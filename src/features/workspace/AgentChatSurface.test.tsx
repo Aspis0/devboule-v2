@@ -418,14 +418,18 @@ describe("AgentChatSurface", () => {
     });
 
     expect(container.textContent).toContain("Hello");
-    expect(container.textContent).toContain("model grok");
+    expect(container.querySelector(".turn-footer-line")?.textContent).toBe(
+      "model grok · stopped: end_turn",
+    );
+    // The ledger behind the line's disclosure: rendered, closed.
+    expect(container.querySelector(".turn-footer-detail")?.hasAttribute("open")).toBe(false);
     expect(container.textContent).toContain("total 3 tokens");
 
     await act(async () => root?.unmount());
     expect(sessionDetach).toHaveBeenCalledWith(41);
   });
 
-  it("shows cached tokens and turn cost on the finished-turn usage line, and neither when absent", async () => {
+  it("shows the turn cost on the short line and the cache figures behind it, and neither when absent", async () => {
     root = createRoot(container);
     await act(async () => {
       root.render(
@@ -449,11 +453,15 @@ describe("AgentChatSurface", () => {
         },
       });
     });
-    expect(container.textContent).toContain("cached 6,016");
-    expect(container.textContent).toContain("cache-wrote 0");
+    expect(container.querySelector(".turn-footer-detail-copy")?.textContent).toContain(
+      "cached 6,016",
+    );
+    expect(container.querySelector(".turn-footer-detail-copy")?.textContent).toContain(
+      "cache-wrote 0",
+    );
     // 0.00555254 truncates at four decimals — the copy never bills more
     // than the provider did.
-    expect(container.textContent).toContain("$0.0055");
+    expect(container.querySelector(".turn-footer-line")?.textContent).toContain("$0.0055");
 
     await act(async () => {
       channelHarness.emit?.({
@@ -463,9 +471,9 @@ describe("AgentChatSurface", () => {
         usage: { inputTokens: 25848, outputTokens: 3, totalTokens: 25851 },
       });
     });
-    expect(container.textContent).not.toContain("cached");
-    expect(container.textContent).not.toContain("cache-wrote");
-    expect(container.textContent).not.toContain("$");
+    expect(container.querySelector(".turn-footer-line")?.textContent).not.toContain("cached");
+    expect(container.querySelector(".turn-footer-line")?.textContent).not.toContain("cache-wrote");
+    expect(container.querySelector(".turn-footer-line")?.textContent).not.toContain("$");
 
     // A cost the provider said is zero shows no figure at all — "$0" would
     // read like the provider said nothing.
@@ -478,7 +486,7 @@ describe("AgentChatSurface", () => {
       });
     });
     expect(container.textContent).toContain("in 2");
-    expect(container.textContent).not.toContain("$");
+    expect(container.querySelector(".turn-footer-line")?.textContent).not.toContain("$");
 
     await act(async () => root?.unmount());
     expect(sessionDetach).toHaveBeenCalledWith(41);

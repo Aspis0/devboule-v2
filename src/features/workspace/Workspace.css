@@ -450,8 +450,8 @@
      pane, where the center panel's overflow: hidden clipped it. */
   max-width: min(760px, 100%);
   margin: 0 auto;
-  gap: var(--space-10);
-  padding: var(--space-4) var(--space-24) 0;
+  gap: var(--space-8);
+  padding: var(--space-4) var(--space-16) 0;
   overflow-y: auto;
   overflow-anchor: none;
 }
@@ -471,7 +471,7 @@
   display: flex;
   flex: none;
   flex-direction: column;
-  gap: var(--space-10);
+  gap: var(--space-8);
 }
 
 /* The rail's gutter is reserved in the content box; the permission card
@@ -599,8 +599,8 @@
   display: flex;
   min-height: var(--control-dense);
   align-items: center;
-  gap: var(--space-8);
-  padding: 0 var(--space-8);
+  gap: var(--space-6);
+  padding: 0 var(--space-6);
   border-radius: var(--radius-6);
   background: var(--fill-tool);
   color: var(--ink-soft);
@@ -617,7 +617,7 @@
 }
 
 .workspace-chat-tool:not(.workspace-chat-tool-group)[open] > summary {
-  padding-inline: var(--space-8);
+  padding-inline: var(--space-6);
   color: var(--code-text);
 }
 
@@ -649,13 +649,13 @@
 .workspace-chat-tool-group[open] {
   flex-direction: column;
   align-items: stretch;
-  gap: var(--space-2);
+  gap: var(--space-4);
   padding: 0;
   background: transparent;
 }
 
 .workspace-chat-tool-group[open] > summary {
-  padding: 0 var(--space-8);
+  padding: 0 var(--space-6);
   border-radius: var(--radius-6);
   background: var(--fill-tool);
   color: var(--ink-soft);
@@ -666,7 +666,7 @@
   display: flex;
   flex: 1;
   align-items: center;
-  gap: var(--space-8);
+  gap: var(--space-6);
   min-height: var(--control-dense);
   min-width: 0;
   cursor: pointer;
@@ -708,7 +708,7 @@
 .workspace-chat-tool-text {
   display: flex;
   align-items: center;
-  gap: var(--space-8);
+  gap: var(--space-6);
   flex: 0 10 100%;
   min-width: 0;
   overflow: hidden;
@@ -834,11 +834,15 @@
   white-space: nowrap;
 }
 
+/* The expanded row's body. The open row itself paints the code ground, so
+   this box adds no fill, no border and no radius of its own: the output and
+   its header read as one surface. The cap keeps one long tool call from
+   pushing the turn after it off the screen. */
 .workspace-chat-tool-body {
-  margin: 0 var(--space-8) var(--space-4) var(--space-32);
-  padding: var(--space-6) var(--space-10);
-  border-radius: var(--radius-6);
-  background: var(--code-bg);
+  margin: 0 var(--space-6) var(--space-6) var(--space-24);
+  padding: var(--space-8);
+  max-height: var(--transcript-detail-max);
+  overflow: auto;
   color: var(--code-text);
   font-family: var(--font-mono);
   font-size: var(--type-mono-sm);
@@ -847,8 +851,6 @@
 }
 
 .workspace-chat-tool.is-plan .workspace-chat-tool-body {
-  max-height: 16em;
-  overflow: auto;
   overflow-wrap: anywhere;
   white-space: normal;
 }
@@ -923,7 +925,7 @@
 .workspace-chat-tool-group-body {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--space-4);
 }
 
 .workspace-chat-error {
@@ -1045,14 +1047,6 @@
   flex: none;
   color: var(--silence);
   font-size: var(--type-meta);
-}
-
-.workspace-chat-finish {
-  flex: none;
-  margin-top: var(--space-2);
-  color: var(--muted);
-  font-family: var(--font-ui);
-  font-size: var(--type-small);
 }
 
 .workspace-chat-empty {
@@ -1240,20 +1234,20 @@
      box's own 1px border a side — without it the floor sits under the height
      it names and never binds. */
   min-height: calc(
-    var(--space-14) + (var(--type-interface) * var(--leading-body)) + var(--space-12) +
-      var(--control-default) + var(--space-12) + 2px
+    var(--space-10) + (var(--type-interface) * var(--leading-body)) + var(--space-6) +
+      var(--control-default) + var(--space-10) + 2px
   );
   /* The rail adds 32 px to the composer's own text inset; the transcript meets
      it within the composer's 1 px border when the conversation fills its
      capped 760 column. */
-  padding: var(--space-14) var(--space-16) var(--space-12);
+  padding: var(--space-10) var(--space-12);
   background: var(--panel-composer);
   border: 1px solid var(--line-strong);
-  border-radius: var(--radius-16);
+  border-radius: var(--radius-8);
 }
 
 .workspace-agent-shell.has-turn-rail .workspace-composer {
-  padding-left: 56px;
+  padding-left: 48px;
 }
 
 .workspace-composer:focus-within {
@@ -1291,7 +1285,7 @@
   display: flex;
   align-items: center;
   gap: var(--space-6);
-  margin-top: var(--space-12);
+  margin-top: var(--space-6);
 }
 
 .workspace-composer-controls {
@@ -1980,8 +1974,8 @@
   display: grid;
   flex: none;
   place-items: center;
-  width: var(--control-default);
-  height: var(--control-default);
+  width: var(--control-dense);
+  height: var(--control-dense);
   padding: 0;
   color: var(--ink-soft);
   background: transparent;

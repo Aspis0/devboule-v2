@@ -31,12 +31,12 @@ describe("turn rail computed styles", () => {
     conversation.appendChild(content);
     document.body.appendChild(conversation);
 
-    expect(getComputedStyle(conversation).paddingLeft).toBe("24px");
+    expect(getComputedStyle(conversation).paddingLeft).toBe("16px");
 
     conversation.classList.add("has-turn-rail");
     // The conversation's own box does not change with the rail; the
-    // content box gives up 32 px of column — 24 + 32 = 56 from the edge.
-    expect(getComputedStyle(conversation).paddingLeft).toBe("24px");
+    // content box gives up 32 px of column — 16 + 32 = 48 from the edge.
+    expect(getComputedStyle(conversation).paddingLeft).toBe("16px");
     expect(getComputedStyle(content).paddingLeft).toBe("32px");
     expect(getComputedStyle(conversation).position).toBe("relative");
     expect(getComputedStyle(content).position).toBe("relative");
@@ -88,13 +88,13 @@ describe("turn rail computed styles", () => {
       return { shell, aux, track, composer };
     };
 
-    // Rail off: no sibling takes an inset; the composer keeps its 16 and the
+    // Rail off: no sibling takes an inset; the composer keeps its 12 and the
     // track keeps the composer's box.
     const off = build(false);
     expect(getComputedStyle(off.aux).marginLeft).toBe("");
     expect(getComputedStyle(off.track).paddingLeft).toBe("");
     expect(getComputedStyle(off.track).maxWidth).toBe("100%");
-    expect(getComputedStyle(off.composer).paddingLeft).toBe("16px");
+    expect(getComputedStyle(off.composer).paddingLeft).toBe("12px");
     off.shell.remove();
 
     // The card takes the gutter as margin, the composer card as padding; the
@@ -105,7 +105,7 @@ describe("turn rail computed styles", () => {
     expect(getComputedStyle(on.aux).marginLeft).toBe("32px");
     expect(getComputedStyle(on.track).paddingLeft).toBe("");
     expect(getComputedStyle(on.track).maxWidth).toBe("100%");
-    expect(getComputedStyle(on.composer).paddingLeft).toBe("56px");
+    expect(getComputedStyle(on.composer).paddingLeft).toBe("48px");
     on.shell.remove();
   });
 
@@ -146,8 +146,8 @@ describe("turn rail computed styles", () => {
     expect(getComputedStyle(on).maxWidth).toBe("min(760px, 100%)");
     // The gutter comes out of the column: the conversation's own padding
     // is the same with the rail on and off.
-    expect(getComputedStyle(off).paddingLeft).toBe("24px");
-    expect(getComputedStyle(on).paddingLeft).toBe("24px");
+    expect(getComputedStyle(off).paddingLeft).toBe("16px");
+    expect(getComputedStyle(on).paddingLeft).toBe("16px");
     expect(getComputedStyle(on.querySelector(".workspace-conversation-content")!).paddingLeft).toBe(
       "32px",
     );
@@ -181,9 +181,9 @@ describe("turn rail computed styles", () => {
     const railStyle = getComputedStyle(rail);
     expect(railStyle.position).toBe("absolute");
     expect(railStyle.width).toBe("56px");
-    // The content box starts 24 px in (the conversation's padding), so
-    // -24 reaches the conversation's left edge and the thread its 24 px.
-    expect(railStyle.left).toBe("-24px");
+    // The content box starts 16 px in (the conversation's padding), so
+    // -16 reaches the conversation's left edge and the thread its 16 px.
+    expect(railStyle.left).toBe("-16px");
     expect(railStyle.pointerEvents).toBe("none");
     const threadStyle = getComputedStyle(thread);
     expect(threadStyle.width).toBe("1px");

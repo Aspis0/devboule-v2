@@ -237,7 +237,7 @@ describe("tool row computed styles", () => {
       expect(
         contrastRatio(getComputedStyle(summary, "::after").color, fillTool!),
       ).toBeGreaterThanOrEqual(4.5);
-      expect(getComputedStyle(body).gap).toBe("2px");
+      expect(getComputedStyle(body).gap).toBe("4px");
       expect(getComputedStyle(row).backgroundColor).toBe(fillTool);
       expect(getComputedStyle(row).borderRadius).toBe("6px");
       group.remove();
@@ -371,7 +371,7 @@ describe("tool row computed styles", () => {
     expect(getComputedStyle(label).whiteSpace).toBe("nowrap");
     expect(getComputedStyle(block).flexShrink).toBe("10");
     expect(getComputedStyle(block).flexBasis).toBe("100%");
-    expect(getComputedStyle(block).gap).toBe("8px");
+    expect(getComputedStyle(block).gap).toBe("6px");
     expect(getComputedStyle(block).minWidth).toBe("0");
     expect(getComputedStyle(block).overflow).toBe("hidden");
     expect(getComputedStyle(summaryText).textOverflow).toBe("ellipsis");
@@ -389,6 +389,56 @@ describe("tool row computed styles", () => {
     document.body.append(loneBlock);
     expect(getComputedStyle(loneLabel).maxWidth).toBe("100%");
     loneBlock.remove();
+  });
+
+  it("draws one surface under an expanded tool body and bounds it", () => {
+    const css = assembleCssProof(sheets);
+    css.inject([
+      ".workspace-chat-tool",
+      ".workspace-chat-tool summary",
+      ".workspace-chat-tool:not(.workspace-chat-tool-group)[open]",
+      ".workspace-chat-tool-body",
+    ]);
+    const row = document.createElement("details");
+    row.className = "workspace-chat-entry workspace-chat-tool";
+    row.open = true;
+    const summary = document.createElement("summary");
+    const body = document.createElement("div");
+    body.className = "workspace-chat-tool-body";
+    row.append(summary, body);
+    document.body.append(row);
+
+    // The open row paints the code ground, so the body draws none of its own:
+    // the header and the output it holds are one surface, not a box in a box.
+    // happy-dom reports no background at all for an unset one, so the
+    // surface question is answered on the rule source.
+    expect(getComputedStyle(row).backgroundColor).toBe(css.token("--code-bg"));
+    expect(css.rulesFor(".workspace-chat-tool-body")).not.toContain("background");
+    expect(css.rulesFor(".workspace-chat-tool-body")).not.toContain("border-radius");
+    expect(getComputedStyle(body).color).toBe(css.token("--code-text"));
+
+    expect(getComputedStyle(body).marginLeft).toBe("24px");
+    expect(getComputedStyle(body).marginRight).toBe("6px");
+    expect(getComputedStyle(body).padding).toBe("8px");
+    // One long tool call scrolls inside its own turn instead of pushing the
+    // turns after it off the screen.
+    expect(getComputedStyle(body).maxHeight).toBe("200px");
+    expect(getComputedStyle(body).overflow).toBe("auto");
+    // The collapsed row stays a 24 px control on a 6 px inset; the open one
+    // drops its own padding so the body insets itself instead.
+    expect(getComputedStyle(summary).minHeight).toBe("24px");
+    expect(getComputedStyle(summary).gap).toBe("6px");
+    expect(getComputedStyle(row).paddingLeft).toBe("0px");
+    row.remove();
+
+    const closed = document.createElement("details");
+    closed.className = "workspace-chat-entry workspace-chat-tool";
+    closed.appendChild(document.createElement("summary"));
+    document.body.appendChild(closed);
+    expect(getComputedStyle(closed).gap).toBe("6px");
+    expect(getComputedStyle(closed).paddingLeft).toBe("6px");
+    expect(getComputedStyle(closed).paddingRight).toBe("6px");
+    closed.remove();
   });
 
   it.each(["light", "dark"] as const)(
@@ -415,7 +465,7 @@ describe("tool row computed styles", () => {
   );
 
   it.each(["light", "dark"] as const)(
-    "keeps expanded groups transparent with separate tool rows and 2 px gaps in the %s theme",
+    "keeps expanded groups transparent with separate tool rows and 4 px gaps in the %s theme",
     (theme: CssTheme) => {
       const css = assembleCssProof(sheets, theme);
       css.inject([
@@ -443,9 +493,9 @@ describe("tool row computed styles", () => {
       document.body.append(group);
 
       expect(getComputedStyle(group).backgroundColor).toBe("transparent");
-      expect(getComputedStyle(group).gap).toBe("2px");
+      expect(getComputedStyle(group).gap).toBe("4px");
       expect(getComputedStyle(summary).backgroundColor).toBe(css.token("--fill-tool"));
-      expect(getComputedStyle(body).gap).toBe("2px");
+      expect(getComputedStyle(body).gap).toBe("4px");
       expect(getComputedStyle(row).backgroundColor).toBe(css.token("--fill-tool"));
       expect(getComputedStyle(row).borderRadius).toBe("6px");
       group.remove();

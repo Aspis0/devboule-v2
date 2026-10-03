@@ -21,6 +21,10 @@ const blockCss = assembleCssProof([
   read("src/styles/tokens.css"),
   read("src/components/codeBlocks.css"),
 ]);
+const footerCss = assembleCssProof([
+  read("src/styles/tokens.css"),
+  read("src/features/workspace/timeline/TurnFooter.css"),
+]);
 
 afterEach(removeCssProof);
 
@@ -39,20 +43,20 @@ describe("timeline computed styles", () => {
     expect(style.marginLeft).toBe("auto");
     expect(style.marginRight).toBe("auto");
     expect(style.paddingTop).toBe("4px");
-    expect(style.paddingRight).toBe("24px");
+    expect(style.paddingRight).toBe("16px");
     expect(style.paddingBottom).toBe("0px");
     // The container's gap now only separates the transcript from the permission
     // card; the entry rhythm lives on the wrapper.
-    expect(style.gap).toBe("10px");
+    expect(style.gap).toBe("8px");
     rail.remove();
   });
 
-  it("declares the transcript wrapper unsquashed with its own 10 px entry gap", () => {
-    // In a real browser a child's computed `gap` inherits the rail's 10 px,
+  it("declares the transcript wrapper unsquashed with its own 8 px entry gap", () => {
+    // In a real browser a child's computed `gap` inherits the rail's 8 px,
     // so only the rule source can certify the wrapper's own declarations.
     const rules = workspaceCss.rulesFor(".workspace-conversation-content");
     expect(rules).toContain("flex: none");
-    expect(rules).toContain("gap: 10px");
+    expect(rules).toContain("gap: 8px");
   });
 
   it("gives user messages the bubble width, inset, corner shape, fill, and ink", () => {
@@ -62,9 +66,9 @@ describe("timeline computed styles", () => {
     document.body.appendChild(bubble);
 
     const style = getComputedStyle(bubble);
-    expect(style.maxWidth).toBe("70%");
-    expect(style.padding).toBe("16px");
-    expect(style.borderRadius).toBe("16px 2px 16px 16px");
+    expect(style.maxWidth).toBe("78%");
+    expect(style.padding).toBe("12px");
+    expect(style.borderRadius).toBe("12px 4px 12px 12px");
     expect(style.backgroundColor).toBe("#fbf8f1");
     expect(style.color).toBe("#1c1a17");
     bubble.remove();
@@ -84,7 +88,6 @@ describe("timeline computed styles", () => {
       ".workspace-chat-user:focus-within .timeline-copy-chip",
       ".workspace-chat-assistant:hover .timeline-copy-chip",
       ".workspace-chat-assistant:focus-within .timeline-copy-chip",
-      ".workspace-chat-assistant:hover .workspace-chat-copy",
     ]);
     blockCss.inject([
       ".copyblock",
@@ -168,7 +171,14 @@ describe("timeline computed styles", () => {
     expect(getComputedStyle(blockCopy).position).toBe("absolute");
     expect(getComputedStyle(blockCopy).right).toBe("6px");
     expect(getComputedStyle(copy).position).toBe("absolute");
-    expect(getComputedStyle(copy).right).toBe("4px");
+    expect(getComputedStyle(copy).right).toBe("0px");
+    // The control overlays the row: a 24 px target with no chip of its own,
+    // and nothing on the row or its text reserves width for it.
+    expect(getComputedStyle(copy).width).toBe("24px");
+    expect(getComputedStyle(copy).height).toBe("24px");
+    expect(getComputedStyle(copy).padding).toBe("0px");
+    expect(getComputedStyle(copy).borderTopWidth).toBe("0px");
+    expect(getComputedStyle(copy).backgroundColor).toBe("transparent");
     expect(getComputedStyle(copiedBtn).color).toBe("#3f7a56");
     expect(getComputedStyle(copiedBtn).opacity).toBe("1");
     expect(blockCss.rulesFor(".copyblock:hover .copy-btn")).toContain("opacity: 1");
@@ -197,6 +207,13 @@ describe("timeline computed styles", () => {
     expect(timelineCss.rulesFor(".workspace-chat-user:hover .timeline-copy-chip")).toContain(
       "pointer-events: auto",
     );
+    // No hover rule hands the text a right padding to clear the control. A
+    // sweep of every hover rule in the sheet is what proves the reservation
+    // is gone; one named rule's absence would only prove one rule is gone.
+    for (const rule of timelineCss.rules) {
+      if (!rule.selector.includes(":hover")) continue;
+      expect(rule.body, rule.selector).not.toContain("padding-right");
+    }
     assistant.remove();
   });
 
@@ -215,16 +232,33 @@ describe("timeline computed styles", () => {
     const typing = document.createElement("div");
     typing.className = "workspace-chat-typing";
     rail.append(typing);
-    document.body.append(system, finish, rail);
+    document.body.append(system, rail);
 
     expect(getComputedStyle(system).fontSize).toBe("12px");
     expect(getComputedStyle(system).color).toBe("#686256");
     expect(getComputedStyle(system).fontFamily).toContain("Inter");
-    expect(getComputedStyle(finish).fontSize).toBe("13px");
-    expect(getComputedStyle(finish).color).toBe("#686256");
-    expect(getComputedStyle(finish).fontFamily).toContain("Inter");
     expect(getComputedStyle(typing).fontSize).toBe("12px");
     system.remove();
     rail.remove();
+  });
+
+  it("holds the turn footer to a 12 px line over one ledger disclosure", () => {
+    footerCss.inject([".turn-footer"]);
+    const footer = document.createElement("div");
+    footer.className = "turn-footer";
+    document.body.appendChild(footer);
+
+    expect(getComputedStyle(footer).fontSize).toBe("12px");
+    expect(getComputedStyle(footer).color).toBe("#686256");
+    expect(getComputedStyle(footer).fontFamily).toContain("Inter");
+    // The trigger is a control, so it is a 24 px target. happy-dom computes
+    // no width on a <summary>, so its box is read off the rule.
+    const trigger = footerCss.rulesFor(".turn-footer-detail-trigger");
+    expect(trigger).toContain("width: 24px");
+    expect(trigger).toContain("height: 24px");
+    // The disclosure shares the line's row: opening it adds the ledger to a
+    // turn that already had its line, never a row under it.
+    expect(footerCss.rulesFor(".turn-footer")).toContain("display: flex");
+    footer.remove();
   });
 });

@@ -103,7 +103,7 @@ describe("the restyled labels speak the UI font at 12px or above", () => {
   it("the composer text is the spec's 14/1.45 on the transcript column", () => {
     const css = assembleCssProof(OWNED_SHEETS);
     const rules = css.rulesFor(".workspace-composer");
-    expect(rules).toContain("padding: 14px 16px 12px;");
+    expect(rules).toContain("padding: 10px 12px;");
     expect(css.rulesFor(".workspace-composer textarea")).toContain("font-size: 14px");
     expect(css.rulesFor(".workspace-composer textarea")).toContain("line-height: 1.45");
   });

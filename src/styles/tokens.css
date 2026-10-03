@@ -201,6 +201,24 @@
   --pulse-ease: ease-in-out;
 }
 
+/* ============================================================================
+   Transcript geometry — feat/transcript-density.
+
+   Sizes several transcript sheets share, named once so the transcript, the
+   cards and the composer cannot drift apart on them. Its own block, so the
+   concurrent sidebar slice rebases onto a contiguous file.
+   ========================================================================== */
+:root {
+  /* the question card's option chip: under --control-default, because the
+     card packs several of them on one row */
+  --control-chip: 26px;
+  /* a queued follow-up: one line of text plus the row's own insets */
+  --control-queue-row: 30px;
+  /* an expanded tool body and an expanded card detail scroll past this and
+     no further, so one long tool call cannot push the turn after it away */
+  --transcript-detail-max: 200px;
+}
+
 [data-theme="dark"] {
   color-scheme: dark;
   --ground-app: #16120e;

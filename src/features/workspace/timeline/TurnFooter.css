@@ -1,0 +1,64 @@
+/* The turn's own metadata: one muted line, and the token ledger behind a
+   disclosure that shares that line's row rather than sitting under it, so a
+   closed turn takes exactly one line of the transcript's rhythm. */
+.turn-footer {
+  display: flex;
+  flex: none;
+  align-items: baseline;
+  gap: var(--space-4);
+  margin-top: var(--space-2);
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: var(--type-meta);
+  line-height: var(--leading-body);
+}
+
+.turn-footer-line {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.turn-footer-detail-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-dense);
+  height: var(--control-dense);
+  color: var(--silence);
+  border-radius: var(--radius-6);
+  cursor: pointer;
+  list-style: none;
+}
+
+.turn-footer-detail-trigger::after {
+  content: "▾";
+  font-size: var(--type-meta);
+}
+
+.turn-footer-detail-trigger::-webkit-details-marker {
+  display: none;
+}
+
+.turn-footer-detail-trigger:hover {
+  color: var(--ink-soft);
+  background: var(--fill-hover);
+}
+
+.turn-footer-detail[open] .turn-footer-detail-trigger {
+  color: var(--ink-soft);
+}
+
+.turn-footer-detail[open] .turn-footer-detail-trigger::after {
+  transform: rotate(180deg);
+}
+
+.turn-footer-detail-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.turn-footer-detail-copy {
+  margin-left: var(--space-4);
+  color: var(--silence);
+  overflow-wrap: anywhere;
+}

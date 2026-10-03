@@ -68,13 +68,14 @@ afterEach(async () => {
 
 describe("the composer's box", () => {
   it("floors itself at one line plus the control row, borders included", async () => {
-    // The floor names a height: 14 of top padding, one 14px line at 1.45, the
-    // bar's 12px gap and its 28px height, 12 of bottom padding, and the 2px
+    // The floor names a height: 10 of top padding, one 14px line at 1.45, the
+    // bar's 6px gap and its 28px height, 10 of bottom padding, and the 2px
     // of border the floor has to count to be a floor at all.
     const floor = workspaceCss.rulesFor(".workspace-composer");
     expect(floor).toContain("min-height: calc(");
     expect(floor).toContain("(14px * 1.45)");
-    expect(floor).toContain("28px + 12px + 2px");
+    expect(floor).toContain("28px + 10px + 2px");
+    expect(floor).toContain("border-radius: 8px");
 
     workspaceCss.inject([".workspace-composer textarea"]);
     await renderComposer();

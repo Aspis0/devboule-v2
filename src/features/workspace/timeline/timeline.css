@@ -7,9 +7,9 @@
   position: relative;
   box-sizing: border-box;
   width: fit-content;
-  max-width: 70%;
-  padding: var(--space-16);
-  border-radius: var(--radius-16) var(--radius-2) var(--radius-16) var(--radius-16);
+  max-width: 78%;
+  padding: var(--space-12);
+  border-radius: var(--radius-12) var(--radius-4) var(--radius-12) var(--radius-12);
   background: var(--bubble-bg);
   color: var(--ink);
   font-size: var(--type-interface);
@@ -32,7 +32,7 @@
 }
 
 .workspace-chat-assistant .workspace-chat-copy p {
-  margin: var(--space-4) 0;
+  margin: var(--space-6) 0;
 }
 
 .workspace-chat-assistant .workspace-chat-copy .plan-markdown-heading-1 {
@@ -73,7 +73,7 @@
 
 .workspace-chat-assistant .workspace-chat-copy ul,
 .workspace-chat-assistant .workspace-chat-copy ol {
-  margin: var(--space-4) 0;
+  margin: var(--space-6) 0;
   padding-left: var(--space-16);
 }
 
@@ -82,7 +82,7 @@
 }
 
 .workspace-chat-assistant .workspace-chat-copy code:not(pre code) {
-  padding: 0 var(--space-6);
+  padding: 0 var(--space-2);
   border-radius: var(--radius-4);
   background: var(--fill-code-inline);
   font-family: var(--font-mono);
@@ -93,19 +93,24 @@
   font-weight: var(--weight-heading);
 }
 
+/* The row's own copy control: an icon-only 24 px target that floats over the
+   text's top-right corner. It reserves nothing — the text keeps the row's
+   full width at rest and under hover alike, and the control paints on top of
+   whatever sits under it. */
 .timeline-copy-chip {
   position: absolute;
   z-index: 1;
-  top: var(--space-4);
-  right: var(--space-4);
+  top: 0;
+  right: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  width: var(--control-dense);
   height: var(--control-dense);
-  padding: 0 var(--space-6);
-  border: 1px solid var(--line);
+  padding: 0;
+  border: 0;
   border-radius: var(--radius-6);
-  background: var(--panel-card);
+  background: transparent;
   color: var(--muted);
   font-size: var(--type-meta);
   opacity: 0;
@@ -125,11 +130,6 @@
   outline-offset: 2px;
 }
 
-.workspace-chat-user:hover .workspace-chat-bubble,
-.workspace-chat-user:focus-within .workspace-chat-bubble {
-  padding-right: 96px;
-}
-
 .workspace-chat-user:hover .timeline-copy-chip,
 .workspace-chat-user:focus-within .timeline-copy-chip,
 .workspace-chat-assistant:hover .timeline-copy-chip,
@@ -138,23 +138,17 @@
   pointer-events: auto;
 }
 
-.workspace-chat-assistant:hover .workspace-chat-copy,
-.workspace-chat-assistant:focus-within .workspace-chat-copy {
-  padding-right: 84px;
-}
-
-/* Chat image thumbnails: a wrapping row of pressable 48 px frames above the
-   user bubble's text, with room below when text follows. */
+/* Chat image thumbnails: a wrapping row of pressable frames above the user
+   bubble's text, each sized by its own aspect ratio inside one cap, with room
+   below when text follows. */
 .workspace-chat-images {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-8);
+  gap: var(--space-6);
   margin-bottom: var(--space-8);
 }
 
 .workspace-chat-image-thumb {
-  width: 48px;
-  height: 48px;
   padding: 0;
   overflow: hidden;
   border: 1px solid var(--line-strong);
@@ -163,10 +157,12 @@
   cursor: pointer;
 }
 
+/* The caps live on the image, which sizes to its own aspect ratio: the button
+   shrink-wraps it and draws its frame around whatever falls out. */
 .workspace-chat-image-thumb img {
   display: block;
-  width: 100%;
-  height: 100%;
+  max-width: 240px;
+  max-height: 180px;
   object-fit: cover;
 }
 

@@ -2,7 +2,7 @@
    the conversation's own padding — and with it the box's fit-content
    behaviour at its own level — is identical with the rail on and off,
    bounded by the pane cap in Workspace.css, and the content box gives up
-   32 px of its column instead. 24 (the conversation's padding) + 32 = 56:
+   32 px of its column instead. 16 (the conversation's padding) + 32 = 48:
    the column and the thread land where the spec puts them. */
 .workspace-conversation.has-turn-rail {
   position: relative;
@@ -14,13 +14,13 @@
 }
 
 /* Reaching back from the content box into the gutter it reserved: the box
-   now starts 24 px in (the conversation's padding), so -24 reaches its
-   left edge and the thread stays at 24 px from it. */
+   now starts 16 px in (the conversation's padding), so -16 reaches its
+   left edge and the thread stays at 16 px from it. */
 .turn-rail {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: -24px;
+  left: -16px;
   z-index: 2;
   width: 56px;
   pointer-events: none;

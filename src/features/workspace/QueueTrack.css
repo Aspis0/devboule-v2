@@ -13,7 +13,8 @@
   display: flex;
   align-items: center;
   gap: var(--space-8);
-  padding: var(--space-6);
+  min-height: var(--control-queue-row);
+  padding: 0 var(--space-8);
   background: var(--surface-muted);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-8);
@@ -29,14 +30,16 @@
   outline-offset: -2px;
 }
 
+/* One line: the row is a reminder of what is queued, and the queue track
+   already says how many rows there are. */
 .workspace-queue-text {
   min-width: 0;
   overflow: hidden;
   color: var(--ink-soft);
-  font-size: var(--type-small);
+  font-size: var(--type-meta);
   line-height: var(--leading-body);
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 1;
   -webkit-box-orient: vertical;
   overflow-wrap: anywhere;
 }
@@ -58,7 +61,7 @@
   border: 1px solid var(--accent);
   border-radius: var(--radius-6);
   font: inherit;
-  font-size: var(--type-small);
+  font-size: var(--type-meta);
   line-height: var(--leading-body);
 }
 

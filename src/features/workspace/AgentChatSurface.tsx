@@ -53,13 +53,13 @@ import { journalLossCopy } from "./journalLoss";
 import { PickerChip, modeDotClass } from "../../components/PickerChip";
 import type { ChatFileLinks } from "../../lib/chatFilePaths";
 import { TurnRail } from "./timeline/TurnRail";
+import { TurnFooter } from "./timeline/TurnFooter";
 import "./timeline/timeline.css";
 import type { A2aNameSource } from "./A2aMessageCard";
 import { AgentTaskPill } from "./AgentTaskPill";
 import { GoalLine } from "./paneHeader/GoalLine";
 import type { WorkspaceCommand } from "./WorkspaceCommandMenu";
 import { setHeldAssistantText } from "./attentionNotice";
-import { usdCopy } from "../../lib/format";
 import { QueueTrack } from "./QueueTrack";
 import { useMessageQueue } from "./useMessageQueue";
 import {
@@ -293,35 +293,6 @@ function modelOptionDescription(model: SessionModel): string | undefined {
     model.contextTokens === undefined ? null : `${model.contextTokens.toLocaleString()} tokens`,
   ].filter((part): part is string => part !== null);
   return parts.length > 0 ? parts.join(" · ") : undefined;
-}
-
-function usageCopy(state: AgentSessionState): string | null {
-  const finished = state.lastFinished;
-  if (finished === null) return null;
-  const details = [
-    finished.modelId ? `model ${finished.modelId}` : null,
-    finished.stopReason ? `stopped: ${finished.stopReason}` : null,
-    finished.usage?.inputTokens === undefined
-      ? null
-      : `in ${finished.usage.inputTokens.toLocaleString()}`,
-    finished.usage?.outputTokens === undefined
-      ? null
-      : `out ${finished.usage.outputTokens.toLocaleString()}`,
-    finished.usage?.cacheReadTokens === undefined
-      ? null
-      : `cached ${finished.usage.cacheReadTokens.toLocaleString()}`,
-    finished.usage?.cacheWriteTokens === undefined
-      ? null
-      : `cache-wrote ${finished.usage.cacheWriteTokens.toLocaleString()}`,
-    finished.usage?.thoughtTokens === undefined
-      ? null
-      : `thought ${finished.usage.thoughtTokens.toLocaleString()}`,
-    finished.usage?.totalTokens === undefined
-      ? null
-      : `total ${finished.usage.totalTokens.toLocaleString()} tokens`,
-    finished.usage?.costUsd === undefined ? null : usdCopy(finished.usage.costUsd),
-  ].filter((part): part is string => part !== null);
-  return details.length > 0 ? details.join(" · ") : null;
 }
 
 function manifestModel(manifest: SessionManifest): SessionModel | null {
@@ -661,7 +632,6 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     return () => setHeldAssistantText(sessionId, null);
   }, [sessionId, state.items]);
 
-  const finishCopy = usageCopy(state);
   const manifest = state.manifest;
   const stripModel = manifest === null ? null : manifestModel(manifest);
   const efforts = stripModel?.efforts ?? [];
@@ -801,7 +771,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
               <span className="workspace-stream-caret" aria-hidden="true" />
             </div>
           ) : null}
-          {finishCopy !== null ? <div className="workspace-chat-finish">{finishCopy}</div> : null}
+          {state.lastFinished !== null ? <TurnFooter finished={state.lastFinished} /> : null}
         </div>
         {auxiliary}
       </div>
