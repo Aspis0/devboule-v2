@@ -44,6 +44,16 @@ const inlineExceptions = {
       exitCondition:
         "upstream portable-pty ships the malformed-environment fix and the vendored patch (plus its daemon-side test) is dropped",
     },
+    "webview2-com": {
+      reason:
+        "the browser tab drives the WebView2 controller wry hands out through with_webview, so its interface types must be the exact webview2-com copy wry 0.55 compiles (0.38.2); a newer copy is a second, incompatible set of COM types",
+      exitCondition: "the wry version Tauri resolves moves to webview2-com 0.39",
+    },
+    windows: {
+      reason:
+        "same as webview2-com: the HWND and COM types the browser tab passes to and from wry's WebView2 controller must come from the windows copy wry 0.55 compiles (0.61.3)",
+      exitCondition: "the wry version Tauri resolves moves to windows 0.62",
+    },
   },
 };
 
