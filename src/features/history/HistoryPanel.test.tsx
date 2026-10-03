@@ -1152,6 +1152,38 @@ describe("HistoryPanel", () => {
     expect(container.textContent).toContain("Shell");
   });
 
+  it("hides an archived child the roster no longer lists, and lists it with the toggle on", async () => {
+    const parent = {
+      ...resumableSession("agent-parent"),
+      title: "Parent agent",
+      state: { type: "live" as const, generation: 1 },
+      createdAtMs: now,
+    };
+    const usage = baseUsage();
+    usage.perSession = [
+      { ...usage.perSession[0], id: parent.id, title: "Parent agent" },
+      { ...usage.perSession[0], id: "agent-older", title: "Older agent" },
+      {
+        ...usage.perSession[0],
+        id: "agent-child",
+        title: "Child agent",
+        createdBy: parent.id,
+      },
+    ];
+    // The roster is the open sessions only, so the archived child is a journal
+    // row and nothing else: the parent link has to come off the row itself.
+    await renderPanel(usage, [parent]);
+    expect(container.querySelectorAll(".history-row-main")).toHaveLength(2);
+    expect(container.textContent).toContain("Parent agent");
+    expect(container.textContent).toContain("Older agent");
+    expect(container.textContent).not.toContain("Child agent");
+    const toggle = container.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    if (!toggle) throw new Error("History show-all toggle did not render");
+    await act(async () => toggle.click());
+    expect(container.querySelectorAll(".history-row-main")).toHaveLength(3);
+    expect(container.textContent).toContain("Child agent");
+  });
+
   it("withholds rows whose top-level state is unknown while the roster is pending", async () => {
     const usage = baseUsage();
     usage.perSession = [{ ...usage.perSession[0], id: "agent-child", title: "Child agent" }];

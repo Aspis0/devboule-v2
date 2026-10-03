@@ -737,6 +737,15 @@ export interface JournalSessionUsage {
    * empty label.
    */
   displayName?: string;
+  /**
+   * The session that created this one, when an agent did (protocol
+   * `JournalSessionUsage.createdBy`, which is the journal's own `created_by`
+   * column). It rides this row because the roster cannot answer for an
+   * archived child: `sessions_list` is the open sessions only. Absent means no
+   * agent created the row — a session a human asked for, and every row written
+   * before the column existed.
+   */
+  createdBy?: string;
   kind: SessionKind;
   bytes: number;
   updatedAtMs: number;

@@ -69,6 +69,14 @@ export function isTopLevelAgent(session: Session): boolean {
   return !contextId || contextId === session.id;
 }
 
+// The same question asked of a journal row, for a row the roster no longer
+// lists: an archived child is closed, so `sessions_list` never carried it and
+// its `createdBy` is the only parent link the app can read. There is no
+// contextId on this row, so a legacy descendant stays top-level.
+export function isTopLevelJournalRow(saved: JournalSessionUsage): boolean {
+  return isAgentKind(saved.kind) && !saved.createdBy?.trim();
+}
+
 // Openable in History = running (live or silent, per the shared close
 // policy: silent still holds its process) or recovered. Ended rows reopen
 // only through the daemon's resumable verdict below.

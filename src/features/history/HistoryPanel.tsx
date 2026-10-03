@@ -18,6 +18,7 @@ import {
   isResumableSession,
   isSameHistoryRow,
   isTopLevelAgent,
+  isTopLevelJournalRow,
   type HistoryRow,
 } from "./HistoryRow";
 import "./history.css";
@@ -151,7 +152,8 @@ export function HistoryPanel({
     for (const saved of usage?.perSession ?? []) {
       if (!showAll && !isAgentKind(saved.kind)) continue;
       const session = sessionsById.get(saved.id) ?? null;
-      if (!showAll && session && !isTopLevelAgent(session)) continue;
+      const topLevel = session ? isTopLevelAgent(session) : isTopLevelJournalRow(saved);
+      if (!showAll && !topLevel) continue;
       const workspaceId = session?.workspaceId ?? null;
       const key = workspaceId === null ? null : localWorkspaceKey(workspaceId);
       byId.set(saved.id, {
