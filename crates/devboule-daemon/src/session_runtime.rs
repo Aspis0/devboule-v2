@@ -10,8 +10,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use devboule_protocol::{
     cursor_replay_ok, AgentActivityState, AgentTaskItem, AttachmentReference, Attention,
     AttentionReason, Cursor, ErrorCode, NoticeSeverity, QueuedMessage, Session, SessionEvent,
-    SessionEventEnvelope, SessionKind, SessionModel, SessionOrigin, TranscriptIntegrity,
-    UserMessageAuthor, UserMessageKind, WireError,
+    SessionEventEnvelope, SessionKind, SessionModel, SessionOrigin, SessionResumeInfo,
+    TranscriptIntegrity, UserMessageAuthor, UserMessageKind, WireError,
 };
 
 use super::permission_broker::PermissionBroker;
@@ -325,6 +325,10 @@ pub(crate) struct LiveAgentReplay {
 pub(crate) struct AttachOutcome {
     pub(crate) generation: u64,
     pub(crate) live_agent_replay: Option<LiveAgentReplay>,
+    /// The resume outcome the attach reply carries, present only when the
+    /// connection negotiated `session.resume_outcomes` and the session is a
+    /// live structured agent that was handed a cursor.
+    pub(crate) resume: Option<SessionResumeInfo>,
 }
 
 fn merge_claude_manifest(previous: &SessionEvent, incoming: SessionEvent) -> SessionEvent {
@@ -3049,6 +3053,52 @@ impl SessionRuntime {
         Ok(Some(page))
     }
 
+    /// The retained sequence domain of one generation, for the attach resume
+    /// decision. `None` when this runtime never promised durability, or when
+    /// the read failed: the caller keeps today's behaviour and says so through
+    /// the degraded signal.
+    pub(crate) fn resume_domain(&self, generation: u64) -> Option<crate::journal::ResumeRange> {
+        let journal = self.journal.as_ref()?;
+        match journal.resume_range(&self.session_id, generation) {
+            Ok(range) => Some(range),
+            Err(error) => {
+                self.mark_journal_degraded();
+                eprintln!(
+                    "resume range read failed for session {}: {error}",
+                    self.session_id
+                );
+                None
+            }
+        }
+    }
+
+    /// The rows a reset tail may be built from: the newest of this generation
+    /// up to the captured head, inside the scan budget.
+    pub(crate) fn tail_candidate_rows(
+        &self,
+        generation: u64,
+        head: u64,
+    ) -> Option<crate::journal::ResetTailPage> {
+        let journal = self.journal.as_ref()?;
+        match journal.reset_tail_rows(
+            &self.session_id,
+            generation,
+            head,
+            crate::journal_resume::TAIL_SCAN_BYTES,
+            crate::journal_resume::TAIL_SCAN_ROWS,
+        ) {
+            Ok(page) => Some(page),
+            Err(error) => {
+                self.mark_journal_degraded();
+                eprintln!(
+                    "reset tail read failed for session {}: {error}",
+                    self.session_id
+                );
+                None
+            }
+        }
+    }
+
     /// Fresh journal copies of a session's Output rows, as
     /// `(generation, seq, data)`. The read is unpositioned — from seq 0 —
     /// because the caller filters with the owed-row predicate: history rows
@@ -3265,30 +3315,42 @@ impl SessionRuntime {
                 "session subscription is already attached",
             ));
         }
+        let live_agent = !stream.transcript && stream.screen.is_none();
+        // The resume decision is taken here, under the stream lock, so the
+        // floor, the head and the replay watermark below name one instant. The
+        // journal writer thread never takes this lock, so the reads it makes
+        // cannot invert the two.
+        let resume = self.resolve_attach_resume(&stream, conn, live_agent, from_cursor);
         // Terminal attaches start at the current screen snapshot. Headless
-        // live agents instead use the cursor as the start of a journal
-        // replay, but both paths still validate generation here so a cursor
-        // from a recreated process fails loudly.
-        if let Some(cursor) = from_cursor {
+        // live agents instead use the cursor as the start of a journal replay.
+        // Both still validate the generation, except on the negotiated resume
+        // road, where a cursor from a recreated process is an `epoch_changed`
+        // reset rather than an error.
+        if let Some(cursor) = from_cursor.filter(|_| resume.is_none()) {
             cursor_replay_ok(stream.generation, cursor)?;
         }
-        let live_agent = !stream.transcript && stream.screen.is_none();
+        // A reset hands the client its tail in the reply, so the replay after
+        // it starts where the tail stopped and the replay-to-live seam prunes
+        // what the tail already carried. Without an outcome this is exactly
+        // the start a bare cursor has always meant.
+        let (from_generation, from_seq) = match (&resume, from_cursor) {
+            (Some(decision), _) => (decision.from_generation, decision.resume_from),
+            (None, Some(cursor)) if cursor.seq > 0 => (cursor.generation, cursor.seq),
+            _ => (0, from_cursor.map(|cursor| cursor.seq).unwrap_or(0)),
+        };
         // A runtime without a journal has made no durability promise. Keep
         // its ordinary live queue contract; a configured journal gets the
         // lazy history replay and stored-manifest seam below.
         let live_agent_replay = if live_agent && self.journal.is_some() {
-            let from_generation = match from_cursor {
-                Some(cursor) if cursor.seq > 0 => cursor.generation,
-                _ => 0,
-            };
             Some(LiveAgentReplay {
                 from_generation,
-                from_seq: from_cursor.map(|cursor| cursor.seq).unwrap_or(0),
+                from_seq,
                 watermark: stream.next_seq.saturating_sub(1),
             })
         } else {
             None
         };
+        let resume = resume.map(|decision| decision.info);
         let as_of_seq = stream.last_applied_seq;
         let screen = stream.screen.as_ref().map(Screen::snapshot);
         let mut attachment = Attachment {
@@ -3376,7 +3438,33 @@ impl SessionRuntime {
         Ok(AttachOutcome {
             generation: stream.generation,
             live_agent_replay,
+            resume,
         })
+    }
+
+    /// The attach reply's resume fields for this connection, or `None` for every
+    /// case where today's behaviour stands: no cursor sent, no negotiated
+    /// capability, not a live structured agent, or a journal this runtime does
+    /// not have.
+    fn resolve_attach_resume(
+        &self,
+        stream: &StreamState,
+        conn: &ConnHandle,
+        live_agent: bool,
+        from_cursor: Option<Cursor>,
+    ) -> Option<crate::journal_resume::ResumeDecision> {
+        let cursor = from_cursor?;
+        // A terminal has a screen to redraw and a transcript replays its whole
+        // stored history: neither has a cursor to reinterpret.
+        if !conn.resume_outcomes_negotiated() || !live_agent || !self.has_journal() {
+            return None;
+        }
+        let generation = stream.generation;
+        // The head this attach captures is the same watermark the replay pages
+        // to, so the tail and the events that follow it agree on one instant
+        // even when the journal writer is behind.
+        let head = stream.next_seq.saturating_sub(1);
+        crate::journal_resume::resolve(self, generation, head, cursor)
     }
 
     pub(crate) fn claim_resize(&self, conn_id: u64, subscription_id: u64) -> Result<(), WireError> {
@@ -3592,6 +3680,31 @@ impl SessionRuntime {
         }
         let origin = stream.last_publish.or(stream.exit_at);
         origin.is_none_or(|instant| instant.elapsed() >= EXIT_DRAIN)
+    }
+
+    /// Test door: publish an agent event as a journalled `AgentReport` row. It
+    /// is the only publish that both spends a stream sequence and writes a
+    /// durable row, so it is the one a journal-reading test needs.
+    #[cfg(test)]
+    pub(crate) fn test_publish_journaled(&self, event: SessionEvent) -> bool {
+        self.publish_journaled_agent_event(|_, _, _| event)
+            .is_some()
+    }
+
+    /// Test door: make this runtime a live structured agent whose stream sits at
+    /// `generation` with `next_seq` as its first unspent sequence, the shape the
+    /// replay tests stage by hand.
+    #[cfg(test)]
+    pub(crate) fn test_live_agent_at(&self, generation: u64, next_seq: u64) {
+        let Ok(mut stream) = self.lock_stream() else {
+            return;
+        };
+        stream.screen = None;
+        stream.transcript = false;
+        stream.generation = generation;
+        stream.next_seq = next_seq;
+        drop(stream);
+        self.generation.store(generation, Ordering::Release);
     }
 
     #[cfg(test)]

@@ -7,6 +7,7 @@ use crate::capability::Capability;
 use crate::error::WireError;
 use crate::handshake::{ClientHello, DaemonHello};
 use crate::project::{Project, Workspace, WorkspaceIsolation};
+use crate::resume::SessionResumeInfo;
 use crate::session::{
     ActiveTurnBehavior, AgentActivityState, AgentTaskState, Cursor, PermissionOutcome, Persistence,
     ResumeResult, Session, SessionEvent, SessionKind, SessionModeView, SessionModel,
@@ -1778,6 +1779,14 @@ pub enum DaemonMessage {
     SessionAttached {
         id: u64,
         subscription_id: SubscriptionId,
+        /// The resume outcome, present only on a connection that negotiated
+        /// [`crate::caps::SESSION_RESUME_OUTCOMES`]. Absent means the daemon
+        /// had nothing to say about the cursor — no cursor was sent, or the
+        /// session is not a live structured agent — and is what a connection
+        /// that did not negotiate the capability always sees, so its bytes are
+        /// unchanged. See [`crate::SessionResumeInfo`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resume: Option<SessionResumeInfo>,
     },
     Ok {
         id: u64,

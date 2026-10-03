@@ -45,6 +45,164 @@ fn view_cwd(row_cwd: Option<&str>) -> Option<std::path::PathBuf> {
         .map(std::path::PathBuf::from)
 }
 
+/// The retained sequence domain of one generation: what is still individually
+/// replayable, what the newest row is, and the first seq the domain is missing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ResumeRange {
+    /// The lowest row seq the generation still holds, `0` when it holds none.
+    pub(crate) oldest_seq: u64,
+    /// The highest row seq the generation still holds, `0` when it holds none.
+    /// Below the live head: `try_append` is asynchronous, so an attach can
+    /// capture a watermark the writer has not reached yet.
+    pub(crate) durable_head: u64,
+    /// The first seq with no row at `seq - 1` that is not the floor itself —
+    /// that is, the seq just above an interior hole. `None` when the domain is
+    /// contiguous.
+    pub(crate) first_gap: Option<u64>,
+}
+
+/// Read the retained sequence domain of one generation.
+///
+/// Every kind counts, not only the two the live page replays: the domain is the
+/// set of rows `StreamState::next_seq` allocated, and a hole in it is a lost
+/// row however it was written. `events` is keyed `(session_id, generation,
+/// seq)`, so one "first seq with no predecessor" query answers for the whole
+/// domain, and the run it reports starts at the floor exactly when the domain
+/// is contiguous.
+pub(super) fn resume_range(
+    conn: &Connection,
+    session_id: &str,
+    generation: u64,
+) -> Result<ResumeRange, JournalError> {
+    let (oldest, newest): (Option<i64>, Option<i64>) = conn.query_row(
+        "SELECT MIN(seq), MAX(seq) FROM events
+         WHERE session_id = ?1 AND generation = ?2",
+        params![session_id, generation as i64],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    // The floor has no predecessor by definition, so the search for a run that
+    // does not reach back to it starts above it: `start - 1` is then the seq the
+    // domain is missing, and no start at all means the domain is one run.
+    let run_start: Option<i64> = match oldest {
+        Some(oldest) => conn.query_row(
+            "SELECT MIN(e.seq) FROM events e
+             WHERE e.session_id = ?1 AND e.generation = ?2
+               AND e.seq > ?3
+               AND NOT EXISTS (SELECT 1 FROM events p
+                                WHERE p.session_id = e.session_id
+                                  AND p.generation = e.generation
+                                  AND p.seq = e.seq - 1)",
+            params![session_id, generation as i64, oldest],
+            |row| row.get(0),
+        )?,
+        None => None,
+    };
+    Ok(match (oldest, newest) {
+        (Some(oldest), Some(newest)) => ResumeRange {
+            oldest_seq: oldest as u64,
+            durable_head: newest as u64,
+            first_gap: run_start.map(|start| (start - 1) as u64),
+        },
+        // No rows at all: an empty domain has no floor to fall below and no
+        // hole to report, so no cursor can be compacted from it.
+        _ => ResumeRange::default(),
+    })
+}
+
+/// The newest rows of one generation with the view cwd that relativises the
+/// locations in them, newest first before the reversal the caller reads.
+#[derive(Debug, Default)]
+pub(crate) struct ResetTailPage {
+    pub(crate) cwd: Option<std::path::PathBuf>,
+    pub(crate) records: Vec<EventRecord>,
+}
+
+/// The newest rows of one generation, newest first, cut where the scan budget
+/// runs out.
+///
+/// A backwards walk alone would hand the rows back in the wrong order for a
+/// provider view to consume, so this only chooses the window; the caller reads
+/// it oldest-first. The budget is on stored payload bytes, which bound the walk
+/// but are not the tail's own budget — that one is paid on the wire bytes of
+/// the derived events.
+pub(super) fn reset_tail_rows(
+    conn: &Connection,
+    session_id: &str,
+    generation: u64,
+    through_seq: u64,
+    scan_bytes: u64,
+    max_rows: usize,
+) -> Result<ResetTailPage, JournalError> {
+    let cwd: Option<String> = conn
+        .query_row(
+            "SELECT cwd FROM sessions WHERE id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    let cwd = cwd.as_deref().map(crate::verbatim_path::plain_path);
+
+    let mut statement = conn.prepare(
+        "SELECT generation, seq, kind, ts_ms, payload, checksum FROM events
+         WHERE session_id = ?1
+           AND generation = ?2
+           AND seq <= ?3
+         ORDER BY seq DESC LIMIT ?4",
+    )?;
+    let rows = statement.query_map(
+        params![
+            session_id,
+            generation as i64,
+            through_seq as i64,
+            max_rows as i64
+        ],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)? as u64,
+                row.get::<_, i64>(1)? as u64,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)? as u64,
+                row.get::<_, Vec<u8>>(4)?,
+                row.get::<_, i64>(5)? as u32,
+            ))
+        },
+    )?;
+    let mut records = Vec::new();
+    let mut bytes = 0u64;
+    for row in rows {
+        let (row_generation, seq, kind, ts_ms, payload, checksum) = row?;
+        if bytes + payload.len() as u64 > scan_bytes {
+            break;
+        }
+        bytes += payload.len() as u64;
+        if crc32(&payload) != checksum {
+            return Err(JournalError::Checksum {
+                session_id: session_id.to_string(),
+                seq,
+            });
+        }
+        let kind = EventKind::parse(&kind).ok_or_else(|| {
+            JournalError::Corrupt(format!(
+                "unknown agent event kind at {session_id} seq {seq}"
+            ))
+        })?;
+        records.push(EventRecord {
+            session_id: session_id.to_string(),
+            generation: row_generation,
+            seq,
+            kind,
+            ts_ms,
+            payload,
+        });
+    }
+    records.reverse();
+    Ok(ResetTailPage {
+        cwd: cwd.map(std::path::PathBuf::from),
+        records,
+    })
+}
+
 /// Read one bounded page of structured agent records. The live attach path
 /// deliberately pages raw journal rows instead of calling `replay_session`:
 /// rebuilding a long conversation into one Vec would merely move the memory

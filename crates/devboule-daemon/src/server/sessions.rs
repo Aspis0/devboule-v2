@@ -53,9 +53,10 @@ pub(super) fn dispatch_session(
                     owner,
                     typed_permissions_ok,
                 )
-                .map(|()| DaemonMessage::SessionAttached {
+                .map(|resume| DaemonMessage::SessionAttached {
                     id,
                     subscription_id,
+                    resume,
                 }),
         ),
         ClientMessage::SessionDetach {
@@ -1053,10 +1054,13 @@ fn rewrite_id(message: DaemonMessage, id: u64) -> DaemonMessage {
         }
         DaemonMessage::Workspace { workspace, .. } => DaemonMessage::Workspace { id, workspace },
         DaemonMessage::SessionAttached {
-            subscription_id, ..
+            subscription_id,
+            resume,
+            ..
         } => DaemonMessage::SessionAttached {
             id,
             subscription_id,
+            resume,
         },
         DaemonMessage::JournalRetention { retention, .. } => {
             DaemonMessage::JournalRetention { id, retention }

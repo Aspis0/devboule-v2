@@ -1227,6 +1227,7 @@ fn subscription_identity_is_explicit_in_attach_reply_claim_and_events() {
     let attached = DaemonMessage::SessionAttached {
         id: 4,
         subscription_id: 12,
+        resume: None,
     };
     let attached_json = serde_json::to_value(&attached).expect("attach reply json");
     assert_eq!(attached_json["type"], "session_attached");

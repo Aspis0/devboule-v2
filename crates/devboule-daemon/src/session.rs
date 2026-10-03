@@ -83,9 +83,9 @@ use devboule_protocol::{
     DelegationState, ErrorCode, ErrorDetails, FinishArtifact, FinishArtifactPart,
     FinishArtifactPartMetadata, JournalRetention, JournalStats, OwnerId, PermissionOutcome,
     Project, PromptAttachment, RetentionPatch, Session, SessionEvent, SessionKind, SessionModel,
-    SessionOrigin, SessionOriginKind, SessionState, SessionStateSnapshot, StoredAttachment,
-    UnattendedState, UserMessageAuthor, UserMessageKind, WireError, Workspace, WorkspaceIsolation,
-    MAX_WRITE_BYTES,
+    SessionOrigin, SessionOriginKind, SessionResumeInfo, SessionState, SessionStateSnapshot,
+    StoredAttachment, UnattendedState, UserMessageAuthor, UserMessageKind, WireError, Workspace,
+    WorkspaceIsolation, MAX_WRITE_BYTES,
 };
 #[cfg(test)]
 use std::sync::Barrier;
@@ -386,6 +386,21 @@ use session_child_permission::child_answer_caps_refusal;
 #[cfg(test)]
 #[path = "session_activity_quiet_tests.rs"]
 mod session_activity_quiet_tests;
+/// The fixture the two attach-resume test files share: a live agent on its own
+/// journal, a connection that can agree or refuse the capability, and the
+/// events that connection drains.
+#[cfg(test)]
+#[path = "session_attach_resume_fixtures.rs"]
+mod session_attach_resume_fixtures;
+/// What the resume answer must leave as it was: the unnegotiated connection's
+/// reply, the stored manifest, the attach queue snapshot.
+#[cfg(test)]
+#[path = "session_attach_resume_scope_tests.rs"]
+mod session_attach_resume_scope_tests;
+/// The reset's tail and the run its observer receives next.
+#[cfg(test)]
+#[path = "session_attach_resume_tests.rs"]
+mod session_attach_resume_tests;
 /// The attachment-and-deposit tests carved out of `session_tests`: the owner's
 /// deposit answered with the reference of the file the store wrote, the
 /// unauthorised, oversized and close-inside-a-deposit refusals, the count,
@@ -727,6 +742,7 @@ pub(crate) use tests::test_epoch;
 mod workspace_identity_tests;
 use session_resume::{provider_refused_session, resume_end_generation_detached};
 
+pub(crate) use event_pull::stamp_turn_time;
 pub use event_pull::ConnHandle;
 pub(crate) use event_pull::QuitIntent;
 pub(crate) use session_types::PendingEvent;
@@ -2220,6 +2236,9 @@ impl SessionRegistry {
         self.claim_resize_with_subscription(session_id, conn.id, owner, conn)
     }
 
+    /// Attach one subscription, and answer the attach reply's resume fields
+    /// when the connection negotiated `session.resume_outcomes`. `Ok(None)` is
+    /// every other case, including a hydrated transcript.
     pub fn attach_with_subscription(
         &self,
         session_id: &str,
@@ -2228,9 +2247,11 @@ impl SessionRegistry {
         conn: &ConnHandle,
         owner: &OwnerId,
         typed_permissions: bool,
-    ) -> Result<(), WireError> {
+    ) -> Result<Option<SessionResumeInfo>, WireError> {
         let runtime = match self.runtime_for_user(session_id, owner, conn) {
             Ok(runtime) => runtime,
+            // A hydrated transcript keeps its full-history semantics: nothing
+            // here answers with a bounded tail.
             Err(error) if error.code == ErrorCode::SessionNotFound => {
                 self.hydrate_transcript(session_id, from_cursor, owner, conn)?
             }
@@ -2274,7 +2295,7 @@ impl SessionRegistry {
         // this one — never between a read and the registration that was meant
         // to deliver it. A terminal has no queue, so it gets no snapshot.
         self.publish_queue_attach_snapshot(&runtime, session_id);
-        Ok(())
+        Ok(outcome.resume)
     }
 
     pub fn claim_resize_with_subscription(

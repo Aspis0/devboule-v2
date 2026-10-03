@@ -82,6 +82,7 @@ mod ids;
 mod messages;
 mod plugin;
 mod project;
+mod resume;
 mod session;
 #[cfg(test)]
 mod session_event_guard;
@@ -89,6 +90,8 @@ mod text_safety;
 
 #[cfg(test)]
 mod queue_frames_tests;
+#[cfg(test)]
+mod resume_tests;
 
 pub use attachments::{
     attachment_name_too_long_message, attachment_reference_session_mismatch_message,
@@ -122,6 +125,7 @@ pub use messages::{
 };
 pub use plugin::WorkspaceRootBody;
 pub use project::{Project, Workspace, WorkspaceIsolation};
+pub use resume::{SessionResumeInfo, SessionResumeOutcome, SessionResumeReason, SessionResumeTail};
 pub use session::{
     cursor_replay_ok, ActiveTurnBehavior, AgentActivityState, AgentBackgroundTask, AgentTaskItem,
     AgentTaskState, AgentTaskStatus, Attention, AttentionReason, AvailableCommandView,
@@ -255,6 +259,18 @@ pub mod caps {
     /// `queue_snapshot` off one — the name is how a client tells a daemon that
     /// owns a shared queue from one that leaves the list in the app.
     pub const SESSION_QUEUE: &str = "session.queue";
+
+    /// The attach reply's resume outcome (`SessionResumeInfo`).
+    ///
+    /// Output-only, like the queue snapshot above, but named because it
+    /// changes what a mismatch means: with it negotiated a cursor from another
+    /// generation attaches as `epoch_changed` with a tail, and without it the
+    /// same attach still answers `session_generation_mismatch`. A client reads
+    /// the field only when this name was agreed, so an older daemon and an
+    /// older app both keep the behaviour they shipped. The daemon offers the
+    /// name today; the app does not, because it has no consumer for the field
+    /// yet (see `m3a_client_capabilities`).
+    pub const SESSION_RESUME_OUTCOMES: &str = "session.resume_outcomes";
 
     /// Prompt-attachment deposits (`SessionDeposit`/`SessionDeposited`).
     ///
@@ -727,6 +743,10 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     // must be offered or the handshake negotiates it away and a client could
     // not tell a shared-queue daemon from one that leaves the list in the app.
     capabilities.push(Capability::new(caps::SESSION_QUEUE));
+    // The attach reply's resume outcome, which the daemon serves: the app
+    // offers the name back the day its consumer reads the outcome (see
+    // `m3a_client_capabilities`).
+    capabilities.push(Capability::new(caps::SESSION_RESUME_OUTCOMES));
     capabilities
 }
 
@@ -799,6 +819,11 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // keeps it, and read before a `SessionQueue*` frame leaves for an older
     // daemon.
     capabilities.push(Capability::new(caps::SESSION_QUEUE));
+    // `session.resume_outcomes` is the one name the daemon offers that the app
+    // does not: its daemon client reads `SessionAttached` for the subscription
+    // id and drops `resume`, so agreeing the name would hand the app a reset
+    // tail it throws away and lose that tail off its timeline. The app adds it
+    // with the consumer that reads the outcome.
     capabilities
 }
 
@@ -832,6 +857,12 @@ mod tests {
         assert_eq!(PROTOCOL_MIN_VERSION, 16);
     }
 
+    /// The names the daemon offers that the app does not: the daemon serves
+    /// them, and the app lane adds each one when its consumer can read what
+    /// the name buys it. Kept as a set so "the two lists are the same" stays a
+    /// statement that names its own exceptions.
+    const DAEMON_ONLY_CAPABILITIES: &[&str] = &[caps::SESSION_RESUME_OUTCOMES];
+
     #[test]
     fn daemon_and_client_advertise_sessions() {
         let daemon = m3a_daemon_capabilities();
@@ -840,7 +871,37 @@ mod tests {
         assert!(client.iter().any(|cap| cap.as_str() == caps::SESSIONS));
         assert!(daemon.iter().any(|cap| cap.as_str() == caps::JOURNAL));
         assert!(client.iter().any(|cap| cap.as_str() == caps::JOURNAL));
-        assert_eq!(daemon, client);
+        let mut expected = client.iter().map(Capability::as_str).collect::<Vec<_>>();
+        expected.extend_from_slice(DAEMON_ONLY_CAPABILITIES);
+        assert_eq!(
+            daemon.iter().map(Capability::as_str).collect::<Vec<_>>(),
+            expected,
+            "the daemon list is the client list plus DAEMON_ONLY_CAPABILITIES: \
+             a name leaves that set the day the app reads the outcome it buys"
+        );
+    }
+
+    #[test]
+    fn the_app_does_not_offer_the_resume_outcomes_capability_yet() {
+        // Why: the app's daemon client reads `SessionAttached` for its
+        // subscription id and drops `resume`, so a negotiated name hands it a
+        // reset tail it throws away and the resumed timeline loses it.
+        assert!(m3a_daemon_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == caps::SESSION_RESUME_OUTCOMES));
+        assert!(
+            !m3a_client_capabilities()
+                .iter()
+                .any(|cap| cap.as_str() == caps::SESSION_RESUME_OUTCOMES),
+            "the app offers the name when its consumer reads the outcome"
+        );
+        let agreed = intersect_capabilities(&m3a_client_capabilities(), &m3a_daemon_capabilities());
+        assert!(
+            !agreed
+                .iter()
+                .any(|cap| cap.as_str() == caps::SESSION_RESUME_OUTCOMES),
+            "an app connection must not negotiate the outcome: {agreed:?}"
+        );
     }
 
     #[test]

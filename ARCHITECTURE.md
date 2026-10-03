@@ -317,6 +317,46 @@ of live entries and journal rows (`crates/devboule-daemon/src/session.rs`, `Sess
 which is why a session whose process is gone is still listed, in `Recovered` state, with its
 transcript available.
 
+**Resume on attach, and the two paths it does not touch.** A live structured agent attaching with a
+`from_cursor` gets an answer about that cursor: `resumed`, or a named `reset` carrying a bounded
+tail (`crates/devboule-protocol/src/resume.rs`, `SessionResumeInfo`;
+`crates/devboule-daemon/src/journal_resume.rs`, `resolve`). The reasons are, in order, a cursor from
+another generation (`epoch_changed`), a hole in the retained rows (`journal_gap`), a cursor past the
+head (`cursor_ahead`) and a cursor below the retained floor (`cursor_compacted`). Exactly
+`oldest_seq - 1` resumes. A hole is corruption, not compaction, and is never delivered as a shorter
+timeline. The floor is `MIN(seq)` over every retained kind of the current generation, not over the
+two kinds the live page replays: the domain is what `StreamState::next_seq` allocated, and the
+per-session trim only ever removes its oldest `(generation, seq)`
+(`crates/devboule-daemon/src/journal_retention.rs`, `trim_session`), so the surviving rows of a
+generation are a suffix and its minimum describes the replayable boundary. The reply carries
+`oldest_seq` and `head` so the client can read its own cursor against that range; both are `0` for a
+generation holding no rows. The tail is the newest events of the current generation ending at the
+captured head, cut from the front while the compact-serialized size stays inside 256 KiB of **wire**
+bytes, with `tail_complete` naming whether it reaches the floor. A tail that carries nothing never
+names that head: it names the newest seq the journal holds for the generation, which for a generation
+with no rows is `0`, the value before its first — an attach right after a turn starts can see a head
+`try_append` has not reached yet, and the replay-to-live seam is what delivers the interval the
+writer is still catching up with. Only the newest event over the budget keeps the head, because
+dropping that event is what the budget is for. After the reply the ordinary replay
+continues from the tail's cursor, and the existing replay-to-live seam prunes what the tail already
+carried, so the tail, the watermark and the first live event stay one ordered run.
+
+Two paths are deliberately outside it. A **transcript (recovered) attach** keeps its full-history
+semantics and hydrates the stored rows; it never answers with a bounded tail. A **terminal (PTY)
+attach** keeps its snapshot-first contract; a screen is redrawn, not resumed from a cursor. Both are
+unchanged by this contract.
+
+The whole thing is output-only and capability-gated on `session.resume_outcomes`
+(`crates/devboule-protocol/src/lib.rs`, `caps`). A connection whose hello did not agree it gets
+today's reply byte for byte, including the `session_generation_mismatch` error
+(`crates/devboule-protocol/src/session.rs`, `cursor_replay_ok`); only a negotiated connection reads
+`resume`. The daemon offers the name; the app does not, because nothing on its Tauri/TS side reads
+the outcome yet, and it adds the name with that consumer (`m3a_client_capabilities`). The attach
+request is unchanged, so no protocol number moved. The shared queue's attach
+snapshot still crosses once per attach, after the tail (`crates/devboule-daemon/src/session.rs`,
+`attach_with_subscription` → `publish_queue_attach_snapshot`), never per replay page and never again
+on a reset.
+
 **`Recovered` is a conclusion, not a guess.** At journal open the daemon rewrites what it cannot
 vouch for: a row still `live` with `reaped = 1` becomes `ended` — the child's exit was observed, the
 daemon died during drain — and any other `live` row becomes `interrupted`

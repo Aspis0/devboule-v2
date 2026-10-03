@@ -167,6 +167,11 @@ pub(crate) fn handle_client(
         quit_intent,
     );
     conn.set_session_queue_negotiated(queue_ok);
+    let resume_outcomes_ok = agreed
+        .capabilities
+        .iter()
+        .any(|capability| capability.as_str() == caps::SESSION_RESUME_OUTCOMES);
+    conn.set_resume_outcomes_negotiated(resume_outcomes_ok);
     let (request_tx, request_rx) = mpsc::sync_channel(64);
     let reader_wake = Arc::clone(&conn.outbound);
     let reader_framed = framed.clone();

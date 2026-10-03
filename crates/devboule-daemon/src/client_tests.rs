@@ -198,6 +198,7 @@ fn subscription_events_route_by_their_subscription_id() {
             .send(&DaemonMessage::SessionAttached {
                 id: first_id,
                 subscription_id: first_subscription,
+                resume: None,
             })
             .expect("first attach reply");
         framed
@@ -248,6 +249,7 @@ fn subscription_events_route_by_their_subscription_id() {
             .send(&DaemonMessage::SessionAttached {
                 id: second_id,
                 subscription_id: second_subscription,
+                resume: None,
             })
             .expect("second attach reply");
         framed
@@ -375,6 +377,7 @@ fn session_detach_removes_only_its_subscription() {
             .send(&DaemonMessage::SessionAttached {
                 id: attach_id,
                 subscription_id,
+                resume: None,
             })
             .expect("attach reply");
         let detach = framed.recv::<ClientMessage>().expect("detach request");

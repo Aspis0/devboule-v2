@@ -256,7 +256,9 @@ fn the_daemon_and_the_client_both_offer_the_queue_capability() {
             .iter()
             .any(|cap| cap.as_str() == caps::SESSION_QUEUE)
     );
-    assert_eq!(m3a_daemon_capabilities(), m3a_client_capabilities());
+    // The two lists are equal apart from the names the daemon alone serves;
+    // `tests::daemon_and_client_advertise_sessions` is where that is pinned,
+    // as the client list plus a named set.
 }
 
 #[test]

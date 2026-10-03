@@ -49,8 +49,8 @@ mod journal_transcript_time;
 pub(crate) use journal_replay::replay_session;
 #[cfg(not(test))]
 use journal_replay::replay_session;
-pub(crate) use journal_replay::AgentReplayPage;
 use journal_replay::{closed_child_record, list_sessions, owned_child_record, replay_agent_page};
+pub(crate) use journal_replay::{AgentReplayPage, ResetTailPage, ResumeRange};
 use journal_retention::{
     delete_session_user, effective_limits, journal_retention, journal_usage, retain,
     set_journal_retention, RetentionState,
@@ -884,6 +884,23 @@ enum JournalCmd {
         limit: usize,
         reply: mpsc::Sender<Result<AgentReplayPage, JournalError>>,
     },
+    /// The retained sequence domain of one generation — the attach floor, the
+    /// durable head, and the first interior hole.
+    ResumeRange {
+        session_id: String,
+        generation: u64,
+        reply: mpsc::Sender<Result<ResumeRange, JournalError>>,
+    },
+    /// The newest rows of one generation, for the bounded tail a reset hands a
+    /// reattaching client.
+    ResetTail {
+        session_id: String,
+        generation: u64,
+        through_seq: u64,
+        scan_bytes: u64,
+        max_rows: usize,
+        reply: mpsc::Sender<Result<ResetTailPage, JournalError>>,
+    },
     DeleteSession {
         session_id: String,
         reply: mpsc::Sender<Result<(), JournalError>>,
@@ -1596,6 +1613,41 @@ impl Journal {
             from_seq,
             through_seq,
             limit,
+            reply,
+        })
+    }
+
+    /// The retained sequence domain of one generation. The attach road reads
+    /// it once per cursor-carrying attach, under the stream lock, so that the
+    /// floor, the head and the replay watermark name one instant.
+    pub(crate) fn resume_range(
+        &self,
+        session_id: &str,
+        generation: u64,
+    ) -> Result<ResumeRange, JournalError> {
+        self.rpc(|reply| JournalCmd::ResumeRange {
+            session_id: session_id.to_string(),
+            generation,
+            reply,
+        })
+    }
+
+    /// The newest rows of one generation, newest at the end, bounded by a scan
+    /// budget in stored payload bytes.
+    pub(crate) fn reset_tail_rows(
+        &self,
+        session_id: &str,
+        generation: u64,
+        through_seq: u64,
+        scan_bytes: u64,
+        max_rows: usize,
+    ) -> Result<ResetTailPage, JournalError> {
+        self.rpc(|reply| JournalCmd::ResetTail {
+            session_id: session_id.to_string(),
+            generation,
+            through_seq,
+            scan_bytes,
+            max_rows,
             reply,
         })
     }
@@ -2343,6 +2395,30 @@ fn journal_loop(
                     from_seq,
                     through_seq,
                     limit,
+                ));
+            }
+            JournalCmd::ResumeRange {
+                session_id,
+                generation,
+                reply,
+            } => {
+                let _ = reply.send(journal_replay::resume_range(&conn, &session_id, generation));
+            }
+            JournalCmd::ResetTail {
+                session_id,
+                generation,
+                through_seq,
+                scan_bytes,
+                max_rows,
+                reply,
+            } => {
+                let _ = reply.send(journal_replay::reset_tail_rows(
+                    &conn,
+                    &session_id,
+                    generation,
+                    through_seq,
+                    scan_bytes,
+                    max_rows,
                 ));
             }
             JournalCmd::Lookback {

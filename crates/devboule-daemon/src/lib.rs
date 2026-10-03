@@ -63,6 +63,8 @@ mod idempotency;
 mod journal;
 #[cfg(feature = "server")]
 mod journal_lookback;
+#[cfg(feature = "server")]
+mod journal_resume;
 mod lock;
 #[cfg(all(windows, feature = "server"))]
 mod log_pipeline;

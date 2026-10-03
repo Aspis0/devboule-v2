@@ -2393,7 +2393,9 @@ fn ownership_paths(
         ),
         (
             "attach",
-            registry.attach_with_subscription(id, 1, None, conn, owner, false),
+            registry
+                .attach_with_subscription(id, 1, None, conn, owner, false)
+                .map(|_| ()),
         ),
         (
             "claim",

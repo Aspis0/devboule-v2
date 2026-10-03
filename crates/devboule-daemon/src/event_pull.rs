@@ -193,6 +193,10 @@ pub struct ConnHandle {
     /// events; the only real clients all come through the serve loop, which
     /// overwrites this with what they actually agreed.
     session_queue: AtomicBool,
+    /// Whether this connection's hello agreed `session.resume_outcomes`,
+    /// which is what decides whether the attach reply carries a resume
+    /// outcome at all.
+    resume_outcomes: AtomicBool,
     /// Async create workers for this connection must not race on its retry key.
     pub(crate) session_create_lock: Mutex<()>,
     attached: Mutex<HashMap<u64, PullState>>,
@@ -225,6 +229,20 @@ impl ConnHandle {
         self.session_queue.load(Ordering::SeqCst)
     }
 
+    /// Record what this connection's hello agreed for the attach resume
+    /// outcome. Called once, by the serve loop, before this connection reads a
+    /// request.
+    pub fn set_resume_outcomes_negotiated(&self, negotiated: bool) {
+        self.resume_outcomes.store(negotiated, Ordering::SeqCst);
+    }
+
+    /// Whether this connection may read the attach reply's resume outcome. A
+    /// connection that did not offer it keeps the older attach contract in
+    /// full, including the generation-mismatch error.
+    pub fn resume_outcomes_negotiated(&self) -> bool {
+        self.resume_outcomes.load(Ordering::SeqCst)
+    }
+
     pub fn with_peer(id: u64, peer: Option<PeerIdentity>) -> Arc<Self> {
         Self::with_conn_peer(id, peer, None)
     }
@@ -255,6 +273,7 @@ impl ConnHandle {
             peer_caps,
             quit_intent,
             session_queue: AtomicBool::new(true),
+            resume_outcomes: AtomicBool::new(true),
             session_create_lock: Mutex::new(()),
             attached: Mutex::new(HashMap::new()),
             state_events: Mutex::new(VecDeque::new()),
