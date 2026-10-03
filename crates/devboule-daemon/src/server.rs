@@ -86,6 +86,22 @@ use peer_gate::*;
 mod peer_dial;
 pub use peer_dial::{call_peer, dial_peer, DialError};
 
+#[path = "server/peer_link.rs"]
+mod peer_link;
+
+#[path = "server/peer_link_state.rs"]
+mod peer_link_state;
+
+#[path = "server/peer_link_read.rs"]
+mod peer_link_read;
+
+#[path = "server/peer_link_worker.rs"]
+mod peer_link_worker;
+
+#[path = "server/peer_link_dispatch.rs"]
+mod peer_link_dispatch;
+use peer_link_dispatch::dispatch_remote_host;
+
 #[path = "server/peer_roster.rs"]
 mod peer_roster;
 use peer_roster::*;

@@ -11,11 +11,12 @@ use devboule_protocol::{
     ActiveTurnBehavior, AgentActivityState, AttachmentReference, ClientHello, ClientMessage,
     Cursor, DaemonHello, DaemonMessage, DaemonStatusBody, ErrorCode, JournalRetention,
     JournalUsage, OwnerId, PairingSecret, PeerRole, PeerRow, PermissionOutcome, Persistence,
-    Project, PromptAttachment, ProviderInfo, ResumeResult, RetentionPatch, Session, SessionEvent,
-    SessionEventEnvelope, SessionKind, SessionResumeInfo, SessionResumeOutcome,
-    SessionStateSnapshot, StoredAttachment, SubscriptionId, WireError, Workspace,
-    WorkspaceDirectory, WorkspaceFileContent, WorkspaceFileMutation, WorkspaceFilePreview,
-    WorkspaceGitFileDiff, WorkspaceGitLog, WorkspaceGitStatus, WorkspaceIsolation,
+    Project, PromptAttachment, ProviderInfo, RemoteHostList, RemoteHostListBody, RemoteHostStatus,
+    ResumeResult, RetentionPatch, Session, SessionEvent, SessionEventEnvelope, SessionKind,
+    SessionResumeInfo, SessionResumeOutcome, SessionStateSnapshot, StoredAttachment,
+    SubscriptionId, WireError, Workspace, WorkspaceDirectory, WorkspaceFileContent,
+    WorkspaceFileMutation, WorkspaceFilePreview, WorkspaceGitFileDiff, WorkspaceGitLog,
+    WorkspaceGitStatus, WorkspaceIsolation,
 };
 
 use crate::diagnostics::DiagnosticsReport;
@@ -130,6 +131,11 @@ pub type SessionResetHandler = Arc<dyn Fn(SessionResumeInfo) + Send + Sync>;
 /// unlike an RPC reply it carries no request id.
 pub type DelegationChangedHandler =
     Arc<dyn Fn(bool, devboule_protocol::DelegationSource) + Send + Sync>;
+/// The daemon-pushed host state (`remote_host_status`): the host's device id,
+/// its state, and the one sentence that goes with it. Fired for a
+/// server-initiated broadcast, so unlike an RPC reply it carries no request id,
+/// and it arrives only for the hosts this process is watching.
+pub type RemoteHostStatusHandler = Arc<dyn Fn(RemoteHostStatus) + Send + Sync>;
 
 struct PendingSubscription {
     subscription_id: SubscriptionId,
@@ -156,6 +162,7 @@ struct ClientInner {
     default_subscriptions: Mutex<HashMap<String, SubscriptionId>>,
     session_state_subscription: Mutex<Option<SessionStateHandler>>,
     delegation_subscription: Mutex<Option<DelegationChangedHandler>>,
+    remote_host_status_handler: Mutex<Option<RemoteHostStatusHandler>>,
     stop: AtomicBool,
     hello: DaemonHello,
     server_pid: Option<u32>,
@@ -1754,6 +1761,70 @@ impl DaemonClient {
             .unwrap_or_else(|err| err.into_inner()) = Some(handler);
     }
 
+    /// Install the handler for the daemon-pushed host state. A sidebar renders
+    /// from this rather than from a reply, because a link comes up, drops and
+    /// comes back while nobody is asking it anything.
+    pub fn on_remote_host_status(&self, handler: RemoteHostStatusHandler) {
+        *self
+            .inner
+            .remote_host_status_handler
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(handler);
+    }
+
+    /// Hold one link to a paired daemon peer for as long as this process wants
+    /// that host's row. Several hosts may be held at once; a second watch of
+    /// one host shares the link the first watch opened.
+    pub fn remote_host_watch(&self, device_id: &str) -> Result<(), DaemonError> {
+        self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::RemoteHostWatch {
+            id,
+            device_id: device_id.to_string(),
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Give back this process's lease on one host.
+    pub fn remote_host_unwatch(&self, device_id: &str) -> Result<(), DaemonError> {
+        self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::RemoteHostUnwatch {
+            id,
+            device_id: device_id.to_string(),
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Read one list from a paired daemon peer, over the link the watch holds.
+    ///
+    /// The body is the remote daemon's own rows: nothing here filters,
+    /// reorders or fills it in, and a refusal is the remote's own error with
+    /// its reason intact.
+    pub fn remote_host_list(
+        &self,
+        device_id: &str,
+        list: RemoteHostList,
+    ) -> Result<RemoteHostListBody, DaemonError> {
+        self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::RemoteHostList {
+            id,
+            device_id: device_id.to_string(),
+            list,
+        })? {
+            DaemonMessage::RemoteHostList { body, .. } => Ok(body),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     pub fn journal_usage(&self) -> Result<JournalUsage, DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::JournalUsage { id })? {
@@ -2226,6 +2297,7 @@ pub fn handshake(file: File, hello: ClientHello) -> Result<DaemonClient, DaemonE
                 default_subscriptions: Mutex::new(HashMap::new()),
                 session_state_subscription: Mutex::new(None),
                 delegation_subscription: Mutex::new(None),
+                remote_host_status_handler: Mutex::new(None),
                 stop: AtomicBool::new(false),
                 hello: daemon_hello,
                 server_pid,
@@ -2321,6 +2393,28 @@ fn client_read_loop(inner: Arc<ClientInner>) {
                         .clone();
                     if let Some(handler) = handler {
                         handler(*enabled, *source);
+                    }
+                    continue;
+                }
+                // The host-status push answers no request either, and arrives
+                // only for the hosts this connection watches.
+                if let DaemonMessage::RemoteHostStatus {
+                    device_id,
+                    state,
+                    last_failure,
+                } = &message
+                {
+                    let handler = inner
+                        .remote_host_status_handler
+                        .lock()
+                        .unwrap_or_else(|err| err.into_inner())
+                        .clone();
+                    if let Some(handler) = handler {
+                        handler(RemoteHostStatus {
+                            device_id: device_id.clone(),
+                            state: *state,
+                            last_failure: last_failure.clone(),
+                        });
                     }
                     continue;
                 }
@@ -2471,7 +2565,10 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         // so it must never be matched against the pending table (a reply
         // answered `None` here is never delivered to its caller). The reader
         // loop hands it to the delegation handler before this match runs.
-        | DaemonMessage::DelegationChanged { .. } => None,
+        | DaemonMessage::DelegationChanged { .. }
+        // The host-status push is a broadcast for the same reason, and it is
+        // handed to the watch handler before this match runs.
+        | DaemonMessage::RemoteHostStatus { .. } => None,
         DaemonMessage::Error(error) => error.id,
         // Every request-shaped reply carries its id. The device RPCs are
         // listed rather than swept into a wildcard: this match is exhaustive on
@@ -2527,6 +2624,7 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::Resume { id, .. }
         | DaemonMessage::SessionDeposited { id, .. }
         | DaemonMessage::SessionAttachment { id, .. }
+        | DaemonMessage::RemoteHostList { id, .. }
         | DaemonMessage::InvokeResult { id, .. } => Some(*id),
     }
 }

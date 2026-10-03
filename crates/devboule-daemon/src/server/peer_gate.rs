@@ -369,6 +369,10 @@ pub(super) fn peer_mode_refusal_for_conn(
         ClientMessage::ToolPolicySet { .. } => None,
         // A provider switch names a provider, never a mode: nothing to vet.
         ClientMessage::ProviderSetEnabled { .. } => None,
+        // The host frames name another machine, not a session or a mode here.
+        ClientMessage::RemoteHostWatch { .. } => None,
+        ClientMessage::RemoteHostUnwatch { .. } => None,
+        ClientMessage::RemoteHostList { .. } => None,
     }
 }
 
@@ -621,6 +625,12 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::AgentProfilesSet { .. }
         | ClientMessage::ProviderVocabularyGet { .. }
         | ClientMessage::DelegationGet { .. }
-        | ClientMessage::DelegationSet { .. } => None,
+        | ClientMessage::DelegationSet { .. }
+        // The host frames name no session on this device at all: they ask
+        // about another machine's. Nothing to vet here; their peer refusal is
+        // `peer_allows`'s.
+        | ClientMessage::RemoteHostWatch { .. }
+        | ClientMessage::RemoteHostUnwatch { .. }
+        | ClientMessage::RemoteHostList { .. } => None,
     }
 }

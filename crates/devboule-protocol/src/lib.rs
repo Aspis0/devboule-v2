@@ -82,6 +82,7 @@ mod ids;
 mod messages;
 mod plugin;
 mod project;
+mod remote_host;
 mod resume;
 mod session;
 #[cfg(test)]
@@ -90,6 +91,8 @@ mod text_safety;
 
 #[cfg(test)]
 mod queue_frames_tests;
+#[cfg(test)]
+mod remote_host_tests;
 #[cfg(test)]
 mod resume_tests;
 
@@ -125,6 +128,7 @@ pub use messages::{
 };
 pub use plugin::WorkspaceRootBody;
 pub use project::{Project, Workspace, WorkspaceIsolation};
+pub use remote_host::{RemoteHostList, RemoteHostListBody, RemoteHostState, RemoteHostStatus};
 pub use resume::{SessionResumeInfo, SessionResumeOutcome, SessionResumeReason, SessionResumeTail};
 pub use session::{
     cursor_replay_ok, ActiveTurnBehavior, AgentActivityState, AgentBackgroundTask, AgentTaskItem,
@@ -173,7 +177,7 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// `SessionQueue*` requests, the `queue_snapshot` event and the daemon-only
 /// `interrupt` send behaviour; all three ride the `session.queue` capability,
 /// so an older peer is never sent or asked to speak them.
-pub const PROTOCOL_VERSION: u32 = 22;
+pub const PROTOCOL_VERSION: u32 = 23;
 /// Oldest dialect this crate still accepts. Protocols 17, 18 and 20 added only
 /// optional fields, so a v16 peer still interoperates — it just shows no
 /// command chip, turn time, cache, cost or chat-image thumbnails until
@@ -372,6 +376,13 @@ pub mod caps {
     /// capability, a different mechanism; this name is deliberately not one
     /// (`PEER_CAPS`).
     pub const AGENT_MESSAGES: &str = "agent_messages";
+
+    /// The held remote-host link: `RemoteHostWatch`, `RemoteHostUnwatch`,
+    /// `RemoteHostList` and the `remote_host_status` push. These frames are
+    /// local-only — the peer gate refuses them outright, because a peer must
+    /// not make this daemon dial a third machine — so this name is negotiated
+    /// between the app and its own daemon and never between two daemons.
+    pub const REMOTE_HOSTS: &str = "remote_hosts";
 }
 
 /// How long the daemon remembers an idempotency key, in seconds.
@@ -754,6 +765,10 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     // must be offered or the handshake negotiates it away and a client could
     // not tell a shared-queue daemon from one that leaves the list in the app.
     capabilities.push(Capability::new(caps::SESSION_QUEUE));
+    // The held host link, paired the same way: the daemon owns the links and
+    // the app asks for the rows, so both ends must offer the name before a
+    // `RemoteHost*` frame can be sent — or refused on the way out.
+    capabilities.push(Capability::new(caps::REMOTE_HOSTS));
     // The attach reply's resume outcome, which the daemon serves and the app
     // now reads: with the reset consumer in place the name belongs to both
     // lists (see `m3a_client_capabilities`).
@@ -833,6 +848,10 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // keeps it, and read before a `SessionQueue*` frame leaves for an older
     // daemon.
     capabilities.push(Capability::new(caps::SESSION_QUEUE));
+    // The held host link, paired the same way: offered so the intersection
+    // keeps it, and read before a `RemoteHost*` frame leaves for an older
+    // daemon.
+    capabilities.push(Capability::new(caps::REMOTE_HOSTS));
     // Same pairing, for the attach reply's resume outcome: the daemon's client
     // raises the reset on its reader thread and the app's session channel
     // replaces its timeline with the tail, so a name only the daemon offered
@@ -863,6 +882,45 @@ pub fn invoke_method_capability(method: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The remote-host frames ride their own capability, so the floor stays
+    /// where it is: a v22 client and a v23 daemon still agree, and the v23
+    /// frames are refused on the negotiated name rather than sent.
+    #[test]
+    fn remote_hosts_rides_its_own_capability_and_leaves_the_floor_alone() {
+        assert_eq!(PROTOCOL_MIN_VERSION, 16, "no required field changed in 23");
+        for list in [m3a_daemon_capabilities(), m3a_client_capabilities()] {
+            assert!(
+                list.iter().any(|cap| cap.as_str() == caps::REMOTE_HOSTS),
+                "both ends must offer the name: {:?}",
+                list.iter().map(Capability::as_str).collect::<Vec<_>>()
+            );
+        }
+        let agreed = intersect_capabilities(&m3a_client_capabilities(), &m3a_daemon_capabilities());
+        assert!(agreed.iter().any(|cap| cap.as_str() == caps::REMOTE_HOSTS));
+        // A v22 client: same protocol range, one capability fewer. The
+        // handshake still succeeds and `remote_hosts` simply never arrives.
+        let mut older_hello = ClientHello::m3a(
+            OwnerId::new("S-1-5-21-1", "client").expect("owner"),
+            "devboule-test",
+        );
+        older_hello
+            .capabilities
+            .retain(|cap| cap.as_str() != caps::REMOTE_HOSTS);
+        let daemon_hello = crate::DaemonHello {
+            protocol_version: PROTOCOL_VERSION,
+            min_protocol_version: PROTOCOL_MIN_VERSION,
+            daemon_version: "test".to_string(),
+            instance_id: "d".to_string(),
+            pid: 1,
+            capabilities: m3a_daemon_capabilities(),
+        };
+        let negotiated = negotiate(&older_hello, &daemon_hello).expect("a v22 client connects");
+        assert!(!negotiated
+            .capabilities
+            .iter()
+            .any(|cap| cap.as_str() == caps::REMOTE_HOSTS));
+    }
 
     #[test]
     fn protocol_min_still_accepts_a_v16_peer() {

@@ -423,6 +423,39 @@ pub enum ClientMessage {
         subscription_id: SubscriptionId,
         item_id: String,
     },
+    /// Take a lease on one remote host: the daemon opens (or shares) one
+    /// authenticated link to that paired device and keeps it while this
+    /// connection holds the lease.
+    ///
+    /// A lease is held by the *connection*, not by the request: a second watch
+    /// of the same host from another window shares the one link, and the link
+    /// closes once the last lease goes and the grace has passed. The reply is
+    /// [`crate::DaemonMessage::Ok`]; the host's state arrives as a
+    /// `remote_host_status` push to this connection alone.
+    RemoteHostWatch {
+        id: u64,
+        device_id: String,
+    },
+    /// Give back one connection's lease on a remote host. Absent a lease this
+    /// is still an `Ok`: unwatching a host nobody watches is a no-op, not an
+    /// error, so a panel that tears down twice does not have to be careful.
+    RemoteHostUnwatch {
+        id: u64,
+        device_id: String,
+    },
+    /// Read one of the three allowlisted lists from a paired daemon peer,
+    /// over the link its watchers hold.
+    ///
+    /// `list` is the whole vocabulary: there is no frame that forwards an
+    /// arbitrary message to a peer, so no other request can reach one from
+    /// here. The answer is the remote daemon's own typed body, carried
+    /// through unchanged, and a refusal comes back as the remote's own typed
+    /// error with its reason intact.
+    RemoteHostList {
+        id: u64,
+        device_id: String,
+        list: crate::RemoteHostList,
+    },
     /// Deliver text from one live agent session to another.
     AgentMessageSend {
         id: u64,
@@ -1231,6 +1264,9 @@ impl ClientMessage {
             | Self::SessionQueueRemove { id, .. }
             | Self::SessionQueueMove { id, .. }
             | Self::SessionQueueSendNow { id, .. }
+            | Self::RemoteHostWatch { id, .. }
+            | Self::RemoteHostUnwatch { id, .. }
+            | Self::RemoteHostList { id, .. }
             | Self::AgentMessageSend { id, .. }
             | Self::SessionDeposit { id, .. }
             | Self::SessionAttachmentRead { id, .. }
@@ -1358,6 +1394,9 @@ impl ClientMessage {
             | Self::SessionQueueRemove { .. }
             | Self::SessionQueueMove { .. }
             | Self::SessionQueueSendNow { .. }
+            | Self::RemoteHostWatch { .. }
+            | Self::RemoteHostUnwatch { .. }
+            | Self::RemoteHostList { .. }
             | Self::SessionResize { .. }
             | Self::SessionInterrupt { .. }
             | Self::SessionSetModel { .. }
@@ -1429,6 +1468,9 @@ impl ClientMessage {
             Self::SessionQueueRemove { .. } => "SessionQueueRemove",
             Self::SessionQueueMove { .. } => "SessionQueueMove",
             Self::SessionQueueSendNow { .. } => "SessionQueueSendNow",
+            Self::RemoteHostWatch { .. } => "RemoteHostWatch",
+            Self::RemoteHostUnwatch { .. } => "RemoteHostUnwatch",
+            Self::RemoteHostList { .. } => "RemoteHostList",
             Self::AgentMessageSend { .. } => "AgentMessageSend",
             Self::SessionDeposit { .. } => "SessionDeposit",
             Self::SessionAttachmentRead { .. } => "SessionAttachmentRead",
@@ -1517,6 +1559,7 @@ impl ClientMessage {
             | Self::WorkspaceGitLog { .. }
             | Self::WorkspaceFilesList { .. }
             | Self::WorkspaceFileRead { .. }
+            | Self::RemoteHostList { .. }
             | Self::WorkspaceOpenRoot { .. }
             | Self::ProvidersList { .. }
             // An unforced check is a read; a forced one spawns provider
@@ -1597,7 +1640,11 @@ impl ClientMessage {
             | Self::ToolPolicySet { .. }
             | Self::ProviderSetEnabled { .. }
             | Self::AgentProfilesSet { .. }
-            | Self::DelegationSet { .. } => true,
+            | Self::DelegationSet { .. }
+            // Taking and giving back a lease both change what this daemon is
+            // connected to, which is the fact an audit row would name.
+            | Self::RemoteHostWatch { .. }
+            | Self::RemoteHostUnwatch { .. } => true,
         }
     }
 }
@@ -1797,6 +1844,26 @@ pub enum DaemonMessage {
     QueueAccepted {
         id: u64,
         replayed: bool,
+    },
+    /// The reply to [`ClientMessage::RemoteHostList`]: the paired daemon's own
+    /// body for the list that was asked of it, named by `device_id` because
+    /// one connection can hold several hosts.
+    ///
+    /// `body` is the remote's rows and nothing else. A refusal is not an arm
+    /// here: it comes back as the remote's own [`WireError`], code and reason
+    /// intact, so the empty state can say what the far side actually said.
+    RemoteHostList {
+        id: u64,
+        device_id: String,
+        body: crate::RemoteHostListBody,
+    },
+    /// One remote host changed state, pushed to the connections watching that
+    /// host and to nobody else. It answers no request, so it carries no id.
+    RemoteHostStatus {
+        device_id: String,
+        state: crate::RemoteHostState,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_failure: Option<String>,
     },
     /// The reply to [`ClientMessage::SessionSend`]: whether a turn is running
     /// on the session when the daemon answers, so the surface waits for a

@@ -326,6 +326,11 @@ impl PluginSession {
                         // purpose.
                         | DaemonMessage::WorkspaceOpenRoot { id, .. }
                         | DaemonMessage::DelegationState { id, .. }
+                        // The host list is the app's own sidebar read of
+                        // another machine; a plugin backend has no sidebar and
+                        // never dials a peer. Listed with its id so the match
+                        // stays exhaustive on purpose.
+                        | DaemonMessage::RemoteHostList { id, .. }
                         | DaemonMessage::DelegationSetOk { id, .. } => Some(*id),
                         DaemonMessage::Hello(_)
                         | DaemonMessage::Event(_)
@@ -333,7 +338,8 @@ impl PluginSession {
                         | DaemonMessage::SubscriptionEvent { .. }
                         // Server-initiated, id-less: it answers no request, so
                         // it must not be matched against a pending one.
-                        | DaemonMessage::DelegationChanged { .. } => None,
+                        | DaemonMessage::DelegationChanged { .. }
+                        | DaemonMessage::RemoteHostStatus { .. } => None,
                     };
                     if message_id == Some(id) {
                         return Ok(message);

@@ -163,6 +163,45 @@ pub(super) fn dispatch(
         }
         return None;
     }
+    // The held remote-host link waits on a peer, so it leaves the loop the
+    // same way the git-backed arms do: the request's own worker answers, and
+    // the reply goes out through this connection's normal writer. A reader
+    // that waited on a peer would be waiting on a reply that only this same
+    // reader can deliver.
+    if peer_link_dispatch::is_remote_host(&request) {
+        if !conn.remote_hosts_negotiated() {
+            return Some(capability_not_supported(
+                request.request_id(),
+                caps::REMOTE_HOSTS,
+            ));
+        }
+        let worker_state = Arc::clone(state);
+        let worker_conn = Arc::clone(conn);
+        let outbound = Arc::clone(&conn.outbound);
+        let failure_outbound = Arc::clone(&outbound);
+        let worker_request = request;
+        let spawn = std::thread::Builder::new()
+            .name("daemon-remote-host".to_string())
+            .spawn(move || {
+                let reply = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    dispatch_remote_host(&worker_state, &worker_conn, worker_request)
+                }))
+                .unwrap_or_else(|_| {
+                    DaemonMessage::Error(WireError::new(
+                        ErrorCode::Io,
+                        "the remote host read failed",
+                    ))
+                });
+                outbound.enqueue_reply(reply);
+            });
+        if spawn.is_err() {
+            failure_outbound.enqueue_reply(DaemonMessage::Error(WireError::new(
+                ErrorCode::Io,
+                "could not start the remote host read",
+            )));
+        }
+        return None;
+    }
     // Deliberately do not serialize concurrent updates: this pipe is single-user,
     // the frontend runs one npm update at a time, and npm's global lockfile
     // serializes racers.
@@ -257,6 +296,16 @@ pub(super) fn dispatch_immediate(
         ClientMessage::Hello(_) => DaemonMessage::Error(WireError::new(
             ErrorCode::InvalidRequest,
             "hello already completed",
+        )),
+        // The three remote-host frames never reach here: `dispatch` hands them
+        // to the link worker before this function is called. The arms below
+        // exist so a future call site that does reach them gets a refusal with
+        // an id rather than a panic.
+        ClientMessage::RemoteHostWatch { .. }
+        | ClientMessage::RemoteHostUnwatch { .. }
+        | ClientMessage::RemoteHostList { .. } => DaemonMessage::Error(WireError::new(
+            ErrorCode::InvalidRequest,
+            "remote host frames are dispatched by the async wrapper",
         )),
         ClientMessage::SessionPermissionRespond { .. } if !typed_permissions_ok => {
             capability_not_supported(request.request_id(), caps::TYPED_PERMISSIONS)

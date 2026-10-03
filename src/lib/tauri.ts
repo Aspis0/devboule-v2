@@ -31,6 +31,9 @@ import type {
   ProviderUpdateOutcome,
   ProviderVocabulary,
   PromptAttachment,
+  RemoteHostList,
+  RemoteHostListBody,
+  RemoteHostStatus,
   AttachmentReference,
   ResumeResult,
   Session,
@@ -229,6 +232,9 @@ export type CommandArgs = {
   session_delete: { id: Id };
   sessions_list: undefined;
   sessions_watch: { ch: SessionStateChannel };
+  remote_host_watch: { deviceId: string; ch: RemoteHostStatusChannel };
+  remote_host_unwatch: { deviceId: string };
+  remote_host_list: { deviceId: string; list: RemoteHostList };
   sessions_unwatch: undefined;
   providers_list: undefined;
   providers_refresh: undefined;
@@ -394,6 +400,10 @@ type CommandResults = {
   pairing_confirm: PeerRow | null;
   peer_revoke: PeerRow;
   peer_set_caps: PeerRow;
+  remote_host_watch: void;
+  remote_host_unwatch: void;
+  /** The paired machine's own rows, carried through unchanged. */
+  remote_host_list: RemoteHostListBody;
   /**
    * The STORED policy rows only (`DaemonMessage::ToolPolicy` minus its
    * request id). A provider with no row is enabled by default: the panel
@@ -562,6 +572,9 @@ export const COMMAND_ARG_KEYS = {
   pairing_confirm: ["deviceId", "accept"],
   peer_revoke: ["deviceId"],
   peer_set_caps: ["deviceId", "caps"],
+  remote_host_watch: ["deviceId", "ch"],
+  remote_host_unwatch: ["deviceId"],
+  remote_host_list: ["deviceId", "list"],
   tool_policy_get: [],
   tool_policy_set: ["providerId", "enabled", "disabledTools"],
   provider_set_enabled: ["providerId", "enabled"],
@@ -598,6 +611,7 @@ export const _unlistedCommandArgKeysMustBeNever: AssertUnlistedCommandArgKeysAre
 
 export type SessionChannel = Channel<SessionAttachMessage>;
 export type SessionStateChannel = Channel<SessionStateSnapshot[]>;
+export type RemoteHostStatusChannel = Channel<RemoteHostStatus>;
 
 export function createSessionChannel(
   onEvent?: (event: SessionAttachMessage) => void,
@@ -609,6 +623,12 @@ export function createSessionStateChannel(
   onSnapshot?: (snapshots: SessionStateSnapshot[]) => void,
 ): SessionStateChannel {
   return new Channel<SessionStateSnapshot[]>(onSnapshot ?? (() => undefined));
+}
+
+export function createRemoteHostStatusChannel(
+  onStatus?: (status: RemoteHostStatus) => void,
+): RemoteHostStatusChannel {
+  return new Channel<RemoteHostStatus>(onStatus ?? (() => undefined));
 }
 
 export function invokeTyped<K extends CommandName>(
@@ -1226,6 +1246,28 @@ export const peerRevoke = (deviceId: string) => invokeTyped("peer_revoke", { dev
  */
 export const peerSetCaps = (deviceId: string, caps: readonly Cap[]) =>
   invokeTyped("peer_set_caps", { deviceId, caps: [...caps] });
+
+/**
+ * Takes this window's lease on one paired daemon and subscribes to its state
+ * changes on `ch`.
+ *
+ * The lease, not the link, is what this process holds: several watches of one
+ * host share a single authenticated link, and the link closes a grace after
+ * the last lease goes. Registering the channel and asking for the lease are
+ * one call so the first `connecting` edge cannot be missed.
+ */
+export const remoteHostWatch = (deviceId: string, ch: RemoteHostStatusChannel) =>
+  invokeTyped("remote_host_watch", { deviceId, ch });
+/** Gives the lease back. The daemon keeps the link for its grace. */
+export const remoteHostUnwatch = (deviceId: string) =>
+  invokeTyped("remote_host_unwatch", { deviceId });
+/**
+ * Reads one of the three allowlisted lists from that host and resolves with the
+ * paired machine's own rows. A refusal rejects with the remote's typed error,
+ * so the empty state can say what the far side actually said.
+ */
+export const remoteHostList = (deviceId: string, list: RemoteHostList) =>
+  invokeTyped("remote_host_list", { deviceId, list });
 
 /**
  * The STORED tool-policy rows (`DaemonMessage::ToolPolicy` minus its request

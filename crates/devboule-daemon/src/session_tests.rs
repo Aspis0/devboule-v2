@@ -2893,6 +2893,11 @@ fn session_paths_of(request: &ClientMessage) -> Option<&'static [&'static str]> 
         ClientMessage::ProviderVocabularyGet { .. } => None,
         ClientMessage::DelegationGet { .. } => None,
         ClientMessage::DelegationSet { .. } => None,
+        // A held link reaches another machine's rows; this harness calls the
+        // registry directly and there is no path here for it.
+        ClientMessage::RemoteHostWatch { .. } => None,
+        ClientMessage::RemoteHostUnwatch { .. } => None,
+        ClientMessage::RemoteHostList { .. } => None,
     }
 }
 

@@ -153,6 +153,12 @@ impl DialError {
     pub fn step(&self) -> &'static str {
         self.step.as_str()
     }
+
+    /// The failed step as the typed value, for a caller that maps steps into
+    /// its own vocabulary (the held link's host states).
+    pub(crate) fn dial_step(&self) -> DialStep {
+        self.step
+    }
 }
 
 impl std::fmt::Display for DialError {
@@ -194,8 +200,10 @@ pub fn dial_peer(
 ///
 /// Split out so a caller can decide between the handshake and the first
 /// application byte — the last moment at which refusing still discloses
-/// nothing and causes nothing. `call_peer` re-reads the revocation there.
-fn connect_and_handshake(
+/// nothing and causes nothing. `call_peer` re-reads the revocation there, and
+/// the held link (`peer_link_worker.rs`) takes this same function rather than a
+/// second copy of the pinned-key handshake.
+pub(super) fn connect_and_handshake(
     static_private: &[u8; 32],
     remote_static: &[u8],
     address: &str,

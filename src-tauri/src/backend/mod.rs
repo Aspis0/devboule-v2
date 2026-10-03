@@ -11,6 +11,7 @@ pub mod open_external;
 pub mod open_in_editor;
 pub mod provider_vocabulary;
 pub mod providers;
+pub mod remote_hosts;
 pub mod session;
 #[cfg(test)]
 mod tests;

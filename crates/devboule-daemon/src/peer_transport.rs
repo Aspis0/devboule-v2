@@ -268,6 +268,8 @@ pub struct NoiseReader {
     state: Arc<Mutex<snow::TransportState>>,
     pending: Vec<u8>,
     offset: usize,
+    /// The `[u16 length][bytes]` message being read, kept across calls.
+    unit: Vec<u8>,
 }
 
 impl NoiseReader {
@@ -277,6 +279,7 @@ impl NoiseReader {
             state,
             pending: Vec::new(),
             offset: 0,
+            unit: Vec::new(),
         }
     }
 
@@ -304,8 +307,7 @@ impl NoiseReader {
                 self.offset += take;
                 return Ok(take);
             }
-            let mut ciphertext = [0u8; MAX_NOISE_MESSAGE];
-            let length = read_framed(&self.stream, &mut ciphertext, deadline)?;
+            let length = self.read_unit(deadline)?;
             if length < NOISE_TAG_LEN {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -319,7 +321,7 @@ impl NoiseReader {
                     .lock()
                     .map_err(|_| io::Error::other("noise state lock poisoned"))?;
                 state
-                    .read_message(&ciphertext[..length], &mut plaintext)
+                    .read_message(&self.unit[2..length + 2], &mut plaintext)
                     .map_err(|error| {
                         io::Error::new(
                             io::ErrorKind::InvalidData,
@@ -327,6 +329,7 @@ impl NoiseReader {
                         )
                     })?
             };
+            self.unit.clear();
             plaintext.truncate(read);
             let flags = plaintext.first().copied().ok_or_else(|| {
                 io::Error::new(
@@ -343,6 +346,59 @@ impl NoiseReader {
             self.pending = plaintext[1..].to_vec();
             self.offset = 0;
         }
+    }
+
+    /// Read one `[u16 length][bytes]` message into `self.unit`, returning the
+    /// payload's length. The length prefix is in the clear, so it is read
+    /// before any decryption.
+    ///
+    /// One `read` per call, never `read_exact`: a timed-out `read_exact` has
+    /// already consumed the bytes it did read and reports only the error, so a
+    /// message that arrives in two segments and runs out of deadline mid-way
+    /// is thrown away — the far end's frame is eaten and nothing it sends next
+    /// can be understood. Keeping the half-read unit here makes the next call
+    /// finish the same message instead.
+    fn read_unit(&mut self, deadline: Instant) -> io::Result<usize> {
+        let mut chunk = [0u8; 4096];
+        loop {
+            let wanted = match self.unit_length() {
+                Some(length) => {
+                    if length > MAX_NOISE_MESSAGE {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "noise message of {length} bytes does not fit the {MAX_NOISE_MESSAGE} byte buffer"
+                            ),
+                        ));
+                    }
+                    length + 2 - self.unit.len()
+                }
+                None => 2 - self.unit.len(),
+            };
+            apply_deadline(&self.stream, deadline)?;
+            let room = chunk.len().min(wanted);
+            let read = self.stream.read(&mut chunk[..room])?;
+            if read == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "peer closed mid-message",
+                ));
+            }
+            self.unit.extend_from_slice(&chunk[..read]);
+            if let Some(length) = self.unit_length() {
+                if self.unit.len() >= length + 2 {
+                    return Ok(length);
+                }
+            }
+        }
+    }
+
+    /// The length this unit's clear prefix names, once the prefix has arrived.
+    fn unit_length(&self) -> Option<usize> {
+        if self.unit.len() < 2 {
+            return None;
+        }
+        Some(u16::from_be_bytes([self.unit[0], self.unit[1]]) as usize)
     }
 }
 

@@ -2337,3 +2337,60 @@ export interface AgentMessageReceipt {
   id: number;
   state: AgentMessageState;
 }
+
+/**
+ * The three reads a remote host link may carry, and the whole of its
+ * vocabulary: there is no frame that forwards an arbitrary message to a peer,
+ * so a fourth read cannot be written here either.
+ */
+export type RemoteHostList =
+  | { kind: "projects" }
+  | { kind: "workspaces"; projectId: string }
+  | { kind: "sessions" };
+
+/**
+ * The paired machine's own rows for one read, carried through unchanged. Each
+ * arm holds exactly what the far daemon sent, in the far daemon's own types;
+ * nothing on this side filters, reorders or fills a row in.
+ */
+export type RemoteHostListBody =
+  | { list: "projects"; rows: Project[] }
+  | { list: "workspaces"; rows: Workspace[] }
+  | { list: "sessions"; rows: Session[] };
+
+/**
+ * One host row's state.
+ *
+ * These are seven different facts with seven different repairs, so the union
+ * keeps them apart: `needs_pairing`, `identity_missing` and `unsupported`
+ * each name the one step that fixes them, and folding them into `offline`
+ * would leave a user with nothing to do but wait.
+ */
+export type RemoteHostState =
+  /** A link is being opened or reopened. */
+  | "connecting"
+  /** Up: the hello was answered and the host answers reads. */
+  | "online"
+  /** The host stopped answering. */
+  | "offline"
+  /** No live pairing row carries this device, or the row was revoked. */
+  | "needs_pairing"
+  /** This daemon has no device key, so it cannot dial anybody. */
+  | "identity_missing"
+  /** The host's daemon cannot speak this read. */
+  | "unsupported"
+  /** The link or read budget is spent; nothing was opened for this ask. */
+  | "busy";
+
+/**
+ * One host's state change, pushed over the `remote_host_watch` channel.
+ *
+ * `lastFailure` is one plain English sentence for the empty state — never an
+ * error dump, and never an address, a key or a tailnet name. It is absent
+ * when there is nothing to explain (`connecting`, `online`).
+ */
+export interface RemoteHostStatus {
+  deviceId: string;
+  state: RemoteHostState;
+  lastFailure?: string;
+}

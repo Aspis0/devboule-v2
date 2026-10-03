@@ -134,6 +134,13 @@ pub(crate) fn handle_client(
         .capabilities
         .iter()
         .any(|capability| capability.as_str() == caps::SESSION_QUEUE);
+    // The held link to another machine rides this connection too: a client that
+    // never agreed the name gets its `RemoteHost*` frames refused, so an older
+    // app cannot ask this daemon to open sockets it has no way to close.
+    let remote_hosts_ok = agreed
+        .capabilities
+        .iter()
+        .any(|capability| capability.as_str() == caps::REMOTE_HOSTS);
     // The hello owner is diagnostic only. All idempotency and session access
     // below use the identity decided above.
     //
@@ -172,6 +179,7 @@ pub(crate) fn handle_client(
         .iter()
         .any(|capability| capability.as_str() == caps::SESSION_RESUME_OUTCOMES);
     conn.set_resume_outcomes_negotiated(resume_outcomes_ok);
+    conn.set_remote_hosts_negotiated(remote_hosts_ok);
     let (request_tx, request_rx) = mpsc::sync_channel(64);
     let reader_wake = Arc::clone(&conn.outbound);
     let reader_framed = framed.clone();
@@ -398,6 +406,9 @@ pub(crate) fn handle_client(
     );
     state.sessions.detach_conn(&conn);
     state.unwatch_sessions(conn.id);
+    // A dropped window takes its host leases with it; the links linger only for
+    // the grace, so a reopen reuses them.
+    state.peer_links.release_connection(conn.id);
     state.sessions.clear_presence(conn.id);
     state.unregister_remote_conn(conn.id);
     // The device is gone, so the permission cards it was holding can no longer

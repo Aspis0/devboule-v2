@@ -630,7 +630,13 @@ pub(super) fn dispatch_session(
         | ClientMessage::AgentProfilesSet { .. }
         | ClientMessage::ProviderVocabularyGet { .. }
         | ClientMessage::DelegationGet { .. }
-        | ClientMessage::DelegationSet { .. }) => unexpected_session_frame(&other),
+        | ClientMessage::DelegationSet { .. }
+        // The host frames are not session frames: they are answered by the
+        // link worker before this dispatcher is reached, so one arriving here
+        // is a routing bug and says only that.
+        | ClientMessage::RemoteHostWatch { .. }
+        | ClientMessage::RemoteHostUnwatch { .. }
+        | ClientMessage::RemoteHostList { .. }) => unexpected_session_frame(&other),
     }
 }
 

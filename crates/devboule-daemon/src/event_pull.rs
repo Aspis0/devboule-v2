@@ -197,6 +197,13 @@ pub struct ConnHandle {
     /// which is what decides whether the attach reply carries a resume
     /// outcome at all.
     resume_outcomes: AtomicBool,
+    /// Whether this connection's hello negotiated `remote_hosts`.
+    ///
+    /// Defaults to **false**: the held-link frames make this daemon dial other
+    /// machines, which is a thing a connection asks for and never a thing it
+    /// is assumed to want. A connection the daemon builds for itself has no
+    /// hello and therefore no leases.
+    remote_hosts: AtomicBool,
     /// Async create workers for this connection must not race on its retry key.
     pub(crate) session_create_lock: Mutex<()>,
     attached: Mutex<HashMap<u64, PullState>>,
@@ -243,6 +250,18 @@ impl ConnHandle {
         self.resume_outcomes.load(Ordering::SeqCst)
     }
 
+    /// Record what this connection's hello agreed on for the remote-host link.
+    /// Called once, by the serve loop, before this connection reads a request.
+    pub fn set_remote_hosts_negotiated(&self, negotiated: bool) {
+        self.remote_hosts.store(negotiated, Ordering::SeqCst);
+    }
+
+    /// Whether this connection's hello offered and the daemon agreed
+    /// `remote_hosts`, which is what decides whether it may ask for a link.
+    pub fn remote_hosts_negotiated(&self) -> bool {
+        self.remote_hosts.load(Ordering::SeqCst)
+    }
+
     pub fn with_peer(id: u64, peer: Option<PeerIdentity>) -> Arc<Self> {
         Self::with_conn_peer(id, peer, None)
     }
@@ -274,6 +293,7 @@ impl ConnHandle {
             quit_intent,
             session_queue: AtomicBool::new(true),
             resume_outcomes: AtomicBool::new(true),
+            remote_hosts: AtomicBool::new(false),
             session_create_lock: Mutex::new(()),
             attached: Mutex::new(HashMap::new()),
             state_events: Mutex::new(VecDeque::new()),

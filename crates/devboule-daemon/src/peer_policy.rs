@@ -366,6 +366,14 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         | ClientMessage::WorkspaceFilePreviewStage { .. }
         | ClientMessage::WorkspaceFilePreviewUnstage { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::ProvidersList { .. } => with_capability(caps, CAP_ADMIN),
+        // The host link is local-only, and the reason is structural rather
+        // than a grant a person could widen: letting a peer ask this daemon to
+        // dial a third machine would turn it into a proxy for someone who
+        // never paired with it. No capability opens it, so the frames are
+        // named `remote_hosts` and refused by name.
+        ClientMessage::RemoteHostWatch { .. }
+        | ClientMessage::RemoteHostUnwatch { .. }
+        | ClientMessage::RemoteHostList { .. } => PeerDecision::Deny("remote_hosts"),
     }
 }
 
@@ -1401,6 +1409,21 @@ pub(crate) mod tests {
                 id: 1,
                 enabled: true,
             },
+            // The held host link, all three frames: local-only, refused by
+            // name to a peer, and not something any capability set opens.
+            ClientMessage::RemoteHostWatch {
+                id: 1,
+                device_id: "b".to_string(),
+            },
+            ClientMessage::RemoteHostUnwatch {
+                id: 2,
+                device_id: "b".to_string(),
+            },
+            ClientMessage::RemoteHostList {
+                id: 3,
+                device_id: "b".to_string(),
+                list: devboule_protocol::RemoteHostList::Sessions,
+            },
             // The rest of the surface denied to every peer:
             // the session verbs outside the view/send pair, the read half of
             // the deposit, the watch set, the project/workspace/provider
@@ -1632,6 +1655,9 @@ pub(crate) mod tests {
             ClientMessage::PeerSetCaps { .. } => Some("peer.set_caps"),
             ClientMessage::PeerRevoke { .. } => Some("peer.revoke"),
             ClientMessage::WorkspaceOpenRoot { .. } => Some("workspace.open"),
+            ClientMessage::RemoteHostWatch { .. } => Some("remote_hosts"),
+            ClientMessage::RemoteHostUnwatch { .. } => Some("remote_hosts"),
+            ClientMessage::RemoteHostList { .. } => Some("remote_hosts"),
             _ => None,
         }
     }
@@ -2547,6 +2573,9 @@ pub(crate) mod tests {
             ClientMessage::ProviderVocabularyGet { .. } => administrative(),
             ClientMessage::DelegationGet { .. } => administrative(),
             ClientMessage::DelegationSet { .. } => administrative(),
+            ClientMessage::RemoteHostWatch { .. } => local("remote_hosts"),
+            ClientMessage::RemoteHostUnwatch { .. } => local("remote_hosts"),
+            ClientMessage::RemoteHostList { .. } => local("remote_hosts"),
         }
     }
 
@@ -2557,7 +2586,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 78;
+    pub(crate) const VARIANT_COUNT: usize = 81;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -2643,6 +2672,9 @@ pub(crate) mod tests {
             ClientMessage::ProviderVocabularyGet { .. } => "ProviderVocabularyGet",
             ClientMessage::DelegationGet { .. } => "DelegationGet",
             ClientMessage::DelegationSet { .. } => "DelegationSet",
+            ClientMessage::RemoteHostWatch { .. } => "RemoteHostWatch",
+            ClientMessage::RemoteHostUnwatch { .. } => "RemoteHostUnwatch",
+            ClientMessage::RemoteHostList { .. } => "RemoteHostList",
         }
     }
 
@@ -3018,6 +3050,19 @@ pub(crate) mod tests {
             ClientMessage::DelegationSet {
                 id: 1,
                 enabled: false,
+            },
+            ClientMessage::RemoteHostWatch {
+                id: 1,
+                device_id: "b".to_string(),
+            },
+            ClientMessage::RemoteHostUnwatch {
+                id: 2,
+                device_id: "b".to_string(),
+            },
+            ClientMessage::RemoteHostList {
+                id: 3,
+                device_id: "b".to_string(),
+                list: devboule_protocol::RemoteHostList::Sessions,
             },
         ]
     }
