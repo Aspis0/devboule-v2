@@ -3959,20 +3959,46 @@ fn push_bounded_agent(
     {
         return;
     }
+    // A pending card is the agent's wait, and the permission broker already
+    // caps how many a session holds: the budget measures what is left once
+    // they are set aside, and eviction never takes one.
+    let (card_bytes, card_frames) = pending_card_extent(queue);
+    if bytes_total.saturating_sub(card_bytes) <= PENDING_OUTPUT_BUDGET_BYTES
+        && frames_total.saturating_sub(card_frames) <= PENDING_OUTPUT_BUDGET_FRAMES
+    {
+        return;
+    }
     // ACP has no terminal screen to use as a replacement snapshot. Keep the
     // newest structured event and bound both the attached queue and the
     // detached backlog with the same limits.
-    let newest = queue.pop_back();
-    queue.clear();
-    *bytes_total = 0;
-    *frames_total = 0;
-    if let Some(item) = newest {
-        if let PendingItem::Agent { bytes, .. } = &item {
-            *bytes_total = *bytes;
-            *frames_total = 1;
+    let newest = queue.len().saturating_sub(1);
+    let mut index = 0;
+    queue.retain(|item| {
+        let keep = index == newest || is_pending_card(item);
+        index += 1;
+        keep
+    });
+    (*bytes_total, *frames_total) = agent_queue_extent(queue);
+}
+
+fn is_pending_card(item: &PendingItem) -> bool {
+    matches!(
+        item,
+        PendingItem::Agent {
+            event: SessionEvent::PermissionRequest { .. },
+            ..
         }
-        queue.push_back(item);
-    }
+    )
+}
+
+fn pending_card_extent(queue: &VecDeque<PendingItem>) -> (usize, u64) {
+    queue
+        .iter()
+        .filter(|item| is_pending_card(item))
+        .fold((0, 0), |(bytes, frames), item| match item {
+            PendingItem::Agent { bytes: size, .. } => (bytes + size, frames + 1),
+            _ => (bytes, frames),
+        })
 }
 
 fn move_agent_pending_to_backlog(stream: &mut StreamState, mut attachment: Attachment) {

@@ -434,6 +434,10 @@ mod session_attention_tests;
 #[cfg(test)]
 #[path = "session_attribution_tests.rs"]
 mod session_attribution_tests;
+/// What the shared backlog's bound owes a permission card that is still pending.
+#[cfg(test)]
+#[path = "session_backlog_pending_card_tests.rs"]
+mod session_backlog_pending_card_tests;
 /// The agent-command roads — cancel, the pending-permission list and the
 /// status snapshot — as `impl SessionRegistry` methods the broker's thin
 /// tool handlers call. Scope, resolution and the documents; the handler keeps
