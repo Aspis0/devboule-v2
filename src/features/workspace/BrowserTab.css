@@ -1,13 +1,18 @@
 /* The browser tab's own chrome: the control row above the page, the inline
    error line under it, and the box the page is drawn over. Lives apart from
    the strip's stylesheet because it belongs to the pane, not to the tab row,
-   and beside Workspace.css because it is one surface's glass and measures. */
+   and beside Workspace.css because it is one surface's glass and measures.
+
+   The pane is not a chat lane: it takes the whole centre area, so the page
+   below the chrome is the pane's content box with nothing around it. */
 
 .workspace-browser-pane {
   display: flex;
+  flex: 1;
+  min-width: 0;
   min-height: 0;
-  background: var(--surface-muted);
   flex-direction: column;
+  background: var(--surface-muted);
 }
 
 .browser-chrome {
@@ -15,7 +20,9 @@
   flex: none;
   align-items: center;
   gap: 4px;
-  padding: 6px 12px;
+  height: 36px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--line-strong);
 }
 
 .browser-chrome-button {
@@ -63,7 +70,7 @@
   flex: none;
   align-items: center;
   gap: 7px;
-  padding: 0 12px 6px;
+  padding: 5px 10px;
   color: var(--danger);
   font-size: var(--type-meta);
   line-height: 1.55;
@@ -73,21 +80,14 @@
   overflow-wrap: anywhere;
 }
 
-/* The rectangle the child webview is placed over. It is painted with the
-   surface ground and not with the pane's own: a page that has not been
-   placed yet must read as an empty page box, not as a hole. */
+/* The rectangle the child webview is placed over, and the whole of what is
+   left under the chrome: no margin, no border, no radius. An inset here is an
+   inset no native child ever covers, so the page would stop short of the
+   pane's own edges. */
 .browser-page-area {
   position: relative;
+  min-width: 0;
   min-height: 0;
-  margin: 0 12px 12px;
-  border: 1px solid var(--line-strong);
-  border-radius: 8px;
   background: var(--surface);
   flex: 1;
-}
-
-/* The page is over this box while it loads, so the box's own outline is the
-   only clue that anything is coming. */
-.browser-page-area-loading {
-  border-style: dashed;
 }

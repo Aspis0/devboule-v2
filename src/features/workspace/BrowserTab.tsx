@@ -21,12 +21,12 @@ import { browserTabLabel } from "./browserUrl";
 import {
   browserHistory,
   browserNavigate,
-  browserOpen,
   browserPark,
   browserPresent,
   browserRectOf,
   browserReload,
 } from "./browserController";
+import { watchBrowserPage } from "./browserPages";
 import { patchBrowserTab, requestBrowserPopup } from "./browserTabs";
 import type { BrowserUpdate, BrowserViewState } from "../../types/ipc";
 import { browserFocusAddress, browserReloadChord } from "../../lib/keymap";
@@ -58,9 +58,13 @@ export function BrowserTab({ browserId, url }: BrowserTabProps) {
   const [refusal, setRefusal] = useState<string | null>(null);
   const addressRef = useRef<HTMLInputElement>(null);
   const pageAreaRef = useRef<HTMLDivElement>(null);
+  // Whether the controller owns this tab's page yet. Nothing can be placed
+  // before that, and the create is answered a tick after the mount effect asks
+  // for it.
+  const ownsPage = useRef(false);
   // Read once, at open. The record's own address changes as the page moves,
-  // and re-running the open effect on it would dispose the page and open it
-  // again on every navigation.
+  // and re-running the open effect on it would open a second page for the
+  // same tab.
   const startUrl = useRef(url).current;
 
   const onUpdate = useCallback(
@@ -82,50 +86,61 @@ export function BrowserTab({ browserId, url }: BrowserTabProps) {
     [browserId],
   );
 
+  // The rectangle, followed for as long as this tab is in front. The
+  // ResizeObserver covers the pane's own resizes and the divider drag; the
+  // window listener covers a window move, which changes no element's box but
+  // does move every native child of the window with it.
+  const present = useCallback(async (): Promise<void> => {
+    const area = pageAreaRef.current;
+    if (area === null || !ownsPage.current) return;
+    await browserPresent(browserId, browserRectOf(area.getBoundingClientRect()));
+  }, [browserId]);
+
   useEffect(() => {
-    let disposed = false;
-    void browserOpen(browserId, startUrl, onUpdate)
+    const watched = watchBrowserPage(browserId, startUrl, onUpdate);
+    let live = true;
+    void watched.opened
       .then((opened) => {
-        if (!disposed) setPage(opened);
+        if (!live) return;
+        setPage(opened);
+        ownsPage.current = true;
+        // The rectangle follows the create: the page is a child webview the
+        // controller parks off-screen until it is told where to be, so a rect
+        // sent before the page exists is a rect nothing reads.
+        return present();
       })
       .catch((cause: unknown) => {
-        if (disposed) return;
+        if (!live) return;
         setRefusal(typeof cause === "string" ? cause : "This page could not be opened.");
         setPage((current) => ({ ...current, loading: false }));
       });
     return () => {
-      disposed = true;
+      live = false;
+      watched.unwatch();
       // Park, never dispose: a tab that is merely no longer in front keeps
       // its page alive and running. Disposal belongs to the tab's close, and
       // a park for a tab that is already gone has nothing to park.
       void browserPark(browserId).catch(() => undefined);
     };
-  }, [browserId, onUpdate, startUrl]);
-
-  // The rectangle, followed for as long as this tab is in front. The
-  // ResizeObserver covers the pane's own resizes and the divider drag; the
-  // window listener covers a window move, which changes no element's box but
-  // does move every native child of the window with it.
-  const present = useCallback(() => {
-    const area = pageAreaRef.current;
-    if (area === null) return;
-    void browserPresent(browserId, browserRectOf(area.getBoundingClientRect()));
-  }, [browserId]);
+  }, [browserId, onUpdate, present, startUrl]);
 
   useLayoutEffect(() => {
     const area = pageAreaRef.current;
     if (area === null) return;
-    present();
-    const observer = new ResizeObserver(present);
+    const onLayout = (): void => {
+      void present().catch(() => undefined);
+    };
+    onLayout();
+    const observer = new ResizeObserver(onLayout);
     observer.observe(area);
     // `capture` because a scroll does not bubble: without it an ancestor's
     // scroll would move the rectangle with nothing to announce it.
-    window.addEventListener("resize", present);
-    window.addEventListener("scroll", present, { capture: true, passive: true });
+    window.addEventListener("resize", onLayout);
+    window.addEventListener("scroll", onLayout, { capture: true, passive: true });
     return () => {
       observer.disconnect();
-      window.removeEventListener("resize", present);
-      window.removeEventListener("scroll", present, { capture: true });
+      window.removeEventListener("resize", onLayout);
+      window.removeEventListener("scroll", onLayout, { capture: true });
     };
   }, [present]);
 
@@ -192,7 +207,7 @@ export function BrowserTab({ browserId, url }: BrowserTabProps) {
   return (
     <div
       id="workspace-panel-terminal"
-      className="workspace-conversation workspace-browser-pane"
+      className="workspace-browser-pane"
       role="tabpanel"
       aria-label={browserTabLabel(page.title, page.url)}
     >
@@ -261,10 +276,11 @@ export function BrowserTab({ browserId, url }: BrowserTabProps) {
       {/* The page is drawn over this box by a child webview in Rust, so the
           box holds no page of its own: it is the rectangle, kept visible so
           that a child which fails to be placed reads as a blank pane instead
-          of an invisible one. */}
+          of an invisible one. It takes the pane's whole content box, because
+          an inset here is an inset the native child never covers. */}
       <div
         ref={pageAreaRef}
-        className={`browser-page-area${page.loading ? " browser-page-area-loading" : ""}`}
+        className="browser-page-area"
         data-browser-id={browserId}
         aria-busy={page.loading}
       />

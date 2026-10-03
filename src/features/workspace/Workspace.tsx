@@ -44,6 +44,7 @@ import {
   subscribeBrowserLayout,
 } from "./browserTabs";
 import { normalizeBrowserUrl, BROWSER_START_URL } from "./browserUrl";
+import { forgetBrowserPage } from "./browserPages";
 import { ErrorTriangleIcon } from "./ErrorTriangleIcon";
 import { createToolContentCache, evictToolContent } from "./toolContentCache";
 import { localWorkspaceKey, parseWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
@@ -469,7 +470,10 @@ export function Workspace({
       for (const tab of prev) {
         if (knownWorkspaceKeys.has(tab.workspaceKey)) continue;
         if (tab.kind !== "browser") evictToolContent(toolContentCache, tab.workspaceKey, tab.path);
-        else closeBrowserTab(tab.browserId);
+        else {
+          closeBrowserTab(tab.browserId);
+          forgetBrowserPage(tab.browserId);
+        }
       }
       return pruneToolTabsForWorkspaces(prev, knownWorkspaceKeys);
     });
@@ -858,6 +862,7 @@ export function Workspace({
         if (!gone.has(makeBrowserTab(record.workspaceKey, record.browserId).id)) continue;
         void browserClose(record.browserId);
         closeBrowserTab(record.browserId);
+        forgetBrowserPage(record.browserId);
       }
       setToolTabs((prev) => {
         for (const tab of prev) {
