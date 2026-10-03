@@ -2,10 +2,17 @@
 // anchored to the tab it came from. Git Discard and file delete ask through this dialog
 // too, so it lives beside the other shared components, not in the strip.
 
-import { useEffect, useId, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { createPortal } from "react-dom";
 import { getFocusableElements } from "../lib/focusableElements";
 import { useModalOpen } from "../lib/modalOpen";
+import { registerOverlay } from "../features/workspace/browserOverlays";
 import "./ConfirmDialog.css";
 
 interface ConfirmDialogProps {
@@ -46,6 +53,10 @@ export function ConfirmDialog({
   const wasOpenRef = useRef(false);
 
   useModalOpen(open);
+  // The ask is a modal over the whole app, so it is over any browser page
+  // under it: the page is parked while this is up and placed again after.
+  // Keyed on `open`, because the card only exists while it is.
+  useLayoutEffect(() => registerOverlay(cardRef.current), [open]);
 
   useEffect(() => {
     const wasOpen = wasOpenRef.current;

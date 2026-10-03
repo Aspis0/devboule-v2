@@ -18,14 +18,8 @@ import {
 import { ErrorTriangleIcon } from "./ErrorTriangleIcon";
 import { browserChrome, submitBrowserAddress } from "./browserChrome";
 import { browserTabLabel } from "./browserUrl";
-import {
-  browserHistory,
-  browserNavigate,
-  browserPark,
-  browserPresent,
-  browserRectOf,
-  browserReload,
-} from "./browserController";
+import { browserHistory, browserNavigate, browserReload } from "./browserController";
+import { followBrowserPage, type BrowserPagePlacement } from "./browserPlacement";
 import { watchBrowserPage } from "./browserPages";
 import { patchBrowserTab, requestBrowserPopup } from "./browserTabs";
 import type { BrowserUpdate, BrowserViewState } from "../../types/ipc";
@@ -58,10 +52,7 @@ export function BrowserTab({ browserId, url }: BrowserTabProps) {
   const [refusal, setRefusal] = useState<string | null>(null);
   const addressRef = useRef<HTMLInputElement>(null);
   const pageAreaRef = useRef<HTMLDivElement>(null);
-  // Whether the controller owns this tab's page yet. Nothing can be placed
-  // before that, and the create is answered a tick after the mount effect asks
-  // for it.
-  const ownsPage = useRef(false);
+  const placementRef = useRef<BrowserPagePlacement | null>(null);
   // Read once, at open. The record's own address changes as the page moves,
   // and re-running the open effect on it would open a second page for the
   // same tab.
@@ -86,16 +77,6 @@ export function BrowserTab({ browserId, url }: BrowserTabProps) {
     [browserId],
   );
 
-  // The rectangle, followed for as long as this tab is in front. The
-  // ResizeObserver covers the pane's own resizes and the divider drag; the
-  // window listener covers a window move, which changes no element's box but
-  // does move every native child of the window with it.
-  const present = useCallback(async (): Promise<void> => {
-    const area = pageAreaRef.current;
-    if (area === null || !ownsPage.current) return;
-    await browserPresent(browserId, browserRectOf(area.getBoundingClientRect()));
-  }, [browserId]);
-
   useEffect(() => {
     const watched = watchBrowserPage(browserId, startUrl, onUpdate);
     let live = true;
@@ -103,11 +84,10 @@ export function BrowserTab({ browserId, url }: BrowserTabProps) {
       .then((opened) => {
         if (!live) return;
         setPage(opened);
-        ownsPage.current = true;
         // The rectangle follows the create: the page is a child webview the
         // controller parks off-screen until it is told where to be, so a rect
         // sent before the page exists is a rect nothing reads.
-        return present();
+        placementRef.current?.show();
       })
       .catch((cause: unknown) => {
         if (!live) return;
@@ -117,32 +97,22 @@ export function BrowserTab({ browserId, url }: BrowserTabProps) {
     return () => {
       live = false;
       watched.unwatch();
-      // Park, never dispose: a tab that is merely no longer in front keeps
-      // its page alive and running. Disposal belongs to the tab's close, and
-      // a park for a tab that is already gone has nothing to park.
-      void browserPark(browserId).catch(() => undefined);
     };
-  }, [browserId, onUpdate, present, startUrl]);
+  }, [browserId, onUpdate, startUrl]);
 
+  // Where the page is, and when the controller hears about it. The placement
+  // follows the pane, the window and every open overlay, and sends one
+  // rectangle per frame.
   useLayoutEffect(() => {
     const area = pageAreaRef.current;
     if (area === null) return;
-    const onLayout = (): void => {
-      void present().catch(() => undefined);
-    };
-    onLayout();
-    const observer = new ResizeObserver(onLayout);
-    observer.observe(area);
-    // `capture` because a scroll does not bubble: without it an ancestor's
-    // scroll would move the rectangle with nothing to announce it.
-    window.addEventListener("resize", onLayout);
-    window.addEventListener("scroll", onLayout, { capture: true, passive: true });
+    const placement = followBrowserPage(browserId, area);
+    placementRef.current = placement;
     return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", onLayout);
-      window.removeEventListener("scroll", onLayout, { capture: true });
+      placementRef.current = null;
+      placement.dispose();
     };
-  }, [present]);
+  }, [browserId]);
 
   const chrome = useMemo(
     () =>

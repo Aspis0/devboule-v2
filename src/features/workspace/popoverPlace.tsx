@@ -17,6 +17,7 @@ import {
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
+import { registerOverlay } from "./browserOverlays";
 
 /** Viewport margin the popover keeps on every edge when it is clamped. */
 export const POPOVER_MARGIN = 8;
@@ -180,6 +181,10 @@ export function AnchoredPopover({
     observer.observe(root);
     return () => observer.disconnect();
   }, [place]);
+
+  // This popover is on screen, so it is on top of any browser page under it:
+  // the page is a native window above the app and has to be parked instead.
+  useLayoutEffect(() => registerOverlay(rootRef.current), []);
 
   useEffect(() => {
     if (onDismiss === undefined) return;
