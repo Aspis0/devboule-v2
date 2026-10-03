@@ -97,7 +97,7 @@ describe("diagnostics cards (real stylesheets, no app launch)", () => {
 
   it("keeps the report sections on the shell's vertical rhythm", () => {
     expect(proof.rulesFor("#settings-panel-diagnostics > section")).toContain(
-      "margin-bottom: 18px",
+      "margin-bottom: 16px",
     );
   });
 

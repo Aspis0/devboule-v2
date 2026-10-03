@@ -11,7 +11,7 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin-top: 18px;
+  margin-top: var(--space-16);
 }
 
 /* One house card for the project list; rows below the first divide on
@@ -31,7 +31,7 @@
 .proj-row {
   display: flex;
   align-items: center;
-  gap: 13px;
+  gap: var(--space-12);
   padding: 10px 14px;
 }
 

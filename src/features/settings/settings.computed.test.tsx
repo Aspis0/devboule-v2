@@ -73,7 +73,7 @@ describe("settings shell layout (real stylesheets, no app launch)", () => {
     const inner = box("settings-main-inner");
     const header = document.createElement("section");
     inner.appendChild(header);
-    // Providers sets the reference with its list's 18 px top margin.
-    expect(getComputedStyle(header).marginBottom).toBe("18px");
+    // Providers sets the reference with its list's 16 px top margin.
+    expect(getComputedStyle(header).marginBottom).toBe("16px");
   });
 });

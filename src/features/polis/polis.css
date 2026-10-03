@@ -16,14 +16,14 @@
   color: var(--ink-soft);
   background: color-mix(in srgb, var(--surface) 94%, transparent);
   border: 1px solid var(--border);
-  border-radius: 9px;
-  box-shadow: 0 3px 12px rgba(var(--ink-rgb), 0.12);
+  border-radius: var(--radius-8);
+  box-shadow: var(--shadow-pop);
   font-size: 12px;
 }
 
 .polis-plugin-failure button {
   flex: none;
-  padding: 5px 9px;
+  padding: var(--space-4) var(--space-8);
   color: var(--ink-soft);
   background: transparent;
   border: 1px solid var(--border);
@@ -48,8 +48,8 @@
   color: var(--ink-soft);
   background: color-mix(in srgb, var(--surface) 94%, transparent);
   border: 1px solid var(--border);
-  border-radius: 9px;
-  box-shadow: 0 3px 12px rgba(var(--ink-rgb), 0.12);
+  border-radius: var(--radius-8);
+  box-shadow: var(--shadow-pop);
   font-size: 12px;
 }
 
@@ -71,7 +71,7 @@
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
   font-size: var(--type-mono-sm);
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -113,7 +113,7 @@
    change while the window is open can be asked again. */
 .polis-readiness-button {
   margin-top: 10px;
-  padding: 0 11px;
+  padding: 0 var(--space-12);
   height: var(--control-default);
   color: var(--ink-soft);
   background: transparent;

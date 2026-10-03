@@ -47,7 +47,7 @@
   height: 32px;
   padding: 0 6px;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-6);
   background: transparent;
   color: var(--muted);
   font-size: 13px;
@@ -83,7 +83,7 @@
   height: 30px;
   padding: 0 8px;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-6);
   background: transparent;
   color: var(--ink-soft);
   font-size: 13px;
@@ -148,7 +148,7 @@
 .settings-main {
   flex: 1;
   min-width: 0;
-  padding: 26px 36px;
+  padding: var(--space-24) var(--space-32);
   overflow-y: auto;
   scrollbar-color: var(--border-strong) transparent;
   scrollbar-width: thin;
@@ -161,7 +161,7 @@
 /* The header block, then the page: Providers sets the reference with its
    list's 18 px top margin, and every other page matches it here. */
 .settings-main-inner > section {
-  margin-bottom: 18px;
+  margin-bottom: var(--space-16);
 }
 
 .settings-page-title {
@@ -188,7 +188,7 @@
    here, on the shell, because components from two future slices render it:
    a shared read with a single edit owner. No page file declares it. */
 .settings-subheading {
-  margin-top: 26px;
+  margin-top: var(--space-24);
   color: var(--muted);
   font-size: 12px;
   font-weight: 500;
@@ -223,13 +223,13 @@
 
 .settings-stack-spaced {
   gap: 8px;
-  margin-top: 18px;
+  margin-top: var(--space-16);
 }
 
 .settings-card {
   display: flex;
   align-items: center;
-  gap: 13px;
+  gap: var(--space-12);
   padding: 10px 0;
 }
 
@@ -249,8 +249,8 @@
 .settings-dashed-action {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 13px 15px;
+  gap: var(--space-8);
+  padding: var(--space-12) var(--space-16);
   color: var(--silence);
   background: transparent;
   border: 1px dashed var(--border-strong);
@@ -318,18 +318,18 @@
   margin: 0;
   color: var(--ink-soft);
   font-size: var(--type-small);
-  line-height: 1.55;
+  line-height: var(--leading-body);
 }
 
 .device-field {
   display: grid;
-  gap: 3px;
+  gap: var(--space-4);
   color: var(--ink-soft);
   font-size: var(--type-meta);
 }
 
 .device-field input {
-  padding: 5px 8px;
+  padding: var(--space-4) 8px;
   color: var(--ink);
   background: var(--surface);
   border: 1px solid var(--border);
@@ -375,5 +375,5 @@
   gap: 6px;
   padding: 8px 10px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-8);
 }

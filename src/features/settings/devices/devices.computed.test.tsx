@@ -231,7 +231,7 @@ describe("shared form rules live in the shell sheet (real stylesheets)", () => {
     expect(style.display).toBe("grid");
     expect(style.paddingTop).toBe("8px");
     expect(style.paddingLeft).toBe("10px");
-    expect(style.borderRadius).toBe("10px");
+    expect(style.borderRadius).toBe("8px");
     // The border must exist and match the shell's own action button —
     // compared resolved, so no hex is duplicated into this file.
     const borderColor = (body: string): string => {
@@ -623,12 +623,12 @@ describe("devices card geometry (real stylesheets, no app launch)", () => {
     expect(style.textTransform).not.toBe("uppercase");
   });
 
-  it("keeps the first card on the shell's 18px rhythm", () => {
+  it("keeps the first card on the shell's 16px rhythm", () => {
     // Our sections sit inside #settings-panel-devices, out of reach of
     // the shell's `.settings-main-inner > section` rule, so the reference
     // is restated here. `rulesFor` matches the exact selector, combinator
     // included — cssProof cannot inject it, but it can read it.
-    expect(proof.rulesFor("#settings-panel-devices > section")).toContain("margin-bottom: 18px");
+    expect(proof.rulesFor("#settings-panel-devices > section")).toContain("margin-bottom: 16px");
   });
 
   it("lays revoked rows out as rows, aligned under the paired names", () => {

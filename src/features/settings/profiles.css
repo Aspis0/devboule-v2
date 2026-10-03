@@ -57,7 +57,7 @@
 .agent-profile-main {
   display: grid;
   flex: 1 1 260px;
-  gap: 3px;
+  gap: var(--space-4);
   min-width: 0;
 }
 
@@ -77,10 +77,10 @@
 .profile-spawn {
   display: flex;
   gap: 6px;
-  margin-top: 5px;
+  margin-top: var(--space-4);
   color: var(--ink-soft);
   font-size: 13px;
-  line-height: 1.45;
+  line-height: var(--leading-body);
 }
 
 .profile-spawn-text {
@@ -185,7 +185,7 @@
   padding: 16px;
   background: var(--panel-card);
   border: 1px solid var(--line-strong);
-  border-radius: 14px;
+  border-radius: var(--radius-12);
   box-shadow: var(--shadow-pop);
 }
 
@@ -208,7 +208,7 @@
 .edit-title {
   margin: 0;
   color: var(--ink);
-  font-size: 15px;
+  font-size: var(--type-interface);
   font-weight: 500;
 }
 
@@ -231,7 +231,7 @@
   border: none;
   border-radius: 6px;
   cursor: pointer;
-  font-size: 15px;
+  font-size: var(--type-interface);
   line-height: 1;
 }
 
@@ -263,7 +263,7 @@
   padding: 10px 16px;
   background: var(--panel-card);
   border-top: 1px solid var(--line);
-  border-radius: 0 0 14px 14px;
+  border-radius: 0 0 var(--radius-12) var(--radius-12);
 }
 
 /* The empty list: one plain line with its action beside it. */
@@ -307,7 +307,7 @@
 .agent-profile-tick {
   display: flex;
   align-items: baseline;
-  gap: 7px;
+  gap: var(--space-8);
   color: var(--ink-soft);
   font-size: var(--type-small);
 }
@@ -328,19 +328,19 @@
   gap: 8px;
   padding: 10px 12px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-8);
 }
 
 .agent-profiles textarea,
 .edit-card textarea {
-  padding: 7px 9px;
+  padding: var(--space-8) var(--space-8);
   color: var(--ink);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
   font-family: inherit;
   font-size: 12px;
-  line-height: 1.45;
+  line-height: var(--leading-body);
   resize: vertical;
 }
 
@@ -351,7 +351,7 @@
 
 .agent-standing {
   display: grid;
-  gap: 7px;
+  gap: var(--space-8);
   padding-top: 12px;
   border-top: 1px solid var(--border);
 }
@@ -387,7 +387,7 @@
 .agent-delegation-row {
   display: flex;
   align-items: baseline;
-  gap: 7px;
+  gap: var(--space-8);
   color: var(--ink-soft);
   font-size: var(--type-small);
 }

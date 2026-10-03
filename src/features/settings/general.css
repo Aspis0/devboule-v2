@@ -14,7 +14,7 @@
    here — dead but harmless on sections, live on divs. */
 .machine-card {
   max-width: 720px;
-  margin-bottom: 18px;
+  margin-bottom: var(--space-16);
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--panel-card);
@@ -50,7 +50,7 @@
   margin: 0;
   color: var(--muted);
   font-size: 12px;
-  line-height: 1.45;
+  line-height: var(--leading-body);
 }
 
 /* The switch: 34x20, on in the accent — the skeleton's toggle, not the
@@ -109,14 +109,14 @@
   gap: 2px;
   padding: 2px;
   border: 1px solid var(--line-strong);
-  border-radius: 9px;
+  border-radius: var(--radius-8);
 }
 
 .machine-segment-option {
   display: flex;
   align-items: center;
   padding: 4px 10px;
-  border-radius: 7px;
+  border-radius: var(--radius-6);
   color: var(--muted);
   cursor: pointer;
   font-size: 12px;

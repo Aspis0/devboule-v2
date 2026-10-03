@@ -98,7 +98,7 @@ export function SettingsMenuIcon({ id }: { id: SettingsPageId | "back" | "host" 
       aria-hidden="true"
       fill="none"
       stroke="currentColor"
-      strokeWidth="2"
+      strokeWidth="1.75"
       strokeLinecap="round"
       strokeLinejoin="round"
     >

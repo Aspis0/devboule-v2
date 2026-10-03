@@ -66,7 +66,7 @@ describe("agent profile rows and dialog (real stylesheets, no app launch)", () =
     expect(style.display).toBe("grid");
     expect(style.flexGrow).toBe("1");
     expect(style.flexBasis).toBe("260px");
-    expect(style.gap).toBe("3px");
+    expect(style.gap).toBe("4px");
     expect(style.minWidth).toBe("0");
   });
 
@@ -150,17 +150,17 @@ describe("agent profile rows and dialog (real stylesheets, no app launch)", () =
     }
     // Then the values themselves: parity at 40 px would pass above and
     // still be wrong, so the sheet's own numbers are pinned here.
-    expect(inCard.paddingTop).toBe("7px");
+    expect(inCard.paddingTop).toBe("8px");
     expect(inCard.borderRadius).toBe("8px");
     expect(inCard.fontSize).toBe("12px");
   });
 
-  it("holds the dialog card at 480 px with a 14 px radius, scrolling inside", () => {
+  it("holds the dialog card at 480 px with a 12 px radius, scrolling inside", () => {
     inject([".edit-card"]);
     const card = box("edit-card");
     const style = getComputedStyle(card);
     expect(style.width).toBe("480px");
-    expect(style.borderRadius).toBe("14px");
+    expect(style.borderRadius).toBe("12px");
     expect(style.overflowY).toBe("auto");
   });
 

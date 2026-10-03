@@ -93,7 +93,7 @@ describe("projects cards (real stylesheets, no app launch)", () => {
   });
 
   it("holds loading, error, rows and the Add action in one spaced stack", () => {
-    // The stack is the page's only top reference (18px under the intro)
+    // The stack is the page's only top reference (16px under the intro)
     // and its inter-block gap (8px): loading/error/empty lines sit in it,
     // never flush against the card.
     proof.inject([".proj-stack"]);
@@ -102,7 +102,7 @@ describe("projects cards (real stylesheets, no app launch)", () => {
     document.body.appendChild(stack);
     const style = getComputedStyle(stack);
     expect(style.display).toBe("flex");
-    expect(style.marginTop).toBe("18px");
+    expect(style.marginTop).toBe("16px");
     expect(proof.rulesFor(".proj-stack")).toContain("gap: 8px");
   });
 });
