@@ -304,6 +304,29 @@ fn a_kill_stops_the_window_and_the_requests() {
     );
 }
 
+/// Ends a poll loop thread when the test unwinds, so it cannot keep polling the
+/// fake. The wait is bounded: a tick stuck on a reply is abandoned, not joined.
+struct StopPollsOnDrop {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for StopPollsOnDrop {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        let Some(thread) = self.thread.take() else {
+            return;
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !thread.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if thread.is_finished() {
+            let _ = thread.join();
+        }
+    }
+}
+
 #[test]
 fn a_pi_that_only_answers_stats_still_hits_the_watchdog() {
     if node_skip() {
@@ -323,13 +346,21 @@ fn a_pi_that_only_answers_stats_still_hits_the_watchdog() {
     let stop_polls = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let looping = Arc::clone(&harness.poller);
     let stop = Arc::clone(&stop_polls);
-    let loop_thread = std::thread::spawn(move || {
-        while !stop.load(std::sync::atomic::Ordering::Acquire) {
-            looping.arm_next_poll_now_for_test();
-            looping.tick_for_test();
-            std::thread::sleep(Duration::from_millis(40));
-        }
-    });
+    // Rendezvous, so the count below is never read mid-round-trip: a tick
+    // that passed the window check before the expiry still writes its
+    // request — the close discards the reply, not the ask.
+    let (tick_over, tick_seen) = std::sync::mpsc::sync_channel::<()>(0);
+    let mut polls = StopPollsOnDrop {
+        stop: Arc::clone(&stop_polls),
+        thread: Some(std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::Acquire) {
+                looping.arm_next_poll_now_for_test();
+                looping.tick_for_test();
+                let _ = tick_over.try_send(());
+                std::thread::sleep(Duration::from_millis(40));
+            }
+        })),
+    };
     // pi answers every stats request and produces no output: the watchdog
     // must still end the run while the polls keep going.
     wait_for(
@@ -338,15 +369,30 @@ fn a_pi_that_only_answers_stats_still_hits_the_watchdog() {
         "the expiry while the polls continue",
     );
     wait_for_window(&harness, false, "the expiry stops the window");
+    let between_ticks = Duration::from_secs(30);
+    tick_seen
+        .recv_timeout(between_ticks)
+        .expect("the poll loop keeps ticking");
     let sent = stats_requests(&harness);
-    std::thread::sleep(Duration::from_millis(150));
+    // Three more rounds with the loop still asking: the expiry, not a quiet
+    // loop, is what has to stop the requests.
+    for _ in 0..3 {
+        tick_seen
+            .recv_timeout(between_ticks)
+            .expect("the poll loop keeps ticking");
+    }
     assert_eq!(
         stats_requests(&harness),
         sent,
         "the expiry stops the requests"
     );
     stop_polls.store(true, std::sync::atomic::Ordering::Release);
-    loop_thread.join().expect("the poll loop ends");
+    polls
+        .thread
+        .take()
+        .expect("the poll loop thread")
+        .join()
+        .expect("the poll loop ends");
 }
 
 #[test]

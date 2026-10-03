@@ -85,13 +85,18 @@ fn test_hello() -> ClientHello {
 }
 
 /// Poll the record until it satisfies `until`, or the daemon dies first.
+///
+/// The deadline is tested after the read, never before it. A runner that
+/// stretches a 25 ms sleep to seconds would otherwise spend the tail of the
+/// budget asleep and give up on a record it had not looked at since before
+/// the daemon published it.
 fn wait_for_record(
     paths: &RuntimePaths,
     process: &mut ChildGuard,
     until: impl Fn(&DaemonState) -> bool,
 ) -> DaemonState {
     let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
+    loop {
         let state = DaemonState::read(&paths.lock_file);
         if until(&state) {
             return state;
@@ -99,9 +104,11 @@ fn wait_for_record(
         if let Ok(Some(status)) = process.child.try_wait() {
             panic!("the daemon exited before its record was usable: {status}");
         }
+        if Instant::now() >= deadline {
+            panic!("no usable record within 5s at {}", paths.dir.display());
+        }
         std::thread::sleep(Duration::from_millis(25));
     }
-    panic!("no usable record within 5s at {}", paths.dir.display());
 }
 
 fn age(path: &Path, age: Duration) {

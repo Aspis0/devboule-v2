@@ -5032,7 +5032,6 @@ fn the_target_check_and_the_slot_reservation_are_one_critical_section() {
         );
     }
     let conn = ConnHandle::new(0);
-    let started = Arc::new(AtomicBool::new(false));
 
     // Hold the brake table: the send below can pass every check the session
     // map guards and still not have its slot.
@@ -5040,19 +5039,27 @@ fn the_target_check_and_the_slot_reservation_are_one_critical_section() {
     let sender = {
         let registry = registry.clone();
         let owner = owner.clone();
-        let started = Arc::clone(&started);
         std::thread::spawn(move || {
-            started.store(true, Ordering::Release);
             registry.agent_message_send("s.msg.a", "s.msg.b", "hello", &owner, &conn)
         })
     };
 
+    // Wait for the send to be inside the critical section — the event the
+    // samples measure — and not for the thread to have been scheduled: a
+    // thread-level flag is set before the map is taken, so under load the
+    // samples run against a map nobody holds yet and the count comes up
+    // short. The map cannot come free before `held` is dropped below, so
+    // every sample from here is a held one.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while registry.inner.try_lock().is_ok() {
+        assert!(
+            Instant::now() < deadline,
+            "the send never reached the session map"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
     let mut held_samples = 0;
     for _ in 0..200 {
-        if !started.load(Ordering::Acquire) {
-            std::thread::sleep(Duration::from_millis(1));
-            continue;
-        }
         if registry.inner.try_lock().is_err() {
             held_samples += 1;
         }

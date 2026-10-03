@@ -772,6 +772,22 @@ fn a_refused_steer_leaves_the_gate_s_failing_batch_untouched() {
     let _ = harness.child.wait();
 }
 
+/// Reaps a child that never exits on its own, so a panicking test cannot leak it.
+struct ReapOnDrop(std::process::Child);
+
+impl ReapOnDrop {
+    fn reap(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+impl Drop for ReapOnDrop {
+    fn drop(&mut self) {
+        self.reap();
+    }
+}
+
 /// S4-09: the gate guard is held across the write, so the decision and the
 /// write really are one critical section — which is what the function claims.
 ///
@@ -788,14 +804,18 @@ fn the_steer_write_holds_the_gate_while_it_writes() {
         return;
     }
     // A fake Claude that never reads its stdin, so a large write blocks in the
-    // pipe and stays there.
-    let mut child = std::process::Command::new("node")
-        .args(["-e", "setTimeout(() => {}, 60000)"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("node is required for the Claude gate-hold test");
-    let stdin = Arc::new(Mutex::new(Some(child.stdin.take().expect("stdin"))));
+    // pipe and stays there. An interval, not a timeout, holds it open: a fake
+    // that leaves on its own closes the pipe the write is blocked in, and
+    // frees the gate for reasons that are not the guard.
+    let mut child = ReapOnDrop(
+        std::process::Command::new("node")
+            .args(["-e", "setInterval(() => {}, 1000)"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("node is required for the Claude gate-hold test"),
+    );
+    let stdin = Arc::new(Mutex::new(Some(child.0.stdin.take().expect("stdin"))));
     let gate: super::ClaudeModeGateRef = Arc::new(Mutex::new(super::ClaudeModeGate {
         state: super::ClaudeModeGateState::Ready,
         pending_frames: Vec::new(),
@@ -810,19 +830,21 @@ fn the_steer_write_holds_the_gate_while_it_writes() {
     let steer = std::thread::spawn(move || {
         crate::test_support::steer_through_the_turn(&mut steerer, &text)
     });
-    // The gate is private to this test: only its own steer thread ever locks
-    // it, so the first failed try_lock is that thread inside the critical
-    // section. The bound only covers reaching the write.
+    // Wait for the write, not for the guard alone: `write_child_stdin` holds
+    // the stdin lock across the bytes, so both locks taken is the one instant
+    // inside the critical section rather than beside it. Neither is reachable
+    // from here — only this test's own steer thread locks either, and the
+    // child does not leave on its own. The bound covers reaching the write.
     let deadline = Instant::now() + Duration::from_secs(30);
-    while !matches!(gate.try_lock(), Err(std::sync::TryLockError::WouldBlock)) {
+    while gate.try_lock().is_ok() || stdin.try_lock().is_ok() {
         assert!(
             Instant::now() < deadline,
             "the steer write never reached the gate"
         );
         std::thread::sleep(Duration::from_millis(1));
     }
-    // The guard is held and the write is next or already blocked in the pipe:
-    // the gate must never be free while the bytes are going out.
+    // The write is blocked in the pipe with the guard held across it: the
+    // gate must never be free while the bytes are going out.
     let mut available = 0;
     for _ in 0..200 {
         if gate.try_lock().is_ok() {
@@ -834,8 +856,7 @@ fn the_steer_write_holds_the_gate_while_it_writes() {
         available, 0,
         "the gate was free during the write: the guard is not held across it (S4-09)"
     );
-    let _ = child.kill();
-    let _ = child.wait();
+    child.reap();
     let _ = steer.join();
 }
 
