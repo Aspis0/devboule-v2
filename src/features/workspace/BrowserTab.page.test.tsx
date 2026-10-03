@@ -77,6 +77,33 @@ async function mountTab(): Promise<{ container: HTMLElement; unmount: () => Prom
   return { container, unmount: async () => void (await act(async () => root.unmount())) };
 }
 
+/** A keystroke into the address bar, the way a browser dispatches it: the
+ * native setter plus the event React's onChange listens for. */
+function type(input: HTMLInputElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+/** The same pane, mounted while something else already holds focus — which is
+ * what every tab switch but the new-tab flow looks like. */
+async function mountTabKeepingFocus(): Promise<{
+  held: HTMLButtonElement;
+  unmount: () => Promise<void>;
+}> {
+  const held = document.createElement("button");
+  document.body.append(held);
+  held.focus();
+  const mounted = await mountTab();
+  return {
+    held,
+    unmount: async () => {
+      await mounted.unmount();
+      held.remove();
+    },
+  };
+}
+
 describe("a browser tab's page", () => {
   beforeEach(() => {
     resetBrowserPagesForTests();
@@ -159,5 +186,56 @@ describe("a browser tab's page", () => {
     await unmount();
     expect(mocks.park).toHaveBeenCalledWith("tab-1");
     expect(mocks.open).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("a browser tab's focus", () => {
+  beforeEach(() => {
+    resetBrowserPagesForTests();
+    mocks.open.mockReset();
+    mocks.present.mockReset();
+    mocks.park.mockReset();
+    mocks.open.mockResolvedValue(OPENED);
+    mocks.present.mockResolvedValue(undefined);
+    mocks.park.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = "";
+    document.body.focus();
+  });
+
+  it("takes the address bar when nothing else holds focus", async () => {
+    const { container, unmount } = await mountTab();
+
+    const address = container.querySelector<HTMLInputElement>(".browser-address");
+    expect(document.activeElement).toBe(address);
+    await unmount();
+  });
+
+  it("leaves focus where the user put it when this tab is only being switched to", async () => {
+    const { held, unmount } = await mountTabKeepingFocus();
+
+    expect(document.activeElement).toBe(held);
+    await unmount();
+  });
+
+  it("hands Escape back to the page, with the draft dropped", async () => {
+    const { container, unmount } = await mountTab();
+    const address = container.querySelector<HTMLInputElement>(".browser-address");
+    const pageArea = container.querySelector<HTMLElement>(".browser-page-area");
+    await act(async () => {
+      address?.focus();
+      type(address!, "half typed");
+    });
+    expect(address?.value).toBe("half typed");
+
+    await act(async () => {
+      address?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+
+    expect(address?.value).toBe("https://example.com/");
+    expect(document.activeElement).toBe(pageArea);
+    await unmount();
   });
 });

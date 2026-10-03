@@ -203,6 +203,15 @@ export function BrowserTab({ browserId, url }: BrowserTabProps) {
     return () => window.removeEventListener("keydown", onKey);
   }, [act, page.loading]);
 
+  // "+ then Browser" closes a menu that held the focus, which leaves the
+  // document with none: this pane is the only surface that can take it, and
+  // the address bar is where a new tab wants a caret. Any other mount — a tab
+  // switch, a workspace landing — has focus somewhere real and keeps it.
+  useEffect(() => {
+    if (document.activeElement !== document.body) return;
+    addressRef.current?.focus({ preventScroll: true });
+  }, []);
+
   const errorLine = refusal ?? chrome.error;
   return (
     <div
@@ -263,6 +272,10 @@ export function BrowserTab({ browserId, url }: BrowserTabProps) {
             if (event.key === "Escape") {
               setDraft(null);
               setRefusal(null);
+              // Escape leaves the bar for the page, as it does everywhere
+              // else in the app: the draft is dropped and the caret is not
+              // left sitting in a field showing the page's own address.
+              pageAreaRef.current?.focus({ preventScroll: true });
             }
           }}
         />
@@ -277,11 +290,16 @@ export function BrowserTab({ browserId, url }: BrowserTabProps) {
           box holds no page of its own: it is the rectangle, kept visible so
           that a child which fails to be placed reads as a blank pane instead
           of an invisible one. It takes the pane's whole content box, because
-          an inset here is an inset the native child never covers. */}
+          an inset here is an inset the native child never covers. Focusable
+          so that Escape out of the address bar can hand it back, and named so
+          that a screen reader has something to call the page. */}
       <div
         ref={pageAreaRef}
         className="browser-page-area"
         data-browser-id={browserId}
+        tabIndex={-1}
+        role="group"
+        aria-label={browserTabLabel(page.title, page.url)}
         aria-busy={page.loading}
       />
     </div>
