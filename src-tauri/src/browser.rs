@@ -47,6 +47,15 @@ pub async fn browser_open(
     open(&app, &registry, &id, &url, updates).await
 }
 
+/// Where a page was put, for the app log. Sizes and positions only: an address
+/// is the page's, not this app's to write down.
+fn trace_place(id: &str, rect: LogicalRect, state: &str) {
+    eprintln!(
+        "devboule: debug: browser page {id} at {}x{} +{}+{} ({state})",
+        rect.width, rect.height, rect.x, rect.y
+    );
+}
+
 /// Put the active tab's page over the pane. Every inactive tab stays parked,
 /// so exactly one child is visible and the rest keep running at full speed.
 #[tauri::command]
@@ -62,6 +71,8 @@ pub fn browser_present(
     webview.set_size(size).map_err(|e| e.to_string())?;
     registry.set_rect(&id, rect, false);
     webview.show().map_err(|e| e.to_string())?;
+    page_host::raise(&webview);
+    trace_place(&id, rect, "active");
     Ok(())
 }
 
@@ -81,6 +92,7 @@ pub fn browser_park(
     webview.set_position(position).map_err(|e| e.to_string())?;
     webview.set_size(size).map_err(|e| e.to_string())?;
     registry.set_rect(&id, PARK_RECT, true);
+    trace_place(&id, PARK_RECT, "parked");
     Ok(())
 }
 

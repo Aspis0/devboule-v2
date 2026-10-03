@@ -35,6 +35,10 @@ mod imp {
     use webview2_com::Microsoft::Web::WebView2::Win32::*;
     use webview2_com::{ExecuteScriptCompletedHandler, PermissionRequestedEventHandler};
     use windows::core::{BOOL, HSTRING};
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    };
 
     const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -73,6 +77,45 @@ mod imp {
         });
         if let Err(error) = denial {
             eprintln!("devboule: browser permission denial was never scheduled: {error}");
+        }
+    }
+
+    /// Bring the child webview's window above the main webview's.
+    ///
+    /// wry parents every webview in its own `WS_CHILD` container, and a
+    /// container created later already sits above an earlier one, so this is
+    /// normally a no-op. It is here because "the page is loaded but nothing is
+    /// painted" is indistinguishable from a broken pane otherwise, and the
+    /// order is Windows' to decide rather than this app's to assume.
+    ///
+    /// Posted to the event loop like every other COM call here, so a failure
+    /// is reported where the app reports its own rather than through a return
+    /// value nobody is waiting for.
+    pub fn raise(webview: &Webview<Wry>) {
+        let scheduled = webview.with_webview(move |pw| {
+            let outcome = (|| {
+                // The controller's own parent window is the container wry
+                // built for this webview, and that is what has to come up.
+                unsafe {
+                    let mut container = HWND::default();
+                    pw.controller().ParentWindow(&mut container)?;
+                    SetWindowPos(
+                        container,
+                        Some(HWND_TOP),
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                    )
+                }
+            })();
+            if let Err(error) = outcome {
+                eprintln!("devboule: browser page could not be raised: {error}");
+            }
+        });
+        if let Err(error) = scheduled {
+            eprintln!("devboule: browser page raise was never scheduled: {error}");
         }
     }
 
@@ -163,6 +206,10 @@ mod imp {
 
     pub fn deny_permissions(_webview: &Webview<Wry>) {}
 
+    /// One window manager owns the stacking order on this platform, so there
+    /// is nothing for a page's window to be raised above.
+    pub fn raise(_webview: &Webview<Wry>) {}
+
     pub async fn act(_app: &AppHandle, _label: &str, what: Act) -> Result<(), String> {
         Err(match what {
             Act::Back => "Going back is not available on this platform.".to_owned(),
@@ -176,4 +223,4 @@ mod imp {
     }
 }
 
-pub use imp::{act, deny_permissions, facts};
+pub use imp::{act, deny_permissions, facts, raise};

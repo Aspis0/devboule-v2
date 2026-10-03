@@ -219,6 +219,33 @@ mod tests {
     }
 
     #[test]
+    fn an_active_tab_is_a_page_and_a_parked_one_is_a_pixel() {
+        let registry = BrowserRegistry::new();
+        registry
+            .claim("tab-1", owned("browser-tab-1"))
+            .expect("claim");
+        // What the pane measures at 1280x800: a browser tab is the centre area.
+        let pane = LogicalRect {
+            x: 455.0,
+            y: 49.0,
+            width: 770.0,
+            height: 751.0,
+        };
+        registry.set_rect("tab-1", pane, false);
+
+        let (rect, parked) = registry.rect_of("tab-1").expect("owned");
+        assert!(!parked, "a placed page is active");
+        assert!(
+            rect.width > 1.0 && rect.height > 1.0,
+            "an active page is never the parked one pixel: {rect:?}"
+        );
+
+        registry.set_rect("tab-1", PARK_RECT, true);
+
+        assert_eq!(registry.rect_of("tab-1"), Some((PARK_RECT, true)));
+    }
+
+    #[test]
     fn rect_moves_are_remembered_per_tab() {
         let registry = BrowserRegistry::new();
         registry.claim("a", owned("browser-a")).expect("claim a");
