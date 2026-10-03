@@ -144,6 +144,12 @@
   --weight-label: 500;
   --weight-heading: 600;
 
+  /* leading: three rhythms, and a text block picks one of these rather than
+     a number of its own */
+  --leading-body: 1.45;
+  --leading-dense: 1.35;
+  --leading-heading: 1.3;
+
   /* spacing scale */
   --space-2: 2px;
   --space-4: 4px;
@@ -157,14 +163,11 @@
   --space-32: 32px;
   --space-48: 48px;
 
-  /* radii */
+  /* radii: one family, no fifths or sevenths */
   --radius-2: 2px;
   --radius-4: 4px;
-  --radius-5: 5px;
   --radius-6: 6px;
-  --radius-7: 7px;
   --radius-8: 8px;
-  --radius-10: 10px;
   --radius-12: 12px;
   --radius-16: 16px;
   --radius-full: 999px;
@@ -175,8 +178,22 @@
   --control-default: 28px;
   --control-menu: 30px;
   --control-large: 32px;
-  --control-bar: 36px;
-  --control-sidebar-top: 44px;
+  --control-bar: var(--tab-height);
+  --control-sidebar-top: var(--sidebar-top);
+
+  /* component geometry: the named sizes the shell's regions share, so a
+     rail height or a row height is written once */
+  --sidebar-width: 248px;
+  --sidebar-min: 200px;
+  --sidebar-max: 360px;
+  --sidebar-top: 40px;
+  /* the workspace row's own height; a row that carries a metadata line
+     grows to --workspace-row-meta */
+  --workspace-row: 32px;
+  --workspace-row-meta: 36px;
+  --group-row: var(--control-dense);
+  --tab-height: 36px;
+  --tab-chip: var(--control-default);
 
   /* motion: the one animation, the working pulse */
   --pulse-halo: 0 0 0 3.5px color-mix(in srgb, var(--tone-live) 22%, transparent);

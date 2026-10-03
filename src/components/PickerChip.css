@@ -9,17 +9,17 @@
 .workspace-mode-chip-trigger {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  height: 28px;
-  padding: 0 8px;
+  gap: var(--space-4);
+  height: var(--control-default);
+  padding: 0 var(--space-8);
   color: var(--muted);
   background: transparent;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-6);
   cursor: pointer;
   font-family: var(--font-ui);
-  font-size: 12px;
-  line-height: 1.2;
+  font-size: var(--type-meta);
+  line-height: var(--leading-dense);
 }
 
 .workspace-mode-chip-trigger:hover {
@@ -34,9 +34,9 @@
 
 .workspace-mode-dot {
   flex: none;
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
 }
 
 .workspace-mode-planning {
@@ -78,32 +78,32 @@
   /* The centre panel clips vertically: the menu scrolls inside a cap, set
      inline on open (menuPlacement) with the side that has room. The sheet
      keeps the above side for the frame before that write lands. */
-  bottom: calc(100% + 6px);
+  bottom: calc(100% + var(--space-6));
   max-height: 280px;
   overflow-y: auto;
   flex-direction: column;
-  gap: 2px;
-  padding: 6px;
+  gap: var(--space-2);
+  padding: var(--space-6);
   background: var(--surface);
   border: 1px solid var(--border-strong);
-  border-radius: 11px;
-  box-shadow: 0 12px 30px rgba(var(--ink-rgb), 0.16);
+  border-radius: var(--radius-12);
+  box-shadow: var(--shadow-pop);
 }
 
 .workspace-mode-option {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-2);
   width: 100%;
   /* A flex column shrinks its rows before it scrolls: without this the rows
      compress and each meta line overprints the next row instead of scrolling. */
   flex: none;
-  min-height: 28px;
-  padding: 6px 9px;
+  min-height: var(--control-default);
+  padding: var(--space-6) var(--space-8);
   color: var(--ink-soft);
   background: transparent;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-6);
   font-family: var(--font-ui);
   text-align: left;
   cursor: pointer;
@@ -119,17 +119,17 @@
 }
 
 .workspace-mode-option[aria-selected="true"] .workspace-mode-name {
-  font-weight: 500;
+  font-weight: var(--weight-label);
 }
 
 .workspace-mode-name {
-  font-size: 13px;
+  font-size: var(--type-small);
   /* 6 px padding top and bottom plus this 16 px line box is exactly 28. */
   line-height: 16px;
 }
 
 .workspace-mode-description {
   color: var(--silence);
-  font-size: 12px;
-  line-height: 1.4;
+  font-size: var(--type-meta);
+  line-height: var(--leading-dense);
 }

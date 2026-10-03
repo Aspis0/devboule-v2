@@ -4,14 +4,14 @@
    Palette tokens only. Loaded by the parser. */
 
 .plan-markdown-table-scroll {
-  margin: 0 0 12px;
+  margin: 0 0 var(--space-12);
   overflow-x: auto;
 }
 
 /* An image is its alt text, muted: nothing is ever fetched for it. */
 .plan-markdown-image {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--type-meta);
 }
 
 /* Preserve paragraph metrics and selection; the global button focus ring
@@ -38,12 +38,12 @@
 
 .plan-markdown-table th,
 .plan-markdown-table td {
-  padding: 4px 8px;
+  padding: var(--space-4) var(--space-8);
   border: 1px solid var(--line);
   text-align: left;
 }
 
 .plan-markdown-table th {
   background: var(--fill-tool);
-  font-weight: 600;
+  font-weight: var(--weight-heading);
 }

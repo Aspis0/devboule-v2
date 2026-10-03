@@ -39,7 +39,7 @@ describe("the picker menu rows' sizes", () => {
     // A single-line row is exactly 28: 6 px of padding top and bottom plus
     // the name's 16 px line box; two-line rows grow past it.
     expect(rows).toContain("min-height: 28px");
-    expect(rows).toContain("padding: 6px 9px");
+    expect(rows).toContain("padding: 6px 8px");
     expect(css.rulesFor(".workspace-mode-name")).toContain("line-height: 16px");
     expect(rows).toContain(UI_FONT);
   });

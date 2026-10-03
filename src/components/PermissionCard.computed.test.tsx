@@ -21,7 +21,7 @@ const cardCssDark = assembleCssProof(
 afterEach(removeCssProof);
 
 describe("PermissionCard computed styles", () => {
-  it("gives the card the mockup shell: panel fill, hairline, r12, 11/14 padding", () => {
+  it("gives the card the mockup shell: panel fill, hairline, r12, 12/14 padding", () => {
     cardCss.inject([".permission-card"]);
     const card = document.createElement("div");
     card.className = "permission-card";
@@ -29,7 +29,7 @@ describe("PermissionCard computed styles", () => {
     const style = getComputedStyle(card);
     expect(style.backgroundColor).toBe(cardCss.token("--panel-card"));
     expect(style.borderRadius).toBe("12px");
-    expect(style.padding).toBe("11px 14px");
+    expect(style.padding).toBe("12px 14px");
     // The hairline: the rule source carries the resolved token.
     expect(cardCss.rulesFor(".permission-card")).toContain("border: 1px solid #ded6c4");
     // The design surface's notice box shares the sheet and the ramp's floor.

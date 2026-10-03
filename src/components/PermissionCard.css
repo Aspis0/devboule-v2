@@ -1,14 +1,13 @@
 /* The card shell: the mockup's .card — panel fill, one hairline, r12,
-   11/14 padding. Every size in this file is an explicit px from the 12/14
-   ramp, so the card reads the same in both themes and at every host
-   scale. */
+   12/14 padding. Every size in this file is a token off the 12/14 ramp, so
+   the card reads the same in both themes and at every host scale. */
 .permission-card {
   flex: none;
   overflow: hidden;
-  padding: 11px 14px;
+  padding: var(--space-12) var(--space-14);
   background: var(--panel-card);
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--radius-12);
   animation: rise 0.24s ease both;
 }
 
@@ -17,12 +16,12 @@
    C4 report, not refactored here. */
 .permission-card-notice {
   flex: none;
-  padding: 8px 12px;
+  padding: var(--space-8) var(--space-12);
   color: var(--ink-soft);
   background: var(--surface-muted);
   border: 1px solid var(--border-strong);
-  border-radius: 9px;
-  font-size: 12px;
+  border-radius: var(--radius-8);
+  font-size: var(--type-meta);
 }
 
 /* The provenance band (A14). Full-bleed above the body and cut from it by a
@@ -31,29 +30,29 @@
    `overflow: hidden` — if that ever becomes visible (the usual reason: a
    focus ring must draw outside), the band bleeds past the rounded corners. */
 .permission-card-origin {
-  margin: -11px -14px 8px;
-  padding: 5px 14px;
+  margin: calc(var(--space-12) * -1) calc(var(--space-14) * -1) var(--space-8);
+  padding: var(--space-4) var(--space-14);
   color: var(--ink-soft);
   border-bottom: 1px solid var(--line);
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0.01em;
+  font-size: var(--type-meta);
+  font-weight: var(--weight-label);
 }
 
 .permission-card-heading {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-8);
   min-width: 0;
-  font-size: 12px;
-  font-weight: 500;
+  font-size: var(--type-meta);
+  font-weight: var(--weight-label);
 }
 
-/* The card's icons: stroke-only, currentColor — the mockup's .ic. */
+/* The card's icons: stroke-only, currentColor — the mockup's .ic, at
+   the app's one icon stroke. */
 .permission-card-icon {
   fill: none;
   stroke: currentColor;
-  stroke-width: 2;
+  stroke-width: 1.75;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -85,29 +84,29 @@
    card's own question below its head. (The plan card's action stays inside
    its head; that card waits for slice C14.) */
 .permission-card > .permission-card-action {
-  margin-top: 6px;
+  margin-top: var(--space-6);
   color: var(--ink);
-  font-size: 14px;
-  font-weight: 500;
-  line-height: 1.4;
+  font-size: var(--type-interface);
+  font-weight: var(--weight-label);
+  line-height: var(--leading-body);
 }
 
 .permission-card-subject {
-  margin-top: 4px;
+  margin-top: var(--space-4);
   overflow: hidden;
   color: var(--ink);
   font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: var(--type-meta);
+  line-height: var(--leading-body);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .permission-card-description {
-  margin-top: 6px;
+  margin-top: var(--space-6);
   color: var(--ink-soft);
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: var(--type-meta);
+  line-height: var(--leading-body);
   /* Descriptions carry daemon-authored line structure (a creation card's
      delimited spawn-prompt block, one '| '-prefixed line per prompt line):
      collapsing the breaks would flatten the block into a paragraph and hide
@@ -127,27 +126,27 @@
 }
 
 .permission-card-plan .plan-markdown-heading-1 {
-  font-size: 1.25em;
-  font-weight: 700;
+  font-size: var(--type-display-md);
+  font-weight: var(--weight-heading);
 }
 
 .permission-card-plan .plan-markdown-heading-2 {
-  font-size: 1.1em;
-  font-weight: 700;
+  font-size: var(--type-display-sm);
+  font-weight: var(--weight-heading);
 }
 
 .permission-card-plan .plan-markdown-heading-3,
 .permission-card-plan .plan-markdown-heading-4,
 .permission-card-plan .plan-markdown-heading-5,
 .permission-card-plan .plan-markdown-heading-6 {
-  font-weight: 650;
+  font-weight: var(--weight-heading);
 }
 
 .permission-card-dot {
   width: 6px;
   height: 6px;
   flex: none;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
 }
 
 .permission-card-waiting {
@@ -195,51 +194,51 @@
 }
 
 .permission-card-command {
-  margin-top: 8px;
+  margin-top: var(--space-8);
   max-height: 12em;
   overflow: auto;
-  padding: 6px 10px;
+  padding: var(--space-6) var(--space-10);
   color: var(--code-text);
   background: var(--code-bg);
-  border-radius: 6px;
+  border-radius: var(--radius-6);
   font-family: var(--font-mono);
   font-size: var(--type-mono-cmd);
-  line-height: 1.5;
+  line-height: var(--leading-body);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .permission-card-env {
-  margin-top: 6px;
+  margin-top: var(--space-6);
   max-height: 8em;
   overflow: auto;
   color: var(--muted);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--type-mono-sm);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .permission-card-unavailable {
-  margin-top: 6px;
+  margin-top: var(--space-6);
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--type-meta);
 }
 
 .permission-card-actions {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
+  gap: var(--space-6);
+  margin-top: var(--space-8);
 }
 
 /* The option the answer picked, under the daemon's own name: the label says
    whether it was allowed or denied — this says which choice that was. */
 .permission-card-choice {
-  margin-top: 6px;
+  margin-top: var(--space-6);
   color: var(--ink);
-  font-size: 12px;
+  font-size: var(--type-meta);
   overflow-wrap: anywhere;
 }
 
@@ -250,7 +249,7 @@
   min-width: 0;
   overflow: hidden;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--type-meta);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -262,7 +261,7 @@
   margin-right: auto;
   overflow: hidden;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--type-meta);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -272,11 +271,11 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 12px;
-  border-radius: 6px;
-  font-size: 13px;
+  gap: var(--space-6);
+  height: var(--control-default);
+  padding: 0 var(--space-12);
+  border-radius: var(--radius-6);
+  font-size: var(--type-small);
   line-height: 1;
   cursor: pointer;
 }
@@ -329,8 +328,8 @@
 .permission-card-questions {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-top: 8px;
+  gap: var(--space-8);
+  margin-top: var(--space-8);
 }
 
 .permission-card-question {
@@ -344,9 +343,9 @@
 .permission-card-question-text {
   padding: 0;
   color: var(--ink);
-  font-size: 14px;
-  font-weight: 500;
-  line-height: 1.4;
+  font-size: var(--type-interface);
+  font-weight: var(--weight-label);
+  line-height: var(--leading-body);
 }
 
 .permission-card-question-row {
@@ -365,8 +364,8 @@
 .permission-card-question-options {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
+  gap: var(--space-6);
+  margin-top: var(--space-8);
 }
 
 /* The chip's input stays in the DOM — it is the accessible control, and its
@@ -386,14 +385,14 @@
 .permission-card-question-option {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  min-height: 28px;
-  padding: 4px 10px;
+  gap: var(--space-6);
+  min-height: var(--control-default);
+  padding: var(--space-4) var(--space-10);
   color: var(--ink-soft);
   background: transparent;
   border: 1px solid var(--line-strong);
-  border-radius: 6px;
-  font-size: 13px;
+  border-radius: var(--radius-6);
+  font-size: var(--type-small);
   line-height: 1;
   cursor: pointer;
 }
@@ -420,7 +419,7 @@
 
 .permission-card-question-description {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--type-meta);
 }
 
 /* The check a chosen chip carries — rendered only when chosen, so an
