@@ -144,10 +144,15 @@ export function activeBrowserTabFor(workspaceKey: WorkspaceKey): string | null {
     : (tabs[0]?.browserId ?? null);
 }
 
-/** A workspace the project list no longer holds has no tabs to restore into. */
-export function pruneBrowserTabs(knownWorkspaceKeys: ReadonlySet<WorkspaceKey>): void {
-  if (layout.tabs.every((tab) => knownWorkspaceKeys.has(tab.workspaceKey))) return;
+/**
+ * A workspace the project list no longer holds has no tabs to restore into.
+ * The ids it dropped come back out, because each one is a child webview in the
+ * Rust process that nothing else can close once its record is gone.
+ */
+export function pruneBrowserTabs(knownWorkspaceKeys: ReadonlySet<WorkspaceKey>): string[] {
+  if (layout.tabs.every((tab) => knownWorkspaceKeys.has(tab.workspaceKey))) return [];
   const tabs = layout.tabs.filter((tab) => knownWorkspaceKeys.has(tab.workspaceKey));
+  const dropped = layout.tabs.filter((tab) => !knownWorkspaceKeys.has(tab.workspaceKey));
   const live = new Set(tabs.map((tab) => tab.browserId));
   commit({
     tabs,
@@ -155,6 +160,7 @@ export function pruneBrowserTabs(knownWorkspaceKeys: ReadonlySet<WorkspaceKey>):
       Object.entries(layout.activeByWorkspace).filter(([, active]) => live.has(active)),
     ),
   });
+  return dropped.map((tab) => tab.browserId);
 }
 
 export function resetBrowserLayoutForTests(): void {

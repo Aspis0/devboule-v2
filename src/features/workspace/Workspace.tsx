@@ -33,18 +33,16 @@ import {
 import { ToolDiffPane } from "./ToolDiffPane";
 import { WorkspaceFileTab } from "./WorkspaceFileTab";
 import { BrowserTab } from "./BrowserTab";
-import { browserClose } from "./browserController";
 import {
   activeBrowserTabFor,
   browserLayoutSnapshot,
-  closeBrowserTab,
   openBrowserTab,
   pruneBrowserTabs,
   routeBrowserPopup,
   subscribeBrowserLayout,
 } from "./browserTabs";
 import { normalizeBrowserUrl, BROWSER_START_URL } from "./browserUrl";
-import { forgetBrowserPage } from "./browserPages";
+import { closeBrowserPage } from "./browserPages";
 import { ErrorTriangleIcon } from "./ErrorTriangleIcon";
 import { createToolContentCache, evictToolContent } from "./toolContentCache";
 import { localWorkspaceKey, parseWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
@@ -456,29 +454,30 @@ export function Workspace({
       ),
     [projects],
   );
-  // Pruned during render from this render's workspace set; keyed on contents,
-  // never Set identity, so roster pushes skip the extra pass.
+  // Keyed on contents, never Set identity, so roster pushes skip the prune.
   const workspaceKeyText = useMemo(
     () => [...knownWorkspaceKeys].sort().join("\n"),
     [knownWorkspaceKeys],
   );
-  const [prunedWorkspaceKeyText, setPrunedWorkspaceKeyText] = useState(workspaceKeyText);
-  if (prunedWorkspaceKeyText !== workspaceKeyText) {
-    setPrunedWorkspaceKeyText(workspaceKeyText);
+  // Pruning runs as an effect on the workspace set's CONTENTS, never during
+  // render: `pruneBrowserTabs` publishes to every browser-layout listener and
+  // writes localStorage, and neither may happen while this renders.
+  const prunedWorkspaceKeyText = useRef(workspaceKeyText);
+  useEffect(() => {
+    if (prunedWorkspaceKeyText.current === workspaceKeyText) return;
+    prunedWorkspaceKeyText.current = workspaceKeyText;
     pruneTabMemory(knownWorkspaceKeys);
     setToolTabs((prev) => {
       for (const tab of prev) {
         if (knownWorkspaceKeys.has(tab.workspaceKey)) continue;
+        // A browser tab has no path to evict; its page is disposed of below,
+        // where the ids the prune dropped come back out.
         if (tab.kind !== "browser") evictToolContent(toolContentCache, tab.workspaceKey, tab.path);
-        else {
-          closeBrowserTab(tab.browserId);
-          forgetBrowserPage(tab.browserId);
-        }
       }
       return pruneToolTabsForWorkspaces(prev, knownWorkspaceKeys);
     });
-    pruneBrowserTabs(knownWorkspaceKeys);
-  }
+    for (const browserId of pruneBrowserTabs(knownWorkspaceKeys)) closeBrowserPage(browserId);
+  }, [knownWorkspaceKeys, workspaceKeyText]);
 
   const closingIds = useSyncExternalStore(closeActions.subscribe, closeActions.getClosingSnapshot);
   const closeFailures = useSyncExternalStore(
@@ -860,9 +859,7 @@ export function Workspace({
       // its strip tab is what disposes it, and its record goes with it.
       for (const record of browserLayout.tabs) {
         if (!gone.has(makeBrowserTab(record.workspaceKey, record.browserId).id)) continue;
-        void browserClose(record.browserId);
-        closeBrowserTab(record.browserId);
-        forgetBrowserPage(record.browserId);
+        closeBrowserPage(record.browserId);
       }
       setToolTabs((prev) => {
         for (const tab of prev) {

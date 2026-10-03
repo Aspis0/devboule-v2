@@ -10,14 +10,16 @@ import type { BrowserUpdate, BrowserViewState } from "../../types/ipc";
 
 const mocks = vi.hoisted(() => ({
   open: vi.fn(),
+  close: vi.fn(),
   popup: vi.fn(),
 }));
 
-vi.mock("./browserController", () => ({ browserOpen: mocks.open }));
+vi.mock("./browserController", () => ({ browserOpen: mocks.open, browserClose: mocks.close }));
 vi.mock("./browserTabs", () => ({ requestBrowserPopup: mocks.popup }));
 
 import {
   browserPagesSnapshot,
+  closeBrowserPage,
   forgetBrowserPage,
   resetBrowserPagesForTests,
   subscribeBrowserPages,
@@ -43,8 +45,10 @@ describe("the browser page store", () => {
   beforeEach(() => {
     resetBrowserPagesForTests();
     mocks.open.mockReset();
+    mocks.close.mockReset();
     mocks.popup.mockReset();
     mocks.open.mockResolvedValue(LOADED);
+    mocks.close.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -166,6 +170,18 @@ describe("the browser page store", () => {
 
     expect(notified).toBe(1);
     expect(browserPagesSnapshot().size).toBe(0);
+  });
+
+  it("closes the page it forgets, and forgets nothing else", async () => {
+    const watched = watchBrowserPage("tab-1", "https://example.com/", () => undefined);
+    watchBrowserPage("tab-2", "https://example.org/", () => undefined);
+    await expect(watched.opened).resolves.toEqual(LOADED);
+
+    closeBrowserPage("tab-1");
+
+    expect(mocks.close).toHaveBeenCalledExactlyOnceWith("tab-1");
+    expect(browserPagesSnapshot().has("tab-1")).toBe(false);
+    expect(browserPagesSnapshot().has("tab-2")).toBe(true);
   });
 
   it("publishes what each live page reported, and only when it changed", async () => {

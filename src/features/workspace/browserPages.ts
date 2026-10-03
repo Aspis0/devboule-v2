@@ -8,7 +8,7 @@
 // persisted: a tab restored after a restart has a record and no page, and that
 // is what "not loading" has to mean for its chip.
 
-import { browserOpen } from "./browserController";
+import { browserClose, browserOpen } from "./browserController";
 import { requestBrowserPopup } from "./browserTabs";
 import type { BrowserUpdate, BrowserViewState } from "../../types/ipc";
 
@@ -98,6 +98,16 @@ export function watchBrowserPage(
 export function forgetBrowserPage(id: string): void {
   pages.delete(id);
   if (reported.delete(id)) publish(new Map(reported));
+}
+
+/**
+ * The tab is gone: dispose of its page and stop reading it. A native close is
+ * the only thing that releases a child webview, and a page outlives its pane
+ * on purpose — so this is the pairing every close path needs, not the pane's.
+ */
+export function closeBrowserPage(id: string): void {
+  void browserClose(id).catch(() => undefined);
+  forgetBrowserPage(id);
 }
 
 /** What each live page last reported, for the chips that name it. */

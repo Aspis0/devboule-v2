@@ -88,6 +88,16 @@ describe("browser tabs", () => {
     expect(dropped.browserId).not.toBe(kept.browserId);
   });
 
+  it("names the ids it dropped, because each one is a page nobody else can close", () => {
+    const kept = openBrowserTab(ALPHA);
+    const dropped = openBrowserTab(BETA);
+    const second = openBrowserTab(BETA);
+
+    expect(pruneBrowserTabs(new Set([ALPHA]))).toEqual([dropped.browserId, second.browserId]);
+    expect(pruneBrowserTabs(new Set([ALPHA]))).toEqual([]);
+    expect(browserTabsFor(ALPHA).map((tab) => tab.browserId)).toEqual([kept.browserId]);
+  });
+
   it("tells its subscribers when the layout changes, and only then", () => {
     let notified = 0;
     const stop = subscribeBrowserLayout(() => {
