@@ -16,7 +16,14 @@ import { chipDisplay } from "./stripDisplay";
 import { sessionAttentionLabel } from "../sessionAttention";
 import { sessionLastActiveMs, sessionStartedLabel } from "./sessionOverview";
 import { composeOverviewGroups, type OverviewRow } from "./overviewTabs";
-import { toolTabDirectory, toolTabLabel, type StripTab, type ToolTab } from "./toolTabs";
+import {
+  toolTabDirectory,
+  toolTabKindLabel,
+  toolTabLabel,
+  toolTabSubject,
+  type StripTab,
+  type ToolTab,
+} from "./toolTabs";
 import { StripKindMark } from "./StripKindMark";
 import { DOT_CLASS } from "./StripChip";
 
@@ -217,8 +224,8 @@ export function SessionOverviewMenu({
               </div>
               {group.rows.map((row) => {
                 if (row.kind === "tool") {
-                  const label = toolTabLabel(row.tool.path);
-                  const directory = toolTabDirectory(row.tool.path);
+                  const label = toolTabLabel(row.tool);
+                  const directory = toolTabDirectory(row.tool);
                   return (
                     <div
                       key={row.id}
@@ -299,11 +306,9 @@ export function SessionOverviewMenu({
 function ToolOverviewPreview({ tool }: { tool: ToolTab }) {
   return (
     <div className="workspace-overview-preview">
-      <div className="workspace-overview-preview-title">{toolTabLabel(tool.path)}</div>
-      <div className="workspace-overview-preview-state">
-        {tool.kind === "diff" ? "Diff" : "File"}
-      </div>
-      <div className="workspace-overview-preview-meta">{tool.path}</div>
+      <div className="workspace-overview-preview-title">{toolTabLabel(tool)}</div>
+      <div className="workspace-overview-preview-state">{toolTabKindLabel(tool)}</div>
+      <div className="workspace-overview-preview-meta">{toolTabSubject(tool)}</div>
     </div>
   );
 }

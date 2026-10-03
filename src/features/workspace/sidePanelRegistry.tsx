@@ -1,10 +1,10 @@
 import type { ReactNode } from "react";
-import { AppSurface, DesignPanel, PullRequestSurface } from "./sidePanels";
+import { DesignPanel, PullRequestSurface } from "./sidePanels";
 import { ChangesSurface } from "./ChangesSurface";
 import { FilesSurface } from "./FilesSurface";
 import type { PanelIconName } from "./panel/PanelIcon";
 import type { WorkspaceKey } from "./hosts/hostIdentity";
-import type { ToolTabKind } from "./strip/toolTabs";
+import type { FileToolTabKind } from "./strip/toolTabs";
 
 /** Where the tab row offers a panel: a visible tab, or the kebab menu. The
  * three spec tabs stay tabs; mock and future panels must not crowd them. */
@@ -27,7 +27,7 @@ export interface SidePanelContext {
    * Open a path as a main tab, under the panel's workspace. Each entry binds
    * its own kind, so the kind travels only this far.
    */
-  onOpenFile?: (workspaceKey: WorkspaceKey, path: string, kind: ToolTabKind) => void;
+  onOpenFile?: (workspaceKey: WorkspaceKey, path: string, kind: FileToolTabKind) => void;
 }
 
 export interface SidePanelEntry {
@@ -82,13 +82,6 @@ export const SIDE_PANEL_REGISTRY: readonly SidePanelEntry[] = [
     placement: "tab",
     icon: "design",
     render: () => <DesignPanel />,
-  },
-  {
-    id: "app",
-    name: "Interactive app",
-    placement: "menu",
-    icon: "app",
-    render: () => <AppSurface />,
   },
   {
     id: "pr",

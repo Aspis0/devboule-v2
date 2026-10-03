@@ -1,4 +1,4 @@
-// Why: a Diff or File tab is frontend state only — the daemon knows
+// Why: a Diff, File or Browser tab is frontend state only — the daemon knows
 // sessions, never these. This owns the tab's shape, its id namespace (a
 // `tool:` prefix session ids cannot collide with), the strip order (tool
 // tabs after sessions) and the one successor rule every close path shares,
@@ -7,16 +7,30 @@
 import type { Session } from "../../../types/ipc";
 import { parseWorkspaceKey, type WorkspaceKey } from "../hosts/hostIdentity";
 
-export type ToolTabKind = "diff" | "file";
+export type ToolTabKind = "diff" | "file" | "browser";
 
-export interface ToolTab {
+/** The kinds a panel opens. A Browser tab is not one of them: nothing in the
+ * side panels opens a page, so the panel seam never names this half. */
+export type FileToolTabKind = "diff" | "file";
+
+interface ToolTabBase {
   id: string;
   kind: ToolTabKind;
   /** What the strip filters and prunes on: the workspace as the UI names it. */
   workspaceKey: WorkspaceKey;
-  /** Workspace-relative, `/`-joined — the trees' own spelling. */
-  path: string;
 }
+
+export type ToolTab = ToolTabBase &
+  (
+    | { kind: "diff"; path: string }
+    | { kind: "file"; path: string }
+    | {
+        kind: "browser";
+        /** The controller's name for this tab's page, stable across a
+         * restart so the page comes back with the tab. */
+        browserId: string;
+      }
+  );
 
 export type StripTab =
   | { type: "session"; id: string; session: Session }
@@ -31,20 +45,32 @@ export type StripTab =
  * change the string of every Diff and File tab in a strip, remounting every
  * chip for no gain. Two hosts can therefore mint the same id, and the id
  * alone is not what separates their tabs — the strip never shows both. */
-export function toolTabId(kind: ToolTabKind, workspaceId: string, path: string): string {
-  return `tool:${kind}:${encodeURIComponent(workspaceId)}:${encodeURIComponent(path)}`;
+export function toolTabId(kind: ToolTabKind, workspaceId: string, subject: string): string {
+  return `tool:${kind}:${encodeURIComponent(workspaceId)}:${encodeURIComponent(subject)}`;
 }
 
 export function isToolTabId(id: string): boolean {
   return id.startsWith("tool:");
 }
 
-export function makeToolTab(kind: ToolTabKind, workspaceKey: WorkspaceKey, path: string): ToolTab {
+/** One tab, one id: the strip selects what it is given, never a second string
+ * rebuilt from the same parts. */
+export function makeToolTab(
+  kind: FileToolTabKind,
+  workspaceKey: WorkspaceKey,
+  path: string,
+): ToolTab {
+  const { workspaceId } = parseWorkspaceKey(workspaceKey);
+  return { id: toolTabId(kind, workspaceId, path), kind, workspaceKey, path };
+}
+
+export function makeBrowserTab(workspaceKey: WorkspaceKey, browserId: string): ToolTab {
+  const { workspaceId } = parseWorkspaceKey(workspaceKey);
   return {
-    id: toolTabId(kind, parseWorkspaceKey(workspaceKey).workspaceId, path),
-    kind,
+    id: toolTabId("browser", workspaceId, browserId),
+    kind: "browser",
     workspaceKey,
-    path,
+    browserId,
   };
 }
 
@@ -54,14 +80,32 @@ export function openToolTabs(tabs: ToolTab[], tab: ToolTab): ToolTab[] {
   return [...tabs, tab];
 }
 
-export function toolTabLabel(path: string): string {
-  const base = path.split("/").pop() ?? "";
-  return base === "" ? path : base;
+/**
+ * What a tool tab is named by inside its workspace: a path for a Diff or
+ * File tab, the controller's browser id for a Browser tab. The strip chip
+ * shows this, the tab id is built from it, and the tooltip is it in full —
+ * one answer, so no reader has to know which of the two a tab carries.
+ */
+export function toolTabSubject(tab: ToolTab): string {
+  return tab.kind === "browser" ? tab.browserId : tab.path;
 }
 
-export function toolTabDirectory(path: string): string | null {
-  const slash = path.lastIndexOf("/");
-  return slash > 0 && slash < path.length - 1 ? path.slice(0, slash) : null;
+export function toolTabLabel(tab: ToolTab): string {
+  const subject = toolTabSubject(tab);
+  if (tab.kind === "browser") return subject;
+  const base = subject.split("/").pop() ?? "";
+  return base === "" ? subject : base;
+}
+
+export function toolTabDirectory(tab: ToolTab): string | null {
+  const subject = toolTabSubject(tab);
+  const slash = subject.lastIndexOf("/");
+  return slash > 0 && slash < subject.length - 1 ? subject.slice(0, slash) : null;
+}
+
+/** What a tool tab names itself, in the words the UI prints. */
+export function toolTabKindLabel(tab: ToolTab): string {
+  return tab.kind === "diff" ? "Diff" : tab.kind === "file" ? "File" : "Browser";
 }
 
 export function composeStripTabs(

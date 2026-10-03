@@ -23,14 +23,27 @@ import { pendingPlanId } from "./pendingPlanId";
 import {
   composeStripTabs,
   isToolTabId,
+  makeBrowserTab,
   makeToolTab,
   openToolTabs,
   pruneToolTabsForWorkspaces,
+  type FileToolTabKind,
   type ToolTab,
-  type ToolTabKind,
 } from "./strip/toolTabs";
 import { ToolDiffPane } from "./ToolDiffPane";
 import { WorkspaceFileTab } from "./WorkspaceFileTab";
+import { BrowserTab } from "./BrowserTab";
+import { browserClose } from "./browserController";
+import {
+  activeBrowserTabFor,
+  browserLayoutSnapshot,
+  closeBrowserTab,
+  openBrowserTab,
+  pruneBrowserTabs,
+  routeBrowserPopup,
+  subscribeBrowserLayout,
+} from "./browserTabs";
+import { normalizeBrowserUrl, BROWSER_START_URL } from "./browserUrl";
 import { ErrorTriangleIcon } from "./ErrorTriangleIcon";
 import { createToolContentCache, evictToolContent } from "./toolContentCache";
 import { localWorkspaceKey, parseWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
@@ -454,11 +467,13 @@ export function Workspace({
     pruneTabMemory(knownWorkspaceKeys);
     setToolTabs((prev) => {
       for (const tab of prev) {
-        if (!knownWorkspaceKeys.has(tab.workspaceKey))
-          evictToolContent(toolContentCache, tab.workspaceKey, tab.path);
+        if (knownWorkspaceKeys.has(tab.workspaceKey)) continue;
+        if (tab.kind !== "browser") evictToolContent(toolContentCache, tab.workspaceKey, tab.path);
+        else closeBrowserTab(tab.browserId);
       }
       return pruneToolTabsForWorkspaces(prev, knownWorkspaceKeys);
     });
+    pruneBrowserTabs(knownWorkspaceKeys);
   }
 
   const closingIds = useSyncExternalStore(closeActions.subscribe, closeActions.getClosingSnapshot);
@@ -477,10 +492,25 @@ export function Workspace({
       (session) => !hiding.has(session.id) && inSelectedWorkspace(session),
     );
   }, [openSessions, closingIds, inSelectedWorkspace]);
-  const visibleToolTabs = useMemo(
-    () => toolTabs.filter((tab) => tab.workspaceKey === selectedKey),
-    [toolTabs, selectedKey],
-  );
+  const browserLayout = useSyncExternalStore(subscribeBrowserLayout, browserLayoutSnapshot);
+  const visibleToolTabs = useMemo(() => {
+    const own = toolTabs.filter((tab) => tab.workspaceKey === selectedKey);
+    if (selectedKey === null) return own;
+    // A browser tab's strip entry is derived from the tab model rather than
+    // held here: the model is what persists it, so a second copy would be a
+    // second answer to "which browser tabs does this workspace have".
+    return [
+      ...own,
+      ...browserLayout.tabs
+        .filter((tab) => tab.workspaceKey === selectedKey)
+        .map((tab) => makeBrowserTab(selectedKey, tab.browserId)),
+    ];
+  }, [toolTabs, selectedKey, browserLayout.tabs]);
+  /** The tab a workspace lands on when no session of its own comes first. */
+  const browserTabIdFor = useCallback((key: WorkspaceKey): string | null => {
+    const browserId = activeBrowserTabFor(key);
+    return browserId === null ? null : makeBrowserTab(key, browserId).id;
+  }, []);
   // The tab ids another workspace would render: the live set a remembered
   // tab has to still belong to, or the switch falls back. Built per call
   // because it is only ever asked for a workspace being entered.
@@ -494,9 +524,12 @@ export function Workspace({
       for (const tab of toolTabs) {
         if (tab.workspaceKey === key) ids.add(tab.id);
       }
+      for (const tab of browserLayout.tabs) {
+        if (tab.workspaceKey === key) ids.add(makeBrowserTab(key, tab.browserId).id);
+      }
       return ids;
     },
-    [closingIds, openSessions, toolTabs],
+    [browserLayout.tabs, closingIds, openSessions, toolTabs],
   );
   // Where a workspace lands when it is entered: the tab it was last showing,
   // if that tab is still live, else the fallback the switch has always used —
@@ -510,9 +543,9 @@ export function Workspace({
         openSessions.find(
           (session) =>
             session.workspaceId !== null && localWorkspaceKey(session.workspaceId) === key,
-        )?.id ?? null,
+        )?.id ?? browserTabIdFor(key),
       ),
-    [liveTabIdsFor, openSessions],
+    [browserTabIdFor, liveTabIdsFor, openSessions],
   );
   const openEndedIds = useMemo(
     () => new Set(openSessions.filter((row) => row.state.type === "ended").map((row) => row.id)),
@@ -540,6 +573,12 @@ export function Workspace({
     [projects, selectedKey],
   );
   const activeTool = visibleToolTabs.find((tab) => tab.id === activeToolTabId) ?? null;
+  /** A browser tab's restored page, so the pane opens where the tab was. */
+  const browserRecordFor = useCallback(
+    (browserId: string) =>
+      browserLayout.tabs.find((record) => record.browserId === browserId) ?? null,
+    [browserLayout.tabs],
+  );
   const activeToolId = activeTool?.id ?? null;
   const activeTabId = activeToolId ?? selectedSessionId;
   const composedTabs = useMemo(
@@ -696,13 +735,31 @@ export function Workspace({
   }, []);
   // Opening the same (kind, workspace, path) again focuses the existing
   // tab instead of duplicating it; opening focuses either way.
-  const openToolTab = useCallback((key: WorkspaceKey, path: string, kind: ToolTabKind) => {
+  const openToolTab = useCallback((key: WorkspaceKey, path: string, kind: FileToolTabKind) => {
     // One tab mints one id: the strip selects what it is given, never a
     // second string rebuilt from the same parts.
     const tab = makeToolTab(kind, key, path);
     setToolTabs((prev) => openToolTabs(prev, tab));
     setActiveToolTabId(tab.id);
   }, []);
+  // A browser tab in a workspace, focused: the "+" entry and a page asking
+  // for a window both land here, so a popup can never open as anything other
+  // than the tab its owner asked for. An address that does not normalise is
+  // dropped to the start page rather than refused — Rust gated it already.
+  const openBrowserFor = useCallback((key: WorkspaceKey, url?: string) => {
+    const record = openBrowserTab(key, url === undefined ? null : normalizeBrowserUrl(url));
+    setActiveToolTabId(makeBrowserTab(key, record.browserId).id);
+  }, []);
+  // A page's window lands in the workspace that page's tab belongs to, never
+  // in whichever workspace happens to be in front when it asks.
+  useEffect(
+    () =>
+      routeBrowserPopup((sourceId, url) => {
+        const owner = browserLayout.tabs.find((tab) => tab.browserId === sourceId);
+        if (owner !== undefined) openBrowserFor(owner.workspaceKey, url);
+      }),
+    [browserLayout.tabs, openBrowserFor],
+  );
   // Every stand-down routes through here. The landed create is the only caller
   // that may skip it (guarded below); the roster reconcile never calls it.
   const standDownToolTab = useCallback(() => writeToolTab(null), [writeToolTab]);
@@ -795,14 +852,23 @@ export function Workspace({
     (ids: readonly string[]): void => {
       if (ids.length === 0) return;
       const gone = new Set(ids);
+      // A browser tab's page is a child webview in the Rust process: closing
+      // its strip tab is what disposes it, and its record goes with it.
+      for (const record of browserLayout.tabs) {
+        if (!gone.has(makeBrowserTab(record.workspaceKey, record.browserId).id)) continue;
+        void browserClose(record.browserId);
+        closeBrowserTab(record.browserId);
+      }
       setToolTabs((prev) => {
         for (const tab of prev) {
-          if (gone.has(tab.id)) evictToolContent(toolContentCache, tab.workspaceKey, tab.path);
+          if (tab.kind !== "browser" && gone.has(tab.id)) {
+            evictToolContent(toolContentCache, tab.workspaceKey, tab.path);
+          }
         }
         return prev.filter((tab) => !gone.has(tab.id));
       });
     },
-    [toolContentCache],
+    [browserLayout.tabs, toolContentCache],
   );
   const tabSelection = useTabSelection({
     tabs: composedTabs,
@@ -1214,6 +1280,13 @@ export function Workspace({
       if (session !== null) armTerminalFocus(session.id, selectedKey);
     });
   }, [armTerminalFocus, createAndShowSession, dismissNewTabMenu, selectedKey, selectedWorkspaceId]);
+  // The menu's Browser entry: a page in the selected workspace, focused. It
+  // creates no daemon session, so it does not wait for the strip's focus rule
+  // — the address bar takes focus itself once the page is up.
+  const handleNewTabBrowser = useCallback(() => {
+    dismissNewTabMenu();
+    if (selectedKey !== null) openBrowserFor(selectedKey);
+  }, [dismissNewTabMenu, openBrowserFor, selectedKey]);
   const consentCancel = useCallback(() => {
     // The picker stays anchored behind the consent card; cancelling only
     // removes the card and returns to the option list.
@@ -1650,6 +1723,7 @@ export function Workspace({
             onToggle: () => setNewTabMenuOpen((open) => !open),
             onAgent: handleNewTabAgent,
             onTerminal: handleNewTabTerminal,
+            onBrowser: handleNewTabBrowser,
             onCloseMenu: dismissNewTabMenu,
           }}
           providerMenu={providerAnchor?.kind === "strip" ? providerMenu : null}
@@ -1759,7 +1833,13 @@ export function Workspace({
           </div>
         ) : null}
 
-        {activeTool !== null ? (
+        {activeTool?.kind === "browser" ? (
+          <BrowserTab
+            key={activeTool.id}
+            browserId={activeTool.browserId}
+            url={browserRecordFor(activeTool.browserId)?.url ?? BROWSER_START_URL}
+          />
+        ) : activeTool !== null ? (
           <div
             id={WORKSPACE_TERMINAL_PANEL_ID}
             className={`workspace-conversation workspace-scroll workspace-tool-pane${

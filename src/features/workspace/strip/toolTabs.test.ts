@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   composeStripTabs,
   isToolTabId,
+  makeBrowserTab,
   makeToolTab,
   openToolTabs,
   pruneToolTabsForWorkspaces,
@@ -86,9 +87,23 @@ describe("openToolTabs", () => {
 });
 
 describe("toolTabLabel", () => {
-  it("shows the basename", () => {
-    expect(toolTabLabel("src/writer.ts")).toBe("writer.ts");
-    expect(toolTabLabel("writer.ts")).toBe("writer.ts");
+  it("shows the basename of a path, and the id of a browser tab", () => {
+    expect(toolTabLabel(makeToolTab("diff", at("ws"), "src/writer.ts"))).toBe("writer.ts");
+    expect(toolTabLabel(makeToolTab("file", at("ws"), "writer.ts"))).toBe("writer.ts");
+    expect(toolTabLabel(makeBrowserTab(at("ws"), "browser-1"))).toBe("browser-1");
+  });
+});
+
+describe("makeBrowserTab", () => {
+  it("gives one browser tab one id, in the tool namespace", () => {
+    const tab = makeBrowserTab(at("ws"), "abc");
+    expect(tab.kind).toBe("browser");
+    expect(tab.id).toBe(toolTabId("browser", "ws", "abc"));
+    expect(isToolTabId(tab.id)).toBe(true);
+  });
+
+  it("keeps two workspaces' browser tabs apart", () => {
+    expect(makeBrowserTab(at("one"), "abc").id).not.toBe(makeBrowserTab(at("two"), "abc").id);
   });
 });
 

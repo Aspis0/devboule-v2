@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
   type RefObject,
@@ -22,8 +23,10 @@ import { chipDisplay } from "./stripDisplay";
 import { sessionNeedsApproval } from "../sessionAttention";
 import { useStripFade } from "./useStripFade";
 import { useStripKeyboard } from "./useStripKeyboard";
-import { StripChip, ToolStripChip } from "./StripChip";
+import { StripChip, ToolStripChip, type BrowserTabPage } from "./StripChip";
 import type { StripTab } from "./toolTabs";
+import { browserLayoutSnapshot, subscribeBrowserLayout } from "../browserTabs";
+import { browserTabLabel } from "../browserUrl";
 import "./strip.css";
 
 /** Chips re-render only when their own props change: every other prop the
@@ -39,6 +42,7 @@ export interface StripNewTab {
   onToggle: () => void;
   onAgent: () => void;
   onTerminal: () => void;
+  onBrowser: () => void;
   onCloseMenu: () => void;
 }
 
@@ -116,6 +120,18 @@ export function SessionStrip({
     () => tabs.flatMap((tab) => (tab.type === "tool" ? [tab.tool] : [])),
     [tabs],
   );
+  // A browser chip names its page, and the favicon arrives long after the tab
+  // does. The strip reads the tab model itself rather than taking a map
+  // through Workspace, and `MemoToolChip` still keeps the other chips still.
+  const browserRecords = useSyncExternalStore(subscribeBrowserLayout, browserLayoutSnapshot);
+  const browserPages = useMemo(() => {
+    return new Map<string, BrowserTabPage>(
+      browserRecords.tabs.map((tab) => [
+        tab.browserId,
+        { label: browserTabLabel(tab.title, tab.url), favicon: tab.favicon, url: tab.url },
+      ]),
+    );
+  }, [browserRecords.tabs]);
   useSelectedTabVisible(scrollportRef, activeTabId, tabs);
   const fade = useStripFade(scrollportRef, tabs);
   const { selection, handleTabClick } = tabSelection;
@@ -307,7 +323,12 @@ export function SessionStrip({
           selected={activeTabId === tool.id}
           multiselected={selection.has(tool.id)}
           tabIndex={tabIndexFor(tool.id)}
-          tooltip={tool.path}
+          browser={tool.kind === "browser" ? browserPages.get(tool.browserId) : undefined}
+          tooltip={
+            tool.kind === "browser"
+              ? (browserPages.get(tool.browserId)?.url ?? tool.browserId)
+              : tool.path
+          }
           menuOpen={menuAnchorId === tool.id}
           onTabClick={(event) => handleTabClick({ id: tool.id }, event)}
           onTabAuxClick={(event) => {
@@ -328,6 +349,7 @@ export function SessionStrip({
     [
       chips,
       toolTabs,
+      browserPages,
       activeTabId,
       selection,
       tabIndexFor,
@@ -375,6 +397,7 @@ export function SessionStrip({
           workspaceSelected={newTab.workspaceSelected}
           onAgent={newTab.onAgent}
           onTerminal={newTab.onTerminal}
+          onBrowser={newTab.onBrowser}
           onClose={newTab.onCloseMenu}
         />
         {providerMenu}

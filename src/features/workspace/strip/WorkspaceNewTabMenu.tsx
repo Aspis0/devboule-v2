@@ -1,10 +1,10 @@
 // The tab strip's "+" menu: what a new tab can be. Agent continues
 // into the provider flow, Terminal creates a plain session of kind
-// "terminal". The keyboard lives on the menu element itself: once focus is
-// elsewhere, the keys are not the menu's. The menu renders through
-// AnchoredPopover: a body portal, because the centre panel clipped it at
-// its edge and the resize handle covered its entries when the strip was
-// full.
+// "terminal", Browser opens a page in a child webview of this window. The
+// keyboard lives on the menu element itself: once focus is elsewhere, the
+// keys are not the menu's. The menu renders through AnchoredPopover: a body
+// portal, because the centre panel clipped it at its edge and the resize
+// handle covered its entries when the strip was full.
 
 import {
   useCallback,
@@ -29,6 +29,7 @@ interface WorkspaceNewTabMenuProps {
   workspaceSelected: boolean;
   onAgent: () => void;
   onTerminal: () => void;
+  onBrowser: () => void;
   onClose: () => void;
 }
 
@@ -74,6 +75,13 @@ const TERMINAL_GLYPH = (
   </Glyph>
 );
 
+const BROWSER_GLYPH = (
+  <Glyph>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M3 12h18M12 3c2.5 2.7 2.5 15.3 0 18M12 3c-2.5 2.7-2.5 15.3 0 18" />
+  </Glyph>
+);
+
 export function WorkspaceNewTabMenu({
   open,
   triggerRef,
@@ -81,6 +89,7 @@ export function WorkspaceNewTabMenu({
   workspaceSelected,
   onAgent,
   onTerminal,
+  onBrowser,
   onClose,
 }: WorkspaceNewTabMenuProps) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -155,6 +164,14 @@ export function WorkspaceNewTabMenu({
       glyph: TERMINAL_GLYPH,
       disabled: creating || !workspaceSelected,
       onSelect: onTerminal,
+    },
+    {
+      label: "Browser",
+      glyph: BROWSER_GLYPH,
+      // A page belongs to a workspace: a browser tab opens in the selected
+      // one, and with no workspace selected there is none to open it in.
+      disabled: creating || !workspaceSelected,
+      onSelect: onBrowser,
     },
   ];
 

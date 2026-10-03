@@ -1,7 +1,7 @@
 import { usableBranch } from "../changesStatusCache";
 import { displayPath } from "../../../lib/displayPath";
 import type { TabMenuEntry } from "./tabCloseMenu";
-import type { StripTab } from "./toolTabs";
+import { toolTabSubject, type StripTab } from "./toolTabs";
 
 export type TabCopyAction = "copy-session-id" | "copy-path" | "copy-branch-name";
 
@@ -16,7 +16,7 @@ export function tabCopyValue(
 ): string | null {
   if (key === "copy-session-id") return tab.type === "session" ? tab.session.id : null;
   if (key === "copy-branch-name") return tab.type === "session" ? usableBranch(branch) : null;
-  const path = tab.type === "session" ? tab.session.cwd : tab.tool.path;
+  const path = tab.type === "session" ? tab.session.cwd : toolTabSubject(tab.tool);
   return displayPath(path ?? "") || null;
 }
 

@@ -4,7 +4,35 @@ import { sessionTabElementId } from "./useTabCloseFlow";
 import { sessionTitle } from "../workspaceSessions";
 import type { ChipDisplay } from "./stripDisplay";
 import { StripKindMark } from "./StripKindMark";
-import { toolTabLabel, type ToolTab } from "./toolTabs";
+import { toolTabKindLabel, toolTabLabel, toolTabSubject, type ToolTab } from "./toolTabs";
+
+/** How a browser tab names itself in the strip: the page's own favicon once
+ * it has one, a globe until then. The chip subscribes to the browser tab
+ * model itself — the favicon arrives after the tab does, and threading it
+ * through the strip would remount every chip for one image. */
+function BrowserFavicon({ favicon }: { favicon: string | null }) {
+  if (favicon !== null) {
+    return (
+      <span className="strip-kind" aria-hidden="true">
+        <img className="strip-browser-favicon" src={favicon} alt="" width={14} height={14} />
+      </span>
+    );
+  }
+  return (
+    <span className="strip-kind" aria-hidden="true">
+      <svg width={14} height={14} viewBox="0 0 14 14" aria-hidden="true" focusable="false">
+        <circle cx="7" cy="7" r="5.5" fill="none" stroke="currentColor" strokeWidth={1.4} />
+        <path
+          d="M1.5 7h11M7 1.5c1.7 1.8 1.7 9.2 0 11M7 1.5c-1.7 1.8-1.7 9.2 0 11"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={1.4}
+          strokeLinecap="round"
+        />
+      </svg>
+    </span>
+  );
+}
 
 /** The spec's dot tones, one class per state in the strip's vocabulary —
  * shared with the end-of-strip overview, which paints the same dots. */
@@ -135,6 +163,9 @@ export interface ToolStripChipProps {
   selected: boolean;
   multiselected: boolean;
   tabIndex: 0 | -1;
+  /** The browser tab's page as the tab model holds it: absent for a Diff or
+   * File tab, whose chip names its path instead. */
+  browser?: BrowserTabPage;
   /** The workspace-relative path — the label keeps the basename only. */
   tooltip: string;
   menuOpen: boolean;
@@ -145,12 +176,21 @@ export interface ToolStripChipProps {
   onClose: () => void;
 }
 
+/** What a browser tab's chip reads: the page's title or its hostname, and
+ * the address the tooltip carries in full. */
+export interface BrowserTabPage {
+  label: string;
+  favicon: string | null;
+  url: string;
+}
+
 /** No take-back, no rename — a tool tab has no session behind it to act on. */
 export function ToolStripChip({
   tool,
   selected,
   multiselected,
   tabIndex,
+  browser,
   tooltip,
   menuOpen,
   onTabClick,
@@ -159,8 +199,10 @@ export function ToolStripChip({
   onChipKeyDown,
   onClose,
 }: ToolStripChipProps) {
-  const label = toolTabLabel(tool.path);
-  const stateLine = tool.kind === "diff" ? "Diff" : "File";
+  const isBrowser = tool.kind === "browser";
+  const label = isBrowser ? (browser?.label ?? toolTabSubject(tool)) : toolTabLabel(tool);
+  const stateLine = toolTabKindLabel(tool);
+  const subject = isBrowser ? (browser?.url ?? toolTabSubject(tool)) : toolTabSubject(tool);
   return (
     <div className="workspace-session-row" onContextMenu={onRowContextMenu}>
       <button
@@ -179,10 +221,14 @@ export function ToolStripChip({
         onAuxClick={onTabAuxClick}
         onKeyDown={onChipKeyDown}
       >
-        <StripKindMark kind={tool.kind} />
+        {isBrowser ? (
+          <BrowserFavicon favicon={browser?.favicon ?? null} />
+        ) : (
+          <StripKindMark kind={tool.kind} />
+        )}
         <span className="workspace-tab-label">{label}</span>
         {/* Heard, never seen: the kind and the path, never a session state. */}
-        <span className="workspace-sr-only">{`${stateLine} ${tool.path}`}</span>
+        <span className="workspace-sr-only">{`${stateLine} ${subject}`}</span>
       </button>
       <span className="workspace-session-chip">
         <button

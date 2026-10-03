@@ -40,6 +40,8 @@ Translated source and captured payloads from [Paseo](https://github.com/getpaseo
 
 The root-relative resolution in `src/lib/chatFilePaths.ts` follows Paseo's `resolveRelativePathUnderRoot` in `packages/app/src/assistant-file-links/parse.ts` (Apache-2.0, Copyright (c) 2025-present Mohamed Boudra). Modified by Devboule to require workspace-relative targets and reject absolute paths outside the workspace root; the source header and NOTICE record this attribution.
 
+`src/features/workspace/browserUrl.ts` — the address bar's answer to typed text — is derived from [Orca](https://github.com/stablyai/orca)'s `src/shared/browser-url.ts`, taken from this repository's `orca-src` checkout at version 1.4.214, commit `de8bffe2` (MIT, Copyright (c) 2026 Lovecast Inc.). The parts taken are the scheme-less classification (a loopback or wildcard-bind address gets `http://`, anything else without a scheme of its own gets `https://`) and the http/https-only gate, which reads the scheme off the parsed URL rather than off the text. Modified by Devboule: `file:` is refused where Orca allows it for its local preview, `about:blank` is replaced by a real start page (`https://example.com`), the filesystem-path and search-engine branches are gone so a refusal here is a refusal there too, and the refusal messages are Devboule's. The file header records the attribution.
+
 ## Non-code assets
 
 | File | Provenance / use | Copyright | Licence | SHA-256 |

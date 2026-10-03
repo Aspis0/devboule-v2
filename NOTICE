@@ -215,6 +215,11 @@ source, and that line is the authority for the entry:
   Mohamed Boudra)
 - `src/lib/toolCallGroups.ts` — `packages/app/src/i18n/resources/en.ts:1853-1879`
   (the `toolCallGroup.*` strings)
+- `src/features/workspace/browserUrl.ts` — `src/shared/browser-url.ts`
+  (the scheme-less address classification and the http/https-only gate;
+  MIT, Copyright (c) 2026 Lovecast Inc., taken at version 1.4.214,
+  commit `de8bffe2`. Modified: `file:` refused, `about:blank` replaced by
+  `https://example.com`, the filesystem-path and search branches dropped.)
 
 The captured extension payloads in `crates/devboule-daemon/fixtures/pi-tasks/`
 (`paseo-pi-goal-x.rpc-session.json`, `paseo-rpiv-todo.rpc-session.json`,
