@@ -675,6 +675,12 @@ pub struct JournalSessionUsage {
     /// has no name of its own. Usage reports what the row says; the fallback a
     /// nameless row is shown under is the app's business, not the query's.
     pub display_name: Option<String>,
+    /// The session that created this row, when an agent did. The roster reads
+    /// `closed = 0` only, so an archived child's parent link is reachable
+    /// nowhere else: usage has to carry it or the app cannot tell the child
+    /// from a top-level agent. `None` for a session a human asked for, and for
+    /// every row that predates v10.
+    pub created_by: Option<String>,
     pub kind: SessionKind,
     pub bytes: u64,
     pub updated_at_ms: u64,

@@ -3136,6 +3136,16 @@ pub struct JournalSessionUsage {
     /// fallback name, never as an empty one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// The session that created this one, when an agent did, read back from the
+    /// journal's own `created_by` column (protocol `Session.created_by`). It
+    /// rides this row because the roster cannot answer it: `sessions_list` is
+    /// the open sessions only, so once a child is archived its parent link
+    /// lives here and nowhere else the app can read. `Option` with the same
+    /// serde pair as the name above: absent means "no agent created this row",
+    /// which the app reads as top-level — today's behaviour, and what a row
+    /// written before the column existed still gets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
     pub kind: SessionKind,
     pub bytes: u64,
     pub updated_at_ms: u64,

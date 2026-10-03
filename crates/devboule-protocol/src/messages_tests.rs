@@ -1870,6 +1870,7 @@ fn journal_commands_round_trip_the_amended_usage_shape() {
                 id: "s.1".to_string(),
                 title: "Terminal".to_string(),
                 display_name: Some("worker one".to_string()),
+                created_by: None,
                 kind: SessionKind::Terminal,
                 bytes: 6,
                 updated_at_ms: 7,
@@ -1901,6 +1902,7 @@ fn a_journal_usage_row_carries_the_display_name_in_camel_case() {
         id: "s.1".to_string(),
         title: "worker".to_string(),
         display_name: Some("worker one".to_string()),
+        created_by: None,
         kind: SessionKind::Terminal,
         bytes: 6,
         updated_at_ms: 7,
@@ -1927,6 +1929,46 @@ fn a_journal_usage_row_carries_the_display_name_in_camel_case() {
     }))
     .expect("a frame without the field is still a row");
     assert_eq!(older.display_name, None);
+}
+
+/// The parent link is what tells History an archived child from a top-level
+/// agent, so it travels in the same dialect as the rest of the row: camel case,
+/// absent rather than null when no agent created the row, and decodable from a
+/// frame that predates the field — such a row reads as top-level, which is
+/// what the app did before it could tell.
+#[test]
+fn a_journal_usage_row_carries_the_parent_in_camel_case() {
+    let child = JournalSessionUsage {
+        id: "s.1.2".to_string(),
+        title: "worker".to_string(),
+        display_name: None,
+        created_by: Some("s.1".to_string()),
+        kind: SessionKind::Claude,
+        bytes: 6,
+        updated_at_ms: 7,
+    };
+    let value = serde_json::to_value(&child).expect("json");
+    assert_eq!(
+        value.get("createdBy").and_then(|parent| parent.as_str()),
+        Some("s.1")
+    );
+
+    let top_level = JournalSessionUsage {
+        created_by: None,
+        ..child.clone()
+    };
+    let value = serde_json::to_value(&top_level).expect("json");
+    assert!(value.get("createdBy").is_none(), "{value}");
+
+    let older: JournalSessionUsage = serde_json::from_value(serde_json::json!({
+        "id": "s.1.2",
+        "title": "worker",
+        "kind": "claude",
+        "bytes": 6,
+        "updatedAtMs": 7
+    }))
+    .expect("a frame without the field is still a row");
+    assert_eq!(older.created_by, None);
 }
 
 #[test]

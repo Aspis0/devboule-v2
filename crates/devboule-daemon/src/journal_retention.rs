@@ -499,7 +499,8 @@ pub(super) fn journal_usage(
     let mut aged_out = 0usize;
     let mut per_session = Vec::new();
     let mut session_stmt = conn.prepare(
-        "SELECT id, title, kind, payload_bytes, updated_at_ms, status, display_name
+        "SELECT id, title, kind, payload_bytes, updated_at_ms, status, display_name,
+                created_by
          FROM sessions ORDER BY updated_at_ms DESC, id",
     )?;
     let mut session_rows = session_stmt.query([])?;
@@ -511,6 +512,7 @@ pub(super) fn journal_usage(
         let updated_at_ms = row.get::<_, i64>(4)?.max(0) as u64;
         let status: String = row.get(5)?;
         let display_name: Option<String> = row.get(6)?;
+        let created_by: Option<String> = row.get(7)?;
         let reclaimable = status != "live" && !pins.contains(&id);
 
         session_count += 1;
@@ -538,6 +540,7 @@ pub(super) fn journal_usage(
             id,
             title,
             display_name,
+            created_by,
             kind,
             bytes,
             updated_at_ms,
@@ -1924,6 +1927,48 @@ mod tests {
         assert_eq!(
             human.display_name, None,
             "a session with no name of its own must stay unnamed"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The roster reports open sessions only, so once a child is archived the
+    /// journal row is the app's last word on whether it is a child. The parent
+    /// link is on disk for archived rows too and has to come out of this query.
+    #[test]
+    fn journal_usage_reports_the_parent_that_created_a_row() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let mut child = sample_session("s.child");
+        child.kind = SessionKind::Claude;
+        child.created_by = Some("s.parent".to_string());
+        child.closed = true;
+        journal.upsert_blocking(child).expect("child row");
+        journal
+            .upsert_blocking(sample_session("s.parent"))
+            .expect("parent row");
+        journal.shutdown();
+
+        let conn = Connection::open(&path).expect("inspect");
+        let usage =
+            super::journal_usage(&conn, &HashSet::new(), JournalLimits::default()).expect("usage");
+        let child = usage
+            .per_session
+            .iter()
+            .find(|row| row.id == "s.child")
+            .expect("the archived child is listed");
+        assert_eq!(
+            child.created_by.as_deref(),
+            Some("s.parent"),
+            "an archived child must still say which agent created it"
+        );
+        let parent = usage
+            .per_session
+            .iter()
+            .find(|row| row.id == "s.parent")
+            .expect("the parent row is listed");
+        assert_eq!(
+            parent.created_by, None,
+            "a session no agent created has no parent to report"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
