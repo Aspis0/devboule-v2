@@ -6,10 +6,10 @@
 //! DOM counters (`DOM.documentUpdated`, which arrives with no enable) and the
 //! load events (`Page.*`, which arrive only after `Page.enable`).
 //!
-//! A handler is installed per page and never removed — this runtime has no
-//! unsubscribe on the path `GetDevToolsProtocolEventReceiver` opens — so a
-//! page is watched exactly once, when it is created, and its counter is
-//! dropped when the tab closes.
+//! One receiver per event per page, installed when the page is created and
+//! never removed: the handler belongs to the child webview, which a close
+//! disposes of, and a page watched twice would move its own counter twice. What
+//! a close does drop is the counter, so the map holds only live tabs.
 
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -122,6 +122,9 @@ async fn subscribe(app: &AppHandle, label: &str, id: &str, event: &str) -> Resul
                         bump(&owned_id);
                         Ok(())
                     }));
+                // The token the runtime hands back is not kept: nothing here
+                // removes this handler, and the child webview it belongs to is
+                // what a close disposes of.
                 let mut token = 0i64;
                 unsafe { receiver.add_DevToolsProtocolEventReceived(&handler, &mut token) }
                     .map_err(com)
