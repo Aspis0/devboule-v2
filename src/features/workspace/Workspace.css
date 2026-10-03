@@ -1236,10 +1236,12 @@
   max-width: 100%;
   margin: 0 auto;
   /* One line of text plus the control row, and no more until the textarea
-     grows: the box must not read as an empty panel. */
+     grows: the box must not read as an empty panel. The trailing 2px is the
+     box's own 1px border a side — without it the floor sits under the height
+     it names and never binds. */
   min-height: calc(
     var(--space-14) + (var(--type-interface) * var(--leading-body)) + var(--space-12) +
-      var(--control-default) + var(--space-12)
+      var(--control-default) + var(--space-12) + 2px
   );
   /* The rail adds 32 px to the composer's own text inset; the transcript meets
      it within the composer's 1 px border when the conversation fills its
@@ -1262,6 +1264,9 @@
 }
 
 .workspace-composer textarea {
+  /* block: an inline-block textarea sits on a line box, and the strut's
+     descender left 5.3px of dead height under the only line of text. */
+  display: block;
   width: 100%;
   max-height: 160px;
   padding: 0;

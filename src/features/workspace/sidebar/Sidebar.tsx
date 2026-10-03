@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChangeEvent, KeyboardEvent, MouseEvent, RefObject } from "react";
 import { HistoryPanel } from "../../history/HistoryPanel";
 import type { DaemonStatus, Session } from "../../../types/ipc";
@@ -7,6 +8,15 @@ import { HostSections } from "./HostSections";
 import { SidebarFooter } from "./SidebarFooter";
 import { WorkspaceTree, type WorkspaceTreeProps } from "./WorkspaceTree";
 import "./sidebar.css";
+
+/**
+ * The width from which the wordmark row holds the search field beside it,
+ * measured from the real sheets: 64px of Fraunces 16px "devboule", the field's
+ * 96px floor, two 28px buttons with the 2px between them and the row's own 24px
+ * of padding add up to 242px, which is the sidebar's default width. Below it
+ * the search is a magnifier that opens the field on the row underneath.
+ */
+export const SIDEBAR_SEARCH_ROW_MIN_WIDTH = 248;
 
 export interface SidebarProps {
   width: number;
@@ -39,10 +49,10 @@ export interface SidebarProps {
 }
 
 /**
- * The sidebar region: the 44px wordmark row (with the search and the add and
- * collapse controls as quiet buttons), the tree or the History panel, and the
- * foot. The resize handle is this region's other half — a sibling of the
- * aside in the screen's flex row.
+ * The sidebar region: the 40px wordmark row (--sidebar-top) with the search
+ * and the add and collapse controls as quiet buttons, the tree or the History
+ * panel, and the foot. The resize handle is this region's other half — a
+ * sibling of the aside in the screen's flex row.
  */
 export function Sidebar({
   width,
@@ -63,6 +73,46 @@ export function Sidebar({
   daemon,
   daemonNote,
 }: SidebarProps) {
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchButtonRef = useRef<HTMLButtonElement>(null);
+  const fieldInRow = width >= SIDEBAR_SEARCH_ROW_MIN_WIDTH;
+
+  // The magnifier opens the field on the row under the wordmark row, and the
+  // field must take the focus with it: it is a different element in the tree,
+  // so nothing focuses it but this.
+  useEffect(() => {
+    if (searchOpen && !fieldInRow) searchInputRef.current?.focus();
+  }, [fieldInRow, searchOpen]);
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    searchButtonRef.current?.focus({ preventScroll: true });
+  }, []);
+
+  const toggleSearch = useCallback(() => {
+    if (searchOpen) closeSearch();
+    else setSearchOpen(true);
+  }, [closeSearch, searchOpen]);
+
+  const searchField = (
+    <label className={`workspace-search sidebar-search${fieldInRow ? "" : " sidebar-search-row"}`}>
+      <span className="sr-only">{historyOpen ? "Search history" : "Search workspaces"}</span>
+      <input
+        ref={searchInputRef}
+        value={historyOpen ? history.searchValue : searchValue}
+        onChange={(event) => {
+          if (historyOpen) history.onSearchChange(event);
+          else onSearchChange(event);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && !fieldInRow) closeSearch();
+        }}
+        placeholder="Search"
+      />
+    </label>
+  );
+
   return (
     <>
       <aside
@@ -86,19 +136,33 @@ export function Sidebar({
             <div className="sidebar-top">
               <span className="sidebar-wordmark">devboule</span>
               <span className="sidebar-top-spacer" />
-              <label className="workspace-search sidebar-search">
-                <span className="sr-only">
-                  {historyOpen ? "Search history" : "Search workspaces"}
-                </span>
-                <input
-                  value={historyOpen ? history.searchValue : searchValue}
-                  onChange={(event) => {
-                    if (historyOpen) history.onSearchChange(event);
-                    else onSearchChange(event);
-                  }}
-                  placeholder="Search"
-                />
-              </label>
+              {fieldInRow ? (
+                searchField
+              ) : (
+                <button
+                  type="button"
+                  className="workspace-icon-button sidebar-top-button sidebar-search-button"
+                  ref={searchButtonRef}
+                  onClick={toggleSearch}
+                  title="Search"
+                  aria-label="Search"
+                  aria-expanded={searchOpen}
+                >
+                  <svg
+                    className="sidebar-search-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.75"
+                    strokeLinecap="round"
+                    aria-hidden="true"
+                    focusable="false"
+                  >
+                    <circle cx="11" cy="11" r="7" />
+                    <path d="m20 20-3.6-3.6" />
+                  </svg>
+                </button>
+              )}
               <button
                 type="button"
                 className="workspace-icon-button sidebar-top-button"
@@ -119,6 +183,8 @@ export function Sidebar({
                 ‹
               </button>
             </div>
+
+            {fieldInRow || !searchOpen ? null : searchField}
 
             <div className="workspace-scroll sidebar-body">
               <HostSections daemon={daemon}>

@@ -9,6 +9,7 @@ import {
 } from "react";
 import type { SidePanelEntry } from "../sidePanelRegistry";
 import { PanelIcon } from "./PanelIcon";
+import { panelTabsShowLabels } from "./panelTabLabels";
 import { usePanelTabsKeyboard } from "./usePanelTabsKeyboard";
 import { useMenuOpen } from "../../../lib/menuOpen";
 import { moveMenuFocus } from "../strip/menuNav";
@@ -25,6 +26,8 @@ interface SidePanelTabsProps {
   activeId: string;
   onSelect: (id: string) => void;
   onCollapse: () => void;
+  /** The panel's own width: the row below its label budget paints icon tabs. */
+  panelWidth: number;
 }
 
 /** The right panel's tab row: the spec tabs in a tablist, a spacer, then the
@@ -37,7 +40,9 @@ export function SidePanelTabs({
   activeId,
   onSelect,
   onCollapse,
+  panelWidth,
 }: SidePanelTabsProps): ReactNode {
+  const showLabels = panelTabsShowLabels(panelWidth);
   const tabs = useMemo(() => registry.filter((entry) => entry.placement === "tab"), [registry]);
   const menuEntries = useMemo(
     () => registry.filter((entry) => entry.placement === "menu"),
@@ -148,11 +153,12 @@ export function SidePanelTabs({
               tabIndex={tabIndexFor(entry.id)}
               className={`workspace-panel-tab${painted ? " workspace-panel-tab-active" : ""}`}
               title={entry.name}
+              aria-label={showLabels ? undefined : entry.name}
               onClick={() => onSelect(entry.id)}
               onKeyDown={(event) => onTabKeyDown(entry.id, event)}
             >
               <PanelIcon name={entry.icon} />
-              <span className="workspace-panel-tab-label">{entry.name}</span>
+              {showLabels ? <span className="workspace-panel-tab-label">{entry.name}</span> : null}
             </button>
           );
         })}

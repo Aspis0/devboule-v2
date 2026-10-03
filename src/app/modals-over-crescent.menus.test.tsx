@@ -148,6 +148,7 @@ describe("walking every menu the source finds — the band's open is the outside
           activeId="files"
           onSelect={() => undefined}
           onCollapse={() => undefined}
+          panelWidth={300}
         />
       </ShellWith>,
     );

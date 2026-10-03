@@ -1955,6 +1955,7 @@ export function Workspace({
               activeId={activeSidePanel}
               onSelect={setActiveSidePanel}
               onCollapse={() => setRightCollapsed(true)}
+              panelWidth={rightWidth}
             />
 
             <div

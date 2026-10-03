@@ -40,11 +40,13 @@
 
 .workspace-panel-tab {
   display: flex;
-  flex: 0 1 auto;
+  /* flex: none — a tab is its label's width or its icon's, never narrower:
+     below the row's label budget (panelTabLabels.ts) the tabs go icon-only
+     rather than ellipsizing half a word. */
+  flex: none;
   align-items: center;
   gap: var(--space-4);
   height: var(--tab-height);
-  min-width: 0;
   padding: 0 var(--space-6);
   color: var(--muted);
   background: transparent;
@@ -73,11 +75,8 @@
 }
 
 .workspace-panel-tab-label {
-  overflow: hidden;
   font-size: var(--type-small);
   font-weight: var(--weight-label);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .workspace-panel-spacer {

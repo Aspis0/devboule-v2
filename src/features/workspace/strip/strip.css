@@ -272,6 +272,14 @@ button.workspace-rate:focus-visible {
   outline-offset: 2px;
 }
 
+/* A click leaves the pointer on the trigger, and Chromium keeps :focus-visible
+   on a button a press lands on while it already holds keyboard focus. The
+   hover fill already names the control under the cursor, so the ring yields
+   there; a pointer that moves off brings it back. */
+button.workspace-rate:focus-visible:hover {
+  outline: none;
+}
+
 /* The all-sessions overview hangs off the count: a flex column whose
    list scrolls inside the remaining space. When the preview alone exceeds
    the portal's viewport cap, the root scrolls under that cap. */

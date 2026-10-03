@@ -102,6 +102,7 @@ import {
 } from "../../lib/tauri";
 import { Workspace } from "./Workspace";
 import { SIDE_PANEL_REGISTRY } from "./sidePanelRegistry";
+import { MIN_RIGHT_WIDTH, writeStoredPanelFrame } from "./workspaceResize";
 import { resetSharedSessionControllerForTests } from "./workspaceSessions";
 import { resetTabMemoryForTests } from "./workspaceTabMemory";
 import { setLastSelectedWorkspaceKey } from "./lastSelectedWorkspace";
@@ -180,6 +181,9 @@ describe("the right panel's tabs", () => {
     resetSharedSessionControllerForTests();
     resetTabMemoryForTests();
     setLastSelectedWorkspaceKey(null);
+    // The stored frame is app-lifetime: a test that narrowed the panel would
+    // hand its icon tabs to the next one.
+    localStorage.clear();
     container = document.createElement("div");
     document.body.appendChild(container);
     vi.mocked(projectsList).mockResolvedValue([project]);
@@ -448,7 +452,7 @@ describe("the right panel's tabs", () => {
     expect(tabpanel().getAttribute("aria-labelledby")).toBe("panel-tab-design");
   });
 
-  it("shrinks gracefully at narrow widths: the tablist clips, tabs shrink, labels ellipsize", async () => {
+  it("never paints half a word: the tabs hold their width and the row goes icon-only", async () => {
     const { rulesFor } = assembleCssProof([
       read("src/styles/tokens.css"),
       read("src/styles/global.css"),
@@ -456,28 +460,46 @@ describe("the right panel's tabs", () => {
       read("src/features/workspace/Workspace.css"),
       read("src/features/workspace/panel/panel.css"),
     ]);
-    // 240 px (MIN_RIGHT_WIDTH) holds 200 px of tablist against 239.25 px of
-    // tabs (real font metrics): the list clips instead of painting under the
-    // kebab, each tab shrinks, each label ellipsizes. Every tab stays clickable.
+    // A tab is its label's width or its icon's — never narrower, and a label
+    // with nothing to ellipsize: below PANEL_TAB_LABEL_MIN_WIDTH the row drops
+    // the labels for icons that keep the panel's name.
     expect(rulesFor(".workspace-panel-tablist")).toContain("overflow: hidden");
-    expect(rulesFor(".workspace-panel-tablist")).toContain("min-width: 0");
     const tabRule = rulesFor(".workspace-panel-tab");
-    expect(tabRule).not.toContain("flex: 1 1 0");
-    expect(tabRule).toContain("flex: 0 1 auto");
-    expect(tabRule).toContain("min-width: 0");
+    expect(tabRule).toContain("flex: none");
+    expect(tabRule).not.toContain("min-width: 0");
     const labelRule = rulesFor(".workspace-panel-tab-label");
-    expect(labelRule).toContain("overflow: hidden");
-    expect(labelRule).toContain("text-overflow: ellipsis");
+    expect(labelRule).not.toContain("text-overflow");
+    expect(labelRule).not.toContain("overflow: hidden");
     await renderWorkspace();
     // The mockup's spacer: content tabs first, the kebab pushed right.
     const spacer = container.querySelector(".workspace-panel-tabs > .workspace-panel-spacer");
     if (spacer === null) throw new Error("tab row spacer did not render");
-    // In a layout engine each label fits its tab at 300 px; happy-dom reports zeros.
-    for (const tab of tabs()) {
-      const label = tab.querySelector<HTMLElement>(".workspace-panel-tab-label");
-      if (label === null) throw new Error("tab label did not render");
-      expect(label.scrollWidth).toBeLessThanOrEqual(tab.clientWidth);
-    }
+    // The default panel is inside the label budget, so all three are named.
+    expect(
+      tabs().map((tab) => tab.querySelector(".workspace-panel-tab-label")?.textContent),
+    ).toEqual(["Files", "Changes", "Design"]);
+  });
+
+  it("paints icon tabs, each carrying its panel's name, when the panel is too narrow", async () => {
+    // 240 px is the panel's own minimum: the three labels need 258 px beside
+    // the kebab, so the row keeps its glyphs and hands every tab its name.
+    writeStoredPanelFrame(localStorage, {
+      left: 248,
+      right: MIN_RIGHT_WIDTH,
+      leftCollapsed: false,
+      rightCollapsed: false,
+    });
+    await renderWorkspace();
+
+    expect(container.querySelector(".workspace-panel-tab-label")).toBeNull();
+    expect(tabs().map((tab) => tab.getAttribute("aria-label"))).toEqual([
+      "Files",
+      "Changes",
+      "Design",
+    ]);
+    expect(tabs().map((tab) => tab.getAttribute("title"))).toEqual(["Files", "Changes", "Design"]);
+    // The keyboard contract is unchanged: the tablist still owns one selection.
+    expect(tabs()[1]?.getAttribute("aria-selected")).toBe("true");
   });
 
   it("closes the kebab on Escape and returns focus, and walks its items with arrows", async () => {

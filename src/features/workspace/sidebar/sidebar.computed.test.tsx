@@ -11,8 +11,10 @@
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { beforeEachHarness, renderWorkspace, unmountWorkspace } from "../bulkCloseHarness";
+import { writeStoredPanelFrame, MIN_LEFT_WIDTH } from "../workspaceResize";
 import { assembleCssProof, removeCssProof } from "../cssProof";
 
 const rootDir = resolve(import.meta.dirname, "../../../..");
@@ -103,12 +105,12 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     expect(getComputedStyle(foot).paddingLeft).toBe("8px");
   });
 
-  it("the search pill holds the placeholder and the wordmark yields instead", async () => {
+  it("the search pill holds the placeholder and the wordmark never gives way", async () => {
     // happy-dom computes no layout, so this pins the BUDGET: the pill's floor
     // of 96px holds "Search" (~35px at --type-meta) inside the content its
-    // padding and border leave, and the row's own budget is spent on that
-    // floor before the wordmark gives way — the wordmark is the one item
-    // allowed to ellipsize, so the collapse button is never clipped.
+    // padding and border leave, and the wordmark is not a candidate for the
+    // row's shortfall at all — below SIDEBAR_SEARCH_ROW_MIN_WIDTH the search
+    // itself becomes the magnifier, so a label never ellipsizes.
     inject([
       ".sidebar-top",
       ".sidebar-search",
@@ -116,6 +118,14 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
       ".sidebar-wordmark",
       ".sidebar-foot",
     ]);
+    // A sidebar past the field's own threshold, so the pill is what is under
+    // test rather than the magnifier that replaces it.
+    writeStoredPanelFrame(localStorage, {
+      left: 320,
+      right: 300,
+      leftCollapsed: false,
+      rightCollapsed: false,
+    });
     await renderWorkspace();
 
     const top = document.querySelector<HTMLElement>(".sidebar-top");
@@ -125,9 +135,15 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     const pill = document.querySelector<HTMLElement>(".sidebar-search");
     if (pill === null) throw new Error("search pill did not render");
     expect(getComputedStyle(pill).minWidth).toBe("96px");
+
+    const wordmarkRule = rulesFor(".sidebar-wordmark");
+    expect(wordmarkRule).toContain("flex: none");
+    expect(wordmarkRule).not.toContain("text-overflow");
+    expect(wordmarkRule).not.toContain("overflow");
     const wordmark = document.querySelector<HTMLElement>(".sidebar-wordmark");
     if (wordmark === null) throw new Error("wordmark did not render");
-    expect(getComputedStyle(wordmark).overflow).toBe("hidden");
+    expect(getComputedStyle(wordmark).whiteSpace).toBe("nowrap");
+
     const input = pill.querySelector("input");
     if (input === null) throw new Error("search input did not render");
     expect(getComputedStyle(input).paddingLeft).toBe("0px");
@@ -136,6 +152,35 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     const foot = document.querySelector<HTMLElement>(".sidebar-foot");
     if (foot === null) throw new Error("daemon foot did not render");
     expect(getComputedStyle(foot).gap).toBe("8px");
+  });
+
+  it("the field's own row below the wordmark row takes the sidebar's whole width", async () => {
+    // The compact search's geometry: a column parent, so flex: none (a 1 1
+    // would grow the field down the sidebar) and no max-width cap. Rendered
+    // open at the sidebar's own minimum, which is narrow enough for the
+    // magnifier instead of the field.
+    const rowRule = rulesFor(".sidebar-search-row");
+    expect(rowRule).toContain("flex: none");
+    expect(rowRule).toContain("max-width: none");
+    inject([".sidebar-search", ".sidebar-search-row"]);
+    writeStoredPanelFrame(localStorage, {
+      left: MIN_LEFT_WIDTH,
+      right: 300,
+      leftCollapsed: false,
+      rightCollapsed: false,
+    });
+    await renderWorkspace();
+    const magnifier = document.querySelector<HTMLButtonElement>(".sidebar-search-button");
+    if (magnifier === null) throw new Error("the search magnifier did not render");
+    await act(async () => magnifier.click());
+
+    const pill = document.querySelector<HTMLElement>(".sidebar-search-row");
+    if (pill === null) throw new Error("the compact search field did not open");
+    const style = getComputedStyle(pill);
+    expect(style.maxWidth).toBe("none");
+    expect(style.flexGrow).toBe("0");
+    expect(style.height).toBe("28px");
+    expect(style.marginLeft).toBe("12px");
   });
 
   it("the foot's rows sit on the body rows' 16px column", async () => {

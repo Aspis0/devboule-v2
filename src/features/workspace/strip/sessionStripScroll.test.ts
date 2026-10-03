@@ -223,6 +223,23 @@ describe("the session strip", () => {
     expect(trigger).toContain("border: 1px solid transparent");
   });
 
+  it("keeps the count's accent ring to the keyboard, never to a click that left the pointer there", () => {
+    // A press leaves the pointer on the trigger, and Chromium keeps
+    // :focus-visible on a button a click lands on while it already holds
+    // keyboard focus — so the ring yields to the hover fill there, and the
+    // hover rule that softens it is the stronger of the two.
+    const keyboard = rulesFor("button.workspace-rate:focus-visible");
+    expect(keyboard).toContain("outline: 2px solid var(--accent)");
+    const pressed = rulesFor("button.workspace-rate:focus-visible:hover");
+    expect(declaredValue(pressed, "outline")).toBe("none");
+    expect(
+      stronger(
+        specificity("button.workspace-rate:focus-visible:hover"),
+        specificity("button.workspace-rate:focus-visible"),
+      ),
+    ).toBe(true);
+  });
+
   it("keeps the close chip a narrow trailing overlay that hides unclickable", () => {
     // The close chip: 48 px on the
     // row's right edge — never a full-width hit area over the label — and hidden means a

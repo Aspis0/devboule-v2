@@ -6,6 +6,8 @@
 // @vitest-environment happy-dom
 import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import {
   composerDrivers,
@@ -13,8 +15,15 @@ import {
   type ComposerDrivers,
   type ComposerMocks,
 } from "./composerTestKit";
+import { assembleCssProof, removeCssProof } from "./cssProof";
 import type { PromptAttachment } from "../../types/ipc";
 import { WorkspaceComposer } from "./WorkspaceComposer";
+
+const rootDir = resolve(import.meta.dirname, "../../..");
+const workspaceCss = assembleCssProof([
+  readFileSync(resolve(rootDir, "src/styles/tokens.css"), "utf8"),
+  readFileSync(resolve(rootDir, "src/features/workspace/Workspace.css"), "utf8"),
+]);
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -53,7 +62,28 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root?.unmount());
   container.remove();
+  removeCssProof();
   vi.clearAllMocks();
+});
+
+describe("the composer's box", () => {
+  it("floors itself at one line plus the control row, borders included", async () => {
+    // The floor names a height: 14 of top padding, one 14px line at 1.45, the
+    // bar's 12px gap and its 28px height, 12 of bottom padding, and the 2px
+    // of border the floor has to count to be a floor at all.
+    const floor = workspaceCss.rulesFor(".workspace-composer");
+    expect(floor).toContain("min-height: calc(");
+    expect(floor).toContain("(14px * 1.45)");
+    expect(floor).toContain("28px + 12px + 2px");
+
+    workspaceCss.inject([".workspace-composer textarea"]);
+    await renderComposer();
+    const textarea = container.querySelector("textarea");
+    if (textarea === null) throw new Error("composer textarea did not render");
+    // An inline-block textarea sits on a line box, and the strut's descender
+    // left 5.3px of dead height under the only line of text.
+    expect(getComputedStyle(textarea).display).toBe("block");
+  });
 });
 
 describe("the send control", () => {
