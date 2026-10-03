@@ -7,6 +7,7 @@ import { daemonStatus, devicesList, workspaceGitStatus } from "../../../lib/taur
 import type { DaemonStatus, DevicesReply, Project } from "../../../types/ipc";
 import type { WorkspaceView } from "../workspaceProjects";
 import { Sidebar, type SidebarProps } from "./Sidebar";
+import { MAX_LEFT_WIDTH, MIN_LEFT_WIDTH } from "../workspaceResize";
 import { LOCAL_HOST_ID } from "../hosts/hostIdentity";
 
 vi.mock("../../../lib/tauri", async (importOriginal) => ({
@@ -82,8 +83,8 @@ function sidebarProps(): SidebarProps {
     onCollapsedChange: vi.fn(),
     onResizeStart: vi.fn(),
     onResizeKeyDown: vi.fn(),
-    resizeMin: 200,
-    resizeMax: 480,
+    resizeMin: MIN_LEFT_WIDTH,
+    resizeMax: MAX_LEFT_WIDTH,
     historyOpen: false,
     onToggleHistory: vi.fn(),
     history: {

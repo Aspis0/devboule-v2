@@ -625,6 +625,6 @@ describe("the subagent sheet", () => {
     const dot = ruleBody(".workspace-subagent-status-dot");
     expect(dot).toContain("width: 6px;");
     expect(dot).toContain("height: 6px;");
-    expect(dot).toContain("border-radius: 999px;");
+    expect(dot).toContain("border-radius: var(--radius-full);");
   });
 });

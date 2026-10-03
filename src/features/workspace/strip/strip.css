@@ -6,9 +6,9 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: 4px;
-  height: 36px;
-  padding: 0 8px;
+  gap: var(--space-4);
+  height: var(--tab-height);
+  padding: 0 var(--space-8);
 }
 
 /* The tabs scroll; they never shrink below their floor. Each row is a flex
@@ -19,7 +19,7 @@
 .workspace-session-tabs-scroll {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-4);
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
@@ -61,14 +61,14 @@
 .workspace-session-tab {
   display: flex;
   align-items: center;
-  gap: 6px;
-  height: 28px;
+  gap: var(--space-6);
+  height: var(--tab-chip);
   min-width: 96px;
   max-width: 160px;
-  padding: 0 8px;
+  padding: 0 var(--space-8);
   color: var(--muted);
   background: transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-6);
   cursor: pointer;
   white-space: nowrap;
 }
@@ -112,8 +112,8 @@
   outline-offset: -1px;
 }
 
-/* flex: none — the label shrinks to make room (its min-width is 0 by
-   design); the dot keeps its 6 px at every chip width, or the only
+/* The dot is flex: none — the label shrinks to make room (its min-width is 0
+   by design); the dot keeps its 6 px at every chip width, or the only
    attention cue vanishes on the longest titles. */
 .workspace-session-tab .workspace-status-dot {
   width: 6px;
@@ -122,7 +122,7 @@
 }
 
 /* The spec's dot tones. Live breathes through the shared pulse; recovered
-   is a ring, never a fill; silence and stops keep the old quiet tones. */
+   is a ring, never a fill. */
 .strip-dot-live {
   background: var(--green);
 }
@@ -145,9 +145,11 @@
   background: var(--border-strong);
 }
 
+/* A stop and an unrecognised kind are quiet states, not an accent: the
+   terracotta belongs to the primary action and the focus ring. */
 .strip-dot-ended,
 .strip-dot-unknown {
-  background: var(--terracotta);
+  background: var(--tone-idle);
 }
 
 .strip-kind {
@@ -166,8 +168,8 @@
 .workspace-tab-label {
   min-width: 0;
   overflow: hidden;
-  font-size: 14px;
-  font-weight: 500;
+  font-size: var(--type-interface);
+  font-weight: var(--weight-label);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -179,7 +181,7 @@
    Hover only: arrow keys move real focus, and a focus reservation
    would grow the chip and shift the strip on every press. */
 .workspace-session-row:hover .workspace-tab-label {
-  padding-right: 16px;
+  padding-right: var(--space-16);
   -webkit-mask-image: linear-gradient(to right, black calc(100% - 22px), transparent);
   mask-image: linear-gradient(to right, black calc(100% - 22px), transparent);
 }
@@ -188,14 +190,14 @@
   display: grid;
   flex: none;
   place-items: center;
-  width: 28px;
-  height: 28px;
+  width: var(--tab-chip);
+  height: var(--tab-chip);
   padding: 0;
   border: 1px solid var(--line-strong);
-  border-radius: 6px;
+  border-radius: var(--radius-6);
   background: var(--fill-plus);
   color: var(--ink);
-  font-size: 16px;
+  font-size: var(--type-display-sm);
   line-height: 1;
   cursor: pointer;
 }
@@ -242,18 +244,19 @@
 .workspace-rate {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-6);
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--type-meta);
   white-space: nowrap;
 }
 
-/* The count is the all-sessions trigger: a quiet button until hovered, so
-   the strip keeps its one "+" affordance. */
+/* The count is the all-sessions trigger: a ghost control. The accent arrives
+   with the pointer or the keyboard, never at rest, or a status line wears
+   the one action colour all day. */
 button.workspace-rate {
-  padding: 2px 6px;
-  border: none;
-  border-radius: 6px;
+  padding: var(--space-2) var(--space-6);
+  border: 1px solid transparent;
+  border-radius: var(--radius-6);
   background: transparent;
   cursor: pointer;
 }
@@ -262,6 +265,11 @@ button.workspace-rate:hover,
 button.workspace-rate:focus-visible {
   color: var(--ink);
   background: var(--fill-hover);
+}
+
+button.workspace-rate:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* The all-sessions overview hangs off the count: a flex column whose
@@ -277,14 +285,14 @@ button.workspace-rate:focus-visible {
 /* Order-proof padding: the shared menu rule is equally specific, so the
    overview names both classes and wins whatever the sheet order is. */
 .workspace-surface-menu.workspace-overview {
-  padding: 4px;
+  padding: var(--space-4);
 }
 
 .workspace-overview-list {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-2);
   min-height: 0;
   max-height: 240px;
   overflow-y: auto;
@@ -294,12 +302,12 @@ button.workspace-rate:focus-visible {
   display: flex;
   flex: none;
   align-items: center;
-  gap: 8px;
-  min-height: 28px;
-  padding: 4px 8px;
-  border-radius: 6px;
+  gap: var(--space-8);
+  min-height: var(--control-default);
+  padding: var(--space-4) var(--space-8);
+  border-radius: var(--radius-6);
   color: var(--ink-soft);
-  font-size: 13px;
+  font-size: var(--type-small);
   cursor: pointer;
 }
 
@@ -312,7 +320,7 @@ button.workspace-rate:focus-visible {
    focus share the fill, so the ring is what tells them apart. Inset, so
    the list's own scrollport never clips it. */
 .workspace-overview-option:focus-visible {
-  outline: 2px solid var(--terracotta);
+  outline: 2px solid var(--accent);
   outline-offset: -2px;
   color: var(--ink);
   background: var(--fill-hover);
@@ -343,44 +351,46 @@ button.workspace-rate:focus-visible {
 .workspace-overview-open {
   flex: none;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--type-meta);
 }
 
 .workspace-overview-time {
   flex: none;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--type-meta);
   white-space: nowrap;
 }
 
 .workspace-overview-empty {
-  padding: 8px;
+  padding: var(--space-8);
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--type-small);
 }
 
 .workspace-overview-group-label {
-  padding: 6px 8px 2px;
+  padding: var(--space-6) var(--space-8) var(--space-2);
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--type-meta);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .workspace-overview-preview {
   display: flex;
   flex: none;
   flex-direction: column;
-  gap: 2px;
-  margin-top: 4px;
-  padding: 8px;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+  padding: var(--space-8);
   border-top: 1px solid var(--line-strong);
-  font-size: 12px;
+  font-size: var(--type-meta);
 }
 
 .workspace-overview-preview-title {
   overflow-wrap: anywhere;
   color: var(--ink);
-  font-size: 13px;
-  font-weight: 500;
+  font-size: var(--type-small);
+  font-weight: var(--weight-label);
 }
 
 .workspace-overview-preview-state,
@@ -405,7 +415,7 @@ button.workspace-rate:focus-visible {
   flex: 0 1 auto;
   align-items: center;
   min-width: 96px;
-  border-radius: 6px;
+  border-radius: var(--radius-6);
 }
 
 .workspace-session-row:has(.workspace-tab-takeback) {
@@ -425,8 +435,8 @@ button.workspace-rate:focus-visible {
   align-items: center;
   justify-content: flex-end;
   width: 48px;
-  padding-right: 4px;
-  border-radius: 0 6px 6px 0;
+  padding-right: var(--space-4);
+  border-radius: 0 var(--radius-6) var(--radius-6) 0;
   overflow: hidden;
   opacity: 0;
   visibility: hidden;
@@ -476,9 +486,9 @@ button.workspace-rate:focus-visible {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 4px;
+  width: var(--control-icon-small);
+  height: var(--control-icon-small);
+  border-radius: var(--radius-4);
   color: var(--ink-soft);
   cursor: pointer;
 }
@@ -495,20 +505,21 @@ button.workspace-rate:focus-visible {
    power everywhere, not on this row. */
 .workspace-tab-takeback {
   flex: none;
-  padding: 2px 8px;
-  border: 1px solid var(--terracotta);
-  border-radius: 999px;
+  padding: var(--space-2) var(--space-8);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-full);
   background: var(--surface);
-  color: var(--accent-text);
+  color: var(--ink-soft);
   font-size: var(--type-small);
-  font-weight: 700;
+  font-weight: var(--weight-label);
   white-space: nowrap;
   cursor: pointer;
 }
 
-.workspace-tab-takeback:hover {
-  background: var(--terracotta-pressed);
-  color: var(--surface);
+.workspace-tab-takeback:hover,
+.workspace-tab-takeback:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent-text);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -518,7 +529,7 @@ button.workspace-rate:focus-visible {
 }
 
 .workspace-overview-attention {
-  color: var(--tone-attention);
-  font-size: 12px;
+  color: var(--tone-attention-text);
+  font-size: var(--type-meta);
   white-space: nowrap;
 }

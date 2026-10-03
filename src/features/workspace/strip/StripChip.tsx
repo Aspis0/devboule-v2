@@ -108,7 +108,7 @@ export function StripChip({
             <path
               d="M2 2l8 8M10 2l-8 8"
               stroke="currentColor"
-              strokeWidth="1.5"
+              strokeWidth="2"
               strokeLinecap="round"
               fill="none"
             />
@@ -197,7 +197,7 @@ export function ToolStripChip({
             <path
               d="M2 2l8 8M10 2l-8 8"
               stroke="currentColor"
-              strokeWidth="1.5"
+              strokeWidth="2"
               strokeLinecap="round"
               fill="none"
             />

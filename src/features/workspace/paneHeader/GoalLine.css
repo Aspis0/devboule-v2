@@ -3,13 +3,12 @@
  * The row never scrolls — it sits outside the transcript scrollport. */
 
 .goal-line {
-  --goal-leading: 1.45;
   display: flex;
   flex: none;
   align-items: center;
-  gap: 8px;
-  min-height: 32px;
-  padding: 6px 8px 6px 12px;
+  gap: var(--space-8);
+  min-height: var(--control-large);
+  padding: var(--space-6) var(--space-8) var(--space-6) var(--space-12);
   border-bottom: 1px solid var(--line);
 }
 
@@ -35,7 +34,7 @@
   color: var(--ink-soft);
   font-family: var(--font-ui);
   font-size: var(--type-small);
-  line-height: var(--goal-leading);
+  line-height: var(--leading-body);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -46,12 +45,12 @@
 
 .goal-line.is-expanded .goal-line-icon {
   /* Centres the 14px mark on the first text line; 14px mirrors .goal-line-icon. */
-  margin-top: calc((var(--type-small) * var(--goal-leading) - 14px) / 2);
+  margin-top: calc((var(--type-small) * var(--leading-body) - 14px) / 2);
 }
 
 .goal-line.is-expanded .goal-line-label {
   /* The text's first-line box, so both centres sit on line one. */
-  line-height: calc(var(--type-small) * var(--goal-leading));
+  line-height: calc(var(--type-small) * var(--leading-body));
 }
 
 .goal-line.is-expanded .goal-line-text {
@@ -63,15 +62,15 @@
   display: grid;
   flex: none;
   place-items: center;
-  width: 28px;
-  height: 28px;
+  width: var(--control-default);
+  height: var(--control-default);
   /* A full-size hit target that does not push the row past its 32px. */
-  margin-block: -4px;
+  margin-block: calc(var(--space-4) * -1);
   padding: 0;
   color: var(--muted);
   background: transparent;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-6);
   cursor: pointer;
 }
 

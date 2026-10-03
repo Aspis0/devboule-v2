@@ -8,18 +8,18 @@
 .workspace-subagent-pill {
   display: flex;
   align-items: center;
-  gap: 12px;
-  height: 28px;
-  padding: 0 12px;
+  gap: var(--space-12);
+  height: var(--control-default);
+  padding: 0 var(--space-12);
   color: var(--ink-soft);
   background: var(--panel-menu);
   border: 1px solid var(--line-strong);
-  border-radius: 14px;
+  border-radius: var(--radius-full);
   box-shadow: var(--shadow-pop);
   cursor: pointer;
   font-family: var(--font-ui);
-  font-size: 12px;
-  line-height: 1.2;
+  font-size: var(--type-meta);
+  line-height: var(--leading-dense);
 }
 
 .workspace-subagent-pill:hover,
@@ -30,7 +30,7 @@
 .workspace-subagent-pill-group {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--space-6);
 }
 
 .workspace-subagent-pill-chevron {
@@ -43,14 +43,14 @@
 }
 
 /* The subagent dots carry this one rule alone: the shared
-   .workspace-status-dot (Workspace.css) is 7 px and loads after this sheet,
-   so a dot wearing both classes renders 7 px in the portaled rows. */
+   .workspace-status-dot loads after this sheet, so a dot wearing both
+   classes needs its own size here. */
 .workspace-subagent-status-dot {
   display: inline-block;
   flex: none;
   width: 6px;
   height: 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
 }
 
 .workspace-subagent-status-running {
@@ -69,22 +69,22 @@
 
 .workspace-subagent-list {
   width: 340px;
-  padding: 6px;
+  padding: var(--space-6);
   background: var(--panel-menu);
   border: 1px solid var(--line-strong);
-  border-radius: 10px;
+  border-radius: var(--radius-12);
   box-shadow: var(--shadow-pop);
 }
 
 .workspace-subagent-list-head {
   display: flex;
   align-items: center;
-  height: 28px;
-  padding: 0 8px;
+  height: var(--control-default);
+  padding: 0 var(--space-8);
   color: var(--muted);
   font-family: var(--font-ui);
-  font-size: 12px;
-  font-weight: 500;
+  font-size: var(--type-meta);
+  font-weight: var(--weight-label);
 }
 
 /* --accent-text rather than --accent: the accent misses 4.5:1 as small text. */
@@ -92,16 +92,16 @@
   margin-left: auto;
   display: flex;
   align-items: center;
-  height: 22px;
-  padding: 0 6px;
+  height: var(--control-dense);
+  padding: 0 var(--space-6);
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--radius-6);
   background: transparent;
   color: var(--accent-text);
   cursor: pointer;
   font-family: var(--font-ui);
-  font-size: 12px;
-  line-height: 1.2;
+  font-size: var(--type-meta);
+  line-height: var(--leading-dense);
 }
 
 .workspace-subagent-action:hover,
@@ -122,13 +122,13 @@
   cursor: pointer;
   display: flex;
   align-items: center;
-  gap: 8px;
-  height: 28px;
-  padding: 0 8px;
-  border-radius: 6px;
+  gap: var(--space-8);
+  height: var(--control-default);
+  padding: 0 var(--space-8);
+  border-radius: var(--radius-6);
   color: var(--ink-soft);
   font-family: var(--font-ui);
-  font-size: 13px;
+  font-size: var(--type-small);
 }
 
 .workspace-subagent-row:hover,
@@ -160,15 +160,15 @@
   opacity: 0.65;
 }
 .workspace-subagent-attention {
-  color: var(--tone-attention);
-  font-size: 12px;
+  color: var(--tone-attention-text);
+  font-size: var(--type-meta);
 }
 
 .workspace-subagent-row-failure {
   margin: 0;
-  padding: 2px 8px 4px;
-  color: var(--tone-attention);
+  padding: var(--space-2) var(--space-8) var(--space-4);
+  color: var(--tone-attention-text);
   font-family: var(--font-ui);
-  font-size: 12px;
-  line-height: 1.3;
+  font-size: var(--type-meta);
+  line-height: var(--leading-dense);
 }

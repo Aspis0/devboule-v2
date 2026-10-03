@@ -95,7 +95,7 @@ describe("the goal row's painted contract", () => {
 
   it("keeps the spec's 32px minimum and the bottom border", () => {
     const row = ruleBody(".goal-line");
-    expect(row).toContain("min-height: 32px");
+    expect(row).toContain("min-height: var(--control-large);");
     expect(row).toContain("border-bottom: 1px solid var(--line)");
   });
 

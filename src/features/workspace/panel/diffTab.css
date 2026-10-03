@@ -10,12 +10,12 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: 8px;
-  height: 36px;
-  padding: 0 12px;
+  gap: var(--space-8);
+  height: var(--control-bar);
+  padding: 0 var(--space-12);
   border-bottom: 1px solid var(--line);
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--type-meta);
 }
 
 .diff-tab-file-icon {
@@ -29,7 +29,7 @@
   flex: 0 1 auto;
   overflow: hidden;
   color: var(--ink);
-  font-weight: 500;
+  font-weight: var(--weight-label);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -48,7 +48,7 @@
   display: flex;
   flex: none;
   align-items: baseline;
-  gap: 4px;
+  gap: var(--space-4);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -79,35 +79,35 @@
 .diff-tab-seg {
   display: inline-flex;
   flex: none;
-  gap: 2px;
-  padding: 2px;
+  gap: var(--space-2);
+  padding: var(--space-2);
   background: var(--fill-tool);
-  border-radius: 7px;
+  border-radius: var(--radius-8);
 }
 
 .diff-tab-seg-button {
-  height: 24px;
-  padding: 0 10px;
+  height: var(--control-dense);
+  padding: 0 var(--space-10);
   color: var(--muted);
   background: transparent;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--radius-6);
   cursor: pointer;
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--type-meta);
   white-space: nowrap;
 }
 
 .diff-tab-seg-button-is-on {
   color: var(--ink);
   background: var(--panel-card);
-  box-shadow: var(--shadow-pop);
 }
 
 .diff-tab-body {
-  padding: 8px 0 12px;
+  padding: var(--space-8) 0 var(--space-12);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--type-mono-sm);
+  /* The spec's diff leading; a code surface gets more air than prose. */
   line-height: 1.6;
 }
 
@@ -131,7 +131,7 @@
 }
 
 .diff-tab-num {
-  padding-right: 8px;
+  padding-right: var(--space-8);
   color: var(--tone-idle-text);
   text-align: right;
   user-select: none;
@@ -162,10 +162,10 @@
 }
 
 .diff-tab-hunk {
-  padding: 2px 12px 2px 14px;
+  padding: var(--space-2) var(--space-12) var(--space-2) var(--space-14);
   color: var(--diff-text-hunk);
   background: var(--diff-row-hunk);
-  font-weight: 500;
+  font-weight: var(--weight-label);
 }
 
 /* Split: old on the left, new on the right; each side keeps its own marker
@@ -190,11 +190,11 @@
 }
 
 .diff-tab-note {
-  padding: 10px 12px 12px;
+  padding: var(--space-10) var(--space-12) var(--space-12);
   color: var(--muted);
   font-family: var(--font-ui);
-  font-size: 12px;
-  line-height: 1.6;
+  font-size: var(--type-meta);
+  line-height: var(--leading-body);
 }
 
 .diff-tab-note-error {

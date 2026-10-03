@@ -103,7 +103,7 @@ describe("the restyled labels speak the UI font at 12px or above", () => {
   it("the composer text is the spec's 14/1.45 on the transcript column", () => {
     const css = assembleCssProof(OWNED_SHEETS);
     const rules = css.rulesFor(".workspace-composer");
-    expect(rules).toContain("padding: 14px 24px 12px");
+    expect(rules).toContain("padding: 14px 16px 12px;");
     expect(css.rulesFor(".workspace-composer textarea")).toContain("font-size: 14px");
     expect(css.rulesFor(".workspace-composer textarea")).toContain("line-height: 1.45");
   });
@@ -124,8 +124,8 @@ describe("the composer chrome's pinned values", () => {
   it("keeps a 2px focus ring on the card, not just the 1px border move", () => {
     const css = assembleCssProof(OWNED_SHEETS);
     const rules = css.rulesFor(".workspace-composer:focus-within");
-    // Resolved to the accent's rgb triplet by the proof, as the bundle does.
-    expect(rules).toContain("box-shadow: 0 0 0 2px rgba(189, 74, 38, 0.22)");
+    // The ring rides the accent-soft tint, so it reads the same in both themes.
+    expect(rules).toContain("box-shadow: 0 0 0 2px color-mix(in srgb, #bd4a26 10%, transparent)");
   });
 
   it("caps the command menu at the wrap's content box, not its padding box", () => {

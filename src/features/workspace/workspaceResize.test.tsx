@@ -1,5 +1,7 @@
 // @vitest-environment happy-dom
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -43,6 +45,18 @@ describe("the shell frame's widths", () => {
     expect(MAX_LEFT_WIDTH).toBe(360);
     expect(MIN_RIGHT_WIDTH).toBeLessThanOrEqual(INITIAL_RIGHT_WIDTH);
     expect(MAX_RIGHT_WIDTH).toBeGreaterThanOrEqual(INITIAL_RIGHT_WIDTH);
+  });
+
+  it("takes the sidebar's bounds from the geometry tokens, so CSS and the clamp cannot drift", () => {
+    const sheet = readFileSync(resolve(import.meta.dirname, "../../styles/tokens.css"), "utf8");
+    const token = (name: string): number => {
+      const match = new RegExp(`--${name}:\\s*(\\d+)px;`).exec(sheet);
+      expect(match, `--${name} is missing from tokens.css`).not.toBeNull();
+      return Number.parseInt(match![1]!, 10);
+    };
+    expect(token("sidebar-width")).toBe(INITIAL_LEFT_WIDTH);
+    expect(token("sidebar-min")).toBe(MIN_LEFT_WIDTH);
+    expect(token("sidebar-max")).toBe(MAX_LEFT_WIDTH);
   });
 
   it("mounts when the localStorage getter itself throws", () => {

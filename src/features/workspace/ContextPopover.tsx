@@ -130,7 +130,7 @@ function readingBody(numbers: ContextMeterNumbers, live: boolean): ReactNode {
             r={POPOVER_RING_RADIUS}
             fill="none"
             stroke="var(--line-strong)"
-            strokeWidth={2}
+            strokeWidth={1.75}
           />
           <circle
             cx={13}
@@ -138,7 +138,7 @@ function readingBody(numbers: ContextMeterNumbers, live: boolean): ReactNode {
             r={POPOVER_RING_RADIUS}
             fill="none"
             stroke="var(--accent)"
-            strokeWidth={2}
+            strokeWidth={1.75}
             strokeLinecap="round"
             strokeDasharray={POPOVER_RING_CIRCUMFERENCE}
             strokeDashoffset={offset}

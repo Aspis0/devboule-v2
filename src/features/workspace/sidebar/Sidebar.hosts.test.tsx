@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { daemonStatus, devicesList } from "../../../lib/tauri";
 import type { DaemonStatus, DevicesReply, PeerRow } from "../../../types/ipc";
 import { Sidebar, type SidebarProps } from "./Sidebar";
+import { MAX_LEFT_WIDTH, MIN_LEFT_WIDTH } from "../workspaceResize";
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -72,8 +73,8 @@ function sidebarProps(overrides: Partial<SidebarProps> = {}): SidebarProps {
     onCollapsedChange: vi.fn(),
     onResizeStart: vi.fn(),
     onResizeKeyDown: vi.fn(),
-    resizeMin: 200,
-    resizeMax: 480,
+    resizeMin: MIN_LEFT_WIDTH,
+    resizeMax: MAX_LEFT_WIDTH,
     historyOpen: false,
     onToggleHistory: vi.fn(),
     history: {

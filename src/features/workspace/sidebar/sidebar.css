@@ -1,5 +1,5 @@
 /* sidebar.css — the sidebar region's look (SPEC-regions.md "Sidebar"): the
-   44px wordmark row, the host header, project headers with avatars and a
+   40px wordmark row, the host header, project headers with avatars and a
    hover-revealed "+", workspace rows with avatar, optional meta, `+N −M`
    stats and a trailing state dot, the quiet "New workspace" row, and the
    foot. Behaviour class names (workspace-row, workspace-project-add, …) are
@@ -10,13 +10,13 @@
   flex: none;
   align-items: center;
   /* No flex gap: at the sidebar's 200px minimum the row's budget is
-     168px (200 minus its own 32px padding), and the measured wordmark
-     (~62px) + pill floor (44px) + two 28px buttons + the one button
-     margin below fill it to ~164px. Any gap here overflows the row and
-     clips the collapse button against the panel edge. */
+     176px (200 minus its own 24px padding), and the measured wordmark
+     (~62px) + search floor (96px) + two 28px buttons + the one button
+     margin below fill it. Any gap here overflows the row and clips the
+     collapse button against the panel edge. */
   gap: 0;
-  height: var(--control-sidebar-top);
-  padding: 0 var(--space-16);
+  height: var(--sidebar-top);
+  padding: 0 var(--space-12);
 }
 
 .sidebar-top .sidebar-top-button + .sidebar-top-button {
@@ -24,9 +24,16 @@
 }
 
 .sidebar-wordmark {
+  /* Shrinkable, so the search field keeps its floor and the collapse button
+     keeps its place at the sidebar's narrowest width. */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
   color: var(--ink);
   font-family: var(--font-display);
   font-size: var(--type-display-sm);
+  line-height: var(--leading-heading);
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -37,12 +44,12 @@
 
 .sidebar-search {
   display: flex;
-  /* The floor the placeholder needs: "Search" at --type-meta is ~35px, plus
-     the pill's 4px padding and 2px border. Higher would overflow the 200px
-     header (see .sidebar-top), lower clips the word (the live "Searc"). */
-  min-width: 44px;
-  max-width: 130px;
-  flex: 1;
+  /* The floor a usable search needs: 96px holds "Search" plus the pill's own
+     padding at --type-meta and stops the field collapsing to a sliver while
+     the row is tight. The wordmark yields instead — see .sidebar-wordmark. */
+  min-width: 96px;
+  max-width: 180px;
+  flex: 1 1 auto;
   align-items: center;
   height: var(--control-default);
   padding: 0 var(--space-2);
@@ -104,11 +111,12 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  height: 28px;
+  height: var(--group-row);
   padding: 0 var(--space-8);
   color: var(--muted);
   font-size: var(--type-meta);
   font-weight: var(--weight-label);
+  line-height: var(--leading-dense);
 }
 
 .sidebar-host-icon {
@@ -116,7 +124,6 @@
   height: 12px;
   flex: none;
 }
-
 /* Two hosts or more: one section each, the local one first. */
 .sidebar-host-section {
   margin-bottom: var(--space-4);
@@ -157,12 +164,13 @@ button.sidebar-host-head:focus-visible {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  height: 28px;
+  height: var(--group-row);
   padding: 0 var(--space-8);
   color: var(--muted);
   font-size: var(--type-meta);
   font-weight: var(--weight-label);
   letter-spacing: normal;
+  line-height: var(--leading-dense);
   text-transform: none;
   white-space: nowrap;
 }
@@ -171,7 +179,7 @@ button.sidebar-host-head:focus-visible {
   display: grid;
   flex: none;
   place-items: center;
-  border-radius: var(--radius-5);
+  border-radius: var(--radius-6);
 }
 
 .sidebar-avatar-project {
@@ -182,21 +190,21 @@ button.sidebar-host-head:focus-visible {
 }
 
 .sidebar-avatar-workspace {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   font-size: 11px;
   font-weight: var(--weight-label);
 }
 
 /* The per-project "+" is revealed by the header's hover, per the spec. */
 .workspace-project-heading .workspace-project-add {
-  width: 20px;
-  height: 20px;
+  width: var(--control-dense);
+  height: var(--control-dense);
   margin-left: auto;
   display: grid;
   place-items: center;
   color: var(--muted);
-  border-radius: var(--radius-5);
+  border-radius: var(--radius-6);
   font-size: var(--type-interface);
   line-height: 1;
   opacity: 0;
@@ -227,11 +235,11 @@ button.sidebar-host-head:focus-visible {
   gap: var(--space-2);
   text-align: left;
   min-width: 0;
-  min-height: 36px;
-  padding: var(--space-4) var(--space-8);
+  min-height: var(--workspace-row);
+  padding: var(--space-2) var(--space-8);
   color: var(--ink);
   background: transparent;
-  border-radius: var(--radius-8);
+  border-radius: var(--radius-6);
 }
 
 .workspace-new-row {
@@ -272,16 +280,23 @@ button.sidebar-host-head:focus-visible {
 .workspace-row-title {
   color: var(--ink-soft);
   font-size: var(--type-meta);
+  line-height: var(--leading-dense);
 }
 
 .workspace-row-selected .workspace-row-title {
   color: var(--ink);
 }
 
+/* A row that carries its metadata line is the 36 px row; the floor alone
+   leaves the two 12 px lines to grow past it unevenly. */
+.workspace-row:has(.workspace-row-meta) {
+  min-height: var(--workspace-row-meta);
+}
+
 .workspace-row-meta {
-  margin-top: var(--space-2);
   color: var(--muted);
   font-size: var(--type-meta);
+  line-height: var(--leading-dense);
 }
 
 /* The row wraps its button so the context menu and the title editor are
@@ -318,7 +333,7 @@ button.sidebar-host-head:focus-visible {
 
 .workspace-row-delete-refusal {
   display: block;
-  padding: 2px 8px 4px;
+  padding: var(--space-2) var(--space-8);
   color: var(--danger);
   font-size: var(--type-meta);
 }
@@ -327,21 +342,22 @@ button.sidebar-host-head:focus-visible {
   position: absolute;
   z-index: 3;
   top: 100%;
-  right: 4px;
+  right: var(--space-4);
   display: flex;
   min-width: 140px;
   flex-direction: column;
-  padding: 4px;
-  border: 1px solid var(--border);
+  padding: var(--space-4);
+  border: 1px solid var(--line-strong);
   border-radius: var(--radius-8);
-  background: var(--panel-side);
+  background: var(--panel-menu);
+  box-shadow: var(--shadow-pop);
 }
 
 .workspace-row-menu button {
-  min-height: 30px;
-  padding: 4px 8px;
+  min-height: var(--control-menu);
+  padding: var(--space-4) var(--space-8);
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--radius-6);
   color: var(--ink);
   background: transparent;
   text-align: left;
@@ -376,7 +392,7 @@ button.sidebar-host-head:focus-visible {
   flex: none;
   width: 6px;
   height: 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
 }
 
 .sidebar-row-dot-pulse {
@@ -401,7 +417,7 @@ button.sidebar-host-head:focus-visible {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  height: 28px;
+  height: var(--control-default);
   margin-top: var(--space-2);
   padding: 0 var(--space-8);
   color: var(--muted);
@@ -444,7 +460,7 @@ button.sidebar-host-head:focus-visible {
   display: flex;
   align-items: center;
   width: 100%;
-  height: 28px;
+  height: var(--control-default);
   margin-bottom: var(--space-2);
   padding: 0 var(--space-8);
   color: var(--muted);
@@ -473,7 +489,7 @@ button.sidebar-host-head:focus-visible {
   /* The spec's foot gap (mockup skeleton: 8px) — the dot must not touch
      its label. */
   gap: var(--space-8);
-  height: 28px;
+  height: var(--control-default);
   padding: 0 var(--space-8);
   overflow: hidden;
   color: var(--muted);

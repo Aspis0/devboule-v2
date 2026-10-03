@@ -3,7 +3,7 @@
  * nothing on a row responds to a pointer — only the head is a control. */
 
 .agent-task-pill {
-  margin-bottom: 6px;
+  margin-bottom: var(--space-6);
   background: var(--panel-card);
   border: 1px solid var(--line);
   border-radius: var(--radius-12);
@@ -13,10 +13,10 @@
 .agent-task-pill-head {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-10);
   width: 100%;
-  height: 36px;
-  padding: 0 12px;
+  height: var(--control-bar);
+  padding: 0 var(--space-12);
   color: var(--ink);
   background: transparent;
   border: 0;
@@ -105,7 +105,7 @@
 .agent-task-pill-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-2);
   margin: 0;
   /* The composer wrap is `flex: none`, so an uncapped body pushes the
      textarea off the bottom of the panel — the same window-height budget the
@@ -116,7 +116,7 @@
   overflow-y: auto;
   scrollbar-color: var(--border-strong) transparent;
   scrollbar-width: thin;
-  padding: 6px 12px 8px;
+  padding: var(--space-6) var(--space-12) var(--space-8);
   border-top: 1px solid var(--line);
   list-style: none;
 }
@@ -128,7 +128,7 @@
 .agent-task-pill-list::-webkit-scrollbar-thumb {
   background: var(--border-strong);
   border: 3px solid transparent;
-  border-radius: 8px;
+  border-radius: var(--radius-8);
   background-clip: content-box;
 }
 
@@ -146,10 +146,10 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: 8px;
-  height: 24px;
+  gap: var(--space-8);
+  height: var(--control-dense);
   font-size: var(--type-interface);
-  line-height: 1.45;
+  line-height: var(--leading-body);
 }
 
 .agent-task-row[data-status="completed"] .agent-task-row-text {
@@ -196,7 +196,7 @@
   width: 14px;
   height: 14px;
   border: 1.5px solid var(--line-strong);
-  border-radius: 50%;
+  border-radius: var(--radius-full);
 }
 
 /* No affordance lives on a mark: every mark rule stops at colour and shape —
@@ -235,5 +235,5 @@
   width: 6px;
   height: 6px;
   background: var(--tone-live);
-  border-radius: 50%;
+  border-radius: var(--radius-full);
 }

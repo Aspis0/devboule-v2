@@ -124,7 +124,7 @@ describe("the session strip", () => {
       [".strip-dot-unattended", "background: var(--tone-unattended);"],
       [".strip-dot-recovered", "outline: var(--ring-recovered);"],
       [".strip-dot-idle", "background: var(--border-strong);"],
-      [".strip-dot-ended,\n.strip-dot-unknown", "background: var(--terracotta);"],
+      [".strip-dot-ended,\n.strip-dot-unknown", "background: var(--tone-idle);"],
     ];
     for (const [selector, declaration] of tones) {
       expect(ruleBody(selector)).toContain(declaration);
@@ -161,7 +161,7 @@ describe("the session strip", () => {
     // under the scrim. happy-dom has no layout, so the reflow itself is
     // a live check; this pins the selector the reflow depends on.
     const hovered = rulesFor(".workspace-session-row:hover .workspace-tab-label");
-    expect(hovered).toContain("padding-right: 16px;");
+    expect(hovered).toContain("padding-right: var(--space-16);");
     expect(hovered).toContain("mask-image:");
     expect(hovered).toContain("-webkit-mask-image:");
     // Focus reserves nothing: arrow keys move real focus, and a focus
@@ -213,11 +213,14 @@ describe("the session strip", () => {
   });
 
   it("sets the session count in sans metadata type, never mono", () => {
-    // Mono never appears in UI metadata: the count is 12 px sans --muted.
+    // Mono never appears in UI metadata: the count is the 12 px meta token
+    // in sans, and the trigger is a ghost control until hover or focus.
     const rate = ruleBody(".workspace-rate");
     expect(rate).not.toContain("monospace");
     expect(rate).not.toContain("Mono");
-    expect(rate).toContain("12px");
+    expect(rate).toContain("font-size: var(--type-meta)");
+    const trigger = ruleBody("button.workspace-rate");
+    expect(trigger).toContain("border: 1px solid transparent");
   });
 
   it("keeps the close chip a narrow trailing overlay that hides unclickable", () => {

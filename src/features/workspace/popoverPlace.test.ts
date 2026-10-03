@@ -207,7 +207,7 @@ describe("the popovers are raised surfaces", () => {
     // are the app's own anchored popup (`.workspace-command-menu`), not new.
     const menu = ruleBody(".workspace-surface-menu");
     expect(menu).toContain("border: 1px solid var(--border-strong);");
-    expect(menu).toContain("box-shadow: 0 12px 30px rgba(var(--ink-rgb), 0.16);");
+    expect(menu).toContain("box-shadow: var(--shadow-pop);");
   });
 
   it("budgets a window height against the window the surface actually gets", () => {

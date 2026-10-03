@@ -8,7 +8,7 @@
   display: inline-flex;
   flex: 0 1 auto;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-8);
   min-width: 0;
 }
 
@@ -16,7 +16,7 @@
   min-width: 0;
   overflow: hidden;
   color: var(--danger);
-  font-size: 12px;
+  font-size: var(--type-meta);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -25,11 +25,11 @@
   display: inline-flex;
   flex: none;
   align-items: center;
-  padding: 4px;
+  padding: var(--space-4);
   color: var(--muted);
   background: transparent;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--radius-6);
   cursor: pointer;
 }
 
@@ -41,11 +41,11 @@
   display: inline-flex;
   flex: none;
   align-items: center;
-  padding: 4px 2px 4px 0;
+  padding: var(--space-4) var(--space-2) var(--space-4) 0;
   color: var(--muted);
   background: transparent;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--radius-6);
   cursor: pointer;
 }
 
@@ -62,28 +62,28 @@
 /* The caret's list: the pane header menu's surface, sized for target names. */
 .open-in-editor-menu {
   width: 200px;
-  padding: 4px;
+  padding: var(--space-4);
   background: var(--panel-menu);
   border: 1px solid var(--line-strong);
-  border-radius: 8px;
+  border-radius: var(--radius-8);
   box-shadow: var(--shadow-pop);
 }
 
 .open-in-editor-menu-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-8);
   width: 100%;
-  min-height: 28px;
-  padding: 5px 9px;
+  min-height: var(--control-default);
+  padding: var(--space-4) var(--space-8);
   color: var(--ink);
   text-align: left;
   background: transparent;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--radius-6);
   cursor: pointer;
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--type-meta);
 }
 
 .open-in-editor-menu-item:hover,

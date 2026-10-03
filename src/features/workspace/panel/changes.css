@@ -24,20 +24,20 @@
 /* Loading, no workspace, not a repository, clean tree: the panel's own words
    for what is true. The wire's sentences use `.workspace-changes-error`. */
 .workspace-changes-state {
-  padding: 10px;
+  padding: var(--space-10);
   color: var(--silence);
   font-size: var(--type-meta);
-  line-height: 1.6;
+  line-height: var(--leading-body);
 }
 
 .workspace-changes-error {
-  margin-bottom: 12px;
-  padding: 8px 10px;
-  border: 1px solid var(--danger-deep);
-  border-radius: 8px;
-  color: var(--danger-deep);
+  margin-bottom: var(--space-12);
+  padding: var(--space-8) var(--space-10);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-8);
+  color: var(--danger);
   font-size: var(--type-meta);
-  line-height: 1.55;
+  line-height: var(--leading-body);
 }
 
 /* The file row: [select | status | counts | acts]. The acts — and
@@ -50,7 +50,7 @@
   flex-wrap: wrap;
   justify-content: flex-end;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-2);
 }
 
 /* The row's Discard menu opens below the row, whatever height it has —
@@ -67,18 +67,18 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-2);
 }
 
 .workspace-file-change-action {
-  height: 22px;
-  padding: 0 8px;
+  height: var(--control-dense);
+  padding: 0 var(--space-8);
   color: var(--silence);
   background: transparent;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-6);
   cursor: pointer;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-ui);
   font-size: var(--type-small);
 }
 
@@ -96,13 +96,13 @@
 .workspace-commit-message {
   flex: 1;
   min-width: 0;
-  height: 26px;
-  padding: 0 8px;
+  height: var(--control-default);
+  padding: 0 var(--space-8);
   color: var(--ink);
   background: var(--surface);
   border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  font-family: "JetBrains Mono", monospace;
+  border-radius: var(--radius-6);
+  font-family: var(--font-mono);
 }
 
 .workspace-commit-message::placeholder {
@@ -112,18 +112,18 @@
 .workspace-file-change {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-8);
   flex: 1;
   min-width: 0;
-  height: 27px;
-  padding: 0 8px;
+  height: var(--control-dense);
+  padding: 0 var(--space-8);
   color: var(--ink-soft);
   text-align: left;
   background: transparent;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-6);
   cursor: pointer;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-ui);
   white-space: nowrap;
 }
 
@@ -135,14 +135,14 @@
   overflow: hidden;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 11px;
+  border-radius: var(--radius-12);
 }
 
 .workspace-diff-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 11px 11px 7px;
+  gap: var(--space-8);
+  padding: var(--space-12) var(--space-12) var(--space-8);
   font-size: var(--type-meta);
 }
 
@@ -160,15 +160,16 @@
 }
 
 .workspace-diff-lines {
-  padding: 4px 0 6px;
+  padding: var(--space-4) 0 var(--space-6);
   font-size: var(--type-mono-sm);
-  line-height: 1.8;
+  /* The spec's diff leading; code gets more air than prose. */
+  line-height: 1.6;
 }
 
 .workspace-diff-line {
   display: flex;
-  gap: 9px;
-  padding: 2px 11px;
+  gap: var(--space-8);
+  padding: var(--space-2) var(--space-12);
 }
 
 .workspace-diff-line > span:first-child {
@@ -197,14 +198,14 @@
 
 .workspace-diff-hunk {
   color: var(--ink-soft);
-  font-weight: 500;
+  font-weight: var(--weight-label);
 }
 
 .workspace-diff-note {
-  padding: 10px 11px 12px;
+  padding: var(--space-10) var(--space-12) var(--space-12);
   color: var(--silence);
   font-size: var(--type-meta);
-  line-height: 1.6;
+  line-height: var(--leading-body);
 }
 
 .workspace-diff-note-error {
@@ -227,11 +228,11 @@
 .workspace-changes-branch {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 6px 4px;
+  gap: var(--space-6);
+  padding: var(--space-8) var(--space-6) var(--space-4);
   color: var(--ink-soft);
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--type-meta);
 }
 
 .workspace-changes-branch-icon {
@@ -265,13 +266,13 @@
   flex: none;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: var(--control-dense);
+  height: var(--control-dense);
   padding: 0;
   color: var(--muted);
   background: transparent;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-6);
   cursor: pointer;
 }
 
@@ -285,7 +286,7 @@
    under the sentence it answers. */
 .workspace-changes-refresh-line {
   display: flex;
-  padding: 4px 6px;
+  padding: var(--space-4) var(--space-6);
 }
 
 /* Uncommitted | Commits: 24px buttons on a fill-tool bed, the active one
@@ -294,30 +295,29 @@
 .workspace-changes-seg {
   display: inline-flex;
   align-self: flex-start;
-  gap: 2px;
-  margin: 2px 6px 8px;
-  padding: 2px;
+  gap: var(--space-2);
+  margin: var(--space-2) var(--space-6) var(--space-8);
+  padding: var(--space-2);
   background: var(--fill-tool);
-  border-radius: 7px;
+  border-radius: var(--radius-8);
 }
 
 .workspace-changes-seg-button {
-  height: 24px;
-  padding: 0 10px;
+  height: var(--control-dense);
+  padding: 0 var(--space-10);
   color: var(--muted);
   background: transparent;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--radius-6);
   cursor: pointer;
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--type-meta);
   white-space: nowrap;
 }
 
 .workspace-changes-seg-button-is-on {
   color: var(--ink);
   background: var(--panel-card);
-  box-shadow: var(--shadow-pop);
 }
 
 /* The tree: h24 rows at 12px sans, folders and files sharing one shape.
@@ -325,11 +325,11 @@
 .workspace-changes-tree {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  margin-bottom: 13px;
+  gap: var(--space-2);
+  margin-bottom: var(--space-12);
   color: var(--ink-soft);
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--type-meta);
 }
 
 /* The tree is a nested disclosure list. Depth pads the buttons inline
@@ -339,31 +339,31 @@ ul.workspace-changes-tree,
 ul.workspace-changes-group {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-2);
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
 ul.workspace-changes-tree {
-  margin-bottom: 13px;
+  margin-bottom: var(--space-12);
 }
 
 .workspace-changes-folder {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-6);
   width: 100%;
-  height: 24px;
-  padding: 0 6px;
+  height: var(--control-dense);
+  padding: 0 var(--space-6);
   color: var(--ink-soft);
   text-align: left;
   background: transparent;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-6);
   cursor: pointer;
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--type-meta);
   white-space: nowrap;
 }
 
@@ -375,7 +375,7 @@ ul.workspace-changes-tree {
   flex: none;
   width: 12px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--type-meta);
   line-height: 1;
   text-align: center;
 }
@@ -402,11 +402,11 @@ ul.workspace-changes-tree {
    is the sheet's single answer. Bare selectors on purpose: the
    computed-style proof only models those. */
 .workspace-changes-file {
-  height: 24px;
-  padding: 0 6px;
-  gap: 6px;
+  height: var(--control-dense);
+  padding: 0 var(--space-6);
+  gap: var(--space-6);
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--type-meta);
 }
 
 .workspace-changes-file-icon {
@@ -530,26 +530,19 @@ ul.workspace-changes-tree {
   }
 }
 
-/* The inline diff card's header bar is UI text (path + counts), not code:
-   Workspace.css's mono group names it, so this scoped rule — not a position
-   bet — holds it at sans in either sheet order. The lines keep mono. */
-.workspace-changes .workspace-diff-header {
-  font-family: var(--font-ui);
-}
-
 /* The pencil after the row's acts: the slice-8 hand-off, quiet until hover. */
 .workspace-changes-pencil {
   display: flex;
   flex: none;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: var(--control-dense);
+  height: var(--control-dense);
   padding: 0;
   color: var(--muted);
   background: transparent;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-6);
   cursor: pointer;
 }
 
@@ -564,9 +557,9 @@ ul.workspace-changes-tree {
    by the panel's hairline. */
 .workspace-commit-row {
   display: flex;
-  gap: 6px;
+  gap: var(--space-6);
   margin-top: auto;
-  padding: 10px 12px;
+  padding: var(--space-10) var(--space-12);
   background: var(--panel-side);
   border-top: 1px solid var(--line);
   position: sticky;
@@ -574,12 +567,12 @@ ul.workspace-changes-tree {
 }
 
 .workspace-commit-row .workspace-commit-message {
-  height: 28px;
+  height: var(--control-default);
   color: var(--ink);
   background: transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-6);
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--type-meta);
 }
 
 .workspace-commit-row .workspace-commit-message::placeholder {
@@ -590,15 +583,15 @@ ul.workspace-changes-tree {
   display: inline-flex;
   flex: none;
   align-items: center;
-  height: 28px;
-  padding: 0 12px;
+  height: var(--control-default);
+  padding: 0 var(--space-12);
   color: var(--ink-soft);
   background: transparent;
   border: 1px solid var(--line-strong);
-  border-radius: 6px;
+  border-radius: var(--radius-6);
   cursor: pointer;
   font-family: var(--font-ui);
-  font-size: 13px;
+  font-size: var(--type-small);
 }
 
 .workspace-commit-button:hover:not(:disabled),
@@ -620,17 +613,17 @@ ul.workspace-changes-tree {
 .workspace-commits {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-2);
   font-family: var(--font-ui);
-  font-size: 13px;
+  font-size: var(--type-small);
 }
 
 .workspace-commits-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  height: 24px;
-  padding: 0 6px;
+  gap: var(--space-8);
+  height: var(--control-dense);
+  padding: 0 var(--space-6);
   white-space: nowrap;
 }
 
@@ -640,7 +633,7 @@ ul.workspace-changes-tree {
   overflow: hidden;
   color: var(--muted);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--type-mono-sm);
   text-overflow: ellipsis;
 }
 
@@ -649,7 +642,7 @@ ul.workspace-changes-tree {
   min-width: 0;
   overflow: hidden;
   color: var(--ink);
-  font-size: 13px;
+  font-size: var(--type-small);
   text-overflow: ellipsis;
 }
 
@@ -657,9 +650,9 @@ ul.workspace-changes-tree {
   display: flex;
   flex: none;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-6);
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--type-meta);
 }
 
 /* A long author yields to the subject, never the other way round. */
@@ -672,17 +665,17 @@ ul.workspace-changes-tree {
 /* Loading and the empty answer: the panel's own quiet sentences, the
    same voice as the tree's states. */
 .workspace-commits-state {
-  padding: 10px;
+  padding: var(--space-10);
   color: var(--silence);
-  font-size: 12px;
-  line-height: 1.6;
+  font-size: var(--type-meta);
+  line-height: var(--leading-body);
 }
 
 /* The cut-short footnote: the list stands beside the sentence, never
    instead of it. */
 .workspace-commits-note {
-  padding: 2px 6px 10px;
+  padding: var(--space-2) var(--space-6) var(--space-10);
   color: var(--silence);
-  font-size: 12px;
-  line-height: 1.55;
+  font-size: var(--type-meta);
+  line-height: var(--leading-body);
 }

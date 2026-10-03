@@ -46,10 +46,10 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     read("src/features/workspace/sidebar/sidebar.css"),
   ]);
 
-  it("workspace rows are laid out as spec'd: flex, padded 4/8, left-aligned", async () => {
+  it("workspace rows are laid out as spec'd: flex, padded 2/8, left-aligned", async () => {
     const body = rulesFor(".workspace-row");
-    expect(body).toContain("padding: 4px 8px");
-    expect(body).toContain("min-height: 36px");
+    expect(body).toContain("padding: 2px 8px");
+    expect(body).toContain("min-height: 32px");
 
     inject([".workspace-row"]);
     await renderWorkspace();
@@ -59,11 +59,11 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     expect(style.display).toBe("flex");
     expect(style.textAlign).toBe("left");
     expect(style.paddingLeft).toBe("8px");
-    expect(style.paddingTop).toBe("4px");
-    expect(style.minHeight).toBe("36px");
+    expect(style.paddingTop).toBe("2px");
+    expect(style.minHeight).toBe("32px");
   });
 
-  it("avatars hold exactly one letter at 18px, and the project avatar 16px", async () => {
+  it("avatars hold exactly one letter at 16px, the project avatar beside it", async () => {
     inject([".sidebar-avatar-workspace", ".sidebar-avatar-project", ".sidebar-avatar"]);
     await renderWorkspace();
     const avatar = document.querySelector<HTMLElement>(".sidebar-avatar-workspace");
@@ -71,8 +71,8 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     // One grapheme, never the truncated first cut.
     expect(avatar.textContent).toHaveLength(1);
     expect(avatar.textContent).not.toContain("…");
-    expect(getComputedStyle(avatar).width).toBe("18px");
-    expect(getComputedStyle(avatar).borderRadius).toBe("5px");
+    expect(getComputedStyle(avatar).width).toBe("16px");
+    expect(getComputedStyle(avatar).borderRadius).toBe("6px");
 
     const projectAvatar = document.querySelector<HTMLElement>(".sidebar-avatar-project");
     if (projectAvatar === null) throw new Error("project avatar did not render");
@@ -86,7 +86,7 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     if (hostHead === null) throw new Error("host header did not render");
     expect(hostHead.textContent).toContain("This PC");
     expect(getComputedStyle(hostHead).paddingLeft).toBe("8px");
-    expect(getComputedStyle(hostHead).height).toBe("28px");
+    expect(getComputedStyle(hostHead).height).toBe("24px");
 
     const projectHead = document.querySelector<HTMLElement>(".workspace-project-heading");
     if (projectHead === null) throw new Error("project header did not render");
@@ -103,15 +103,19 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     expect(getComputedStyle(foot).paddingLeft).toBe("8px");
   });
 
-  it("the search pill keeps the placeholder readable and the header fits at the 200px floor", async () => {
-    // Live check found the input at 39px inside a 44.5px pill ("Searc").
-    // happy-dom computes no layout, so this pins the BUDGET instead: at the
-    // sidebar's 200px minimum the row's content box is 168px (200 minus its
-    // own 32px padding), and the live-measured wordmark advance (~62px) +
-    // pill floor 44 + two 28px buttons + the 2px button margin = ~164px ≤
-    // 168. The pill floor of 44 keeps "Search" (~35px at --type-meta) inside
-    // the 44 - 4 - 2 = 38px of content the pill's padding and border leave.
-    inject([".sidebar-top", ".sidebar-search", ".sidebar-search input", ".sidebar-foot"]);
+  it("the search pill holds the placeholder and the wordmark yields instead", async () => {
+    // happy-dom computes no layout, so this pins the BUDGET: the pill's floor
+    // of 96px holds "Search" (~35px at --type-meta) inside the content its
+    // padding and border leave, and the row's own budget is spent on that
+    // floor before the wordmark gives way — the wordmark is the one item
+    // allowed to ellipsize, so the collapse button is never clipped.
+    inject([
+      ".sidebar-top",
+      ".sidebar-search",
+      ".sidebar-search input",
+      ".sidebar-wordmark",
+      ".sidebar-foot",
+    ]);
     await renderWorkspace();
 
     const top = document.querySelector<HTMLElement>(".sidebar-top");
@@ -120,7 +124,10 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
 
     const pill = document.querySelector<HTMLElement>(".sidebar-search");
     if (pill === null) throw new Error("search pill did not render");
-    expect(getComputedStyle(pill).minWidth).toBe("44px");
+    expect(getComputedStyle(pill).minWidth).toBe("96px");
+    const wordmark = document.querySelector<HTMLElement>(".sidebar-wordmark");
+    if (wordmark === null) throw new Error("wordmark did not render");
+    expect(getComputedStyle(wordmark).overflow).toBe("hidden");
     const input = pill.querySelector("input");
     if (input === null) throw new Error("search input did not render");
     expect(getComputedStyle(input).paddingLeft).toBe("0px");
@@ -190,15 +197,13 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     expect(body).toContain("color:");
   });
 
-  it("the inline diff header reads sans, not the workspace mono rule", () => {
-    // The mono group in Workspace.css names .workspace-diff-header, so the
-    // Changes sheet must answer with a HIGHER-specificity scoped rule — one
-    // that holds in whichever order the bundle emits the two sheets. This
-    // harness renders no diff header element, so the assertion reads the
-    // rule itself; the Tree suite proves the computed style on a live one.
-    const body = rulesFor(".workspace-changes .workspace-diff-header");
-    expect(body).toContain("font-family");
-    expect(body).not.toContain("JetBrains Mono");
+  it("the workspace mono group names only the code surfaces", () => {
+    // The diff header is a UI bar (path + counts), so the shared mono group
+    // must not claim it: a silent font swap here would print a header in a
+    // different face from every other header.
+    const mono = rulesFor(".workspace-diff-lines");
+    expect(mono).toContain("JetBrains Mono");
+    expect(rulesFor(".workspace-diff-header")).not.toContain("JetBrains Mono");
   });
 
   it("the R2a cleanup's deleted hover and focus rules are restored", () => {

@@ -143,13 +143,13 @@ describe("timeline computed styles", () => {
       const levelHeading = assistant.querySelector<HTMLElement>(`.plan-markdown-heading-${level}`);
       expect(levelHeading).not.toBeNull();
       expect(getComputedStyle(levelHeading!).fontSize).toBe(
-        ({ 1: "20px", 2: "16px", 3: "14px", 4: "13px", 5: "12px", 6: "12px" } as const)[
+        ({ 1: "18px", 2: "16px", 3: "14px", 4: "13px", 5: "12px", 6: "12px" } as const)[
           level as 1 | 2 | 3 | 4 | 5 | 6
         ],
       );
       expect(getComputedStyle(levelHeading!).fontWeight).toBe("600");
     }
-    expect(getComputedStyle(list).paddingLeft).toBe("18px");
+    expect(getComputedStyle(list).paddingLeft).toBe("16px");
     expect(getComputedStyle(inlineCode).fontSize).toBe("13px");
     expect(getComputedStyle(inlineCode).fontFamily).toContain("JetBrains Mono");
     expect(getComputedStyle(codeBlock).backgroundColor).toBe("#262019");
@@ -161,7 +161,7 @@ describe("timeline computed styles", () => {
     expect(getComputedStyle(copyable).padding).toBe("10px 80px 10px 12px");
     expect(getComputedStyle(copyable).fontFamily).toContain("JetBrains Mono");
     expect(getComputedStyle(copyable).fontSize).toBe("13px");
-    expect(getComputedStyle(blockCopy).height).toBe("22px");
+    expect(getComputedStyle(blockCopy).height).toBe("24px");
     expect(getComputedStyle(blockCopy).opacity).toBe("0");
     expect(getComputedStyle(blockCopy).pointerEvents).toBe("none");
     expect(getComputedStyle(blockCopy).userSelect).toBe("none");

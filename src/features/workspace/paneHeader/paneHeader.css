@@ -2,9 +2,9 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: 8px;
-  height: 36px;
-  padding: 0 8px 0 12px;
+  gap: var(--space-8);
+  height: var(--control-bar);
+  padding: 0 var(--space-8) 0 var(--space-12);
   border-bottom: 1px solid var(--line);
 }
 
@@ -20,8 +20,8 @@
   flex: none;
   color: var(--ink);
   font-family: var(--font-ui);
-  font-size: 14px;
-  font-weight: 500;
+  font-size: var(--type-interface);
+  font-weight: var(--weight-label);
 }
 
 .workspace-terminal-toolbar .workspace-terminal-status {
@@ -30,21 +30,21 @@
   overflow: hidden;
   color: var(--muted);
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--type-meta);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .workspace-terminal-interrupt {
   flex: none;
-  height: 24px;
-  padding: 0 9px;
+  height: var(--control-dense);
+  padding: 0 var(--space-8);
   color: var(--ink-soft);
   background: transparent;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-6);
   cursor: pointer;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-ui);
   font-size: var(--type-small);
 }
 
@@ -64,14 +64,14 @@
 
 .workspace-terminal-close {
   flex: none;
-  height: 24px;
-  padding: 0 9px;
+  height: var(--control-dense);
+  padding: 0 var(--space-8);
   color: var(--ink-soft);
   background: transparent;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-6);
   cursor: pointer;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-ui);
   font-size: var(--type-small);
 }
 
@@ -87,9 +87,9 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: 8px;
-  height: 36px;
-  padding: 0 8px 0 12px;
+  gap: var(--space-8);
+  height: var(--control-bar);
+  padding: 0 var(--space-8) 0 var(--space-12);
   border-bottom: 1px solid var(--line);
 }
 
@@ -116,8 +116,8 @@
   overflow: hidden;
   color: var(--ink);
   font-family: var(--font-ui);
-  font-size: 14px;
-  font-weight: 500;
+  font-size: var(--type-interface);
+  font-weight: var(--weight-label);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -128,36 +128,36 @@
   overflow: hidden;
   color: var(--muted);
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--type-meta);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .pane-header-menu {
-  width: 240px;
-  padding: 4px;
+  width: 220px;
+  padding: var(--space-4);
   background: var(--panel-menu);
   border: 1px solid var(--line-strong);
-  border-radius: 8px;
+  border-radius: var(--radius-8);
   box-shadow: var(--shadow-pop);
 }
 
 .pane-header-menu-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-8);
   width: 100%;
-  min-height: 28px;
-  padding: 5px 9px;
+  min-height: var(--control-default);
+  padding: var(--space-4) var(--space-8);
   color: var(--ink);
   text-align: left;
   background: transparent;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--radius-6);
   cursor: pointer;
   font-family: var(--font-ui);
-  font-size: 13px;
-  line-height: 1.4;
+  font-size: var(--type-small);
+  line-height: var(--leading-body);
 }
 
 .pane-header-menu-item:not(:disabled):hover,
@@ -167,11 +167,11 @@
 }
 
 .pane-header-path {
-  padding: 7px 9px 3px;
+  padding: var(--space-8) var(--space-8) var(--space-4);
   overflow: hidden;
   color: var(--muted);
   font-family: var(--font-ui);
-  font-size: 13px;
+  font-size: var(--type-small);
   /* Backstop only: the JS middle-cut fits the box, so this marks genuinely
      wider-than-average clusters rather than trimming the preserved tail. */
   text-overflow: ellipsis;
@@ -182,15 +182,15 @@
   display: grid;
   flex: none;
   place-items: center;
-  width: 28px;
-  height: 28px;
+  width: var(--control-default);
+  height: var(--control-default);
   padding: 0;
   color: var(--muted);
   background: transparent;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-6);
   cursor: pointer;
-  font-size: 15px;
+  font-size: var(--type-interface);
   line-height: 1;
 }
 

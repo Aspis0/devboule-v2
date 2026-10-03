@@ -10,7 +10,7 @@ panel's (R7b's precedent); loaded by FilesSurface itself, which the import
 .workspace-files-tree {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: var(--space-2);
   color: var(--ink);
 }
 
@@ -23,24 +23,24 @@ panel's (R7b's precedent); loaded by FilesSurface itself, which the import
   position: relative;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-2);
 }
 
 .workspace-tree-dir {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-6);
   flex: 1;
   min-width: 0;
-  height: 27px;
-  padding: 0 8px;
+  height: var(--control-dense);
+  padding: 0 var(--space-8);
   color: var(--ink);
   text-align: left;
   background: transparent;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-6);
   cursor: pointer;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: var(--type-mono-sm);
 }
 
@@ -48,18 +48,18 @@ panel's (R7b's precedent); loaded by FilesSurface itself, which the import
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-8);
   flex: 1;
   min-width: 0;
-  height: 27px;
-  padding: 0 8px;
+  height: var(--control-dense);
+  padding: 0 var(--space-8);
   color: var(--ink-soft);
   text-align: left;
   background: transparent;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-6);
   cursor: pointer;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: var(--type-mono-sm);
 }
 
@@ -68,14 +68,14 @@ panel's (R7b's precedent); loaded by FilesSurface itself, which the import
    Delete arrives with its own slice). */
 .workspace-tree-menu-trigger {
   flex: none;
-  height: 27px;
-  padding: 0 8px;
+  height: var(--control-dense);
+  padding: 0 var(--space-8);
   color: var(--silence);
   background: transparent;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-6);
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--type-small);
   line-height: 1;
 }
 
@@ -89,28 +89,28 @@ panel's (R7b's precedent); loaded by FilesSurface itself, which the import
    tree under the pointer. */
 .workspace-tree-menu {
   position: absolute;
-  top: 26px;
-  right: 6px;
+  top: var(--control-dense);
+  right: var(--space-6);
   z-index: 4;
   display: flex;
   flex-direction: column;
-  min-width: 118px;
-  padding: 4px;
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  box-shadow: 0 6px 18px rgb(0 0 0 / 28%);
+  min-width: 190px;
+  padding: var(--space-4);
+  background: var(--panel-menu);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-8);
+  box-shadow: var(--shadow-pop);
 }
 
 .workspace-tree-menu-item {
-  padding: 6px 8px;
+  padding: var(--space-6) var(--space-8);
   color: var(--ink);
   text-align: left;
   background: transparent;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-6);
   cursor: pointer;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-ui);
   font-size: var(--type-small);
 }
 
@@ -129,14 +129,14 @@ panel's (R7b's precedent); loaded by FilesSurface itself, which the import
 .workspace-tree-rename {
   flex: 1;
   min-width: 0;
-  height: 24px;
-  padding: 0 6px;
+  height: var(--control-dense);
+  padding: 0 var(--space-6);
   color: var(--ink);
   background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: 6px;
-  font-family: "JetBrains Mono", monospace;
-  font-size: var(--type-mono-sm);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-6);
+  font-family: var(--font-ui);
+  font-size: var(--type-small);
 }
 
 .workspace-tree-label {
@@ -159,10 +159,10 @@ panel's (R7b's precedent); loaded by FilesSurface itself, which the import
 
 /* Loading, a folder's own refusal, the capped note: rows inside the tree. */
 .workspace-tree-row-note {
-  padding: 4px 8px;
+  padding: var(--space-4) var(--space-8);
   color: var(--silence);
   font-size: var(--type-meta);
-  line-height: 1.6;
+  line-height: var(--leading-body);
 }
 
 /* The Files panel's content preview: raw text and an image, in the same
@@ -170,9 +170,9 @@ panel's (R7b's precedent); loaded by FilesSurface itself, which the import
    one card vocabulary for both panels, not two that can drift). */
 .workspace-file-preview-text {
   margin: 0;
-  padding: 4px 11px 12px;
+  padding: var(--space-4) var(--space-12) var(--space-12);
   font-size: var(--type-mono-sm);
-  line-height: 1.6;
+  line-height: var(--leading-body);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -183,14 +183,14 @@ panel's (R7b's precedent); loaded by FilesSurface itself, which the import
 .workspace-file-preview-window {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-10);
   flex-wrap: wrap;
 }
 
 .workspace-file-preview-image {
   display: block;
   max-width: 100%;
-  padding: 4px 11px 12px;
+  padding: var(--space-4) var(--space-12) var(--space-12);
 }
 
 /* The staged video and PDF, same card padding as the image: the video is
@@ -200,14 +200,14 @@ panel's (R7b's precedent); loaded by FilesSurface itself, which the import
 .workspace-file-preview-video {
   display: block;
   max-width: 100%;
-  padding: 4px 11px 12px;
+  padding: var(--space-4) var(--space-12) var(--space-12);
 }
 
 .workspace-file-preview-pdf {
   display: block;
-  width: calc(100% - 22px);
+  width: calc(100% - 24px);
   height: 360px;
-  margin: 4px 11px 12px;
+  margin: var(--space-4) var(--space-12) var(--space-12);
 }
 
 .workspace-tree-row-note-error {
@@ -219,48 +219,34 @@ panel's (R7b's precedent); loaded by FilesSurface itself, which the import
 .workspace-files-toolbar {
   display: flex;
   justify-content: flex-end;
-  margin-bottom: 12px;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-6);
+  padding: var(--space-6) var(--space-6) var(--space-2);
+  /* position: relative anchors the sort menu, which reuses the row menu's
+     overlay shape. */
+  position: relative;
 }
 
 .workspace-files-state {
-  padding: 10px;
+  padding: var(--space-10);
   color: var(--silence);
   font-size: var(--type-meta);
-  line-height: 1.6;
+  line-height: var(--leading-body);
 }
 
 .workspace-files-error {
-  margin-bottom: 12px;
-  padding: 8px 10px;
-  border: 1px solid var(--danger-deep);
-  border-radius: 8px;
-  color: var(--danger-deep);
+  margin-bottom: var(--space-12);
+  padding: var(--space-8) var(--space-10);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-8);
+  color: var(--danger);
   font-size: var(--type-meta);
-  line-height: 1.55;
+  line-height: var(--leading-body);
 }
-
-/* R7c redesign (SPEC-regions §Right panel, mockup a-workspace-5.html:131-141
-   with values from mockups/skeleton-workspace.css, which win): the toolbar
-   with the sort control and a quiet refresh, h24 sans rows at the Changes
-   tree's 14px indent step, and the selected file as a fill-tool row with its
-   pencil. UI text is sans throughout. The moved rules above still say mono
-   in places; the rules below override them within this same sheet, so their
-   position here is deterministic. The ONE cross-sheet conflict —
-   Workspace.css's mono group naming .workspace-files-tree — is answered
-   with a higher-specificity scoped rule instead of a position bet, the way
-   changes.css holds its diff header. Only the preview's own bytes keep
-   their mono. */
 
 /* The toolbar: sort control left, the spacer, the quiet refresh right —
-   the mockup's ftoolbar geometry. position:relative anchors the sort menu,
-   which reuses the row menu's overlay shape. */
-.workspace-files-toolbar {
-  position: relative;
-  align-items: center;
-  gap: 2px;
-  margin-bottom: 6px;
-  padding: 6px 6px 2px;
-}
+   the mockup's ftoolbar geometry. */
 
 /* The order named, not offered: one criterion means a label, never a
    control that cannot do anything. */
@@ -268,12 +254,12 @@ panel's (R7b's precedent); loaded by FilesSurface itself, which the import
   display: flex;
   flex: none;
   align-items: center;
-  gap: 2px;
-  height: 24px;
-  padding: 0 6px;
+  gap: var(--space-2);
+  height: var(--control-dense);
+  padding: 0 var(--space-6);
   color: var(--muted);
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--type-meta);
   white-space: nowrap;
 }
 
@@ -287,13 +273,13 @@ panel's (R7b's precedent); loaded by FilesSurface itself, which the import
   flex: none;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: var(--control-dense);
+  height: var(--control-dense);
   padding: 0;
   color: var(--muted);
   background: transparent;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-6);
   cursor: pointer;
 }
 
@@ -314,11 +300,11 @@ panel's (R7b's precedent); loaded by FilesSurface itself, which the import
    (the Changes tree's 14px precedent), so the rules below only reset the
    list shape and wear the mockup's look over the moved bones. */
 .workspace-files-tree {
-  gap: 2px;
+  gap: var(--space-2);
   margin: 0;
   padding: 0;
   color: var(--ink-soft);
-  font-size: 12px;
+  font-size: var(--type-meta);
   list-style: none;
 }
 
@@ -326,7 +312,7 @@ ul.workspace-files-tree,
 ul.workspace-files-group {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-2);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -346,24 +332,17 @@ ul.workspace-files-group {
    inline depth pad beats the shorthand's left side. Bare selectors on
    purpose: the computed-style proof only models those. */
 .workspace-files-row {
-  height: 24px;
-  padding: 0 6px;
-  gap: 6px;
+  height: var(--control-dense);
+  padding: 0 var(--space-6);
+  gap: var(--space-6);
   justify-content: flex-start;
-  border-radius: 6px;
+  border-radius: var(--radius-6);
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--type-meta);
 }
 
 .workspace-files-row:hover {
   background: var(--fill-hover);
-}
-
-/* The row's own menu trigger fits its row: the moved 27px bone would make
-   every row 27px tall. Scoped, so the Changes panel's trigger — same
-   class, merged R7b code — keeps the height it shipped with. */
-.workspace-files .workspace-tree-menu-trigger {
-  height: 24px;
 }
 
 .workspace-files-file-icon {
@@ -381,7 +360,7 @@ ul.workspace-files-group {
 .workspace-files-row .workspace-tree-size {
   margin-left: auto;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--type-meta);
   font-variant-numeric: tabular-nums;
 }
 
@@ -393,16 +372,6 @@ ul.workspace-files-group {
   background: var(--fill-tool);
 }
 
-/* The rename input and the row menu items are UI text, not code — the menu
-   at the same 13 the Changes panel's own items read. Scoped: the Changes
-   panel renders its Discard item with the same menu class, and this slice
-   must not restyle merged R7b code in passing. */
-.workspace-files .workspace-tree-rename,
-.workspace-files .workspace-tree-menu-item {
-  font-family: var(--font-ui);
-  font-size: var(--type-small);
-}
-
 /* The pencil after the row's trigger: the slice-8 hand-off, quiet until
    hover — the Changes pencil's strokes at the same hit area. */
 .workspace-files-pencil {
@@ -410,13 +379,13 @@ ul.workspace-files-group {
   flex: none;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: var(--control-dense);
+  height: var(--control-dense);
   padding: 0;
   color: var(--muted);
   background: transparent;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-6);
   cursor: pointer;
 }
 
@@ -426,15 +395,9 @@ ul.workspace-files-group {
   background: var(--fill-hover);
 }
 
-/* The preview card's header bar is UI text (path + stat), not code: the
-   scoped rule holds it at sans the way the Changes panel holds its diff
-   header. The file's own bytes below keep their mono — declared here, not
-   left to the UA stylesheet's `pre`, so a global reset cannot silently
-   flip the preview to sans. */
-.workspace-files .workspace-diff-header {
-  font-family: var(--font-ui);
-}
-
+/* The file's own bytes below keep their mono — declared here, not left to
+   the UA stylesheet's `pre`, so a global reset cannot silently flip the
+   preview to sans. */
 .workspace-file-preview-text {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
 }

@@ -111,7 +111,7 @@ export function ContextMeter({ usage, manifest, running, lastFinished }: Context
             r={RING_RADIUS}
             fill="none"
             stroke="var(--line-strong)"
-            strokeWidth={2}
+            strokeWidth={1.75}
           />
           {arcPercent !== null ? (
             <circle
@@ -120,7 +120,7 @@ export function ContextMeter({ usage, manifest, running, lastFinished }: Context
               r={RING_RADIUS}
               fill="none"
               stroke="var(--accent)"
-              strokeWidth={2}
+              strokeWidth={1.75}
               strokeLinecap="round"
               strokeDasharray={RING_CIRCUMFERENCE}
               strokeDashoffset={RING_CIRCUMFERENCE * (1 - arcPercent / 100)}

@@ -4,7 +4,7 @@ import type { ToolTabKind } from "./toolTabs";
 const STROKE = {
   fill: "none",
   stroke: "currentColor",
-  strokeWidth: 1.4,
+  strokeWidth: 1.75,
   strokeLinecap: "round",
   strokeLinejoin: "round",
 } as const;

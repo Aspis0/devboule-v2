@@ -147,6 +147,7 @@ export function SidePanelTabs({
               aria-controls={paintedId === null ? undefined : SIDE_PANEL_BODY_ID}
               tabIndex={tabIndexFor(entry.id)}
               className={`workspace-panel-tab${painted ? " workspace-panel-tab-active" : ""}`}
+              title={entry.name}
               onClick={() => onSelect(entry.id)}
               onKeyDown={(event) => onTabKeyDown(entry.id, event)}
             >

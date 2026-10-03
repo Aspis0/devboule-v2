@@ -88,13 +88,13 @@ describe("turn rail computed styles", () => {
       return { shell, aux, track, composer };
     };
 
-    // Rail off: no sibling takes an inset; the composer keeps its 24 and the
+    // Rail off: no sibling takes an inset; the composer keeps its 16 and the
     // track keeps the composer's box.
     const off = build(false);
     expect(getComputedStyle(off.aux).marginLeft).toBe("");
     expect(getComputedStyle(off.track).paddingLeft).toBe("");
     expect(getComputedStyle(off.track).maxWidth).toBe("100%");
-    expect(getComputedStyle(off.composer).paddingLeft).toBe("24px");
+    expect(getComputedStyle(off.composer).paddingLeft).toBe("16px");
     off.shell.remove();
 
     // The card takes the gutter as margin, the composer card as padding; the

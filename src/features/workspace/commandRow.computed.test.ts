@@ -85,7 +85,7 @@ describe("command row computed styles", () => {
       const chipStyle = getComputedStyle(chip);
       expect(chipStyle.backgroundColor).toBe(css.token("--code-bg"));
       expect(chipStyle.color).toBe(css.token("--code-text"));
-      expect(chipStyle.borderRadius).toBe("5px");
+      expect(chipStyle.borderRadius).toBe("4px");
       // A decorative boundary in the copyable block's form (SPEC-regions:79);
       // the mono text is what identifies the chip, so the contrast lives there.
       expect(chipStyle.borderTopWidth).toBe("1px");
@@ -113,7 +113,7 @@ describe("command row computed styles", () => {
       expect(dotOkStyle.backgroundColor).toBe(css.token("--tone-live"));
       expect(dotOkStyle.width).toBe("6px");
       expect(dotOkStyle.height).toBe("6px");
-      expect(dotOkStyle.borderRadius).toBe("50%");
+      expect(dotOkStyle.borderRadius).toBe("999px");
       expect(contrastRatio(dotOkStyle.backgroundColor, fillTool!)).toBeGreaterThanOrEqual(3);
       const dotFailStyle = getComputedStyle(dotFail);
       expect(dotFailStyle.backgroundColor).toBe(css.token("--danger"));

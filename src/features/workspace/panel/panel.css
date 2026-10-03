@@ -14,7 +14,7 @@
 .workspace-side-scroll {
   flex: 1;
   min-height: 0;
-  padding: 12px;
+  padding: var(--space-12);
   overflow-y: auto;
 }
 
@@ -24,16 +24,16 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: 2px;
-  height: 36px;
-  padding: 0 8px;
+  gap: var(--space-2);
+  height: var(--tab-height);
+  padding: 0 var(--space-8);
   border-bottom: 1px solid var(--line);
 }
 
 .workspace-panel-tablist {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-2);
   min-width: 0;
   overflow: hidden;
 }
@@ -42,10 +42,10 @@
   display: flex;
   flex: 0 1 auto;
   align-items: center;
-  gap: 6px;
-  height: 35px;
+  gap: var(--space-4);
+  height: var(--tab-height);
   min-width: 0;
-  padding: 0 8px;
+  padding: 0 var(--space-6);
   color: var(--muted);
   background: transparent;
   border-bottom: 2px solid transparent;
@@ -68,12 +68,14 @@
 .workspace-panel-icon {
   display: block;
   flex: none;
+  width: 14px;
+  height: 14px;
 }
 
 .workspace-panel-tab-label {
   overflow: hidden;
   font-size: var(--type-small);
-  font-weight: 500;
+  font-weight: var(--weight-label);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -99,7 +101,7 @@
    panel body never moves. The Files row menu is the z-index precedent. */
 .workspace-panel-menu {
   position: absolute;
-  top: calc(100% + 4px);
+  top: calc(100% + var(--space-4));
   right: 0;
   z-index: 4;
   min-width: 190px;
@@ -117,26 +119,26 @@
 /* A panel with nothing built yet: its name, the one line of what it will
    hold, and the honest note. No controls, like the empty Settings pages. */
 .workspace-panel-empty {
-  padding: 16px 12px;
+  padding: var(--space-16) var(--space-12);
 }
 
 .workspace-panel-empty-title {
   margin: 0;
   color: var(--ink);
   font-size: var(--type-small);
-  font-weight: 500;
+  font-weight: var(--weight-label);
 }
 
 .workspace-panel-empty-intro {
-  margin: 4px 0 0;
+  margin: var(--space-4) 0 0;
   color: var(--muted);
   font-size: var(--type-small);
-  line-height: 1.5;
+  line-height: var(--leading-body);
 }
 
 .workspace-panel-empty-note {
-  margin: 12px 0 0;
+  margin: var(--space-12) 0 0;
   color: var(--muted);
   font-size: var(--type-small);
-  line-height: 1.5;
+  line-height: var(--leading-body);
 }

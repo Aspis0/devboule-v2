@@ -64,7 +64,7 @@
 .turn-rail-glyph {
   width: 5px;
   height: 5px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   /* The resting mark is a control's only visual, so it reads the text-safe
      mix, not the raw idle tone. */
   background: var(--tone-idle-text);
@@ -93,9 +93,9 @@
   left: calc(100% - 3px);
   display: none;
   width: 224px;
-  padding: 6px 8px;
+  padding: var(--space-6) var(--space-8);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-8);
   background: var(--panel-card);
   box-shadow: var(--shadow-pop);
   transform: translateY(-50%);
@@ -119,8 +119,8 @@
 .turn-rail-preview-title {
   display: block;
   color: var(--ink);
-  font-size: 12px;
-  line-height: 1.4;
+  font-size: var(--type-meta);
+  line-height: var(--leading-dense);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -133,5 +133,5 @@
   display: block;
   color: var(--muted);
   font-size: 12px;
-  line-height: 1.4;
+  line-height: var(--leading-body);
 }

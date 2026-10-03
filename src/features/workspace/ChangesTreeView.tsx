@@ -91,7 +91,7 @@ const FileIcon = (
     <path
       d="M14 2v4a2 2 0 0 0 2 2h4"
       stroke="currentColor"
-      strokeWidth="2"
+      strokeWidth="1.75"
       strokeLinejoin="round"
     />
   </svg>

@@ -47,8 +47,8 @@
   width: 100%;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
-  padding: 14px 0;
+  gap: var(--space-12);
+  padding: var(--space-14) 0;
   color: var(--silence);
   background: transparent;
   cursor: pointer;
@@ -100,7 +100,7 @@
 }
 
 .workspace-collapsed-panel > span:first-child {
-  font-size: 12px;
+  font-size: var(--type-meta);
 }
 
 .workspace-vertical-label {
@@ -108,8 +108,8 @@
   /* One line: two 12px line boxes fill a 30px rail to the half-pixel. */
   white-space: nowrap;
   font-size: var(--type-meta);
-  font-weight: 500;
-  letter-spacing: 0.14em;
+  font-weight: var(--weight-label);
+  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
@@ -125,10 +125,10 @@
 }
 
 .workspace-icon-button {
-  width: 20px;
-  height: 20px;
-  border-radius: 6px;
-  font-size: 12px;
+  width: var(--control-dense);
+  height: var(--control-dense);
+  border-radius: var(--radius-6);
+  font-size: var(--type-meta);
 }
 
 .workspace-scroll {
@@ -144,7 +144,7 @@
 .workspace-scroll::-webkit-scrollbar-thumb {
   background: var(--border-strong);
   border: 3px solid transparent;
-  border-radius: 8px;
+  border-radius: var(--radius-8);
   background-clip: content-box;
 }
 
@@ -161,9 +161,9 @@
 .workspace-status-dot {
   display: inline-block;
   flex: none;
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
 }
 
 .workspace-dot-terracotta {
@@ -217,11 +217,11 @@
   user-select: none !important;
 }
 
+/* Meta text is not code: only the paths, the diffs and the command payloads
+   below take mono. */
 .workspace-session-cwd,
-.workspace-diff-header,
-.workspace-diff-lines,
-.workspace-files-tree {
-  font-family: "JetBrains Mono", monospace;
+.workspace-diff-lines {
+  font-family: var(--font-mono);
 }
 
 /* The parsed `agent_permission_request` envelope: the relayed sentence, and
@@ -236,7 +236,7 @@
    unbroken multi-kilobyte field inside the pane (the app also bounds those
    fields in code — this is the belt to that brace). */
 .workspace-chat-permission-request .workspace-chat-copy {
-  margin-top: 4px;
+  margin-top: var(--space-4);
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -247,21 +247,21 @@
 }
 
 .workspace-chat-child-said {
-  margin: 6px 0 0 0;
-  padding: 6px 10px;
+  margin: var(--space-6) 0 0;
+  padding: var(--space-6) var(--space-10);
   border-left: 3px solid var(--purple-deep);
   background: var(--surface-muted);
 }
 
 .workspace-chat-child-said figcaption {
   font-size: var(--type-meta);
-  font-weight: 700;
+  font-weight: var(--weight-heading);
   font-style: italic;
   color: var(--purple-deep);
 }
 
 .workspace-chat-child-said blockquote {
-  margin: 2px 0 0 0;
+  margin: var(--space-2) 0 0;
   font-style: italic;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -271,7 +271,7 @@
    so the block ran to the envelope's end. The reader is told, not left to
    wonder why the quote never seems to stop. */
 .workspace-chat-child-said-note {
-  margin: 4px 0 0 0;
+  margin: var(--space-4) 0 0;
   color: var(--purple-deep);
   font-size: var(--type-meta);
   font-style: italic;
@@ -282,21 +282,21 @@
    block that claims neither voice — same shape as the child's quote, none of
    its colour. */
 .workspace-chat-unattributed {
-  margin: 6px 0 0 0;
-  padding: 6px 10px;
+  margin: var(--space-6) 0 0;
+  padding: var(--space-6) var(--space-10);
   border-left: 3px solid var(--silence);
   background: var(--surface-muted);
 }
 
 .workspace-chat-unattributed figcaption {
   font-size: var(--type-meta);
-  font-weight: 700;
+  font-weight: var(--weight-heading);
   font-style: italic;
   color: var(--silence);
 }
 
 .workspace-chat-unattributed blockquote {
-  margin: 2px 0 0 0;
+  margin: var(--space-2) 0 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -314,7 +314,7 @@
    interpolates the sender's name the same way. */
 .workspace-chat-daemon-notice .workspace-chat-copy,
 .workspace-chat-a2a-message .workspace-chat-copy {
-  margin-top: 4px;
+  margin-top: var(--space-4);
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -325,11 +325,11 @@
 .workspace-error-line {
   display: flex;
   align-items: center;
-  gap: 7px;
-  margin: 8px 12px 0;
+  gap: var(--space-6);
+  margin: var(--space-8) var(--space-12) 0;
   color: var(--danger);
   font-size: var(--type-meta);
-  line-height: 1.55;
+  line-height: var(--leading-body);
 }
 
 .workspace-error-line-icon {
@@ -402,7 +402,7 @@
 .workspace-terminal-host .xterm .xterm-viewport::-webkit-scrollbar-thumb {
   background: var(--border-strong);
   border: 3px solid transparent;
-  border-radius: 8px;
+  border-radius: var(--radius-8);
   background-clip: content-box;
 }
 
@@ -412,11 +412,11 @@
 
 .workspace-terminal-banner {
   flex: none;
-  padding: 7px 14px;
+  padding: var(--space-8) var(--space-14);
   color: var(--danger-deep);
   background: transparent;
-  font-family: "JetBrains Mono", monospace;
-  font-size: var(--type-mono-sm);
+  font-family: var(--font-ui);
+  font-size: var(--type-meta);
 }
 
 /* The daemon's own words behind the banner's Details control: demoted so
@@ -425,7 +425,7 @@
   display: block;
   color: var(--muted);
   font-size: var(--type-meta);
-  margin-top: 2px;
+  margin-top: var(--space-2);
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
@@ -433,11 +433,11 @@
 /* The agent chat's pinned journal-loss notice (same voice as the terminal's). */
 .workspace-journal-banner {
   flex: none;
-  padding: 7px 14px;
+  padding: var(--space-8) var(--space-14);
   color: var(--danger-deep);
   background: transparent;
-  font-family: "JetBrains Mono", monospace;
-  font-size: var(--type-mono-sm);
+  font-family: var(--font-ui);
+  font-size: var(--type-meta);
 }
 
 .workspace-conversation {
@@ -450,8 +450,8 @@
      pane, where the center panel's overflow: hidden clipped it. */
   max-width: min(760px, 100%);
   margin: 0 auto;
-  gap: 10px;
-  padding: 4px 24px 0;
+  gap: var(--space-10);
+  padding: var(--space-4) var(--space-24) 0;
   overflow-y: auto;
   overflow-anchor: none;
 }
@@ -471,13 +471,13 @@
   display: flex;
   flex: none;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-10);
 }
 
 /* The rail's gutter is reserved in the content box; the permission card
    takes the same 32 px as margin, so its box sits on the rows' axis. */
 .workspace-conversation.has-turn-rail > .permission-card {
-  margin-left: 32px;
+  margin-left: var(--space-32);
 }
 
 .workspace-agent-shell {
@@ -492,14 +492,14 @@
   flex: none;
   max-width: 100%;
   color: var(--ink);
-  font-size: 14px;
-  line-height: 1.45;
+  font-size: var(--type-interface);
+  line-height: var(--leading-body);
   text-wrap: pretty;
   white-space: pre-wrap;
 }
 
 .workspace-chat-subagent {
-  padding-inline-start: 10px;
+  padding-inline-start: var(--space-10);
   border-inline-start: 2px solid var(--purple);
 }
 
@@ -513,11 +513,12 @@
 }
 
 .workspace-chat-label {
-  margin-bottom: 3px;
+  margin-bottom: var(--space-2);
   color: var(--silence);
   font-family: var(--font-ui);
-  font-size: 12px;
-  font-weight: 500;
+  font-size: var(--type-meta);
+  font-weight: var(--weight-label);
+  line-height: var(--leading-dense);
 }
 
 .workspace-chat-assistant .workspace-chat-label {
@@ -527,8 +528,8 @@
 .workspace-chat-thought {
   max-width: 80%;
   color: var(--muted);
-  font-size: 12px;
-  line-height: 1.45;
+  font-size: var(--type-meta);
+  line-height: var(--leading-body);
 }
 
 /* Descendant on purpose: `font: inherit` needs a nameable parent, and the
@@ -538,8 +539,8 @@
   width: 100%;
   min-width: 0;
   align-items: center;
-  gap: 6px;
-  padding: 0 2px;
+  gap: var(--space-6);
+  padding: 0 var(--space-2);
   border: 0;
   background: transparent;
   color: var(--muted);
@@ -577,34 +578,34 @@
 
 .workspace-chat-thought-preview::before {
   content: "·";
-  margin-inline-end: 6px;
+  margin-inline-end: var(--space-6);
 }
 
 .workspace-chat-thought .workspace-chat-copy {
-  margin-top: 4px;
+  margin-top: var(--space-4);
   color: var(--silence);
   font-size: var(--type-meta);
-  line-height: 1.55;
+  line-height: var(--leading-body);
 }
 
 .workspace-chat-system {
   color: var(--muted);
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--type-meta);
 }
 
 .workspace-chat-tool,
 .workspace-chat-tool-group {
   display: flex;
-  min-height: 24px;
+  min-height: var(--control-dense);
   align-items: center;
-  gap: 8px;
-  padding: 0 8px;
-  border-radius: 6px;
+  gap: var(--space-8);
+  padding: 0 var(--space-8);
+  border-radius: var(--radius-6);
   background: var(--fill-tool);
   color: var(--ink-soft);
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--type-meta);
 }
 
 .workspace-chat-tool:not(.workspace-chat-tool-group)[open] {
@@ -616,14 +617,14 @@
 }
 
 .workspace-chat-tool:not(.workspace-chat-tool-group)[open] > summary {
-  padding-inline: 8px;
+  padding-inline: var(--space-8);
   color: var(--code-text);
 }
 
 .workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-summary-text {
   color: var(--code-text);
   font-family: var(--font-mono);
-  line-height: 1.45;
+  line-height: var(--leading-body);
 }
 
 .workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-label,
@@ -648,14 +649,14 @@
 .workspace-chat-tool-group[open] {
   flex-direction: column;
   align-items: stretch;
-  gap: 2px;
+  gap: var(--space-2);
   padding: 0;
   background: transparent;
 }
 
 .workspace-chat-tool-group[open] > summary {
-  padding: 0 8px;
-  border-radius: 6px;
+  padding: 0 var(--space-8);
+  border-radius: var(--radius-6);
   background: var(--fill-tool);
   color: var(--ink-soft);
 }
@@ -665,8 +666,8 @@
   display: flex;
   flex: 1;
   align-items: center;
-  gap: 8px;
-  min-height: 24px;
+  gap: var(--space-8);
+  min-height: var(--control-dense);
   min-width: 0;
   cursor: pointer;
   list-style: none;
@@ -707,7 +708,7 @@
 .workspace-chat-tool-text {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-8);
   flex: 0 10 100%;
   min-width: 0;
   overflow: hidden;
@@ -723,8 +724,8 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 500;
+  font-size: var(--type-meta);
+  font-weight: var(--weight-label);
 }
 
 /* A fixed 48 px seat for any claimant: the label never measures the summary,
@@ -743,7 +744,7 @@
   margin-left: auto;
   width: 6px;
   height: 6px;
-  border-radius: 50%;
+  border-radius: var(--radius-full);
   background: var(--tone-live);
 }
 
@@ -759,12 +760,12 @@
 
 .workspace-chat-tool-interrupted {
   flex: none;
-  padding: 1px 6px;
+  padding: 0 var(--space-6);
   border: 1px dashed var(--border-strong);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   color: var(--silence);
   background: var(--surface-muted);
-  font-size: 12px;
+  font-size: var(--type-meta);
   white-space: nowrap;
 }
 
@@ -781,7 +782,7 @@
 
 .workspace-chat-tool-group-summary-text::before {
   content: "·";
-  margin-inline: 2px 8px;
+  margin-inline: var(--space-2) var(--space-8);
 }
 
 /* The command row's chip (SPEC-regions "Command"): the payload on --code-bg,
@@ -791,18 +792,18 @@
   min-width: 0;
   /* Border counted: 22 − 2 keeps the 20 px line box, 6 + 1 the 7 px inset. */
   height: 22px;
-  padding: 0 6px;
+  padding: 0 var(--space-6);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   /* Decorative boundary in the copyable block's form (SPEC-regions:79): the
      mono text is what identifies the chip. */
   border: 1px solid var(--line-strong);
-  border-radius: 5px;
+  border-radius: var(--radius-4);
   background: var(--code-bg);
   color: var(--code-text);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--type-mono-sm);
   line-height: 20px;
 }
 
@@ -812,7 +813,7 @@
   flex: none;
   width: 6px;
   height: 6px;
-  border-radius: 50%;
+  border-radius: var(--radius-full);
   background: var(--tone-live);
 }
 
@@ -829,19 +830,19 @@
 .workspace-command-exit {
   flex: none;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--type-meta);
   white-space: nowrap;
 }
 
 .workspace-chat-tool-body {
-  margin: 0 8px 4px 30px;
-  padding: 5px 10px;
-  border-radius: 6px;
+  margin: 0 var(--space-8) var(--space-4) var(--space-32);
+  padding: var(--space-6) var(--space-10);
+  border-radius: var(--radius-6);
   background: var(--code-bg);
   color: var(--code-text);
   font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.45;
+  font-size: var(--type-mono-sm);
+  line-height: var(--leading-body);
   white-space: pre-wrap;
 }
 
@@ -858,40 +859,40 @@
 }
 
 .workspace-chat-tool.is-plan .plan-markdown-heading-1 {
-  font-size: 1.25em;
-  font-weight: 700;
+  font-size: var(--type-display-md);
+  font-weight: var(--weight-heading);
 }
 
 .workspace-chat-tool.is-plan .plan-markdown-heading-2 {
-  font-size: 1.1em;
-  font-weight: 700;
+  font-size: var(--type-display-sm);
+  font-weight: var(--weight-heading);
 }
 
 .workspace-chat-tool.is-plan .plan-markdown-heading-3,
 .workspace-chat-tool.is-plan .plan-markdown-heading-4,
 .workspace-chat-tool.is-plan .plan-markdown-heading-5,
 .workspace-chat-tool.is-plan .plan-markdown-heading-6 {
-  font-weight: 650;
+  font-weight: var(--weight-heading);
 }
 
 .workspace-chat-tool-failed {
   flex: none;
   color: var(--danger-deep);
-  font-size: 12px;
-  font-weight: 700;
+  font-size: var(--type-meta);
+  font-weight: var(--weight-heading);
 }
 
 .workspace-chat-tool-locations {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-  margin: 6px 0 2px;
+  gap: var(--space-4);
+  margin: var(--space-6) 0 var(--space-2);
 }
 
 .workspace-chat-tool-location {
-  padding: 1px 6px;
+  padding: 0 var(--space-6);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   color: var(--silence);
   font-size: var(--type-meta);
   white-space: normal;
@@ -908,7 +909,7 @@
 }
 
 .workspace-chat-tool-body .workspace-chat-copy {
-  margin-top: 4px;
+  margin-top: var(--space-4);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -922,7 +923,7 @@
 .workspace-chat-tool-group-body {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-2);
 }
 
 .workspace-chat-error {
@@ -934,11 +935,10 @@
 /* The transcript's error line (SPEC-regions "Error line"): a 12px --danger
    sentence with the triangle, start-aligned so the icon stays on line one. */
 .workspace-chat-error-line {
-  --error-leading: 1.55;
   display: flex;
   align-items: flex-start;
-  gap: 7px;
-  line-height: calc(var(--type-meta) * var(--error-leading));
+  gap: var(--space-6);
+  line-height: var(--leading-body);
 }
 
 /* A path or URL in an error is one unbreakable token; the flex item needs
@@ -951,7 +951,7 @@
 /* Centres the mark on the first text line: the line box (meta × leading)
    minus the icon's own box, halved — two named sizes, never one number. */
 .workspace-chat-error-line .workspace-error-line-icon {
-  margin-top: calc((var(--type-meta) * var(--error-leading) - var(--error-icon)) / 2);
+  margin-top: calc((var(--type-meta) * var(--leading-body) - var(--error-icon)) / 2);
 }
 
 /* The demoted raw text under a transcript error item: present for the copy,
@@ -959,7 +959,7 @@
 .workspace-chat-error-detail {
   color: var(--muted);
   font-size: var(--type-meta);
-  margin-top: 2px;
+  margin-top: var(--space-2);
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
@@ -967,14 +967,14 @@
 .workspace-session-error {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin: 8px 12px 0;
-  padding: 8px 12px;
-  border: 1px solid var(--terracotta);
-  border-radius: 6px;
+  gap: var(--space-10);
+  margin: var(--space-8) var(--space-12) 0;
+  padding: var(--space-8) var(--space-12);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-6);
   color: var(--danger-deep);
   font-size: var(--type-meta);
-  line-height: 1.55;
+  line-height: var(--leading-body);
 }
 
 /* The recovered bar's note: the pane header below it already says
@@ -983,11 +983,11 @@
 .workspace-session-recovered {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin: 8px 12px 0;
+  gap: var(--space-10);
+  margin: var(--space-8) var(--space-12) 0;
   color: var(--muted);
   font-size: var(--type-meta);
-  line-height: 1.55;
+  line-height: var(--leading-body);
 }
 
 /* The quiet note's control answers hover and focus in ink; the shared
@@ -1005,21 +1005,21 @@
 
 .workspace-session-error-dismiss {
   flex: none;
-  width: 20px;
-  height: 20px;
+  width: var(--control-default);
+  height: var(--control-default);
   padding: 0;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-6);
   background: transparent;
   color: var(--danger-deep);
-  font-size: 13px;
+  font-size: var(--type-small);
   line-height: 1;
   cursor: pointer;
 }
 
 .workspace-session-error-dismiss:hover {
-  background: var(--terracotta);
-  color: var(--white);
+  background: var(--danger);
+  color: var(--danger-contrast);
 }
 
 /* The gate's empty picker: the one sentence plus the one action that hands
@@ -1027,8 +1027,8 @@
 .workspace-provider-empty {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 4px 6px 6px;
+  gap: var(--space-8);
+  padding: var(--space-4) var(--space-6);
   /* Capped so the sentence wraps: the popover sizes to its content, and an
      uncapped one-liner painted ~850px wide across the sidebar (live E1). */
   max-width: 340px;
@@ -1038,7 +1038,7 @@
   margin: 0;
   color: var(--ink-soft);
   font-size: var(--type-meta);
-  line-height: 1.5;
+  line-height: var(--leading-body);
 }
 
 .workspace-chat-typing {
@@ -1049,17 +1049,17 @@
 
 .workspace-chat-finish {
   flex: none;
-  margin-top: 2px;
+  margin-top: var(--space-2);
   color: var(--muted);
   font-family: var(--font-ui);
-  font-size: 13px;
+  font-size: var(--type-small);
 }
 
 .workspace-chat-empty {
-  padding-top: 10px;
+  padding-top: var(--space-10);
   color: var(--muted);
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--type-meta);
 }
 
 .workspace-composer-hint {
@@ -1067,7 +1067,7 @@
   overflow: hidden;
   color: var(--muted);
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--type-meta);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1076,9 +1076,9 @@
   display: inline-block;
   width: 6px;
   height: 12px;
-  margin-left: 3px;
+  margin-left: var(--space-2);
   vertical-align: -1px;
-  background: var(--terracotta);
+  background: var(--accent);
   animation: caret 1s steps(1) infinite;
 }
 
@@ -1092,13 +1092,13 @@
   flex: none;
   place-items: center;
   height: var(--control-default);
-  border-radius: 8px;
+  border-radius: var(--radius-8);
   cursor: pointer;
   font-size: var(--type-small);
 }
 
 .workspace-secondary-action {
-  padding: 0 11px;
+  padding: 0 var(--space-12);
   color: var(--ink-soft);
   background: transparent;
   border: 0;
@@ -1110,11 +1110,11 @@
 }
 
 .workspace-primary-action {
-  padding: 0 12px;
-  color: var(--surface);
-  background: var(--terracotta-deep);
-  border: 1px solid var(--terracotta-deep);
-  font-weight: 500;
+  padding: 0 var(--space-12);
+  color: var(--accent-contrast);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  font-weight: var(--weight-label);
 }
 
 .workspace-secondary-action:disabled,
@@ -1136,7 +1136,7 @@
 .workspace-composer-wrap {
   position: relative;
   flex: none;
-  padding: 4px 24px 12px;
+  padding: var(--space-4) var(--space-16) var(--space-12);
 }
 
 /* The queued follow-ups sit on the composer's axis: the same 760 column,
@@ -1165,38 +1165,38 @@
      row landing on the sliver and landing below it. */
   max-height: min(320px, calc((100vh - var(--crescent-band)) * 0.45));
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-2);
   overflow-y: auto;
-  padding: 6px;
+  padding: var(--space-6);
   background: var(--surface);
   border: 1px solid var(--border-strong);
-  border-radius: 11px;
-  box-shadow: 0 12px 30px rgba(var(--ink-rgb), 0.16);
+  border-radius: var(--radius-12);
+  box-shadow: var(--shadow-pop);
 }
 
 .workspace-command-menu-heading,
 .workspace-command-empty {
-  padding: 5px 9px;
+  padding: var(--space-4) var(--space-8);
   color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-ui);
   font-size: var(--type-meta);
 }
 
 .workspace-command-menu-heading {
-  letter-spacing: 0.08em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
 .workspace-command-option {
   display: grid;
   grid-template-columns: minmax(130px, max-content) minmax(0, 1fr);
-  gap: 10px;
+  gap: var(--space-10);
   width: 100%;
-  padding: 7px 9px;
+  padding: var(--space-6) var(--space-8);
   color: var(--ink-soft);
   background: transparent;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-6);
   text-align: left;
 }
 
@@ -1226,7 +1226,7 @@
   overflow: hidden;
   color: var(--silence);
   font-size: var(--type-small);
-  line-height: 1.4;
+  line-height: var(--leading-dense);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1235,13 +1235,19 @@
   width: 760px;
   max-width: 100%;
   margin: 0 auto;
+  /* One line of text plus the control row, and no more until the textarea
+     grows: the box must not read as an empty panel. */
+  min-height: calc(
+    var(--space-14) + (var(--type-interface) * var(--leading-body)) + var(--space-12) +
+      var(--control-default) + var(--space-12)
+  );
   /* The rail adds 32 px to the composer's own text inset; the transcript meets
      it within the composer's 1 px border when the conversation fills its
      capped 760 column. */
-  padding: 14px 24px 12px;
+  padding: var(--space-14) var(--space-16) var(--space-12);
   background: var(--panel-composer);
   border: 1px solid var(--line-strong);
-  border-radius: 16px;
+  border-radius: var(--radius-16);
 }
 
 .workspace-agent-shell.has-turn-rail .workspace-composer {
@@ -1252,7 +1258,7 @@
   border-color: var(--accent);
   /* The border move alone is 1 px; the ring is the visible focus cue the
      textarea (outline: 0) and the 1 px border cannot give. */
-  box-shadow: 0 0 0 2px rgba(var(--terracotta-rgb), 0.22);
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 .workspace-composer textarea {
@@ -1265,8 +1271,8 @@
   outline: 0;
   resize: none;
   overflow-y: hidden;
-  font-size: 14px;
-  line-height: 1.45;
+  font-size: var(--type-interface);
+  line-height: var(--leading-body);
 }
 
 .workspace-composer textarea::placeholder {
@@ -1279,8 +1285,8 @@
 .workspace-composer-bar {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-top: 12px;
+  gap: var(--space-6);
+  margin-top: var(--space-12);
 }
 
 .workspace-composer-controls {
@@ -1288,7 +1294,7 @@
   flex: 1;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-6);
   min-width: 0;
 }
 
@@ -1301,13 +1307,13 @@
   display: block;
   flex: none;
   min-width: 0;
-  height: 28px;
-  padding: 0 8px;
+  height: var(--control-default);
+  padding: 0 var(--space-8);
   color: var(--muted);
-  border-radius: 6px;
+  border-radius: var(--radius-6);
   font-family: var(--font-ui);
-  font-size: 12px;
-  line-height: 28px;
+  font-size: var(--type-meta);
+  line-height: var(--control-default);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1321,10 +1327,10 @@
   display: grid;
   flex: none;
   place-items: center;
-  width: 28px;
-  height: 28px;
+  width: var(--control-default);
+  height: var(--control-default);
   padding: 0;
-  border-radius: 50%;
+  border-radius: var(--radius-full);
   cursor: pointer;
 }
 
@@ -1377,8 +1383,8 @@
 .workspace-context-meter-button {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 2px;
+  gap: var(--space-6);
+  padding: 0 var(--space-2);
   color: var(--muted);
   background: none;
   border: 0;
@@ -1386,7 +1392,7 @@
 }
 
 .workspace-context-meter-text {
-  font-size: 12px;
+  font-size: var(--type-meta);
   line-height: 1;
   color: var(--muted);
   white-space: nowrap;
@@ -1405,66 +1411,66 @@
      later mount order can lose. */
   z-index: 50;
   width: 300px;
-  padding: 12px;
+  padding: var(--space-12);
   color: var(--ink);
-  font-size: 13px;
+  font-size: var(--type-small);
   background: var(--panel-menu);
   border: 1px solid var(--line-strong);
-  border-radius: 12px;
+  border-radius: var(--radius-12);
   box-shadow: var(--shadow-pop);
 }
 
 .workspace-context-popover-head {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-10);
 }
 
 .workspace-context-reading {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-2);
 }
 
 .workspace-context-percent {
-  font-size: 15px;
-  font-weight: 500;
-  line-height: 1.3;
+  font-size: var(--type-interface);
+  font-weight: var(--weight-label);
+  line-height: var(--leading-heading);
 }
 
 .workspace-context-tokens,
 .workspace-context-note {
-  font-size: 12px;
-  line-height: 1.4;
+  font-size: var(--type-meta);
+  line-height: var(--leading-dense);
   color: var(--muted);
 }
 
 .workspace-context-cost {
-  margin-top: 10px;
-  font-size: 12px;
-  line-height: 1.4;
+  margin-top: var(--space-10);
+  font-size: var(--type-meta);
+  line-height: var(--leading-dense);
   color: var(--muted);
 }
 
 .workspace-context-popover-plan {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-top: 10px;
-  padding-top: 10px;
+  gap: var(--space-8);
+  margin-top: var(--space-10);
+  padding-top: var(--space-10);
   border-top: 1px solid var(--line-strong);
 }
 
 .workspace-context-plan-chip {
   align-self: flex-start;
-  height: 20px;
-  padding: 0 8px;
+  height: var(--control-dense);
+  padding: 0 var(--space-8);
   font-size: var(--type-meta);
-  line-height: 18px;
+  line-height: 22px;
   color: var(--ink);
   background: var(--fill-tool);
   border: 1px solid var(--line-strong);
-  border-radius: 10px;
+  border-radius: var(--radius-full);
 }
 
 /* The window block and its bar are shared with the Settings Usage page;
@@ -1474,80 +1480,85 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 8px;
-  font-size: 13px;
+  gap: var(--space-8);
+  font-size: var(--type-small);
 }
 
 .workspace-context-window-meta {
-  font-size: 12px;
+  font-size: var(--type-meta);
   color: var(--muted);
   white-space: nowrap;
 }
 
 .workspace-context-credits {
-  font-size: 12px;
+  font-size: var(--type-meta);
   color: var(--muted);
 }
 
 .workspace-surface-name {
-  flex: none;
-  font-size: 12px;
-  font-weight: 500;
+  /* Menu labels name an action and never wrap: they ellipsize inside the row
+     so the icon and the trailing affordance keep their places. */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--type-meta);
+  font-weight: var(--weight-label);
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .workspace-surface-menu {
   flex: none;
-  padding: 8px;
+  padding: var(--space-4);
   /* A menu, not a card: the dark theme's menu fill is a step lighter. */
   background: var(--panel-menu);
   /* Raised over the page the way the app's own anchored popup is raised
      (.workspace-command-menu): the portal has no panel behind it, so the
      right panel's text used to show through beside the entries. */
   border: 1px solid var(--border-strong);
-  border-radius: 11px;
-  box-shadow: 0 12px 30px rgba(var(--ink-rgb), 0.16);
+  border-radius: var(--radius-12);
+  box-shadow: var(--shadow-pop);
   animation: rise 0.18s ease both;
 }
 
 .workspace-menu-label {
   color: var(--silence);
   font-size: var(--type-meta);
-  font-weight: 500;
-  letter-spacing: 0.12em;
+  font-weight: var(--weight-label);
+  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
 .workspace-menu-label {
-  padding: 2px 6px 7px;
+  padding: var(--space-2) var(--space-6) var(--space-6);
 }
 
 .workspace-surface-options {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-2);
 }
 
 .workspace-provider-group {
   min-width: 0;
-  padding-top: 3px;
+  padding-top: var(--space-2);
 }
 
 .workspace-provider-group + .workspace-provider-group {
-  margin-top: 6px;
+  margin-top: var(--space-6);
 }
 
 .workspace-surface-option {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: var(--space-8);
   width: 100%;
   min-width: 0;
-  padding: 7px 9px;
+  padding: var(--space-6) var(--space-8);
   color: var(--ink);
   text-align: left;
   background: transparent;
-  border-radius: 9px;
+  border-radius: var(--radius-8);
   cursor: pointer;
 }
 
@@ -1564,45 +1575,45 @@
 .workspace-consent-provider {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 7px 9px;
-  border-radius: 9px;
+  gap: var(--space-2);
+  padding: var(--space-6) var(--space-8);
+  border-radius: var(--radius-8);
   background: var(--surface-muted);
 }
 
 .workspace-consent-provider .workspace-surface-name {
-  font-size: 13px;
-  font-weight: 500;
+  font-size: var(--type-small);
+  font-weight: var(--weight-label);
 }
 
 .workspace-consent-spec {
   color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: var(--type-mono-sm);
   word-break: break-all;
 }
 
 .workspace-consent-notice {
   margin: 0;
-  padding: 6px 9px 0;
+  padding: var(--space-6) var(--space-8) 0;
   color: var(--silence);
   font-size: var(--type-small);
-  line-height: 1.45;
+  line-height: var(--leading-body);
 }
 
 .workspace-consent-actions {
   display: flex;
-  gap: 6px;
+  gap: var(--space-6);
   justify-content: flex-end;
-  padding: 8px 0 2px;
+  padding: var(--space-8) 0 var(--space-2);
 }
 
 .workspace-grounding-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-8);
   min-width: 0;
-  padding: 9px 0;
+  padding: var(--space-8) 0;
   color: var(--ink-soft);
   font-size: var(--type-small);
 }
@@ -1618,14 +1629,14 @@
 .workspace-open-design {
   display: grid;
   flex: none;
-  height: 24px;
+  height: var(--control-dense);
   margin-left: auto;
-  padding: 0 10px;
+  padding: 0 var(--space-10);
   place-items: center;
   color: var(--ink-soft);
   background: var(--surface-muted);
   border: 1px solid var(--border-strong);
-  border-radius: 7px;
+  border-radius: var(--radius-6);
   cursor: pointer;
   font-size: var(--type-small);
 }
@@ -1640,30 +1651,30 @@
   overflow: hidden;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 11px;
+  border-radius: var(--radius-12);
 }
 
 .workspace-generation-heading {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 9px 11px;
+  gap: var(--space-8);
+  padding: var(--space-8) var(--space-12);
   font-size: var(--type-interface);
-  font-weight: 500;
+  font-weight: var(--weight-label);
 }
 
 .workspace-design-desc {
-  padding: 0 11px 9px;
+  padding: 0 var(--space-12) var(--space-8);
   color: var(--ink-soft);
   font-size: var(--type-small);
-  line-height: 1.55;
+  line-height: var(--leading-body);
 }
 
 .workspace-design-sources {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
-  padding: 0 11px 9px;
+  gap: var(--space-6);
+  padding: 0 var(--space-12) var(--space-8);
 }
 
 .workspace-design-sources span {
@@ -1673,10 +1684,10 @@
 }
 
 .workspace-design-note {
-  margin-top: 9px;
+  margin-top: var(--space-8);
   color: var(--silence);
   font-size: var(--type-meta);
-  line-height: 1.55;
+  line-height: var(--leading-body);
 }
 
 /* The modal shell every workspace dialog shares — backdrop, card, header,
@@ -1693,17 +1704,17 @@
   z-index: 50;
   display: grid;
   place-items: center;
-  padding: 24px;
+  padding: var(--space-24);
   background: var(--modal-dim);
 }
 
 .workspace-project-dialog,
 .workspace-rename-dialog {
-  padding: 20px;
+  padding: var(--space-24);
   background: var(--surface);
   border: 1px solid var(--border-strong);
-  border-radius: 14px;
-  box-shadow: 0 12px 36px rgba(var(--ink-rgb), 0.18);
+  border-radius: var(--radius-12);
+  box-shadow: var(--shadow-pop);
 }
 
 .workspace-project-dialog {
@@ -1721,44 +1732,45 @@
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--space-16);
 }
 
 .workspace-dialog-eyebrow {
   color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-ui);
   font-size: var(--type-meta);
-  letter-spacing: 0.12em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
 .workspace-project-dialog h2,
 .workspace-rename-dialog-header h2 {
-  font-family: "Fraunces", Georgia, serif;
-  font-weight: 600;
+  font-family: var(--font-display);
+  font-weight: var(--weight-heading);
+  line-height: var(--leading-heading);
 }
 
 .workspace-project-dialog h2 {
-  margin: 4px 0 0;
-  font-size: 22px;
+  margin: var(--space-4) 0 0;
+  font-size: var(--type-display-lg);
 }
 
 .workspace-rename-dialog-header h2 {
   margin: 0;
-  font-size: 20px;
+  font-size: var(--type-display-lg);
 }
 
 .workspace-dialog-close {
   display: grid;
-  width: 27px;
-  height: 27px;
+  width: var(--control-default);
+  height: var(--control-default);
   flex: none;
   place-items: center;
   color: var(--silence);
   background: transparent;
-  border-radius: 8px;
+  border-radius: var(--radius-6);
   cursor: pointer;
-  font-size: 18px;
+  font-size: var(--type-display-sm);
   line-height: 1;
 }
 
@@ -1769,10 +1781,10 @@
 }
 
 .workspace-project-dialog-copy {
-  margin: 8px 0 18px;
+  margin: var(--space-8) 0 var(--space-16);
   color: var(--ink-soft);
-  font-size: 12px;
-  line-height: 1.6;
+  font-size: var(--type-meta);
+  line-height: var(--leading-body);
 }
 
 .workspace-project-input-label,
@@ -1780,26 +1792,26 @@
   display: block;
   color: var(--ink-soft);
   font-size: var(--type-meta);
-  font-weight: 500;
+  font-weight: var(--weight-label);
 }
 
 .workspace-project-input-label {
-  margin: 18px 0 6px;
+  margin: var(--space-16) 0 var(--space-6);
 }
 
 .workspace-rename-input-label {
-  margin: 14px 0 6px;
+  margin: var(--space-14) 0 var(--space-6);
 }
 
 .workspace-project-picker-row {
   display: flex;
   align-items: center;
-  gap: 9px;
-  margin-bottom: 8px;
+  gap: var(--space-8);
+  margin-bottom: var(--space-8);
 }
 
 .workspace-project-picker-button {
-  height: 30px;
+  height: var(--control-menu);
   border: 1px solid var(--border-strong);
 }
 
@@ -1811,12 +1823,12 @@
 .workspace-project-dialog input,
 .workspace-rename-dialog input {
   width: 100%;
-  height: 34px;
-  padding: 0 11px;
+  height: var(--control-large);
+  padding: 0 var(--space-12);
   color: var(--ink);
   background: var(--surface-muted);
   border: 1px solid var(--border-strong);
-  border-radius: 9px;
+  border-radius: var(--radius-8);
   outline: 0;
 }
 
@@ -1830,13 +1842,13 @@
 
 .workspace-rename-dialog input {
   font-family: var(--font-ui);
-  font-size: 13px;
+  font-size: var(--type-small);
 }
 
 .workspace-project-dialog input:focus,
 .workspace-rename-dialog input:focus {
-  border-color: var(--terracotta);
-  box-shadow: 0 0 0 2px var(--terracotta);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 .workspace-project-dialog input::placeholder {
@@ -1851,24 +1863,24 @@
 
 .workspace-project-error,
 .workspace-rename-error {
-  margin-top: 6px;
+  margin-top: var(--space-6);
   color: var(--danger-deep);
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-ui);
   font-size: var(--type-meta);
-  line-height: 1.5;
+  line-height: var(--leading-body);
 }
 
 .workspace-project-dialog-actions,
 .workspace-rename-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 7px;
-  margin-top: 20px;
+  gap: var(--space-8);
+  margin-top: var(--space-24);
 }
 
 /* The rename dialog's one-field form sits tighter than the project dialog's. */
 .workspace-rename-actions {
-  margin-top: 18px;
+  margin-top: var(--space-16);
 }
 
 /* The spec's dialog actions are the default control: the base 28px carries
@@ -1877,20 +1889,20 @@
 .workspace-project-dialog-actions .workspace-primary-action,
 .workspace-rename-actions .workspace-secondary-action,
 .workspace-rename-actions .workspace-primary-action {
-  padding: 0 13px;
-  border-radius: 9px;
+  padding: 0 var(--space-12);
+  border-radius: var(--radius-8);
   font-size: var(--type-small);
 }
 
 /* The menu's Delete entry reads as what it is: the one entry that destroys. */
 .workspace-menu-separator {
   height: 1px;
-  margin: 4px 8px;
+  margin: var(--space-4) var(--space-8);
   background: var(--border-strong);
 }
 
 .workspace-menu-option-destructive {
-  color: var(--accent-text);
+  color: var(--danger);
 }
 
 /* Composer image picker: the attach button flows with the control row while
@@ -1904,8 +1916,8 @@
   display: flex;
   flex-basis: 100%;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 2px;
+  gap: var(--space-6);
+  margin-bottom: var(--space-2);
 }
 
 .workspace-composer-preview {
@@ -1921,24 +1933,24 @@
   height: 100%;
   object-fit: cover;
   border: 1px solid var(--line-strong);
-  border-radius: 8px;
+  border-radius: var(--radius-8);
 }
 
 .workspace-composer-preview-remove {
   position: absolute;
-  top: -7px;
-  right: -7px;
+  top: -6px;
+  right: -6px;
   display: grid;
   place-items: center;
-  width: 18px;
-  height: 18px;
+  width: var(--control-icon-small);
+  height: var(--control-icon-small);
   padding: 0;
   color: var(--ink-soft);
   background: var(--panel-card);
   border: 1px solid var(--line-strong);
-  border-radius: 50%;
+  border-radius: var(--radius-full);
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--type-meta);
   line-height: 1;
 }
 
@@ -1956,20 +1968,20 @@
 .workspace-composer-image-refusal {
   flex-basis: 100%;
   color: var(--danger);
-  font-size: 12px;
+  font-size: var(--type-meta);
 }
 
 .workspace-composer-attach {
   display: grid;
   flex: none;
   place-items: center;
-  width: 28px;
-  height: 28px;
+  width: var(--control-default);
+  height: var(--control-default);
   padding: 0;
   color: var(--ink-soft);
   background: transparent;
   border: 1px solid var(--line-strong);
-  border-radius: 50%;
+  border-radius: var(--radius-full);
   cursor: pointer;
 }
 
