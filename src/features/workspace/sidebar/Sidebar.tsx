@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ChangeEvent, KeyboardEvent, MouseEvent, RefObject } from "react";
+import type {
+  ChangeEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent,
+  RefObject,
+} from "react";
 import { HistoryPanel } from "../../history/HistoryPanel";
+import { searchChordFor, searchChordLabel } from "../../../lib/keymap";
 import type { DaemonStatus, Session } from "../../../types/ipc";
 import type { WorkspaceProject } from "../workspaceProjects";
 import type { WorkspaceKey } from "../hosts/hostIdentity";
@@ -9,21 +15,12 @@ import { SidebarFooter } from "./SidebarFooter";
 import { WorkspaceTree, type WorkspaceTreeProps } from "./WorkspaceTree";
 import "./sidebar.css";
 
-/**
- * The width from which the wordmark row holds the search field beside it,
- * measured from the real sheets: 64px of Fraunces 16px "devboule", the field's
- * 96px floor, two 28px buttons with the 2px between them and the row's own 24px
- * of padding add up to 242px, which is the sidebar's default width. Below it
- * the search is a magnifier that opens the field on the row underneath.
- */
-export const SIDEBAR_SEARCH_ROW_MIN_WIDTH = 248;
-
 export interface SidebarProps {
   width: number;
   collapsed: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
   onResizeStart: (event: MouseEvent<HTMLButtonElement>) => void;
-  onResizeKeyDown: (event: KeyboardEvent<HTMLButtonElement>) => void;
+  onResizeKeyDown: (event: ReactKeyboardEvent<HTMLButtonElement>) => void;
   resizeMin: number;
   resizeMax: number;
   historyOpen: boolean;
@@ -49,10 +46,10 @@ export interface SidebarProps {
 }
 
 /**
- * The sidebar region: the 40px wordmark row (--sidebar-top) with the search
- * and the add and collapse controls as quiet buttons, the tree or the History
- * panel, and the foot. The resize handle is this region's other half — a
- * sibling of the aside in the screen's flex row.
+ * The sidebar region: the 40px wordmark row (--sidebar-top) with the add and
+ * collapse controls, the search row under it, the tree or the History panel,
+ * and the foot. The resize handle is this region's other half — a sibling of
+ * the aside in the screen's flex row.
  */
 export function Sidebar({
   width,
@@ -76,27 +73,42 @@ export function Sidebar({
   const [searchOpen, setSearchOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchButtonRef = useRef<HTMLButtonElement>(null);
-  const fieldInRow = width >= SIDEBAR_SEARCH_ROW_MIN_WIDTH;
+  /** Which end of the row takes the focus once the swap commits: the field
+   * replaces the trigger, so the trigger's ref is null until it is back. */
+  const focusSearchRef = useRef<"field" | "trigger" | null>(null);
 
-  // The magnifier opens the field on the row under the wordmark row, and the
-  // field must take the focus with it: it is a different element in the tree,
-  // so nothing focuses it but this.
   useEffect(() => {
-    if (searchOpen && !fieldInRow) searchInputRef.current?.focus();
-  }, [fieldInRow, searchOpen]);
+    const take = focusSearchRef.current;
+    if (take === null) return;
+    focusSearchRef.current = null;
+    (take === "field" ? searchInputRef : searchButtonRef).current?.focus({ preventScroll: true });
+  }, [collapsed, searchOpen]);
 
-  const closeSearch = useCallback(() => {
-    setSearchOpen(false);
-    searchButtonRef.current?.focus({ preventScroll: true });
+  const openSearch = useCallback(() => {
+    focusSearchRef.current = "field";
+    setSearchOpen(true);
   }, []);
 
-  const toggleSearch = useCallback(() => {
-    if (searchOpen) closeSearch();
-    else setSearchOpen(true);
-  }, [closeSearch, searchOpen]);
+  const closeSearch = useCallback(() => {
+    focusSearchRef.current = "trigger";
+    setSearchOpen(false);
+  }, []);
+
+  // The chord is window-level so it answers from the composer, and it opens
+  // the collapsed panel first: a listed shortcut must never be dead.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!searchChordFor(event)) return;
+      event.preventDefault();
+      if (collapsed) onCollapsedChange(false);
+      openSearch();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [collapsed, onCollapsedChange, openSearch]);
 
   const searchField = (
-    <label className={`workspace-search sidebar-search${fieldInRow ? "" : " sidebar-search-row"}`}>
+    <label className="workspace-search sidebar-search">
       <span className="sr-only">{historyOpen ? "Search history" : "Search workspaces"}</span>
       <input
         ref={searchInputRef}
@@ -106,7 +118,7 @@ export function Sidebar({
           else onSearchChange(event);
         }}
         onKeyDown={(event) => {
-          if (event.key === "Escape" && !fieldInRow) closeSearch();
+          if (event.key === "Escape") closeSearch();
         }}
         placeholder="Search"
       />
@@ -136,33 +148,6 @@ export function Sidebar({
             <div className="sidebar-top">
               <span className="sidebar-wordmark">devboule</span>
               <span className="sidebar-top-spacer" />
-              {fieldInRow ? (
-                searchField
-              ) : (
-                <button
-                  type="button"
-                  className="workspace-icon-button sidebar-top-button sidebar-search-button"
-                  ref={searchButtonRef}
-                  onClick={toggleSearch}
-                  title="Search"
-                  aria-label="Search"
-                  aria-expanded={searchOpen}
-                >
-                  <svg
-                    className="sidebar-search-icon"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.75"
-                    strokeLinecap="round"
-                    aria-hidden="true"
-                    focusable="false"
-                  >
-                    <circle cx="11" cy="11" r="7" />
-                    <path d="m20 20-3.6-3.6" />
-                  </svg>
-                </button>
-              )}
               <button
                 type="button"
                 className="workspace-icon-button sidebar-top-button"
@@ -184,7 +169,36 @@ export function Sidebar({
               </button>
             </div>
 
-            {fieldInRow || !searchOpen ? null : searchField}
+            <div className="sidebar-search-row">
+              {searchOpen ? (
+                searchField
+              ) : (
+                <button
+                  type="button"
+                  className="sidebar-search-trigger"
+                  ref={searchButtonRef}
+                  onClick={openSearch}
+                  title="Search"
+                  aria-label={historyOpen ? "Search history" : "Search workspaces"}
+                >
+                  <svg
+                    className="sidebar-search-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.75"
+                    strokeLinecap="round"
+                    aria-hidden="true"
+                    focusable="false"
+                  >
+                    <circle cx="11" cy="11" r="7" />
+                    <path d="m20 20-3.6-3.6" />
+                  </svg>
+                  <span className="sidebar-search-trigger-label">Search</span>
+                  <span className="sidebar-search-trigger-hint">{searchChordLabel()}</span>
+                </button>
+              )}
+            </div>
 
             <div className="workspace-scroll sidebar-body">
               <HostSections daemon={daemon}>

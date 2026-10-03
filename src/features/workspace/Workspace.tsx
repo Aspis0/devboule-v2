@@ -1631,6 +1631,7 @@ export function Workspace({
             providerAnchor?.kind === "project" ? providerAnchor.projectId : null,
           providerMenu: providerAnchor?.kind === "project" ? providerMenu : null,
           stats: workspaceStats,
+          branches: workspaceBranches,
         }}
       />
 

@@ -207,6 +207,9 @@ describe("deleting a workspace from the sidebar", () => {
       { ...localWorkspace, id: "workspace-2", title: "second" },
     ]);
     await renderWorkspace();
+    const trigger = document.querySelector<HTMLButtonElement>(".sidebar-search-trigger");
+    if (trigger === null) throw new Error("the sidebar search row did not render");
+    await act(async () => trigger.click());
     const search = document.querySelector<HTMLInputElement>(".workspace-search input");
     if (search === null) throw new Error("search input did not render");
     await act(async () => {

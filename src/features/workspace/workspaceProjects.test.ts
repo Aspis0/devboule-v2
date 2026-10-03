@@ -48,32 +48,41 @@ describe("workspaceView", () => {
       "pulse",
     );
   });
-  it("shows no meta line for a row that matches the norm", () => {
-    const view = workspaceView(workspace, [session()]);
-    expect(view.meta).toBeNull();
+  it("counts the workspace's working agents and the ones waiting on the user", () => {
+    const waiting = session({
+      id: "w1",
+      state: { type: "silent", generation: 1 },
+      attention: { reason: "permission", atMs: 1 },
+    });
+    const view = workspaceView(workspace, [session(), session({ id: "s2" }), waiting]);
+    expect(view.agents).toEqual({ working: 2, waiting: 1 });
   });
 
-  it("speaks only the anomaly: recovered sessions count", () => {
+  it("counts nothing for a workspace with no sessions", () => {
+    expect(workspaceView(workspace, []).agents).toEqual({ working: 0, waiting: 0 });
+  });
+
+  it("carries the shortest silence across the workspace's own sessions", () => {
+    // A workspace's last activity is its most recent output, so the row keeps
+    // the elapsed time of the session that spoke last.
     const view = workspaceView(workspace, [
-      session({
-        id: "r1",
-        state: {
-          type: "recovered",
-          generation: 2,
-          integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
-        },
-      }),
-      session({
-        id: "r2",
-        state: {
-          type: "recovered",
-          generation: 2,
-          integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
-        },
-      }),
-      session(),
+      session({ id: "quiet", elapsedMs: 900_000 }),
+      session({ id: "talked", elapsedMs: 4_000 }),
+      session({ id: "other", workspaceId: "workspace-2", elapsedMs: 1 }),
     ]);
-    expect(view.meta).toBe("2 recovered");
+    expect(view.elapsedMs).toBe(4_000);
+  });
+
+  it("carries no elapsed time when no roster row reports one", () => {
+    const recovered = session({
+      state: {
+        type: "recovered",
+        generation: 2,
+        integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
+      },
+      elapsedMs: null,
+    });
+    expect(workspaceView(workspace, [recovered]).elapsedMs).toBeNull();
   });
 
   it("counts only the workspace's own sessions", () => {
@@ -88,7 +97,7 @@ describe("workspaceView", () => {
         },
       }),
     ]);
-    expect(view.meta).toBeNull();
+    expect(view.agents).toEqual({ working: 0, waiting: 0 });
   });
 
   it("the state dot speaks the tab chips' vocabulary, priority first", () => {

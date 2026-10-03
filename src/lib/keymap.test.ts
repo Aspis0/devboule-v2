@@ -9,6 +9,8 @@ import {
   composerKeyAction,
   crescentPageForKey,
   isCloseTabKey,
+  searchChordFor,
+  searchChordLabel,
   shortcutSections,
   stripChordFor,
   tabMoveForKey,
@@ -235,6 +237,13 @@ describe("shortcutSections", () => {
     expect(tabMoveForKey("Home")).toBe("first");
     expect(crescentPageForKey("ArrowLeft")).toBe("previous");
     expect(isCloseTabKey("Backspace")).toBe(true);
+  });
+
+  it("lists the search chord the sidebar answers", () => {
+    expect(rows("queue")).toContain(`${searchChordLabel()} | Search workspaces |`);
+    expect(searchChordFor(chord({ key: "k", altKey: false, shiftKey: false, ctrlKey: true }))).toBe(
+      true,
+    );
   });
 
   it("shows the host's own command modifier in the alternate row", () => {

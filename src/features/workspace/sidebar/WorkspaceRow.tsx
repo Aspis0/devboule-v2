@@ -17,14 +17,9 @@ import { moveMenuFocus } from "../strip/menuNav";
 import type { WorkspaceView } from "../workspaceProjects";
 import type { WorkspaceKey } from "../hosts/hostIdentity";
 import { avatarStyle } from "./avatars";
+import { compactAge } from "./compactAge";
+import { DOT_LABELS, WorkspaceRowFacts } from "./WorkspaceRowFacts";
 import type { WorkspaceStat } from "./useWorkspaceStats";
-
-/** The row's trailing state dot in the tab chips' vocabulary. */
-const DOT_LABELS: Record<NonNullable<WorkspaceView["stateDot"]>, string> = {
-  pulse: "running",
-  attention: "needs attention",
-  unattended: "running unattended",
-};
 
 /**
  * Where focus goes once this row's workspace is gone: the next row, the
@@ -62,6 +57,10 @@ export interface WorkspaceRowProps {
   projectName: string;
   selected: boolean;
   stat: WorkspaceStat | undefined;
+  /** The branch the workspace's last status read reported. */
+  branch: string | undefined;
+  /** The clock the row reads its last activity against (WorkspaceTree's). */
+  now: number;
   onSelect: (workspaceKey: WorkspaceKey) => void;
   /** Persists a new title and answers with the refusal, if one came back. */
   onRename: (workspaceId: string, title: string) => Promise<ErrorSentence | null>;
@@ -75,6 +74,8 @@ export function WorkspaceRow({
   projectName,
   selected,
   stat,
+  branch,
+  now,
   onSelect,
   onRename,
   onDelete,
@@ -266,6 +267,7 @@ export function WorkspaceRow({
   };
 
   const dot = workspace.stateDot !== null ? `, ${DOT_LABELS[workspace.stateDot]}` : null;
+  const age = compactAge(workspace.elapsedMs, now);
   return (
     <div className="workspace-row-wrap" onContextMenu={openMenu}>
       {editing ? (
@@ -311,26 +313,17 @@ export function WorkspaceRow({
             {firstGrapheme(workspace.displayTitle)}
           </span>
           <span className="workspace-row-copy">
-            <span className="workspace-row-title">{workspace.displayTitle}</span>
-            {workspace.meta !== null ? (
-              <span className="workspace-row-meta">{workspace.meta}</span>
-            ) : null}
-          </span>
-          {stat !== undefined ? (
-            <span className="sidebar-row-stats">
-              <span className="sidebar-stat-add">+{stat.additions}</span>{" "}
-              <span className="sidebar-stat-del">−{stat.deletions}</span>
+            <span className="workspace-row-line">
+              <span className="workspace-row-title">{workspace.displayTitle}</span>
+              {age === null ? null : <span className="workspace-row-age">{age}</span>}
             </span>
-          ) : null}
-          {workspace.stateDot !== null ? (
-            <span
-              role="img"
-              aria-label={DOT_LABELS[workspace.stateDot]}
-              className={`sidebar-row-dot sidebar-row-dot-${workspace.stateDot}${
-                workspace.stateDot === "pulse" ? " dot-pulse" : ""
-              }`}
+            <WorkspaceRowFacts
+              branch={branch}
+              stat={stat}
+              agents={workspace.agents}
+              stateDot={workspace.stateDot}
             />
-          ) : null}
+          </span>
         </button>
       )}
       {menuOpen ? (

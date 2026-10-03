@@ -1076,10 +1076,6 @@
   animation: caret 1s steps(1) infinite;
 }
 
-.workspace-row-selected .workspace-row-meta {
-  color: var(--ink-soft);
-}
-
 .workspace-secondary-action,
 .workspace-primary-action {
   display: grid;

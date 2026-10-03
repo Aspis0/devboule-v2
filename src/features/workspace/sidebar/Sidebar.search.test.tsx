@@ -1,17 +1,17 @@
 // @vitest-environment happy-dom
 
-// The sidebar's search at narrow widths: the wordmark row cannot hold the
-// field, so the search is a magnifier that opens the same field on the row
-// under it. The wordmark itself is never the thing that gives way — that is
-// pinned in sidebar.computed.test.tsx, from the real sheets.
+// The sidebar's search, on its own row under the wordmark row: a quiet
+// trigger that names itself and its shortcut, opening the same field that
+// filters the tree. The chord lives in the keymap and is pinned there.
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { daemonStatus, devicesList, workspaceGitStatus } from "../../../lib/tauri";
+import { searchChordLabel } from "../../../lib/keymap";
 import type { DaemonStatus } from "../../../types/ipc";
-import { MAX_LEFT_WIDTH, MIN_LEFT_WIDTH, INITIAL_LEFT_WIDTH } from "../workspaceResize";
-import { Sidebar, SIDEBAR_SEARCH_ROW_MIN_WIDTH, type SidebarProps } from "./Sidebar";
+import { MAX_LEFT_WIDTH, MIN_LEFT_WIDTH } from "../workspaceResize";
+import { Sidebar, type SidebarProps } from "./Sidebar";
 
 vi.mock("../../../lib/tauri", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../lib/tauri")>()),
@@ -34,9 +34,9 @@ const CONNECTED: DaemonStatus = {
   message: null,
 };
 
-function sidebarProps(width: number): SidebarProps {
+function sidebarProps(overrides: Partial<SidebarProps> = {}): SidebarProps {
   return {
-    width,
+    width: MAX_LEFT_WIDTH,
     collapsed: false,
     onCollapsedChange: vi.fn(),
     onResizeStart: vi.fn(),
@@ -73,13 +73,15 @@ function sidebarProps(width: number): SidebarProps {
       providerMenuAnchorProjectId: null,
       providerMenu: null,
       stats: new Map(),
+      branches: new Map(),
     },
     daemon: CONNECTED,
     daemonNote: null,
+    ...overrides,
   };
 }
 
-describe("the sidebar's search when the row is too narrow for it", () => {
+describe("the sidebar's search row", () => {
   let container: HTMLDivElement;
   let root: Root;
 
@@ -117,99 +119,95 @@ describe("the sidebar's search when the row is too narrow for it", () => {
     container.remove();
   });
 
-  async function render(width: number, searchValue = ""): Promise<void> {
+  async function render(overrides: Partial<SidebarProps> = {}): Promise<void> {
     root = createRoot(container);
     await act(async () => {
-      root.render(<Sidebar {...sidebarProps(width)} searchValue={searchValue} />);
+      root.render(<Sidebar {...sidebarProps(overrides)} />);
     });
     await act(async () => {
       for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
     });
   }
 
-  function topRow(): HTMLElement {
-    const row = container.querySelector<HTMLElement>(".sidebar-top");
-    if (row === null) throw new Error("the wordmark row did not render");
-    return row;
-  }
-
-  function magnifier(): HTMLButtonElement {
-    const button = container.querySelector<HTMLButtonElement>(".sidebar-search-button");
-    if (button === null) throw new Error("the search magnifier did not render");
+  function trigger(): HTMLButtonElement {
+    const button = container.querySelector<HTMLButtonElement>(".sidebar-search-trigger");
+    if (button === null) throw new Error("the search row did not render");
     return button;
   }
 
-  it("spends its threshold on the wordmark, the field, the buttons and the padding", () => {
-    // The row's budget, measured in a browser against these sheets: 63.97px of
-    // Fraunces 16px "devboule", the pill's own 96px floor, two 28px buttons
-    // with the 2px between them, and 12px of padding a side.
-    const budget = 63.97 + 96 + 28 + 2 + 28 + 12 * 2;
-    expect(budget).toBeLessThanOrEqual(SIDEBAR_SEARCH_ROW_MIN_WIDTH);
-    // The slack is the collapse button's: the panel clips anything past its
-    // edge, so the row must stop short of one.
-    expect(SIDEBAR_SEARCH_ROW_MIN_WIDTH - budget).toBeGreaterThanOrEqual(4);
+  function input(): HTMLInputElement | null {
+    return container.querySelector<HTMLInputElement>(".sidebar-search-row .workspace-search input");
+  }
+
+  it("leaves the wordmark row to the wordmark and its two buttons", async () => {
+    await render();
+
+    const top = container.querySelector<HTMLElement>(".sidebar-top");
+    if (top === null) throw new Error("the wordmark row did not render");
+    expect(top.querySelector(".sidebar-search")).toBeNull();
+    expect(top.querySelector(".sidebar-search-trigger")).toBeNull();
+    expect(top.textContent).toBe("devboule+‹");
   });
 
-  it("keeps the field in the row at the sidebar's default width", async () => {
-    await render(INITIAL_LEFT_WIDTH);
+  it("sits under the wordmark row, naming itself and its shortcut", async () => {
+    await render();
 
-    expect(container.querySelector(".sidebar-search-button")).toBeNull();
-    expect(topRow().querySelector(".sidebar-search")).not.toBeNull();
+    const row = container.querySelector<HTMLElement>(".sidebar-search-row");
+    if (row === null) throw new Error("the search row did not render");
+    const top = container.querySelector<HTMLElement>(".sidebar-top");
+    if (top === null) throw new Error("the wordmark row did not render");
+    expect(top.nextElementSibling).toBe(row);
+    expect(row.textContent).toBe(`Search${searchChordLabel()}`);
+    expect(trigger().getAttribute("aria-label")).toBe("Search workspaces");
   });
 
-  it("spends the narrow row on the wordmark and a magnifier named Search", async () => {
-    await render(MIN_LEFT_WIDTH);
+  it("shows the field in place of itself and takes the focus", async () => {
+    await render({ searchValue: "shell" });
 
-    expect(container.querySelector(".sidebar-search")).toBeNull();
-    expect(topRow().querySelector(".sidebar-wordmark")?.textContent).toBe("devboule");
-    expect(magnifier().getAttribute("aria-label")).toBe("Search");
-    expect(magnifier().getAttribute("title")).toBe("Search");
-    expect(magnifier().getAttribute("aria-expanded")).toBe("false");
+    await act(async () => trigger().click());
+
+    expect(container.querySelector(".sidebar-search-trigger")).toBeNull();
+    // The same field, holding the draft the tree was already filtering on.
+    expect(input()?.value).toBe("shell");
+    expect(document.activeElement).toBe(input());
   });
 
-  it("holds the field in the row once the sidebar is wide enough", async () => {
-    await render(SIDEBAR_SEARCH_ROW_MIN_WIDTH);
-
-    expect(container.querySelector(".sidebar-search-button")).toBeNull();
-    const pill = topRow().querySelector(".sidebar-search");
-    expect(pill).not.toBeNull();
-    expect(container.querySelector(".sidebar-search-row")).toBeNull();
-  });
-
-  it("opens the same field on the row under the wordmark row, and focuses it", async () => {
-    await render(MIN_LEFT_WIDTH, "shell");
-
-    await act(async () => magnifier().click());
-
-    const field = container.querySelector<HTMLElement>(".sidebar-search-row");
-    if (field === null) throw new Error("the compact search field did not open");
-    expect(topRow().contains(field)).toBe(false);
-    // The same field, not a second one: the draft the row's field held.
-    expect(field.querySelector<HTMLInputElement>("input")?.value).toBe("shell");
-    expect(document.activeElement).toBe(field.querySelector("input"));
-    expect(magnifier().getAttribute("aria-expanded")).toBe("true");
-  });
-
-  it("closes on Escape and hands the focus back to the magnifier", async () => {
-    await render(MIN_LEFT_WIDTH);
-    await act(async () => magnifier().click());
-    const input = container.querySelector<HTMLInputElement>(".sidebar-search-row input");
-    if (input === null) throw new Error("the compact search field did not open");
+  it("closes on Escape and hands the focus back to the row", async () => {
+    await render();
+    await act(async () => trigger().click());
+    const field = input();
+    if (field === null) throw new Error("the search field did not open");
 
     await act(async () => {
-      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      field.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     });
 
-    expect(container.querySelector(".sidebar-search-row")).toBeNull();
-    expect(document.activeElement).toBe(magnifier());
+    expect(container.querySelector(".sidebar-search-row .workspace-search")).toBeNull();
+    expect(document.activeElement).toBe(trigger());
   });
 
-  it("closes when the magnifier is pressed again", async () => {
-    await render(MIN_LEFT_WIDTH);
-    await act(async () => magnifier().click());
-    await act(async () => magnifier().click());
+  it("opens from the shortcut, and reopens it with the field focused", async () => {
+    await render();
 
-    expect(container.querySelector(".sidebar-search")).toBeNull();
-    expect(document.activeElement).toBe(magnifier());
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }),
+      );
+    });
+
+    expect(document.activeElement).toBe(input());
+  });
+
+  it("opens a collapsed sidebar before the field, so the chord is never dead", async () => {
+    const onCollapsedChange = vi.fn();
+    await render({ collapsed: true, onCollapsedChange });
+
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }),
+      );
+    });
+
+    expect(onCollapsedChange).toHaveBeenCalledExactlyOnceWith(false);
   });
 });

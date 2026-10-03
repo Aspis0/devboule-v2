@@ -43,6 +43,18 @@ const STRIP_CHORDS: readonly { chord: StripChord; key: string }[] = [
   { chord: "previous", key: "[" },
 ];
 
+/** True when the event belongs to a widget that owns the whole keyboard: a
+ * terminal, or an open menu, dialog or listbox. The chord must not pull its
+ * own keys out from under one. */
+function holdsTheKeyboard(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return (
+    target.closest(".workspace-terminal-shell") !== null ||
+    target.closest('[role="menu"], [role="dialog"], [role="alertdialog"], [role="listbox"]') !==
+      null
+  );
+}
+
 /** True when the event belongs to a widget that owns its keys: a text field,
  * a terminal, or an open menu, dialog or listbox. The chord must not pull a
  * caret or a terminal's own Alt chord out from under it. */
@@ -54,9 +66,7 @@ function ownsItsKeys(target: EventTarget | null): boolean {
     tag === "TEXTAREA" ||
     tag === "SELECT" ||
     target.isContentEditable ||
-    target.closest(".workspace-terminal-shell") !== null ||
-    target.closest('[role="menu"], [role="dialog"], [role="alertdialog"], [role="listbox"]') !==
-      null
+    holdsTheKeyboard(target)
   );
 }
 
@@ -130,6 +140,29 @@ export function crescentPageForKey(key: string): CrescentPage | null {
 /** Typing this at the start of a message opens the command menu. */
 export const COMMAND_MENU_KEY = "/";
 
+/** The key the search chord rides on, with either command modifier. */
+const SEARCH_KEY = "k";
+
+/**
+ * The window-level chord that focuses the sidebar's search field, or false.
+ * A text field does not claim it: the whole point is reaching the search
+ * from the composer, so only the surfaces that take the whole keyboard — a
+ * terminal, menu, dialog or listbox — hold it back.
+ */
+export function searchChordFor(
+  event: Pick<
+    KeyboardEvent,
+    "key" | "altKey" | "ctrlKey" | "metaKey" | "isComposing" | "keyCode"
+  > & { target: EventTarget | null },
+): boolean {
+  if (isImeComposition(event)) return false;
+  if (event.altKey) return false;
+  // Exactly one command modifier: Cmd on a Mac, Ctrl everywhere else.
+  if (event.ctrlKey === event.metaKey) return false;
+  if (event.key.toLowerCase() !== SEARCH_KEY) return false;
+  return !holdsTheKeyboard(event.target);
+}
+
 /** The command modifier's label for a platform string. */
 export function commandModifierLabel(platform: string): "Cmd" | "Ctrl" {
   return platform.startsWith("Mac") ? "Cmd" : "Ctrl";
@@ -139,6 +172,11 @@ export function commandModifierLabel(platform: string): "Cmd" | "Ctrl" {
  * module-scope constant would answer for a test's platform before it runs. */
 export function commandModifier(): "Cmd" | "Ctrl" {
   return commandModifierLabel(typeof navigator === "undefined" ? "" : navigator.platform);
+}
+
+/** The search chord as the app prints it, on this host's modifier. */
+export function searchChordLabel(): string {
+  return `${commandModifier()}+${SEARCH_KEY.toUpperCase()}`;
 }
 
 /** One line of the Shortcuts page. */
@@ -218,6 +256,17 @@ function crescentRows(): readonly ShortcutRow[] {
   }));
 }
 
+function navigationRows(): readonly ShortcutRow[] {
+  return [
+    {
+      keys: searchChordLabel(),
+      title: "Search workspaces",
+      detail: "The workspaces panel opens first while it is collapsed.",
+    },
+    ...crescentRows(),
+  ];
+}
+
 function panelRows(): readonly ShortcutRow[] {
   return [
     { keys: tabMoveKeys("next"), title: "Next panel tab" },
@@ -242,7 +291,7 @@ export function shortcutSections(behavior: SendBehavior): readonly ShortcutSecti
   return [
     { label: "Tabs", rows: tabStripRows() },
     { label: "Composer", rows: composerRows(behavior), note: COMPOSER_BLOCKED_NOTE },
-    { label: "Navigation", rows: crescentRows() },
+    { label: "Navigation", rows: navigationRows() },
     { label: "Panel", rows: panelRows() },
   ];
 }

@@ -187,10 +187,10 @@
   --sidebar-min: 200px;
   --sidebar-max: 360px;
   --sidebar-top: 40px;
-  /* the workspace row's own height; a row that carries a metadata line
+  /* the workspace row's own height; a row that carries a facts line
      grows to --workspace-row-meta */
   --workspace-row: 32px;
-  --workspace-row-meta: 36px;
+  --workspace-row-meta: 40px;
   --group-row: var(--control-dense);
   --tab-height: 36px;
   --tab-chip: var(--control-default);

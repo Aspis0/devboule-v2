@@ -270,7 +270,7 @@ export const HistoryRowView = memo(function HistoryRowView({
             ) : null}
           </div>
         </div>
-        <span className="workspace-row-meta history-row-meta" aria-hidden="true">
+        <span className="history-row-meta" aria-hidden="true">
           {visibleMeta.join(" · ")}
         </span>
       </div>

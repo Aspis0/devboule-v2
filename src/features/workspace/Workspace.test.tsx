@@ -503,6 +503,17 @@ const historyUsage: JournalUsage = {
   ],
 };
 
+/** The sidebar search is a quiet row until it is opened; the tests
+ * below drive the field itself, so they open it first. */
+async function openSidebarSearch(): Promise<HTMLInputElement> {
+  const trigger = document.querySelector<HTMLButtonElement>(".sidebar-search-trigger");
+  if (trigger === null) throw new Error("the sidebar search row did not render");
+  await act(async () => trigger.click());
+  const field = document.querySelector<HTMLInputElement>('input[placeholder="Search"]');
+  if (field === null) throw new Error("the search field did not open");
+  return field;
+}
+
 function setSearchValue(input: HTMLInputElement, value: string) {
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
   if (!setter) throw new Error("input value setter did not resolve");
@@ -759,8 +770,7 @@ describe("Workspace sessions", () => {
       await act(async () => undefined);
 
       // The query matches only A's row ("devboule main"); B's row drops out.
-      const input = container.querySelector<HTMLInputElement>(".workspace-search input");
-      if (input === null) throw new Error("search input did not render");
+      const input = await openSidebarSearch();
       await act(async () => setSearchValue(input, "devboule main"));
       const rowsAfterSearch = [...container.querySelectorAll<HTMLButtonElement>(".workspace-row")];
       expect(rowsAfterSearch.some((row) => row.textContent?.includes("other-main"))).toBe(false);
@@ -931,8 +941,7 @@ describe("Workspace sessions", () => {
     await act(async () =>
       container.querySelector<HTMLButtonElement>(".workspace-history-button")?.click(),
     );
-    const search = container.querySelector<HTMLInputElement>('input[placeholder="Search"]');
-    if (!search) throw new Error("History search did not render");
+    const search = await openSidebarSearch();
     await act(async () => setSearchValue(search, "Feature"));
     const row = container.querySelector<HTMLButtonElement>('[data-agent-id="agent-w2"]');
     if (!row) throw new Error("History agent row did not render");
@@ -989,8 +998,7 @@ describe("Workspace sessions", () => {
       root.render(<Workspace />);
     });
     await act(async () => undefined);
-    const treeSearch = container.querySelector<HTMLInputElement>('input[placeholder="Search"]');
-    if (!treeSearch) throw new Error("tree search did not render");
+    const treeSearch = await openSidebarSearch();
     await act(async () => setSearchValue(treeSearch, "devboule main"));
     await act(async () => projectsReply.resolve([project, secondProject]));
     await act(async () => undefined);
@@ -1041,6 +1049,7 @@ describe("Workspace sessions", () => {
     await act(async () => undefined);
     const readIds = () => vi.mocked(workspaceGitStatus).mock.calls.map(([id]) => id);
     expect(readIds()).not.toContain("workspace-9");
+    await openSidebarSearch();
     await act(async () => {
       container.querySelector<HTMLButtonElement>(".workspace-history-button")?.click();
     });
@@ -1306,8 +1315,7 @@ describe("Workspace sessions", () => {
     expect(container.textContent).toContain("workspace journal busy");
     expect(container.textContent).not.toContain("No matching workspaces");
 
-    const search = container.querySelector<HTMLInputElement>('input[placeholder="Search"]');
-    if (search === null) throw new Error("workspace search did not render");
+    const search = await openSidebarSearch();
     await act(async () => setSearchValue(search, "does-not-match"));
     expect(container.textContent).toContain("workspace journal busy");
     expect(container.textContent).toContain("Retry");
@@ -1952,7 +1960,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const search = container.querySelector<HTMLInputElement>('input[placeholder="Search"]');
+    const search = await openSidebarSearch();
     if (!search) throw new Error("search input did not render");
     const historyToggle = container.querySelector<HTMLButtonElement>(".workspace-history-button");
     if (!historyToggle) throw new Error("History toggle did not render");
@@ -2002,8 +2010,7 @@ describe("Workspace sessions", () => {
     expect(initialIds).toContain("workspace-1");
     expect(initialIds).toContain("workspace-2");
     vi.mocked(workspaceGitStatus).mockClear();
-    const input = container.querySelector<HTMLInputElement>(".workspace-search input");
-    if (input === null) throw new Error("search input did not render");
+    const input = await openSidebarSearch();
     await act(async () => setSearchValue(input, "other-main"));
     await act(async () => undefined);
     const sidebar = container.querySelector('aside[aria-label="Workspaces"]');

@@ -31,12 +31,27 @@ export interface WorkspaceProject extends Project {
   workspaceError?: ErrorSentence;
 }
 
+/** What a workspace's own agents are doing, counted from the roster. */
+export interface WorkspaceAgents {
+  /** Sessions with a live turn. */
+  working: number;
+  /** Sessions stopped on the user's approval. */
+  waiting: number;
+}
+
 export interface WorkspaceView extends HostWorkspace {
   /** What the sidebar prints; `title` stays the stored row. */
   displayTitle: string;
-  /** A word only when the row differs from the norm; null renders no line. */
-  meta: string | null;
-  /** The row's trailing state dot, in the tab chips' vocabulary. */
+  /** What the row's second line counts. */
+  agents: WorkspaceAgents;
+  /**
+   * Milliseconds since the last output this workspace's own sessions
+   * reported — the shortest silence among them, so the row can print when it
+   * last spoke. Null when no roster row reports one, which is unknown, never
+   * "long ago".
+   */
+  elapsedMs: number | null;
+  /** The row's state dot, in the tab chips' vocabulary. */
   stateDot: "pulse" | "attention" | "unattended" | null;
 }
 
@@ -115,26 +130,41 @@ export function buildSessionIndex(sessions: readonly Session[]): Map<WorkspaceKe
   return index;
 }
 
+/** The shortest silence among the roster rows: the instant the workspace
+ * last spoke, as an elapsed time so the row can read a clock of its own. */
+function shortestElapsed(sessions: readonly Session[]): number | null {
+  let shortest: number | null = null;
+  for (const session of sessions) {
+    const elapsed = session.elapsedMs;
+    if (typeof elapsed !== "number" || !Number.isFinite(elapsed)) continue;
+    if (shortest === null || elapsed < shortest) shortest = elapsed;
+  }
+  return shortest;
+}
+
 function workspaceViewFromIndex(
   workspace: HostWorkspace,
   sessionsOfWorkspace: readonly Session[],
   displayTitle: string,
 ): WorkspaceView {
-  const recovered = sessionsOfWorkspace.filter((session) => session.state.type === "recovered");
-  // The meta line appears only when the row differs from the norm (spec): a
-  // recovered transcript is the anomaly worth a word. Live counts and the
-  // isolation word are the norm and stay off the row.
-  const meta = recovered.length > 0 ? `${recovered.length} recovered` : null;
-  const attention = sessionsOfWorkspace.some(sessionNeedsApproval);
+  const live = sessionsOfWorkspace.filter((session) => session.state.type === "live");
+  const waiting = sessionsOfWorkspace.filter(sessionNeedsApproval);
   const unattended = sessionsOfWorkspace.some(
     (session) => session.state.type !== "ended" && session.unattended === "yes",
   );
-  const running = sessionsOfWorkspace.some((session) => session.state.type === "live");
   return {
     ...workspace,
     displayTitle,
-    meta,
-    stateDot: attention ? "attention" : unattended ? "unattended" : running ? "pulse" : null,
+    agents: { working: live.length, waiting: waiting.length },
+    elapsedMs: shortestElapsed(sessionsOfWorkspace),
+    stateDot:
+      waiting.length > 0
+        ? "attention"
+        : unattended
+          ? "unattended"
+          : live.length > 0
+            ? "pulse"
+            : null,
   };
 }
 
@@ -364,7 +394,7 @@ export function useWorkspaceProjects(restoredWorkspaceKey: WorkspaceKey | null) 
               !query ||
               // Both spellings: a row is found by what it prints (its
               // numbered title) and by what the journal stores under it.
-              `${project.name} ${workspace.title} ${workspace.displayTitle} ${workspace.meta ?? ""}`
+              `${project.name} ${workspace.title} ${workspace.displayTitle}`
                 .toLowerCase()
                 .includes(query),
           ),

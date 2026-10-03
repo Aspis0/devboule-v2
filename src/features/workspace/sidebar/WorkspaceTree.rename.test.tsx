@@ -25,7 +25,8 @@ const project: WorkspaceProject = {
       hostId: LOCAL_HOST_ID,
       isolation: "local",
       path: "C:\\devboule-v2",
-      meta: null,
+      agents: { working: 0, waiting: 0 },
+      elapsedMs: null,
       stateDot: null,
     },
     {
@@ -36,7 +37,8 @@ const project: WorkspaceProject = {
       hostId: LOCAL_HOST_ID,
       isolation: "local",
       path: "C:\\devboule-v2",
-      meta: null,
+      agents: { working: 0, waiting: 0 },
+      elapsedMs: null,
       stateDot: null,
     },
   ],
@@ -81,6 +83,7 @@ describe("the sidebar's workspace rows", () => {
           providerMenuAnchorProjectId={null}
           providerMenu={null}
           stats={new Map()}
+          branches={new Map()}
           onRenameWorkspace={onRename}
           onDeleteWorkspace={onDeleteWorkspace}
         />,

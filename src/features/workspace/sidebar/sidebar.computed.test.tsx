@@ -14,7 +14,6 @@ import { resolve } from "node:path";
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { beforeEachHarness, renderWorkspace, unmountWorkspace } from "../bulkCloseHarness";
-import { writeStoredPanelFrame, MIN_LEFT_WIDTH } from "../workspaceResize";
 import { assembleCssProof, removeCssProof } from "../cssProof";
 
 const rootDir = resolve(import.meta.dirname, "../../../..");
@@ -39,7 +38,7 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
   // then changes.css, strip (SessionStrip, :23), sidebar (Sidebar, :37).
   // First importer wins the position, so the :80 re-import of
   // Workspace.css changes nothing.
-  const { rulesFor, inject } = assembleCssProof([
+  const { rulesFor, inject, token } = assembleCssProof([
     read("src/styles/tokens.css"),
     read("src/styles/global.css"),
     read("src/features/workspace/Workspace.css"),
@@ -63,6 +62,34 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     expect(style.paddingLeft).toBe("8px");
     expect(style.paddingTop).toBe("2px");
     expect(style.minHeight).toBe("32px");
+  });
+
+  it("a row carrying a facts line is the 40px row, and the name sits above it", () => {
+    expect(rulesFor(".workspace-row:has(.workspace-row-facts)")).toContain("min-height: 40px");
+    expect(rulesFor(".workspace-row-line")).toContain("display: flex");
+    expect(rulesFor(".workspace-row-title")).toContain("font-size: 13px");
+    expect(rulesFor(".workspace-row-title")).toContain("font-weight: 500");
+    expect(rulesFor(".workspace-row-age")).toContain("font-variant-numeric: tabular-nums");
+    // The branch is the only code on the row.
+    expect(rulesFor(".workspace-row-branch")).toContain("JetBrains Mono");
+    expect(rulesFor(".workspace-row-facts")).not.toContain("JetBrains Mono");
+    expect(rulesFor(".sidebar-row-waiting")).toContain(`color: ${token("--tone-attention-text")}`);
+  });
+
+  it("the selected row is the soft fill, and hover only tints", async () => {
+    // A 40px row in the strong selected fill reads as a block; the soft one
+    // keeps the row a row. happy-dom cannot mix colours, so the pin is on the
+    // declaration and its token.
+    const soft = (token("--fill-selected-soft") ?? "").replace(
+      /var\(--[a-zA-Z0-9-]+\)/,
+      token("--ground-center") ?? "",
+    );
+    expect(rulesFor(".workspace-row-selected")).toContain(`background: ${soft}`);
+    inject([".workspace-row", ".workspace-row-selected"]);
+    await renderWorkspace();
+    const selected = document.querySelector<HTMLElement>(".workspace-row-selected");
+    if (selected === null) throw new Error("no selected workspace row rendered");
+    expect(getComputedStyle(selected).borderRadius).toBe("6px");
   });
 
   it("avatars hold exactly one letter at 16px, the project avatar beside it", async () => {
@@ -105,36 +132,13 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     expect(getComputedStyle(foot).paddingLeft).toBe("8px");
   });
 
-  it("the search pill holds the placeholder and the wordmark never gives way", async () => {
-    // happy-dom computes no layout, so this pins the BUDGET: the pill's floor
-    // of 96px holds "Search" (~35px at --type-meta) inside the content its
-    // padding and border leave, and the wordmark is not a candidate for the
-    // row's shortfall at all — below SIDEBAR_SEARCH_ROW_MIN_WIDTH the search
-    // itself becomes the magnifier, so a label never ellipsizes.
-    inject([
-      ".sidebar-top",
-      ".sidebar-search",
-      ".sidebar-search input",
-      ".sidebar-wordmark",
-      ".sidebar-foot",
-    ]);
-    // A sidebar past the field's own threshold, so the pill is what is under
-    // test rather than the magnifier that replaces it.
-    writeStoredPanelFrame(localStorage, {
-      left: 320,
-      right: 300,
-      leftCollapsed: false,
-      rightCollapsed: false,
-    });
+  it("the wordmark row keeps the wordmark whole", async () => {
+    inject([".sidebar-top", ".sidebar-wordmark", ".sidebar-foot"]);
     await renderWorkspace();
 
     const top = document.querySelector<HTMLElement>(".sidebar-top");
     if (top === null) throw new Error("sidebar top did not render");
     expect(getComputedStyle(top).gap).toBe("0");
-
-    const pill = document.querySelector<HTMLElement>(".sidebar-search");
-    if (pill === null) throw new Error("search pill did not render");
-    expect(getComputedStyle(pill).minWidth).toBe("96px");
 
     const wordmarkRule = rulesFor(".sidebar-wordmark");
     expect(wordmarkRule).toContain("flex: none");
@@ -144,43 +148,48 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     if (wordmark === null) throw new Error("wordmark did not render");
     expect(getComputedStyle(wordmark).whiteSpace).toBe("nowrap");
 
-    const input = pill.querySelector("input");
-    if (input === null) throw new Error("search input did not render");
-    expect(getComputedStyle(input).paddingLeft).toBe("0px");
-    expect(getComputedStyle(input).paddingRight).toBe("0px");
-
     const foot = document.querySelector<HTMLElement>(".sidebar-foot");
     if (foot === null) throw new Error("daemon foot did not render");
     expect(getComputedStyle(foot).gap).toBe("8px");
   });
 
-  it("the field's own row below the wordmark row takes the sidebar's whole width", async () => {
-    // The compact search's geometry: a column parent, so flex: none (a 1 1
-    // would grow the field down the sidebar) and no max-width cap. Rendered
-    // open at the sidebar's own minimum, which is narrow enough for the
-    // magnifier instead of the field.
-    const rowRule = rulesFor(".sidebar-search-row");
-    expect(rowRule).toContain("flex: none");
-    expect(rowRule).toContain("max-width: none");
-    inject([".sidebar-search", ".sidebar-search-row"]);
-    writeStoredPanelFrame(localStorage, {
-      left: MIN_LEFT_WIDTH,
-      right: 300,
-      leftCollapsed: false,
-      rightCollapsed: false,
-    });
+  it("the search takes its own row, the sidebar's whole width", async () => {
+    // The row is the sidebar's width minus its own 12px a side, and the field
+    // that replaces the trigger fills it: no floor, no cap, the quiet row's
+    // own height.
+    expect(rulesFor(".sidebar-search-row")).toContain("flex: none");
+    expect(rulesFor(".sidebar-search-row")).toContain("height: 28px");
+    expect(rulesFor(".sidebar-search-row")).toContain("margin: 0 12px 8px");
+    // The field's own row is the whole width: no floor of its own, no cap to
+    // shrink it at wide sidebars.
+    expect(rulesFor(".sidebar-search")).not.toContain("max-width");
+    inject([
+      ".sidebar-search-row",
+      ".sidebar-search",
+      ".sidebar-search input",
+      ".sidebar-search-trigger",
+    ]);
     await renderWorkspace();
-    const magnifier = document.querySelector<HTMLButtonElement>(".sidebar-search-button");
-    if (magnifier === null) throw new Error("the search magnifier did not render");
-    await act(async () => magnifier.click());
 
-    const pill = document.querySelector<HTMLElement>(".sidebar-search-row");
-    if (pill === null) throw new Error("the compact search field did not open");
+    const row = document.querySelector<HTMLElement>(".sidebar-search-row");
+    if (row === null) throw new Error("the search row did not render");
+    expect(getComputedStyle(row).height).toBe("28px");
+
+    const trigger = document.querySelector<HTMLButtonElement>(".sidebar-search-trigger");
+    if (trigger === null) throw new Error("the search trigger did not render");
+    expect(getComputedStyle(trigger).width).toBe("100%");
+    await act(async () => trigger.click());
+
+    const pill = document.querySelector<HTMLElement>(".sidebar-search-row .sidebar-search");
+    if (pill === null) throw new Error("the search field did not open");
     const style = getComputedStyle(pill);
-    expect(style.maxWidth).toBe("none");
-    expect(style.flexGrow).toBe("0");
-    expect(style.height).toBe("28px");
-    expect(style.marginLeft).toBe("12px");
+    expect(style.height).toBe("100%");
+    expect(style.flexGrow).toBe("1");
+
+    const input = pill.querySelector("input");
+    if (input === null) throw new Error("search input did not render");
+    expect(getComputedStyle(input).paddingLeft).toBe("0px");
+    expect(getComputedStyle(input).paddingRight).toBe("0px");
   });
 
   it("the foot's rows sit on the body rows' 16px column", async () => {

@@ -780,11 +780,14 @@ describe("workspace session controller", () => {
       isolation: "local",
       path: "C:\\project-1",
     };
-    // A live session is the norm: no meta line. The workspace with the agent
-    // shows it through the state dot, not through words.
+    // A live session is the norm: the workspace with the agent shows it
+    // through the state dot and one counted agent, not through words.
     expect(workspaceView(workspaceWithAgent, sessions).stateDot).toBe("pulse");
-    expect(workspaceView(workspaceWithAgent, sessions).meta).toBeNull();
-    expect(workspaceView(workspaceOne, sessions).meta).toBeNull();
+    expect(workspaceView(workspaceWithAgent, sessions).agents).toEqual({
+      working: 1,
+      waiting: 0,
+    });
+    expect(workspaceView(workspaceOne, sessions).agents).toEqual({ working: 0, waiting: 0 });
     expect(workspaceView(workspaceOne, sessions).stateDot).toBeNull();
     release();
   });

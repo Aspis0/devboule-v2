@@ -42,7 +42,8 @@ const WORKSPACES: readonly WorkspaceView[] = [
     isolation: "local",
     path: "C:/code/alpha",
     displayTitle: "shell one",
-    meta: null,
+    agents: { working: 0, waiting: 0 },
+    elapsedMs: null,
     stateDot: null,
   },
   {
@@ -53,7 +54,8 @@ const WORKSPACES: readonly WorkspaceView[] = [
     isolation: "local",
     path: "C:/code/alpha",
     displayTitle: "shell two",
-    meta: null,
+    agents: { working: 0, waiting: 0 },
+    elapsedMs: null,
     stateDot: null,
   },
 ];
@@ -115,6 +117,7 @@ function sidebarProps(): SidebarProps {
       providerMenuAnchorProjectId: null,
       providerMenu: null,
       stats: new Map(),
+      branches: new Map(),
     },
     daemon: CONNECTED,
     daemonNote: null,
@@ -171,12 +174,20 @@ describe("the lone host's sidebar markup", () => {
 <span class="sidebar-wordmark">devboule</span>
 <span class="sidebar-top-spacer">
 </span>
-<label class="workspace-search sidebar-search">
-<span class="sr-only">Search workspaces</span>
-<input placeholder="Search" value="">
-</label>
 <button type="button" class="workspace-icon-button sidebar-top-button" title="New project" aria-label="New project">+</button>
 <button type="button" class="workspace-icon-button sidebar-top-button" title="Collapse" aria-label="Collapse workspaces">‹</button>
+</div>
+<div class="sidebar-search-row">
+<button type="button" class="sidebar-search-trigger" title="Search" aria-label="Search workspaces">
+<svg class="sidebar-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true" focusable="false">
+<circle cx="11" cy="11" r="7">
+</circle>
+<path d="m20 20-3.6-3.6">
+</path>
+</svg>
+<span class="sidebar-search-trigger-label">Search</span>
+<span class="sidebar-search-trigger-hint">Ctrl+K</span>
+</button>
 </div>
 <div class="workspace-scroll sidebar-body">
 <div class="sidebar-host">
@@ -204,7 +215,9 @@ describe("the lone host's sidebar markup", () => {
 <button type="button" class="workspace-row" aria-pressed="false" aria-label="shell one, Alpha" title="C:/code/alpha">
 <span class="sidebar-avatar sidebar-avatar-workspace" aria-hidden="true">s</span>
 <span class="workspace-row-copy">
+<span class="workspace-row-line">
 <span class="workspace-row-title">shell one</span>
+</span>
 </span>
 </button>
 </div>
@@ -212,7 +225,9 @@ describe("the lone host's sidebar markup", () => {
 <button type="button" class="workspace-row" aria-pressed="false" aria-label="shell two, Alpha" title="C:/code/alpha">
 <span class="sidebar-avatar sidebar-avatar-workspace" aria-hidden="true">s</span>
 <span class="workspace-row-copy">
+<span class="workspace-row-line">
 <span class="workspace-row-title">shell two</span>
+</span>
 </span>
 </button>
 </div>
