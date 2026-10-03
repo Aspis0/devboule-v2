@@ -10,6 +10,7 @@
 
 import { browserClose, browserOpen } from "./browserController";
 import { requestBrowserPopup } from "./browserTabs";
+import { isWorkspaceKey, parseWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
 import type { BrowserChord, BrowserUpdate, BrowserViewState } from "../../types/ipc";
 
 /** A view of a page, told what the page reports. */
@@ -92,8 +93,8 @@ export function watchBrowserChords(id: string, onChord: (chord: BrowserChord) =>
   };
 }
 
-function create(id: string, url: string): Page {
-  const opened = browserOpen(id, url, (update) => report(id, update));
+function create(id: string, url: string, workspaceKey: WorkspaceKey): Page {
+  const opened = browserOpen(id, url, workspace_of(workspaceKey), (update) => report(id, update));
   const page: Page = { id, state: null, opened, watchers: new Set() };
   pages.set(id, page);
   void opened.then(
@@ -107,16 +108,30 @@ function create(id: string, url: string): Page {
   return page;
 }
 
+/** The daemon's own id for a workspace, which is the half Rust scopes tabs by.
+ * A key this app did not compose has no such half, and a page claimed for the
+ * wrong workspace is one no agent can ever address. */
+function workspace_of(workspaceKey: WorkspaceKey): string {
+  if (!isWorkspaceKey(workspaceKey)) {
+    throw new Error(`Not a workspace key: ${workspaceKey}`);
+  }
+  return parseWorkspaceKey(workspaceKey).workspaceId;
+}
+
 /**
  * Show a page, and follow it. `opened` answers with the page's state as soon
  * as the page has one, and `unwatch` is the caller's half of the subscription.
+ *
+ * Rust adopts a page that is already open, so a pane opening a tab an agent
+ * created finds that page rather than a second one at the same address.
  */
 export function watchBrowserPage(
   id: string,
   url: string,
+  workspaceKey: WorkspaceKey,
   onUpdate: PageWatch,
 ): { opened: Promise<BrowserViewState>; unwatch: () => void } {
-  const page = pages.get(id) ?? create(id, url);
+  const page = pages.get(id) ?? create(id, url, workspaceKey);
   page.watchers.add(onUpdate);
   return {
     // A view that arrives after the page has settled must not read the

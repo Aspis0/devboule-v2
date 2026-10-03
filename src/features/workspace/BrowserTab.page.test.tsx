@@ -37,6 +37,10 @@ vi.mock("./browserTabs", () => ({ patchBrowserTab: vi.fn(), requestBrowserPopup:
 
 import { BrowserTab } from "./BrowserTab";
 import { resetBrowserPagesForTests } from "./browserPages";
+import { localWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
+
+/** The workspace the tab under test belongs to. */
+const WORKSPACE = localWorkspaceKey("w-1") as WorkspaceKey;
 
 const PAGE_RECT = { x: 455, y: 137, width: 770, height: 663 };
 const OPENED: BrowserViewState = {
@@ -70,7 +74,7 @@ async function mountTab(): Promise<{ container: HTMLElement; unmount: () => Prom
   await act(async () => {
     root.render(
       <StrictMode>
-        <BrowserTab browserId="tab-1" url="https://example.com/" />
+        <BrowserTab browserId="tab-1" url="https://example.com/" workspaceKey={WORKSPACE} />
       </StrictMode>,
     );
   });
@@ -157,7 +161,8 @@ describe("a browser tab's page", () => {
 
   it("keeps reporting to the mount that is still there", async () => {
     const { container, unmount } = await mountTab();
-    const report = mocks.open.mock.calls[0]?.[2] as (update: BrowserUpdate) => void;
+    // The callback is the fourth argument: id, address, workspace, callback.
+    const report = mocks.open.mock.calls[0]?.[3] as (update: BrowserUpdate) => void;
     expect(typeof report).toBe("function");
 
     await act(async () => {

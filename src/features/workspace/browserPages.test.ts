@@ -17,6 +17,11 @@ const mocks = vi.hoisted(() => ({
 vi.mock("./browserController", () => ({ browserOpen: mocks.open, browserClose: mocks.close }));
 vi.mock("./browserTabs", () => ({ requestBrowserPopup: mocks.popup }));
 
+import { localWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
+
+/** The workspace every tab in this file belongs to. */
+const WORKSPACE = localWorkspaceKey("w-1") as WorkspaceKey;
+
 import {
   browserPagesSnapshot,
   closeBrowserPage,
@@ -36,9 +41,10 @@ const LOADED: BrowserViewState = {
   error: null,
 };
 
-/** The callback the controller reports the page's own state on. */
+/** The callback the controller reports the page's own state on, after the id,
+ * the address and the workspace the page is claimed for. */
 function reportOn(): (update: BrowserUpdate) => void {
-  return mocks.open.mock.calls[0]?.[2] as (update: BrowserUpdate) => void;
+  return mocks.open.mock.calls[0]?.[3] as (update: BrowserUpdate) => void;
 }
 
 describe("the browser page store", () => {
@@ -58,8 +64,8 @@ describe("the browser page store", () => {
   it("creates one page for two views of the same tab", async () => {
     const first: BrowserUpdate[] = [];
     const second: BrowserUpdate[] = [];
-    watchBrowserPage("tab-1", "https://example.com/", (update) => first.push(update));
-    watchBrowserPage("tab-1", "https://example.com/", (update) => second.push(update));
+    watchBrowserPage("tab-1", "https://example.com/", WORKSPACE, (update) => first.push(update));
+    watchBrowserPage("tab-1", "https://example.com/", WORKSPACE, (update) => second.push(update));
 
     expect(mocks.open).toHaveBeenCalledTimes(1);
     // Both views hear the page, which is what a shared channel buys: the
@@ -80,7 +86,7 @@ describe("the browser page store", () => {
   });
 
   it("answers a view that arrives late with the page as it stands", async () => {
-    const first = watchBrowserPage("tab-1", "https://example.com/", () => undefined);
+    const first = watchBrowserPage("tab-1", "https://example.com/", WORKSPACE, () => undefined);
     await expect(first.opened).resolves.toEqual(LOADED);
     const report = reportOn();
     report({
@@ -94,7 +100,7 @@ describe("the browser page store", () => {
       error: null,
     });
 
-    const late = watchBrowserPage("tab-1", "https://example.com/next", () => undefined);
+    const late = watchBrowserPage("tab-1", "https://example.com/next", WORKSPACE, () => undefined);
 
     await expect(late.opened).resolves.toMatchObject({ url: "https://example.com/next" });
     expect(mocks.open).toHaveBeenCalledTimes(1);
@@ -103,11 +109,11 @@ describe("the browser page store", () => {
   it("stops answering a view that unsubscribed", async () => {
     const gone: BrowserUpdate[] = [];
     const staying: BrowserUpdate[] = [];
-    const watched = watchBrowserPage("tab-1", "https://example.com/", (update) =>
+    const watched = watchBrowserPage("tab-1", "https://example.com/", WORKSPACE, (update) =>
       gone.push(update),
     );
     const report = reportOn();
-    watchBrowserPage("tab-1", "https://example.com/", (update) => staying.push(update));
+    watchBrowserPage("tab-1", "https://example.com/", WORKSPACE, (update) => staying.push(update));
     watched.unwatch();
 
     report({
@@ -127,18 +133,18 @@ describe("the browser page store", () => {
 
   it("lets a refused create be tried again, because no page was built", async () => {
     mocks.open.mockRejectedValueOnce("The main window is gone.");
-    const failed = watchBrowserPage("tab-1", "https://example.com/", () => undefined);
+    const failed = watchBrowserPage("tab-1", "https://example.com/", WORKSPACE, () => undefined);
     await expect(failed.opened).rejects.toBe("The main window is gone.");
 
-    const again = watchBrowserPage("tab-1", "https://example.com/", () => undefined);
+    const again = watchBrowserPage("tab-1", "https://example.com/", WORKSPACE, () => undefined);
     await expect(again.opened).resolves.toEqual(LOADED);
     expect(mocks.open).toHaveBeenCalledTimes(2);
   });
 
   it("routes one window request per page, not one per view", () => {
-    watchBrowserPage("tab-1", "https://example.com/", () => undefined);
+    watchBrowserPage("tab-1", "https://example.com/", WORKSPACE, () => undefined);
     const report = reportOn();
-    watchBrowserPage("tab-1", "https://example.com/", () => undefined);
+    watchBrowserPage("tab-1", "https://example.com/", WORKSPACE, () => undefined);
 
     report({ kind: "newWindow", url: "https://example.com/other" });
 
@@ -146,7 +152,7 @@ describe("the browser page store", () => {
   });
 
   it("drops an update that arrives after the tab was closed", async () => {
-    const watched = watchBrowserPage("tab-1", "https://example.com/", () => undefined);
+    const watched = watchBrowserPage("tab-1", "https://example.com/", WORKSPACE, () => undefined);
     const report = reportOn();
     await expect(watched.opened).resolves.toEqual(LOADED);
     let notified = 0;
@@ -173,8 +179,8 @@ describe("the browser page store", () => {
   });
 
   it("closes the page it forgets, and forgets nothing else", async () => {
-    const watched = watchBrowserPage("tab-1", "https://example.com/", () => undefined);
-    watchBrowserPage("tab-2", "https://example.org/", () => undefined);
+    const watched = watchBrowserPage("tab-1", "https://example.com/", WORKSPACE, () => undefined);
+    watchBrowserPage("tab-2", "https://example.org/", WORKSPACE, () => undefined);
     await expect(watched.opened).resolves.toEqual(LOADED);
 
     closeBrowserPage("tab-1");
@@ -185,7 +191,7 @@ describe("the browser page store", () => {
   });
 
   it("publishes what each live page reported, and only when it changed", async () => {
-    watchBrowserPage("tab-1", "https://example.com/", () => undefined);
+    watchBrowserPage("tab-1", "https://example.com/", WORKSPACE, () => undefined);
     const report = reportOn();
     let notified = 0;
     subscribeBrowserPages(() => {
@@ -213,7 +219,7 @@ describe("the browser page store", () => {
   it("says nothing when a parked page reports what it already said", async () => {
     // A parked page keeps running and keeps reporting. Its state is the
     // strip's whole input, so a repeat must not re-render every chip.
-    const watched = watchBrowserPage("tab-1", "https://example.com/", () => undefined);
+    const watched = watchBrowserPage("tab-1", "https://example.com/", WORKSPACE, () => undefined);
     await expect(watched.opened).resolves.toEqual(LOADED);
     const report = reportOn();
     let notified = 0;

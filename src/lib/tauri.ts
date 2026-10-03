@@ -283,7 +283,7 @@ export type CommandArgs = {
   };
   delegation_get: undefined;
   delegation_set: { enabled: boolean };
-  browser_open: { id: string; url: string; updates: BrowserChannel };
+  browser_open: { id: string; url: string; workspaceId: string; updates: BrowserChannel };
   browser_present: { id: string; rect: LogicalRect };
   browser_park: { id: string };
   browser_navigate: { id: string; url: string };
@@ -598,7 +598,7 @@ export const COMMAND_ARG_KEYS = {
   provider_vocabulary_get: ["provider", "model", "refresh"],
   delegation_get: [],
   delegation_set: ["enabled"],
-  browser_open: ["id", "url", "updates"],
+  browser_open: ["id", "url", "workspaceId", "updates"],
   browser_present: ["id", "rect"],
   browser_park: ["id"],
   browser_navigate: ["id", "url"],

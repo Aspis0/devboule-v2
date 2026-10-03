@@ -22,6 +22,7 @@ import { browserHistory, browserNavigate, browserReload } from "./browserControl
 import { followBrowserPage, type BrowserPagePlacement } from "./browserPlacement";
 import { watchBrowserChords, watchBrowserPage } from "./browserPages";
 import { patchBrowserTab, requestBrowserPopup } from "./browserTabs";
+import type { WorkspaceKey } from "./hosts/hostIdentity";
 import type { BrowserUpdate, BrowserViewState } from "../../types/ipc";
 import { browserFocusAddress, browserReloadChord } from "../../lib/keymap";
 import "./BrowserTab.css";
@@ -31,6 +32,9 @@ export interface BrowserTabProps {
   browserId: string;
   /** Where the page starts: the tab's restored address, or the start page. */
   url: string;
+  /** The workspace this tab belongs to. Rust scopes the page by it, so an
+   * agent may only address the tabs of the workspace it is working in. */
+  workspaceKey: WorkspaceKey;
 }
 
 const IDLE: BrowserViewState = {
@@ -43,7 +47,7 @@ const IDLE: BrowserViewState = {
   error: null,
 };
 
-export function BrowserTab({ browserId, url }: BrowserTabProps) {
+export function BrowserTab({ browserId, url, workspaceKey }: BrowserTabProps) {
   const [page, setPage] = useState<BrowserViewState>({ ...IDLE, url });
   /** What the user has typed. Null while the bar shows the page's own
    * address, which is the only state in which a keystroke would move the
@@ -83,7 +87,7 @@ export function BrowserTab({ browserId, url }: BrowserTabProps) {
   );
 
   useEffect(() => {
-    const watched = watchBrowserPage(browserId, startUrl, onUpdate);
+    const watched = watchBrowserPage(browserId, startUrl, workspaceKey, onUpdate);
     let live = true;
     void watched.opened
       .then((opened) => {
@@ -103,7 +107,7 @@ export function BrowserTab({ browserId, url }: BrowserTabProps) {
       live = false;
       watched.unwatch();
     };
-  }, [browserId, onUpdate, startUrl]);
+  }, [browserId, onUpdate, startUrl, workspaceKey]);
 
   // Where the page is, and when the controller hears about it. The placement
   // follows the pane, the window and every open overlay, and sends one

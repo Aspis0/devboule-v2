@@ -107,6 +107,19 @@ export function openBrowserTab(
   return record;
 }
 
+/**
+ * A tab an agent opened: a chip in the workspace it belongs to, recorded like
+ * any other tab so a restart brings it back. It does not become the tab that
+ * workspace is showing — the pane the user is looking at is theirs.
+ */
+export function addAgentTab(workspaceKey: WorkspaceKey, browserId: string, url: string): void {
+  if (layout.tabs.some((tab) => tab.browserId === browserId)) return;
+  commit({
+    ...layout,
+    tabs: [...layout.tabs, { browserId, workspaceKey, url, title: null, favicon: null }],
+  });
+}
+
 /** What the page said about itself. The tab keeps its place in the strip; only
  * the words on its chip and the address in its bar change. */
 export function patchBrowserTab(browserId: string, page: BrowserPageState): void {

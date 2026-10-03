@@ -895,7 +895,18 @@ pub(crate) struct BridgeInner {
     client_lifecycle: Mutex<()>,
     roster_subscription: Arc<RosterSubscription>,
     attachments: Arc<AttachmentRegistry>,
+    /// Told about every connection this process holds, with the connection
+    /// itself or None for the drop. The browser host is the one listener: it
+    /// registers for as long as it is connected, which is per connection and
+    /// not once per process.
+    listeners: Mutex<Vec<ClientListener>>,
 }
+
+/// What a listener is told when the connection changes: the new client, or
+/// None once the connection is gone. Called with the lifecycle guard held, so
+/// a listener must not make an RPC of its own from here — it hands the change
+/// to its own thread and answers there.
+pub(crate) type ClientListener = Arc<dyn Fn(Option<&Arc<DaemonClient>>) + Send + Sync>;
 
 pub struct DaemonBridge {
     inner: Arc<BridgeInner>,
@@ -911,6 +922,7 @@ impl DaemonBridge {
             client_lifecycle: Mutex::new(()),
             roster_subscription: Arc::new(RosterSubscription::default()),
             attachments: Arc::new(AttachmentRegistry::default()),
+            listeners: Mutex::new(Vec::new()),
         });
         let stop = Arc::new(AtomicBool::new(false));
         let thread_inner = Arc::clone(&inner);
@@ -998,6 +1010,38 @@ impl BridgeInner {
             .ok_or_else(|| "The daemon connection was lost.".to_string())
     }
 
+    /// Report every later connection change to `listener`, and the connection
+    /// this process already holds if it holds one. A listener installed after
+    /// the first connect would otherwise never learn about it.
+    pub(crate) fn on_client_change(&self, listener: ClientListener) {
+        let held = self
+            .client
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone();
+        self.listeners
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .push(listener);
+        if let Some(held) = held {
+            self.notify(Some(&held));
+        }
+    }
+
+    /// Hand one connection change to every listener. Called with the lifecycle
+    /// guard held: a listener that blocked here would hold up the roster and
+    /// every attachment that wants the same client.
+    fn notify(&self, client: Option<&Arc<DaemonClient>>) {
+        let listeners: Vec<ClientListener> = self
+            .listeners
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone();
+        for listener in listeners {
+            listener(client);
+        }
+    }
+
     pub(crate) fn sessions_watch(
         self: &Arc<Self>,
         handler: SessionStateHandler,
@@ -1066,6 +1110,10 @@ impl BridgeInner {
         for (session_id, error) in failures {
             eprintln!("session {session_id} reattach deferred until the next user action: {error}");
         }
+        // Last, and for the same reason: the roster and the attachments are
+        // this client's business, and a listener that fails is one the bridge
+        // cannot do anything about.
+        self.notify(Some(&client));
         Ok(())
     }
 
@@ -1081,6 +1129,7 @@ impl BridgeInner {
         {
             *current = None;
             self.attachments.begin_replacement();
+            self.notify(None);
         }
     }
 
@@ -1089,10 +1138,15 @@ impl BridgeInner {
             .client_lifecycle
             .lock()
             .unwrap_or_else(|err| err.into_inner());
-        self.client
+        let taken = self
+            .client
             .lock()
             .unwrap_or_else(|err| err.into_inner())
-            .take()
+            .take();
+        if taken.is_some() {
+            self.notify(None);
+        }
+        taken
     }
 
     fn observe_roster(&self, snapshots: &[SessionStateSnapshot]) {

@@ -74,15 +74,23 @@ pub enum BrowserChord {
 
 /// The handles a webview's own hooks need: the channel it reports down and
 /// the state it edits. Cloned into each hook, because each takes ownership.
+///
+/// The channel sits behind a lock because the page outlives any one watcher:
+/// a page an agent opened has no pane to report to until the user opens its
+/// chip, and adopting that page hands the channel over without rebuilding it.
 #[derive(Clone)]
 struct TabHooks {
-    updates: Channel<BrowserUpdate>,
+    sink: Arc<Mutex<Channel<BrowserUpdate>>>,
     state: Arc<Mutex<BrowserViewState>>,
 }
 
 impl TabHooks {
     fn send(&self, update: BrowserUpdate) {
-        let _ = self.updates.send(update);
+        let _ = self
+            .sink
+            .lock()
+            .expect("browser sink poisoned")
+            .send(update);
     }
 
     /// Put a note on the pane's own line, the way a refused navigation does.
@@ -195,6 +203,7 @@ pub async fn open(
     registry: &BrowserRegistry,
     id: &str,
     raw_url: &str,
+    workspace: &str,
     updates: Channel<BrowserUpdate>,
 ) -> Result<BrowserViewState, String> {
     let target = url::accept(raw_url)?;
@@ -206,13 +215,15 @@ pub async fn open(
     std::fs::create_dir_all(&profile).map_err(|e| format!("browser profile: {e}"))?;
 
     let label = format!("{LABEL_PREFIX}{id}");
+    let sink = Arc::new(Mutex::new(updates));
+    let state = Arc::new(Mutex::new(BrowserViewState {
+        url: target.to_string(),
+        loading: true,
+        ..BrowserViewState::default()
+    }));
     let hooks = TabHooks {
-        updates,
-        state: Arc::new(Mutex::new(BrowserViewState {
-            url: target.to_string(),
-            loading: true,
-            ..BrowserViewState::default()
-        })),
+        sink: Arc::clone(&sink),
+        state: Arc::clone(&state),
     };
     registry.claim(
         id,
@@ -221,6 +232,10 @@ pub async fn open(
             rect: PARK_RECT,
             parked: true,
             cancelled: false,
+            workspace: workspace.to_owned(),
+            state: Arc::clone(&state),
+            sink,
+            presented: None,
         },
     )?;
 
@@ -262,7 +277,11 @@ pub async fn open(
         registry.release(id);
         return Err(error.to_string());
     }
-    let opened = hooks.state.lock().expect("browser state poisoned").clone();
+    // The page is on the network now; its own event stream is what tells an
+    // agent whether the document is still moving, so the subscription is
+    // installed here rather than on the first command that needs it.
+    super::cdp_events::watch(app, id, &label).await;
+    let opened = state.lock().expect("browser state poisoned").clone();
     Ok(opened)
 }
 

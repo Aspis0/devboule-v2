@@ -18,9 +18,17 @@ export function browserRectOf(rect: DOMRect): LogicalRect {
 export function browserOpen(
   id: string,
   url: string,
+  workspaceId: string,
   onUpdate: (update: BrowserUpdate) => void,
 ): Promise<BrowserViewState> {
-  return invokeTyped("browser_open", { id, url, updates: new Channel<BrowserUpdate>(onUpdate) });
+  // Rust claims the page for a workspace and adopts an existing one, so this
+  // is the only place a page is ever created for an id.
+  return invokeTyped("browser_open", {
+    id,
+    url,
+    workspaceId,
+    updates: new Channel<BrowserUpdate>(onUpdate),
+  });
 }
 
 export function browserPresent(id: string, rect: LogicalRect): Promise<void> {

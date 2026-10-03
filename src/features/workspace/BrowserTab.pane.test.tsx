@@ -34,6 +34,10 @@ vi.mock("./browserTabs", () => ({ patchBrowserTab: vi.fn(), requestBrowserPopup:
 
 import { BrowserTab } from "./BrowserTab";
 import { resetBrowserPagesForTests } from "./browserPages";
+import { localWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
+
+/** The workspace the tab under test belongs to. */
+const WORKSPACE = localWorkspaceKey("w-1") as WorkspaceKey;
 
 const PANE_RECT = { x: 455, y: 49, width: 770, height: 751 };
 
@@ -53,7 +57,7 @@ async function mountPane(): Promise<HTMLElement> {
   await act(async () => {
     root.render(
       <StrictMode>
-        <BrowserTab browserId="tab-1" url="https://example.com/" />
+        <BrowserTab browserId="tab-1" url="https://example.com/" workspaceKey={WORKSPACE} />
       </StrictMode>,
     );
   });

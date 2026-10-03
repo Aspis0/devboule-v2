@@ -33,6 +33,7 @@ import {
 import { ToolDiffPane } from "./ToolDiffPane";
 import { WorkspaceFileTab } from "./WorkspaceFileTab";
 import { BrowserTab } from "./BrowserTab";
+import { watchBrowserTabs } from "./browserTabEvents";
 import {
   activeBrowserTabFor,
   browserLayoutSnapshot,
@@ -758,6 +759,26 @@ export function Workspace({
   const openBrowserFor = useCallback((key: WorkspaceKey, url?: string) => {
     const record = openBrowserTab(key, url === undefined ? null : normalizeBrowserUrl(url));
     setActiveToolTabId(makeBrowserTab(key, record.browserId).id);
+  }, []);
+  // A tab an agent opened arrives from Rust as a chip for that workspace, and
+  // an agent's `close_tab` takes it away again.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let live = true;
+    void watchBrowserTabs()
+      .then((stop) => {
+        if (live) unlisten = stop;
+        else stop();
+      })
+      // The strip works without this; a tab an agent opened simply gets no
+      // chip until the app is restarted.
+      .catch((error: unknown) => {
+        console.warn("Could not follow browser tab events.", error);
+      });
+    return () => {
+      live = false;
+      unlisten?.();
+    };
   }, []);
   // A page's window lands in the workspace that page's tab belongs to, never
   // in whichever workspace happens to be in front when it asks.
@@ -1847,6 +1868,7 @@ export function Workspace({
             key={activeTool.id}
             browserId={activeTool.browserId}
             url={browserRecordFor(activeTool.browserId)?.url ?? BROWSER_START_URL}
+            workspaceKey={activeTool.workspaceKey}
           />
         ) : activeTool !== null ? (
           <div

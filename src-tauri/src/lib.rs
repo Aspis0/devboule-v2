@@ -38,7 +38,9 @@ pub fn run() {
         .manage(plugins::rpc::PluginRuntime::default())
         // The registry every browser tab resolves through: which child
         // webview a tab owns, and the one profile directory they share.
-        .manage(browser::registry::BrowserRegistry::new())
+        .manage(std::sync::Arc::new(
+            browser::registry::BrowserRegistry::new(),
+        ))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         // The opener behind the pencil's Reveal in folder target — its Rust
@@ -96,6 +98,18 @@ pub fn run() {
             // present while it runs, and closing the window is a decision,
             // not a quit.
             tray::build(app)?;
+            // The browser host, once the daemon bridge is up: it registers for
+            // as long as it holds a connection, and every (re)connect is
+            // reported to it from there.
+            let registry = app
+                .state::<std::sync::Arc<browser::registry::BrowserRegistry>>()
+                .inner()
+                .clone();
+            app.manage(browser::host::BrowserHost::start(
+                app.state::<client::DaemonBridge>().shared(),
+                app.handle().clone(),
+                registry,
+            ));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -208,10 +222,6 @@ pub fn run() {
             browser::browser_history,
             browser::browser_reload,
             browser::browser_close,
-            #[cfg(debug_assertions)]
-            browser::cdp_probe::browser_cdp_probe,
-            #[cfg(debug_assertions)]
-            browser::cdp_probe::browser_cdp_events,
         ])
         .on_window_event(|window, event| {
             // Every close of the main window becomes a decision (hide, quit,
@@ -227,6 +237,9 @@ pub fn run() {
                 let oracle = app_handle.state::<oracle::OracleRuntime>();
                 oracle.shutdown();
                 app_handle.state::<oracle::OracleEndpoint>().stop();
+                // Before the bridge: this gives the daemon its host id back
+                // while the connection that carries the frame is still open.
+                app_handle.state::<browser::host::BrowserHost>().stop();
                 let daemon = app_handle.state::<client::DaemonBridge>();
                 daemon.shutdown();
                 app_handle.state::<plugins::rpc::PluginRuntime>().stop_all();

@@ -32,6 +32,10 @@ import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { BrowserTab } from "./BrowserTab";
 import { resetBrowserPagesForTests } from "./browserPages";
 import { resetBrowserOverlaysForTests } from "./browserOverlays";
+import { localWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
+
+/** The workspace the tab under test belongs to. */
+const WORKSPACE = localWorkspaceKey("w-1") as WorkspaceKey;
 
 /** The page's area: the whole centre area under the chrome row. */
 const PAGE_RECT = { x: 455, y: 137, width: 770, height: 663 };
@@ -114,7 +118,7 @@ describe("a page under an overlay", () => {
     stubLayout(PAGE_RECT, DIALOG_RECT);
     const { unmount } = await mount(
       <>
-        <BrowserTab browserId="tab-1" url="https://example.com/" />
+        <BrowserTab browserId="tab-1" url="https://example.com/" workspaceKey={WORKSPACE} />
         <ConfirmDialog
           open
           title="Close this tab?"
@@ -137,7 +141,7 @@ describe("a page under an overlay", () => {
     stubLayout(PAGE_RECT, { x: 0, y: 0, width: 120, height: 40 });
     const { unmount } = await mount(
       <>
-        <BrowserTab browserId="tab-1" url="https://example.com/" />
+        <BrowserTab browserId="tab-1" url="https://example.com/" workspaceKey={WORKSPACE} />
         <ConfirmDialog
           open
           title="Settings"
@@ -161,7 +165,7 @@ describe("a page under an overlay", () => {
     function Host({ asking }: { asking: boolean }) {
       return (
         <>
-          <BrowserTab browserId="tab-1" url="https://example.com/" />
+          <BrowserTab browserId="tab-1" url="https://example.com/" workspaceKey={WORKSPACE} />
           <ConfirmDialog
             open={asking}
             title="Close this tab?"
@@ -195,7 +199,9 @@ describe("a page under an overlay", () => {
   });
 
   it("sends one rectangle per frame, and never the same one twice", async () => {
-    const { unmount } = await mount(<BrowserTab browserId="tab-1" url="https://example.com/" />);
+    const { unmount } = await mount(
+      <BrowserTab browserId="tab-1" url="https://example.com/" workspaceKey={WORKSPACE} />,
+    );
     await frame();
     expect(mocks.present).toHaveBeenCalledTimes(1);
 

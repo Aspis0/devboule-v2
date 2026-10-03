@@ -5,10 +5,13 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
+use tauri::ipc::Channel;
 use tauri::{LogicalPosition, LogicalSize};
+
+use super::tab::{BrowserUpdate, BrowserViewState};
 
 /// The folder name under the app's local data directory that holds every
 /// browser page's cookies, cache and storage. It is named here and nowhere
@@ -54,9 +57,9 @@ impl LogicalRect {
     }
 }
 
-/// One owned page: the webview label it lives under and where it was last
-/// put. The channel a page reports down belongs to the hooks that built it,
-/// not to the registry: only they write on it.
+/// One owned page: the webview label it lives under, where it was last put,
+/// and the three things an agent command needs about it — which workspace it
+/// belongs to, what the page last reported, and where to report next.
 pub struct OwnedTab {
     pub label: String,
     pub rect: LogicalRect,
@@ -65,6 +68,49 @@ pub struct OwnedTab {
     /// `add_child` runs, so this is the one thing a close can leave behind
     /// that the create itself has to act on.
     pub cancelled: bool,
+    /// The workspace whose agent may address this page. A tab of another
+    /// workspace is not addressable, exactly as an unknown id is not.
+    pub workspace: String,
+    /// The page's last reported state, shared with the hooks that own it: what
+    /// `list_tabs`, `snapshot` and every delta read without asking the page.
+    pub state: Arc<Mutex<BrowserViewState>>,
+    /// Where the page's reports go. A page an agent opened has none until a
+    /// pane adopts it, which is what hands the channel over.
+    pub sink: Arc<Mutex<Channel<BrowserUpdate>>>,
+    /// The last size the page was presented at, and what a measurement of a
+    /// parked page is taken against. None until a pane has shown it once.
+    pub presented: Option<Size>,
+}
+
+/// A width and a height, in the pane's logical pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Size {
+    pub width: f64,
+    pub height: f64,
+}
+
+/// The last presented size for a page that has never been presented: what an
+/// agent measures a parked page against, so a responsive document lays out
+/// for something a person could read.
+pub const DEFAULT_PRESENTED: Size = Size {
+    width: 1280.0,
+    height: 800.0,
+};
+
+/// What one tab is, read once by whoever is about to address its page.
+#[derive(Debug, Clone)]
+pub struct TabInfo {
+    pub browser_id: String,
+    pub label: String,
+    pub workspace: String,
+    pub url: String,
+    pub title: Option<String>,
+    /// Whether the page is parked, and therefore whether measuring it needs a
+    /// device-metrics override first.
+    pub parked: bool,
+    /// The size to measure against: the last presented one, or the default.
+    pub size: Size,
+    pub state: Arc<Mutex<BrowserViewState>>,
 }
 
 /// Every browser page this process owns, keyed by the browser id the frontend
@@ -121,16 +167,76 @@ impl BrowserRegistry {
     }
 
     pub fn set_rect(&self, id: &str, rect: LogicalRect, parked: bool) {
-        if let Some(tab) = self
-            .tabs
-            .lock()
-            .expect("browser registry poisoned")
-            .get_mut(id)
-            .filter(|tab| !tab.cancelled)
-        {
+        let mut tabs = self.tabs.lock().expect("browser registry poisoned");
+        if let Some(tab) = tabs.get_mut(id).filter(|tab| !tab.cancelled) {
+            if !parked {
+                // The last real size, kept past the park: a parked page is
+                // measured against what the pane last showed it at.
+                tab.presented = Some(Size {
+                    width: rect.width,
+                    height: rect.height,
+                });
+            }
             tab.rect = rect;
             tab.parked = parked;
         }
+    }
+
+    /// Everything one addressable tab is, or None when the id is unknown,
+    /// closed, or still being created. The workspace is carried out of here
+    /// so the scoping check is one comparison at the seam.
+    pub fn tab_of(&self, id: &str) -> Option<TabInfo> {
+        let tabs = self.tabs.lock().expect("browser registry poisoned");
+        let tab = tabs.get(id).filter(|tab| !tab.cancelled)?;
+        let state = tab.state.lock().expect("browser state poisoned");
+        Some(TabInfo {
+            browser_id: id.to_owned(),
+            label: tab.label.clone(),
+            workspace: tab.workspace.clone(),
+            url: state.url.clone(),
+            title: state.title.clone(),
+            parked: tab.parked,
+            size: tab.presented.unwrap_or(DEFAULT_PRESENTED),
+            state: Arc::clone(&tab.state),
+        })
+    }
+
+    /// Hand a page's reports to a new watcher and answer with the state the
+    /// page has already reported. None when there is no page to adopt, which
+    /// is the caller's cue to open one.
+    ///
+    /// The pane that adopts an agent-opened page has to find the page that is
+    /// already there: a second create for a live id is refused, so without
+    /// this the user could only ever look at a page the agent had closed.
+    pub fn attach(&self, id: &str, updates: Channel<BrowserUpdate>) -> Option<BrowserViewState> {
+        let (sink, state) = {
+            let tabs = self.tabs.lock().expect("browser registry poisoned");
+            let tab = tabs.get(id).filter(|tab| !tab.cancelled)?;
+            (Arc::clone(&tab.sink), Arc::clone(&tab.state))
+        };
+        // The page's own lock is taken with the registry's released: a report
+        // arriving at this moment must not be able to hold the registry while
+        // it waits for a channel.
+        *sink.lock().expect("browser sink poisoned") = updates;
+        let reported = state.lock().expect("browser state poisoned").clone();
+        Some(reported)
+    }
+
+    /// Every live tab of one workspace. `browserId`s are UUIDs, so the map's
+    /// own order is the only order there is to report them in.
+    ///
+    /// The ids are collected before each one is read: the registry lock is not
+    /// reentrant, and a tab is read through [`Self::tab_of`].
+    pub fn tabs_of(&self, workspace: &str) -> Vec<TabInfo> {
+        let ids: Vec<String> = self
+            .tabs
+            .lock()
+            .expect("browser registry poisoned")
+            .iter()
+            .filter(|(_, tab)| !tab.cancelled && tab.workspace == workspace)
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.iter().filter_map(|id| self.tab_of(id)).collect()
     }
 
     /// A close that arrived before the child existed. Only the create can
@@ -186,6 +292,17 @@ mod tests {
             rect: PARK_RECT,
             parked: true,
             cancelled: false,
+            workspace: "ws-1".to_owned(),
+            state: Arc::new(Mutex::new(BrowserViewState::default())),
+            sink: Arc::new(Mutex::new(Channel::new(|_| Ok(())))),
+            presented: None,
+        }
+    }
+
+    fn owned_in(label: &str, workspace: &str) -> OwnedTab {
+        OwnedTab {
+            workspace: workspace.to_owned(),
+            ..owned(label)
         }
     }
 
@@ -364,5 +481,67 @@ mod tests {
         assert_eq!(registry.rect_of("a"), Some((rect, false)));
         // Parked is the default; one tab's presentation never moves another's.
         assert_eq!(registry.rect_of("b"), Some((PARK_RECT, true)));
+    }
+
+    #[test]
+    fn a_parked_tab_keeps_the_size_it_was_last_presented_at() {
+        let registry = BrowserRegistry::new();
+        registry.claim("a", owned("browser-a")).expect("claim a");
+        // Never presented: the default, so an agent measures a parked page
+        // against something a person could read.
+        assert_eq!(registry.tab_of("a").expect("owned").size, DEFAULT_PRESENTED);
+
+        let pane = LogicalRect {
+            x: 0.0,
+            y: 0.0,
+            width: 770.0,
+            height: 751.0,
+        };
+        registry.set_rect("a", pane, false);
+        registry.set_rect("a", PARK_RECT, true);
+
+        // Parking must not throw the size away: it is the only record of how
+        // wide the page was when it was in front.
+        assert_eq!(
+            registry.tab_of("a").expect("owned").size,
+            Size {
+                width: 770.0,
+                height: 751.0
+            }
+        );
+    }
+
+    #[test]
+    fn a_tab_is_addressable_only_by_its_own_workspace() {
+        let registry = BrowserRegistry::new();
+        registry
+            .claim("a", owned_in("browser-a", "ws-1"))
+            .expect("claim a");
+        registry
+            .claim("b", owned_in("browser-b", "ws-2"))
+            .expect("claim b");
+
+        assert_eq!(registry.tab_of("a").expect("owned").workspace, "ws-1");
+        let mine: Vec<String> = registry
+            .tabs_of("ws-1")
+            .into_iter()
+            .map(|tab| tab.browser_id)
+            .collect();
+        assert_eq!(
+            mine,
+            vec!["a".to_owned()],
+            "another workspace's tab is not listed"
+        );
+        // And the id itself is still real: scoping is a check, not a hiding.
+        assert!(registry.tab_of("b").is_some());
+    }
+
+    #[test]
+    fn a_closed_tab_stops_being_addressable() {
+        let registry = BrowserRegistry::new();
+        registry.claim("a", owned("browser-a")).expect("claim a");
+        registry.release("a");
+        assert!(registry.tab_of("a").is_none());
+        assert!(registry.tabs_of("ws-1").is_empty());
     }
 }

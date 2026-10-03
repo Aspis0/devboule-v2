@@ -9,13 +9,22 @@
 //! requests are refused at the webview and reported up the tab's own channel
 //! instead of becoming a native popup this app does not manage.
 
-#[cfg(debug_assertions)]
-pub mod cdp_probe;
-
+mod ax;
+pub mod cdp;
+pub mod cdp_events;
+mod commands;
+mod delta;
+mod find;
+pub mod host;
 mod page_host;
 pub(crate) mod registry;
 mod tab;
+#[cfg(test)]
+mod test_support;
 mod url;
+mod view;
+
+use std::sync::Arc;
 
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State, Wry};
@@ -37,17 +46,25 @@ fn owned(
         .ok_or_else(|| "This browser tab is no longer open.".to_owned())
 }
 
-/// Open a tab's page. `add_child` blocks until the child exists, so this runs
-/// on a worker thread and never on the main one.
+/// Claim a tab's page for a watcher, and report it.
+///
+/// A live page is adopted rather than rebuilt: the pane that opens a tab an
+/// agent created finds the page already there, so the one-create-per-id rule
+/// holds and the user gets the page the agent was reading rather than a second
+/// one at the same address.
 #[tauri::command]
 pub async fn browser_open(
     app: AppHandle,
-    registry: State<'_, BrowserRegistry>,
+    registry: State<'_, Arc<BrowserRegistry>>,
     id: String,
     url: String,
+    workspace_id: String,
     updates: Channel<BrowserUpdate>,
 ) -> Result<BrowserViewState, String> {
-    open(&app, &registry, &id, &url, updates).await
+    if let Some(state) = registry.attach(&id, updates.clone()) {
+        return Ok(state);
+    }
+    open(&app, &registry, &id, &url, &workspace_id, updates).await
 }
 
 /// Where a page was put, for the app log. Sizes and positions only: an address
@@ -64,7 +81,7 @@ fn trace_place(id: &str, rect: LogicalRect, state: &str) {
 #[tauri::command]
 pub fn browser_present(
     app: AppHandle,
-    registry: State<'_, BrowserRegistry>,
+    registry: State<'_, Arc<BrowserRegistry>>,
     id: String,
     rect: LogicalRect,
 ) -> Result<(), String> {
@@ -84,7 +101,7 @@ pub fn browser_present(
 #[tauri::command]
 pub fn browser_park(
     app: AppHandle,
-    registry: State<'_, BrowserRegistry>,
+    registry: State<'_, Arc<BrowserRegistry>>,
     id: String,
 ) -> Result<(), String> {
     if registry.rect_of(&id).is_some_and(|(_, parked)| parked) {
@@ -104,7 +121,7 @@ pub fn browser_park(
 #[tauri::command]
 pub fn browser_navigate(
     app: AppHandle,
-    registry: State<'_, BrowserRegistry>,
+    registry: State<'_, Arc<BrowserRegistry>>,
     id: String,
     url: String,
 ) -> Result<(), String> {
@@ -117,7 +134,7 @@ pub fn browser_navigate(
 #[tauri::command]
 pub async fn browser_history(
     app: AppHandle,
-    registry: State<'_, BrowserRegistry>,
+    registry: State<'_, Arc<BrowserRegistry>>,
     id: String,
     act: Act,
 ) -> Result<(), String> {
@@ -128,7 +145,7 @@ pub async fn browser_history(
 #[tauri::command]
 pub fn browser_reload(
     app: AppHandle,
-    registry: State<'_, BrowserRegistry>,
+    registry: State<'_, Arc<BrowserRegistry>>,
     id: String,
 ) -> Result<(), String> {
     owned(&app, &registry, &id)?
@@ -148,18 +165,21 @@ pub fn browser_reload(
 #[tauri::command]
 pub fn browser_close(
     app: AppHandle,
-    registry: State<'_, BrowserRegistry>,
+    registry: State<'_, Arc<BrowserRegistry>>,
     id: String,
 ) -> Result<(), String> {
     let Ok(label) = registry.label_of(&id) else {
         registry.cancel(&id);
+        cdp_events::forget(&id);
         return Ok(());
     };
     let Some(webview) = app.get_webview(&label) else {
         registry.cancel(&id);
+        cdp_events::forget(&id);
         return Ok(());
     };
     webview.close().map_err(|e| e.to_string())?;
     registry.release(&id);
+    cdp_events::forget(&id);
     Ok(())
 }
