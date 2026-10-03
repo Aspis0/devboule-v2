@@ -403,6 +403,8 @@ export class AgentSession {
   private switchTimer: ReturnType<typeof setTimeout> | null = null;
   private modeTimer: ReturnType<typeof setTimeout> | null = null;
   private modeRequest = 0;
+  /** While a reset replays its tail, `notify` waits for the last frame. */
+  private replayingTail = false;
 
   constructor(private readonly deps: AgentSessionDeps) {
     this.state = { ...this.state, goal: normalizeGoal(deps.initialGoal) };
@@ -897,17 +899,25 @@ export class AgentSession {
   }
 
   /**
-   * A reset is a new timeline, not a patch: every row is dropped and the tail
-   * takes its place. `INITIAL_STATE` is the same empty timeline a fresh
-   * session starts from, and every counter that names a row goes back to it,
-   * so the tail renders through the same pipeline — and the same block keys —
-   * as a fresh open. `journalLoss` survives: it is worst-known totals, and a
-   * reset is one more reason the history is shorter than it was.
+   * A reset replaces the TRANSCRIPT: every row, and every counter and map that
+   * names one, goes back to the values a fresh session starts from, so the tail
+   * renders through the same pipeline — and the same block keys — as a fresh
+   * open. It replaces nothing else. A reset does not end the session, so every
+   * projection a bounded tail need not carry — the goal, the task list, the
+   * context reading, the manifest and its features, the advertised commands,
+   * the subagents, the last finish, the switches still waiting on a manifest —
+   * stays until a frame of its own moves it. `status` and `streaming` are
+   * liveness the reset did not change, and they are carried across rather than
+   * set: the latch in `setStatus` still owns every transition.
    *
    * Nothing here re-attaches. The tail is in the answer, so a second attach
    * would ask with the same stale cursor and reset again.
    */
   private replaceWithResumeTail(reset: SessionResumeReset): void {
+    // A tail that is not a list of frames cannot be replayed, and rows that are
+    // gone cannot be put back: nothing is touched until the tail proves usable.
+    const events = (reset.tail as { events?: unknown } | undefined)?.events;
+    if (!Array.isArray(events)) return;
     // The marker states what is missing ABOVE the tail, so it is the first row
     // of the replaced timeline rather than a note under the rows that follow.
     const items: AgentChatItem[] = reset.tail.tail_complete
@@ -923,8 +933,19 @@ export class AgentSession {
     this.state = {
       ...INITIAL_STATE,
       items,
-      goal: normalizeGoal(this.deps.initialGoal),
+      status: this.state.status,
+      streaming: this.state.streaming,
+      availableCommands: this.state.availableCommands,
+      subagents: this.state.subagents,
+      lastFinished: this.state.lastFinished,
+      contextUsage: this.state.contextUsage,
+      manifest: this.state.manifest,
+      features: this.state.features,
+      pendingSwitch: this.state.pendingSwitch,
+      pendingModeId: this.state.pendingModeId,
       journalLoss: this.state.journalLoss,
+      agentTasks: this.state.agentTasks,
+      goal: this.state.goal,
     };
     this.blocks.clear();
     this.toolRows.clear();
@@ -939,8 +960,16 @@ export class AgentSession {
     this.heldAgentErrors.length = 0;
     this.pendingSendRejections.length = 0;
     this.turnOpen = false;
+    // One reset is one update: a permitted tail can carry hundreds of frames,
+    // and each one's own notification would re-render the whole transcript
+    // before the next frame has even landed.
+    this.replayingTail = true;
+    try {
+      for (const event of events) this.handleEvent(event);
+    } finally {
+      this.replayingTail = false;
+    }
     this.notify();
-    for (const event of reset.tail.events) this.handleEvent(event);
   }
 
   private appendSystemMessage(text: string): void {
@@ -1796,6 +1825,7 @@ export class AgentSession {
   }
 
   private notify(): void {
+    if (this.replayingTail) return;
     // A listener may dispose or unsubscribe during notification; a snapshot prevents that
     // mutation from skipping listeners that were already subscribed for this update.
     for (const listener of [...this.listeners]) listener();

@@ -38,6 +38,17 @@ function resetMessage(events: SessionEvent[], tailComplete: boolean) {
   } satisfies SessionAttachMessage;
 }
 
+/** The same reset with its tail's frame list replaced by whatever `events` is. */
+function resetWithBrokenEvents(events: unknown): SessionAttachMessage {
+  return {
+    outcome: "reset",
+    reason: "epoch_changed",
+    tail: { cursor: { generation: 1, seq: 9 }, events, tail_complete: false },
+    oldest_seq: 0,
+    head: 9,
+  } as unknown as SessionAttachMessage;
+}
+
 function roles(harness: Harness): string[] {
   return harness.session.getState().items.map((item) => item.role);
 }
@@ -138,7 +149,90 @@ describe("attach reset", () => {
     expect(attaches).toHaveLength(1);
   });
 
-  it("changes nothing when the attach resumed", async () => {
+  it("keeps the pre-reset liveness when the tail stops mid-turn", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    await harness.session.send("a prompt the agent is still answering");
+    expect(harness.session.getState()).toMatchObject({ status: "running", streaming: true });
+
+    // The tail ends where the journal was cut, not on a turn boundary.
+    harness.emit(
+      resetMessage([{ type: "agent_message", messageId: "m-9", text: "still answering" }], false),
+    );
+
+    expect(harness.session.getState()).toMatchObject({ status: "running", streaming: true });
+  });
+
+  it("keeps the pre-reset liveness on an empty complete tail", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    await harness.session.send("a prompt the agent is still answering");
+
+    harness.emit(resetMessage([], true));
+
+    expect(harness.session.getState()).toMatchObject({ status: "running", streaming: true });
+  });
+
+  it("keeps the projections a bounded tail does not carry", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    harness.emit({ type: "goal_changed", goal: "hold the line" });
+    harness.emit({
+      type: "agent_tasks",
+      items: [{ text: "keep the tail", status: "in_progress" }],
+    });
+    harness.emit({
+      type: "context_usage",
+      modelId: "provider/model",
+      usedTokens: 4321,
+      maxTokens: 8000,
+      live: true,
+    });
+
+    harness.emit(
+      resetMessage([{ type: "agent_message", messageId: "m-9", text: "tail row" }], true),
+    );
+
+    const state = harness.session.getState();
+    expect(state.goal).toBe("hold the line");
+    expect(state.agentTasks).toEqual([{ text: "keep the tail", status: "in_progress" }]);
+    expect(state.contextUsage).toMatchObject({ usedTokens: 4321, live: true });
+  });
+
+  it("notifies once for a whole tail", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    const listener = vi.fn();
+    harness.session.subscribe(listener);
+
+    harness.emit(
+      resetMessage(
+        [
+          { type: "agent_message", messageId: "m-9", text: "tail " },
+          { type: "agent_message", messageId: "m-9", text: "row" },
+          { type: "agent_tool_call", toolCallId: "tool-9", title: "Read file", status: "running" },
+          { type: "agent_finished", stopReason: "end_turn" },
+        ],
+        true,
+      ),
+    );
+
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the timeline when the tail carries no frame list", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    harness.emit({ type: "agent_message", messageId: "m-1", text: "before the reset" });
+
+    harness.emit(resetWithBrokenEvents(undefined));
+    harness.emit(resetWithBrokenEvents("agent_message"));
+
+    expect(roles(harness)).toEqual(["assistant"]);
+    expect(harness.session.getState().items[0]).toMatchObject({ text: "before the reset" });
+  });
+
+  it("carries no message for a resumed outcome, leaving the rows as delivered", async () => {
     // A resumed outcome crosses the channel as no message at all, so the rows
     // are whatever the stream delivered and the timeline was never replaced.
     const harness = makeHarness();

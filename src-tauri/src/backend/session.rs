@@ -829,6 +829,54 @@ mod tests {
         require_terminal_kind(&SessionKind::Codex).expect("codex");
     }
 
+    /// The frontend tells a frame from a reset by the absence of `type`, so
+    /// the reset has to reach the channel as the daemon's bare object and an
+    /// event has to keep its discriminator. Nothing else on this seam
+    /// serializes: the registry tests hand `SessionResumeInfo` to the sink
+    /// directly, past the wire.
+    #[test]
+    fn the_untagged_channel_message_serializes_both_of_its_arms() {
+        use devboule_protocol::{
+            Cursor, NoticeSeverity, SessionResumeOutcome, SessionResumeReason, SessionResumeTail,
+        };
+
+        let frame =
+            serde_json::to_value(SessionAttachMessage::Event(SessionEvent::SessionNotice {
+                text: "a frame".to_string(),
+                severity: NoticeSeverity::Info,
+            }))
+            .expect("a notice serializes");
+        assert_eq!(
+            frame.get("type").and_then(|value| value.as_str()),
+            Some("session_notice")
+        );
+
+        let marker = serde_json::to_value(SessionAttachMessage::Reset(SessionResumeInfo {
+            resume: SessionResumeOutcome::Reset {
+                reason: SessionResumeReason::EpochChanged,
+                tail: SessionResumeTail {
+                    cursor: Cursor {
+                        generation: 1,
+                        seq: 9,
+                    },
+                    events: Vec::new(),
+                    tail_complete: true,
+                },
+            },
+            oldest_seq: 0,
+            head: 9,
+        }))
+        .expect("a reset serializes");
+        assert!(
+            marker.get("type").is_none(),
+            "the frontend reads a present `type` as an event: {marker}"
+        );
+        assert_eq!(
+            marker.get("outcome").and_then(|value| value.as_str()),
+            Some("reset")
+        );
+    }
+
     /// The Tauri boundary `src/lib/tauri.ts` is written against: `{
     /// workspaceId, kind, provider, mode, cols?, rows? }` in, the session out.
     /// The size pair is optional in both spellings — absent keys from a

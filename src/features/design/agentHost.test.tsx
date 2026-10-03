@@ -9,15 +9,16 @@ import type {
   OracleSearchResponse,
   ProviderInfo,
   Session,
+  SessionAttachMessage,
   SessionEvent,
   Workspace,
 } from "../../types/ipc";
 import type { DesignAttachment } from "./designHost";
 
 const channelHarness = vi.hoisted(() => ({
-  emit: null as ((event: SessionEvent) => void) | null,
-  active: null as ((event: SessionEvent) => void) | null,
-  handlers: new WeakMap<object, (event: SessionEvent) => void>(),
+  emit: null as ((event: SessionAttachMessage) => void) | null,
+  active: null as ((event: SessionAttachMessage) => void) | null,
+  handlers: new WeakMap<object, (event: SessionAttachMessage) => void>(),
 }));
 
 const mocks = vi.hoisted(() => ({
@@ -50,7 +51,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../../lib/tauri", () => ({
   daemonStatus: mocks.daemonStatus,
-  createSessionChannel: vi.fn((onEvent: (event: SessionEvent) => void) => {
+  createSessionChannel: vi.fn((onEvent: (event: SessionAttachMessage) => void) => {
     const channel = {};
     channelHarness.handlers.set(channel, onEvent);
     channelHarness.emit = onEvent;
@@ -272,6 +273,17 @@ function emitToolUpdate(
     status,
     text,
     ...(paths === undefined ? {} : { locations: paths.map((path) => ({ path })) }),
+  });
+}
+
+/** A reset marker: an attach's reply named a tail instead of resuming a cursor. */
+function emitReset(events: SessionEvent[] = []): void {
+  channelHarness.active?.({
+    outcome: "reset",
+    reason: "epoch_changed",
+    tail: { cursor: { generation: 1, seq: 9 }, events, tail_complete: true },
+    oldest_seq: 0,
+    head: 9,
   });
 }
 
@@ -2153,6 +2165,44 @@ describe("ACP design host", () => {
 
     finishRun();
     await run;
+    await disposeAgentHost(host);
+  });
+
+  it("keeps a card answerable across a reset and dedupes its re-delivery", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+    const permission = {
+      type: "permission_request" as const,
+      toolCallId: "permission-reset",
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    };
+    channelHarness.active?.(permission);
+
+    // A reset replaces the timeline. The card is the session's live question,
+    // not one of the replaced rows, so it stays answerable across the replace.
+    emitReset();
+    expect(host.getPendingPermission?.()).toMatchObject({
+      request: { toolCallId: "permission-reset" },
+      subscriptionId: 41,
+    });
+
+    // The daemon re-arms the request it still holds on the attachment that
+    // replaced this one, and that re-delivery must land on the card above
+    // rather than queue a second copy behind it.
+    channelHarness.active?.(permission);
+
+    expect(host.getPendingPermission?.()).toMatchObject({
+      request: { toolCallId: "permission-reset" },
+      subscriptionId: 41,
+    });
+    await host.respondPermission?.({ outcome: "allow_once" });
+    expect(mocks.sessionPermissionRespond).toHaveBeenCalledTimes(1);
+    // One card answered and none left: a second copy would still be queued.
+    expect(host.getPendingPermission?.()).toBeNull();
+
+    finishRun();
+    await expect(run).resolves.toMatchObject(QUIET_RESULT);
     await disposeAgentHost(host);
   });
 
