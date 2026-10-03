@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Session } from "../../../types/ipc";
 import { buildTabCopyEntries, isTabCopyAction, tabCopyValue } from "./tabCopyActions";
-import { composeStripTabs, makeToolTab } from "./toolTabs";
+import { composeStripTabs, makeBrowserTab, makeToolTab } from "./toolTabs";
 import { localWorkspaceKey, type WorkspaceKey } from "../hosts/hostIdentity";
 
 const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
@@ -51,6 +51,26 @@ describe("single-tab copy actions", () => {
     const [tab] = composeStripTabs([{ ...makeSession("acp"), cwd: "\\\\?\\" }], []);
     expect(tabCopyValue(tab, "copy-path")).toBe("\\\\?\\");
     expect(buildTabCopyEntries(tab).map((entry) => entry.label)).toContain("Copy path");
+  });
+
+  it("offers a browser tab its address, never its id as a path", () => {
+    const [tab] = composeStripTabs([], [makeBrowserTab(keyFor("ws"), "browser-1")]);
+    const address = (): string | null => "https://example.com/docs";
+
+    expect(buildTabCopyEntries(tab, null, address)).toEqual([
+      { key: "copy-address", label: "Copy address", disabled: false, separatorAfter: true },
+    ]);
+    expect(tabCopyValue(tab, "copy-address", null, address)).toBe("https://example.com/docs");
+    // The tab's id is an opaque handle, never something to put on a clipboard.
+    expect(tabCopyValue(tab, "copy-path", null, address)).toBeNull();
+    expect(isTabCopyAction("copy-address")).toBe(true);
+  });
+
+  it("offers a browser tab nothing at all when its address is unknown", () => {
+    const [tab] = composeStripTabs([], [makeBrowserTab(keyFor("ws"), "browser-1")]);
+
+    expect(buildTabCopyEntries(tab, null, () => null)).toEqual([]);
+    expect(tabCopyValue(tab, "copy-address", null, () => null)).toBeNull();
   });
 });
 

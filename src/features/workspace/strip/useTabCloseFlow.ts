@@ -49,6 +49,9 @@ interface TabCloseFlowArgs {
   selectTab: (id: string | null) => void;
   clearSelection: () => void;
   addButtonRef: RefObject<HTMLButtonElement | null>;
+  /** Where a browser tab's page is, so its menu row offers an address
+   * instead of the file path a file tab has. */
+  resolveBrowserAddress?: (browserId: string) => string | null;
   /** The rename half of the tab menu, wired by the caller from the rename
    * hook: the entries for an anchor and the open for the menu's rename key.
    * Required: a caller that forgets it must not compile into a menu that
@@ -165,6 +168,7 @@ export function useTabCloseFlow({
   selectTab,
   clearSelection,
   addButtonRef,
+  resolveBrowserAddress,
   renameMenu,
 }: TabCloseFlowArgs): {
   menu: { anchorId: string; entries: TabMenuEntry[] } | null;
@@ -214,7 +218,7 @@ export function useTabCloseFlow({
           entries: openMenuState.viaSelection
             ? [buildSelectionCloseEntry(openMenuState.targets.length)]
             : (toolTabMenuEntries(tabs, openMenuState.anchorId) ?? [
-                ...buildTabCopyEntries(anchorTab, branch),
+                ...buildTabCopyEntries(anchorTab, branch, resolveBrowserAddress),
                 ...renameEntriesFor(openMenuState.anchorId),
                 ...buildTabCloseEntries(
                   tabs.findIndex((tab) => tab.id === openMenuState.anchorId),
@@ -349,7 +353,7 @@ export function useTabCloseFlow({
   const copyEntryValue = (key: TabCopyAction): string | null => {
     if (openMenuState === null || openMenuState.viaSelection || anchorTab === undefined)
       return null;
-    return tabCopyValue(anchorTab, key, branch);
+    return tabCopyValue(anchorTab, key, branch, resolveBrowserAddress);
   };
 
   // The per-anchor core both entry points share: the tab menu resolves its

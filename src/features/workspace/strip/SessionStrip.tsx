@@ -440,6 +440,7 @@ export function SessionStrip({
         sessions={overviewSessions}
         stripOrder={stripOrder}
         tabs={tabs}
+        browserPages={browserPages}
         activeTabId={activeTabId}
         activeSessionId={selectedSessionId}
         workspaceName={workspaceName}

@@ -23,6 +23,12 @@ describe("StripKindMark", () => {
     );
   });
 
+  it("draws a globe for a browser tab, never the agent mark", () => {
+    const html = renderToStaticMarkup(<StripKindMark kind="browser" />);
+    expect(html).toContain('data-mark="browser"');
+    expect(html).not.toContain('data-mark="agent"');
+  });
+
   it("falls back to the generic agent mark for acp and anything unknown", () => {
     expect(renderToStaticMarkup(<StripKindMark kind="acp" />)).toContain('data-mark="agent"');
     expect(renderToStaticMarkup(<StripKindMark kind="terminal" />)).not.toContain(

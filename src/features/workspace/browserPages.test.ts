@@ -209,4 +209,22 @@ describe("the browser page store", () => {
     expect(browserPagesSnapshot().get("tab-1")?.loading).toBe(true);
     expect(notified).toBe(2);
   });
+
+  it("says nothing when a parked page reports what it already said", async () => {
+    // A parked page keeps running and keeps reporting. Its state is the
+    // strip's whole input, so a repeat must not re-render every chip.
+    const watched = watchBrowserPage("tab-1", "https://example.com/", () => undefined);
+    await expect(watched.opened).resolves.toEqual(LOADED);
+    const report = reportOn();
+    let notified = 0;
+    subscribeBrowserPages(() => {
+      notified += 1;
+    });
+    const loaded = { kind: "state", ...LOADED } as const;
+
+    report(loaded);
+    report(loaded);
+
+    expect(notified).toBe(0);
+  });
 });

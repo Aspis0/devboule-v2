@@ -7,29 +7,15 @@ import { StripKindMark } from "./StripKindMark";
 import { toolTabKindLabel, toolTabLabel, toolTabSubject, type ToolTab } from "./toolTabs";
 
 /** How a browser tab names itself in the strip: the page's own favicon once
- * it has one, a globe until then. The chip subscribes to the browser tab
- * model itself — the favicon arrives after the tab does, and threading it
- * through the strip would remount every chip for one image. */
+ * it has one, and the same globe the rest of the app draws for a page until
+ * then. The chip subscribes to the browser tab model itself — the favicon
+ * arrives after the tab does, and threading it through the strip would
+ * remount every chip for one image. */
 function BrowserFavicon({ favicon }: { favicon: string | null }) {
-  if (favicon !== null) {
-    return (
-      <span className="strip-kind" aria-hidden="true">
-        <img className="strip-browser-favicon" src={favicon} alt="" width={14} height={14} />
-      </span>
-    );
-  }
+  if (favicon === null) return <StripKindMark kind="browser" />;
   return (
     <span className="strip-kind" aria-hidden="true">
-      <svg width={14} height={14} viewBox="0 0 14 14" aria-hidden="true" focusable="false">
-        <circle cx="7" cy="7" r="5.5" fill="none" stroke="currentColor" strokeWidth={1.4} />
-        <path
-          d="M1.5 7h11M7 1.5c1.7 1.8 1.7 9.2 0 11M7 1.5c-1.7 1.8-1.7 9.2 0 11"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={1.4}
-          strokeLinecap="round"
-        />
-      </svg>
+      <img className="strip-browser-favicon" src={favicon} alt="" width={14} height={14} />
     </span>
   );
 }

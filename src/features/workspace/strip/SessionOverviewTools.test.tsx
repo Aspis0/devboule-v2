@@ -7,7 +7,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Session } from "../../../types/ipc";
 import { SessionOverviewMenu } from "./SessionOverviewMenu";
-import { composeStripTabs, makeToolTab, type StripTab } from "./toolTabs";
+import type { BrowserTabPage } from "./StripChip";
+import { composeStripTabs, makeBrowserTab, makeToolTab, type StripTab } from "./toolTabs";
 import { localWorkspaceKey, type WorkspaceKey } from "../hosts/hostIdentity";
 
 const keyFor = (workspaceId: string): WorkspaceKey => localWorkspaceKey(workspaceId)!;
@@ -49,6 +50,7 @@ afterEach(() => {
 
 function MenuHarness({
   tabs,
+  browserPages,
   sessions,
   stripOrder,
   activeTabId,
@@ -58,6 +60,7 @@ function MenuHarness({
   onClose,
 }: {
   tabs: readonly StripTab[];
+  browserPages: ReadonlyMap<string, BrowserTabPage>;
   sessions: readonly Session[];
   stripOrder: readonly string[];
   activeTabId: string | null;
@@ -80,6 +83,7 @@ function MenuHarness({
         sessions={sessions}
         stripOrder={stripOrder}
         tabs={tabs}
+        browserPages={browserPages}
         activeTabId={activeTabId}
         activeSessionId={activeSessionId}
         workspaceName="atelier"
@@ -98,17 +102,26 @@ function renderMenu(
   activeTabId: string | null = tabs[0]?.id ?? null,
   sessions: readonly Session[] = ROSTER,
   stripOrder: readonly string[] = ["b"],
+  browserPages: ReadonlyMap<string, BrowserTabPage> = new Map(),
 ) {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
   const calls = { onOpen: vi.fn(), onSelectTab: vi.fn(), onClose: vi.fn() };
-  const state = { tabs, sessions, stripOrder, activeTabId, activeSessionId: "b" as string | null };
+  const state = {
+    tabs,
+    sessions,
+    stripOrder,
+    activeTabId,
+    activeSessionId: "b" as string | null,
+    browserPages,
+  };
   const draw = () => {
     act(() => {
       root!.render(
         <MenuHarness
           tabs={state.tabs}
+          browserPages={state.browserPages}
           sessions={state.sessions}
           stripOrder={state.stripOrder}
           activeTabId={state.activeTabId}
@@ -267,5 +280,39 @@ describe("overview tool tabs", () => {
     press("ArrowUp");
     expect(document.activeElement).toBe(rendered.option("b"));
     expect(rendered.option("b").tabIndex).toBe(0);
+  });
+});
+
+function browserPage(over: Partial<BrowserTabPage> = {}): BrowserTabPage {
+  return {
+    label: "Example Domain",
+    favicon: null,
+    url: "https://example.com/docs",
+    loading: false,
+    ...over,
+  };
+}
+
+describe("overview browser tabs", () => {
+  it("names a browser row by its page, never by its id", () => {
+    const browser = makeBrowserTab(keyFor("workspace-1"), "browser-1");
+    const tabs = composeStripTabs([session("b")], [browser]);
+    const rendered = renderMenu(
+      tabs,
+      browser.id,
+      ROSTER,
+      ["b"],
+      new Map([["browser-1", browserPage()]]),
+    );
+
+    const row = rendered.option(browser.id);
+    expect(row.textContent).toContain("Example Domain");
+    expect(row.textContent).not.toContain("browser-1");
+    expect(row.querySelector('[data-mark="browser"]')).not.toBeNull();
+    act(() => {
+      row.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    });
+    expect(rendered.preview().textContent).toContain("Example Domain");
+    expect(rendered.preview().textContent).toContain("https://example.com/docs");
   });
 });

@@ -88,6 +88,7 @@ function MenuHarness({
         sessions={sessions}
         stripOrder={stripOrder}
         tabs={tabs}
+        browserPages={new Map()}
         activeTabId={activeSessionId}
         activeSessionId={activeSessionId}
         workspaceName={workspaceName}

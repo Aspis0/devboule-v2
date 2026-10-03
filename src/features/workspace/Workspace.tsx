@@ -582,6 +582,12 @@ export function Workspace({
       browserLayout.tabs.find((record) => record.browserId === browserId) ?? null,
     [browserLayout.tabs],
   );
+  /** Where a browser tab's page is, for the copy row that offers an address
+   * instead of the path a file tab has. */
+  const browserTabAddress = useCallback(
+    (browserId: string) => browserRecordFor(browserId)?.url ?? null,
+    [browserRecordFor],
+  );
   const activeToolId = activeTool?.id ?? null;
   const activeTabId = activeToolId ?? selectedSessionId;
   const composedTabs = useMemo(
@@ -890,6 +896,7 @@ export function Workspace({
     selectTab,
     clearSelection: tabSelection.clearSelection,
     addButtonRef,
+    resolveBrowserAddress: browserTabAddress,
     renameMenu: { entriesFor: rename.renameEntriesFor, open: rename.openRename },
   });
   // The roster is the authority on what a close is still hiding: a row it

@@ -64,6 +64,14 @@ function mark(kind: SessionKind | ToolTabKind) {
           <path d="M4 5.2l2 1.8-2 1.8M7.2 9h2.6" />
         </g>
       );
+    case "browser":
+      // The globe the chip falls back to while a page has no icon of its own.
+      return (
+        <g data-mark="browser" {...STROKE}>
+          <circle cx="7" cy="7" r="5.5" />
+          <path d="M1.5 7h11M7 1.5c1.7 1.8 1.7 9.2 0 11M7 1.5c-1.7 1.8-1.7 9.2 0 11" />
+        </g>
+      );
     default:
       return (
         <g data-mark="agent" {...STROKE}>

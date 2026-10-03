@@ -25,7 +25,7 @@ import {
   type ToolTab,
 } from "./toolTabs";
 import { StripKindMark } from "./StripKindMark";
-import { DOT_CLASS } from "./StripChip";
+import { DOT_CLASS, type BrowserTabPage } from "./StripChip";
 
 interface SessionOverviewMenuProps {
   /** The menu is up; the owner owns the open state and says so. */
@@ -41,6 +41,9 @@ interface SessionOverviewMenuProps {
   /** Every tab of the selected workspace in strip order: session tabs and
    * tool tabs. Workspace scopes this; the menu lists exactly what it gets. */
   tabs: readonly StripTab[];
+  /** What each browser tab's page is called, by browser id. A page names
+   * itself here; without it the row would read as its own id. */
+  browserPages: ReadonlyMap<string, BrowserTabPage>;
   /** The strip's active tab id: seeds the preview when it names a row. */
   activeTabId: string | null;
   activeSessionId: string | null;
@@ -61,6 +64,7 @@ export function SessionOverviewMenu({
   sessions,
   stripOrder,
   tabs,
+  browserPages,
   activeTabId,
   activeSessionId,
   workspaceName,
@@ -224,7 +228,9 @@ export function SessionOverviewMenu({
               </div>
               {group.rows.map((row) => {
                 if (row.kind === "tool") {
-                  const label = toolTabLabel(row.tool);
+                  const page =
+                    row.tool.kind === "browser" ? browserPages.get(row.tool.browserId) : undefined;
+                  const label = page?.label ?? toolTabLabel(row.tool);
                   const directory = toolTabDirectory(row.tool);
                   return (
                     <div
@@ -294,7 +300,12 @@ export function SessionOverviewMenu({
       )}
       {preview !== null ? (
         preview.kind === "tool" ? (
-          <ToolOverviewPreview tool={preview.tool} />
+          <ToolOverviewPreview
+            tool={preview.tool}
+            page={
+              preview.tool.kind === "browser" ? browserPages.get(preview.tool.browserId) : undefined
+            }
+          />
         ) : (
           <OverviewPreview session={preview.session} workspaceName={workspaceName} now={now} />
         )
@@ -303,12 +314,12 @@ export function SessionOverviewMenu({
   );
 }
 
-function ToolOverviewPreview({ tool }: { tool: ToolTab }) {
+function ToolOverviewPreview({ tool, page }: { tool: ToolTab; page?: BrowserTabPage }) {
   return (
     <div className="workspace-overview-preview">
-      <div className="workspace-overview-preview-title">{toolTabLabel(tool)}</div>
+      <div className="workspace-overview-preview-title">{page?.label ?? toolTabLabel(tool)}</div>
       <div className="workspace-overview-preview-state">{toolTabKindLabel(tool)}</div>
-      <div className="workspace-overview-preview-meta">{toolTabSubject(tool)}</div>
+      <div className="workspace-overview-preview-meta">{page?.url ?? toolTabSubject(tool)}</div>
     </div>
   );
 }

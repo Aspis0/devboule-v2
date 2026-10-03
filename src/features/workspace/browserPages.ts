@@ -35,7 +35,25 @@ function publish(next: Map<string, BrowserViewState>): void {
   for (const listener of [...listeners]) listener();
 }
 
+/** Two reports of the same page. Every field, because a title that changed
+ * only its case is a chip that has to change. */
+function samePage(one: BrowserViewState, two: BrowserViewState): boolean {
+  return (
+    one.url === two.url &&
+    one.title === two.title &&
+    one.favicon === two.favicon &&
+    one.loading === two.loading &&
+    one.canGoBack === two.canGoBack &&
+    one.canGoForward === two.canGoForward &&
+    one.error === two.error
+  );
+}
+
 function remember(page: Page, state: BrowserViewState): void {
+  // A parked page keeps running, and its hooks keep reporting. Those reports
+  // are the strip's whole input, so one that says nothing new must not walk
+  // every chip again.
+  if (page.state !== null && samePage(page.state, state)) return;
   page.state = state;
   publish(new Map(reported).set(page.id, state));
   for (const watcher of [...page.watchers]) watcher({ kind: "state", ...state });
