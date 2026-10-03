@@ -23,7 +23,6 @@ import { boundByGraphemes } from "../../lib/graphemeBound";
 import { errorSentence } from "../../lib/errorSentence";
 import { lastFittedGrid } from "../terminal/lastFittedGrid";
 import { fireAttentionToast, forgetAttentionFor, markAttentionSeen } from "./attentionNotice";
-import { sharedSessionQueueOwner } from "./sessionQueueOwner";
 import { integrityClause, rosterStateDisplay } from "./sessionStateDisplay";
 import { createOpenSessionTabs, openTabsStorage } from "./openSessionTabs";
 
@@ -550,13 +549,6 @@ export type AttentionObserver = (session: Session, attention: Attention) => void
 export function createWorkspaceSessionController(
   source: WorkspaceSessionSource = DEFAULT_SOURCE,
   onAttention?: AttentionObserver,
-  /**
-   * Called with the full roster of every daemon push. A list
-   * refresh and a reconnect do not reach it: an app-level owner may discard
-   * state on the daemon's word that a session is gone, and only a push is that
-   * word. Queue ownership is its only current reader.
-   */
-  onRosterPush?: (sessions: readonly Session[]) => void,
   storage = openTabsStorage(),
 ): WorkspaceSessionController {
   let state: WorkspaceSessionState = {
@@ -684,10 +676,10 @@ export function createWorkspaceSessionController(
         // Attention comes and goes with each roster push; assigning it
         // (even undefined) keeps a stale badge from surviving a cleared one.
         attention: snapshot.attention,
-        // The turn status rides the same way for the same reason, and matters
-        // more: a queued message drains on the *edge* between `working` and
-        // `idle`, so a row that stopped being `working` has to be seen stopping,
-        // and one the daemon stopped describing has to be seen as unstated.
+        // The turn status rides the same way for the same reason: the
+        // composer's Queue action follows the roster's activity, so a row that
+        // stopped being `working` has to be seen stopping, and one the daemon
+        // stopped describing has to be seen as unstated.
         activity: snapshot.activity,
         // A push replaces the goal outright: missing, null and undefined
         // all mean "no goal". A list refresh instead carries the row's goal forward.
@@ -765,8 +757,6 @@ export function createWorkspaceSessionController(
     // without a toast, so no later application announces them as if they were
     // news the user never saw.
     markAttentionSeen(standing);
-    // Queues follow the full roster; hiding a tab must not delete the user's text on reconnect.
-    if (onRosterPush !== undefined) onRosterPush(sessions);
     // Rows that left the roster take their dedupe slot with them, so a
     // session that returns re-announces like the first arrival it is.
     forgetAttentionFor(new Set(sessions.map((session) => session.id)));
@@ -967,13 +957,8 @@ let sharedController: WorkspaceSessionController | null = null;
  */
 export function sharedSessionController(): WorkspaceSessionController {
   if (sharedController === null) {
-    sharedController = createWorkspaceSessionController(
-      DEFAULT_SOURCE,
-      (session, attention) => fireAttentionToast(session.id, sessionTitle(session), attention),
-      // The queue owner's only feed: the daemon's full roster, so a session
-      // that leaves it is gone and a turn that ends here can drain a queue
-      // with no view on screen.
-      (sessions) => sharedSessionQueueOwner().onRosterPush(sessions),
+    sharedController = createWorkspaceSessionController(DEFAULT_SOURCE, (session, attention) =>
+      fireAttentionToast(session.id, sessionTitle(session), attention),
     );
   }
   return sharedController;

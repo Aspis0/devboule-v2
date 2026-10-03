@@ -239,6 +239,12 @@ export interface AgentSessionDeps {
   onPermissionResolved?: (resolution: PermissionResolved) => void;
   /** The session channel reported `agent_finished`; exits and disconnects use other paths. */
   onTurnFinished?: () => void;
+  /**
+   * The session channel carried the daemon's whole follow-up queue. The event
+   * names no session: it arrives on this attachment's channel, so this view's
+   * session is the only one it can be about.
+   */
+  onQueueSnapshot?: (event: Extract<SessionEvent, { type: "queue_snapshot" }>) => void;
   /** A `goal_changed` frame arrived, carrying the live goal (null on a clear). */
   onGoalChanged?: (goal: string | null) => void;
 }
@@ -1175,8 +1181,9 @@ export class AgentSession {
         }
         return;
       case "queue_snapshot":
-        // The queue UI consumes this in the app lane's next slice; until then
-        // a snapshot must not fail the session.
+        // The daemon owns the follow-up queue and publishes it whole; the view
+        // that asked for it decides whether this snapshot is news.
+        this.deps.onQueueSnapshot?.(event);
         return;
       default: {
         // Every `SessionEvent` arm is a case above, so this branch is

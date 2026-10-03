@@ -224,8 +224,6 @@ import { resetSharedSessionControllerForTests } from "./workspaceSessions";
 import { resetTabMemoryForTests } from "./workspaceTabMemory";
 import { setLastSelectedWorkspaceKey } from "./lastSelectedWorkspace";
 import { resetSharedCloseActionsForTests } from "./strip/closeActions";
-import { resetSharedSessionQueueOwnerForTests, sharedSessionQueueOwner } from "./sessionQueueOwner";
-import { createSenderProbe } from "./queueSenderDouble";
 import type { Workspace as IpcWorkspace } from "../../types/ipc";
 
 export function agentSession(
@@ -572,8 +570,6 @@ export function beforeEachHarness(): void {
   // The queue owner is app-lifetime like the close store, and a close now
   // reaches it; a test of a different file must not inherit either its queues
   // or a bearer that would call the wire this harness never mocks.
-  resetSharedSessionQueueOwnerForTests();
-  sharedSessionQueueOwner({ newSender: createSenderProbe().newSender });
   watchListener = null;
   window.localStorage.clear();
   container = document.createElement("div");

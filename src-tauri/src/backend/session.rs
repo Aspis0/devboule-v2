@@ -204,6 +204,118 @@ pub async fn session_send(
     .await
 }
 
+/// The shared follow-up queue, protocol 22's five frames behind the
+/// `session.queue` capability.
+///
+/// All five carry `client_operation_id`, one per user intent: the daemon
+/// answers a repeat of an operation it already answered instead of queueing a
+/// second row or sending a row twice, and refuses the same id with different
+/// bytes. The client half of that rule lives in `daemonQueue.ts`; what is
+/// here is the same forwarder shape as every other command — validate, wait
+/// off the window's thread, map the daemon's `Error` frame by the same `?`.
+///
+/// The queue's own list is not here: it arrives as a `queue_snapshot` event on
+/// the session's channel, which is why nothing in this file sends queued text
+/// to the agent. These commands only change it.
+#[tauri::command]
+pub async fn session_queue_add(
+    bridge: State<'_, DaemonBridge>,
+    id: String,
+    client_operation_id: String,
+    text: String,
+    attachments: Option<Vec<PromptAttachment>>,
+    attachment_references: Option<Vec<AttachmentReference>>,
+) -> Result<(), CommandError> {
+    require_session_id(&id)?;
+    require_write_size(&text)?;
+    let attachments = attachments.unwrap_or_default();
+    require_attachment_limits(&attachments)?;
+    let attachment_references = attachment_references.unwrap_or_default();
+    require_attachment_reference_limits(&id, &attachment_references)?;
+    let client = require_client(&bridge)?;
+    off_main_thread(move || {
+        client.session_queue_add(
+            &id,
+            &client_operation_id,
+            &text,
+            &attachments,
+            &attachment_references,
+        )
+    })
+    .await
+}
+
+/// Replace one queued row's text, keeping its place: the daemon edits the row
+/// in place rather than taking it out and putting it back.
+#[tauri::command]
+pub async fn session_queue_edit(
+    bridge: State<'_, DaemonBridge>,
+    id: String,
+    client_operation_id: String,
+    item_id: String,
+    text: String,
+) -> Result<(), CommandError> {
+    require_session_id(&id)?;
+    require_write_size(&text)?;
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.session_queue_edit(&id, &client_operation_id, &item_id, &text))
+        .await
+}
+
+/// Take one queued row out of the queue. A row a send has already claimed is
+/// not in the queue, and the daemon says so.
+#[tauri::command]
+pub async fn session_queue_remove(
+    bridge: State<'_, DaemonBridge>,
+    id: String,
+    client_operation_id: String,
+    item_id: String,
+) -> Result<(), CommandError> {
+    require_session_id(&id)?;
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.session_queue_remove(&id, &client_operation_id, &item_id)).await
+}
+
+/// Move one queued row, counting `to_index` in the queue the row has already
+/// left. The daemon refuses an index the queue has no place for, so the client
+/// clamps before it asks.
+#[tauri::command]
+pub async fn session_queue_move(
+    bridge: State<'_, DaemonBridge>,
+    id: String,
+    client_operation_id: String,
+    item_id: String,
+    to_index: usize,
+) -> Result<(), CommandError> {
+    require_session_id(&id)?;
+    let client = require_client(&bridge)?;
+    off_main_thread(move || {
+        client.session_queue_move(&id, &client_operation_id, &item_id, to_index)
+    })
+    .await
+}
+
+/// Send one queued row now. This is a send — it interrupts the running turn
+/// and opens a new one with that row's text — so it carries the subscription
+/// and waits through the same attachment guard every other send does.
+#[tauri::command]
+pub async fn session_queue_send_now(
+    bridge: State<'_, DaemonBridge>,
+    id: String,
+    client_operation_id: String,
+    subscription_id: SubscriptionId,
+    item_id: String,
+) -> Result<(), CommandError> {
+    require_session_id(&id)?;
+    let client = require_client(&bridge)?;
+    let inner = bridge.shared();
+    off_main_thread(move || {
+        inner.ensure_subscription_attached(subscription_id)?;
+        client.session_queue_send_now(&id, &client_operation_id, subscription_id, &item_id)
+    })
+    .await
+}
+
 /// Store one attachment for a session and answer the reference a later
 /// `session_send` names it by.
 ///
@@ -785,6 +897,75 @@ mod tests {
         ) {
         }
         frozen(session_stop);
+    }
+
+    /// The Tauri boundary `src/lib/tauri.ts` is written against: `{ id,
+    /// clientOperationId, text, attachments?, attachmentReferences? }` in,
+    /// nothing out. The add is the only queue frame that carries a prompt, so
+    /// it is the only one with the two attachment lists.
+    // The six-type list is the test: it is this command's argument shape, and
+    // naming the parts would hide the thing being pinned.
+    #[allow(clippy::type_complexity)]
+    #[test]
+    fn session_queue_add_forwarder_has_the_frozen_tauri_signature() {
+        fn frozen<Fut: std::future::Future<Output = Result<(), CommandError>>>(
+            _: fn(
+                State<'static, DaemonBridge>,
+                String,
+                String,
+                String,
+                Option<Vec<PromptAttachment>>,
+                Option<Vec<AttachmentReference>>,
+            ) -> Fut,
+        ) {
+        }
+        frozen(session_queue_add);
+    }
+
+    /// The Tauri boundary `src/lib/tauri.ts` is written against: `{ id,
+    /// clientOperationId, itemId, text }` in, nothing out.
+    #[test]
+    fn session_queue_edit_forwarder_has_the_frozen_tauri_signature() {
+        fn frozen<Fut: std::future::Future<Output = Result<(), CommandError>>>(
+            _: fn(State<'static, DaemonBridge>, String, String, String, String) -> Fut,
+        ) {
+        }
+        frozen(session_queue_edit);
+    }
+
+    /// The Tauri boundary `src/lib/tauri.ts` is written against: `{ id,
+    /// clientOperationId, itemId }` in, nothing out.
+    #[test]
+    fn session_queue_remove_forwarder_has_the_frozen_tauri_signature() {
+        fn frozen<Fut: std::future::Future<Output = Result<(), CommandError>>>(
+            _: fn(State<'static, DaemonBridge>, String, String, String) -> Fut,
+        ) {
+        }
+        frozen(session_queue_remove);
+    }
+
+    /// The Tauri boundary `src/lib/tauri.ts` is written against: `{ id,
+    /// clientOperationId, itemId, toIndex }` in, nothing out.
+    #[test]
+    fn session_queue_move_forwarder_has_the_frozen_tauri_signature() {
+        fn frozen<Fut: std::future::Future<Output = Result<(), CommandError>>>(
+            _: fn(State<'static, DaemonBridge>, String, String, String, usize) -> Fut,
+        ) {
+        }
+        frozen(session_queue_move);
+    }
+
+    /// The Tauri boundary `src/lib/tauri.ts` is written against: `{ id,
+    /// clientOperationId, subscriptionId, itemId }` in, nothing out. The
+    /// subscription is this one — a send-now is a send, and the daemon checks
+    /// the attach against it.
+    #[test]
+    fn session_queue_send_now_forwarder_has_the_frozen_tauri_signature() {
+        fn frozen<Fut: std::future::Future<Output = Result<(), CommandError>>>(
+            _: fn(State<'static, DaemonBridge>, String, String, SubscriptionId, String) -> Fut,
+        ) {
+        }
+        frozen(session_queue_send_now);
     }
 
     fn reference(session_id: &str, digest: &str) -> AttachmentReference {

@@ -22,18 +22,7 @@ import {
   terminalSession,
 } from "./bulkCloseHarness";
 import { OLDER_BUILD_PENDING_KEY } from "./strip/closeActions";
-import { sharedSessionQueueOwner } from "./sessionQueueOwner";
-import type { MessageQueue } from "./messageQueue";
 import { sessionStop, sessionsList } from "../../lib/tauri";
-
-function queuedTexts(queue: MessageQueue): string[] {
-  let items: readonly { text: string }[] = [];
-  const stop = queue.subscribe((next) => {
-    items = next;
-  });
-  stop();
-  return items.map((item) => item.text);
-}
 
 beforeEach(() => {
   beforeEachHarness();
@@ -189,27 +178,6 @@ describe("the close chip", () => {
     expect(document.querySelector(DIALOG_SELECTOR)).toBeNull();
     expect(document.querySelector("#workspace-session-tab-agent-one")).toBeNull();
     expect(sessionStop).not.toHaveBeenCalled();
-  });
-
-  it("a close takes the queued messages with the tab", async () => {
-    // The daemon keeps a closed session's journal row, so its queue would
-    // outlive the tab on the absence rule alone: the act that removed the
-    // session is the word that its text goes too.
-    vi.mocked(sessionsList).mockResolvedValue([
-      recoveredAgentSession("agent-old", "Old transcript"),
-      terminalSession("session-2", "shell two"),
-    ]);
-    await renderWorkspace();
-
-    const queue = sharedSessionQueueOwner().queueFor("agent-old");
-    queue.add("queued before the close", []);
-    expect(queuedTexts(queue)).toEqual(["queued before the close"]);
-
-    await lifecycleClose("agent-old");
-    await settleCloseActs();
-
-    expect(queuedTexts(queue)).toEqual([]);
-    expect(sharedSessionQueueOwner().queueFor("agent-old")).not.toBe(queue);
   });
 
   it("after cancelling a session close, focus returns to its tab", async () => {

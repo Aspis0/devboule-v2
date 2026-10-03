@@ -47,6 +47,26 @@
   gap: 2px;
 }
 
+/* The in-place editor. It stands where the text stood, so the row keeps its
+   place and its identity while it is being written. */
+.workspace-queue-edit {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 6px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--terracotta);
+  border-radius: 6px;
+  font: inherit;
+  font-size: var(--type-small);
+  line-height: 1.45;
+}
+
+.workspace-queue-edit:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: -2px;
+}
+
 .workspace-queue-button {
   display: grid;
   place-items: center;

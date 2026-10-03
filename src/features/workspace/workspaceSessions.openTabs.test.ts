@@ -31,7 +31,7 @@ function harness(roster: Session[]) {
       return () => undefined;
     }),
   };
-  const controller = createWorkspaceSessionController(source, undefined, undefined, disk);
+  const controller = createWorkspaceSessionController(source, undefined, disk);
   return { controller, source, disk, push: (rows: Session[]) => push(rows) };
 }
 
@@ -75,7 +75,7 @@ describe("explicit session tab membership", () => {
         createdAtMs: row.createdAtMs,
       },
     ]);
-    const restored = createWorkspaceSessionController(source, undefined, undefined, disk);
+    const restored = createWorkspaceSessionController(source, undefined, disk);
     await restored.refresh();
     expect(restored.getState().selectedSessionId).toBe(row.id);
   });
@@ -158,12 +158,12 @@ describe("explicit session tab membership", () => {
     controller.open(roster[0]);
     controller.open(roster[1]);
     controller.closeTabs(["a"]);
-    const restored = createWorkspaceSessionController(source, undefined, undefined, disk);
+    const restored = createWorkspaceSessionController(source, undefined, disk);
     await restored.refresh();
     expect(restored.getState().openSessions.map((row) => row.id)).toEqual(["b"]);
     expect(restored.getState().selectedSessionId).toBe("b");
     source.list.mockResolvedValue([session("b", { createdAtMs: 456 })]);
-    const reused = createWorkspaceSessionController(source, undefined, undefined, disk);
+    const reused = createWorkspaceSessionController(source, undefined, disk);
     await reused.refresh();
     expect(reused.getState().openSessions).toEqual([]);
     expect(reused.getState().selectedSessionId).toBeNull();

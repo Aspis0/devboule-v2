@@ -1218,6 +1218,24 @@ describe("TerminalSession protocol event coverage", () => {
       expect(unknownTypeBanners(harness.banners)).toEqual([]);
     },
   );
+
+  it("ignores the shared queue's snapshot, which the terminal does not render", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({
+      type: "queue_snapshot",
+      epoch: "0123456789abcdef0123456789abcdef",
+      revision: 1,
+      items: [{ itemId: "queue-1", text: "a queued follow-up" }],
+    } as unknown as TerminalEvent);
+    harness.flushFrame();
+
+    // The queue belongs to the session view; a snapshot reaching this channel
+    // is a leak, and it must leave no banner and no output behind.
+    expect(unknownTypeBanners(harness.banners)).toEqual([]);
+    expect(harness.view.written).toEqual([]);
+  });
 });
 
 // The production wiring: a real createTerminalView (over mocked xterm) so a

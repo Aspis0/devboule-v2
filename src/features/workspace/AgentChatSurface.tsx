@@ -61,7 +61,6 @@ import type { WorkspaceCommand } from "./WorkspaceCommandMenu";
 import { setHeldAssistantText } from "./attentionNotice";
 import { usdCopy } from "../../lib/format";
 import { QueueTrack } from "./QueueTrack";
-import type { MessageQueue } from "./messageQueue";
 import { useMessageQueue } from "./useMessageQueue";
 import {
   getSendBehavior,
@@ -183,12 +182,12 @@ interface AgentChatSurfaceProps {
    * every plan row renders. */
   pendingPlanToolCallId?: string | null;
   /**
-   * The session's queue of unsent follow-ups, held in memory by the workspace
-   * (one per session) and handed down. Handed none, the surface renders
-   * no rows and no queue actions and Enter always sends — the
-   * workspace never ships that mode.
+   * The connected daemon agreed `session.queue`, so it owns this session's
+   * queue of unsent follow-ups: the rows come from its snapshots and the
+   * actions are its frames. Without it the surface renders no rows, Enter sends
+   * as it always has, and the composer's queue action says why it cannot queue.
    */
-  queue?: MessageQueue | null;
+  queueSupported?: boolean;
   onPermissionRequest?: (
     sessionId: string,
     subscriptionId: SubscriptionId,
@@ -219,12 +218,13 @@ function invokeAgentCommand<T>(command: string, args?: Record<string, unknown>):
     const attachments = args?.attachments as readonly PromptAttachment[] | undefined;
     const text = typeof args?.text === "string" ? args.text : "";
     const subscriptionId = args?.subscriptionId as SubscriptionId;
-    // The controller only ever names the one behaviour that differs from a
-    // plain send. Anything else is a bug on this side of the wire and is
-    // refused loudly: silently dropping it would turn a misspelling into a
-    // plain send the caller never asked for.
+    // The controller only ever names the two behaviours that differ from a
+    // plain send: the composer's replace-a-running-turn, and a steer into one.
+    // Anything else is a bug on this side of the wire and is refused loudly:
+    // silently dropping it would turn a misspelling into a plain send the
+    // caller never asked for.
     const behavior = args?.activeTurnBehavior;
-    if (behavior !== undefined && behavior !== "steer") {
+    if (behavior !== undefined && behavior !== "steer" && behavior !== "interrupt") {
       return Promise.reject(new Error(`Unsupported active turn behavior: ${String(behavior)}`));
     }
     const activeTurnBehavior: ActiveTurnBehavior | undefined = behavior;
@@ -354,6 +354,12 @@ function pendingEffortSentence(manifest: SessionManifest | null, effortId: strin
   return effort === undefined ? null : `switching to ${effort.label}…`;
 }
 
+/** The sentence the composer's queue action wears when the connected daemon
+ * does not keep a queue for this session. One place, because the button's label
+ * and the surface's own copy must not drift. */
+export const QUEUE_UNSUPPORTED =
+  "The running agent does not keep queued messages for this session.";
+
 export const AgentChatSurface = memo(function AgentChatSurface({
   sessionId,
   title,
@@ -375,7 +381,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   deviceNames,
   hasPendingPermission = false,
   pendingPlanToolCallId = null,
-  queue = null,
+  queueSupported = false,
   onPermissionRequest,
   onPermissionResolved,
 }: AgentChatSurfaceProps) {
@@ -417,11 +423,11 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     [sessionId, sessionRoster, state.subagents],
   );
 
-  // The composer's handed-back draft. `focus` is false for an Edit, whose
-  // focus follows the row rule in the track; true for a refusal, whose text
-  // the user must look at before sending it again. `images` ride along when
-  // a taken queue row held them; a failed image send never hands back — its
-  // picks stay in the composer while sending and clear only on success.
+  // The composer's handed-back draft. `focus` is false for a refused edit whose
+  // row took the focus rule in the track, and true for a refusal the user must
+  // look at before sending again. `images` ride along when a queued add failed;
+  // a failed image send never hands back — its picks stay in the composer while
+  // sending and clear only on success.
   const [restoreDraft, setRestoreDraft] = useState<{
     text: string;
     images: readonly PromptAttachment[];
@@ -437,21 +443,24 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     [],
   );
 
-  // One queue per session, held by the app for as long as the session is in
-  // the roster and handed down here; without one the surface renders no rows
-  // and no queue actions, and Enter keeps sending as it always has.
+  // The daemon's queue for this session: its snapshots in, its five frames out.
+  // This surface owns no list and sends nothing queued — the daemon drains its
+  // own queue, which is what keeps two devices from sending one row twice.
   const composerQueue = useMessageQueue(
-    queue ?? null,
+    sessionId,
     useMemo(
       () => ({
-        onEditRestored: (text: string, images: readonly PromptAttachment[] = []) =>
-          handDraftBack(text, false, images),
-        onSteerRefused: (text: string, images: readonly PromptAttachment[] = []) =>
-          handDraftBack(text, true, images),
-        onQueueRefused: (text: string, images: readonly PromptAttachment[] = []) =>
-          handDraftBack(text, true, images),
+        supported: queueSupported,
+        activity: activity ?? null,
+        // Read at call time: a resume or a reconnect replaces the controller
+        // under us, and the newest attach is the one a send may use.
+        subscriptionId: () => sessionRef.current?.getSubscriptionId() ?? null,
+        depositAttachment: (attachment: PromptAttachment) =>
+          sessionRef.current?.depositAttachment(attachment) ??
+          Promise.reject(new Error("This view has no session open.")),
+        onDraftBack: handDraftBack,
       }),
-      [handDraftBack],
+      [activity, handDraftBack, queueSupported],
     ),
   );
 
@@ -469,16 +478,21 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   // strand the message, so the queue action becomes steer while a card is open.
   const sendBehavior = useSyncExternalStore(subscribeSendBehavior, getSendBehavior);
   const enterQueues =
-    queue != null && resolveActiveSendBehavior(sendBehavior, hasPendingPermission) === "queue";
-  // The session's one predicate, read from the queue every surface on this
-  // session shares, so two panes cannot disagree about a send in flight.
+    queueSupported && resolveActiveSendBehavior(sendBehavior, hasPendingPermission) === "queue";
+  // The composer's one predicate: the roster's activity, or a send of this view
+  // that the daemon has not answered yet.
   const turnActive = composerQueue.turnActive;
+  const noQueue = queueSupported ? null : QUEUE_UNSUPPORTED;
 
   const sendSession = useCallback(
-    async (text: string, attachments: readonly PromptAttachment[] = []): Promise<boolean> => {
+    async (
+      text: string,
+      attachments: readonly PromptAttachment[] = [],
+      activeTurnBehavior?: ActiveTurnBehavior,
+    ): Promise<boolean> => {
       const session = sessionRef.current;
       if (session === null) return false;
-      const submissionId = queue?.submissionStarted();
+      const submissionId = composerQueue.submissionStarted();
       let replyTurnActive: boolean | undefined;
       const reportTurn = (turnActive: boolean) => {
         replyTurnActive = turnActive;
@@ -489,41 +503,19 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         // names, so replay resolves the stored bytes instead of the bytes
         // the composer held.
         if (attachments.length === 0) {
-          return await session.send(text, [], undefined, [], undefined, reportTurn);
+          return await session.send(text, [], activeTurnBehavior, [], undefined, reportTurn);
         }
         return await sendChatImagesByReference({
           images: attachments,
           deposit: (attachment) => session.depositAttachment(attachment),
           send: (references) =>
-            session.send(text, [], undefined, references, undefined, reportTurn),
+            session.send(text, [], activeTurnBehavior, references, undefined, reportTurn),
         });
       } finally {
-        if (submissionId !== undefined) queue?.submissionSettled(submissionId, replyTurnActive);
+        composerQueue.submissionSettled(submissionId, replyTurnActive);
       }
     },
-    [queue],
-  );
-
-  const sendQueuedSession = useCallback(
-    async (text: string, attachments: readonly PromptAttachment[], idempotencyKey: string) => {
-      const session = sessionRef.current;
-      if (session === null) return { accepted: false, turnActive: null };
-      let replyTurnActive: boolean | undefined;
-      const reportTurn = (turnActive: boolean) => {
-        replyTurnActive = turnActive;
-      };
-      const accepted =
-        attachments.length === 0
-          ? await session.send(text, [], undefined, [], idempotencyKey, reportTurn)
-          : await sendChatImagesByReference({
-              images: attachments,
-              deposit: (attachment) => session.depositAttachment(attachment),
-              send: (references) =>
-                session.send(text, [], undefined, references, idempotencyKey, reportTurn),
-            });
-      return { accepted, turnActive: replyTurnActive ?? null };
-    },
-    [],
+    [composerQueue],
   );
 
   // The roster goal the workspace keeps current. The controller reads it at
@@ -545,7 +537,8 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         goalFrameRef.current !== undefined ? goalFrameRef.current : latestInitialGoalRef.current,
       invoke: invokeAgentCommand,
       createChannel: createSessionChannel,
-      onTurnFinished: () => queue?.agentFinished(),
+      onTurnFinished: composerQueue.onTurnFinished,
+      onQueueSnapshot: composerQueue.onSnapshot,
       onGoalChanged: (goal) => {
         goalFrameRef.current = goal;
       },
@@ -568,7 +561,14 @@ export const AgentChatSurface = memo(function AgentChatSurface({
       if (sessionRef.current === session) sessionRef.current = null;
       session.dispose();
     };
-  }, [onPermissionRequest, onPermissionResolved, queue, sessionId, observedState?.generation]);
+  }, [
+    composerQueue.onSnapshot,
+    composerQueue.onTurnFinished,
+    onPermissionRequest,
+    onPermissionResolved,
+    sessionId,
+    observedState?.generation,
+  ]);
 
   // The freshest roster handed down: the archive act reads this per close, so
   // a push that landed while the ask was open counts at the moment it matters.
@@ -629,21 +629,6 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     // oxlint-disable-next-line react-hooks/exhaustive-deps -- conversationRef comes from the scroll hook: its element is read when the act runs, never at render.
     [focusComposer, onRefreshSubagents, sessionId],
   );
-
-  // While this surface is on screen, the queue's sends and interrupts ride the
-  // controller it owns, read at call time so a recreated controller (resume,
-  // reconnect) answers for the same queue the owner holds. Detaching hands the
-  // queue back to the sender it runs on with no view, so a row is never left
-  // with nowhere to go. What this effect does *not* do is decide when to send: a
-  // visible session's queue is armed by the same roster edge as a hidden one, and
-  // a second path that guesses from the transcript would disagree with it.
-  useEffect(() => {
-    if (queue === null) return;
-    return queue.attach({
-      send: sendQueuedSession,
-      interrupt: () => sessionRef.current?.interrupt() ?? Promise.resolve(),
-    });
-  }, [queue, sendQueuedSession]);
 
   // Zed's pattern: re-apply the remembered effort once, on the first manifest
   // of the session. The confirmation manifest is just another manifest here —
@@ -747,7 +732,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   // the element's identity only moves when the queue's snapshot does.
   const queuedTrack = useMemo(
     () =>
-      queue === null ? null : (
+      queueSupported ? (
         <QueueTrack
           items={composerQueue.items}
           onSteer={composerQueue.steerRow}
@@ -756,9 +741,9 @@ export const AgentChatSurface = memo(function AgentChatSurface({
           onMove={composerQueue.moveRow}
           onEmptied={focusComposer}
         />
-      ),
+      ) : null,
     [
-      queue,
+      queueSupported,
       composerQueue.items,
       composerQueue.steerRow,
       composerQueue.editRow,
@@ -834,17 +819,23 @@ export const AgentChatSurface = memo(function AgentChatSurface({
           {composerQueue.error}
         </div>
       ) : null}
+      {composerQueue.dropNote !== null ? (
+        <div className="workspace-queue-error" role="status" data-testid="queue-drop">
+          {composerQueue.dropNote}
+        </div>
+      ) : null}
       <WorkspaceComposer
         streaming={state.streaming && !osGone}
         turnActive={turnActive}
         queueAllowed={!hasPendingPermission}
+        queueUnsupportedReason={noQueue}
         disabled={composerDisabled}
         disabledReason={recoveredAttach ? null : disabledReason}
         availableCommands={composerCommands}
         taskPill={taskPill}
         queuedTrack={queuedTrack}
         restoreDraft={restoreDraft}
-        onQueue={queue === null ? undefined : composerQueue.queueMessage}
+        onQueue={queueSupported ? composerQueue.queueMessage : undefined}
         enterQueues={enterQueues}
         captureTextarea={captureComposerTextarea}
         onSend={async (text, attachments) => {
@@ -854,7 +845,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
           // the composer whether its in-flight images may clear: queued
           // transfers and steers clear at once, a refused send keeps them.
           if (attachments.length > 0) {
-            if (queue !== null && (turnActive || hasPendingPermission)) {
+            if (queueSupported && (turnActive || hasPendingPermission)) {
               composerQueue.queueMessage(text, attachments);
               return true;
             }
@@ -869,15 +860,14 @@ export const AgentChatSurface = memo(function AgentChatSurface({
               return false;
             }
           }
-          // A running turn with a queue in hand goes through the queue's steer,
-          // which interrupts and then waits for the daemon's turn-over. An idle
-          // session takes the plain send it always took — and a refusal puts
-          // the text back in the composer instead of losing it.
-          if ((turnActive || hasPendingPermission) && queue !== null) {
-            composerQueue.steerComposer(text);
-            return true;
-          }
-          return sendSession(text).then((sent: boolean) => {
+          // Text the user types while a turn runs goes straight to the agent as
+          // one send that replaces that turn: the wire's own interrupt
+          // behaviour, which waits out the turn it displaced on the daemon's
+          // side. It never becomes a queued row — nothing is waiting to be
+          // sent later, and a queued row could not move until the turn the
+          // user is interrupting had already ended.
+          const steer = turnActive || hasPendingPermission;
+          return sendSession(text, [], steer ? "interrupt" : undefined).then((sent: boolean) => {
             if (!sent) handDraftBack(text, true);
             return sent;
           });

@@ -783,6 +783,138 @@ impl DaemonClient {
         }
     }
 
+    /// The shared follow-up queue (protocol 22, the `session.queue`
+    /// capability). All five frames name the caller's `client_operation_id`,
+    /// and the daemon answers a repeat of one it has already answered from its
+    /// ledger instead of queueing or sending a second time; a repeat with
+    /// different bytes is refused as `operation_conflict`. `replayed` is
+    /// therefore not news to a caller — an answered operation is applied once
+    /// however many times it is asked — so these five resolve to nothing.
+    ///
+    /// The capability gate is first in every one of them, for the reason
+    /// [`DaemonClient::require_agreed`] gives: a daemon from before protocol 22
+    /// cannot deserialize these variants, and the connection would die on a
+    /// frame it had no answer for.
+    pub fn session_queue_add(
+        &self,
+        session_id: &str,
+        client_operation_id: &str,
+        text: &str,
+        attachments: &[PromptAttachment],
+        attachment_references: &[AttachmentReference],
+    ) -> Result<(), DaemonError> {
+        self.require_agreed(devboule_protocol::caps::SESSION_QUEUE)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionQueueAdd {
+            id,
+            session_id: session_id.to_string(),
+            client_operation_id: client_operation_id.to_string(),
+            text: text.to_string(),
+            attachments: attachments.to_vec(),
+            attachment_references: attachment_references.to_vec(),
+        })? {
+            DaemonMessage::QueueAccepted { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Replace one queued row's text where it stands. See
+    /// [`DaemonClient::session_queue_add`] for what the operation id and the
+    /// capability gate are for.
+    pub fn session_queue_edit(
+        &self,
+        session_id: &str,
+        client_operation_id: &str,
+        item_id: &str,
+        text: &str,
+    ) -> Result<(), DaemonError> {
+        self.require_agreed(devboule_protocol::caps::SESSION_QUEUE)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionQueueEdit {
+            id,
+            session_id: session_id.to_string(),
+            client_operation_id: client_operation_id.to_string(),
+            item_id: item_id.to_string(),
+            text: text.to_string(),
+        })? {
+            DaemonMessage::QueueAccepted { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Take one queued row out. See [`DaemonClient::session_queue_add`] for the
+    /// rest.
+    pub fn session_queue_remove(
+        &self,
+        session_id: &str,
+        client_operation_id: &str,
+        item_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.require_agreed(devboule_protocol::caps::SESSION_QUEUE)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionQueueRemove {
+            id,
+            session_id: session_id.to_string(),
+            client_operation_id: client_operation_id.to_string(),
+            item_id: item_id.to_string(),
+        })? {
+            DaemonMessage::QueueAccepted { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Move one queued row, counting `to_index` in the queue the row has
+    /// already left. See [`DaemonClient::session_queue_add`] for the rest.
+    pub fn session_queue_move(
+        &self,
+        session_id: &str,
+        client_operation_id: &str,
+        item_id: &str,
+        to_index: usize,
+    ) -> Result<(), DaemonError> {
+        self.require_agreed(devboule_protocol::caps::SESSION_QUEUE)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionQueueMove {
+            id,
+            session_id: session_id.to_string(),
+            client_operation_id: client_operation_id.to_string(),
+            item_id: item_id.to_string(),
+            to_index,
+        })? {
+            DaemonMessage::QueueAccepted { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Send one queued row now, which is a send and therefore needs the
+    /// subscription a send has. See [`DaemonClient::session_queue_add`] for
+    /// the rest.
+    pub fn session_queue_send_now(
+        &self,
+        session_id: &str,
+        client_operation_id: &str,
+        subscription_id: SubscriptionId,
+        item_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.require_agreed(devboule_protocol::caps::SESSION_QUEUE)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionQueueSendNow {
+            id,
+            session_id: session_id.to_string(),
+            client_operation_id: client_operation_id.to_string(),
+            subscription_id,
+            item_id: item_id.to_string(),
+        })? {
+            DaemonMessage::QueueAccepted { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn session_report_agent(
         &self,

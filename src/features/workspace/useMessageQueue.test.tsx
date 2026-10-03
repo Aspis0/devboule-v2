@@ -1,51 +1,113 @@
-// The chat surface's side of the queue, driven through a probe component:
-// snapshots land, every action reaches the queue, and every refusal lands
-// where the user reads it — the error line, or the composer's text back.
+// The chat surface's side of the daemon's queue: the snapshot is the list, the
+// five frames are the actions, and every refusal lands where the user reads it
+// — beside the composer, or as the composer's text back.
 // @vitest-environment happy-dom
-import { act } from "react";
+import { act, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SEND_FAILED } from "./inMemoryMessageQueue";
-import { createQueueHarness, flushQueueTurns, type QueueHarness } from "./queueHarness";
-import { useMessageQueue, type MessageQueueUiHandlers } from "./useMessageQueue";
+import type { AttachmentReference, QueuedMessage, SessionEvent } from "../../types/ipc";
+
+vi.mock("../../lib/tauri", () => ({
+  sessionQueueAdd: vi.fn(async () => undefined),
+  sessionQueueEdit: vi.fn(async () => undefined),
+  sessionQueueRemove: vi.fn(async () => undefined),
+  sessionQueueMove: vi.fn(async () => undefined),
+  sessionQueueSendNow: vi.fn(async () => undefined),
+}));
+
+import {
+  sessionQueueAdd,
+  sessionQueueEdit,
+  sessionQueueMove,
+  sessionQueueRemove,
+  sessionQueueSendNow,
+} from "../../lib/tauri";
+import {
+  DELIVERY_UNKNOWN_NOTE,
+  useMessageQueue,
+  type MessageQueueOptions,
+  type MessageQueueUi,
+} from "./useMessageQueue";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+const SESSION = "s.owner.1";
+const EPOCH = "0123456789abcdef0123456789abcdef";
+
+type QueueSnapshot = Extract<SessionEvent, { type: "queue_snapshot" }>;
+
 let container: HTMLDivElement;
 let root: Root;
+let latest: MessageQueueUi | null = null;
+let lastKey = "";
+let handedBack: Array<{ text: string; focus: boolean }>;
 
-function renderProbe(harness: QueueHarness | null) {
-  const handlers: MessageQueueUiHandlers = {
-    onEditRestored: vi.fn(),
-    onSteerRefused: vi.fn(),
-    onQueueRefused: vi.fn(),
+function row(itemId: string, text: string, error?: string): QueuedMessage {
+  return { itemId, text, ...(error === undefined ? {} : { error }) };
+}
+
+function snapshot(revision: number, items: readonly QueuedMessage[]): QueueSnapshot {
+  return { type: "queue_snapshot", epoch: EPOCH, revision, items: [...items] };
+}
+
+function reference(): AttachmentReference {
+  return { sessionId: SESSION, digest: "a".repeat(64), storedBytes: 12 };
+}
+
+function renderProbe(overrides: Partial<MessageQueueOptions> = {}): void {
+  const options: MessageQueueOptions = {
+    supported: true,
+    activity: "idle",
+    subscriptionId: () => 41,
+    depositAttachment: async () => reference(),
+    onDraftBack: (text, focus) => {
+      handedBack.push({ text, focus });
+    },
+    ...overrides,
   };
   function Probe() {
-    const ui = useMessageQueue(harness?.queue ?? null, handlers);
+    const ui = useMessageQueue(SESSION, options);
+    // The test drives the hook the way the surface's session channel does:
+    // from outside, after the render that produced it.
+    useEffect(() => {
+      latest = ui;
+    });
     return (
       <div
         data-testid="probe"
-        data-items={JSON.stringify(
-          ui.items.map((item) => ({ id: item.id, text: item.text, error: item.error })),
-        )}
+        data-items={JSON.stringify(ui.items.map((item) => item.text))}
         data-error={ui.error ?? ""}
+        data-drop={ui.dropNote ?? ""}
+        data-turn-active={String(ui.turnActive)}
       >
         <button
           type="button"
-          data-testid="queue-it"
-          onClick={() => ui.queueMessage("from the probe")}
+          data-testid="submit"
+          onClick={() => {
+            lastKey = ui.submissionStarted();
+          }}
         />
-        <button type="button" data-testid="queue-blank" onClick={() => ui.queueMessage("   ")} />
-        <button type="button" data-testid="edit-it" onClick={() => ui.editRow("queued-1")} />
-        <button type="button" data-testid="delete-it" onClick={() => ui.deleteRow("queued-1")} />
-        <button type="button" data-testid="steer-row" onClick={() => ui.steerRow("queued-1")} />
-        <button type="button" data-testid="move-it" onClick={() => ui.moveRow("queued-1", 1)} />
         <button
           type="button"
-          data-testid="steer-composer"
-          onClick={() => ui.steerComposer("steered words")}
+          data-testid="settle-refused"
+          onClick={() => {
+            ui.submissionSettled(lastKey);
+          }}
         />
-        <button type="button" data-testid="steer-blank" onClick={() => ui.steerComposer("   ")} />
+        <button
+          type="button"
+          data-testid="settle-accepted"
+          onClick={() => {
+            ui.submissionSettled(lastKey, true);
+          }}
+        />
+        <button
+          type="button"
+          data-testid="turn-finished"
+          onClick={() => {
+            ui.onTurnFinished();
+          }}
+        />
       </div>
     );
   }
@@ -53,31 +115,51 @@ function renderProbe(harness: QueueHarness | null) {
   act(() => {
     root.render(<Probe />);
   });
-  const snapshot = () => {
-    const probe = container.querySelector<HTMLDivElement>('[data-testid="probe"]');
-    if (probe === null) throw new Error("probe did not render");
-    return {
-      items: JSON.parse(probe.dataset.items ?? "[]") as {
-        id: string;
-        text: string;
-        error?: string;
-      }[],
-      error: probe.dataset.error === "" ? null : probe.dataset.error,
-    };
+}
+
+function read() {
+  const probe = container.querySelector<HTMLDivElement>('[data-testid="probe"]');
+  if (probe === null) throw new Error("probe did not render");
+  return {
+    items: JSON.parse(probe.dataset.items ?? "[]") as string[],
+    error: probe.dataset.error === "" ? null : probe.dataset.error,
+    drop: probe.dataset.drop === "" ? null : probe.dataset.drop,
+    turnActive: probe.dataset.turnActive === "true",
   };
-  return { handlers, snapshot };
+}
+
+/** A snapshot, delivered the way the surface's session channel delivers it. */
+function push(event: QueueSnapshot): void {
+  act(() => {
+    latest?.onSnapshot(event);
+  });
+}
+
+/** A user action, and the promise of the frames it asked for. */
+async function press(action: () => void): Promise<void> {
+  await act(async () => {
+    action();
+    await Promise.resolve();
+  });
 }
 
 async function click(testId: string): Promise<void> {
-  await act(async () => {
-    container.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`)?.click();
-    await flushQueueTurns();
-  });
+  const button = container.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`);
+  if (button === null) throw new Error(`${testId} did not render`);
+  await press(() => button.click());
 }
 
 beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
+  latest = null;
+  handedBack = [];
+  vi.clearAllMocks();
+  vi.mocked(sessionQueueAdd).mockResolvedValue(undefined);
+  vi.mocked(sessionQueueEdit).mockResolvedValue(undefined);
+  vi.mocked(sessionQueueRemove).mockResolvedValue(undefined);
+  vi.mocked(sessionQueueMove).mockResolvedValue(undefined);
+  vi.mocked(sessionQueueSendNow).mockResolvedValue(undefined);
 });
 
 afterEach(async () => {
@@ -86,149 +168,204 @@ afterEach(async () => {
 });
 
 describe("useMessageQueue", () => {
-  it("carries the queue's snapshots into render state", async () => {
-    const harness = createQueueHarness();
-    const probe = renderProbe(harness);
-    expect(probe.snapshot().items).toEqual([]);
-    await act(async () => {
-      harness.queue.add("hello", []);
+  it("renders the snapshot and nothing of its own", async () => {
+    renderProbe();
+    expect(read().items).toEqual([]);
+
+    push(snapshot(1, [row("queue-1", "one"), row("queue-2", "two")]));
+    expect(read().items).toEqual(["one", "two"]);
+
+    // An older snapshot is not news: the daemon is the only writer.
+    push(snapshot(1, [row("queue-9", "stale")]));
+    expect(read().items).toEqual(["one", "two"]);
+
+    push(snapshot(2, [row("queue-2", "two")]));
+    expect(read().items).toEqual(["two"]);
+  });
+
+  it("queues the composer's text through one frame and never holds a row itself", async () => {
+    renderProbe();
+    await press(() => latest?.queueMessage("from the probe"));
+
+    expect(vi.mocked(sessionQueueAdd).mock.calls).toEqual([
+      [SESSION, expect.stringMatching(/^[0-9a-f-]{36}$/), "from the probe", [], []],
+    ]);
+    // No local list: the row appears when the snapshot says so.
+    expect(read().items).toEqual([]);
+    push(snapshot(1, [row("queue-1", "from the probe")]));
+    expect(read().items).toEqual(["from the probe"]);
+  });
+
+  it("keeps a blank in the composer instead of asking the daemon about it", async () => {
+    renderProbe();
+    await press(() => latest?.queueMessage("   "));
+
+    expect(sessionQueueAdd).not.toHaveBeenCalled();
+    expect(read().error).toBe("There is nothing to queue.");
+    expect(handedBack).toEqual([{ text: "   ", focus: true }]);
+  });
+
+  it("hands the composer's text back when the daemon refuses the add", async () => {
+    renderProbe();
+    vi.mocked(sessionQueueAdd).mockRejectedValue({
+      code: "invalid_request",
+      message: "A queued message needs text or an attachment.",
     });
-    expect(probe.snapshot().items.map((item) => item.text)).toEqual(["hello"]);
+    await press(() => latest?.queueMessage("too big"));
+
+    expect(read().error).toBe("The agent daemon refused that request as invalid.");
+    expect(handedBack).toEqual([{ text: "too big", focus: true }]);
   });
 
-  it("renders nothing and does nothing without a queue", async () => {
-    const probe = renderProbe(null);
-    await click("queue-it");
-    expect(probe.snapshot().items).toEqual([]);
-    expect(probe.snapshot().error).toBeNull();
-  });
-
-  it("maps a refusal carrying the daemon's words instead of echoing them", async () => {
-    const harness = createQueueHarness();
-    const probe = renderProbe(harness);
-    vi.spyOn(harness.queue, "add").mockImplementation(() => {
-      throw new Error("session attachment is not registered");
-    });
-    await click("queue-it");
-    expect(probe.snapshot().error).toBe(
-      "This view lost its live connection to the session. Reopen the tab to reconnect.",
-    );
-    expect(probe.snapshot().error).not.toContain("attachment");
-  });
-
-  it("takes the composer's text into the queue, and hands back what the queue refuses", async () => {
-    const harness = createQueueHarness();
-    const probe = renderProbe(harness);
-
-    await click("queue-it");
-    expect(probe.snapshot().items.map((item) => item.text)).toEqual(["from the probe"]);
-    expect(probe.handlers.onQueueRefused).not.toHaveBeenCalled();
-    expect(probe.snapshot().error).toBeNull();
-
-    // The refusal the queue can raise: text with nothing in it.
-    await click("queue-blank");
-    expect(probe.snapshot().error).toBe("There is nothing to queue.");
-    expect(probe.handlers.onQueueRefused).toHaveBeenCalledWith("   ", []);
-
-    await click("queue-it");
-    expect(probe.snapshot().error).toBeNull();
-  });
-
-  it("hands the row's text back once the queue has taken it", async () => {
-    const harness = createQueueHarness();
-    harness.queue.add("a row", []);
-    harness.status = "idle";
-    const probe = renderProbe(harness);
-
-    await click("edit-it");
-    expect(probe.handlers.onEditRestored).toHaveBeenCalledWith("a row", []);
-    expect(probe.snapshot().items).toEqual([]);
-  });
-
-  it("says so when the row the user clicked is already gone", async () => {
-    const harness = createQueueHarness();
-    harness.queue.add("a row", []);
-    const probe = renderProbe(harness);
-    act(() => {
-      harness.queue.take("queued-1"); // drained or deleted a moment ago
+  it("gives back the text of an edit the daemon no longer has a row for", async () => {
+    // Another device removed the row between the click and the frame.
+    renderProbe();
+    push(snapshot(1, [row("queue-1", "one")]));
+    vi.mocked(sessionQueueEdit).mockRejectedValue({
+      code: "invalid_request",
+      message: "No queued message 'queue-1' is in this session's queue.",
     });
 
-    await click("edit-it");
-    expect(probe.handlers.onEditRestored).not.toHaveBeenCalled();
-    expect(probe.snapshot().error).toBe("That queued message is gone.");
+    await press(() => latest?.editRow("queue-1", "edited words"));
+
+    expect(vi.mocked(sessionQueueEdit).mock.calls).toEqual([
+      [SESSION, expect.any(String), "queue-1", "edited words"],
+    ]);
+    expect(handedBack).toEqual([{ text: "edited words", focus: true }]);
+    expect(read().error).not.toBeNull();
   });
 
-  it("deletes and reorders through the queue, and a delete of nothing says nothing", async () => {
-    const harness = createQueueHarness();
-    harness.queue.add("a row", []);
-    harness.queue.add("another", []);
-    const probe = renderProbe(harness);
+  it("deletes and reorders through frames, and never asks for a place the queue has not got", async () => {
+    renderProbe();
+    push(snapshot(1, [row("queue-1", "one"), row("queue-2", "two"), row("queue-3", "three")]));
 
-    await click("move-it");
-    expect(probe.snapshot().items.map((item) => item.text)).toEqual(["another", "a row"]);
+    await press(() => latest?.deleteRow("queue-1"));
+    expect(vi.mocked(sessionQueueRemove).mock.calls).toEqual([
+      [SESSION, expect.any(String), "queue-1"],
+    ]);
 
-    await click("delete-it");
-    expect(probe.snapshot().items.map((item) => item.text)).toEqual(["another"]);
+    // The last place a three-row queue has is 2: the index is counted after the
+    // row has left, and the daemon refuses anything longer.
+    await press(() => latest?.moveRow("queue-1", 99));
+    expect(vi.mocked(sessionQueueMove).mock.calls[0]).toEqual([
+      SESSION,
+      expect.any(String),
+      "queue-1",
+      2,
+    ]);
 
-    await click("delete-it"); // already gone: the goal is reached
-    expect(probe.snapshot().items.map((item) => item.text)).toEqual(["another"]);
-    expect(probe.snapshot().error).toBeNull();
+    await press(() => latest?.moveRow("queue-3", 0));
+    expect(vi.mocked(sessionQueueMove).mock.calls[1]).toEqual([
+      SESSION,
+      expect.any(String),
+      "queue-3",
+      0,
+    ]);
+
+    // A row already at the front is not moved again: no frame, no revision.
+    await press(() => latest?.moveRow("queue-1", 0));
+    expect(sessionQueueMove).toHaveBeenCalledTimes(2);
   });
 
-  it("sends a row steer through the queue", async () => {
-    const harness = createQueueHarness();
-    harness.queue.add("a row", []);
-    harness.status = "idle";
-    const probe = renderProbe(harness);
+  it("says nothing beside the composer when a move is refused", async () => {
+    renderProbe();
+    push(snapshot(1, [row("queue-1", "one"), row("queue-2", "two")]));
+    // Another device moved the same row; the daemon answers the index the
+    // client no longer means. The next snapshot is the answer.
+    vi.mocked(sessionQueueMove).mockRejectedValue({
+      code: "invalid_request",
+      message: "No queued message 'queue-1' is in this session's queue.",
+    });
 
-    await click("steer-row");
-    expect(harness.actions).toEqual(["send:a row"]);
-    expect(probe.snapshot().items).toEqual([]);
-    expect(probe.handlers.onSteerRefused).not.toHaveBeenCalled();
-    expect(probe.snapshot().error).toBeNull();
+    await press(() => latest?.moveRow("queue-1", 1));
+    expect(read().error).toBeNull();
   });
 
-  // Review F16: one alert per failure. The row is where a queued send's
-  // refusal is said; the composer line stays for the steer the queue never
-  // took at all.
-  it("a refused row steer keeps the row and stamps it, without a second alert", async () => {
-    const harness = createQueueHarness();
-    harness.queue.add("stuck row", []);
-    harness.status = "idle";
-    const probe = renderProbe(harness);
+  it("sends a row now through the session's own subscription", async () => {
+    renderProbe();
+    push(snapshot(1, [row("queue-1", "hold this")]));
 
-    harness.failingSends = true;
-    await click("steer-row");
-    expect(probe.snapshot().items[0].error).toBe(SEND_FAILED);
-    expect(probe.snapshot().error).toBeNull();
-    expect(probe.handlers.onSteerRefused).not.toHaveBeenCalled();
+    await press(() => latest?.steerRow("queue-1"));
+    expect(vi.mocked(sessionQueueSendNow).mock.calls).toEqual([
+      [SESSION, expect.any(String), 41, "queue-1"],
+    ]);
   });
 
-  it("a composer steer whose send the session refused stays on its row", async () => {
-    const harness = createQueueHarness();
-    harness.status = "idle";
-    const probe = renderProbe(harness);
+  it("says a refused send-now once, with the daemon's sentence, and does not ask again", async () => {
+    renderProbe();
+    push(snapshot(1, [row("queue-1", "hold this")]));
+    vi.mocked(sessionQueueSendNow).mockRejectedValue({
+      code: "invalid_request",
+      message: "A queued message is already being sent for this session.",
+    });
 
-    await click("steer-composer");
-    expect(harness.actions).toEqual(["send:steered words"]);
-    expect(probe.handlers.onSteerRefused).not.toHaveBeenCalled();
-    harness.status = "idle"; // the turn that steer opened is over
+    await press(() => latest?.steerRow("queue-1"));
 
-    // A refusal is not a lost message: the text is a row now, with its reason,
-    // and the ladder retries it. The composer keeps what it was told to send
-    // only when the queue refused to take it at all.
-    harness.failingSends = true;
-    await click("steer-composer");
-    expect(probe.handlers.onSteerRefused).not.toHaveBeenCalled();
-    expect(harness.current().map((item) => item.text)).toEqual(["steered words"]);
-    expect(harness.current()[0].error).toBe(SEND_FAILED);
+    expect(sessionQueueSendNow).toHaveBeenCalledTimes(1);
+    expect(read().error).toBe("The agent daemon refused that request as invalid.");
   });
 
-  it("text the queue refuses to take goes back to the composer", async () => {
-    const harness = createQueueHarness();
-    const probe = renderProbe(harness);
-    await click("steer-blank");
-    expect(probe.handlers.onSteerRefused).toHaveBeenCalledWith("   ", []);
-    expect(probe.snapshot().error).toBe("There is nothing to send.");
+  it("has no send-now to make while this view holds no attach", async () => {
+    renderProbe({ subscriptionId: () => null });
+    push(snapshot(1, [row("queue-1", "hold this")]));
+
+    await press(() => latest?.steerRow("queue-1"));
+    expect(sessionQueueSendNow).not.toHaveBeenCalled();
+    expect(read().error).not.toBeNull();
+  });
+
+  it("renders nothing and asks for nothing on a daemon that does not own the queue", async () => {
+    renderProbe({ supported: false });
+
+    await press(() => latest?.queueMessage("where did this go"));
+    await press(() => latest?.deleteRow("queue-1"));
+    await press(() => latest?.steerRow("queue-1"));
+
+    expect(sessionQueueAdd).not.toHaveBeenCalled();
+    expect(sessionQueueRemove).not.toHaveBeenCalled();
+    expect(sessionQueueSendNow).not.toHaveBeenCalled();
+    expect(read().items).toEqual([]);
+    expect(read().turnActive).toBe(false);
+  });
+
+  it("leaves one honest note for a row the daemon dropped, and the row stays gone", async () => {
+    renderProbe();
+    push(snapshot(1, [row("queue-1", "one"), row("queue-2", "two")]));
+
+    push({
+      type: "queue_snapshot",
+      epoch: EPOCH,
+      revision: 2,
+      items: [row("queue-2", "two")],
+      dropped: [{ itemId: "queue-1", reason: "delivery_unknown" }],
+    });
+    expect(read().items).toEqual(["two"]);
+    expect(read().drop).toBe(DELIVERY_UNKNOWN_NOTE);
+
+    // It is said once: the next ordinary snapshot clears it.
+    push(snapshot(3, [row("queue-2", "two")]));
+    expect(read().drop).toBeNull();
+  });
+
+  it("reads the composer's affordance off the roster and this view's own sends", async () => {
+    renderProbe({ activity: "idle" });
+    expect(read().turnActive).toBe(false);
+
+    await click("submit");
+    expect(read().turnActive).toBe(true);
+
+    // A refused send opens no turn, and nothing is left holding the session.
+    await click("settle-refused");
+    expect(read().turnActive).toBe(false);
+  });
+
+  it("keeps a reply hold from an accepted send until the turn says it is over", async () => {
+    renderProbe({ activity: "idle" });
+    await click("submit");
+    await click("settle-accepted");
+    expect(read().turnActive).toBe(true);
+
+    await click("turn-finished");
+    expect(read().turnActive).toBe(false);
   });
 });

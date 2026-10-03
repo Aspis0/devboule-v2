@@ -105,8 +105,6 @@ import { SIDE_PANEL_REGISTRY } from "./sidePanelRegistry";
 import { resetSharedSessionControllerForTests } from "./workspaceSessions";
 import { resetTabMemoryForTests } from "./workspaceTabMemory";
 import { setLastSelectedWorkspaceKey } from "./lastSelectedWorkspace";
-import { resetSharedSessionQueueOwnerForTests, sharedSessionQueueOwner } from "./sessionQueueOwner";
-import { createSenderProbe, type SenderProbe } from "./queueSenderDouble";
 import { assembleCssProof, removeCssProof } from "./cssProof";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -177,15 +175,11 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 describe("the right panel's tabs", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
-  let sender: SenderProbe;
 
   beforeEach(() => {
     resetSharedSessionControllerForTests();
     resetTabMemoryForTests();
     setLastSelectedWorkspaceKey(null);
-    resetSharedSessionQueueOwnerForTests();
-    sender = createSenderProbe();
-    sharedSessionQueueOwner({ newSender: sender.newSender });
     container = document.createElement("div");
     document.body.appendChild(container);
     vi.mocked(projectsList).mockResolvedValue([project]);

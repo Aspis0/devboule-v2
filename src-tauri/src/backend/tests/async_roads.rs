@@ -8,7 +8,7 @@
 //! which commands must be `async`, how many waits go through the helper —
 //! and the helper's own promise that the wait leaves the caller's thread.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::super::blocking::off_main_thread;
 use super::command_scan;
@@ -112,9 +112,63 @@ fn the_blocking_roads_outside_the_bridge_stay_async() {
 fn every_wait_goes_through_the_blocking_helper() {
     let scan = command_scan::scan();
     assert_eq!(
-        scan.helper_calls, 67,
+        scan.helper_calls, 72,
         "one helper call per waiting road, plus the thread test below that calls the helper itself"
     );
+}
+
+/// The queue forwarders, and the checks each one makes before its frame
+/// leaves the process.
+///
+/// Read from the sources because the checks run against a live bridge registry
+/// and a live pipe, neither of which a unit test here can stand up: what is
+/// pinned is which guard each command calls. `session_queue_send_now` is a
+/// send — it carries the subscription a send needs — so it must confirm this
+/// view holds that attach before the frame goes; the other four carry no
+/// subscription and have no such guard to make.
+#[test]
+fn the_queue_forwarders_make_the_checks_their_frames_need() {
+    let scan = command_scan::scan();
+    let guards: BTreeMap<&str, Vec<&str>> = scan
+        .commands
+        .iter()
+        .filter(|command| command.name.starts_with("session_queue_"))
+        .map(|command| {
+            (
+                command.name.as_str(),
+                command.guards.iter().map(String::as_str).collect(),
+            )
+        })
+        .collect();
+    let named = |command: &str| {
+        guards
+            .get(command)
+            .map(|found| found.join(" "))
+            .unwrap_or_else(|| format!("<{command} is gone>"))
+    };
+    assert_eq!(
+        named("session_queue_add"),
+        "require_session_id require_write_size require_attachment_limits",
+        "an add is the one queue frame that carries a prompt: it is checked as a prompt is"
+    );
+    assert_eq!(
+        named("session_queue_send_now"),
+        "require_session_id ensure_subscription_attached",
+        "a send-now is a send, so it waits through the same attachment guard every other send does"
+    );
+    // Every other queue frame names a session and one row, and carries neither
+    // a prompt nor a subscription.
+    for command in [
+        "session_queue_edit",
+        "session_queue_remove",
+        "session_queue_move",
+    ] {
+        assert_eq!(
+            named(command),
+            "require_session_id",
+            "{command} names a row, not a prompt or a subscription"
+        );
+    }
 }
 
 /// The helper's own property: the work runs on a thread other than the

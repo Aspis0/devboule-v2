@@ -154,8 +154,6 @@ import { openListedSessionsForTest } from "./workspaceSessionTestSetup";
 import { resetSharedCloseActionsForTests } from "./strip/closeActions";
 import { resetTabMemoryForTests } from "./workspaceTabMemory";
 import { setLastSelectedWorkspaceKey } from "./lastSelectedWorkspace";
-import { resetSharedSessionQueueOwnerForTests, sharedSessionQueueOwner } from "./sessionQueueOwner";
-import { createSenderProbe } from "./queueSenderDouble";
 
 function recoveredAgent(id: string, title: string): Session {
   return {
@@ -336,8 +334,6 @@ beforeEach(() => {
   setLastSelectedWorkspaceKey(null);
   vi.useFakeTimers();
   resetSharedCloseActionsForTests();
-  resetSharedSessionQueueOwnerForTests();
-  sharedSessionQueueOwner({ newSender: createSenderProbe().newSender });
   surfaceHooks.bySession.clear();
   watchListener = null;
   window.localStorage.clear();

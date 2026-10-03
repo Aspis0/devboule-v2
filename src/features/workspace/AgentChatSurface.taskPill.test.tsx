@@ -10,13 +10,23 @@ import { channelHarness } from "./sessionChannelHarness";
 vi.mock("../../lib/tauri", async () => (await import("./sessionChannelHarness")).tauriMock);
 
 import { AgentChatSurface } from "./AgentChatSurface";
-import { createInMemoryMessageQueue } from "./inMemoryMessageQueue";
-import { idleSender } from "./queueTestKit";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 let container: HTMLDivElement;
 let root: Root;
+
+/** The daemon's queue, as it arrives on the session's own channel. */
+function pushQueuedRow(): void {
+  act(() => {
+    channelHarness.active?.({
+      type: "queue_snapshot",
+      epoch: "0123456789abcdef0123456789abcdef",
+      revision: 1,
+      items: [{ itemId: "queue-1", text: "a second look afterwards" }],
+    });
+  });
+}
 
 beforeEach(() => {
   container = document.createElement("div");
@@ -37,7 +47,6 @@ afterEach(async () => {
 
 describe("the checklist pill in the composer track", () => {
   it("shows an agent_tasks frame above the queued follow-ups", async () => {
-    const queue = createInMemoryMessageQueue("agent-1", idleSender());
     root = createRoot(container);
     await act(async () => {
       root.render(
@@ -45,12 +54,12 @@ describe("the checklist pill in the composer track", () => {
           daemonState="connected"
           sessionId="agent-1"
           title="Agent"
-          queue={queue}
+          queueSupported
         />,
       );
     });
     await act(async () => undefined);
-    act(() => queue.add("a second look afterwards", []));
+    pushQueuedRow();
 
     const track = container.querySelector(".workspace-composer-track");
     if (track === null) throw new Error("no composer track");
@@ -82,7 +91,6 @@ describe("the checklist pill in the composer track", () => {
   });
 
   it("counts and names the next item from the list the reducer kept", async () => {
-    const queue = createInMemoryMessageQueue("agent-1", idleSender());
     root = createRoot(container);
     await act(async () => {
       root.render(
@@ -90,7 +98,7 @@ describe("the checklist pill in the composer track", () => {
           daemonState="connected"
           sessionId="agent-1"
           title="Agent"
-          queue={queue}
+          queueSupported
         />,
       );
     });

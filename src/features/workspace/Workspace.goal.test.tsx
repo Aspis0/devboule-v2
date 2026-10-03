@@ -112,8 +112,6 @@ import { openListedSessionsForTest } from "./workspaceSessionTestSetup";
 import { resetSharedSessionControllerForTests } from "./workspaceSessions";
 import { resetTabMemoryForTests } from "./workspaceTabMemory";
 import { setLastSelectedWorkspaceKey } from "./lastSelectedWorkspace";
-import { resetSharedSessionQueueOwnerForTests, sharedSessionQueueOwner } from "./sessionQueueOwner";
-import { createSenderProbe } from "./queueSenderDouble";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -170,9 +168,6 @@ beforeEach(() => {
   resetSharedSessionControllerForTests();
   resetTabMemoryForTests();
   setLastSelectedWorkspaceKey(null);
-  resetSharedSessionQueueOwnerForTests();
-  const sender = createSenderProbe();
-  sharedSessionQueueOwner({ newSender: sender.newSender });
   container = document.createElement("div");
   document.body.appendChild(container);
   vi.mocked(projectsList).mockResolvedValue([project]);

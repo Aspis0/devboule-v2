@@ -17,7 +17,6 @@ import {
 } from "./bulkCloseHarness";
 import { sessionClose, sessionPermissionRespond, sessionStop, sessionsList } from "../../lib/tauri";
 import { resetSharedSessionControllerForTests, sharedSessionController } from "./workspaceSessions";
-import { sharedSessionQueueOwner } from "./sessionQueueOwner";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -127,24 +126,16 @@ describe("user-opened workspace tabs", () => {
     expect(tabElement("child").getAttribute("aria-selected")).toBe("true");
   });
 
-  it("removes a tab while keeping the session, queued text and its closed state across restart", async () => {
+  it("removes a tab while keeping the session and its closed state across restart", async () => {
     const row = { ...agentSession("parent", "Parent"), createdAtMs: 1 };
     vi.mocked(sessionsList).mockResolvedValue([row]);
     sharedSessionController().open(row);
     await renderWorkspace(false);
-    const queue = sharedSessionQueueOwner().queueFor(row.id);
-    queue.add("keep this follow-up", []);
     await chipClick(row.id);
     expect(tabTitles()).toEqual([]);
     expect(sessionStop).not.toHaveBeenCalled();
     expect(sessionClose).not.toHaveBeenCalled();
     expect(sharedSessionController().getState().sessions[0].state.type).toBe("live");
-    let texts: string[] = [];
-    const release = queue.subscribe((items) => {
-      texts = items.map((item) => item.text);
-    });
-    release();
-    expect(texts).toEqual(["keep this follow-up"]);
     await unmountWorkspace();
     resetSharedSessionControllerForTests();
     await renderWorkspace(false);

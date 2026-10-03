@@ -1,11 +1,11 @@
 import type { AgentActivityState } from "../../types/ipc";
 
-/** The roster and current send-held state decide whether the composer offers Queue or a row drains. */
+/** The roster and the view's own unanswered sends decide whether the composer
+ * offers Queue or sends. The queue's rows are the daemon's: nothing here says
+ * when a queued message goes. */
 
-/** The head row's sentence while the session has no process to send into. */
-export const SESSION_NOT_RUNNING = "The session is not running; it sends when it is back.";
-
-/** `sendHeld` includes pending composer sends, in-flight queue writes, and bounded reply holds. */
+/** `sendHeld` includes a pending composer send and the bounded hold it leaves
+ * behind while the turn it opened is still running. */
 export function isTurnActive(activity: AgentActivityState | null, sendHeld: boolean): boolean {
   return activity === "working" || activity === "blocked" || sendHeld;
 }

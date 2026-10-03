@@ -372,16 +372,17 @@ export type SendIntent = "interrupt" | "steer" | "queue";
  * What a `session_send` does when the target session already has a turn
  * running: the protocol's `SessionSend.activeTurnBehavior`. Omitting the field
  * asks nothing of a running turn — the plain path starts its turn and interrupts
- * nothing (`session_messaging.rs`) — so the only member here is the value that
- * differs from it: `"steer"` delivers the text into the running turn. A caller
- * that means to replace a running turn sends `sessionInterrupt` first and waits
- * for that turn's own end, which is what the message queue does.
+ * nothing (`session_messaging.rs`). `"steer"` delivers the text into the running
+ * turn; `"interrupt"` stops that turn and sends this text as the new one, which
+ * is what the composer does when someone types into a running turn. The daemon
+ * waits out the turn it displaced, up to its own bound, so a caller must not
+ * wait for it here as well.
  *
  * `"queue"` is deliberately absent: no daemon branch implements it, and a value
  * the daemon silently treats as a plain send would be a type that promises
  * behaviour nothing delivers. It can come back with the branch.
  */
-export type ActiveTurnBehavior = "steer";
+export type ActiveTurnBehavior = "steer" | "interrupt";
 
 /**
  * Who authored one `agent_user_message` echo (protocol `UserMessageAuthor`).

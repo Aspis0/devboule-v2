@@ -6,7 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionState } from "../../types/ipc";
 import { channelHarness } from "./sessionChannelHarness";
-import { RECOVERED } from "./queueTestKit";
+import { RECOVERED } from "./sessionStateFixtures";
 
 vi.mock("../../lib/tauri", async () => (await import("./sessionChannelHarness")).tauriMock);
 

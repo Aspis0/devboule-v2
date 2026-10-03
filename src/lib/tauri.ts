@@ -168,6 +168,35 @@ export type CommandArgs = {
     attachmentReferences?: readonly AttachmentReference[];
   };
   session_deposit: { id: Id; attachment: PromptAttachment };
+  session_queue_add: {
+    id: Id;
+    /**
+     * One per user intent. The daemon keeps the last 128 answered ids per
+     * session, so re-asking the same operation is answered from its ledger
+     * instead of queueing a second row; a different payload under the same id
+     * is refused.
+     */
+    clientOperationId: string;
+    text: string;
+    /**
+     * Both lists follow `session_send`'s own rule: omitted, never empty, for a
+     * message that carries neither. Composer images are deposited first and
+     * named by reference here, because the daemon stores a queued message's
+     * bytes at queue time.
+     */
+    attachments?: readonly PromptAttachment[];
+    attachmentReferences?: readonly AttachmentReference[];
+  };
+  session_queue_edit: { id: Id; clientOperationId: string; itemId: string; text: string };
+  session_queue_remove: { id: Id; clientOperationId: string; itemId: string };
+  session_queue_move: { id: Id; clientOperationId: string; itemId: string; toIndex: number };
+  session_queue_send_now: {
+    id: Id;
+    clientOperationId: string;
+    /** A send-now is a send, so it carries the subscription a send has. */
+    subscriptionId: SubscriptionId;
+    itemId: string;
+  };
   session_attachment_read: { reference: AttachmentReference };
   session_interrupt: { id: Id; subscriptionId: SubscriptionId };
   session_claim: { subscriptionId: SubscriptionId };
@@ -299,6 +328,13 @@ type CommandResults = {
   session_send: boolean;
   /** The reference to the bytes the deposit stored, exactly as the daemon stated it. */
   session_deposit: AttachmentReference;
+  session_queue_add: void;
+  session_queue_edit: void;
+  session_queue_remove: void;
+  session_queue_move: void;
+  /** An answered operation is applied once however often it is asked, so the
+   * daemon's `replayed` flag carries nothing a caller has to act on. */
+  session_queue_send_now: void;
   /** The stored bytes and MIME type, exactly as the daemon stated them. */
   session_attachment_read: StoredAttachment;
   session_interrupt: void;
@@ -460,6 +496,11 @@ export const COMMAND_ARG_KEYS = {
     "idempotencyKey",
   ],
   session_deposit: ["id", "attachment"],
+  session_queue_add: ["id", "clientOperationId", "text", "attachments", "attachmentReferences"],
+  session_queue_edit: ["id", "clientOperationId", "itemId", "text"],
+  session_queue_remove: ["id", "clientOperationId", "itemId"],
+  session_queue_move: ["id", "clientOperationId", "itemId", "toIndex"],
+  session_queue_send_now: ["id", "clientOperationId", "subscriptionId", "itemId"],
   session_attachment_read: ["reference"],
   session_interrupt: ["id", "subscriptionId"],
   session_claim: ["subscriptionId"],
@@ -873,6 +914,55 @@ export const sessionSend = (
  */
 export const sessionDeposit = (id: Id, attachment: PromptAttachment) =>
   invokeTyped("session_deposit", { id, attachment });
+
+/**
+ * The shared follow-up queue (protocol 22, `session.queue`). Five frames,
+ * one shape: the caller's operation id plus what the operation does. The list
+ * itself is not asked for here — it arrives as a `queue_snapshot` event on the
+ * session's channel — and nothing in this module sends a queued message to the
+ * agent: the daemon drains its own queue.
+ *
+ * `clientOperationId` is one per user intent and is what makes a retry after a
+ * lost answer safe: the same id with the same payload is answered again without
+ * queueing or sending a second time. A caller that has lost an answer must
+ * therefore re-ask with the id it already used, never a fresh one.
+ */
+export const sessionQueueAdd = (
+  id: Id,
+  clientOperationId: string,
+  text: string,
+  attachments?: readonly PromptAttachment[],
+  attachmentReferences?: readonly AttachmentReference[],
+) =>
+  invokeTyped("session_queue_add", {
+    id,
+    clientOperationId,
+    text,
+    ...(attachments === undefined || attachments.length === 0 ? {} : { attachments }),
+    ...(attachmentReferences === undefined || attachmentReferences.length === 0
+      ? {}
+      : { attachmentReferences }),
+  });
+/** Replaces one queued row's text, keeping its place in the queue. */
+export const sessionQueueEdit = (id: Id, clientOperationId: string, itemId: string, text: string) =>
+  invokeTyped("session_queue_edit", { id, clientOperationId, itemId, text });
+export const sessionQueueRemove = (id: Id, clientOperationId: string, itemId: string) =>
+  invokeTyped("session_queue_remove", { id, clientOperationId, itemId });
+/** `toIndex` is counted in the queue the row has already left. */
+export const sessionQueueMove = (
+  id: Id,
+  clientOperationId: string,
+  itemId: string,
+  toIndex: number,
+) => invokeTyped("session_queue_move", { id, clientOperationId, itemId, toIndex });
+/** Sends one queued row now, which interrupts the running turn on the daemon's
+ * side and therefore needs this view's subscription. */
+export const sessionQueueSendNow = (
+  id: Id,
+  clientOperationId: string,
+  subscriptionId: SubscriptionId,
+  itemId: string,
+) => invokeTyped("session_queue_send_now", { id, clientOperationId, subscriptionId, itemId });
 /**
  * Reads back the bytes of one deposited attachment, by reference.
  *

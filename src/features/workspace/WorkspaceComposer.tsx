@@ -40,6 +40,9 @@ interface WorkspaceComposerProps {
   streaming: boolean;
   turnActive: boolean;
   queueAllowed?: boolean;
+  /** The connected daemon does not keep a queue for this session: the action
+   * stays on screen, disabled, and says why it cannot queue. */
+  queueUnsupportedReason?: string | null;
   disabled?: boolean;
   disabledReason: string | null;
   availableCommands?: readonly WorkspaceCommand[];
@@ -93,6 +96,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   streaming,
   turnActive,
   queueAllowed = true,
+  queueUnsupportedReason = null,
   disabled = false,
   disabledReason,
   availableCommands = [],
@@ -448,15 +452,19 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
             ) : null}
           </div>
           {contextMeter}
-          {queueAvailable ? (
+          {queueAvailable || queueUnsupportedReason != null ? (
             <button
               type="button"
               className="workspace-queue-action"
               data-testid="composer-queue-action"
-              title={actionLabel}
-              aria-label={actionLabel}
+              // The reason stands in for the label while there is nothing to
+              // do: an action that cannot act must not invite the click.
+              title={queueUnsupportedReason ?? actionLabel}
+              aria-label={queueUnsupportedReason ?? actionLabel}
               onClick={runDefaultAction}
-              disabled={disabled || sendingImages || !input.trim()}
+              disabled={
+                queueUnsupportedReason != null || disabled || sendingImages || !input.trim()
+              }
             >
               {/* A clock while the action queues: it sends later. The
                   interrupt-and-send default steers, which sends, so it wears

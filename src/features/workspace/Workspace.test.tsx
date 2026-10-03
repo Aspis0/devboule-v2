@@ -127,11 +127,10 @@ vi.mock("../terminal/TerminalSurface", () => ({
   ),
 }));
 
-// What the mocked chat surface was handed, per session: the workspace's
-// queue prop is asserted through it (identity, one per session, discard),
-// and the title prop — the pane header's only input — is captured so a test
-// can prove the tab's label and the header's title are one string.
-const surfaceQueues = vi.hoisted(() => ({ bySession: new Map<string, unknown>() }));
+// What the mocked chat surface was handed, per session: the queue capability
+// it is gated on, and the title prop — the pane header's only input — captured
+// so a test can prove the tab's label and the header's title are one string.
+const surfaceQueueSupported = vi.hoisted(() => ({ bySession: new Map<string, boolean>() }));
 const surfaceTitles = vi.hoisted(() => ({ bySession: new Map<string, string>() }));
 
 vi.mock("./AgentChatSurface", () => ({
@@ -140,7 +139,7 @@ vi.mock("./AgentChatSurface", () => ({
     title,
     auxiliary,
     hasPendingPermission,
-    queue,
+    queueSupported,
     onPermissionRequest,
     onPermissionResolved,
   }: {
@@ -148,7 +147,7 @@ vi.mock("./AgentChatSurface", () => ({
     title?: string;
     auxiliary?: ReactNode;
     hasPendingPermission?: boolean;
-    queue?: unknown;
+    queueSupported?: boolean;
     onPermissionRequest?: (
       sessionId: string,
       subscriptionId: number,
@@ -156,7 +155,7 @@ vi.mock("./AgentChatSurface", () => ({
     ) => void;
     onPermissionResolved?: (sessionId: string, resolution: PermissionResolved) => void;
   }) => {
-    surfaceQueues.bySession.set(sessionId, queue);
+    surfaceQueueSupported.bySession.set(sessionId, queueSupported === true);
     surfaceTitles.bySession.set(sessionId, title ?? "");
     return (
       <div data-testid="agent-chat-surface">
@@ -334,13 +333,10 @@ import type {
   WorkspaceGitStatus,
 } from "../../types/ipc";
 import { Workspace, WorkspacePermissionCard } from "./Workspace";
-import type { MessageQueue } from "./messageQueue";
 import { resetSharedSessionControllerForTests, sharedSessionController } from "./workspaceSessions";
 import { getLastSelectedWorkspaceKey, setLastSelectedWorkspaceKey } from "./lastSelectedWorkspace";
 import { resetTabMemoryForTests } from "./workspaceTabMemory";
 import { parseWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
-import { resetSharedSessionQueueOwnerForTests, sharedSessionQueueOwner } from "./sessionQueueOwner";
-import { createSenderProbe, type SenderProbe } from "./queueSenderDouble";
 import { createDelegationController } from "../../lib/delegation";
 import type { SessionStateSnapshot } from "../../types/ipc";
 
@@ -535,7 +531,6 @@ function newTabMenuItem(container: HTMLElement, label: string): HTMLButtonElemen
 describe("Workspace sessions", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
-  let sender: SenderProbe;
 
   beforeEach(() => {
     // The shared controller is app-lifetime in production; a test must not
@@ -547,12 +542,7 @@ describe("Workspace sessions", () => {
     // workspace in force: the next mount of this surface starts on it.
     resetTabMemoryForTests();
     setLastSelectedWorkspaceKey(null);
-    // The queue owner is app-lifetime too, and its sender is the wire a queued
-    // message leaves on: both are reset and counted, never left to the last test.
-    resetSharedSessionQueueOwnerForTests();
-    sender = createSenderProbe();
-    sharedSessionQueueOwner({ newSender: sender.newSender });
-    surfaceQueues.bySession.clear();
+    surfaceQueueSupported.bySession.clear();
     surfaceTitles.bySession.clear();
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -2325,22 +2315,6 @@ describe("Workspace sessions", () => {
     expect(pending()).toBe("false");
   });
 
-  function queuedTexts(queue: MessageQueue): string[] {
-    let items: readonly { text: string }[] = [];
-    const stop = queue.subscribe((next) => {
-      items = next;
-    });
-    stop();
-    return items.map((item) => item.text);
-  }
-
-  // The queue the Workspace handed the mock surface for one session.
-  function handedQueue(sessionId: string): MessageQueue {
-    const queue = surfaceQueues.bySession.get(sessionId);
-    if (queue === undefined) throw new Error(`no queue was handed for ${sessionId}`);
-    return queue as MessageQueue;
-  }
-
   function rosterRow(
     id: string,
     activity?: "idle" | "working" | "blocked" | "unknown",
@@ -2366,48 +2340,7 @@ describe("Workspace sessions", () => {
     });
   }
 
-  it("hands the surface one queue per session, and the same one when you come back", async () => {
-    vi.mocked(sessionsList).mockResolvedValue([
-      acpSession("agent-a", "agent a"),
-      acpSession("agent-b", "agent b"),
-    ]);
-    root = createRoot(container);
-    await act(async () => {
-      await openListedSessionsForTest();
-      root.render(<Workspace />);
-    });
-    await act(async () => undefined);
-    await pushRoster([rosterRow("agent-a"), rosterRow("agent-b")]);
-
-    const queueA = handedQueue("agent-a");
-    await act(async () => {
-      queueA.add("yours first", []);
-    });
-
-    const tabB = [...container.querySelectorAll<HTMLButtonElement>(".workspace-session-tab")].find(
-      (tab) => tab.textContent?.includes("agent b"),
-    );
-    if (tabB === undefined) throw new Error("session B tab did not render");
-    await act(async () => tabB.click());
-    await act(async () => undefined);
-
-    const queueB = handedQueue("agent-b");
-    expect(queueB).not.toBe(queueA); // one queue per session, not one for all
-
-    const tabA = [...container.querySelectorAll<HTMLButtonElement>(".workspace-session-tab")].find(
-      (tab) => tab.textContent?.includes("agent a"),
-    );
-    if (tabA === undefined) throw new Error("session A tab did not render");
-    await act(async () => tabA.click());
-    await act(async () => undefined);
-
-    // The same object, with the same item on it: the hook resubscribes only on
-    // identity change, and the row never left.
-    expect(handedQueue("agent-a")).toBe(queueA);
-    expect(queuedTexts(queueA)).toEqual(["yours first"]);
-  });
-
-  it("sends what you queued after you leave the Workspace, in the order you queued it", async () => {
+  it("hands the surface the queue only when the handshake agreed it", async () => {
     vi.mocked(sessionsList).mockResolvedValue([acpSession("agent-a", "agent a")]);
     root = createRoot(container);
     await act(async () => {
@@ -2416,123 +2349,22 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
     await pushRoster([rosterRow("agent-a")]);
+    expect(surfaceQueueSupported.bySession.get("agent-a")).toBe(false);
 
-    const queueA = handedQueue("agent-a");
-    await act(async () => {
-      queueA.add("first after", []);
-      queueA.add("second after", []);
-    });
-
-    // Settings takes the screen: the Workspace unmounts, and every queue in it
-    // stays — ownership is app-level, not the screen's.
+    // The capability is one fact of the handshake, so the next mount against a
+    // daemon that agrees it turns the queue on for the pane.
     await act(async () => root.unmount());
-    expect(queuedTexts(queueA)).toEqual(["first after", "second after"]);
-
-    // The turn the user queued during closes, and the queue sends the head. The
-    // daemon opens that send's turn before it answers, so the second row waits
-    // for that turn's end: the edge into idle is what moves the row.
-    sender.holdNextWrite();
-    await pushRoster([rosterRow("agent-a", "working")]);
-    await pushRoster([rosterRow("agent-a", "idle")]);
-    await pushRoster([rosterRow("agent-a", "working")]);
-    sender.releaseWrites();
-    await act(async () => undefined);
-    expect(sender.sent.map((message) => message.text)).toEqual(["first after"]);
-
-    await pushRoster([rosterRow("agent-a", "idle")]);
-    await act(async () => undefined);
-    expect(sender.sent.map((message) => message.text)).toEqual(["first after", "second after"]);
-    expect(queuedTexts(queueA)).toEqual([]); // the rows are gone when you come back
-  });
-
-  it("sends the last message you queued, not the ones behind it", async () => {
-    // The queue must not release its own bearer on the way to sending the only
-    // row it had: the last message of a background tab is the one that would
-    // never arrive. One row is the case that catches it.
-    vi.mocked(sessionsList).mockResolvedValue([acpSession("agent-a", "agent a")]);
+    vi.mocked(daemonStatus).mockResolvedValue({
+      ...daemonConnected,
+      capabilities: ["typed_permissions", "session.queue"],
+    });
     root = createRoot(container);
     await act(async () => {
-      await openListedSessionsForTest();
       root.render(<Workspace />);
     });
     await act(async () => undefined);
     await pushRoster([rosterRow("agent-a")]);
-
-    const queueA = handedQueue("agent-a");
-    await act(async () => {
-      queueA.add("the only one", []);
-    });
-    await act(async () => root.unmount());
-
-    // One row, and the message that never arrives is the one at the back of the
-    // old release rule: nothing else is pending, so nothing would have saved it.
-    await pushRoster([rosterRow("agent-a", "working")]);
-    await pushRoster([rosterRow("agent-a", "idle")]);
-    await act(async () => undefined);
-
-    expect(sender.sent.map((message) => message.text)).toEqual(["the only one"]);
-    expect(queuedTexts(queueA)).toEqual([]);
-  });
-
-  it("sends a background tab's queue when its turn ends, without showing the tab", async () => {
-    vi.mocked(sessionsList).mockResolvedValue([
-      acpSession("agent-a", "agent a"),
-      acpSession("agent-b", "agent b"),
-    ]);
-    root = createRoot(container);
-    await act(async () => {
-      await openListedSessionsForTest();
-      root.render(<Workspace />);
-    });
-    await act(async () => undefined);
-    await pushRoster([rosterRow("agent-a"), rosterRow("agent-b")]);
-
-    const queueA = handedQueue("agent-a");
-    await act(async () => {
-      queueA.add("while you read B", []);
-    });
-
-    const tabB = [...container.querySelectorAll<HTMLButtonElement>(".workspace-session-tab")].find(
-      (tab) => tab.textContent?.includes("agent b"),
-    );
-    if (tabB === undefined) throw new Error("session B tab did not render");
-    await act(async () => tabB.click());
-    await act(async () => undefined);
-    await pushRoster([rosterRow("agent-a", "working"), rosterRow("agent-b", "idle")]);
-    await pushRoster([rosterRow("agent-a", "idle"), rosterRow("agent-b", "idle")]);
-    await act(async () => undefined);
-
-    expect(sender.sent.map((message) => message.text)).toEqual(["while you read B"]);
-    expect(queuedTexts(queueA)).toEqual([]);
-    expect(container.textContent).toContain("agent b"); // and B is what was on screen
-  });
-
-  it("drops the queue when the roster drops the session, and keeps it through a refresh", async () => {
-    vi.mocked(sessionsList).mockResolvedValue([acpSession("agent-a", "agent a")]);
-    root = createRoot(container);
-    await act(async () => {
-      await openListedSessionsForTest();
-      root.render(<Workspace />);
-    });
-    await act(async () => undefined);
-    await pushRoster([rosterRow("agent-a")]);
-
-    const queueA = handedQueue("agent-a");
-    await act(async () => {
-      queueA.add("kept across a list", []);
-    });
-
-    // A reconnect goes straight through the list, and the tab strip's derived
-    // list drops the row with it. A list is not the daemon's word that a
-    // session is gone, so the queue stands.
-    vi.mocked(sessionsList).mockResolvedValue([]);
-    await act(async () => sharedSessionController().refresh());
-    expect(queuedTexts(queueA)).toEqual(["kept across a list"]);
-
-    // The full push no longer names it: closed, archived or deleted — the
-    // session is gone, so the queue goes with it.
-    await pushRoster([]);
-    expect(queuedTexts(queueA)).toEqual([]);
+    expect(surfaceQueueSupported.bySession.get("agent-a")).toBe(true);
   });
 
   it("renders the description in its own compact class", async () => {

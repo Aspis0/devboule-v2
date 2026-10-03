@@ -1,20 +1,17 @@
-// The queue rows wired at the surface: edit hands the row's text back once
-// the queue has taken the row, a refused send leaves its reason on the row,
-// a row steer interrupts the running turn, delete hands focus back to the
-// composer, and reorder moves what it should. The keyboard and the permission
-// rule are pinned in `AgentChatSurface.queue.test.tsx`.
+// The queue rows wired at the surface: each action reaches the daemon as its
+// own frame with the row's id, a send-now carries the subscription this view
+// holds, and delete hands focus back to the composer. The keyboard and the
+// permission rule are pinned in `AgentChatSurface.queue.test.tsx`.
 // @vitest-environment happy-dom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SessionEvent } from "../../types/ipc";
-import { idleSender } from "./queueTestKit";
-import { SEND_FAILED } from "./inMemoryMessageQueue";
-import type { MessageQueue } from "./messageQueue";
+import type { QueuedMessage, SessionEvent } from "../../types/ipc";
 
 const harness = vi.hoisted(() => ({
   emit: null as ((event: SessionEvent) => void) | null,
   nextSubscriptionId: 41,
+  revision: 0,
 }));
 
 vi.mock("../../lib/tauri", () => ({
@@ -25,31 +22,61 @@ vi.mock("../../lib/tauri", () => ({
   }),
   sessionAttach: vi.fn(async () => harness.nextSubscriptionId++),
   sessionDetach: vi.fn(async () => undefined),
-  sessionSend: vi.fn(async () => undefined),
+  sessionSend: vi.fn(async () => true),
   sessionInterrupt: vi.fn(async () => undefined),
+  sessionDeposit: vi.fn(async () => ({ sessionId: "agent-1", digest: "a", storedBytes: 1 })),
   sessionSetModel: vi.fn(async () => undefined),
   sessionSetMode: vi.fn(async () => undefined),
+  sessionQueueAdd: vi.fn(async () => undefined),
+  sessionQueueEdit: vi.fn(async () => undefined),
+  sessionQueueRemove: vi.fn(async () => undefined),
+  sessionQueueMove: vi.fn(async () => undefined),
+  sessionQueueSendNow: vi.fn(async () => undefined),
   isCommandError: () => false,
 }));
 
-import { sessionInterrupt, sessionSend } from "../../lib/tauri";
+import {
+  sessionQueueEdit,
+  sessionQueueMove,
+  sessionQueueRemove,
+  sessionQueueSendNow,
+  sessionSend,
+} from "../../lib/tauri";
 import { AgentChatSurface } from "./AgentChatSurface";
-import { createInMemoryMessageQueue } from "./inMemoryMessageQueue";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+const EPOCH = "0123456789abcdef0123456789abcdef";
 
 let container: HTMLDivElement;
 let root: Root;
 
-async function renderSurface(queue: MessageQueue) {
+function row(itemId: string, text: string, error?: string): QueuedMessage {
+  return { itemId, text, ...(error === undefined ? {} : { error }) };
+}
+
+function pushSnapshot(items: readonly QueuedMessage[]): void {
+  harness.revision += 1;
+  act(() => {
+    harness.emit?.({
+      type: "queue_snapshot",
+      epoch: EPOCH,
+      revision: harness.revision,
+      items: [...items],
+    });
+  });
+}
+
+async function renderSurface(items: readonly QueuedMessage[]) {
   root = createRoot(container);
   await act(async () => {
     root.render(
-      <AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" queue={queue} />,
+      <AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" queueSupported />,
     );
   });
   await act(async () => undefined);
-  return queue;
+  pushSnapshot(items);
+  await act(async () => undefined);
 }
 
 function textarea(): HTMLTextAreaElement {
@@ -70,17 +97,6 @@ function rowButton(row: HTMLDivElement, testId: string): HTMLButtonElement {
   return button;
 }
 
-/** Send from the composer, so the surface reports a running turn. */
-async function startTurn(): Promise<void> {
-  const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
-  if (setValue === undefined) throw new Error("textarea value setter did not exist");
-  setValue.call(textarea(), "running now");
-  textarea().dispatchEvent(new Event("input", { bubbles: true }));
-  const send = container.querySelector<HTMLButtonElement>(".workspace-send-action");
-  if (send === null) throw new Error("send button did not render");
-  await act(async () => send.click());
-}
-
 async function flush(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
@@ -90,6 +106,7 @@ beforeEach(() => {
   document.body.appendChild(container);
   harness.emit = null;
   harness.nextSubscriptionId = 41;
+  harness.revision = 0;
   localStorage.removeItem("devboule.sendBehavior");
   localStorage.removeItem("devboule.modelEffortPrefs");
 });
@@ -101,113 +118,134 @@ afterEach(async () => {
 });
 
 describe("AgentChatSurface queue rows", () => {
-  it("edit takes the row out and puts its text back into the composer", async () => {
-    const queue = await renderSurface(createInMemoryMessageQueue("agent-1", idleSender()));
-    act(() => {
-      queue.add("first", []);
-      queue.add("second", []);
-    });
+  it("edits the row in place through one frame", async () => {
+    await renderSurface([row("queue-1", "first"), row("queue-2", "second")]);
 
     await act(async () => rowButton(rows()[1], "queue-edit").click());
+    const input = container.querySelector<HTMLInputElement>('[data-testid="queue-edit-input"]');
+    if (input === null) throw new Error("the row editor did not open");
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    if (setValue === undefined) throw new Error("input value setter did not exist");
+    setValue.call(input, "second, edited");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await act(async () => rowButton(rows()[1], "queue-edit-save").click());
     await flush();
-    expect(textarea().value).toBe("second");
-    expect(rows()).toHaveLength(1);
-    expect(rows()[0].textContent).toContain("first");
+
+    expect(vi.mocked(sessionQueueEdit).mock.calls).toEqual([
+      ["agent-1", expect.stringMatching(/^[0-9a-f-]{36}$/), "queue-2", "second, edited"],
+    ]);
+    // The row never left the queue, so the composer keeps what it had.
+    expect(rows()).toHaveLength(2);
+    expect(textarea().value).toBe("");
+  });
+
+  it("hands an edited row's text back when the daemon no longer has the row", async () => {
+    await renderSurface([row("queue-1", "first")]);
+    vi.mocked(sessionQueueEdit).mockRejectedValue({
+      code: "invalid_request",
+      message: "No queued message 'queue-1' is in this session's queue.",
+    });
+
+    await act(async () => rowButton(rows()[0], "queue-edit").click());
+    const input = container.querySelector<HTMLInputElement>('[data-testid="queue-edit-input"]');
+    if (input === null) throw new Error("the row editor did not open");
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    if (setValue === undefined) throw new Error("input value setter did not exist");
+    setValue.call(input, "edited, and gone");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await act(async () => rowButton(rows()[0], "queue-edit-save").click());
+    await flush();
+
+    expect(textarea().value).toBe("edited, and gone");
   });
 
   it("renders the reason a refused send left on its row", async () => {
-    const queue = await renderSurface(createInMemoryMessageQueue("agent-1", idleSender()));
-    act(() => {
-      queue.add("stuck", []);
-      queue.setTurnStatus("idle");
-    });
-    vi.mocked(sessionSend).mockRejectedValueOnce(new Error("the session refused the send"));
-
-    await act(async () => rowButton(rows()[0], "queue-steer").click());
-    await flush();
-
-    expect(rows()).toHaveLength(1);
+    await renderSurface([row("queue-1", "stuck", "The message was not sent.")]);
     const note = rows()[0].querySelector('[role="alert"]');
-    expect(note?.textContent).toBe(SEND_FAILED);
+    expect(note?.textContent).toBe("The message was not sent.");
   });
 
-  it("sends a row's own steer after the turn it interrupted is over", async () => {
-    const queue = await renderSurface(createInMemoryMessageQueue("agent-1", idleSender()));
-    act(() => {
-      queue.add("hold this", []);
-    });
-    await startTurn();
-    // The roster says a turn owns the session — the owner's one input to
-    // whether a press interrupts first.
-    queue.setTurnStatus("working");
+  it("sends a row now with the subscription this view holds", async () => {
+    await renderSurface([row("queue-1", "hold this")]);
 
     await act(async () => rowButton(rows()[0], "queue-steer").click());
     await flush();
-    expect(sessionInterrupt).toHaveBeenCalledTimes(1);
-    expect(sessionInterrupt).toHaveBeenCalledWith("agent-1", 41);
-    // The row waits: the cancel is only dispatched, and a send that followed it
-    // straight away could reach a provider that has not stopped.
-    expect(sessionSend).toHaveBeenCalledTimes(1);
-    expect(rows()).toHaveLength(1);
 
-    // The turn it interrupted closes and the row reads "idle": the predicate
-    // falls, and that is what starts the drain.
-    queue.setTurnStatus("idle");
-    queue.notifyIdle();
+    expect(vi.mocked(sessionQueueSendNow).mock.calls).toEqual([
+      ["agent-1", expect.any(String), 41, "queue-1"],
+    ]);
+    // The interrupt is the daemon's now: this view sends nothing itself.
+    expect(sessionSend).not.toHaveBeenCalled();
+  });
+
+  it("says a refused send-now once, beside the composer", async () => {
+    await renderSurface([row("queue-1", "hold this")]);
+    vi.mocked(sessionQueueSendNow).mockRejectedValue({
+      code: "invalid_request",
+      message: "A queued message is already being sent for this session.",
+    });
+
+    await act(async () => rowButton(rows()[0], "queue-steer").click());
     await flush();
-    expect(sessionSend).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(sessionSend).mock.calls[1]?.[2]).toBe("hold this");
-    expect(vi.mocked(sessionSend).mock.calls[1]?.[6]).toMatch(/^agent-1\.queued-1\.[0-9a-f-]{36}$/);
-    expect(rows()).toHaveLength(0);
+
+    expect(sessionQueueSendNow).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-testid="queue-error"]')?.textContent).toBe(
+      "The agent daemon refused that request as invalid.",
+    );
+    expect(rows()).toHaveLength(1);
   });
 
   it("when delete takes the last row, the composer takes the focus back", async () => {
-    const queue = await renderSurface(createInMemoryMessageQueue("agent-1", idleSender()));
-    act(() => {
-      queue.add("only", []);
-    });
+    await renderSurface([row("queue-1", "only")]);
 
     rows()[0].focus();
     await act(async () => rowButton(rows()[0], "queue-delete").click());
-    await flush();
+    await act(async () => undefined);
+    // The daemon removes the row: until its snapshot says so it is still there.
+    expect(rows()).toHaveLength(1);
+    expect(vi.mocked(sessionQueueRemove).mock.calls).toEqual([
+      ["agent-1", expect.any(String), "queue-1"],
+    ]);
+
+    pushSnapshot([]);
+    await act(async () => undefined);
     expect(container.querySelector('[data-testid="queue-track"]')).toBeNull();
     expect(document.activeElement).toBe(textarea());
   });
 
-  it("reorder moves the row that can move, and clamps the ones at the ends", async () => {
-    const queue = await renderSurface(createInMemoryMessageQueue("agent-1", idleSender()));
-    act(() => {
-      queue.add("first", []);
-      queue.add("middle", []);
-      queue.add("last", []);
-    });
+  it("reorder moves the row that can move, and asks for no place the queue has not got", async () => {
+    await renderSurface([
+      row("queue-1", "first"),
+      row("queue-2", "middle"),
+      row("queue-3", "last"),
+    ]);
 
-    // Top row up and bottom row down: both clamp to no movement.
+    // Top row up and bottom row down: both already stand where they are.
     await act(async () =>
       rows()[0].dispatchEvent(
         new KeyboardEvent("keydown", { key: "ArrowUp", altKey: true, bubbles: true }),
       ),
     );
-    await flush();
     await act(async () =>
       rows()[2].dispatchEvent(
         new KeyboardEvent("keydown", { key: "ArrowDown", altKey: true, bubbles: true }),
       ),
     );
     await flush();
-    expect(rows()).toHaveLength(3);
-    expect(rows()[0].textContent).toContain("first");
-    expect(rows()[2].textContent).toContain("last");
+    expect(sessionQueueMove).not.toHaveBeenCalled();
 
-    // The bottom row moves up: the keyboard reaches the queue.
     await act(async () =>
       rows()[2].dispatchEvent(
         new KeyboardEvent("keydown", { key: "ArrowUp", altKey: true, bubbles: true }),
       ),
     );
     await flush();
-    expect(rows()[1].textContent).toContain("last");
-    expect(rows()[2].textContent).toContain("middle");
+    expect(vi.mocked(sessionQueueMove).mock.calls[0]).toEqual([
+      "agent-1",
+      expect.any(String),
+      "queue-3",
+      1,
+    ]);
     expect(sessionSend).not.toHaveBeenCalled();
   });
 });

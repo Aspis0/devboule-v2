@@ -20,7 +20,6 @@ import { useMenuOpen } from "../../lib/menuOpen";
 import { TerminalSurface } from "../terminal/TerminalSurface";
 import { AgentChatSurface } from "./AgentChatSurface";
 import { pendingPlanId } from "./pendingPlanId";
-import { sharedSessionQueueOwner } from "./sessionQueueOwner";
 import {
   composeStripTabs,
   isToolTabId,
@@ -121,6 +120,9 @@ type ProviderAnchor = { kind: "project"; projectId: string } | { kind: "strip" }
 const WORKSPACE_TERMINAL_PANEL_ID = "workspace-panel-terminal";
 /** The negotiated capability the Changes panel's history read is gated on. */
 const WORKSPACE_GIT_LOG = "workspace.git_log";
+/** The negotiated capability the shared follow-up queue is gated on: the
+ * daemon holds the rows, and this workspace asks it for them. */
+const SESSION_QUEUE_CAPABILITY = "session.queue";
 
 export { WorkspacePermissionCard, formatPermissionCommand };
 
@@ -277,9 +279,7 @@ export function Workspace({
   // device. The sidebar's host list reads the same payload on the same poll, so
   // the names are derived from that read rather than from a second one.
   const peerNames = useMemo(() => peerDeviceNames(devices.peers), [devices]);
-  useEffect(() => {
-    if (daemon.state !== "connected") sharedSessionQueueOwner().onDisconnect();
-  }, [daemon.state]);
+  const queueSupported = daemon.capabilities.includes(SESSION_QUEUE_CAPABILITY);
   // The empty provider picker's action hands the user to Settings → Providers
   // (the surface opens on that tab), so the flow needs the app's one switcher.
   const selectSurface = useAppStore((state) => state.selectSurface);
@@ -397,17 +397,14 @@ export function Workspace({
   // list is still shown when the Workspace mounts again.
   const [closeActions] = useState(() =>
     sharedCloseActions({
-      // An explicit close or archive takes the queued messages with the
-      // session: the journal keeps the row, so the roster would go on naming a
-      // session the user just removed and its queue would never be dropped by
-      // the absence rule alone (`sessionQueueOwner.ts::closeSession`). Its
-      // permission cards go the same way. A close that fails while the
-      // session still exists keeps them; a moot one (`session_not_found`:
-      // the row is already gone) drops them and lets the store stay silent.
+      // An explicit close or archive takes the session's permission cards with
+      // it. A close that fails while the session still exists keeps them; a
+      // moot one (`session_not_found`: the row is already gone) drops them and
+      // lets the store stay silent. The queue needs nothing here: the daemon
+      // fences and clears it with the session, and publishes the empty queue.
       archive: (id) =>
         sessionStop(id).then(
           () => {
-            sharedSessionQueueOwner().closeSession(id);
             dropSessionPermissions(id);
           },
           (cause: unknown) => {
@@ -420,7 +417,6 @@ export function Workspace({
       destroy: (id) =>
         sessionClose(id).then(
           () => {
-            sharedSessionQueueOwner().closeSession(id);
             dropSessionPermissions(id);
           },
           (cause: unknown) => {
@@ -856,12 +852,6 @@ export function Workspace({
   // header menu unmount with it, so none of them act on the hidden session.
   const paneSession =
     activeTool !== null ? null : paneSessionOf(selectedSessionId, visibleSessions);
-  // The queue the pane's session drains into belongs to the app, not to this
-  // surface: the owner holds one per session for the whole run, so opening
-  // Settings, switching tabs or a refresh that rebuilds the strip cannot
-  // destroy a message the user queued.
-  const sessionQueue =
-    paneSession === null ? null : sharedSessionQueueOwner().queueFor(paneSession.id);
   // Primitive dependencies keep fileLinks stable across roster pushes so
   // unchanged messages retain their Markdown memo.
   // The pane's workspace, as the UI names it: the header menu reads it for the
@@ -1838,10 +1828,10 @@ export function Workspace({
                 deviceNames={peerNames}
                 hasPendingPermission={hasPendingPermission}
                 pendingPlanToolCallId={pendingPlanToolCallId}
-                // The app-level owner's queue for this session (see
-                // `sessionQueue`): the surface binds its controller to it, and
+                // The daemon owns this session's follow-up queue (see
+                // `queueSupported`): the surface renders its snapshots, and
                 // Enter mid-turn queues instead of interrupting.
-                queue={sessionQueue}
+                queueSupported={queueSupported}
                 auxiliary={
                   selectedPermission !== null ? (
                     <WorkspacePermissionCard

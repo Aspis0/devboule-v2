@@ -1,6 +1,6 @@
 //! Read the sources at test time: walk every `.rs` under `src/`, parse it,
 //! and report the `#[tauri::command]`s it declares together with the waits it
-//! sends through the blocking helper.
+//! sends through the blocking helper and the checks its own body runs.
 //!
 //! The pins lean on two properties bought here. A file that stops parsing
 //! fails the test with its name instead of vanishing from the scan, and a
@@ -8,6 +8,7 @@
 //! text. A list of file names would go stale the day a file is added; this
 //! walk sees the new file by itself.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use syn::visit::Visit;
@@ -18,12 +19,27 @@ pub(super) struct CommandDecl {
     pub(super) is_public: bool,
     pub(super) is_async: bool,
     pub(super) takes_daemon_bridge: bool,
+    /// The checks from [`GUARD_CALLS`] this command's own body runs. Recorded
+    /// per command because a guard a pin names is a statement about one
+    /// command, and a global count cannot say which command made it.
+    pub(super) guards: BTreeSet<String>,
 }
 
 pub(super) struct SourceScan {
     pub(super) commands: Vec<CommandDecl>,
     pub(super) helper_calls: usize,
 }
+
+/// The checks a forwarder makes before its frame leaves the process. A name
+/// here is only a label: the walk records which of them a given command's body
+/// calls, and the pin in `async_roads.rs` is what says a command must call
+/// one.
+const GUARD_CALLS: &[&str] = &[
+    "ensure_subscription_attached",
+    "require_attachment_limits",
+    "require_session_id",
+    "require_write_size",
+];
 
 struct FileScan {
     file: PathBuf,
@@ -37,9 +53,17 @@ impl FileScan {
         attrs: &[syn::Attribute],
         sig: &syn::Signature,
         visibility: &syn::Visibility,
+        body: Option<&syn::Block>,
     ) {
         if !attrs.iter().any(is_command_attr) {
             return;
+        }
+        let mut guards = BTreeSet::new();
+        if let Some(block) = body {
+            let mut guard_scan = GuardScan {
+                guards: &mut guards,
+            };
+            syn::visit::visit_block(&mut guard_scan, block);
         }
         self.commands.push(CommandDecl {
             file: self.file.clone(),
@@ -50,7 +74,30 @@ impl FileScan {
                 syn::FnArg::Typed(typed) => is_daemon_bridge_state(&typed.ty),
                 syn::FnArg::Receiver(_) => false,
             }),
+            guards,
         });
+    }
+}
+
+/// The guard calls inside one command body. The same call written as
+/// `self::require_session_id(..)` or `crate::x::require_write_size(..)` is the
+/// same check, so only the last path segment is read — exactly the rule
+/// `helper_calls` already applies to `off_main_thread`.
+struct GuardScan<'a> {
+    guards: &'a mut BTreeSet<String>,
+}
+
+impl<'ast> Visit<'ast> for GuardScan<'_> {
+    fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
+        if let syn::Expr::Path(path) = &*node.func {
+            if let Some(segment) = path.path.segments.last() {
+                let name = segment.ident.to_string();
+                if GUARD_CALLS.contains(&name.as_str()) {
+                    self.guards.insert(name);
+                }
+            }
+        }
+        syn::visit::visit_expr_call(self, node);
     }
 }
 
@@ -93,12 +140,12 @@ fn is_daemon_bridge_state(ty: &syn::Type) -> bool {
 
 impl<'ast> Visit<'ast> for FileScan {
     fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
-        self.record(&node.attrs, &node.sig, &node.vis);
+        self.record(&node.attrs, &node.sig, &node.vis, Some(&node.block));
         syn::visit::visit_item_fn(self, node);
     }
 
     fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
-        self.record(&node.attrs, &node.sig, &node.vis);
+        self.record(&node.attrs, &node.sig, &node.vis, Some(&node.block));
         syn::visit::visit_impl_item_fn(self, node);
     }
 
