@@ -2720,6 +2720,8 @@ dependencies = [
  "tauri-plugin-notification",
  "tauri-plugin-opener",
  "tempfile",
+ "webview2-com",
+ "windows 0.61.3",
 ]
 
 [[package]]
