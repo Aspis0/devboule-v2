@@ -9,6 +9,9 @@
 //! requests are refused at the webview and reported up the tab's own channel
 //! instead of becoming a native popup this app does not manage.
 
+#[cfg(debug_assertions)]
+pub mod cdp_probe;
+
 mod page_host;
 pub(crate) mod registry;
 mod tab;

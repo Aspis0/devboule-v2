@@ -208,6 +208,10 @@ pub fn run() {
             browser::browser_history,
             browser::browser_reload,
             browser::browser_close,
+            #[cfg(debug_assertions)]
+            browser::cdp_probe::browser_cdp_probe,
+            #[cfg(debug_assertions)]
+            browser::cdp_probe::browser_cdp_events,
         ])
         .on_window_event(|window, event| {
             // Every close of the main window becomes a decision (hide, quit,
