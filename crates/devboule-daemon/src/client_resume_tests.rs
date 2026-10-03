@@ -11,7 +11,7 @@
 //! overtake.
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use devboule_protocol::{
     ClientMessage, Cursor, DaemonMessage, SessionEvent, SessionEventEnvelope, SessionResumeInfo,
@@ -110,6 +110,25 @@ fn attach(client: &DaemonClient, seen: Seen) -> Result<u64, DaemonError> {
     )
 }
 
+/// The body must not return while replay frames are still in flight: dropping
+/// the client then breaks the server's remaining sends with a broken pipe.
+fn wait_for_entries(seen: &Seen, expected: usize) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let entries = seen
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        if entries.len() >= expected {
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!("timed out waiting for {expected} deliveries, saw {entries:?}");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// Reads one attach, answers it, and pushes the frames that follow — in that
 /// order, which is what makes the assertion about delivery order meaningful.
 fn serve_attach(
@@ -150,6 +169,7 @@ fn serve_attach(
 fn a_reset_reply_reaches_the_subscriber_before_the_first_replayed_envelope() {
     let seen: Seen = Arc::new(Mutex::new(Vec::new()));
     let seen_by_attach = Arc::clone(&seen);
+    let seen_by_wait = Arc::clone(&seen);
     with_a_fake_daemon(
         "client-resume-order",
         serve_attach(
@@ -158,6 +178,7 @@ fn a_reset_reply_reaches_the_subscriber_before_the_first_replayed_envelope() {
         ),
         move |client| {
             attach(client, seen_by_attach).expect("attach with a stale cursor");
+            wait_for_entries(&seen_by_wait, 3);
         },
     );
     assert_eq!(
@@ -178,11 +199,13 @@ fn a_reset_reply_reaches_the_subscriber_before_the_first_replayed_envelope() {
 fn a_resumed_reply_calls_no_hook() {
     let seen: Seen = Arc::new(Mutex::new(Vec::new()));
     let seen_by_attach = Arc::clone(&seen);
+    let seen_by_wait = Arc::clone(&seen);
     with_a_fake_daemon(
         "client-resume-ok",
         serve_attach(resumed(), &["replayed one"]),
         move |client| {
             attach(client, seen_by_attach).expect("attach with a live cursor");
+            wait_for_entries(&seen_by_wait, 1);
         },
     );
     assert_eq!(
