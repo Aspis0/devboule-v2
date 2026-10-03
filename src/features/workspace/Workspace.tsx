@@ -477,7 +477,7 @@ export function Workspace({
       return pruneToolTabsForWorkspaces(prev, knownWorkspaceKeys);
     });
     for (const browserId of pruneBrowserTabs(knownWorkspaceKeys)) closeBrowserPage(browserId);
-  }, [knownWorkspaceKeys, workspaceKeyText]);
+  }, [knownWorkspaceKeys, toolContentCache, workspaceKeyText]);
 
   const closingIds = useSyncExternalStore(closeActions.subscribe, closeActions.getClosingSnapshot);
   const closeFailures = useSyncExternalStore(

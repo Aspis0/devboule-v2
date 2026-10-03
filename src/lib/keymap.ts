@@ -199,15 +199,11 @@ function browserChordAllowed(event: BrowserChordEvent): boolean {
  * while a browser tab is the active tab.
  */
 export function browserFocusAddress(event: BrowserChordEvent): boolean {
-  return (
-    isCommandLetter(event) && event.key.toLowerCase() === "l" && browserChordAllowed(event)
-  );
+  return isCommandLetter(event) && event.key.toLowerCase() === "l" && browserChordAllowed(event);
 }
 
 export function browserReloadChord(event: BrowserChordEvent): boolean {
-  return (
-    isCommandLetter(event) && event.key.toLowerCase() === "r" && browserChordAllowed(event)
-  );
+  return isCommandLetter(event) && event.key.toLowerCase() === "r" && browserChordAllowed(event);
 }
 
 /** The command modifier's label for a platform string. */

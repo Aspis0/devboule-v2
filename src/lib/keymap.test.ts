@@ -313,7 +313,7 @@ describe("the browser chords", () => {
     const address = inElement('<input class="browser-address" />');
     const dialog = inElement('<div role="dialog"><span>x</span></div>');
     const menu = inElement('<div role="menu"><span>x</span></div>');
-    const composing = inElement('<input />');
+    const composing = inElement("<input />");
 
     expect(browserFocusAddress(chord("l", { target: address }))).toBe(false);
     expect(browserReloadChord(chord("r", { target: address }))).toBe(false);
