@@ -534,6 +534,7 @@ fn tool_call_command_and_exit_code_round_trip_and_are_skipped_when_absent() {
         spawn_depth: None,
         command: None,
         exit_code: Some(1),
+        replace: false,
     };
     let encoded = serde_json::to_value(&update).expect("json");
     assert_eq!(encoded["exitCode"], 1);
@@ -576,6 +577,48 @@ fn old_tool_rows_without_command_and_exit_code_still_parse() {
             ..
         }
     ));
+}
+
+fn tool_update(replace: bool) -> SessionEvent {
+    SessionEvent::AgentToolUpdate {
+        tool_call_id: "tc-1".to_string(),
+        status: None,
+        text: Some("whole output".to_string()),
+        title: None,
+        kind: None,
+        locations: None,
+        parent_tool_use_id: None,
+        spawn_depth: None,
+        command: None,
+        exit_code: None,
+        replace,
+    }
+}
+
+#[test]
+fn tool_update_replace_is_on_the_wire_only_when_true() {
+    let absent = serde_json::to_value(tool_update(false)).expect("json");
+    assert!(
+        absent.get("replace").is_none(),
+        "false is omitted: {absent}"
+    );
+
+    let present = serde_json::to_value(tool_update(true)).expect("json");
+    assert_eq!(present["replace"], true);
+    let decoded: SessionEvent = serde_json::from_value(present).expect("event");
+    assert_eq!(decoded, tool_update(true));
+}
+
+#[test]
+fn a_tool_update_without_replace_decodes_as_false() {
+    let wire = serde_json::json!({
+        "type": "agent_tool_update",
+        "toolCallId": "tc-1",
+        "status": null,
+        "text": "whole output"
+    });
+    let decoded: SessionEvent = serde_json::from_value(wire).expect("update without the field");
+    assert_eq!(decoded, tool_update(false));
 }
 
 #[test]
@@ -1283,6 +1326,7 @@ fn tool_call_kind_and_locations_are_camel_case_and_optional() {
         spawn_depth: None,
         command: None,
         exit_code: None,
+        replace: false,
     };
     let encoded = serde_json::to_value(&update).expect("json");
     assert_eq!(encoded["type"], "agent_tool_update");

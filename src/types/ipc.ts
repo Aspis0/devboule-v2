@@ -1351,6 +1351,12 @@ export type SessionEvent =
       command?: string;
       /** The command's exit code. Absent while running or when unknown. */
       exitCode?: number;
+      /**
+       * When true, `text` is the whole current output and replaces the row's
+       * output instead of being appended; an empty `text` clears the row.
+       * Absent means false.
+       */
+      replace?: boolean;
     }
   /**
    * ACP prompt completion. `modelId` and `usage` are what the agent actually

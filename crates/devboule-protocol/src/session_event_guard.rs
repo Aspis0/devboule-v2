@@ -120,6 +120,7 @@ pub(crate) fn session_event_samples() -> Vec<SessionEvent> {
             spawn_depth: Some(1),
             command: Some("cargo test".to_string()),
             exit_code: Some(1),
+            replace: false,
         },
         AgentFinished => SessionEvent::AgentFinished {
             stop_reason: String::new(),

@@ -1452,6 +1452,7 @@ fn tool_delta(params: &Value, kind: &str) -> Vec<SessionEvent> {
         spawn_depth: None,
         command: None,
         exit_code: None,
+        replace: false,
     }]
 }
 
@@ -1484,6 +1485,7 @@ fn item_event(
                     spawn_depth: None,
                     command: None,
                     exit_code: None,
+                    replace: false,
                 }]
             } else {
                 vec![SessionEvent::AgentToolCall {
@@ -1533,6 +1535,7 @@ fn item_event(
                     spawn_depth: None,
                     exit_code: codex_exit_code(item),
                     command,
+                    replace: false,
                 }]
             } else {
                 vec![SessionEvent::AgentToolCall {
@@ -1570,6 +1573,7 @@ fn item_event(
                     spawn_depth: None,
                     command: None,
                     exit_code: None,
+                    replace: false,
                 }]
             } else {
                 vec![SessionEvent::AgentToolCall {

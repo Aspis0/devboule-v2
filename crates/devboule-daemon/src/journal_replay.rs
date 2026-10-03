@@ -988,6 +988,7 @@ mod tests {
             spawn_depth: None,
             command: None,
             exit_code: None,
+            replace: false,
         };
         let (dir, path) = tmp_journal();
         let journal = Journal::open(&path).expect("open");

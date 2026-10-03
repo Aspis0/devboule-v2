@@ -286,6 +286,7 @@ fn toolcall_end(value: &Value) -> Option<SessionEvent> {
         spawn_depth: None,
         command,
         exit_code: None,
+        replace: false,
     })
 }
 
@@ -304,6 +305,7 @@ fn tool_execution_start(value: &Value) -> Option<SessionEvent> {
         spawn_depth: None,
         command: None,
         exit_code: None,
+        replace: false,
     })
 }
 
@@ -329,6 +331,7 @@ fn tool_execution_end(value: &Value) -> Vec<SessionEvent> {
         spawn_depth: None,
         command: None,
         exit_code: result_exit_code(value.get("result")),
+        replace: false,
     }];
     if let Some(tool_name) = value.get("toolName").and_then(Value::as_str) {
         if let Some(items) =

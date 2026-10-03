@@ -493,6 +493,7 @@ fn a_latch_denied_plan_keeps_its_cancelled_plan_row_live_and_in_replay() {
             spawn_depth: None,
             command: None,
             exit_code: None,
+            replace: false,
         }),
         "the plan row's terminal state is the daemon's, live: {events:?}"
     );

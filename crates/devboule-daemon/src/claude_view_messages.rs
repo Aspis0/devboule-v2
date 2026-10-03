@@ -142,6 +142,7 @@ impl ClaudeView {
                                 spawn_depth,
                                 command: None,
                                 exit_code: None,
+                                replace: false,
                             });
                         }
                     }

@@ -232,12 +232,13 @@ fn view_from_session_update(
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default();
             let status = update.get("status").and_then(serde_json::Value::as_str);
-            let text = memory.new_text(tool_call_id, update.get("content"), status);
+            let added = memory.new_text(tool_call_id, update.get("content"), status);
+            let replace = added.as_ref().is_some_and(|added| added.replace);
             let (command, exit_code) = command_row_from_update(update, Frame::Update);
             Some(SessionEvent::AgentToolUpdate {
                 tool_call_id: tool_call_id.to_string(),
                 status: status.map(str::to_string),
-                text,
+                text: added.map(|added| added.text),
                 title: update
                     .get("title")
                     .and_then(serde_json::Value::as_str)
@@ -252,6 +253,7 @@ fn view_from_session_update(
                 spawn_depth: None,
                 command,
                 exit_code,
+                replace,
             })
         }
         Some("plan") => {

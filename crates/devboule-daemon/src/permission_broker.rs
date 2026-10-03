@@ -1213,6 +1213,7 @@ impl PermissionBroker {
                     spawn_depth: None,
                     command: None,
                     exit_code: None,
+                    replace: false,
                 };
                 // Both halves are attempted even if the first fails. A row
                 // the stream refuses is a wordless log line — ids only —
@@ -1636,6 +1637,7 @@ fn publish_plan_outcome_for(
             spawn_depth: None,
             command: None,
             exit_code: None,
+            replace: false,
         });
         if !published {
             eprintln!("could not publish the completed plan row");

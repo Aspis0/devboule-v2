@@ -449,6 +449,7 @@ fn plan_rows_and_agent_report_outcomes_replay_from_the_journal() {
             spawn_depth: None,
             command: None,
             exit_code: None,
+            replace: false,
         }));
     }
     journal.flush().expect("flush decision rows");

@@ -302,6 +302,7 @@ fn user_tool_result_success_and_error() {
             spawn_depth: None,
             command: None,
             exit_code: None,
+            replace: false,
         }]
     );
     let err = mapper.ingest(&json!({
@@ -329,6 +330,7 @@ fn user_tool_result_success_and_error() {
             spawn_depth: None,
             command: None,
             exit_code: None,
+            replace: false,
         }]
     );
 }

@@ -98,6 +98,7 @@ fn element_line(element: &Value) -> Option<Cow<'_, str>> {
 
 /// What one extraction read: the lines joined with newlines, cut at the
 /// budget.
+#[derive(PartialEq)]
 struct Extracted {
     body: String,
     truncated: bool,
@@ -122,9 +123,41 @@ impl Extracted {
         }
         self.truncated = true;
     }
+
+    /// The text a row shows for this snapshot.
+    fn shown(&self) -> String {
+        let mut text = self.body.clone();
+        if self.truncated {
+            text.push_str(TRUNCATION_MARKER);
+        }
+        text
+    }
+
+    /// What a row showing `self` can append so that it shows `next`: the app
+    /// rebuilds `shown`, a line feed and `suffix`, so this is `Some` only when that is
+    /// byte-exact. A truncated or empty `self` shows more or less than its
+    /// body, and a `next` that is only a trailing newline or differs in its
+    /// line endings has no suffix to give.
+    fn suffix_to(&self, next: &Self) -> Option<String> {
+        if self.truncated || self.body.is_empty() {
+            return None;
+        }
+        let added = next
+            .body
+            .strip_prefix(self.body.as_str())?
+            .strip_prefix('\n')?;
+        if added.is_empty() {
+            return None;
+        }
+        let mut suffix = added.to_string();
+        if next.truncated {
+            suffix.push_str(TRUNCATION_MARKER);
+        }
+        Some(suffix)
+    }
 }
 
-fn extract(content: &Value) -> Option<Extracted> {
+fn extract(content: &Value) -> Extracted {
     let mut extracted = Extracted {
         body: String::new(),
         truncated: false,
@@ -146,70 +179,84 @@ fn extract(content: &Value) -> Option<Extracted> {
             }
         }
     }
-    (!extracted.body.is_empty()).then_some(extracted)
+    extracted
 }
 
 fn is_finished(status: Option<&str>) -> bool {
     matches!(status, Some("completed" | "failed"))
 }
 
+/// What one snapshot sends to the row.
+pub(crate) struct ToolText {
+    /// The whole snapshot when `replace`, else a suffix to append. Empty with
+    /// `replace` means the snapshot is empty and clears the row.
+    pub(crate) text: String,
+    pub(crate) replace: bool,
+}
+
 /// The last content snapshot of each open tool call.
 ///
 /// ACP content replaces the call's content, but the app appends every update
 /// text to the row. Remembering the snapshot already sent lets a repeat send
-/// nothing and a grown snapshot send only what it added. A snapshot that is
-/// neither still appends whole: the row cannot be rewritten without a new
-/// protocol field.
+/// nothing. A suffix goes out without the flag only when the app's own join
+/// (the old text, a line feed and the suffix) rebuilds the new snapshot byte for byte; every other
+/// change is sent whole, flagged as a replacement, and so is a snapshot for a
+/// call with no memory (first, evicted, or a replay that began mid-call). An
+/// empty first snapshot sends nothing: the row has nothing to clear.
 #[derive(Default)]
 pub(crate) struct ToolContentMemory {
-    calls: Vec<(String, String)>,
+    calls: Vec<(String, Extracted)>,
 }
 
 impl ToolContentMemory {
-    /// The text to append for this snapshot, or `None` when it adds nothing.
-    /// A finished call is forgotten after its snapshot is read.
+    /// What this snapshot sends to the row, or `None` when it adds nothing.
+    /// A finished call is forgotten after its snapshot is read. A `null` or
+    /// absent `content` is no snapshot and leaves the memory alone.
     pub(crate) fn new_text(
         &mut self,
         call_id: &str,
         content: Option<&Value>,
         status: Option<&str>,
-    ) -> Option<String> {
+    ) -> Option<ToolText> {
         let text = content
-            .and_then(extract)
-            .and_then(|snapshot| self.append_for(call_id, snapshot));
+            .filter(|content| !content.is_null())
+            .and_then(|content| self.send_for(call_id, extract(content)));
         if is_finished(status) {
             self.calls.retain(|(known, _)| known != call_id);
         }
         text
     }
 
-    fn append_for(&mut self, call_id: &str, snapshot: Extracted) -> Option<String> {
+    fn send_for(&mut self, call_id: &str, snapshot: Extracted) -> Option<ToolText> {
         let slot = self.calls.iter().position(|(known, _)| known == call_id);
-        let appended = match slot.map(|index| self.calls[index].1.as_str()) {
-            Some(old) if old == snapshot.body => None,
-            Some(old) if snapshot.body.starts_with(old) => {
-                let added = &snapshot.body[old.len()..];
-                Some(added.strip_prefix('\n').unwrap_or(added).to_string())
-            }
-            _ => Some(snapshot.body.clone()),
-        }
-        .filter(|added| !added.is_empty())
-        .map(|mut added| {
-            if snapshot.truncated {
-                added.push_str(TRUNCATION_MARKER);
-            }
-            added
-        });
+        let change = match slot.map(|index| &self.calls[index].1) {
+            Some(old) if *old == snapshot => None,
+            Some(old) => Some(match old.suffix_to(&snapshot) {
+                Some(suffix) => ToolText {
+                    text: suffix,
+                    replace: false,
+                },
+                None => ToolText {
+                    text: snapshot.shown(),
+                    replace: true,
+                },
+            }),
+            None if snapshot.body.is_empty() => return None,
+            None => Some(ToolText {
+                text: snapshot.shown(),
+                replace: true,
+            }),
+        };
         match slot {
-            Some(index) => self.calls[index].1 = snapshot.body,
+            Some(index) => self.calls[index].1 = snapshot,
             None => {
                 if self.calls.len() == MAX_TRACKED_CALLS {
                     self.calls.remove(0);
                 }
-                self.calls.push((call_id.to_string(), snapshot.body));
+                self.calls.push((call_id.to_string(), snapshot));
             }
         }
-        appended
+        change
     }
 
     #[cfg(test)]
@@ -234,11 +281,11 @@ pub(crate) fn call_content_update(
     else {
         return None;
     };
-    let text = memory.new_text(tool_call_id, update.get("content"), Some(status.as_str()))?;
+    let added = memory.new_text(tool_call_id, update.get("content"), Some(status.as_str()))?;
     Some(SessionEvent::AgentToolUpdate {
         tool_call_id: tool_call_id.clone(),
         status: None,
-        text: Some(text),
+        text: Some(added.text),
         title: None,
         kind: None,
         locations: None,
@@ -246,6 +293,7 @@ pub(crate) fn call_content_update(
         spawn_depth: None,
         command: None,
         exit_code: None,
+        replace: added.replace,
     })
 }
 
@@ -260,3 +308,7 @@ mod replace_tests;
 #[cfg(test)]
 #[path = "acp_tool_content_bounds_tests.rs"]
 mod bounds_tests;
+
+#[cfg(test)]
+#[path = "acp_tool_content_journal_tests.rs"]
+mod journal_tests;

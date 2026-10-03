@@ -68,6 +68,7 @@ pub(super) fn web_search_events(id: &str, item: &Value, completed: bool) -> Vec<
             spawn_depth: None,
             command: None,
             exit_code: None,
+            replace: false,
         }]
     } else {
         let shown = presentation.unwrap_or_else(|| Presentation {

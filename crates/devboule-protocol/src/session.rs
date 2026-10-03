@@ -912,6 +912,13 @@ pub enum SessionEvent {
         /// outcome, and for rows written before the field existed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         exit_code: Option<i32>,
+        /// `text` is the whole current output and replaces what the row
+        /// already shows, instead of being appended to it; an empty `text`
+        /// clears the row. Absent (false) for every provider except an ACP
+        /// content snapshot that is not a byte-exact line-aligned growth of
+        /// the previous one, and for rows written before the field existed.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        replace: bool,
     },
     /// The response to one `session/prompt` request.
     AgentFinished {

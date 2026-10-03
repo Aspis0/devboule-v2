@@ -141,6 +141,7 @@ pub(super) fn tool_update_from_result(
         spawn_depth,
         command: None,
         exit_code: None,
+        replace: false,
     })
 }
 
