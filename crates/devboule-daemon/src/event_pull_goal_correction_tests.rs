@@ -363,6 +363,7 @@ fn goal_correction_is_emitted_into_a_saturated_round() {
             generation: 1,
             pending: VecDeque::new(),
             replayed_seqs: std::collections::HashSet::new(),
+            reset_tail_cards: None,
             claude_view: None,
             codex_view: None,
             codex_plan_turns: None,

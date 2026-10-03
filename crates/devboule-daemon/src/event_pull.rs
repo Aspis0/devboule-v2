@@ -350,6 +350,7 @@ impl ConnHandle {
                     generation,
                     pending: VecDeque::new(),
                     replayed_seqs: std::collections::HashSet::new(),
+                    reset_tail_cards: replay.reset_tail_cards,
                     claude_view: None,
                     codex_view: None,
                     codex_plan_turns: None,
@@ -806,6 +807,7 @@ fn pull_live_agent_replay_events(
                     pull.attachment_key,
                     replay.from_seq,
                     &replay.replayed_seqs,
+                    replay.reset_tail_cards.as_ref(),
                 );
                 if current_seq > replay.watermark && !replay.force_finish {
                     if replay.catch_up_extensions < LIVE_AGENT_REPLAY_MAX_CATCH_UPS {

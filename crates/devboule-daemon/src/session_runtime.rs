@@ -320,6 +320,11 @@ pub(crate) struct LiveAgentReplay {
     pub(crate) from_generation: u64,
     pub(crate) from_seq: u64,
     pub(crate) watermark: u64,
+    /// The permission cards the reset tail in this attach's reply carries, by
+    /// `tool_call_id`; `None` when the client keeps its own timeline. Carried
+    /// to the seam because a reset replaced what the client had, and the seam
+    /// is the only place that knows which cards crossed already.
+    pub(crate) reset_tail_cards: Option<HashSet<String>>,
 }
 
 pub(crate) struct AttachOutcome {
@@ -2966,6 +2971,7 @@ impl SessionRuntime {
         key: AttachmentKey,
         from_seq: u64,
         replayed_seqs: &HashSet<u64>,
+        reset_tail_cards: Option<&HashSet<String>>,
     ) -> (u64, Option<SessionEvent>) {
         // Publication stores a manifest before it queues the live event. Take
         // the snapshot in that order so the replay copy and the late-queue
@@ -2997,15 +3003,13 @@ impl SessionRuntime {
                 replace_manifest,
             );
             for item in backlog {
-                let eligible = match &item {
-                    PendingItem::Agent { seq, event, .. } => {
-                        !seq.is_some_and(|seq| seq <= from_seq || replayed_seqs.contains(&seq))
-                            && !matches!(event, SessionEvent::SessionManifest { .. })
-                            && (!matches!(event, SessionEvent::PermissionRequest { .. })
-                                || attachment.typed_permissions)
-                    }
-                    PendingItem::Output { .. } | PendingItem::Snapshot { .. } => false,
-                };
+                let eligible = backlog_item_eligible(
+                    &item,
+                    from_seq,
+                    replayed_seqs,
+                    reset_tail_cards,
+                    attachment.typed_permissions,
+                );
                 let already_pending = matches!(
                     &item,
                     PendingItem::Agent {
@@ -3346,6 +3350,9 @@ impl SessionRuntime {
                 from_generation,
                 from_seq,
                 watermark: stream.next_seq.saturating_sub(1),
+                reset_tail_cards: resume
+                    .as_ref()
+                    .and_then(|decision| decision.reset_tail_cards.clone()),
             })
         } else {
             None
@@ -3806,6 +3813,47 @@ fn enqueue_output(stream: &mut StreamState, seq: u64, data: &str) -> (u64, u64) 
         }
     }
     (discarded_bytes, discarded_frames)
+}
+
+/// Whether the replay this attach just ran already carried the position one
+/// shared-backlog item holds. `None` is a position nothing has claimed: a
+/// daemon-local event, which no replay can deliver.
+fn replay_covered(seq: Option<u64>, from_seq: u64, replayed_seqs: &HashSet<u64>) -> bool {
+    seq.is_some_and(|seq| seq <= from_seq || replayed_seqs.contains(&seq))
+}
+
+/// Whether one shared-backlog item belongs on the observer whose replay just
+/// finished.
+///
+/// A still-pending permission card is the exception, and only for the observer
+/// that is resetting: its timeline was replaced by the tail in the attach
+/// reply, so a card at or below `from_seq` is no longer on its screen and the
+/// agent is waiting on a card nobody can answer. It crosses unless this attach
+/// already delivered it — `reset_tail_cards` names the cards the reply's own
+/// tail carried, and the caller drops a card the observer's queue already holds.
+/// Every other item, and every card on an attach that keeps the client's own
+/// timeline, follows the replay boundary as before: that client's cursor says
+/// what it has already seen.
+fn backlog_item_eligible(
+    item: &PendingItem,
+    from_seq: u64,
+    replayed_seqs: &HashSet<u64>,
+    reset_tail_cards: Option<&HashSet<String>>,
+    typed_permissions: bool,
+) -> bool {
+    let PendingItem::Agent { seq, event, .. } = item else {
+        return false;
+    };
+    match event {
+        SessionEvent::PermissionRequest { tool_call_id, .. } => {
+            typed_permissions
+                && (!replay_covered(*seq, from_seq, replayed_seqs)
+                    || reset_tail_cards.is_some_and(|cards| !cards.contains(tool_call_id)))
+        }
+        // The seam emits the stored summary in its place.
+        SessionEvent::SessionManifest { .. } => false,
+        _ => !replay_covered(*seq, from_seq, replayed_seqs),
+    }
 }
 
 fn enqueue_agent(stream: &mut StreamState, event: SessionEvent, seq: Option<u64>) {

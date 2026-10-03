@@ -392,6 +392,11 @@ mod session_activity_quiet_tests;
 #[cfg(test)]
 #[path = "session_attach_resume_fixtures.rs"]
 mod session_attach_resume_fixtures;
+/// What an attach owes a permission card that is still pending: a reset hands
+/// it over again, an ordinary resume leaves what the cursor covers alone.
+#[cfg(test)]
+#[path = "session_attach_resume_permission_tests.rs"]
+mod session_attach_resume_permission_tests;
 /// What the resume answer must leave as it was: the unnegotiated connection's
 /// reply, the stored manifest, the attach queue snapshot.
 #[cfg(test)]

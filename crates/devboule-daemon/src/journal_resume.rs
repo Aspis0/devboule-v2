@@ -49,6 +49,15 @@ pub(crate) struct ResumeDecision {
     /// transcript below the attach generation, which is what a Reopen asks for
     /// when it renumbers its cursor.
     pub(crate) from_generation: u64,
+    /// The permission cards this reset's tail carries, by `tool_call_id`, or
+    /// `None` when the client keeps its own timeline.
+    ///
+    /// `Some` is what makes a pending card eligible at the seam whatever its
+    /// seq: the client is told to replace its timeline with the tail, so a card
+    /// the tail does not carry is gone from its screen, and a card the tail
+    /// does carry has already been delivered here. `None` leaves the client's
+    /// own cursor in charge — it holds the cards at or below it.
+    pub(crate) reset_tail_cards: Option<HashSet<String>>,
 }
 
 /// Where a resumed cursor starts its replay: the generations below the attach
@@ -107,10 +116,12 @@ pub(crate) fn resolve(
             },
             resume_from: cursor.seq,
             from_generation: resume_start_generation(cursor),
+            reset_tail_cards: None,
         });
     };
     let tail = build_tail(runtime, generation, head, &journal);
     let resume_from = tail.cursor.seq;
+    let reset_tail_cards = permission_ids(&tail.events);
     Some(ResumeDecision {
         info: SessionResumeInfo {
             resume: SessionResumeOutcome::Reset { reason, tail },
@@ -119,7 +130,20 @@ pub(crate) fn resolve(
         },
         resume_from,
         from_generation: generation,
+        reset_tail_cards: Some(reset_tail_cards),
     })
+}
+
+/// The cards a tail carries, by `tool_call_id`: the ones this attach's reply
+/// has already delivered, so the seam never offers one of them again.
+fn permission_ids(events: &[SessionEvent]) -> HashSet<String> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::PermissionRequest { tool_call_id, .. } => Some(tool_call_id.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// An empty tail at a cursor the caller names: the head when the newest event

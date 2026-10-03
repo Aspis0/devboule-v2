@@ -319,6 +319,11 @@ pub(super) struct AgentReplay {
     /// history from the current stream.
     pub(super) pending: VecDeque<(u64, u64, SessionEvent)>,
     pub(super) replayed_seqs: HashSet<u64>,
+    /// The permission cards the reset tail in this attach's reply carried, or
+    /// `None` when the client kept its own timeline. Handed to the seam so a
+    /// pending card crosses again after a reset unless that reply already
+    /// delivered it.
+    pub(super) reset_tail_cards: Option<HashSet<String>>,
     pub(super) claude_view: Option<crate::claude_view::ClaudeView>,
     pub(super) codex_view: Option<crate::codex_view::CodexView>,
     /// Turns with a journalled plan approval mark, read lazily on the first

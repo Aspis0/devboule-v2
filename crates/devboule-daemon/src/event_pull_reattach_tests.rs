@@ -262,6 +262,7 @@ fn third_live_agent_observer_keeps_the_shared_backlog() {
         },
         2,
         &std::collections::HashSet::new(),
+        None,
     );
 
     let middle = ConnHandle::new(2);
@@ -312,6 +313,7 @@ fn third_live_agent_observer_keeps_the_shared_backlog() {
         },
         0,
         &std::collections::HashSet::new(),
+        None,
     );
 
     let stream = runtime.stream.lock().unwrap();
