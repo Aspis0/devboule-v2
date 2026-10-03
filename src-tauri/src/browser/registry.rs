@@ -61,6 +61,10 @@ pub struct OwnedTab {
     pub label: String,
     pub rect: LogicalRect,
     pub parked: bool,
+    /// A close that arrived before the child existed. A claim is made before
+    /// `add_child` runs, so this is the one thing a close can leave behind
+    /// that the create itself has to act on.
+    pub cancelled: bool,
 }
 
 /// Every browser page this process owns, keyed by the browser id the frontend
@@ -81,12 +85,14 @@ impl BrowserRegistry {
     /// The label a browser id owns, or the refusal a command reports when the
     /// tab is gone. Every command starts here, which is what makes "no
     /// navigation after dispose" a property of the seam rather than of each
-    /// command remembering to check.
+    /// command remembering to check. A cancelled claim resolves to nothing:
+    /// the tab was closed, so there is no page to address.
     pub fn label_of(&self, id: &str) -> Result<String, String> {
         self.tabs
             .lock()
             .expect("browser registry poisoned")
             .get(id)
+            .filter(|tab| !tab.cancelled)
             .map(|tab| tab.label.clone())
             .ok_or_else(|| "This browser tab is no longer open.".to_owned())
     }
@@ -103,12 +109,14 @@ impl BrowserRegistry {
         Ok(())
     }
 
-    /// Where the page was last put, and whether it is parked.
+    /// Where the page was last put, and whether it is parked. A cancelled
+    /// claim has no page to place.
     pub fn rect_of(&self, id: &str) -> Option<(LogicalRect, bool)> {
         self.tabs
             .lock()
             .expect("browser registry poisoned")
             .get(id)
+            .filter(|tab| !tab.cancelled)
             .map(|tab| (tab.rect, tab.parked))
     }
 
@@ -118,10 +126,37 @@ impl BrowserRegistry {
             .lock()
             .expect("browser registry poisoned")
             .get_mut(id)
+            .filter(|tab| !tab.cancelled)
         {
             tab.rect = rect;
             tab.parked = parked;
         }
+    }
+
+    /// A close that arrived before the child existed. Only the create can
+    /// dispose of what it is about to get, so this leaves a mark instead of
+    /// pretending the tab was never there. The bool says whether a create was
+    /// in flight to mark.
+    pub fn cancel(&self, id: &str) -> bool {
+        let mut tabs = self.tabs.lock().expect("browser registry poisoned");
+        match tabs.get_mut(id) {
+            Some(tab) => {
+                tab.cancelled = true;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Whether a create that has just built its child still owns the id. A
+    /// close that arrived in the meantime either cancelled the claim or
+    /// released it, and in both cases the child it is holding is nobody's.
+    pub fn claim_is_live(&self, id: &str) -> bool {
+        self.tabs
+            .lock()
+            .expect("browser registry poisoned")
+            .get(id)
+            .is_some_and(|tab| !tab.cancelled)
     }
 
     /// Release an id. The bool is what makes a close idempotent: a second
@@ -150,6 +185,7 @@ mod tests {
             label: label.to_owned(),
             rect: PARK_RECT,
             parked: true,
+            cancelled: false,
         }
     }
 
@@ -216,6 +252,74 @@ mod tests {
         const { assert!(PARK_RECT.height == 1.0) };
         const { assert!(PARK_RECT.x < -1_000.0) };
         const { assert!(PARK_RECT.y < -1_000.0) };
+    }
+
+    #[test]
+    fn a_close_that_arrives_before_the_child_exists_cancels_the_claim() {
+        let registry = BrowserRegistry::new();
+        registry
+            .claim("tab-1", owned("browser-tab-1"))
+            .expect("claim");
+        assert!(
+            registry.claim_is_live("tab-1"),
+            "a claim is a create's to keep"
+        );
+
+        assert!(
+            registry.cancel("tab-1"),
+            "the close found the create in flight"
+        );
+
+        // Nothing addresses a page the user has already closed...
+        assert!(registry.label_of("tab-1").is_err());
+        assert!(registry.rect_of("tab-1").is_none());
+        // ...and the create that is about to get a child knows to close it.
+        assert!(!registry.claim_is_live("tab-1"));
+    }
+
+    #[test]
+    fn a_cancelled_claim_reopens_under_its_own_id_once_it_is_released() {
+        let registry = BrowserRegistry::new();
+        registry
+            .claim("tab-1", owned("browser-tab-1"))
+            .expect("claim");
+        registry.cancel("tab-1");
+        registry.release("tab-1");
+
+        registry
+            .claim("tab-1", owned("browser-tab-1"))
+            .expect("the same id claims again");
+
+        assert!(registry.claim_is_live("tab-1"));
+        assert_eq!(
+            registry.label_of("tab-1").expect("reopened"),
+            "browser-tab-1"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_claim_takes_no_rectangle() {
+        let registry = BrowserRegistry::new();
+        registry
+            .claim("tab-1", owned("browser-tab-1"))
+            .expect("claim");
+        registry.cancel("tab-1");
+        let rect = LogicalRect {
+            x: 1.0,
+            y: 2.0,
+            width: 300.0,
+            height: 400.0,
+        };
+        registry.set_rect("tab-1", rect, false);
+
+        assert!(registry.rect_of("tab-1").is_none());
+    }
+
+    #[test]
+    fn a_close_of_an_unknown_tab_cancels_nothing() {
+        let registry = BrowserRegistry::new();
+
+        assert!(!registry.cancel("tab-never-existed"));
     }
 
     #[test]

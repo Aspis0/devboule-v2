@@ -8,11 +8,17 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
+use tauri::Url;
 use tauri::{AppHandle, Manager, WebviewBuilder, WebviewUrl, Wry};
 
 use super::page_host;
 use super::registry::{profile_dir, BrowserRegistry, OwnedTab, PARK_RECT};
 use super::url;
+
+/// The empty document a child is created on, before it is allowed to load
+/// anything. Its only job is to be there for the handlers to be installed on:
+/// the real address is navigated to once they are.
+pub const BOOTSTRAP_URL: &str = "about:blank";
 
 /// The label prefix every browser child webview carries. Tauri needs a
 /// distinct label per webview in a window and the frontend needs a stable id
@@ -39,8 +45,9 @@ pub struct BrowserViewState {
     pub error: Option<String>,
 }
 
-/// What travels down a tab's channel: its page's state changing, or the page
-/// asking for a window of its own.
+/// What travels down a tab's channel: its page's state changing, the page
+/// asking for a window of its own, or a chord pressed while the page itself
+/// held the focus and the app's own keymap could not hear it.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum BrowserUpdate {
@@ -50,6 +57,19 @@ pub enum BrowserUpdate {
     NewWindow {
         url: String,
     },
+    Chord {
+        chord: BrowserChord,
+    },
+}
+
+/// The two keys a browser tab answers wherever the focus is. Read down the
+/// channel rather than answered here: the app's keymap owns what a chord
+/// means, and this half only reports that one was pressed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BrowserChord {
+    FocusAddress,
+    Reload,
 }
 
 /// The handles a webview's own hooks need: the channel it reports down and
@@ -63,6 +83,12 @@ struct TabHooks {
 impl TabHooks {
     fn send(&self, update: BrowserUpdate) {
         let _ = self.updates.send(update);
+    }
+
+    /// Put a note on the pane's own line, the way a refused navigation does.
+    /// The next navigation clears it.
+    fn send_note(&self, note: &str) {
+        self.edit(|state| state.error = Some(note.to_owned()));
     }
 
     /// Edit and publish. The lock is dropped before the send so a slow
@@ -80,7 +106,7 @@ impl TabHooks {
 /// Wire the four hooks that make a page safe and its chrome truthful.
 fn builder(
     label: &str,
-    target: tauri::Url,
+    bootstrap: tauri::Url,
     profile: PathBuf,
     hooks: &TabHooks,
 ) -> WebviewBuilder<Wry> {
@@ -90,11 +116,18 @@ fn builder(
     let on_window = hooks.clone();
     let load_label = label.to_owned();
 
-    WebviewBuilder::new(label, WebviewUrl::External(target))
+    WebviewBuilder::new(label, WebviewUrl::External(bootstrap))
         // Every browser tab shares one profile, so a login in one is a login in
         // the next. It is this app's own folder, and no page input reaches it.
         .data_directory(profile)
         .on_navigation(move |candidate| {
+            // The empty document the child starts on, so that nothing is on
+            // the network until its handlers exist. Nothing can ask for
+            // anything from it, and refusing it would be refusing our own
+            // bootstrap rather than the page's.
+            if candidate.as_str() == BOOTSTRAP_URL {
+                return true;
+            }
             // The gate page-initiated navigation and every redirect pass through.
             // A refusal becomes the inline error line and the page stays put.
             match url::gate(candidate) {
@@ -154,7 +187,9 @@ fn builder(
 
 /// Open a tab's page and claim its id. The id is claimed BEFORE the child
 /// exists so a second create for the same tab cannot slip a second webview in
-/// under a label the first one holds; a failed build releases the claim.
+/// under a label the first one holds; a failed build releases the claim, and a
+/// claim a close cancelled while the child was being built closes that child
+/// instead of handing back a page nobody asked for.
 pub async fn open(
     app: &AppHandle,
     registry: &BrowserRegistry,
@@ -185,18 +220,65 @@ pub async fn open(
             label: label.clone(),
             rect: PARK_RECT,
             parked: true,
+            cancelled: false,
         },
     )?;
 
+    let bootstrap = Url::parse(BOOTSTRAP_URL).expect("the bootstrap URL is a constant");
     let (position, size) = PARK_RECT.into_tauri();
-    let webview = window.add_child(builder(&label, target, profile, &hooks), position, size);
-    match webview {
-        Ok(webview) => page_host::deny_permissions(&webview),
-        Err(error) => {
-            registry.release(id);
-            return Err(error.to_string());
-        }
+    let webview =
+        match window.add_child(builder(&label, bootstrap, profile, &hooks), position, size) {
+            Ok(webview) => webview,
+            Err(error) => {
+                registry.release(id);
+                return Err(error.to_string());
+            }
+        };
+    // A close that arrived while this child was being built is the one thing
+    // that can leave the id claimed with no page behind it: nobody else is
+    // holding the webview this create just got.
+    if !registry.claim_is_live(id) {
+        let _ = webview.close();
+        registry.release(id);
+        return Err("This browser tab was closed before it opened.".to_owned());
+    }
+    // Every handler this app answers with goes on before the first navigation.
+    // A page that asks for the camera in the time between being created and
+    // being restricted asked a question this app had not installed a "no" for
+    // yet, so an empty document is what it is created on.
+    let on_download = hooks.clone();
+    let on_chord = hooks.clone();
+    if let Err(error) = page_host::restrict(
+        &webview,
+        move || on_download.send_note("Downloads are not supported yet."),
+        move |chord| on_chord.send(BrowserUpdate::Chord { chord }),
+    ) {
+        let _ = webview.close();
+        registry.release(id);
+        return Err(error);
+    }
+    if let Err(error) = webview.navigate(target) {
+        let _ = webview.close();
+        registry.release(id);
+        return Err(error.to_string());
     }
     let opened = hooks.state.lock().expect("browser state poisoned").clone();
     Ok(opened)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_bootstrap_is_something_the_gate_would_refuse() {
+        // The empty document a child starts on exists so that nothing is on
+        // the network before its handlers are installed. That is worth exactly
+        // as long as it is not an address a page could reach on its own: an
+        // https bootstrap would be loaded before the restriction exists, and
+        // this test is what says so.
+        let bootstrap = Url::parse(BOOTSTRAP_URL).expect("the bootstrap URL parses");
+
+        assert!(url::gate(&bootstrap).is_err());
+    }
 }

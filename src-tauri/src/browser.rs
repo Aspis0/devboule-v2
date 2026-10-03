@@ -133,9 +133,15 @@ pub fn browser_reload(
         .map_err(|e| e.to_string())
 }
 
-/// Close a tab's page. Closing twice, or closing after the app already did,
-/// reports success: the caller's intent — this tab has no page — holds either
-/// way.
+/// Close a tab's page. Two orderings, because a create claims its id before
+/// the child exists:
+///
+/// - the child is there: close it natively, and only then drop the entry, so a
+///   failed close leaves a claim that owns the label and refuses a reopen over
+///   a live webview;
+/// - it is not: either this tab was never here, or its create is still
+///   building the child. The second is a close the create itself has to
+///   honour, so the claim is marked and the create disposes of what it gets.
 #[tauri::command]
 pub fn browser_close(
     app: AppHandle,
@@ -143,11 +149,14 @@ pub fn browser_close(
     id: String,
 ) -> Result<(), String> {
     let Ok(label) = registry.label_of(&id) else {
+        registry.cancel(&id);
         return Ok(());
     };
+    let Some(webview) = app.get_webview(&label) else {
+        registry.cancel(&id);
+        return Ok(());
+    };
+    webview.close().map_err(|e| e.to_string())?;
     registry.release(&id);
-    if let Some(webview) = app.get_webview(&label) {
-        webview.close().map_err(|e| e.to_string())?;
-    }
     Ok(())
 }
