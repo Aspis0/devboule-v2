@@ -117,11 +117,12 @@ fn the_second_waves_schema_states_the_bounds_the_daemon_enforces() {
     }
 
     let screenshot = browser_commands::schema_for("browser_screenshot").expect("screenshot");
-    assert_eq!(screenshot["properties"]["zoom"]["minimum"], json!(1));
-    assert_eq!(screenshot["properties"]["zoom"]["maximum"], json!(3));
+    assert_eq!(screenshot["properties"]["zoom"]["type"], "number");
+    assert_eq!(screenshot["properties"]["zoom"]["minimum"], json!(1.0));
+    assert_eq!(screenshot["properties"]["zoom"]["maximum"], json!(3.0));
     let clip = &screenshot["properties"]["clip"]["properties"];
     for corner in ["x", "y", "width", "height"] {
-        assert_eq!(clip[corner]["minimum"], json!(0), "{corner}");
+        assert_eq!(clip[corner]["minimum"], json!(0.0), "{corner}");
     }
 
     let logs = browser_commands::schema_for("browser_console_logs").expect("console_logs");

@@ -1,4 +1,4 @@
-import { browserToolName } from "./browserToolName";
+import { isBrowserToolRow } from "./browserToolName";
 import type { ToolChatItem } from "./toolCallGroups";
 
 export interface ToolCallGroupSummary {
@@ -36,11 +36,10 @@ export function countToolCallGroup(items: readonly ToolChatItem[]): ToolCallGrou
       commandCount += 1;
     } else if (kind === "search") {
       searchCount += 1;
-    } else if (kind === "browser" || (kind === "other" && isBrowserRowTitle(item.title))) {
-      // A journal replays the kind the daemon gave the row at the time, so a
-      // browser call written before it learned Claude's spelling arrives as
-      // `other` with the provider's name. `other` claims nothing, and the title
-      // is what the row itself is decided by.
+    } else if (kind === "browser" || isBrowserToolRow(kind, item.title)) {
+      // `isBrowserToolRow` answers the row for `other` and for no kind, so a
+      // row journaled before the daemon learned Claude's spelling counts here
+      // too. `kind` was already checked and is none of the named kinds.
       browserCallCount += 1;
     } else {
       otherToolCount += 1;
@@ -54,10 +53,6 @@ export function countToolCallGroup(items: readonly ToolChatItem[]): ToolCallGrou
     browserCallCount,
     otherToolCount,
   };
-}
-
-function isBrowserRowTitle(title: string): boolean {
-  return browserToolName(title) !== null;
 }
 
 // Summary strings copied from Paseo's locale (`packages/app/src/i18n/resources/en.ts:1853-1879`).

@@ -185,7 +185,7 @@ const SPECS: &[Spec] = &[
             required("browserId", Kind::Tab),
             optional("ref", Kind::Ref).described("Scroll this element into view."),
             optional("direction", Kind::Choices(SCROLL_DIRECTIONS)),
-            optional("amount", Kind::Integer(1, None)).described("Pixels to scroll, with a direction."),
+            optional("amount", Kind::Number(1.0, None)).described("Pixels to scroll, with a direction."),
         ],
         // Scrolling an element into view and scrolling the page are two
         // different acts, so one of them has to be named: neither named means
@@ -224,9 +224,10 @@ const SPECS: &[Spec] = &[
         fields: &[
             required("browserId", Kind::Tab),
             optional("clip", Kind::Clip).described(
-                "The part of the viewport to photograph, in CSS pixels - the same pixels browser_click_at takes.",
+                "The part of the viewport to photograph, in CSS pixels - the same pixels browser_click_at takes. The whole viewport by default.",
             ),
-            optional("zoom", Kind::Integer(1, Some(3))).described("Enlarge the clip up to three times."),
+            optional("zoom", Kind::Number(1.0, Some(3.0)))
+                .described("Enlarge the picture up to three times, the clip or the whole viewport. Image pixels are CSS pixels times this."),
         ],
         alternatives: &[],
         tab: true,
@@ -235,8 +236,8 @@ const SPECS: &[Spec] = &[
         command: "click_at",
         fields: &[
             required("browserId", Kind::Tab),
-            required("x", Kind::Integer(0, None)),
-            required("y", Kind::Integer(0, None)),
+            required("x", Kind::Number(0.0, None)),
+            required("y", Kind::Number(0.0, None)),
             optional("button", Kind::Choices(CLICK_BUTTONS)),
             optional("clickCount", Kind::Integer(1, Some(3))).described("2 is a double click."),
         ],

@@ -39,6 +39,9 @@ pub(in crate::mcp_broker) enum Kind {
     Tab,
     /// A whole number, bounded. `None` leaves the upper bound open.
     Integer(i64, Option<i64>),
+    /// A real number, bounded: a place on a scaled display, which is not a
+    /// whole number of pixels. `None` leaves the upper bound open.
+    Number(f64, Option<f64>),
     /// A boolean.
     Bool,
     /// One word of a closed vocabulary.
@@ -73,6 +76,14 @@ impl Kind {
                 }
                 Value::Object(schema)
             }
+            Self::Number(min, max) => {
+                let mut schema = Map::from_iter([("type".to_string(), json!("number"))]);
+                schema.insert("minimum".to_string(), json!(min));
+                if let Some(max) = max {
+                    schema.insert("maximum".to_string(), json!(max));
+                }
+                Value::Object(schema)
+            }
             Self::Bool => json!({"type": "boolean"}),
             Self::Choices(words) => json!({"type": "string", "enum": words}),
             Self::Flags(words) => {
@@ -87,7 +98,7 @@ impl Kind {
             Self::Clip => json!({
                 "type": "object",
                 "properties": Map::from_iter(
-                    CLIP_FIELDS.map(|field| (field.to_string(), json!({"type": "integer", "minimum": 0}))),
+                    CLIP_FIELDS.map(|field| (field.to_string(), json!({"type": "number", "minimum": 0.0}))),
                 ),
                 "required": CLIP_FIELDS,
                 "additionalProperties": false,
@@ -129,6 +140,16 @@ impl Kind {
                     Err(format!("{tool}: '{name}' must be a whole number from {range}."))
                 }
             },
+            Self::Number(min, max) => match value.as_f64() {
+                Some(number) if number >= min && max.is_none_or(|max| number <= max) => Ok(()),
+                _ => {
+                    let range = match max {
+                        Some(max) => format!("{min} to {max}"),
+                        None => format!("{min} or more"),
+                    };
+                    Err(format!("{tool}: '{name}' must be a number from {range}."))
+                }
+            },
             Self::Bool => value
                 .as_bool()
                 .map(|_| ())
@@ -166,8 +187,8 @@ fn clip_check(tool: &str, name: &str, value: &Value) -> Result<(), String> {
         }
     }
     for field in CLIP_FIELDS {
-        match clip.get(field).and_then(Value::as_i64) {
-            Some(number) if number >= 0 => {}
+        match clip.get(field).and_then(Value::as_f64) {
+            Some(number) if number >= 0.0 => {}
             _ => {
                 return Err(format!(
                     "{tool}: '{name}' needs '{field}' as a non-negative whole number."

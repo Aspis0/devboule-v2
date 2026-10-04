@@ -2,7 +2,8 @@
 //! ran and one delta, and refuses a batch it cannot run whole.
 
 use super::*;
-use crate::browser::commands::{BrowserError, Deadline};
+use crate::browser::cdp::CdpError;
+use crate::browser::commands::{on_tab, BrowserError, Deadline};
 use crate::browser::test_support::{ax_fixture, box_model, function_answer, parked_tab, FakePage};
 use devboule_protocol::BrowserErrorCode;
 use serde_json::json;
@@ -84,8 +85,9 @@ fn a_step_that_fails_stops_the_batch_and_says_which_one() {
         &page,
         json!([
             { "command": "click", "ref": "e15" },
-            // A step that names a field it does not have.
-            { "command": "fill", "text": "person@example.test" },
+            // A scroll in a direction that is not one: the shape is right, and
+            // the command itself refuses it when it runs.
+            { "command": "scroll", "direction": "sideways" },
             { "command": "click", "ref": "e15" },
         ]),
     )
@@ -94,7 +96,7 @@ fn a_step_that_fails_stops_the_batch_and_says_which_one() {
     assert_eq!(steps(&answered).len(), 2, "the batch stopped");
     assert_eq!(steps(&answered)[0]["ok"], true);
     assert_eq!(steps(&answered)[1]["ok"], false);
-    assert_eq!(steps(&answered)[1]["command"], "fill");
+    assert_eq!(steps(&answered)[1]["command"], "scroll");
     assert_eq!(
         steps(&answered)[1]["error"]["code"],
         "browser_host_error",
@@ -186,4 +188,110 @@ fn ten_steps_run_and_the_eleventh_does_not() {
     let page = form_page();
     let answered = run(&page, json!(many)).expect("ten is the contract's cap");
     assert_eq!(steps(&answered).len(), MAX_STEPS);
+}
+
+/// A step that runs out of time has already changed the page, and the batch
+/// still answers with what it did: a caller that gets a bare error cannot tell
+/// an action that never happened from one that did.
+#[test]
+fn a_batch_that_runs_out_of_time_still_answers_with_the_steps_that_ran() {
+    let page = form_page().during("Input.insertText", || {
+        std::thread::sleep(std::time::Duration::from_millis(60));
+    });
+    let asked = json!([
+        { "command": "fill", "ref": "e13", "text": "person@example.test" },
+        { "command": "click", "ref": "e15" },
+        { "command": "click", "ref": "e15" },
+    ]);
+
+    // A budget the typing sleeps past: the text went into the page, and what
+    // came after it had no time left.
+    let answered = tauri::async_runtime::block_on(on_tab(
+        &parked_tab("tab-1"),
+        &page,
+        "act",
+        &json!({ "browserId": "tab-1", "steps": asked }),
+        Deadline::in_(std::time::Duration::from_millis(25)),
+    ))
+    .expect("the batch answers even when the page runs out of time");
+
+    let ran = steps(&answered);
+    assert_eq!(ran[0]["ok"], false, "the fill ran out of time: {answered}");
+    assert_eq!(
+        ran[0]["error"]["code"], "browser_timeout",
+        "a budget that ran out is a timeout, not a page refusal: {answered}"
+    );
+    assert_eq!(
+        ran.len(),
+        1,
+        "and the batch stopped at the step that timed out"
+    );
+    assert_eq!(answered["settled"], false, "the page never settled");
+    assert!(
+        answered["delta"].is_null(),
+        "and no delta could be computed: {answered}"
+    );
+    assert_eq!(
+        page.called("Input.insertText"),
+        1,
+        "what did happen is what the report says"
+    );
+}
+
+/// The timeout a step carries is the protocol's own code, not a host refusal:
+/// the page had no say in it.
+#[test]
+fn a_step_that_times_out_says_so_in_the_protocols_own_words() {
+    let page = FakePage::new()
+        .answering("Accessibility.getFullAXTree", ax_fixture())
+        .refusing("DOM.getBoxModel", CdpError::OutOfTime);
+
+    let answered = run(&page, json!([{ "command": "click", "ref": "e15" }])).expect("answered");
+
+    assert_eq!(
+        steps(&answered)[0]["error"]["code"],
+        "browser_timeout",
+        "{answered}"
+    );
+}
+
+/// Every step's arguments are checked before the first one runs: a batch that
+/// cannot run whole is refused whole, rather than doing its first step and
+/// failing on the second.
+#[test]
+fn a_batch_is_refused_whole_when_a_later_steps_arguments_are_wrong() {
+    for (asked, because) in [
+        (
+            json!([
+                { "command": "click", "ref": "e15" },
+                { "command": "fill", "ref": "e13" },
+            ]),
+            "fill needs a text",
+        ),
+        (
+            json!([
+                { "command": "fill", "ref": "e13", "text": "person@example.test" },
+                { "command": "click" },
+            ]),
+            "click needs a ref",
+        ),
+        (
+            json!([
+                { "command": "navigate", "url": "https://example.test/" },
+                { "command": "wait_for", "timeoutMs": 1 },
+            ]),
+            "wait_for needs something to wait for",
+        ),
+    ] {
+        let page = form_page();
+
+        let error = run(&page, asked.clone()).expect_err(because);
+
+        assert_eq!(error.code, BrowserErrorCode::HostError, "{because}");
+        assert!(
+            page.calls().is_empty(),
+            "{because}: the first step ran anyway: {:?}",
+            page.calls()
+        );
+    }
 }

@@ -27,3 +27,21 @@ export function browserToolName(name: string): string | null {
   const bare = name.trim().replace(MCP_SERVER_QUALIFIER, "").replace(SERVER_QUALIFIER, "");
   return bare.startsWith(BROWSER_PREFIX) && bare.length > BROWSER_PREFIX.length ? bare : null;
 }
+
+/**
+ * Whether one chat row is a browser call, from its kind and its title.
+ *
+ * A kind the daemon named wins: `search` is a claim about what the row is, and
+ * a grep whose query reads `browser_click` is a grep. `other` is nobody's claim
+ * — the fallback for a tool nobody mapped — and so is no kind at all, so there
+ * the title decides. That is what a row journaled before the daemon learned
+ * Claude's spelling needs: it carries `other` and `mcp__devboule__browser_x`.
+ *
+ * The row and a run's count both ask this, so a browser call cannot show as one
+ * row and summarize as another.
+ */
+export function isBrowserToolRow(kind: string | undefined, title: string): boolean {
+  const named = kind?.trim().toLowerCase();
+  if (named !== undefined && named !== "" && named !== "other") return named === "browser";
+  return browserToolName(title) !== null;
+}

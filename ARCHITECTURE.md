@@ -826,12 +826,22 @@ changed rather than the page again. A tab is scoped to the calling session's own
 rows instead of typing out twenty schemas a second time.
 
 **A screenshot is the one answer that is not text.** The host answers base64 and the broker returns
-it as an MCP image content block with one short line beside it (size, clip) — no `structuredContent`
-beside it, because that would carry the same bytes a second time
+it as an MCP image content block with one short line beside it (size, the factor a point is read at,
+clip) — no `structuredContent` beside it, because that would carry the same bytes a second time
 (`mcp_broker/tools/browser_tools.rs`, `picture`). Every other command answers its result
 unchanged, as text and as a structured document. The app's own transcript has no image path for a
 tool result (`transcript/ToolRow.tsx` renders the row's text, and an ACP image block becomes
 `[image: image/jpeg]`), so a screenshot row shows the line and the picture is never drawn.
+
+**A picture is in CSS pixels times the zoom, on every display.** A display at 125% or 150% renders
+at more than the CSS size, so the host asks for `clip.scale = zoom / deviceScaleRatio` and the
+picture comes back at the size the caller asked for; a point read off it and divided by the answer's
+`zoom` is a point `click_at` takes. The size the host reports is the picture's own, read out of its
+JPEG header, because a renderer that rounds is the only thing that knows how big it made one
+(`src-tauri/src/browser/commands/shot.rs`, `jpeg_size`). What is capped is the **encoded** answer —
+base64 and the JSON around it, 820 KiB against the 900 KiB the daemon and the wire allow: quality is
+stepped down first, then the picture is taken smaller, and a page that will not fit at one pixel per
+point is refused rather than sent.
 
 **The creation call.** The caller is the session whose bearer authenticated the connection — "there is
 no `from_session` parameter to lie about" (the doc on `create_agent`, `crates/devboule-daemon/src/mcp_broker/tools/creation/run.rs`).

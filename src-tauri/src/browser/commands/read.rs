@@ -120,13 +120,21 @@ pub const READABLE: &str = r##"function (budget) {
     used += line.length + 1;
   };
   // A link's own label, which is its subtree read as one line.
+  //
+  // Iterative, and on the page's own node budget. A link can nest markup as
+  // deep as a page likes: a reader that recursed would overflow the renderer's
+  // stack, and one that walked the subtree for free would read nodes the rest
+  // of the walk had budgeted away.
   const inside = (node) => {
-    if (node.nodeType === 3) return flat(node.nodeValue).trim();
-    if (node.nodeType !== 1 || SKIP.indexOf(node.tagName) >= 0 || !shown(node)) return "";
+    const stack = [node];
     let text = "";
-    for (let child = node.firstChild; child; child = child.nextSibling) {
-      const said = inside(child);
-      if (said) text += said + " ";
+    while (stack.length) {
+      const current = stack.pop();
+      if (current.nodeType === 3) { text += flat(current.nodeValue).trim() + " "; continue; }
+      if (current.nodeType !== 1 || SKIP.indexOf(current.tagName) >= 0) continue;
+      if (++seen > NODES || !shown(current)) break;
+      // Pushed back to front, so the walk stays in document order.
+      for (let child = current.lastChild; child; child = child.previousSibling) stack.push(child);
     }
     return flat(text).trim();
   };

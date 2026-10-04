@@ -1,4 +1,4 @@
-import { browserToolName } from "../../lib/browserToolName";
+import { browserToolName, isBrowserToolRow } from "../../lib/browserToolName";
 import type { AgentChatItem } from "../../lib/agentSession";
 import { linkTarget } from "../../lib/externalUrl";
 import { carriesCredentials } from "../../lib/urlCredentials";
@@ -149,18 +149,6 @@ function parsedUrl(value: string): URL | null {
 }
 
 /**
- * Whether the row is one of the browser lane's. A kind the daemon named wins:
- * `search` is a claim about what the row is, and a grep whose query reads
- * `browser_click` is a grep. `other` is nobody's claim — the fallback for a tool
- * nobody mapped — so there the title decides, which is what a row journaled
- * before the daemon learned Claude's spelling needs.
- */
-function isBrowserRow(kind: string | undefined, title: string): boolean {
-  if (kind !== undefined && kind !== "other") return kind === "browser";
-  return browserToolName(title) !== null;
-}
-
-/**
  * A browser row's own line, or nothing when the row carries only the tool's
  * name: the daemon titles the call with the argument it was given (`click e33`),
  * and a provider that sends the bare name gives a reader nothing to add to the
@@ -173,7 +161,7 @@ function browserSummary(title: string): string | undefined {
 
 export function toolRowDisplay(item: ToolItem): ToolRowModel {
   const kind = item.kind?.trim().toLowerCase();
-  if (isBrowserRow(kind, item.title)) {
+  if (isBrowserToolRow(kind, item.title)) {
     const summary = browserSummary(item.title);
     return {
       displayName: "Browser",

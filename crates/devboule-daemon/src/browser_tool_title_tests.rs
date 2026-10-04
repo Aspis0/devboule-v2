@@ -46,9 +46,14 @@ fn a_row_names_the_command_and_the_argument_it_was_given() {
         (
             "browser_fill",
             json!({"ref": "e3", "text": "WebView2"}),
-            "fill e3 \"WebView2\"",
+            "fill e3 (8 chars)",
         ),
-        ("browser_type", json!({"text": "hello"}), "type \"hello\""),
+        ("browser_type", json!({"text": "hello"}), "type (5 chars)"),
+        (
+            "browser_type",
+            json!({"ref": "e4", "text": "hello"}),
+            "type e4 (5 chars)",
+        ),
         (
             "browser_press",
             json!({"key": "Control+A"}),
@@ -57,7 +62,7 @@ fn a_row_names_the_command_and_the_argument_it_was_given() {
         (
             "browser_select",
             json!({"ref": "e2", "label": "Dark"}),
-            "select e2 \"Dark\"",
+            "select e2 (4 chars)",
         ),
         (
             "browser_check",
@@ -120,18 +125,46 @@ fn no_row_shows_the_tab_id() {
     }
 }
 
+/// A row is journaled and outlives the call, so it never shows what was typed
+/// into a page: a password an agent filled would be legible in the transcript
+/// forever. The row says how much there was, which is what a reader needs.
 #[test]
-fn a_value_longer_than_the_row_is_cut_on_one_line() {
-    let long = format!("{} {}", "word ".repeat(30), "end");
-    let line = row("browser_fill", json!({"ref": "e3", "text": long}));
-    let prefix = "fill e3 \"".chars().count();
-    assert!(line.chars().count() <= prefix + 40 + 2, "{line}");
-    assert!(line.contains('…'), "{line}");
+fn a_row_never_shows_typed_text() {
+    let typed = "correct horse battery staple";
+    for (name, input) in [
+        ("browser_fill", json!({"ref": "e3", "text": typed})),
+        ("browser_type", json!({"text": typed})),
+        ("browser_select", json!({"ref": "e2", "value": typed})),
+        ("browser_select", json!({"ref": "e2", "label": typed})),
+    ] {
+        let line = row(name, input.clone());
+        assert!(!line.contains("horse"), "{name}: {line}");
+        assert!(!line.contains("battery"), "{name}: {line}");
+        assert!(line.contains("(28 chars)"), "{name}: {line}");
+    }
     assert_eq!(
-        row("browser_type", json!({"text": "first\nsecond\tthird"})),
-        "type \"first second third\"",
+        row("browser_fill", json!({"ref": "e3", "text": "a"})),
+        "fill e3 (1 char)"
+    );
+    assert_eq!(
+        row("browser_press", json!({"key": "Control+A"})),
+        "press Control+A",
+        "a key name is the act, not something typed into a page"
+    );
+}
+
+#[test]
+fn a_query_is_folded_onto_one_line_and_cut() {
+    assert_eq!(
+        row("browser_find", json!({"query": "first\nsecond\tthird"})),
+        "find \"first second third\"",
         "a value that would break the row onto two lines is folded onto one"
     );
+    let long = format!("{} {}", "word ".repeat(30), "end");
+    let line = row("browser_find", json!({"query": long}));
+    let prefix = "find \"".chars().count();
+    assert!(line.chars().count() <= prefix + 40 + 2, "{line}");
+    assert!(line.contains('…'), "{line}");
 }
 
 #[test]

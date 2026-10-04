@@ -7,13 +7,15 @@
 //! delta for the four, not four deltas it has to read and merge.
 //!
 //! Everything is checked before anything runs. A step naming a command this
-//! host does not run, or a step that is a batch itself, is refused whole: half
-//! a batch is worse than none, because the caller cannot tell which half
+//! host does not run, a step that is a batch itself, and a step whose own
+//! arguments are not the ones its command takes: all of them are refused whole,
+//! because half a batch is worse than none — the caller cannot tell which half
 //! happened.
 //!
-//! The steps themselves are not checked: a `fill` with no ref is a step that
-//! fails, and the batch answers with the steps that ran, the one that did not,
-//! and the delta in between.
+//! What a batch cannot undo is what a step did. A page an agent typed into has
+//! already changed by the time a deadline runs out, so a batch that runs out of
+//! time answers with the steps that ran and `settled: false`, never with a bare
+//! refusal that reads as "nothing happened".
 
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -65,21 +67,39 @@ pub async fn run(
         match one(tab, page, step, deadline).await {
             Ok(_) => steps.push(json!({ "command": step.command, "ok": true })),
             Err(error) => {
-                steps.push(json!({
-                    "command": step.command,
-                    "ok": false,
-                    "error": { "code": code_name(error.code), "message": error.message },
-                }));
+                steps.push(failed(&step.command, &error));
                 break;
             }
         }
     }
-    let after = act::settled(tab, page, deadline).await?;
-    let delta = delta::between(&start.view, &after, &start.place, &act::place(tab), None);
-    Ok(json!({ "steps": steps, "delta": delta }))
+    // The settle is what the deadline is usually spent on, and it is what used
+    // to throw the steps away: the page may well have changed, so the answer is
+    // the steps and no delta rather than a refusal that reads as nothing done.
+    let after = act::settled(tab, page, deadline).await.ok();
+    let delta = after
+        .as_ref()
+        .map(|after| delta::between(&start.view, after, &start.place, &act::place(tab), None));
+    Ok(json!({
+        "steps": steps,
+        "delta": delta,
+        // Whether the page settled inside the budget. A caller that needs the
+        // delta it did not get can take another look and ask again.
+        "settled": after.is_some(),
+    }))
 }
 
-/// What every step must be before the first one runs.
+/// One step's own outcome, in the protocol's words: a budget that ran out is a
+/// timeout and not something the page refused.
+fn failed(command: &str, error: &BrowserError) -> Value {
+    json!({
+        "command": command,
+        "ok": false,
+        "error": { "code": code_name(error.code), "message": error.message },
+    })
+}
+
+/// What every step must be before the first one runs: a command this host runs,
+/// and arguments that command's own shape accepts.
 fn checked(steps: &[Step]) -> Result<(), BrowserError> {
     if steps.is_empty() || steps.len() > MAX_STEPS {
         return Err(host_error(format!(
@@ -100,6 +120,27 @@ fn checked(steps: &[Step]) -> Result<(), BrowserError> {
                 STEPS.join(", ")
             )));
         }
+        // The step's own arguments, read by the command that will run it: a
+        // batch that cannot run whole is refused whole, rather than doing its
+        // first step and failing on the second.
+        command_args(&step.command, &step.rest)?;
+    }
+    Ok(())
+}
+
+/// One step's arguments, checked against the shape the command reads. The
+/// commands that answer something rather than acting — a navigation, a wait —
+/// are checked by their own readers, so a batch refuses what they would.
+fn command_args(command: &str, rest: &Map<String, Value>) -> Result<(), BrowserError> {
+    let args = Value::Object(rest.clone());
+    match command {
+        "navigate" => {
+            let _: tabs::NavigateArgs = args_of(&args)?;
+        }
+        "wait_for" => {
+            wait::checked(&args)?;
+        }
+        other => input::check_args(other, &args)?,
     }
     Ok(())
 }

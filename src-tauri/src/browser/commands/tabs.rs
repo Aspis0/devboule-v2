@@ -56,9 +56,11 @@ struct NewTabArgs {
     url: String,
 }
 
+/// Visible because `act` checks a step's own shape against it before the
+/// batch runs (`batch::checked`).
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct NavigateArgs {
+pub(super) struct NavigateArgs {
     url: Option<String>,
     action: Option<String>,
 }

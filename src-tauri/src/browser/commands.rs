@@ -135,7 +135,17 @@ pub fn args_of<T: DeserializeOwned>(args: &Value) -> Result<T, BrowserError> {
 /// says so in the message, because the caller's only move is to take a new
 /// snapshot and every other message would send it looking for the fault.
 pub fn cdp_failure(error: CdpError) -> BrowserError {
-    host_error(error.message())
+    match error {
+        // A budget that ran out is the daemon's own deadline, not something the
+        // page refused, and a caller that retries a timeout wants to know it
+        // was a timeout.
+        CdpError::OutOfTime => BrowserError {
+            code: BrowserErrorCode::Timeout,
+            message: "The browser command ran out of time before the page answered.".to_owned(),
+            retryable: true,
+        },
+        other => host_error(other.message()),
+    }
 }
 
 /// A ref, as the node id it names.

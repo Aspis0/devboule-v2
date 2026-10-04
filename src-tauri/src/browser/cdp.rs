@@ -37,6 +37,10 @@ pub enum CdpError {
     /// same: take a new snapshot. A ref is never remapped to another node.
     StaleRef,
     Refused(String),
+    /// The command ran out of its own budget. Not the page's refusal: this is
+    /// the daemon's deadline, and it is told apart from one everywhere it is
+    /// answered.
+    OutOfTime,
 }
 
 impl std::fmt::Display for CdpError {
@@ -52,6 +56,7 @@ impl CdpError {
                 "stale_ref: that node is gone from the page; take a new snapshot".to_owned()
             }
             CdpError::Refused(text) => text.clone(),
+            CdpError::OutOfTime => "the command ran out of time".to_owned(),
         }
     }
 }
@@ -90,11 +95,7 @@ impl Page for Bounded<'_> {
     fn call_within<'a>(&'a self, method: &'a str, params: Value, limit: Duration) -> Call<'a> {
         let left = self.deadline.left().min(limit);
         if left.is_zero() {
-            return Box::pin(async move {
-                Err(CdpError::Refused(format!(
-                    "{method}: the command ran out of time"
-                )))
-            });
+            return Box::pin(async move { Err(CdpError::OutOfTime) });
         }
         self.page.call_within(method, params, left)
     }

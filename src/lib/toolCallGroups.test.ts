@@ -171,12 +171,17 @@ describe("summarizeToolCallGroup", () => {
   it("counts a browser row the daemon could not kind as a browser call", () => {
     // A journal replays the kind the daemon gave the row at the time, so a row
     // written before it learned Claude's spelling arrives as `other` with a
-    // prefixed name. It shows as a browser row, so it counts as one.
-    expect(
-      summarizeToolCallGroup([
-        tool({ title: "mcp__devboule__browser_click", kind: "other" }),
-        tool({ title: "git status", kind: "execute" }),
-      ]),
-    ).toBe("Ran 1 command and used 1 browser tool");
+    // prefixed name, and an ACP row arrives with no kind at all. Either way the
+    // row shows as a browser row, so it counts as one: the row and the count
+    // ask the same question.
+    for (const row of [
+      tool({ title: "mcp__devboule__browser_click", kind: "other" }),
+      tool({ title: "browser_click", kind: undefined }),
+    ]) {
+      expect(
+        summarizeToolCallGroup([row, tool({ title: "git status", kind: "execute" })]),
+        row.title,
+      ).toBe("Ran 1 command and used 1 browser tool");
+    }
   });
 });

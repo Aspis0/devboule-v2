@@ -29,7 +29,7 @@ const POLL: std::time::Duration = std::time::Duration::from_millis(250);
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct WaitArgs {
+pub(crate) struct WaitArgs {
     text: Option<String>,
     url: Option<String>,
     #[serde(rename = "ref")]
@@ -38,12 +38,10 @@ struct WaitArgs {
     timeout_ms: Option<u64>,
 }
 
-pub async fn wait_for(
-    tab: &TabInfo,
-    page: &dyn Page,
-    args: &Value,
-    deadline: Deadline,
-) -> Result<Value, BrowserError> {
+/// The wait's own shape, read without waiting for anything: a caller that asks
+/// for nothing to wait for is refused before the page is read, and `act` asks
+/// the same question of a step before it runs any of them.
+pub fn checked(args: &Value) -> Result<WaitArgs, BrowserError> {
     let asked: WaitArgs = args_of(args)?;
     if asked.text.is_none() && asked.url.is_none() && asked.reference.is_none() {
         return Err(host_error(
@@ -58,6 +56,16 @@ pub async fn wait_for(
             return Err(host_error(format!("{state} is not a state to wait for.")));
         }
     }
+    Ok(asked)
+}
+
+pub async fn wait_for(
+    tab: &TabInfo,
+    page: &dyn Page,
+    args: &Value,
+    deadline: Deadline,
+) -> Result<Value, BrowserError> {
+    let asked = checked(args)?;
     let node = asked.reference.as_deref().map(node_of).transpose()?;
     // A read, but of the page as a person would see it: a parked page is put at
     // its pane's size first. It holds nothing of the tab's.

@@ -169,6 +169,11 @@ fn picture(result: &Value) -> Option<(Value, String)> {
         size(result, "width", "height"),
         size(result, "cssWidth", "cssHeight"),
     );
+    if let Some(factor) = result.get("zoom").and_then(Value::as_f64) {
+        // The factor a picture pixel is worth in the points click_at takes: an
+        // agent reads a point off the picture and divides by this.
+        line.push_str(&format!(", {} per point", number(&json!(factor))));
+    }
     if let Some(clip) = result.get("clip").filter(|clip| clip.is_object()) {
         let corner = |key: &str| clip.get(key).map_or_else(String::new, number);
         line.push_str(&format!(

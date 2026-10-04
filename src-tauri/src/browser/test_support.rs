@@ -19,10 +19,17 @@ use super::registry::{BrowserRegistry, OwnedTab, TabInfo};
 use super::tab::BrowserViewState;
 
 /// A page that answers from a table, and remembers what it was asked.
+/// Something that happens while a call is in flight.
+type Happens = Box<dyn Fn() + Send + Sync>;
+
+/// An answer computed from what was asked, as a renderer computes a capture.
+type Answered = Box<dyn Fn(&Value) -> Value + Send + Sync>;
+
 pub struct FakePage {
     answers: HashMap<String, Value>,
+    computed: HashMap<String, Answered>,
     failures: HashMap<String, CdpError>,
-    hooks: HashMap<String, Box<dyn Fn() + Send + Sync>>,
+    hooks: HashMap<String, Happens>,
     calls: Mutex<Vec<(String, Value)>>,
 }
 
@@ -31,6 +38,7 @@ impl FakePage {
     pub fn new() -> Self {
         FakePage {
             answers: HashMap::new(),
+            computed: HashMap::new(),
             failures: HashMap::new(),
             hooks: HashMap::new(),
             calls: Mutex::new(Vec::new()),
@@ -39,6 +47,18 @@ impl FakePage {
 
     pub fn answering(mut self, method: &str, value: Value) -> Self {
         self.answers.insert(method.to_owned(), value);
+        self
+    }
+
+    /// An answer that depends on what was asked: a renderer answers a capture
+    /// with a picture whose size follows the scale it was asked for, which is
+    /// the only way a size ladder can be driven to its end.
+    pub fn answering_with(
+        mut self,
+        method: &str,
+        answer: impl Fn(&Value) -> Value + Send + Sync + 'static,
+    ) -> Self {
+        self.computed.insert(method.to_owned(), Box::new(answer));
         self
     }
 
@@ -89,17 +109,18 @@ impl Page for FakePage {
         self.calls
             .lock()
             .expect("fake page poisoned")
-            .push((method.to_owned(), params));
+            .push((method.to_owned(), params.clone()));
         if let Some(happens) = self.hooks.get(method) {
             happens();
         }
         let answer = self.answers.get(method).cloned();
+        let computed = self.computed.get(method).map(|answer| answer(&params));
         let failure = self.failures.get(method).cloned();
         Box::pin(async move {
             if let Some(error) = failure {
                 return Err(error);
             }
-            Ok(answer.unwrap_or(Value::Null))
+            Ok(answer.or(computed).unwrap_or(Value::Null))
         })
     }
 }

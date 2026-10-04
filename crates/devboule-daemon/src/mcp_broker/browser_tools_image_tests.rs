@@ -23,6 +23,7 @@ fn shot(clip: Option<Value>) -> Value {
         "height": 720.0,
         "cssWidth": 1024.0,
         "cssHeight": 768.0,
+        "zoom": 1.25,
         "clip": clip,
     })
 }
@@ -61,7 +62,7 @@ fn a_screenshot_answers_an_image_block_and_one_short_line() {
     let line = content[1]["text"].as_str().expect("text line").to_string();
     assert_eq!(content[1]["type"], "text", "{body}");
     assert_eq!(
-        line, "image/jpeg 1280x720 px, viewport 1024x768 css px, clip 0,0,800,600",
+        line, "image/jpeg 1280x720 px, viewport 1024x768 css px, 1.25 per point, clip 0,0,800,600",
         "every number the host sent is read, as the host sent it"
     );
     assert!(
@@ -94,7 +95,7 @@ fn the_bytes_travel_once_and_no_document_rides_beside_the_block() {
         .as_str()
         .expect("text line");
     assert_eq!(
-        line, "image/jpeg 1280x720 px, viewport 1024x768 css px",
+        line, "image/jpeg 1280x720 px, viewport 1024x768 css px, 1.25 per point",
         "no clip was asked for, so none is named"
     );
 }
@@ -129,9 +130,9 @@ fn a_zoom_and_a_clip_outside_the_contract_are_refused_before_the_host_sees_it() 
             "a zoom above three",
         ),
         (
-            json!({"browserId": "t", "zoom": 1.5}),
-            "1 to 3",
-            "a zoom that is not a whole number",
+            json!({"browserId": "t", "zoom": "2"}),
+            "must be a number",
+            "a zoom written as text",
         ),
         (
             json!({"browserId": "t", "clip": {"x": -1, "y": 0, "width": 10, "height": 10}}),
@@ -166,10 +167,68 @@ fn a_clip_and_a_zoom_reach_the_host_as_written() {
     let host = FakeHost::register(&panel.state, 5);
     let arguments = json!({
         "browserId": "tab-1",
-        "clip": {"x": 10, "y": 20, "width": 300, "height": 400},
-        "zoom": 3,
+        "clip": {"x": 10.5, "y": 20.25, "width": 300.5, "height": 400},
+        "zoom": 1.5,
     });
     let (body, request) = panel.call(&host, "browser_screenshot", arguments.clone(), shot(None));
     assert_eq!(request.args, arguments, "{body}");
     assert_eq!(body["result"]["isError"], json!(false), "{body}");
+}
+
+/// Geometry is a place on a scaled display, and the host reads it as a real
+/// number: half a pixel is routine at 125% or 150%, and refusing it here would
+/// make the daemon stricter than the page it drives.
+#[test]
+fn geometry_takes_the_fractional_numbers_the_host_takes() {
+    let cases = [
+        (
+            "browser_click_at",
+            json!({"browserId": "t", "x": 12.5, "y": 40.25}),
+            "a point between two pixels",
+        ),
+        (
+            "browser_screenshot",
+            json!({"browserId": "t", "clip": {"x": 0.5, "y": 0, "width": 10.5, "height": 10}, "zoom": 1.5}),
+            "half a clip edge and a fractional zoom",
+        ),
+        (
+            "browser_scroll",
+            json!({"browserId": "t", "direction": "down", "amount": 2.5}),
+            "a third of a notch",
+        ),
+    ];
+    for (tool, arguments, what) in cases {
+        let spec = super::tools::browser_commands::spec_for(tool).expect(tool);
+        assert!(
+            parse(spec, tool, &arguments).is_ok(),
+            "{tool}: {what}: {arguments}"
+        );
+    }
+    let schema = |tool: &str| super::tools::browser_commands::schema_for(tool).expect(tool);
+    assert_eq!(
+        schema("browser_click_at")["properties"]["x"]["type"],
+        json!("number")
+    );
+    assert_eq!(
+        schema("browser_click_at")["properties"]["y"]["type"],
+        json!("number")
+    );
+    assert_eq!(
+        schema("browser_screenshot")["properties"]["zoom"]["type"],
+        json!("number")
+    );
+    assert_eq!(
+        schema("browser_screenshot")["properties"]["clip"]["properties"]["x"]["type"],
+        json!("number"),
+        "a clip edge is a place on a scaled display too"
+    );
+    assert_eq!(
+        schema("browser_scroll")["properties"]["amount"]["type"],
+        json!("number")
+    );
+    // A count is not a place: it stays a whole number.
+    assert_eq!(
+        schema("browser_click_at")["properties"]["clickCount"]["type"],
+        json!("integer")
+    );
 }

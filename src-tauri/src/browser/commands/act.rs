@@ -142,6 +142,27 @@ pub async fn viewport(page: &dyn Page) -> Result<(f64, f64), BrowserError> {
     Ok((side("clientWidth")?, side("clientHeight")?))
 }
 
+/// How many device pixels one CSS pixel is here: the display's own scale.
+///
+/// `layoutViewport` is the window in the device's pixels and
+/// `cssLayoutViewport` the same window in CSS pixels, so their ratio is what a
+/// capture at scale one comes back at. A page that reports neither is read as
+/// an unscaled one, which is what a parked tab is forced to.
+pub async fn display_scale(page: &dyn Page) -> Result<f64, BrowserError> {
+    let metrics = call(page, "Page.getLayoutMetrics", json!({})).await?;
+    let side = |viewport: &str, field: &str| {
+        metrics
+            .get(viewport)
+            .and_then(|viewport| viewport.get(field))
+            .and_then(Value::as_f64)
+    };
+    let css = side("cssLayoutViewport", "clientWidth");
+    match (side("layoutViewport", "clientWidth"), css) {
+        (Some(device), Some(css)) if css > 0.0 && device > 0.0 => Ok(device / css),
+        _ => Ok(1.0),
+    }
+}
+
 /// The middle of a node's own box, which is where a click belongs.
 ///
 /// `content` is a FLAT array of eight numbers — four corners, x then y, top

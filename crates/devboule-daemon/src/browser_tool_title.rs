@@ -30,20 +30,19 @@ pub(crate) fn browser_tool_title(name: &str, input: &Value) -> Option<String> {
         "browser_snapshot" => row("snapshot", field(input, "scope")),
         "browser_find" => row("find", quoted(field(input, "query"))),
         "browser_click" => row("click", field(input, "ref")),
-        "browser_fill" => row(
-            "fill",
-            join(field(input, "ref"), quoted(field(input, "text"))),
-        ),
-        "browser_type" => row(
-            "type",
-            join(field(input, "ref"), quoted(field(input, "text"))),
-        ),
+        "browser_fill" => row("fill", join(field(input, "ref"), length(input, "text"))),
+        "browser_type" => row("type", join(field(input, "ref"), length(input, "text"))),
         "browser_press" => row("press", field(input, "key")),
         "browser_select" => row(
             "select",
             join(
                 field(input, "ref"),
-                quoted(field(input, "value").or_else(|| field(input, "label"))),
+                length_of(
+                    input
+                        .get("value")
+                        .or_else(|| input.get("label"))
+                        .and_then(Value::as_str),
+                ),
             ),
         ),
         "browser_check" => row("check", join(field(input, "ref"), flag(input, "checked"))),
@@ -93,14 +92,24 @@ fn join(first: Option<String>, second: Option<String>) -> Option<String> {
     )
 }
 
-/// One argument as the row shows it: text on one line, or a whole number.
+/// One argument as the row shows it: text on one line, or a number.
 fn field(input: &Value, key: &str) -> Option<String> {
     let value = input.get(key)?;
     value
         .as_str()
         .map(one_line)
-        .or_else(|| value.as_i64().map(|number| number.to_string()))
-        .filter(|text| !text.is_empty())
+        .or_else(|| value.as_f64().map(number))
+        .filter(|shown| !shown.is_empty())
+}
+
+/// A number as a row reads it: a whole one without its decimals, because `12`
+/// is what the caller wrote and `12.0` would be this file's noise.
+fn number(value: f64) -> String {
+    if value.fract() == 0.0 {
+        format!("{}", value as i64)
+    } else {
+        format!("{value}")
+    }
 }
 
 /// One boolean argument, spelled as the row reads it.
@@ -111,6 +120,20 @@ fn flag(input: &Value, key: &str) -> Option<String> {
 /// One argument in quotes, so a value with a space in it stays one value.
 fn quoted(value: Option<String>) -> Option<String> {
     value.map(|value| format!("\"{value}\""))
+}
+
+/// How much text a call put into a page, and never the text itself: a row is
+/// journaled, and a filled password would outlive the call in the clear.
+fn length(input: &Value, key: &str) -> Option<String> {
+    length_of(input.get(key)?.as_str())
+}
+
+fn length_of(value: Option<&str>) -> Option<String> {
+    let chars = value?.chars().count();
+    Some(format!(
+        "({chars} {})",
+        if chars == 1 { "char" } else { "chars" }
+    ))
 }
 
 /// A url as its host and port, so the row names the page and nothing of the

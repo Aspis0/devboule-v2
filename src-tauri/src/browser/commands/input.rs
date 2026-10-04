@@ -118,6 +118,33 @@ pub async fn run(
     }
 }
 
+/// Whether `args` are the shape this command reads, without touching a page.
+///
+/// The same parse each command opens with, kept in one place so a batch can ask
+/// the question before it acts: a step with no ref is a step that fails, and a
+/// caller is better served by learning that before the first of its ten steps
+/// has run than after.
+pub fn check_args(command: &str, args: &Value) -> Result<(), BrowserError> {
+    match command {
+        "click" => args_of::<ClickArgs>(args).map(|_| ()),
+        "hover" => args_of::<RefArgs>(args).map(|_| ()),
+        "fill" => args_of::<FillArgs>(args).map(|_| ()),
+        "type" => args_of::<TypeArgs>(args).map(|_| ()),
+        "press" => args_of::<PressArgs>(args).map(|_| ()),
+        "check" => args_of::<CheckArgs>(args).map(|_| ()),
+        "click_at" => args_of::<PointArgs>(args).map(|_| ()),
+        "scroll" => args_of::<ScrollArgs>(args).map(|_| ()),
+        "select" => args_of::<SelectArgs>(args).and_then(|asked| {
+            // A dropdown with neither a value nor a label has nothing to choose.
+            if asked.value.is_none() && asked.label.is_none() {
+                return Err(host_error("select needs a value or a label to choose."));
+            }
+            Ok(())
+        }),
+        other => Err(host_error(format!("{other} is not an input command."))),
+    }
+}
+
 pub async fn click(
     tab: &TabInfo,
     page: &dyn Page,
