@@ -47,6 +47,34 @@ fn the_tree_is_read_out_of_the_answers_the_runtime_gives() {
     assert_eq!(ignored.backend_dom_node_id, Some(18));
 }
 
+/// The parser reads only `value`, so a fixture that dropped `type` or `ignored`
+/// would still parse and prove nothing about the shape the runtime sends.
+#[test]
+fn the_fixture_carries_every_field_the_protocol_requires_of_a_node() {
+    let fixture = ax_fixture();
+    for node in fixture["nodes"].as_array().expect("a list of nodes") {
+        for field in ["nodeId", "backendDOMNodeId", "ignored", "role", "childIds"] {
+            assert!(node.get(field).is_some(), "{field} is required: {node}");
+        }
+        let typed = ["role", "name", "value"]
+            .into_iter()
+            .filter_map(|field| node.get(field))
+            .chain(
+                node["properties"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|property| &property["value"]),
+            );
+        for value in typed {
+            assert!(
+                value["type"].is_string() && value.get("value").is_some(),
+                "an AXValue is a type and a value: {value}"
+            );
+        }
+    }
+}
+
 #[test]
 fn a_tree_is_fetched_with_the_one_call_that_computes_it() {
     tauri::async_runtime::block_on(async {

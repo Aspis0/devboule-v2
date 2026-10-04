@@ -5,13 +5,22 @@
 //! changed. The delta is that, keyed on the ref, so the caller can see that a
 //! checkbox did not flip (it is in `target`, unchanged) without spending a
 //! snapshot to find out.
+//!
+//! An action that left the page for another has no before to compare with:
+//! every node of the new page would be "added", and two hundred lines of that
+//! say less than the page's title and what it is made of. A navigation answers
+//! with that summary instead.
 
 use serde::Serialize;
 
-use super::view::{View, ViewNode};
+use super::view::{clip, View, ViewNode, FIELD_ROLES};
 
 /// How many lines each list carries before the rest is counted instead.
 pub const LIST_CAP: usize = 40;
+
+/// How many headings a page summary names, and how much of each it reads.
+const SUMMARY_HEADINGS: usize = 5;
+const HEADING_MAX: usize = 80;
 
 /// One page's address and title, read before and after an action.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,15 +40,13 @@ pub struct Delta {
     pub focused: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dialog: Option<Dialog>,
-    pub added: Vec<String>,
-    #[serde(skip_serializing_if = "is_zero")]
-    pub added_more: usize,
-    pub removed: Vec<String>,
-    #[serde(skip_serializing_if = "is_zero")]
-    pub removed_more: usize,
-    pub changed: Vec<String>,
-    #[serde(skip_serializing_if = "is_zero")]
-    pub changed_more: usize,
+    /// What came, went and differed inside the same document. A navigation has
+    /// none: the page it left has nothing to be compared with.
+    #[serde(flatten)]
+    pub changes: Option<Changes>,
+    /// What the page the action landed on is made of; only a navigation has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<Summary>,
     /// The node the command acted on, read again after the page settled.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
@@ -53,6 +60,31 @@ pub struct Dialog {
     #[serde(rename = "type")]
     pub kind: String,
     pub message: String,
+}
+
+/// The lines of one document that came, went and differ, each list capped.
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Changes {
+    pub added: Vec<String>,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub added_more: usize,
+    pub removed: Vec<String>,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub removed_more: usize,
+    pub changed: Vec<String>,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub changed_more: usize,
+}
+
+/// A page in a few words: what it calls itself and how much there is to do.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct Summary {
+    /// The first headings, as `h1 "Title"`.
+    pub headings: Vec<String>,
+    pub links: usize,
+    pub buttons: usize,
+    pub fields: usize,
 }
 
 fn is_zero(count: &usize) -> bool {
@@ -71,6 +103,22 @@ pub fn between(
     to: &Place,
     target: Option<u64>,
 ) -> Delta {
+    let navigated = from != to;
+    Delta {
+        navigated,
+        url: to.url.clone(),
+        title: to.title.clone(),
+        focused: after.focused().map(|node| node.line.clone()),
+        dialog: after
+            .dialog()
+            .map(|(kind, message)| Dialog { kind, message }),
+        changes: (!navigated).then(|| changes(before, after)),
+        summary: navigated.then(|| summarize(after)),
+        target: target.and_then(|id| after.line_of(id).map(str::to_owned)),
+    }
+}
+
+fn changes(before: &View, after: &View) -> Changes {
     let previous: std::collections::HashMap<u64, &ViewNode> = before
         .nodes
         .iter()
@@ -93,21 +141,39 @@ pub fn between(
         .filter(|node| !live.contains(&node.backend_id))
         .map(|node| node.line.clone())
         .collect();
-    Delta {
-        navigated: from != to,
-        url: to.url.clone(),
-        title: to.title.clone(),
-        focused: after.focused().map(|node| node.line.clone()),
-        dialog: after
-            .dialog()
-            .map(|(kind, message)| Dialog { kind, message }),
-        added: take(&added),
+    Changes {
         added_more: added.len().saturating_sub(LIST_CAP),
-        removed: take(&removed),
+        added: take(&added),
         removed_more: removed.len().saturating_sub(LIST_CAP),
-        changed: take(&changed),
+        removed: take(&removed),
         changed_more: changed.len().saturating_sub(LIST_CAP),
-        target: target.and_then(|id| after.line_of(id).map(str::to_owned)),
+        changed: take(&changed),
+    }
+}
+
+/// What a view is made of, in the few words an agent decides its next step by.
+fn summarize(view: &View) -> Summary {
+    let headings = view
+        .nodes
+        .iter()
+        .filter(|node| node.role == "heading" && !node.name.is_empty())
+        .take(SUMMARY_HEADINGS)
+        .map(|node| match node.level {
+            Some(level) => format!("h{level} \"{}\"", clip(&node.name, HEADING_MAX)),
+            None => format!("heading \"{}\"", clip(&node.name, HEADING_MAX)),
+        })
+        .collect();
+    let count = |wanted: &dyn Fn(&str) -> bool| {
+        view.nodes
+            .iter()
+            .filter(|node| wanted(node.role.as_str()))
+            .count()
+    };
+    Summary {
+        headings,
+        links: count(&|role| role == "link"),
+        buttons: count(&|role| role == "button"),
+        fields: count(&|role| FIELD_ROLES.contains(&role)),
     }
 }
 

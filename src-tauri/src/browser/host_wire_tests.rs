@@ -11,15 +11,16 @@
 mod wire_daemon;
 
 use std::sync::mpsc::{channel, Receiver};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use devboule_protocol::{BrowserError, BrowserErrorCode, BrowserExecuteRequest, BrowserOutcome};
 
-use crate::browser::host::{serve_connection, Stop};
+use crate::browser::host::{serve_connection, unregister_within, Registration, Stop};
 use crate::browser::registry::BrowserRegistry;
 use crate::browser::test_support::registry_with;
 use wire_daemon::{
-    list_tabs, next_answer, request, request_without_a_workspace, WireDaemon, ANSWER, HOST_ID, IDLE,
+    list_tabs, next_answer, next_unregister, request, request_without_a_workspace, WireDaemon,
+    ANSWER, HOST_ID, IDLE,
 };
 
 /// Register on the daemon's newest connection and run the production loop on
@@ -126,6 +127,58 @@ fn a_command_the_host_cannot_answer_is_answered_not_dropped() {
 
     daemon.close_current();
     assert_eq!(stops.recv_timeout(ANSWER).ok(), Some(Stop::ConnectionEnded));
+}
+
+/// A host the app is quitting on, while it is inside a command that has not
+/// returned: the worker cannot see the stop until the command is over, so the
+/// side that stops it gives the registration back, and the daemon stops
+/// routing to a host that is going away.
+#[test]
+fn a_host_stopped_inside_a_command_is_unregistered_by_the_side_that_stops_it() {
+    let daemon = WireDaemon::start("host-stop");
+    let client = Arc::new(daemon.client());
+    let host_id = client
+        .browser_host_register(&["list_tabs".to_owned()])
+        .expect("the host registers");
+    let registration: Registration =
+        Arc::new(Mutex::new(Some((Arc::clone(&client), host_id.clone()))));
+
+    let (entered_tx, entered) = channel();
+    let (release, blocked) = channel::<()>();
+    let blocked = Mutex::new(blocked);
+    let worker_client = Arc::clone(&client);
+    let worker = std::thread::Builder::new()
+        .name("browser-host".into())
+        .spawn(move || {
+            let answer = move |_: &BrowserExecuteRequest| {
+                let _ = entered_tx.send(());
+                let _ = blocked.lock().expect("blocked").recv();
+                BrowserOutcome::Ok {
+                    result: serde_json::json!({}),
+                }
+            };
+            serve_connection(&worker_client, &answer)
+        })
+        .expect("host thread");
+    daemon.push(request("browser-1"));
+    entered
+        .recv_timeout(ANSWER)
+        .expect("the worker is inside the command");
+
+    unregister_within(&registration, ANSWER);
+
+    assert_eq!(next_unregister(&daemon), host_id);
+    assert!(
+        registration.lock().expect("registration").is_none(),
+        "and it is given back once, so the worker has nothing left to give"
+    );
+    unregister_within(&registration, ANSWER);
+    let _ = release.send(());
+    daemon.close_current();
+    assert_eq!(
+        worker.join().expect("the worker ends"),
+        Stop::ConnectionEnded
+    );
 }
 
 /// The refusal a command the host cannot run carries, spelled the way the

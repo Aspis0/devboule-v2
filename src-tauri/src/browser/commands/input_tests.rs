@@ -265,3 +265,45 @@ fn a_ref_that_is_not_a_ref_is_refused_before_the_page_is_touched() {
         "a ref that never existed is refused without a round trip"
     );
 }
+
+#[test]
+fn a_script_that_threw_on_the_node_is_a_failure_and_the_text_is_not_typed() {
+    // A function that throws is a successful protocol answer with the failure
+    // beside an absent value.
+    let page = FakePage::new()
+        .answering("Accessibility.getFullAXTree", ax_fixture())
+        .answering("DOM.getBoxModel", box_model())
+        .answering("DOM.resolveNode", json!({ "object": { "objectId": "7" } }))
+        .answering(
+            "Runtime.callFunctionOn",
+            json!({
+                "result": { "type": "object", "subtype": "error" },
+                "exceptionDetails": {
+                    "exceptionId": 1,
+                    "text": "Uncaught",
+                    "lineNumber": 3,
+                    "columnNumber": 10,
+                    "exception": { "type": "object", "description": "TypeError: no value setter" }
+                }
+            }),
+        );
+
+    let error = run(
+        &page,
+        "fill",
+        args(json!({ "ref": "e13", "text": "hello" })),
+    )
+    .expect_err("the clear threw");
+
+    assert_eq!(error.code, BrowserErrorCode::HostError);
+    assert!(
+        error.message.contains("TypeError: no value setter"),
+        "{}",
+        error.message
+    );
+    assert_eq!(
+        page.called("Input.insertText"),
+        0,
+        "typing into a field the clear never emptied would append to it"
+    );
+}

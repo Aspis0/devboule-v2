@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 use devboule_protocol::BrowserError;
 
 use super::super::cdp::{self, Page};
+use super::super::deadline::Deadline;
 use super::super::delta::{self, Place};
 use super::super::registry::TabInfo;
 use super::super::view::{self, Mode, View};
@@ -66,10 +67,11 @@ pub async fn read(tab: &TabInfo, page: &dyn Page) -> Result<Start, BrowserError>
 pub async fn answer(
     tab: &TabInfo,
     page: &dyn Page,
+    deadline: Deadline,
     start: Start,
     target: Option<u64>,
 ) -> Result<Value, BrowserError> {
-    super::super::cdp_events::settle(&tab.browser_id).await;
+    super::super::cdp_events::settle(&tab.browser_id, deadline).await;
     let after = super::view_of(page, Mode::Interactive).await?;
     let delta = delta::between(&start.view, &after, &start.place, &place(tab), target);
     Ok(json!({ "delta": delta }))
@@ -379,11 +381,32 @@ pub async fn on_node(
         }),
     )
     .await?;
+    // A function that threw is still a successful protocol answer, with the
+    // failure beside an absent value: read as `null`, it would let `fill` type
+    // into a field the clear never emptied.
+    if let Some(thrown) = answered.get("exceptionDetails") {
+        return Err(host_error(format!(
+            "The page's script failed on that node: {}",
+            thrown_text(thrown)
+        )));
+    }
     Ok(answered
         .get("result")
         .and_then(|result| result.get("value"))
         .cloned()
         .unwrap_or(Value::Null))
+}
+
+/// What a thrown script said, short enough to read: the exception's own
+/// description when the runtime sent one, else the `text` beside it.
+fn thrown_text(thrown: &Value) -> String {
+    let said = thrown
+        .get("exception")
+        .and_then(|exception| exception.get("description"))
+        .or_else(|| thrown.get("text"))
+        .and_then(Value::as_str)
+        .unwrap_or("it threw");
+    said.chars().take(200).collect()
 }
 
 /// Empty a field the way a person would: through the native setter a

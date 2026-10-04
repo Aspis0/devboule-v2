@@ -20,6 +20,7 @@ use devboule_daemon::{DaemonClient, DaemonError};
 use devboule_protocol::{BrowserError, BrowserErrorCode, BrowserExecuteRequest, BrowserOutcome};
 
 use super::commands::{self, COMMANDS};
+use super::deadline::Deadline;
 use super::registry::BrowserRegistry;
 use crate::client::BridgeInner;
 
@@ -33,10 +34,16 @@ enum Change {
     Stop,
 }
 
+/// The connection this host is registered on and the id the daemon gave it.
+/// Shared between the worker that serves it and the side that stops it, so
+/// whichever gets there first gives it back, and only once.
+type Registration = Arc<Mutex<Option<(Arc<DaemonClient>, String)>>>;
+
 /// The browser host: one worker thread, told about every (re)connect.
 pub struct BrowserHost {
     changes: Arc<Mutex<Option<Sender<Change>>>>,
     worker: Mutex<Option<std::thread::JoinHandle<()>>>,
+    registration: Registration,
 }
 
 impl BrowserHost {
@@ -62,17 +69,23 @@ impl BrowserHost {
                 let _ = changes.send(change);
             }
         }));
+        let registration = Registration::default();
+        let held = Arc::clone(&registration);
         let worker = std::thread::Builder::new()
             .name("browser-host".into())
-            .spawn(move || serve(rx, app, registry))
+            .spawn(move || serve(rx, app, registry, held))
             .ok();
         BrowserHost {
             changes,
             worker: Mutex::new(worker),
+            registration,
         }
     }
 
-    /// Stop being the host: unregister, then end the worker.
+    /// Stop being the host: end the worker, and unregister from here if the
+    /// worker is still inside a command and has not done it. The worker cannot
+    /// see a stop while it is answering, and a host that stays registered after
+    /// the app is going away is a host the daemon keeps routing commands to.
     pub fn stop(&self) {
         if let Some(changes) = self.changes.lock().expect("browser host poisoned").as_ref() {
             let _ = changes.send(Change::Stop);
@@ -87,6 +100,7 @@ impl BrowserHost {
                 let _ = worker.join();
             }
         }
+        unregister_within(&self.registration, STOP_BUDGET);
     }
 }
 
@@ -97,22 +111,27 @@ impl Drop for BrowserHost {
 }
 
 /// The worker: register on a connection, serve its commands, repeat.
-fn serve(changes: Receiver<Change>, app: tauri::AppHandle, registry: Arc<BrowserRegistry>) {
-    let mut registration: Option<(Arc<DaemonClient>, String)> = None;
+fn serve(
+    changes: Receiver<Change>,
+    app: tauri::AppHandle,
+    registry: Arc<BrowserRegistry>,
+    registration: Registration,
+) {
     while let Ok(change) = changes.recv() {
         match change {
             Change::Stop => {
-                unregister(&mut registration);
+                unregister(&registration);
                 return;
             }
-            Change::Disconnected => unregister(&mut registration),
+            Change::Disconnected => unregister(&registration),
             Change::Connected(client) => match register(&client) {
                 Ok(host_id) => {
                     eprintln!(
                         "devboule: browser host {host_id} registered for {} commands",
                         COMMANDS.len()
                     );
-                    registration = Some((Arc::clone(&client), host_id.clone()));
+                    *registration.lock().expect("browser host poisoned") =
+                        Some((Arc::clone(&client), host_id.clone()));
                     // One deadline per command, taken when the command starts:
                     // what it may wait for is what is left of its own budget.
                     let answered = |request: &BrowserExecuteRequest| {
@@ -120,7 +139,7 @@ fn serve(changes: Receiver<Change>, app: tauri::AppHandle, registry: Arc<Browser
                             &app,
                             &registry,
                             request,
-                            commands::Deadline::from_now(),
+                            Deadline::from_now(),
                         ))
                     };
                     let stop = serve_connection(&client, &answered);
@@ -132,13 +151,13 @@ fn serve(changes: Receiver<Change>, app: tauri::AppHandle, registry: Arc<Browser
                     // and is not reading its queue answers every command
                     // `browser_busy`, which looks exactly like an app that is
                     // working and is not.
-                    unregister(&mut registration);
+                    unregister(&registration);
                 }
                 Err(error) => eprintln!("devboule: the browser host did not register: {error}"),
             },
         }
     }
-    unregister(&mut registration);
+    unregister(&registration);
 }
 
 fn register(client: &Arc<DaemonClient>) -> Result<String, String> {
@@ -151,8 +170,9 @@ fn register(client: &Arc<DaemonClient>) -> Result<String, String> {
 /// Give the host id back before its connection goes: a call still waiting on
 /// this host then fails as `browser_no_host` rather than waiting out its
 /// deadline.
-fn unregister(registration: &mut Option<(Arc<DaemonClient>, String)>) {
-    let Some((client, host_id)) = registration.take() else {
+fn unregister(registration: &Registration) {
+    let held = registration.lock().expect("browser host poisoned").take();
+    let Some((client, host_id)) = held else {
         return;
     };
     match client.browser_host_unregister(&host_id) {
@@ -161,6 +181,30 @@ fn unregister(registration: &mut Option<(Arc<DaemonClient>, String)>) {
         // there is nothing left to unregister and nothing to report.
         Err(DaemonError::ConnectionLost) => {}
         Err(error) => eprintln!("devboule: the browser host did not unregister: {error}"),
+    }
+}
+
+/// [`unregister`] from a thread of its own, waited for no longer than `budget`.
+/// The call is a round trip, and a daemon that never answers must not hold up
+/// the app's exit.
+fn unregister_within(registration: &Registration, budget: std::time::Duration) {
+    if registration
+        .lock()
+        .expect("browser host poisoned")
+        .is_none()
+    {
+        return;
+    }
+    let held = Arc::clone(registration);
+    let (done, finished) = channel();
+    let spawned = std::thread::Builder::new()
+        .name("browser-host-unregister".into())
+        .spawn(move || {
+            unregister(&held);
+            let _ = done.send(());
+        });
+    if spawned.is_ok() {
+        let _ = finished.recv_timeout(budget);
     }
 }
 
@@ -238,7 +282,7 @@ async fn answer(
     app: &tauri::AppHandle,
     registry: &BrowserRegistry,
     request: &BrowserExecuteRequest,
-    deadline: commands::Deadline,
+    deadline: Deadline,
 ) -> BrowserOutcome {
     let result: Result<Value, BrowserError> =
         commands::dispatch(app, registry, request, deadline).await;

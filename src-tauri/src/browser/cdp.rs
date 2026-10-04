@@ -17,9 +17,11 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use super::deadline::Deadline;
 use super::registry::Size;
 
 /// A call in flight, so the layer above it never sees a lifetime.
@@ -57,6 +59,44 @@ impl CdpError {
 /// layer runs on a WebView2 in the app and on canned answers in a test.
 pub trait Page: Send + Sync {
     fn call<'a>(&'a self, method: &'a str, params: Value) -> Call<'a>;
+
+    /// The same call, waiting no longer than `limit` for the answer. A page
+    /// that answers at once, as a canned one does, has nothing to cut short.
+    fn call_within<'a>(&'a self, method: &'a str, params: Value, _limit: Duration) -> Call<'a> {
+        self.call(method, params)
+    }
+}
+
+/// A page that answers only while its command still has time, and never waits
+/// longer than what is left. Every command runs on one of these, so no call it
+/// makes can outlive the command's budget.
+pub struct Bounded<'p> {
+    page: &'p dyn Page,
+    deadline: Deadline,
+}
+
+impl<'p> Bounded<'p> {
+    pub fn new(page: &'p dyn Page, deadline: Deadline) -> Self {
+        Bounded { page, deadline }
+    }
+}
+
+impl Page for Bounded<'_> {
+    fn call<'a>(&'a self, method: &'a str, params: Value) -> Call<'a> {
+        self.call_within(method, params, self.deadline.left())
+    }
+
+    fn call_within<'a>(&'a self, method: &'a str, params: Value, limit: Duration) -> Call<'a> {
+        let left = self.deadline.left().min(limit);
+        if left.is_zero() {
+            return Box::pin(async move {
+                Err(CdpError::Refused(format!(
+                    "{method}: the command ran out of time"
+                )))
+            });
+        }
+        self.page.call_within(method, params, left)
+    }
 }
 
 /// Give a parked page the layout it would have if it were on screen, at the
@@ -123,6 +163,7 @@ mod imp {
         label: &str,
         method: &str,
         params: Value,
+        limit: Duration,
     ) -> Result<Value, CdpError> {
         let webview = app
             .get_webview(label)
@@ -160,7 +201,7 @@ mod imp {
                 }
             })
             .map_err(|error| CdpError::Refused(format!("{called}: {error}")))?;
-        match rx.recv_timeout(CALL_TIMEOUT) {
+        match rx.recv_timeout(limit.min(CALL_TIMEOUT)) {
             Ok(Ok(body)) => Ok(serde_json::from_str(&body).unwrap_or(Value::Null)),
             Ok(Err(error)) => Err(error),
             Err(_) => Err(CdpError::Refused(format!(
@@ -187,10 +228,19 @@ mod imp {
 
     impl Page for WebviewPage {
         fn call<'a>(&'a self, method: &'a str, params: Value) -> super::Call<'a> {
+            self.call_within(method, params, CALL_TIMEOUT)
+        }
+
+        fn call_within<'a>(
+            &'a self,
+            method: &'a str,
+            params: Value,
+            limit: Duration,
+        ) -> super::Call<'a> {
             let app = self.app.clone();
             let label = self.label.clone();
             let method = method.to_owned();
-            Box::pin(async move { call_on(&app, &label, &method, params).await })
+            Box::pin(async move { call_on(&app, &label, &method, params, limit).await })
         }
     }
 }

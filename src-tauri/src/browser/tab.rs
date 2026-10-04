@@ -12,6 +12,7 @@ use tauri::Url;
 use tauri::{AppHandle, Emitter, Manager, WebviewBuilder, WebviewUrl, Wry};
 
 use super::commands::tabs::{TabEvent, TAB_EVENT};
+use super::deadline::Deadline;
 use super::page_host;
 use super::registry::{profile_dir, BrowserRegistry, OwnedTab, PARK_RECT};
 use super::url;
@@ -234,6 +235,7 @@ pub async fn open(
     raw_url: &str,
     workspace: &str,
     updates: Channel<BrowserUpdate>,
+    deadline: Deadline,
 ) -> Result<BrowserViewState, String> {
     let target = url::accept(raw_url)?;
     let window = app
@@ -267,6 +269,7 @@ pub async fn open(
             state: Arc::clone(&state),
             sink,
             presented: None,
+            guard: Arc::default(),
         },
     )?;
 
@@ -311,7 +314,7 @@ pub async fn open(
     // The page is on the network now; its own event stream is what tells an
     // agent whether the document is still moving, so the subscription is
     // installed here rather than on the first command that needs it.
-    super::cdp_events::watch(app, id, &label).await;
+    super::cdp_events::watch(app, id, &label, deadline).await;
     let opened = state.lock().expect("browser state poisoned").clone();
     Ok(opened)
 }

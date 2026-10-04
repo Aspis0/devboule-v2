@@ -19,7 +19,8 @@ use std::time::Duration;
 use serde_json::json;
 use tauri::{AppHandle, Manager};
 
-use super::cdp::{Page as _, WebviewPage};
+use super::cdp::{Bounded, Page as _, WebviewPage};
+use super::deadline::Deadline;
 
 /// What a page must go without before its state is believed.
 pub const QUIET: Duration = Duration::from_millis(300);
@@ -73,17 +74,21 @@ pub fn forget(id: &str) {
     }
 }
 
+/// Watch a page for as long as `deadline` allows. What is not installed in time
+/// is not installed: the tab is already open, and a settle without the event
+/// falls back to its cap.
 #[cfg(windows)]
-pub async fn watch(app: &AppHandle, id: &str, label: &str) {
+pub async fn watch(app: &AppHandle, id: &str, label: &str, deadline: Deadline) {
     signal_for(id);
-    let page = WebviewPage::new(app, label);
+    let webview = WebviewPage::new(app, label);
+    let page = Bounded::new(&webview, deadline);
     // `Page.*` events arrive only after this, so it is asked for before any
     // receiver is installed.
     if let Err(error) = page.call("Page.enable", json!({})).await {
         eprintln!("devboule: browser page {id} will not report its loads: {error}");
     }
     for event in WATCHED {
-        if let Err(error) = subscribe(app, label, id, event).await {
+        if let Err(error) = subscribe(app, label, id, event, deadline.left()).await {
             // Without this event the settle falls back to its cap, which is
             // slower and no worse than not settling at all.
             eprintln!("devboule: browser page {id} is not watched for {event}: {error}");
@@ -92,7 +97,13 @@ pub async fn watch(app: &AppHandle, id: &str, label: &str) {
 }
 
 #[cfg(windows)]
-async fn subscribe(app: &AppHandle, label: &str, id: &str, event: &str) -> Result<(), String> {
+async fn subscribe(
+    app: &AppHandle,
+    label: &str,
+    id: &str,
+    event: &str,
+    limit: Duration,
+) -> Result<(), String> {
     use webview2_com::{take_pwstr, DevToolsProtocolEventReceivedEventHandler};
     use windows::core::HSTRING;
 
@@ -132,7 +143,7 @@ async fn subscribe(app: &AppHandle, label: &str, id: &str, event: &str) -> Resul
             let _ = tx.send(outcome.map_err(|error| error.to_string()));
         })
         .map_err(|error| format!("with_webview: {error}"))?;
-    rx.recv()
+    rx.recv_timeout(limit)
         .unwrap_or(Err("The page did not answer.".to_owned()))
 }
 
@@ -150,7 +161,7 @@ fn com(error: windows::core::Error) -> String {
 }
 
 #[cfg(not(windows))]
-pub async fn watch(_app: &AppHandle, _id: &str, _label: &str) {
+pub async fn watch(_app: &AppHandle, _id: &str, _label: &str, _deadline: Deadline) {
     // No event stream on this target, so `moved` never moves and every settle
     // ends on its first quiet. Nothing here blocks a command from running.
 }
@@ -162,15 +173,19 @@ pub async fn nap(for_: Duration) {
 }
 
 /// Wait until the page has gone `QUIET` without an event, or `SETTLE_CAP` has
-/// passed. A navigation and a re-render are the same signal here, which is
-/// what the contract asks for: one answer per action, taken once the page has
-/// stopped.
-pub async fn settle(id: &str) {
-    let deadline = std::time::Instant::now() + SETTLE_CAP;
+/// passed, or the command has no time left. A navigation and a re-render are
+/// the same signal here, which is what the contract asks for: one answer per
+/// action, taken once the page has stopped.
+pub async fn settle(id: &str, deadline: Deadline) {
+    let end = std::time::Instant::now() + SETTLE_CAP.min(deadline.left());
     loop {
         let before = moved(id);
-        nap(QUIET).await;
-        if moved(id) == before || std::time::Instant::now() >= deadline {
+        let rest = end.saturating_duration_since(std::time::Instant::now());
+        if rest.is_zero() {
+            return;
+        }
+        nap(QUIET.min(rest)).await;
+        if moved(id) == before || std::time::Instant::now() >= end {
             return;
         }
     }

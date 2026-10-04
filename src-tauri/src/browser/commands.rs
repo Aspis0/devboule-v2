@@ -16,54 +16,24 @@ pub mod see;
 pub mod tabs;
 pub mod wait;
 
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use devboule_protocol::{BrowserCaller, BrowserError, BrowserErrorCode, BrowserExecuteRequest};
 
-use super::cdp::{CdpError, Page, WebviewPage};
+use super::ax::AxTree;
+use super::cdp::{Bounded, CdpError, Page, WebviewPage};
+use super::cdp_events;
+use super::deadline::Deadline;
 use super::registry::{BrowserRegistry, TabInfo};
 use super::view;
 
-/// How long one command may take from being taken off the queue to being
-/// answered. Under the daemon's 15 s, so the answer has time to travel, and over
-/// the longest wait a caller may ask for.
-pub const COMMAND_BUDGET: Duration = Duration::from_secs(13);
-
-/// What a command must leave for its own answer: the settle (3 s, the cap in
-/// `cdp_events`) and the two tree reads a delta is built from, plus slack.
-/// Taken off a wait, so a `wait_for` that uses all the time it is given still
-/// answers inside the budget instead of being cut off by the daemon's.
-const ANSWER_RESERVE: Duration = Duration::from_secs(6);
-
-/// The end of one command's time. `wait_for` is the only command that waits,
-/// and it is bounded by this as well as by its own argument: the contract lets
-/// a caller ask for 12 s and the daemon's budget is 15 s, so the two cannot both
-/// be the whole rule.
-#[derive(Debug, Clone, Copy)]
-pub struct Deadline(Instant);
-
-impl Deadline {
-    pub fn from_now() -> Self {
-        Deadline(Instant::now() + COMMAND_BUDGET)
-    }
-
-    /// A deadline of the caller's choosing, for a test that is not about time.
-    #[cfg(test)]
-    pub fn in_(budget: Duration) -> Self {
-        Deadline(Instant::now() + budget)
-    }
-
-    /// How long a command may still wait: what is left of the budget, less what
-    /// its answer needs.
-    pub fn wait_for(&self) -> Duration {
-        self.0
-            .saturating_duration_since(Instant::now())
-            .saturating_sub(ANSWER_RESERVE)
-    }
-}
+/// How often a command waiting for its tab looks again. The wait is short by
+/// nature — the holder is another acting command or a pane moving the page.
+const LOCK_POLL: Duration = Duration::from_millis(25);
 
 /// The failure's wire name, for the one line this app writes per command. The
 /// daemon's own log spells it the same way, so the two read alike.
@@ -177,10 +147,47 @@ pub fn stale_ref(reference: &str) -> BrowserError {
     ))
 }
 
+/// One page's accessible tree, as the runtime computed it.
+pub async fn tree_of(page: &dyn Page) -> Result<AxTree, BrowserError> {
+    super::ax::tree(page).await.map_err(cdp_failure)
+}
+
 /// The view of one page, in the mode the caller asked for.
 pub async fn view_of(page: &dyn Page, mode: view::Mode) -> Result<view::View, BrowserError> {
-    let tree = super::ax::tree(page).await.map_err(cdp_failure)?;
-    Ok(view::compact(&tree, mode))
+    Ok(view::compact(&tree_of(page).await?, mode))
+}
+
+/// The commands that only read a page. They change nothing a pane or another
+/// command could be measuring against, so they never wait for the tab and
+/// never hold it: a `wait_for` that polled for twelve seconds under the tab's
+/// lock would leave the pane's own present waiting just as long.
+const READS: [&str; 3] = ["snapshot", "find", "wait_for"];
+
+/// Take the tab for one acting command, waiting while another holds it.
+///
+/// The wait is cut to the command's own deadline, and the lock is taken by
+/// polling rather than queueing because the one thing waited for is a holder
+/// that is itself bounded by a deadline or a pane gesture.
+async fn hold(
+    registry: &BrowserRegistry,
+    browser_id: &str,
+    deadline: Deadline,
+) -> Result<impl Send, BrowserError> {
+    let guard = registry
+        .guard_of(browser_id)
+        .ok_or_else(|| tab_not_found(browser_id))?;
+    loop {
+        if let Ok(held) = Arc::clone(&guard).try_lock_owned() {
+            return Ok(held);
+        }
+        let left = deadline.left();
+        if left.is_zero() {
+            return Err(host_error(
+                "This tab is busy with another action; try again in a moment.",
+            ));
+        }
+        cdp_events::nap(LOCK_POLL.min(left)).await;
+    }
 }
 
 /// Run one command the daemon pushed to this host.
@@ -190,28 +197,38 @@ pub async fn dispatch(
     request: &BrowserExecuteRequest,
     deadline: Deadline,
 ) -> Result<Value, BrowserError> {
-    match request.command.as_str() {
-        "new_tab" | "list_tabs" | "close_tab" => {
-            tabs::run(
-                app,
-                registry,
-                &request.caller,
-                &request.command,
-                &request.args,
-            )
-            .await
-        }
-        _ => {
-            let browser_id = browser_id(&request.args)?;
-            let tab = resolve(registry, &request.caller, &browser_id)?;
-            let page = WebviewPage::new(app, &tab.label);
-            on_tab(&tab, &page, &request.command, &request.args, deadline).await
-        }
+    let command = request.command.as_str();
+    if matches!(command, "new_tab" | "list_tabs") {
+        return tabs::run(
+            app,
+            registry,
+            &request.caller,
+            command,
+            &request.args,
+            deadline,
+        )
+        .await;
     }
+    let browser_id = browser_id(&request.args)?;
+    let tab = resolve(registry, &request.caller, &browser_id)?;
+    if READS.contains(&command) {
+        let page = WebviewPage::new(app, &tab.label);
+        return on_tab(&tab, &page, command, &request.args, deadline).await;
+    }
+    let _held = hold(registry, &browser_id, deadline).await?;
+    // What the tab was when this command queued is not what it is now: the
+    // pane may have shown, parked or closed it while the lock was held.
+    let tab = resolve(registry, &request.caller, &browser_id)?;
+    if command == "close_tab" {
+        return tabs::close_tab(app, registry, &tab);
+    }
+    let page = WebviewPage::new(app, &tab.label);
+    on_tab(&tab, &page, command, &request.args, deadline).await
 }
 
 /// Run one command against one page. Everything below the tab commands goes
-/// through here, so the whole command layer is reachable with a fake page.
+/// through here, so the whole command layer is reachable with a fake page, and
+/// every call it makes is cut to the command's deadline.
 pub async fn on_tab(
     tab: &TabInfo,
     page: &dyn Page,
@@ -219,6 +236,8 @@ pub async fn on_tab(
     args: &Value,
     deadline: Deadline,
 ) -> Result<Value, BrowserError> {
+    let bounded = Bounded::new(page, deadline);
+    let page: &dyn Page = &bounded;
     match command {
         "navigate" => tabs::navigate(tab, page, args, deadline).await,
         "snapshot" => see::snapshot(tab, page, args).await,
@@ -239,3 +258,7 @@ pub async fn on_tab(
 #[cfg(test)]
 #[path = "commands_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "commands_time_tests.rs"]
+mod time_tests;

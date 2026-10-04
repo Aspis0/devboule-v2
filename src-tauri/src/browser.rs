@@ -13,22 +13,28 @@ mod ax;
 pub mod cdp;
 pub mod cdp_events;
 mod commands;
+mod deadline;
 mod delta;
 mod find;
+mod find_query;
 pub mod host;
 mod page_host;
 pub(crate) mod registry;
 mod tab;
 #[cfg(test)]
+mod test_pages;
+#[cfg(test)]
 mod test_support;
 mod url;
 mod view;
+mod view_context;
 
 use std::sync::Arc;
 
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State, Wry};
 
+use deadline::Deadline;
 use page_host::Act;
 use registry::{BrowserRegistry, LogicalRect, PARK_RECT};
 use tab::{open, BrowserUpdate, BrowserViewState};
@@ -64,7 +70,26 @@ pub async fn browser_open(
     if let Some(state) = registry.attach(&id, updates.clone()) {
         return Ok(state);
     }
-    open(&app, &registry, &id, &url, &workspace_id, updates).await
+    open(
+        &app,
+        &registry,
+        &id,
+        &url,
+        &workspace_id,
+        updates,
+        Deadline::from_now(),
+    )
+    .await
+}
+
+/// Wait out an agent command that is acting on this tab's page, and keep the
+/// tab still while the caller moves or closes it. A tab with no guard is one
+/// that is not there, which the caller reports in its own words.
+async fn still(registry: &BrowserRegistry, id: &str) -> Option<impl Send> {
+    match registry.guard_of(id) {
+        Some(guard) => Some(guard.lock_owned().await),
+        None => None,
+    }
 }
 
 /// Where a page was put, for the app log. Sizes and positions only: an address
@@ -79,12 +104,13 @@ fn trace_place(id: &str, rect: LogicalRect, state: &str) {
 /// Put the active tab's page over the pane. Every inactive tab stays parked,
 /// so exactly one child is visible and the rest keep running at full speed.
 #[tauri::command]
-pub fn browser_present(
+pub async fn browser_present(
     app: AppHandle,
     registry: State<'_, Arc<BrowserRegistry>>,
     id: String,
     rect: LogicalRect,
 ) -> Result<(), String> {
+    let _still = still(&registry, &id).await;
     let webview = owned(&app, &registry, &id)?;
     let (position, size) = rect.into_tauri();
     webview.set_position(position).map_err(|e| e.to_string())?;
@@ -99,11 +125,12 @@ pub fn browser_present(
 /// Park a tab's page without stopping it. `hide()` would be one call, but a
 /// hidden WebView2 throttles the page's timers to about 1 Hz.
 #[tauri::command]
-pub fn browser_park(
+pub async fn browser_park(
     app: AppHandle,
     registry: State<'_, Arc<BrowserRegistry>>,
     id: String,
 ) -> Result<(), String> {
+    let _still = still(&registry, &id).await;
     if registry.rect_of(&id).is_some_and(|(_, parked)| parked) {
         return Ok(());
     }
@@ -163,11 +190,12 @@ pub fn browser_reload(
 ///   building the child. The second is a close the create itself has to
 ///   honour, so the claim is marked and the create disposes of what it gets.
 #[tauri::command]
-pub fn browser_close(
+pub async fn browser_close(
     app: AppHandle,
     registry: State<'_, Arc<BrowserRegistry>>,
     id: String,
 ) -> Result<(), String> {
+    let _still = still(&registry, &id).await;
     let Ok(label) = registry.label_of(&id) else {
         registry.cancel(&id);
         cdp_events::forget(&id);

@@ -15,10 +15,10 @@ use tauri::{AppHandle, Emitter, Manager};
 use devboule_protocol::{BrowserCaller, BrowserError, BrowserErrorCode};
 
 use super::super::cdp::Page;
+use super::super::deadline::Deadline;
 use super::super::registry::{BrowserRegistry, TabInfo};
 use super::super::tab;
-use super::Deadline;
-use super::{act, host_error, refused, resolve, tab_not_found};
+use super::{act, host_error, refused, tab_not_found};
 
 /// The app-wide event the strip listens for. One name with a tag, because a
 /// chip appearing and a chip going away are the same fact about the same list.
@@ -57,12 +57,6 @@ struct NewTabArgs {
 }
 
 #[derive(Deserialize)]
-struct CloseTabArgs {
-    #[serde(rename = "browserId")]
-    browser_id: String,
-}
-
-#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NavigateArgs {
     url: Option<String>,
@@ -75,11 +69,11 @@ pub async fn run(
     caller: &BrowserCaller,
     command: &str,
     args: &Value,
+    deadline: Deadline,
 ) -> Result<Value, BrowserError> {
     match command {
-        "new_tab" => new_tab(app, registry, caller, args).await,
+        "new_tab" => new_tab(app, registry, caller, args, deadline).await,
         "list_tabs" => list_tabs(registry, caller),
-        "close_tab" => close_tab(app, registry, caller, args),
         other => Err(host_error(format!(
             "{other} is not a command this app runs."
         ))),
@@ -120,6 +114,7 @@ async fn new_tab(
     registry: &BrowserRegistry,
     caller: &BrowserCaller,
     args: &Value,
+    deadline: Deadline,
 ) -> Result<Value, BrowserError> {
     let asked: NewTabArgs = super::args_of(args)?;
     let workspace = workspace_of(caller)?;
@@ -134,6 +129,7 @@ async fn new_tab(
         &asked.url,
         &workspace,
         Channel::new(|_| Ok(())),
+        deadline,
     )
     .await
     .map_err(|error| host_error(format!("This address could not be opened: {error}")))?;
@@ -181,17 +177,15 @@ pub fn list_tabs(
     Ok(json!({ "tabs": tabs }))
 }
 
-fn close_tab(
+/// Close the tab an agent named, already resolved and held by the caller.
+pub fn close_tab(
     app: &AppHandle,
     registry: &BrowserRegistry,
-    caller: &BrowserCaller,
-    args: &Value,
+    tab: &TabInfo,
 ) -> Result<Value, BrowserError> {
-    let asked: CloseTabArgs = super::args_of(args)?;
-    let tab = resolve(registry, caller, &asked.browser_id)?;
     let webview = app
         .get_webview(&tab.label)
-        .ok_or_else(|| tab_not_found(&asked.browser_id))?;
+        .ok_or_else(|| tab_not_found(&tab.browser_id))?;
     webview
         .close()
         .map_err(|error| host_error(format!("The tab would not close: {error}")))?;
@@ -221,7 +215,7 @@ pub async fn navigate(
     tab: &TabInfo,
     page: &dyn Page,
     args: &Value,
-    _deadline: Deadline,
+    deadline: Deadline,
 ) -> Result<Value, BrowserError> {
     let asked: NavigateArgs = super::args_of(args)?;
     let start = act::read(tab, page).await?;
@@ -248,7 +242,7 @@ pub async fn navigate(
         }
         (None, None) => return Err(host_error("navigate needs a url or an action.")),
     }
-    let answer = act::answer(tab, page, start, None).await?;
+    let answer = act::answer(tab, page, deadline, start, None).await?;
     let delta = answer.get("delta").cloned().unwrap_or(Value::Null);
     Ok(json!({
         "url": act::place(tab).url,
@@ -271,12 +265,13 @@ async fn history(page: &dyn Page, action: &str) -> Result<(), BrowserError> {
         "forward" => 1,
         other => return Err(host_error(format!("{other} is not a history action."))),
     };
-    let target = current + step;
+    let nothing_that_way = || host_error("There is nothing that way in this page's history.");
+    let target = usize::try_from(current + step).map_err(|_| nothing_that_way())?;
     let entry = history
         .get("entries")
         .and_then(Value::as_array)
-        .and_then(|entries| entries.get(target.max(0) as usize))
-        .ok_or_else(|| host_error("There is nothing that way in this page's history."))?;
+        .and_then(|entries| entries.get(target))
+        .ok_or_else(nothing_that_way)?;
     let id = entry
         .get("id")
         .cloned()

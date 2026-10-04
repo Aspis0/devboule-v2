@@ -17,9 +17,9 @@ use serde_json::{json, Value};
 use devboule_protocol::BrowserError;
 
 use super::super::cdp::Page;
+use super::super::deadline::Deadline;
 use super::super::registry::TabInfo;
 use super::act;
-use super::Deadline;
 use super::{args_of, host_error, node_of};
 
 #[derive(Deserialize)]
@@ -92,21 +92,26 @@ pub async fn run(
     page: &dyn Page,
     command: &str,
     args: &Value,
-    _deadline: Deadline,
+    deadline: Deadline,
 ) -> Result<Value, BrowserError> {
     match command {
-        "click" => click(tab, page, args).await,
-        "fill" => fill(tab, page, args).await,
-        "type" => type_into(tab, page, args).await,
-        "press" => press(tab, page, args).await,
-        "select" => select(tab, page, args).await,
-        "check" => check(tab, page, args).await,
-        "hover" => hover(tab, page, args).await,
-        _ => scroll(tab, page, args).await,
+        "click" => click(tab, page, args, deadline).await,
+        "fill" => fill(tab, page, args, deadline).await,
+        "type" => type_into(tab, page, args, deadline).await,
+        "press" => press(tab, page, args, deadline).await,
+        "select" => select(tab, page, args, deadline).await,
+        "check" => check(tab, page, args, deadline).await,
+        "hover" => hover(tab, page, args, deadline).await,
+        _ => scroll(tab, page, args, deadline).await,
     }
 }
 
-pub async fn click(tab: &TabInfo, page: &dyn Page, args: &Value) -> Result<Value, BrowserError> {
+pub async fn click(
+    tab: &TabInfo,
+    page: &dyn Page,
+    args: &Value,
+    deadline: Deadline,
+) -> Result<Value, BrowserError> {
     let asked: ClickArgs = args_of(args)?;
     let node = node_of(&asked.reference)?;
     let start = act::read(tab, page).await?;
@@ -118,10 +123,15 @@ pub async fn click(tab: &TabInfo, page: &dyn Page, args: &Value) -> Result<Value
     let modifiers = asked.modifiers.unwrap_or(0);
     act::mouse(page, "mousePressed", at, button, count, modifiers).await?;
     act::mouse(page, "mouseReleased", at, button, count, modifiers).await?;
-    act::answer(tab, page, start, Some(node)).await
+    act::answer(tab, page, deadline, start, Some(node)).await
 }
 
-pub async fn hover(tab: &TabInfo, page: &dyn Page, args: &Value) -> Result<Value, BrowserError> {
+pub async fn hover(
+    tab: &TabInfo,
+    page: &dyn Page,
+    args: &Value,
+    deadline: Deadline,
+) -> Result<Value, BrowserError> {
     let asked: RefArgs = args_of(args)?;
     let node = node_of(&asked.reference)?;
     let start = act::read(tab, page).await?;
@@ -136,13 +146,18 @@ pub async fn hover(tab: &TabInfo, page: &dyn Page, args: &Value) -> Result<Value
         0,
     )
     .await?;
-    act::answer(tab, page, start, Some(node)).await
+    act::answer(tab, page, deadline, start, Some(node)).await
 }
 
 /// Replace a field's contents: the clear is page script, the text is not.
 /// A script that assigns `.value` on its own leaves a value tracker believing
 /// nothing changed, while inserted text arrives as input a person made.
-pub async fn fill(tab: &TabInfo, page: &dyn Page, args: &Value) -> Result<Value, BrowserError> {
+pub async fn fill(
+    tab: &TabInfo,
+    page: &dyn Page,
+    args: &Value,
+    deadline: Deadline,
+) -> Result<Value, BrowserError> {
     let asked: FillArgs = args_of(args)?;
     let node = node_of(&asked.reference)?;
     let start = act::read(tab, page).await?;
@@ -151,32 +166,43 @@ pub async fn fill(tab: &TabInfo, page: &dyn Page, args: &Value) -> Result<Value,
     act::call(page, "DOM.focus", json!({ "backendNodeId": node })).await?;
     act::on_node(page, node, act::CLEAR, json!([])).await?;
     act::call(page, "Input.insertText", json!({ "text": asked.text })).await?;
-    act::answer(tab, page, start, Some(node)).await
+    act::answer(tab, page, deadline, start, Some(node)).await
 }
 
 pub async fn type_into(
     tab: &TabInfo,
     page: &dyn Page,
     args: &Value,
+    deadline: Deadline,
 ) -> Result<Value, BrowserError> {
     let asked: TypeArgs = args_of(args)?;
     let start = act::read(tab, page).await?;
     act::ready(tab, page).await?;
     let node = focus(page, &asked.reference).await?;
     act::call(page, "Input.insertText", json!({ "text": asked.text })).await?;
-    act::answer(tab, page, start, node).await
+    act::answer(tab, page, deadline, start, node).await
 }
 
-pub async fn press(tab: &TabInfo, page: &dyn Page, args: &Value) -> Result<Value, BrowserError> {
+pub async fn press(
+    tab: &TabInfo,
+    page: &dyn Page,
+    args: &Value,
+    deadline: Deadline,
+) -> Result<Value, BrowserError> {
     let asked: PressArgs = args_of(args)?;
     let start = act::read(tab, page).await?;
     act::ready(tab, page).await?;
     let node = focus(page, &asked.reference).await?;
     act::press_key(page, &asked.key).await?;
-    act::answer(tab, page, start, node).await
+    act::answer(tab, page, deadline, start, node).await
 }
 
-pub async fn select(tab: &TabInfo, page: &dyn Page, args: &Value) -> Result<Value, BrowserError> {
+pub async fn select(
+    tab: &TabInfo,
+    page: &dyn Page,
+    args: &Value,
+    deadline: Deadline,
+) -> Result<Value, BrowserError> {
     let asked: SelectArgs = args_of(args)?;
     if asked.value.is_none() && asked.label.is_none() {
         return Err(host_error("select needs a value or a label to choose."));
@@ -195,12 +221,17 @@ pub async fn select(tab: &TabInfo, page: &dyn Page, args: &Value) -> Result<Valu
     if chosen.is_null() {
         return Err(host_error("This control has no such option."));
     }
-    act::answer(tab, page, start, Some(node)).await
+    act::answer(tab, page, deadline, start, Some(node)).await
 }
 
 /// Put a control in the state the caller asked for, and touch it only when it
 /// is not already there: clicking a checked box unchecks it.
-pub async fn check(tab: &TabInfo, page: &dyn Page, args: &Value) -> Result<Value, BrowserError> {
+pub async fn check(
+    tab: &TabInfo,
+    page: &dyn Page,
+    args: &Value,
+    deadline: Deadline,
+) -> Result<Value, BrowserError> {
     let asked: CheckArgs = args_of(args)?;
     let node = node_of(&asked.reference)?;
     let start = act::read(tab, page).await?;
@@ -212,10 +243,15 @@ pub async fn check(tab: &TabInfo, page: &dyn Page, args: &Value) -> Result<Value
         act::mouse(page, "mousePressed", at, "left", 1, 0).await?;
         act::mouse(page, "mouseReleased", at, "left", 1, 0).await?;
     }
-    act::answer(tab, page, start, Some(node)).await
+    act::answer(tab, page, deadline, start, Some(node)).await
 }
 
-pub async fn scroll(tab: &TabInfo, page: &dyn Page, args: &Value) -> Result<Value, BrowserError> {
+pub async fn scroll(
+    tab: &TabInfo,
+    page: &dyn Page,
+    args: &Value,
+    deadline: Deadline,
+) -> Result<Value, BrowserError> {
     let asked: ScrollArgs = args_of(args)?;
     let start = act::read(tab, page).await?;
     act::ready(tab, page).await?;
@@ -239,7 +275,7 @@ pub async fn scroll(tab: &TabInfo, page: &dyn Page, args: &Value) -> Result<Valu
         let middle = (tab.size.width / 2.0, tab.size.height / 2.0);
         act::wheel(page, middle, delta).await?;
     }
-    act::answer(tab, page, start, node).await
+    act::answer(tab, page, deadline, start, node).await
 }
 
 /// Focus a node the caller named, or nothing when it named none: `type` and

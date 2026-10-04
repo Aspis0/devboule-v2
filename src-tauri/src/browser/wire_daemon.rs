@@ -347,3 +347,15 @@ pub fn next_answer(daemon: &WireDaemon) -> (String, Value) {
     }
     panic!("no browser answer arrived within {ANSWER:?}");
 }
+
+/// The host id the next unregistration on the wire names.
+pub fn next_unregister(daemon: &WireDaemon) -> String {
+    for _ in 0..10 {
+        match daemon.next_frame() {
+            Some(ClientMessage::BrowserHostUnregister { host_id, .. }) => return host_id,
+            Some(_) => continue,
+            None => break,
+        }
+    }
+    panic!("no browser host unregistered within {ANSWER:?}");
+}

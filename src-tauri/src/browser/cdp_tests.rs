@@ -43,6 +43,69 @@ fn a_page_in_front_is_left_exactly_as_it_is() {
     );
 }
 
+/// A page that remembers the longest wait each call was allowed.
+struct Recording(std::sync::Mutex<Vec<Duration>>);
+
+impl Page for Recording {
+    fn call<'a>(&'a self, _method: &'a str, _params: Value) -> Call<'a> {
+        Box::pin(async { Ok(Value::Null) })
+    }
+
+    fn call_within<'a>(&'a self, method: &'a str, params: Value, limit: Duration) -> Call<'a> {
+        self.0.lock().expect("recording poisoned").push(limit);
+        self.call(method, params)
+    }
+}
+
+#[test]
+fn a_command_that_has_run_out_of_time_makes_no_call() {
+    let page = FakePage::new();
+    let bounded = Bounded::new(&page, Deadline::in_(Duration::from_millis(5)));
+    std::thread::sleep(Duration::from_millis(30));
+
+    let error = tauri::async_runtime::block_on(bounded.call("DOM.getBoxModel", json!({})))
+        .expect_err("no time is no call");
+
+    assert!(
+        error.message().contains("ran out of time"),
+        "{}",
+        error.message()
+    );
+    assert_eq!(page.called("DOM.getBoxModel"), 0);
+}
+
+#[test]
+fn a_call_is_never_allowed_longer_than_what_is_left_of_the_command() {
+    let recording = Recording(std::sync::Mutex::new(Vec::new()));
+    let bounded = Bounded::new(&recording, Deadline::in_(Duration::from_secs(2)));
+
+    tauri::async_runtime::block_on(async {
+        bounded
+            .call_within("A", json!({}), Duration::from_secs(10))
+            .await
+            .expect("answered");
+        bounded.call("B", json!({})).await.expect("answered");
+        bounded
+            .call_within("C", json!({}), Duration::from_millis(50))
+            .await
+            .expect("answered");
+    });
+
+    let limits = recording.0.lock().expect("recording poisoned").clone();
+    assert_eq!(limits.len(), 3);
+    assert!(
+        limits[0] <= Duration::from_secs(2),
+        "a fixed 10 s wait is cut to what is left: {:?}",
+        limits[0]
+    );
+    assert!(limits[1] <= Duration::from_secs(2), "{:?}", limits[1]);
+    assert!(
+        limits[2] <= Duration::from_millis(50),
+        "and a shorter ask is kept: {:?}",
+        limits[2]
+    );
+}
+
 #[test]
 fn a_call_that_addresses_a_node_is_the_one_a_refusal_means_a_dead_ref() {
     // The runtime answers all of these with E_INVALIDARG, so the parameters

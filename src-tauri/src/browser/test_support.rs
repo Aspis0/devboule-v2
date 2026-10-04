@@ -117,74 +117,95 @@ pub fn registry_with(id: &str) -> BrowserRegistry {
                 })),
                 sink: Arc::new(Mutex::new(tauri::ipc::Channel::new(|_| Ok(())))),
                 presented: None,
+                guard: Arc::default(),
             },
         )
         .expect("the fixture tab claims");
     registry
 }
 
+/// One `Accessibility.AXValue` as the runtime writes it: always a `type`
+/// beside the `value`, which is what a parser that reads only `value` never
+/// notices missing.
+fn ax_value(kind: &str, value: Value) -> Value {
+    json!({ "type": kind, "value": value })
+}
+
+/// One `Accessibility.AXProperty`: a name, and a typed value.
+pub fn ax_property(name: &str, kind: &str, value: Value) -> Value {
+    json!({ "name": name, "value": ax_value(kind, value) })
+}
+
+/// A node's own typed value, as a text field's contents arrive.
+pub fn ax_text(text: &str) -> Value {
+    ax_value("string", json!(text))
+}
+
+/// One `Accessibility.AXNode` with every field the protocol requires of it:
+/// the ids, `ignored`, the role and the computed name, and the child list.
+pub fn ax_node(node_id: &str, backend: u64, role: &str, name: &str, children: &[&str]) -> Value {
+    json!({
+        "nodeId": node_id,
+        "backendDOMNodeId": backend,
+        "ignored": false,
+        "role": ax_value("role", json!(role)),
+        "name": ax_value("computedString", json!(name)),
+        "childIds": children,
+    })
+}
+
+/// The node with one more property, in the order the runtime lists them.
+pub fn ax_with_property(mut node: Value, property: Value) -> Value {
+    match node.get_mut("properties").and_then(Value::as_array_mut) {
+        Some(properties) => properties.push(property),
+        None => node["properties"] = json!([property]),
+    }
+    node
+}
+
+/// The node with a field of its own set: a text field's `value`, say.
+pub fn ax_with(mut node: Value, field: &str, value: Value) -> Value {
+    node[field] = value;
+    node
+}
+
 /// The tree `Accessibility.getFullAXTree` would answer with for a sign-in
 /// form: a heading, a form, a field with a value, a checkbox, two buttons and
 /// a paragraph, plus the `generic` and `ignored` nodes a real tree is full of.
 pub fn ax_fixture() -> Value {
+    let ignored = ax_with(
+        ax_node("10", 18, "generic", "", &[]),
+        "ignoredReasons",
+        json!([{ "name": "uninteresting", "value": ax_value("boolean", json!(true)) }]),
+    );
     json!({
         "nodes": [
-            {
-                "nodeId": "1", "backendDOMNodeId": 10,
-                "role": { "value": "RootWebArea" }, "name": { "value": "Test page" },
-                "childIds": ["2", "3"]
-            },
-            {
-                "nodeId": "2", "backendDOMNodeId": 11,
-                "role": { "value": "heading" }, "name": { "value": "Sign in" },
-                "properties": [{ "name": "level", "value": { "value": 2 } }],
-                "childIds": []
-            },
-            {
-                "nodeId": "3", "backendDOMNodeId": 19,
-                "role": { "value": "form" }, "name": { "value": "Sign in" },
-                "childIds": ["4", "5", "6", "7", "8", "9"]
-            },
-            {
-                "nodeId": "4", "backendDOMNodeId": 13,
-                "role": { "value": "textbox" }, "name": { "value": "Email" },
-                "value": { "value": "person@example.test" },
-                "properties": [{ "name": "focused", "value": { "value": "true" } }],
-                "childIds": []
-            },
-            {
-                "nodeId": "5", "backendDOMNodeId": 20,
-                "role": { "value": "StaticText" },
-                "name": { "value": "Keep me signed in" },
-                "childIds": []
-            },
-            {
-                "nodeId": "6", "backendDOMNodeId": 14,
-                "role": { "value": "checkbox" }, "name": { "value": "Remember me" },
-                "properties": [{ "name": "checked", "value": { "value": "false" } }],
-                "childIds": []
-            },
-            {
-                "nodeId": "7", "backendDOMNodeId": 15,
-                "role": { "value": "button" }, "name": { "value": "Sign in" },
-                "properties": [{ "name": "disabled", "value": { "value": "false" } }],
-                "childIds": []
-            },
-            {
-                "nodeId": "8", "backendDOMNodeId": 16,
-                "role": { "value": "paragraph" }, "name": { "value": "Forgot your password?" },
-                "childIds": []
-            },
-            {
-                "nodeId": "9", "backendDOMNodeId": 17,
-                "role": { "value": "button" }, "name": { "value": "" },
-                "childIds": []
-            },
-            {
-                "nodeId": "10", "backendDOMNodeId": 18, "ignored": true,
-                "role": { "value": "generic" }, "name": { "value": "" },
-                "childIds": []
-            }
+            ax_node("1", 10, "RootWebArea", "Test page", &["2", "3"]),
+            ax_with_property(
+                ax_node("2", 11, "heading", "Sign in", &[]),
+                ax_property("level", "integer", json!(2)),
+            ),
+            ax_node("3", 19, "form", "Sign in", &["4", "5", "6", "7", "8", "9"]),
+            ax_with_property(
+                ax_with(
+                    ax_node("4", 13, "textbox", "Email", &[]),
+                    "value",
+                    ax_text("person@example.test"),
+                ),
+                ax_property("focused", "booleanOrUndefined", json!(true)),
+            ),
+            ax_node("5", 20, "StaticText", "Keep me signed in", &[]),
+            ax_with_property(
+                ax_node("6", 14, "checkbox", "Remember me", &[]),
+                ax_property("checked", "tristate", json!("false")),
+            ),
+            ax_with_property(
+                ax_node("7", 15, "button", "Sign in", &[]),
+                ax_property("disabled", "boolean", json!(false)),
+            ),
+            ax_node("8", 16, "paragraph", "Forgot your password?", &[]),
+            ax_node("9", 17, "button", "", &[]),
+            ax_with(ignored, "ignored", json!(true)),
         ]
     })
 }
@@ -193,32 +214,26 @@ pub fn ax_fixture() -> Value {
 /// numbered from 1 in the order it is given. The root's own id is out of the
 /// way, so a child's number is its position and nothing else.
 pub fn flat_tree(nodes: &[(&str, &str)]) -> AxTree {
-    let children: Vec<Value> = (1..=nodes.len())
-        .map(|at| Value::String(at.to_string()))
-        .collect();
-    let mut all = vec![json!({
-        "nodeId": "0", "backendDOMNodeId": 900,
-        "role": { "value": "RootWebArea" }, "childIds": children
-    })];
-    all.extend(nodes.iter().enumerate().map(|(at, (role, name))| {
-        json!({
-            "nodeId": (at + 1).to_string(),
-            "backendDOMNodeId": at + 1,
-            "role": { "value": role },
-            "name": { "value": name }
-        })
-    }));
+    let ids: Vec<String> = (1..=nodes.len()).map(|at| at.to_string()).collect();
+    let children: Vec<&str> = ids.iter().map(String::as_str).collect();
+    let mut all = vec![ax_node("0", 900, "RootWebArea", "", &children)];
+    all.extend(
+        nodes
+            .iter()
+            .enumerate()
+            .map(|(at, (role, name))| ax_node(&ids[at], at as u64 + 1, role, name, &[])),
+    );
     serde_json::from_value(json!({ "nodes": all })).expect("the fixture parses as a tree")
 }
 
 /// One checkbox, in the state it is in.
 pub fn checkbox_tree(checked: &str) -> AxTree {
     serde_json::from_value(json!({ "nodes": [
-        { "nodeId": "0", "backendDOMNodeId": 900, "role": { "value": "RootWebArea" },
-          "childIds": ["1"] },
-        { "nodeId": "1", "backendDOMNodeId": 1, "role": { "value": "checkbox" },
-          "name": { "value": "Remember" },
-          "properties": [{ "name": "checked", "value": { "value": checked } }] }
+        ax_node("0", 900, "RootWebArea", "", &["1"]),
+        ax_with_property(
+            ax_node("1", 1, "checkbox", "Remember", &[]),
+            ax_property("checked", "tristate", json!(checked)),
+        )
     ]}))
     .expect("the fixture parses as a tree")
 }

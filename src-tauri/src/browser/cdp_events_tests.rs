@@ -23,6 +23,32 @@ fn a_watched_page_has_a_signal_and_forgetting_it_takes_the_signal_with_it() {
 }
 
 #[test]
+fn a_settle_never_outlasts_the_time_its_command_has_left() {
+    // One quiet is 300 ms, so a settle that ignored the command's deadline
+    // would take at least that however little was left.
+    let started = std::time::Instant::now();
+    tauri::async_runtime::block_on(settle(
+        "tab-settle",
+        Deadline::in_(Duration::from_millis(40)),
+    ));
+    assert!(
+        started.elapsed() < Duration::from_millis(250),
+        "settled in {:?}",
+        started.elapsed()
+    );
+
+    let spent = Deadline::in_(Duration::from_millis(1));
+    std::thread::sleep(Duration::from_millis(10));
+    let started = std::time::Instant::now();
+    tauri::async_runtime::block_on(settle("tab-settle", spent));
+    assert!(
+        started.elapsed() < Duration::from_millis(100),
+        "a spent command does not wait at all: {:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
 fn the_quiet_a_settle_waits_for_is_shorter_than_the_cap_it_gives_up_at() {
     assert!(QUIET < SETTLE_CAP);
     assert_eq!(

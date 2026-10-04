@@ -14,10 +14,10 @@ use serde_json::{json, Value};
 use devboule_protocol::BrowserError;
 
 use super::super::cdp::Page;
+use super::super::deadline::Deadline;
 use super::super::delta;
 use super::super::registry::TabInfo;
 use super::super::view::Mode;
-use super::Deadline;
 use super::{args_of, host_error, node_of};
 
 /// The longest a caller may wait. Below the daemon's 15 s budget, with room
@@ -59,25 +59,27 @@ pub async fn wait_for(
         }
     }
     let node = asked.reference.as_deref().map(node_of).transpose()?;
+    // Only reads: the accessible tree of a parked page is the presented
+    // page's, so a wait puts nothing on screen and holds nothing of the tab's.
     let start = super::act::read(tab, page).await?;
-    super::act::ready(tab, page).await?;
     // The smaller of what the caller asked for, the contract's own cap, and
     // what the command's answer still needs out of its budget.
     let budget = Duration::from_millis(asked.timeout_ms.unwrap_or(5_000).min(MAX_WAIT_MS))
         .min(deadline.wait_for());
-    let deadline = std::time::Instant::now() + budget;
+    let waited_until = std::time::Instant::now() + budget;
     let mut met = false;
-    while std::time::Instant::now() < deadline {
+    while std::time::Instant::now() < waited_until {
         met = is_met(tab, page, &asked, node).await?;
         if met {
             break;
         }
-        super::super::cdp_events::nap(POLL).await;
+        let left = waited_until.saturating_duration_since(std::time::Instant::now());
+        super::super::cdp_events::nap(POLL.min(left)).await;
     }
     // A wait that was met has already watched the page until it stopped
     // moving, so it is not settled again; one that ran out has not.
     if !met {
-        super::super::cdp_events::settle(&tab.browser_id).await;
+        super::super::cdp_events::settle(&tab.browser_id, deadline).await;
     }
     let after = super::view_of(page, Mode::Interactive).await?;
     let delta = delta::between(

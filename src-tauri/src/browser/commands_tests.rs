@@ -7,7 +7,6 @@ use super::*;
 use crate::browser::test_support::{ax_fixture, box_model, function_answer, parked_tab, FakePage};
 use devboule_protocol::{BrowserCaller, BrowserErrorCode};
 use serde_json::json;
-use std::time::Duration;
 
 fn caller() -> BrowserCaller {
     BrowserCaller {
@@ -119,7 +118,7 @@ fn a_find_answers_with_at_most_twenty_refs_and_what_each_one_is() {
     assert_eq!(matches[0]["ref"], "e14");
     assert_eq!(matches[0]["role"], "checkbox");
     assert_eq!(matches[0]["name"], "Remember me");
-    assert_eq!(matches[0]["context"], r#"form "Sign in""#);
+    assert_eq!(matches[0]["context"], r#"in form "Sign in""#);
 }
 
 #[test]
@@ -238,6 +237,35 @@ fn a_navigate_step_through_history_uses_the_pages_own_entries() {
 }
 
 #[test]
+fn a_step_that_way_with_no_history_that_way_goes_nowhere() {
+    let only_entry = FakePage::new()
+        .answering("Accessibility.getFullAXTree", ax_fixture())
+        .answering(
+            "Page.getNavigationHistory",
+            json!({ "currentIndex": 0, "entries": [{ "id": 40, "url": "https://example.test/" }] }),
+        );
+
+    for action in ["back", "forward"] {
+        let error = run(
+            &only_entry,
+            "navigate",
+            json!({ "browserId": "tab-1", "action": action }),
+        )
+        .expect_err(action);
+        assert!(
+            error.message.contains("nothing that way"),
+            "{action}: {}",
+            error.message
+        );
+    }
+    assert_eq!(
+        only_entry.called("Page.navigateToHistoryEntry"),
+        0,
+        "a back from the first entry is not a navigation to the first entry"
+    );
+}
+
+#[test]
 fn a_command_this_app_does_not_run_is_a_refusal_and_not_an_empty_answer() {
     let error = run(&form_page(), "screenshot", args(json!({}))).expect_err("not a 4b-1 command");
     assert_eq!(error.code, BrowserErrorCode::HostError);
@@ -264,28 +292,6 @@ fn a_tab_of_another_workspace_is_exactly_as_unknown_as_a_tab_that_is_not_there()
         resolve(&registry, &caller(), "tab-1").is_ok(),
         "and its own workspace's tab resolves"
     );
-}
-
-#[test]
-fn a_wait_cannot_use_the_time_its_own_answer_needs() {
-    // The contract lets a caller ask for 12 s and the daemon's budget is 15 s;
-    // a command that waited for all of it and then read two trees would be cut
-    // off instead of answered.
-    let deadline = Deadline::from_now();
-    assert!(
-        deadline.wait_for() + ANSWER_RESERVE <= COMMAND_BUDGET,
-        "a wait plus its answer stays inside the budget: {:?} + {ANSWER_RESERVE:?} <= {COMMAND_BUDGET:?}",
-        deadline.wait_for()
-    );
-    assert!(
-        deadline.wait_for() < Duration::from_millis(12_000),
-        "and a caller who asks for 12 s is served less rather than timed out"
-    );
-
-    // A budget already spent leaves nothing to wait for, and not a negative.
-    let spent = Deadline::in_(Duration::from_secs(1));
-    std::thread::sleep(Duration::from_millis(20));
-    assert_eq!(spent.wait_for(), Duration::ZERO);
 }
 
 #[test]

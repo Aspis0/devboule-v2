@@ -1,6 +1,6 @@
 use super::*;
 use crate::browser::ax::AxTree;
-use crate::browser::test_support::ax_fixture;
+use crate::browser::test_support::{ax_fixture, ax_node, ax_text, ax_with};
 
 fn fixture() -> AxTree {
     serde_json::from_value(ax_fixture()).expect("the fixture parses as a tree")
@@ -87,12 +87,11 @@ fn the_states_a_line_carries_are_read_from_the_properties_in_a_fixed_order() {
 fn a_value_is_clipped_because_a_field_can_hold_a_whole_document() {
     let long = "x".repeat(200);
     let tree: AxTree = serde_json::from_value(serde_json::json!({
-        "nodes": [{
-            "nodeId": "1", "backendDOMNodeId": 5,
-            "role": { "value": "textbox" }, "name": { "value": "Notes" },
-            "value": { "value": long },
-            "childIds": []
-        }]
+        "nodes": [ax_with(
+            ax_node("1", 5, "textbox", "Notes", &[]),
+            "value",
+            ax_text(&long),
+        )]
     }))
     .expect("the fixture parses");
 
@@ -120,20 +119,12 @@ fn a_value_is_clipped_because_a_field_can_hold_a_whole_document() {
 #[test]
 fn a_view_is_cut_at_its_budget_and_the_cursor_is_the_node_that_did_not_fit() {
     let tree: AxTree = serde_json::from_value(serde_json::json!({
-        "nodes": [{
-            "nodeId": "1", "backendDOMNodeId": 1,
-            "role": { "value": "form" }, "name": { "value": "A long form" },
-            "childIds": ["2", "3", "4"]
-        }, {
-            "nodeId": "2", "backendDOMNodeId": 2,
-            "role": { "value": "button" }, "name": { "value": "One" }
-        }, {
-            "nodeId": "3", "backendDOMNodeId": 3,
-            "role": { "value": "button" }, "name": { "value": "Two" }
-        }, {
-            "nodeId": "4", "backendDOMNodeId": 4,
-            "role": { "value": "button" }, "name": { "value": "Three" }
-        }]
+        "nodes": [
+            ax_node("1", 1, "form", "A long form", &["2", "3", "4"]),
+            ax_node("2", 2, "button", "One", &[]),
+            ax_node("3", 3, "button", "Two", &[]),
+            ax_node("4", 4, "button", "Three", &[]),
+        ]
     }))
     .expect("the fixture parses");
     let view = compact(&tree, Mode::Interactive);
@@ -188,7 +179,7 @@ fn a_named_control_keeps_the_nearest_named_ancestor_as_its_context() {
         .find(|node| node.backend_id == 14)
         .expect("the checkbox is kept");
 
-    assert_eq!(checkbox.context, r#"form "Sign in""#);
+    assert_eq!(checkbox.context, r#"in form "Sign in""#);
     // And the words above it, which is what tells it from another control of
     // the same name.
     assert_eq!(checkbox.nearby, "Keep me signed in");

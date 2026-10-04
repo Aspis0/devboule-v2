@@ -80,7 +80,14 @@ pub struct OwnedTab {
     /// The last size the page was presented at, and what a measurement of a
     /// parked page is taken against. None until a pane has shown it once.
     pub presented: Option<Size>,
+    /// Held by whatever changes this page or where it is shown: an agent's
+    /// acting command, and the pane's present, park and close. Two of those at
+    /// once is a click measured against a layout the pane has just replaced.
+    pub guard: TabGuard,
 }
+
+/// One tab's lock, owned so a command can hold it across its own awaits.
+pub type TabGuard = Arc<tauri::async_runtime::Mutex<()>>;
 
 /// A width and a height, in the pane's logical pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -201,6 +208,17 @@ impl BrowserRegistry {
         })
     }
 
+    /// The lock that serializes everything acting on one tab's page, or None
+    /// when the tab is unknown, closed, or still being created.
+    pub fn guard_of(&self, id: &str) -> Option<TabGuard> {
+        self.tabs
+            .lock()
+            .expect("browser registry poisoned")
+            .get(id)
+            .filter(|tab| !tab.cancelled)
+            .map(|tab| Arc::clone(&tab.guard))
+    }
+
     /// Hand a page's reports to a new watcher and answer with the state the
     /// page has already reported. None when there is no page to adopt, which
     /// is the caller's cue to open one.
@@ -296,6 +314,7 @@ mod tests {
             state: Arc::new(Mutex::new(BrowserViewState::default())),
             sink: Arc::new(Mutex::new(Channel::new(|_| Ok(())))),
             presented: None,
+            guard: TabGuard::default(),
         }
     }
 
@@ -534,6 +553,27 @@ mod tests {
         );
         // And the id itself is still real: scoping is a check, not a hiding.
         assert!(registry.tab_of("b").is_some());
+    }
+
+    #[test]
+    fn a_tab_has_one_guard_and_a_closed_or_cancelled_tab_has_none() {
+        let registry = BrowserRegistry::new();
+        registry.claim("a", owned("browser-a")).expect("claim a");
+        registry.claim("b", owned("browser-b")).expect("claim b");
+
+        let first = registry.guard_of("a").expect("a live tab has a guard");
+        let again = registry.guard_of("a").expect("and the same one every time");
+        assert!(Arc::ptr_eq(&first, &again));
+        assert!(
+            !Arc::ptr_eq(&first, &registry.guard_of("b").expect("b has its own")),
+            "one tab's command never waits on another tab"
+        );
+
+        registry.cancel("a");
+        assert!(registry.guard_of("a").is_none());
+        registry.release("b");
+        assert!(registry.guard_of("b").is_none());
+        assert!(registry.guard_of("never-existed").is_none());
     }
 
     #[test]

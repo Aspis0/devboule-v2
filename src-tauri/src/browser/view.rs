@@ -11,9 +11,10 @@
 //! control), a context node only with one, and everything else — `ignored`,
 //! `generic`, `presentation`, every other role — is dropped.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use super::ax::{AxNode, AxTree, AxValue};
+use super::view_context::{Ancestry, Index};
 
 /// The characters a view may carry before it is cut and a cursor offered.
 pub const VIEW_BUDGET: usize = 12_000;
@@ -48,6 +49,10 @@ const INTERACTIVE: [&str; 19] = [
     "tab",
     "textbox",
 ];
+
+/// The roles a person types into, which is what a question about a "field",
+/// a "box" or an "input" is asking for.
+pub const FIELD_ROLES: [&str; 3] = ["searchbox", "textbox", "combobox"];
 
 /// Roles worth reading as the way to a node: a heading that says what the
 /// region below it is, a landmark that says which part of the page this is.
@@ -100,31 +105,30 @@ pub struct ViewNode {
     pub placeholder: String,
     /// The last piece of text the node's own markup put above it, for `find`.
     pub nearby: String,
-    /// The nearest named node above this one, as `role "name"`. This is what
-    /// two controls with the same name are told apart by.
+    /// The row or list item and the landmark this node is in, as
+    /// `in row "…", in navigation "…"`. This is what two controls with the same
+    /// name are told apart by.
     pub context: String,
+    /// The role of the landmark this node is under, or empty.
+    pub landmark: String,
+    /// What the markup of a field says about it that the accessible tree does
+    /// not: its `type`, `name`, `id` and `placeholder`. Empty until `find`
+    /// reads it, and only for the fields a question is about.
+    pub hints: String,
+    /// How deep a heading is.
+    pub level: Option<u8>,
     pub focused: bool,
     pub disabled: bool,
     /// `Some` when the runtime reports a checked state, `None` when the node
     /// has none: a checkbox that did not flip and a control that cannot flip
     /// are different answers.
     pub checked: Option<bool>,
-    pub depth: usize,
     pub line: String,
 }
 
 impl ViewNode {
     pub fn ref_text(&self) -> String {
         format!("e{}", self.backend_id)
-    }
-
-    /// The node as a `find` match names it back: role and name, no states.
-    pub fn label(&self) -> String {
-        if self.name.is_empty() {
-            self.role.clone()
-        } else {
-            format!("{} \"{}\"", self.role, self.name)
-        }
     }
 }
 
@@ -266,7 +270,7 @@ fn line_for(node: &AxNode, backend_id: u64, depth: usize) -> String {
 }
 
 /// Shorten to `max` characters, at a boundary that does not split one.
-fn clip(text: &str, max: usize) -> String {
+pub(super) fn clip(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_owned();
     }
@@ -280,10 +284,20 @@ fn clip(text: &str, max: usize) -> String {
 /// A context node is written once, where it is first reached: a page with four
 /// `nav` landmarks would otherwise repeat the same line before every group it
 /// contains, and the repeats would read as changes between two snapshots.
-/// The tree indexed by the `nodeId` each child list names.
-type Index<'a> = HashMap<&'a str, usize>;
-
 pub fn compact(tree: &AxTree, mode: Mode) -> View {
+    build(tree, mode, None).0
+}
+
+/// The same view of one node and everything under it, or None when the tree
+/// has no such node. The node is found in the tree and not in a view of it, so
+/// a ref taken from a full view still names a node when this asks for the
+/// interactive one.
+pub fn compact_under(tree: &AxTree, mode: Mode, scope: u64) -> Option<View> {
+    let (view, found) = build(tree, mode, Some(scope));
+    found.then_some(view)
+}
+
+fn build(tree: &AxTree, mode: Mode, scope: Option<u64>) -> (View, bool) {
     let index: Index<'_> = tree
         .nodes
         .iter()
@@ -301,11 +315,20 @@ pub fn compact(tree: &AxTree, mode: Mode) -> View {
         tree,
         index: &index,
         mode,
+        scope,
+        found: false,
         written: HashSet::new(),
         view: View::default(),
     };
-    walk(&mut step, &[root], 0, 0, None);
-    step.view
+    walk(
+        &mut step,
+        &[root],
+        0,
+        0,
+        &Ancestry::default(),
+        scope.is_none(),
+    );
+    (step.view, step.found)
 }
 
 /// What the walk carries: the tree it reads, the view it writes and the one
@@ -314,64 +337,73 @@ struct Walk<'a> {
     tree: &'a AxTree,
     index: &'a Index<'a>,
     mode: Mode,
+    /// The one node a view is asked for, and whether the walk reached it.
+    scope: Option<u64>,
+    found: bool,
     /// The nodes already written. A node reachable twice is written once, so
     /// a delta between two reads sees a change and not a duplicate.
     written: HashSet<u64>,
     view: View,
 }
 
-fn walk(step: &mut Walk<'_>, siblings: &[usize], at: usize, depth: usize, context: Option<usize>) {
-    let Walk {
-        tree,
-        index,
-        mode,
-        written,
-        view,
-    } = step;
-    let Some(node) = tree.nodes.get(siblings[at]) else {
+fn walk(
+    step: &mut Walk<'_>,
+    siblings: &[usize],
+    at: usize,
+    depth: usize,
+    ancestry: &Ancestry,
+    inside: bool,
+) {
+    let Some(node) = step.tree.nodes.get(siblings[at]) else {
         return;
     };
     let Some(backend_id) = node.backend_dom_node_id else {
         return;
     };
-    let keep = keeps(node, *mode) && !written.contains(&backend_id);
+    let reached = step.scope == Some(backend_id);
+    step.found |= reached;
+    let inside = inside || reached;
+    let keep = keeps(node, step.mode) && !step.written.contains(&backend_id);
     let mut next_depth = depth;
-    let mut next_context = context;
     if keep && !node.name().is_empty() {
         next_depth = (depth + 1).min(MAX_DEPTH);
-        next_context = Some(view.nodes.len());
     }
     if keep {
-        written.insert(backend_id);
-        view.nodes.push(ViewNode {
-            backend_id,
-            role: node.role(),
-            name: node.name(),
-            value: node.text_of("value"),
-            description: node.text_of("description"),
-            placeholder: node.placeholder(),
-            nearby: nearby_text(tree, index, siblings, at),
-            context: context
-                .map(|above| view.nodes[above].label())
-                .unwrap_or_default(),
-            focused: node.property("focused") == "true",
-            disabled: node.property("disabled") == "true",
-            checked: match node.property("checked").as_str() {
-                "true" => Some(true),
-                "false" => Some(false),
-                _ => None,
-            },
-            depth,
-            line: line_for(node, backend_id, depth),
-        });
+        step.written.insert(backend_id);
+        if inside {
+            let level = node.property("level").parse().ok();
+            step.view.nodes.push(ViewNode {
+                backend_id,
+                role: node.role(),
+                name: node.name(),
+                value: node.text_of("value"),
+                description: node.text_of("description"),
+                placeholder: node.placeholder(),
+                nearby: nearby_text(step.tree, step.index, siblings, at),
+                context: ancestry.context(),
+                landmark: ancestry.landmark().to_owned(),
+                hints: String::new(),
+                level,
+                focused: node.property("focused") == "true",
+                disabled: node.property("disabled") == "true",
+                checked: match node.property("checked").as_str() {
+                    "true" => Some(true),
+                    "false" => Some(false),
+                    _ => None,
+                },
+                line: line_for(node, backend_id, depth),
+            });
+        }
     }
+    let entered = ancestry.within(node, step.tree, step.index);
+    let ancestry = entered.as_ref().unwrap_or(ancestry);
     let children: Vec<usize> = node
         .child_ids
         .iter()
-        .filter_map(|child| index.get(child.as_str()).copied())
+        .filter_map(|child| step.index.get(child.as_str()).copied())
         .collect();
     for position in 0..children.len() {
-        walk(step, &children, position, next_depth, next_context);
+        walk(step, &children, position, next_depth, ancestry, inside);
     }
 }
 
