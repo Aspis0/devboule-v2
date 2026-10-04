@@ -7,11 +7,17 @@
 //! copy taken when it started.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+
+use super::registry::{Size, DEFAULT_PRESENTED};
 
 #[derive(Debug)]
 pub struct Live {
     parked: AtomicBool,
     overridden: AtomicBool,
+    /// The last size the page was presented at, which a parked page is
+    /// measured against; the default until a pane has shown it once.
+    presented: Mutex<Size>,
 }
 
 /// A tab starts parked, as every child webview is created, with no override.
@@ -20,6 +26,7 @@ impl Default for Live {
         Live {
             parked: AtomicBool::new(true),
             overridden: AtomicBool::new(false),
+            presented: Mutex::new(DEFAULT_PRESENTED),
         }
     }
 }
@@ -41,6 +48,15 @@ impl Live {
 
     pub fn set_overridden(&self, on: bool) {
         self.overridden.store(on, Ordering::SeqCst);
+    }
+
+    pub fn size(&self) -> Size {
+        *self.presented.lock().expect("browser geometry poisoned")
+    }
+
+    /// The pane showed the page at this size. Kept past the park.
+    pub fn set_size(&self, size: Size) {
+        *self.presented.lock().expect("browser geometry poisoned") = size;
     }
 
     /// Whether an override was on, and from now on it is not: the pane, which

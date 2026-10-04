@@ -59,8 +59,9 @@ pub async fn wait_for(
         }
     }
     let node = asked.reference.as_deref().map(node_of).transpose()?;
-    // Only reads: the accessible tree of a parked page is the presented
-    // page's, so a wait puts nothing on screen and holds nothing of the tab's.
+    // A read, but of the page as a person would see it: a parked page is put at
+    // its pane's size first. It holds nothing of the tab's.
+    super::act::ready(tab, page).await?;
     let start = super::act::read(tab, page).await?;
     // The smaller of what the caller asked for, the contract's own cap, and
     // what the command's answer still needs out of its budget.

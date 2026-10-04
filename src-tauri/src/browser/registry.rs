@@ -80,9 +80,6 @@ pub struct OwnedTab {
     /// Where the page's reports go. A page an agent opened has none until a
     /// pane adopts it, which is what hands the channel over.
     pub sink: Arc<Mutex<Channel<BrowserUpdate>>>,
-    /// The last size the page was presented at, and what a measurement of a
-    /// parked page is taken against. None until a pane has shown it once.
-    pub presented: Option<Size>,
     /// Held by whatever changes this page or where it is shown: an agent's
     /// acting command, and the pane's present, park and close. Two of those at
     /// once is a click measured against a layout the pane has just replaced.
@@ -190,7 +187,7 @@ impl BrowserRegistry {
             if !parked {
                 // The last real size, kept past the park: a parked page is
                 // measured against what the pane last showed it at.
-                tab.presented = Some(Size {
+                tab.live.set_size(Size {
                     width: rect.width,
                     height: rect.height,
                 });
@@ -215,7 +212,7 @@ impl BrowserRegistry {
             url: state.url.clone(),
             title: state.title.clone(),
             live: Arc::clone(&tab.live),
-            size: tab.presented.unwrap_or(DEFAULT_PRESENTED),
+            size: tab.live.size(),
             state: Arc::clone(&tab.state),
         })
     }
@@ -325,7 +322,6 @@ mod tests {
             workspace: "ws-1".to_owned(),
             state: Arc::new(Mutex::new(BrowserViewState::default())),
             sink: Arc::new(Mutex::new(Channel::new(|_| Ok(())))),
-            presented: None,
             guard: TabGuard::default(),
         }
     }

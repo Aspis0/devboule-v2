@@ -13,8 +13,10 @@ use tauri::{AppHandle, Emitter, Manager, WebviewBuilder, WebviewUrl, Wry};
 
 use super::commands::tabs::{TabEvent, TAB_EVENT};
 use super::deadline::Deadline;
+use super::live::Live;
 use super::page_host;
 use super::registry::{profile_dir, BrowserRegistry, OwnedTab, PARK_RECT};
+use super::tab_reports;
 use super::url;
 
 /// The empty document a child is created on, before it is allowed to load
@@ -258,17 +260,17 @@ pub async fn open(
         app: app.clone(),
         id: id.to_owned(),
     };
+    let live: Arc<Live> = Arc::default();
     registry.claim(
         id,
         OwnedTab {
             label: label.clone(),
             rect: PARK_RECT,
-            live: Arc::default(),
+            live: Arc::clone(&live),
             cancelled: false,
             workspace: workspace.to_owned(),
             state: Arc::clone(&state),
             sink,
-            presented: None,
             guard: Arc::default(),
         },
     )?;
@@ -306,6 +308,10 @@ pub async fn open(
         registry.release(id);
         return Err(error);
     }
+    // A parked page lays itself out at two pixels, so it is given the size a
+    // pane would show it at while it is still the blank bootstrap, before it
+    // has a first layout to get wrong.
+    tab_reports::lay_out_before_loading(app, id, &label, &live, deadline).await;
     if let Err(error) = webview.navigate(target) {
         let _ = webview.close();
         registry.release(id);
@@ -314,7 +320,14 @@ pub async fn open(
     // The page is on the network now; its own event stream is what tells an
     // agent whether the document is still moving, so the subscription is
     // installed here rather than on the first command that needs it.
-    super::cdp_events::watch(app, id, &label, deadline).await;
+    let on_move = hooks.clone();
+    let reports = tab_reports::reports(app, &label, &live, move |url| {
+        // A page that moved its own address — `pushState`, a hash — has no
+        // navigation for the webview's hook to see, and the pane, the strip's
+        // record and the agent's answers all read this one state.
+        on_move.edit(|state| state.url = url);
+    });
+    super::cdp_events::watch(app, id, &label, deadline, reports).await;
     let opened = state.lock().expect("browser state poisoned").clone();
     Ok(opened)
 }

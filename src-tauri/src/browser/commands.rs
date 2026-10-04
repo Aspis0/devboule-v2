@@ -153,10 +153,11 @@ pub async fn view_of(page: &dyn Page, mode: view::Mode) -> Result<view::View, Br
     Ok(view_walk::compact(&tree_of(page).await?, mode))
 }
 
-/// The commands that only read a page. They change nothing a pane or another
-/// command could be measuring against, so they never wait for the tab and
-/// never hold it: a `wait_for` that polled for twelve seconds under the tab's
-/// lock would leave the pane's own present waiting just as long.
+/// The commands that only read a page. They never wait for the tab and never
+/// hold it: a `wait_for` that polled for twelve seconds under the tab's lock
+/// would leave the pane's own present waiting just as long. They do put a
+/// parked page at its pane's size, which is safe without the lock because the
+/// override is checked against the live parked state on both sides of its call.
 const READS: [&str; 3] = ["snapshot", "find", "wait_for"];
 
 /// Run one command the daemon pushed to this host.

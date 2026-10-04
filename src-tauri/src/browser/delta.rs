@@ -24,11 +24,25 @@ pub const LIST_CAP: usize = 40;
 const SUMMARY_HEADINGS: usize = 5;
 const HEADING_MAX: usize = 80;
 
-/// One page's address and title, read before and after an action.
+/// One page's address and title, and how many documents it has loaded, read
+/// before and after an action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Place {
     pub url: String,
     pub title: Option<String>,
+    /// How many documents the tab's own frame has committed. The address can
+    /// move without it moving (`pushState`, a hash), and it can move without
+    /// the address (a reload).
+    pub document: u64,
+}
+
+impl Place {
+    /// Whether the action took the tab somewhere: to another address, or to a
+    /// new document at the same one. A title that changed on its own is a change
+    /// on the page, and is read as one.
+    fn navigated_to(&self, to: &Place) -> bool {
+        self.url != to.url || self.document != to.document
+    }
 }
 
 /// What changed between two views of one page.
@@ -36,6 +50,10 @@ pub struct Place {
 #[serde(rename_all = "camelCase")]
 pub struct Delta {
     pub navigated: bool,
+    /// The address changed and no document was loaded: the page moved itself,
+    /// as a single-page app does. The summary describes where it is now.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub same_document: bool,
     pub url: String,
     pub title: Option<String>,
     /// The node the command acted on, read again after the page settled: the
@@ -145,10 +163,11 @@ fn delta_of(
     target: Option<u64>,
     within_one_document: impl FnOnce(&View, &View) -> Lists,
 ) -> Delta {
-    let navigated = from != to;
+    let navigated = from.navigated_to(to);
     let target_line = target.and_then(|id| after.line_of(id).map(str::to_owned));
     Delta {
         navigated,
+        same_document: navigated && from.document == to.document,
         url: to.url.clone(),
         title: to.title.clone(),
         // The focused node is what the caller acted on more often than not, and

@@ -6,6 +6,10 @@
 //! DOM counters (`DOM.documentUpdated`, which arrives with no enable) and the
 //! load events (`Page.*`, which arrive only after `Page.enable`).
 //!
+//! The same stream says where the tab is: a new document in its own frame, and
+//! a move of the address with no load at all (`pushState`, a hash change),
+//! which the owner of the tab is told about through [`Reports`].
+//!
 //! One receiver per event per page, installed when the page is created and
 //! never removed: the handler belongs to the child webview, which a close
 //! disposes of, and a page watched twice would move its own counter twice. What
@@ -13,7 +17,7 @@
 
 use std::collections::HashMap;
 use std::sync::mpsc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::json;
@@ -21,6 +25,7 @@ use tauri::{AppHandle, Manager};
 
 use super::cdp::{Bounded, Page as _, WebviewPage};
 use super::deadline::Deadline;
+use super::frames::{Frames, Observed};
 
 /// What a page must go without before its state is believed.
 pub const QUIET: Duration = Duration::from_millis(300);
@@ -34,31 +39,62 @@ pub const SETTLE_CAP: Duration = Duration::from_secs(3);
 /// `Page.*` does, which is why [`watch`] enables the page before asking for
 /// them.
 #[cfg(windows)]
-const WATCHED: [&str; 4] = [
+const WATCHED: [&str; 5] = [
     "DOM.documentUpdated",
     "Page.frameNavigated",
+    "Page.navigatedWithinDocument",
     "Page.loadEventFired",
     "Page.frameStoppedLoading",
 ];
 
-/// How much the page has moved since the tab was opened, per browser id.
-static QUIET_SIGNAL: Mutex<Option<HashMap<String, u64>>> = Mutex::new(None);
+/// What a tab's owner is told when the page says where it is.
+#[derive(Clone)]
+pub struct Reports {
+    /// The tab's own frame moved to this address without loading a document.
+    pub within_document: Arc<dyn Fn(String) + Send + Sync>,
+    /// The tab's own frame committed a new document.
+    pub committed: Arc<dyn Fn() + Send + Sync>,
+}
 
-/// The signal one page's events bump, created when the page is watched.
+/// What one page's events have counted since the tab was opened.
+#[derive(Default)]
+struct Counters {
+    /// Every event: how far the page has moved, which is what a settle waits out.
+    moved: u64,
+    /// New documents in the tab's own frame.
+    documents: u64,
+}
+
+/// The counters of every watched page, per browser id.
+static QUIET_SIGNAL: Mutex<Option<HashMap<String, Counters>>> = Mutex::new(None);
+
+/// The counters one page's events bump, created when the page is watched.
 fn signal_for(id: &str) {
     let mut pages = QUIET_SIGNAL.lock().expect("browser page signals poisoned");
     pages
         .get_or_insert_with(HashMap::new)
         .entry(id.to_owned())
-        .or_insert(0);
+        .or_default();
 }
 
 /// How far the page has moved since the tab was opened.
 pub fn moved(id: &str) -> u64 {
+    counted(id, |counters| counters.moved)
+}
+
+/// How many documents the tab's own frame has committed. A navigation that
+/// loaded nothing leaves it where it was, which is how a delta tells a move
+/// within a document from a new page.
+pub fn documents(id: &str) -> u64 {
+    counted(id, |counters| counters.documents)
+}
+
+fn counted(id: &str, read: impl Fn(&Counters) -> u64) -> u64 {
     let pages = QUIET_SIGNAL.lock().expect("browser page signals poisoned");
     pages
         .as_ref()
-        .and_then(|pages| pages.get(id).copied())
+        .and_then(|pages| pages.get(id))
+        .map(read)
         .unwrap_or(0)
 }
 
@@ -78,7 +114,7 @@ pub fn forget(id: &str) {
 /// is not installed: the tab is already open, and a settle without the event
 /// falls back to its cap.
 #[cfg(windows)]
-pub async fn watch(app: &AppHandle, id: &str, label: &str, deadline: Deadline) {
+pub async fn watch(app: &AppHandle, id: &str, label: &str, deadline: Deadline, reports: Reports) {
     signal_for(id);
     let webview = WebviewPage::new(app, label);
     let page = Bounded::new(&webview, deadline);
@@ -87,11 +123,46 @@ pub async fn watch(app: &AppHandle, id: &str, label: &str, deadline: Deadline) {
     if let Err(error) = page.call("Page.enable", json!({})).await {
         eprintln!("devboule: browser page {id} will not report its loads: {error}");
     }
+    // Which frame is the tab's own is what makes a same-document move the tab's
+    // address. Without it none is believed.
+    let frames = Arc::new(Frames::default());
+    match page.call("Page.getFrameTree", json!({})).await {
+        Ok(tree) => frames.learn_from_tree(&tree),
+        Err(error) => eprintln!("devboule: browser page {id} has no known top frame: {error}"),
+    }
     for event in WATCHED {
-        if let Err(error) = subscribe(app, label, id, event, deadline.left()).await {
+        let listener = Listener {
+            id: id.to_owned(),
+            frames: Arc::clone(&frames),
+            reports: reports.clone(),
+        };
+        if let Err(error) = subscribe(app, label, event, deadline.left(), listener).await {
             // Without this event the settle falls back to its cap, which is
             // slower and no worse than not settling at all.
             eprintln!("devboule: browser page {id} is not watched for {event}: {error}");
+        }
+    }
+}
+
+/// What one event receiver needs to turn an event into a count and a report.
+#[cfg(windows)]
+struct Listener {
+    id: String,
+    frames: Arc<Frames>,
+    reports: Reports,
+}
+
+#[cfg(windows)]
+impl Listener {
+    fn heard(&self, event: &str, params: &str) {
+        bump(&self.id);
+        match self.frames.observe(event, params) {
+            Observed::NewDocument => {
+                bump_document(&self.id);
+                (self.reports.committed)();
+            }
+            Observed::SameDocument(url) => (self.reports.within_document)(url),
+            Observed::Nothing => {}
         }
     }
 }
@@ -100,9 +171,9 @@ pub async fn watch(app: &AppHandle, id: &str, label: &str, deadline: Deadline) {
 async fn subscribe(
     app: &AppHandle,
     label: &str,
-    id: &str,
     event: &str,
     limit: Duration,
+    listener: Listener,
 ) -> Result<(), String> {
     use webview2_com::{take_pwstr, DevToolsProtocolEventReceivedEventHandler};
     use windows::core::HSTRING;
@@ -111,7 +182,6 @@ async fn subscribe(
         .get_webview(label)
         .ok_or_else(|| "This browser tab is no longer open.".to_owned())?;
     let (tx, rx) = mpsc::channel();
-    let owned_id = id.to_owned();
     let owned_event = event.to_owned();
     webview
         .with_webview(move |pw| {
@@ -120,17 +190,17 @@ async fn subscribe(
                 let watched = HSTRING::from(owned_event.as_str());
                 let receiver =
                     unsafe { core.GetDevToolsProtocolEventReceiver(&watched) }.map_err(com)?;
+                let named = owned_event.clone();
                 let handler =
                     DevToolsProtocolEventReceivedEventHandler::create(Box::new(move |_, args| {
-                        // The parameters are read only to prove an event
-                        // arrived; nothing here needs what is in them.
+                        let mut params = String::new();
                         if let Some(args) = args {
                             let mut buffer = windows::core::PWSTR::default();
                             if unsafe { args.ParameterObjectAsJson(&mut buffer) }.is_ok() {
-                                take_pwstr(buffer);
+                                params = take_pwstr(buffer);
                             }
                         }
-                        bump(&owned_id);
+                        listener.heard(&named, &params);
                         Ok(())
                     }));
                 // The token the runtime hands back is not kept: nothing here
@@ -149,9 +219,23 @@ async fn subscribe(
 
 #[cfg(windows)]
 fn bump(id: &str) {
+    count(id, |counters| {
+        counters.moved = counters.moved.wrapping_add(1);
+    });
+}
+
+#[cfg(windows)]
+fn bump_document(id: &str) {
+    count(id, |counters| {
+        counters.documents = counters.documents.wrapping_add(1);
+    });
+}
+
+#[cfg(windows)]
+fn count(id: &str, update: impl FnOnce(&mut Counters)) {
     let mut pages = QUIET_SIGNAL.lock().expect("browser page signals poisoned");
     if let Some(page) = pages.as_mut().and_then(|pages| pages.get_mut(id)) {
-        *page = page.wrapping_add(1);
+        update(page);
     }
 }
 
@@ -161,7 +245,13 @@ fn com(error: windows::core::Error) -> String {
 }
 
 #[cfg(not(windows))]
-pub async fn watch(_app: &AppHandle, _id: &str, _label: &str, _deadline: Deadline) {
+pub async fn watch(
+    _app: &AppHandle,
+    _id: &str,
+    _label: &str,
+    _deadline: Deadline,
+    _reports: Reports,
+) {
     // No event stream on this target, so `moved` never moves and every settle
     // ends on its first quiet. Nothing here blocks a command from running.
 }

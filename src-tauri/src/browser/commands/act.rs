@@ -40,13 +40,15 @@ pub async fn call(page: &dyn Page, method: &str, params: Value) -> Result<Value,
     page.call(method, params).await.map_err(cdp_failure)
 }
 
-/// The address and title the page's own hooks last reported, read fresh: they
-/// are the only record of where a navigation actually landed.
+/// The address and title the page's own hooks last reported, read fresh, and
+/// the documents it has loaded: they are the only record of where a navigation
+/// actually landed, and of whether it loaded anything.
 pub fn place(tab: &TabInfo) -> Place {
     let state = tab.state.lock().expect("browser state poisoned");
     Place {
         url: state.url.clone(),
         title: state.title.clone(),
+        document: super::super::cdp_events::documents(&tab.browser_id),
     }
 }
 

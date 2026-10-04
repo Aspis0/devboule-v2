@@ -48,19 +48,41 @@ fn a_command_with_no_time_left_touches_nothing() {
 }
 
 #[test]
-fn a_wait_puts_no_parked_page_on_screen_because_it_only_reads() {
-    let page = form_page();
-    let tab = parked_tab("tab-1");
-    let args = json!({ "browserId": "tab-1", "text": "remember", "timeoutMs": 500 });
+fn every_read_of_a_parked_page_puts_it_at_its_panes_size_first() {
+    for (command, args) in [
+        ("snapshot", json!({ "browserId": "tab-1" })),
+        ("find", json!({ "browserId": "tab-1", "query": "remember" })),
+        (
+            "wait_for",
+            json!({ "browserId": "tab-1", "text": "remember", "timeoutMs": 500 }),
+        ),
+    ] {
+        let page = form_page();
+        let tab = parked_tab("tab-1");
 
-    tauri::async_runtime::block_on(on_tab(
-        &tab,
-        &page,
-        "wait_for",
-        &args,
-        Deadline::in_(Duration::from_secs(10)),
-    ))
-    .expect("answered");
+        tauri::async_runtime::block_on(on_tab(
+            &tab,
+            &page,
+            command,
+            &args,
+            Deadline::in_(Duration::from_secs(10)),
+        ))
+        .expect(command);
 
-    assert_eq!(page.called("Emulation.setDeviceMetricsOverride"), 0);
+        let first_override = page
+            .calls()
+            .iter()
+            .position(|(method, _)| method == "Emulation.setDeviceMetricsOverride")
+            .unwrap_or_else(|| panic!("{command} left the page at two pixels"));
+        let first_read = page
+            .calls()
+            .iter()
+            .position(|(method, _)| method == "Accessibility.getFullAXTree")
+            .expect("and read it");
+        assert!(
+            first_override < first_read,
+            "{command}: the layout comes first"
+        );
+        assert!(tab.live.overridden(), "{command}");
+    }
 }

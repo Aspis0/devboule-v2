@@ -9,6 +9,7 @@ fn place(url: &str) -> Place {
     Place {
         url: url.to_owned(),
         title: Some("Sign in".to_owned()),
+        document: 1,
     }
 }
 
@@ -207,4 +208,92 @@ fn the_lists_are_capped_and_the_rest_is_counted_rather_than_dropped() {
         20,
         "the other 20 are counted, not lost"
     );
+}
+
+fn moved_to(url: &str, document: u64) -> Place {
+    Place {
+        url: url.to_owned(),
+        title: Some("Sign in".to_owned()),
+        document,
+    }
+}
+
+#[test]
+fn a_page_that_moved_its_own_address_is_a_navigation_within_the_document() {
+    let before = view_of(&flat_tree(&[("button", "Save")]));
+    let after = view_of(&flat_tree(&[("button", "Save"), ("link", "Learn")]));
+
+    let delta = between(
+        &before,
+        &after,
+        &moved_to("https://react.dev/", 1),
+        &moved_to("https://react.dev/learn", 1),
+        None,
+    );
+
+    assert!(delta.navigated);
+    assert!(delta.same_document);
+    assert_eq!(delta.url, "https://react.dev/learn");
+    assert_eq!(
+        delta.changes, None,
+        "the summary, not a list of what was added"
+    );
+    assert!(delta.summary.is_some());
+    let json = serde_json::to_value(&delta).expect("serializes");
+    assert_eq!(json["sameDocument"], true);
+    assert_eq!(json["navigated"], true);
+}
+
+#[test]
+fn a_new_document_is_a_navigation_that_is_not_within_one() {
+    let view = view_of(&flat_tree(&[("button", "Save")]));
+
+    let delta = between(
+        &view,
+        &view,
+        &moved_to("https://example.test/a", 1),
+        &moved_to("https://example.test/b", 2),
+        None,
+    );
+
+    assert!(delta.navigated && !delta.same_document);
+    let json = serde_json::to_value(&delta).expect("serializes");
+    assert!(json.get("sameDocument").is_none(), "{json}");
+}
+
+#[test]
+fn a_reload_is_a_navigation_at_the_same_address() {
+    let view = view_of(&flat_tree(&[("button", "Save")]));
+
+    let delta = between(
+        &view,
+        &view,
+        &moved_to("https://example.test/a", 1),
+        &moved_to("https://example.test/a", 2),
+        None,
+    );
+
+    assert!(delta.navigated && !delta.same_document);
+}
+
+#[test]
+fn a_title_that_changed_on_its_own_is_a_change_on_the_page_and_not_a_navigation() {
+    let before = view_of(&flat_tree(&[("button", "Save")]));
+    let after = view_of(&flat_tree(&[("button", "Save"), ("button", "Publish")]));
+    let retitled = Place {
+        title: Some("Draft saved".to_owned()),
+        ..moved_to("https://example.test/a", 1)
+    };
+
+    let delta = between(
+        &before,
+        &after,
+        &moved_to("https://example.test/a", 1),
+        &retitled,
+        None,
+    );
+
+    assert!(!delta.navigated);
+    assert_eq!(delta.title.as_deref(), Some("Draft saved"));
+    assert_eq!(lists(&delta).added.len(), 1);
 }

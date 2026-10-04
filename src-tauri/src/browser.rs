@@ -18,12 +18,14 @@ mod delta;
 mod delta_input;
 mod find;
 mod find_query;
+mod frames;
 pub mod host;
 mod live;
 mod page_host;
 pub(crate) mod registry;
 mod tab;
 mod tab_guard;
+mod tab_reports;
 #[cfg(test)]
 mod test_pages;
 #[cfg(test)]

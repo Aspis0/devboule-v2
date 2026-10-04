@@ -1,10 +1,9 @@
 //! `snapshot` and `find`: the two commands that read a page.
 //!
-//! Neither measures the page, so neither puts a parked one on screen: the
-//! accessible tree of a parked page is byte-identical to the same page's
-//! presented one (measured in the spike report), and overriding the metrics
-//! would re-lay out a responsive document for no gain. Everything that DOES
-//! measure goes through `act`, which overrides first.
+//! Neither measures the page, but both put a parked one on screen first: the
+//! accessible tree is the tree of the layout, and a responsive page laid out at
+//! the two pixels a parked child has collapses its navigation into a menu
+//! button. Reading it as it would look to a person is the point.
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -46,6 +45,7 @@ pub async fn snapshot(tab: &TabInfo, page: &dyn Page, args: &Value) -> Result<Va
         Some("full") => Mode::Full,
         Some(other) => return Err(host_error(format!("{other} is not a snapshot mode."))),
     };
+    super::act::ready(tab, page).await?;
     let tree = tree_of(page).await?;
     let scoped = match &asked.scope {
         None => view_walk::compact(&tree, mode),
@@ -73,9 +73,10 @@ pub async fn snapshot(tab: &TabInfo, page: &dyn Page, args: &Value) -> Result<Va
     }))
 }
 
-pub async fn find(_tab: &TabInfo, page: &dyn Page, args: &Value) -> Result<Value, BrowserError> {
+pub async fn find(tab: &TabInfo, page: &dyn Page, args: &Value) -> Result<Value, BrowserError> {
     let asked: FindArgs = args_of(args)?;
     let query = Query::parse(&asked.query);
+    super::act::ready(tab, page).await?;
     let mut view = view_of(page, Mode::Interactive).await?;
     if query.asks_for_fields() {
         for node in fields_of(&mut view).take(FIELDS_READ) {

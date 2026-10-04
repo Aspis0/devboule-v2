@@ -11,6 +11,7 @@ fn place() -> Place {
     Place {
         url: "https://example.test/".to_owned(),
         title: Some("Search".to_owned()),
+        document: 1,
     }
 }
 
@@ -157,6 +158,7 @@ fn an_input_that_navigated_is_answered_like_any_navigation() {
     let to = Place {
         url: "https://example.test/results".to_owned(),
         title: Some("Results".to_owned()),
+        document: 2,
     };
 
     let delta = between_input(
