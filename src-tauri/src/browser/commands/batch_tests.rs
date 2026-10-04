@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::browser::cdp::CdpError;
-use crate::browser::commands::{on_tab, BrowserError, Deadline};
+use crate::browser::commands::{BrowserError, Deadline};
 use crate::browser::test_support::{ax_fixture, box_model, function_answer, parked_tab, FakePage};
 use devboule_protocol::BrowserErrorCode;
 use serde_json::json;
@@ -195,25 +195,24 @@ fn ten_steps_run_and_the_eleventh_does_not() {
 /// an action that never happened from one that did.
 #[test]
 fn a_batch_that_runs_out_of_time_still_answers_with_the_steps_that_ran() {
-    let page = form_page().during("Input.insertText", || {
-        std::thread::sleep(std::time::Duration::from_millis(60));
-    });
+    // The typing is where the budget runs out, and the page never settles
+    // after it. Said by call order, so the test does not depend on how fast
+    // the machine reaches the typing.
+    let page = form_page()
+        .refusing("Input.insertText", CdpError::OutOfTime)
+        .refusing_after(
+            "Input.insertText",
+            "Accessibility.getFullAXTree",
+            CdpError::OutOfTime,
+        );
     let asked = json!([
         { "command": "fill", "ref": "e13", "text": "person@example.test" },
         { "command": "click", "ref": "e15" },
         { "command": "click", "ref": "e15" },
     ]);
 
-    // A budget the typing sleeps past: the text went into the page, and what
-    // came after it had no time left.
-    let answered = tauri::async_runtime::block_on(on_tab(
-        &parked_tab("tab-1"),
-        &page,
-        "act",
-        &json!({ "browserId": "tab-1", "steps": asked }),
-        Deadline::in_(std::time::Duration::from_millis(25)),
-    ))
-    .expect("the batch answers even when the page runs out of time");
+    let answered =
+        run(&page, asked).expect("the batch answers even when the page runs out of time");
 
     let ran = steps(&answered);
     assert_eq!(ran[0]["ok"], false, "the fill ran out of time: {answered}");

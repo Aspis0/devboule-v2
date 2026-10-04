@@ -16,8 +16,10 @@
 //!
 //! What it skips: scripts, styles, and anything hidden — `display: none`,
 //! `visibility: hidden`, `hidden`, `aria-hidden` — which is what a person
-//! cannot read either. A frame or a canvas is not this document's text and is
-//! left out rather than read empty.
+//! cannot read either, and any control the page marks as holding a password.
+//! A `textarea` carries its value as a text child, so without that the walk
+//! below reads a passphrase as the page's own prose. A frame or a canvas is
+//! not this document's text and is left out rather than read empty.
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -106,6 +108,15 @@ pub const READABLE: &str = r##"function (budget) {
     el.getAttribute("aria-hidden") !== "true" &&
     style(el).display !== "none" &&
     style(el).visibility !== "hidden";
+  // A control that holds a passphrase, left unread. `type=password` is what an
+  // input says; `autocomplete` is the mark a textarea carries, and a
+  // textarea's value IS its text, which is what the walk below would read.
+  const secret = (el) => {
+    if (el.tagName !== "INPUT" && el.tagName !== "TEXTAREA") return false;
+    const type = (el.getAttribute("type") || "").toLowerCase();
+    const auto = (el.getAttribute("autocomplete") || "").toLowerCase();
+    return type === "password" || auto.indexOf("password") >= 0;
+  };
   const add = (line) => {
     line = flat(line).trim();
     if (!line || lines.length >= LINES) return;
@@ -133,6 +144,7 @@ pub const READABLE: &str = r##"function (budget) {
       if (current.nodeType === 3) { text += flat(current.nodeValue).trim() + " "; continue; }
       if (current.nodeType !== 1 || SKIP.indexOf(current.tagName) >= 0) continue;
       if (++seen > NODES || !shown(current)) break;
+      if (secret(current)) continue;
       // Pushed back to front, so the walk stays in document order.
       for (let child = current.lastChild; child; child = child.previousSibling) stack.push(child);
     }
@@ -143,7 +155,7 @@ pub const READABLE: &str = r##"function (budget) {
     if (node.nodeType === 3) { buffer += flat(node.nodeValue) + " "; return; }
     if (node.nodeType !== 1) return;
     const tag = node.tagName;
-    if (SKIP.indexOf(tag) >= 0 || !shown(node)) return;
+    if (SKIP.indexOf(tag) >= 0 || !shown(node) || secret(node)) return;
     if (tag === "A") {
       const label = inside(node);
       const href = flat(node.getAttribute("href"));

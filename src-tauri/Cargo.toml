@@ -77,6 +77,18 @@ sha2 = "0.11"
 # OS entropy source — never derived from pid/time. Same version the daemon
 # already pins; 0.4 is the latest stable major.
 getrandom = "=0.4.3"
+# Saved logins' passwords, which live in this machine's OS credential store
+# (the Windows Credential Manager here) instead of in any file of ours.
+# `v1` is the feature that picks that store per platform — it is what pulls in
+# `windows-native-keyring-store` on Windows — so the default features stay off
+# and nothing above `browser/credentials/secrets.rs` names an OS. Same pin as
+# the daemon, which keeps its device secrets in the same store.
+keyring = { version = "=4.2.0", default-features = false, features = ["v1"] }
+# Saved logins' origins are parsed by the same WHATWG URL parser the runtime
+# uses, so the spelling this app stores is the spelling a frame's own origin
+# serialises to — a comparison against a home-made canonicalisation is a
+# comparison against the wrong string. Same copy the workspace already resolves.
+url = "=2.5.8"
 
 [dev-dependencies]
 # Already in the workspace; used to assert the Tauri error payload JSON.

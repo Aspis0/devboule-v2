@@ -131,7 +131,7 @@ describe("Settings removed placeholder rows", () => {
     return row;
   }
 
-  it("has fourteen pages and no Labs page", async () => {
+  it("has fifteen pages and no Labs page", async () => {
     root = createRoot(container);
     await act(async () => root.render(<SettingsSurface />));
     await act(async () => undefined);
@@ -146,6 +146,7 @@ describe("Settings removed placeholder rows", () => {
       "Shortcuts",
       "Notifications",
       "Diagnostics",
+      "Saved logins",
       "Providers",
       "Agent profiles",
       "Usage",
@@ -202,6 +203,7 @@ describe("Settings menu shell", () => {
     { group: "This machine", label: "Shortcuts" },
     { group: "This machine", label: "Notifications" },
     { group: "This machine", label: "Diagnostics" },
+    { group: "This machine", label: "Saved logins" },
     { group: "Providers & agents", label: "Providers" },
     { group: "Providers & agents", label: "Agent profiles" },
     { group: "Providers & agents", label: "Usage" },

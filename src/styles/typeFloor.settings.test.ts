@@ -18,6 +18,7 @@ const SHEET_PATHS = [
   "src/features/settings/diagnostics.css",
   "src/features/settings/general.css",
   "src/features/settings/projects.css",
+  "src/features/settings/savedLogins.css",
   "src/features/marketplace/marketplace.css",
   "src/styles/global.css",
   "src/features/history/history.css",
@@ -49,7 +50,7 @@ function listedSettingsSheets(): string[] {
 }
 
 describe("the settings slice's 12px type floor", () => {
-  it("walks exactly the thirteen sheets the slice owns, by name", () => {
+  it("walks exactly the fourteen sheets the slice owns, by name", () => {
     expect(SHEET_PATHS.map((path) => basename(path))).toEqual([
       "tokens.css",
       "settings.css",
@@ -59,6 +60,7 @@ describe("the settings slice's 12px type floor", () => {
       "diagnostics.css",
       "general.css",
       "projects.css",
+      "savedLogins.css",
       "marketplace.css",
       "global.css",
       "history.css",

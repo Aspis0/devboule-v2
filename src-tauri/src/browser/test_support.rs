@@ -29,6 +29,7 @@ pub struct FakePage {
     answers: HashMap<String, Value>,
     computed: HashMap<String, Answered>,
     failures: HashMap<String, CdpError>,
+    late_failures: HashMap<String, (String, CdpError)>,
     hooks: HashMap<String, Happens>,
     calls: Mutex<Vec<(String, Value)>>,
 }
@@ -40,6 +41,7 @@ impl FakePage {
             answers: HashMap::new(),
             computed: HashMap::new(),
             failures: HashMap::new(),
+            late_failures: HashMap::new(),
             hooks: HashMap::new(),
             calls: Mutex::new(Vec::new()),
         }
@@ -65,6 +67,15 @@ impl FakePage {
     /// A call that refuses, as a stale ref or a bad method would.
     pub fn refusing(mut self, method: &str, error: CdpError) -> Self {
         self.failures.insert(method.to_owned(), error);
+        self
+    }
+
+    /// A call that answers until `after` has been made and refuses from then
+    /// on: a budget that runs out part-way through a command, said in the
+    /// order calls happen instead of by a clock a slow machine can outrun.
+    pub fn refusing_after(mut self, after: &str, method: &str, error: CdpError) -> Self {
+        self.late_failures
+            .insert(method.to_owned(), (after.to_owned(), error));
         self
     }
 
@@ -115,7 +126,10 @@ impl Page for FakePage {
         }
         let answer = self.answers.get(method).cloned();
         let computed = self.computed.get(method).map(|answer| answer(&params));
-        let failure = self.failures.get(method).cloned();
+        let failure = self.failures.get(method).cloned().or_else(|| {
+            let (after, error) = self.late_failures.get(method)?;
+            self.called(after).gt(&0).then(|| error.clone())
+        });
         Box::pin(async move {
             if let Some(error) = failure {
                 return Err(error);
@@ -238,6 +252,78 @@ pub fn ax_fixture() -> Value {
             ax_node("8", 16, "paragraph", "Forgot your password?", &[]),
             ax_node("9", 17, "button", "", &[]),
             ax_with(ignored, "ignored", json!(true)),
+        ]
+    })
+}
+
+/// The value this runtime reports for a filled `input[type=password]`: one
+/// U+2022 per character. Captured from a real fill on this machine's engine —
+/// the run is the runtime's own mask, and its length is the password's
+/// length, which is why nothing may print it as it stands.
+pub fn masked_by_runtime(characters: usize) -> String {
+    "\u{2022}".repeat(characters)
+}
+
+/// One element as `DOM.describeNode` writes it: a tag name and the attributes
+/// as the runtime sends them, one flat list of name/value pairs.
+fn element(tag: &str, attributes: &[(&str, &str)]) -> Value {
+    let flat: Vec<Value> = attributes
+        .iter()
+        .flat_map(|(name, value)| [json!(name), json!(value)])
+        .collect();
+    json!({ "nodeName": tag, "attributes": flat })
+}
+
+/// What `DOM.describeNode` answers for the two fields of
+/// [`ax_sign_in_with_password`]: the email field is a text input, and the
+/// password field is the one that says `type=password`. That is the fact the
+/// accessible tree does not carry, so a fake page has to answer it for the
+/// tree's values to be masked at all.
+pub fn sign_in_markup(described: &Value) -> Value {
+    let node = match described["backendNodeId"].as_u64() {
+        Some(14) => element("INPUT", &[("type", "password"), ("name", "pass")]),
+        _ => element("INPUT", &[("type", "text"), ("name", "email")]),
+    };
+    json!({ "node": node })
+}
+
+/// A sign-in form whose password field carries `password_value`, in the shape
+/// a real fill leaves it in: the field is a `textbox` named by its label, the
+/// properties a Chromium text node carries, and no `protected` — the captured
+/// node has none, so the shape of the value is all that says "secret".
+pub fn ax_sign_in_with_password(password_value: &str) -> Value {
+    let password = ax_with_property(
+        ax_with(
+            ax_node("4", 14, "textbox", "Password", &[]),
+            "value",
+            ax_text(password_value),
+        ),
+        ax_property("multiline", "boolean", json!(false)),
+    );
+    json!({
+        "nodes": [
+            ax_node("1", 10, "RootWebArea", "Test page", &["2", "3"]),
+            ax_node("2", 19, "form", "Sign in", &["4", "5", "6"]),
+            password,
+            ax_node("5", 15, "button", "Sign in", &[]),
+            ax_node("6", 16, "paragraph", "Forgot your password?", &[]),
+        ]
+    })
+}
+
+/// The same field with no accessible name and no `placeholder` of its own,
+/// which is what a login form on a site that never labelled its fields looks
+/// like. A field like this is the one a `find` has to describe, and describing
+/// it falls back to the value — so it is the one that would print a password.
+pub fn ax_unnamed_password_field(password_value: &str) -> Value {
+    json!({
+        "nodes": [
+            ax_node("1", 10, "RootWebArea", "Test page", &["2"]),
+            ax_with(
+                ax_node("2", 14, "textbox", "", &[]),
+                "value",
+                ax_text(password_value),
+            ),
         ]
     })
 }

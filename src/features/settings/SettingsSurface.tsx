@@ -3,6 +3,7 @@ import type { KeyboardEvent, RefObject } from "react";
 import { useAppStore } from "../../store/appStore";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import { DevicesPanel } from "./DevicesPanel";
+import { SavedLoginsPanel } from "./SavedLoginsPanel";
 import { OraclePanel } from "../oracle/OraclePanel";
 import { AppearanceSection } from "./AppearanceSection";
 import { CloseBehaviorSetting } from "./CloseBehaviorSetting";
@@ -137,6 +138,8 @@ export function SettingsSurface() {
         return <OraclePanel />;
       case "paired":
         return <DevicesPanel />;
+      case "saved-logins":
+        return <SavedLoginsPanel />;
       case "about":
         return <AboutPanel />;
       default:

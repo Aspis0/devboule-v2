@@ -2709,6 +2709,7 @@ dependencies = [
  "devboule-plugin-rpc",
  "devboule-protocol",
  "getrandom 0.4.3",
+ "keyring",
  "oracle-core",
  "serde",
  "serde_json",
@@ -2720,6 +2721,7 @@ dependencies = [
  "tauri-plugin-notification",
  "tauri-plugin-opener",
  "tempfile",
+ "url",
  "webview2-com",
  "windows 0.61.3",
 ]

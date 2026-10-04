@@ -171,4 +171,54 @@ describe("the page-side reader", () => {
     expect(budget).toBeGreaterThan(0);
     expect(asked).toBeLessThanOrEqual(budget * 2 + 10);
   });
+
+  it("leaves a password field's contents unread", () => {
+    const secret = "SENTINEL-PW-7f3a";
+    const body = node("element", {
+      tag: "BODY",
+      children: [
+        node("element", {
+          tag: "FORM",
+          children: [
+            node("element", { tag: "INPUT", attrs: { type: "password" } }),
+            // The mark a textarea carries. Its value IS its text, so this is
+            // the path a passphrase would otherwise be read out through.
+            node("element", {
+              tag: "TEXTAREA",
+              attrs: { autocomplete: "current-password" },
+              children: [text(secret)],
+            }),
+            node("element", {
+              tag: "INPUT",
+              attrs: { type: "text", autocomplete: "current-password" },
+            }),
+            text("Sign in"),
+          ],
+        }),
+      ],
+    });
+
+    expect(read(body, 12_000)).toBe("Sign in");
+  });
+
+  it("still reads an ordinary field that sits among them", () => {
+    const body = node("element", {
+      tag: "BODY",
+      children: [
+        node("element", {
+          tag: "FORM",
+          children: [
+            node("element", { tag: "INPUT", attrs: { type: "password" } }),
+            node("element", {
+              tag: "TEXTAREA",
+              attrs: { autocomplete: "note" },
+              children: [text("the note a person wrote")],
+            }),
+          ],
+        }),
+      ],
+    });
+
+    expect(read(body, 12_000)).toBe("the note a person wrote");
+  });
 });

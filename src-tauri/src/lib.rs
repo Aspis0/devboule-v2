@@ -222,6 +222,10 @@ pub fn run() {
             browser::browser_history,
             browser::browser_reload,
             browser::browser_close,
+            browser::credentials::commands::saved_logins_list,
+            browser::credentials::commands::saved_login_create,
+            browser::credentials::commands::saved_login_update,
+            browser::credentials::commands::saved_login_delete,
         ])
         .on_window_event(|window, event| {
             // Every close of the main window becomes a decision (hide, quit,

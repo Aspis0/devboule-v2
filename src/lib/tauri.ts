@@ -36,6 +36,7 @@ import type {
   RemoteHostStatus,
   AttachmentReference,
   ResumeResult,
+  SavedLogin,
   Session,
   ToolPolicyReply,
   Workspace,
@@ -290,6 +291,27 @@ export type CommandArgs = {
   browser_history: { id: string; act: "back" | "forward" | "stop" };
   browser_reload: { id: string };
   browser_close: { id: string };
+  saved_logins_list: undefined;
+  /**
+   * The password travels into the OS credential store and nowhere else. No
+   * command in this group reads one back, which is why `SavedLogin` has no
+   * field for it and why the update's is optional: absent means keep the one
+   * already stored.
+   */
+  saved_login_create: {
+    label: string;
+    origins: string[];
+    username: string;
+    password: string;
+  };
+  saved_login_update: {
+    id: string;
+    label: string;
+    origins: string[];
+    username: string;
+    password?: string | null;
+  };
+  saved_login_delete: { id: string };
 };
 
 type CommandResults = {
@@ -465,6 +487,10 @@ type CommandResults = {
   browser_history: void;
   browser_reload: void;
   browser_close: void;
+  saved_logins_list: SavedLogin[];
+  saved_login_create: SavedLogin;
+  saved_login_update: SavedLogin;
+  saved_login_delete: void;
 };
 
 type CommandName = keyof CommandArgs & keyof CommandResults;
@@ -605,6 +631,10 @@ export const COMMAND_ARG_KEYS = {
   browser_history: ["id", "act"],
   browser_reload: ["id"],
   browser_close: ["id"],
+  saved_logins_list: [],
+  saved_login_create: ["label", "origins", "username", "password"],
+  saved_login_update: ["id", "label", "origins", "username", "password"],
+  saved_login_delete: ["id"],
 } as const satisfies {
   [K in CommandName]: readonly (CommandArgs[K] extends undefined
     ? never
@@ -1108,6 +1138,28 @@ export const sessionDelete = (id: Id) => invokeTyped("session_delete", { id });
 export const sessionsList = () => invokeTyped("sessions_list");
 export const sessionsWatch = (ch: SessionStateChannel) => invokeTyped("sessions_watch", { ch });
 export const sessionsUnwatch = () => invokeTyped("sessions_unwatch");
+/**
+ * The logins this machine has saved for its browser. Every answer is metadata:
+ * the password went to the OS credential store and no command here reads it
+ * back, which is what lets the Settings page offer add, change and delete
+ * without a field that could show one.
+ */
+export const savedLoginsList = () => invokeTyped("saved_logins_list");
+export const savedLoginCreate = (draft: {
+  label: string;
+  origins: string[];
+  username: string;
+  password: string;
+}) => invokeTyped("saved_login_create", draft);
+export const savedLoginUpdate = (patch: {
+  id: string;
+  label: string;
+  origins: string[];
+  username: string;
+  /** Absent means keep the stored password: the form's empty field. */
+  password?: string | null;
+}) => invokeTyped("saved_login_update", patch);
+export const savedLoginDelete = (id: Id) => invokeTyped("saved_login_delete", { id });
 export const providersList = () => invokeTyped("providers_list");
 /** Same catalog as `providersList`, but re-probed (up to ~10s: skips the npx-registry TTL). */
 export const providersRefresh = () => invokeTyped("providers_refresh");

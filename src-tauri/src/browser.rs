@@ -14,6 +14,7 @@ pub mod cdp;
 pub mod cdp_events;
 mod commands;
 mod console;
+pub(crate) mod credentials;
 mod deadline;
 mod delta;
 mod delta_input;
@@ -22,6 +23,7 @@ mod find_query;
 mod frames;
 pub mod host;
 mod live;
+mod mask;
 mod page_host;
 pub(crate) mod registry;
 mod tab;
@@ -36,6 +38,10 @@ mod view;
 mod view_context;
 mod view_line;
 mod view_walk;
+
+#[cfg(test)]
+#[path = "browser/masking_tests.rs"]
+mod masking_tests;
 
 use std::sync::Arc;
 

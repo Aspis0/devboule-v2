@@ -13,6 +13,7 @@ export type SettingsPageId =
   | "oracle"
   | "paired"
   | "permissions"
+  | "saved-logins"
   | "about";
 
 export interface SettingsMenuPage {
@@ -66,6 +67,12 @@ export const SETTINGS_MENU: readonly SettingsMenuGroup[] = [
         id: "diagnostics",
         label: "Diagnostics",
         intro: "Numbers and versions about the app itself, plus the transcript history it keeps.",
+      },
+      {
+        id: "saved-logins",
+        label: "Saved logins",
+        intro:
+          "Logins this machine may fill in for an agent. The password stays in this machine's credential store; an agent never reads it.",
       },
     ],
   },

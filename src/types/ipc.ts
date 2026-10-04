@@ -2521,6 +2521,22 @@ export interface BrowserViewState {
 }
 
 /**
+ * One saved login as the Settings page shows it (`SavedLogin` in
+ * `src-tauri/src/browser/credentials/metadata.rs`). There is no field a
+ * password could be read back through: the password lives in this machine's OS
+ * credential store, keyed by `id`, and no command that drives this page returns
+ * one.
+ */
+export interface SavedLogin {
+  /** Opaque and random: it names the credential store's item and nothing else. */
+  id: string;
+  label: string;
+  /** Exact origins, canonical: scheme, host and port, nothing else. */
+  origins: string[];
+  username: string;
+}
+
+/**
  * What travels down one browser tab's channel. A `newWindow` is a page
  * asking for a window of its own: the controller refuses the native popup
  * and sends this instead, and the strip opens a tab for it in the

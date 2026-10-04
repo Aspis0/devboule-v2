@@ -162,9 +162,19 @@ pub fn stale_ref(reference: &str) -> BrowserError {
     ))
 }
 
-/// One page's accessible tree, as the runtime computed it.
+/// One page's accessible tree, with every password field's value replaced.
+///
+/// Every answer built from the accessible tree comes through here — the view,
+/// a snapshot, a delta, a `find`, a `wait_for` — which is what makes the
+/// replacement total for those. `read_text` is not one of them: it never reads
+/// the tree, and its own page-side walk refuses the same two marks in
+/// `commands::read` with its own tests.
 pub async fn tree_of(page: &dyn Page) -> Result<AxTree, BrowserError> {
-    super::ax::tree(page).await.map_err(cdp_failure)
+    let mut tree = super::ax::tree(page).await.map_err(cdp_failure)?;
+    super::mask::redact(page, &mut tree)
+        .await
+        .map_err(cdp_failure)?;
+    Ok(tree)
 }
 
 /// The view of one page, in the mode the caller asked for.
