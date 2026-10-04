@@ -6,6 +6,8 @@
 //! caller that is not met when the budget runs out gets `met: false` and the
 //! page as it stood — which is a fact about the page, not a failure.
 
+use std::time::Duration;
+
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -15,6 +17,7 @@ use super::super::cdp::Page;
 use super::super::delta;
 use super::super::registry::TabInfo;
 use super::super::view::Mode;
+use super::Deadline;
 use super::{args_of, host_error, node_of};
 
 /// The longest a caller may wait. Below the daemon's 15 s budget, with room
@@ -35,7 +38,12 @@ struct WaitArgs {
     timeout_ms: Option<u64>,
 }
 
-pub async fn wait_for(tab: &TabInfo, page: &dyn Page, args: &Value) -> Result<Value, BrowserError> {
+pub async fn wait_for(
+    tab: &TabInfo,
+    page: &dyn Page,
+    args: &Value,
+    deadline: Deadline,
+) -> Result<Value, BrowserError> {
     let asked: WaitArgs = args_of(args)?;
     if asked.text.is_none() && asked.url.is_none() && asked.reference.is_none() {
         return Err(host_error(
@@ -53,8 +61,10 @@ pub async fn wait_for(tab: &TabInfo, page: &dyn Page, args: &Value) -> Result<Va
     let node = asked.reference.as_deref().map(node_of).transpose()?;
     let start = super::act::read(tab, page).await?;
     super::act::ready(tab, page).await?;
-    let budget =
-        std::time::Duration::from_millis(asked.timeout_ms.unwrap_or(5_000).min(MAX_WAIT_MS));
+    // The smaller of what the caller asked for, the contract's own cap, and
+    // what the command's answer still needs out of its budget.
+    let budget = Duration::from_millis(asked.timeout_ms.unwrap_or(5_000).min(MAX_WAIT_MS))
+        .min(deadline.wait_for());
     let deadline = std::time::Instant::now() + budget;
     let mut met = false;
     while std::time::Instant::now() < deadline {

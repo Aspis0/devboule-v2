@@ -16,17 +16,12 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
-use devboule_daemon::DaemonClient;
+use devboule_daemon::{DaemonClient, DaemonError};
 use devboule_protocol::{BrowserError, BrowserErrorCode, BrowserExecuteRequest, BrowserOutcome};
 
 use super::commands::{self, COMMANDS};
 use super::registry::BrowserRegistry;
 use crate::client::BridgeInner;
-
-/// How long the worker waits for one command before looking at its connection
-/// again. A command that takes longer than this is not interrupted; the check
-/// is only for a host that has to notice a dead connection.
-const IDLE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// How long a shutdown waits for the worker to finish the command it is in.
 const STOP_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
@@ -113,8 +108,31 @@ fn serve(changes: Receiver<Change>, app: tauri::AppHandle, registry: Arc<Browser
             Change::Disconnected => unregister(&mut registration),
             Change::Connected(client) => match register(&client) {
                 Ok(host_id) => {
-                    registration = Some((Arc::clone(&client), host_id));
-                    serve_connection(&client, &app, &registry);
+                    eprintln!(
+                        "devboule: browser host {host_id} registered for {} commands",
+                        COMMANDS.len()
+                    );
+                    registration = Some((Arc::clone(&client), host_id.clone()));
+                    // One deadline per command, taken when the command starts:
+                    // what it may wait for is what is left of its own budget.
+                    let answered = |request: &BrowserExecuteRequest| {
+                        tauri::async_runtime::block_on(answer(
+                            &app,
+                            &registry,
+                            request,
+                            commands::Deadline::from_now(),
+                        ))
+                    };
+                    let stop = serve_connection(&client, &answered);
+                    eprintln!(
+                        "devboule: browser host {host_id} stopped serving: {}",
+                        stop.why()
+                    );
+                    // Always: a host that is still registered with the daemon
+                    // and is not reading its queue answers every command
+                    // `browser_busy`, which looks exactly like an app that is
+                    // working and is not.
+                    unregister(&mut registration);
                 }
                 Err(error) => eprintln!("devboule: the browser host did not register: {error}"),
             },
@@ -134,43 +152,96 @@ fn register(client: &Arc<DaemonClient>) -> Result<String, String> {
 /// this host then fails as `browser_no_host` rather than waiting out its
 /// deadline.
 fn unregister(registration: &mut Option<(Arc<DaemonClient>, String)>) {
-    if let Some((client, host_id)) = registration.take() {
-        if let Err(error) = client.browser_host_unregister(&host_id) {
-            eprintln!("devboule: the browser host did not unregister: {error}");
+    let Some((client, host_id)) = registration.take() else {
+        return;
+    };
+    match client.browser_host_unregister(&host_id) {
+        Ok(()) => {}
+        // The connection is gone, so the daemon dropped this host with it:
+        // there is nothing left to unregister and nothing to report.
+        Err(DaemonError::ConnectionLost) => {}
+        Err(error) => eprintln!("devboule: the browser host did not unregister: {error}"),
+    }
+}
+
+/// Why a serving loop ended. Every one of them ends it for good: the daemon is
+/// told, so the next connection starts from a clean host rather than from one
+/// that is registered and reads nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stop {
+    /// The connection ended. The client drops its half of the request queue
+    /// when it fails, and that is the only thing a blocking read can return.
+    ConnectionEnded,
+    /// The daemon would not take this connection's answer, so the connection is
+    /// gone and every answer after it would be refused too.
+    AnswerRefused,
+    /// This connection's queue had already been handed out, so there is nothing
+    /// left to read.
+    QueueTaken,
+}
+
+impl Stop {
+    fn why(self) -> &'static str {
+        match self {
+            Stop::ConnectionEnded => "the connection ended",
+            Stop::AnswerRefused => "the daemon would not take an answer",
+            Stop::QueueTaken => "this connection's request queue was already taken",
         }
     }
 }
 
 /// Answer every command this connection sends, until the connection ends.
+///
+/// The read is a BLOCKING one and there is no idle window. That is the whole
+/// fix for the failure this app shipped: a timed wait ended the loop when the
+/// agent had not called for thirty seconds, the request receiver went with it,
+/// and every later command was refused at once with `browser_busy` — a host
+/// that still looks registered to the daemon and no longer reads anything. The
+/// queue is ended by the connection and by nothing else, so this ends with it.
 fn serve_connection(
     client: &Arc<DaemonClient>,
-    app: &tauri::AppHandle,
-    registry: &BrowserRegistry,
-) {
-    // Handed out once per connection: a second call would find nothing, and a
+    answer: &(dyn Fn(&BrowserExecuteRequest) -> BrowserOutcome + Send + Sync),
+) -> Stop {
+    // Handed out once per connection: a second call finds nothing, and a
     // request queued in the meantime has nowhere else to wait.
     let Some(requests) = client.take_browser_requests() else {
-        return;
+        return Stop::QueueTaken;
     };
-    while let Ok(request) = requests.recv_timeout(IDLE) {
-        let outcome = tauri::async_runtime::block_on(answer(app, registry, &request));
+    loop {
+        let Ok(request) = requests.recv() else {
+            return Stop::ConnectionEnded;
+        };
+        let outcome = answer(&request);
+        // One line per command: the name and how it ended. Never the address,
+        // the arguments or the result — the daemon logs the command names too,
+        // and neither log is the place for what a page said.
+        match &outcome {
+            BrowserOutcome::Ok { .. } => {
+                eprintln!("devboule: browser {} answered ok", request.command)
+            }
+            BrowserOutcome::Err(error) => eprintln!(
+                "devboule: browser {} answered {}",
+                request.command,
+                commands::code_name(error.code)
+            ),
+        }
         if let Err(error) = client.browser_respond(&request.request_id, &request.host_id, outcome) {
-            // The connection is gone: its reader ended the queue, so every
-            // answer after this one would be refused too.
             eprintln!("devboule: a browser command could not be answered: {error}");
-            return;
+            return Stop::AnswerRefused;
         }
     }
 }
 
 /// One command, and exactly one answer: the result, or the failure with the
 /// code the contract names it by.
-pub async fn answer(
+async fn answer(
     app: &tauri::AppHandle,
     registry: &BrowserRegistry,
     request: &BrowserExecuteRequest,
+    deadline: commands::Deadline,
 ) -> BrowserOutcome {
-    let result: Result<Value, BrowserError> = commands::dispatch(app, registry, request).await;
+    let result: Result<Value, BrowserError> =
+        commands::dispatch(app, registry, request, deadline).await;
     match result {
         Ok(result) => {
             // The host checks its own answer: a result over the frame budget
@@ -186,3 +257,11 @@ pub async fn answer(
         Err(error) => BrowserOutcome::Err(error),
     }
 }
+
+#[cfg(test)]
+#[path = "host_tests.rs"]
+mod tests;
+
+#[cfg(all(test, windows))]
+#[path = "host_wire_tests.rs"]
+mod wire_tests;

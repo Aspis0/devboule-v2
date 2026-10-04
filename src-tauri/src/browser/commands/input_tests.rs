@@ -27,7 +27,13 @@ fn form_page() -> FakePage {
 
 fn run(page: &FakePage, command: &str, args: Value) -> Result<Value, BrowserError> {
     let tab = parked_tab("tab-1");
-    tauri::async_runtime::block_on(super::super::on_tab(&tab, page, command, &args))
+    tauri::async_runtime::block_on(super::super::on_tab(
+        &tab,
+        page,
+        command,
+        &args,
+        Deadline::in_(std::time::Duration::from_secs(10)),
+    ))
 }
 
 #[test]

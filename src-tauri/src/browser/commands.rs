@@ -16,6 +16,8 @@ pub mod see;
 pub mod tabs;
 pub mod wait;
 
+use std::time::{Duration, Instant};
+
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -24,6 +26,60 @@ use devboule_protocol::{BrowserCaller, BrowserError, BrowserErrorCode, BrowserEx
 use super::cdp::{CdpError, Page, WebviewPage};
 use super::registry::{BrowserRegistry, TabInfo};
 use super::view;
+
+/// How long one command may take from being taken off the queue to being
+/// answered. Under the daemon's 15 s, so the answer has time to travel, and over
+/// the longest wait a caller may ask for.
+pub const COMMAND_BUDGET: Duration = Duration::from_secs(13);
+
+/// What a command must leave for its own answer: the settle (3 s, the cap in
+/// `cdp_events`) and the two tree reads a delta is built from, plus slack.
+/// Taken off a wait, so a `wait_for` that uses all the time it is given still
+/// answers inside the budget instead of being cut off by the daemon's.
+const ANSWER_RESERVE: Duration = Duration::from_secs(6);
+
+/// The end of one command's time. `wait_for` is the only command that waits,
+/// and it is bounded by this as well as by its own argument: the contract lets
+/// a caller ask for 12 s and the daemon's budget is 15 s, so the two cannot both
+/// be the whole rule.
+#[derive(Debug, Clone, Copy)]
+pub struct Deadline(Instant);
+
+impl Deadline {
+    pub fn from_now() -> Self {
+        Deadline(Instant::now() + COMMAND_BUDGET)
+    }
+
+    /// A deadline of the caller's choosing, for a test that is not about time.
+    #[cfg(test)]
+    pub fn in_(budget: Duration) -> Self {
+        Deadline(Instant::now() + budget)
+    }
+
+    /// How long a command may still wait: what is left of the budget, less what
+    /// its answer needs.
+    pub fn wait_for(&self) -> Duration {
+        self.0
+            .saturating_duration_since(Instant::now())
+            .saturating_sub(ANSWER_RESERVE)
+    }
+}
+
+/// The failure's wire name, for the one line this app writes per command. The
+/// daemon's own log spells it the same way, so the two read alike.
+pub fn code_name(code: BrowserErrorCode) -> &'static str {
+    match code {
+        BrowserErrorCode::NoHost => "browser_no_host",
+        BrowserErrorCode::Timeout => "browser_timeout",
+        BrowserErrorCode::Busy => "browser_busy",
+        BrowserErrorCode::ResultTooLarge => "browser_result_too_large",
+        BrowserErrorCode::ArgsTooLarge => "browser_args_too_large",
+        BrowserErrorCode::HostError => "browser_host_error",
+        BrowserErrorCode::UnsupportedCommand => "browser_unsupported_command",
+        BrowserErrorCode::OwnerUnavailable => "browser_owner_unavailable",
+        BrowserErrorCode::TabNotFound => "browser_tab_not_found",
+    }
+}
 
 /// The commands this host runs, as the daemon is told at registration. The
 /// list and the dispatch below are one thing: a name here that the dispatch
@@ -132,6 +188,7 @@ pub async fn dispatch(
     app: &tauri::AppHandle,
     registry: &BrowserRegistry,
     request: &BrowserExecuteRequest,
+    deadline: Deadline,
 ) -> Result<Value, BrowserError> {
     match request.command.as_str() {
         "new_tab" | "list_tabs" | "close_tab" => {
@@ -148,7 +205,7 @@ pub async fn dispatch(
             let browser_id = browser_id(&request.args)?;
             let tab = resolve(registry, &request.caller, &browser_id)?;
             let page = WebviewPage::new(app, &tab.label);
-            on_tab(&tab, &page, &request.command, &request.args).await
+            on_tab(&tab, &page, &request.command, &request.args, deadline).await
         }
     }
 }
@@ -160,15 +217,16 @@ pub async fn on_tab(
     page: &dyn Page,
     command: &str,
     args: &Value,
+    deadline: Deadline,
 ) -> Result<Value, BrowserError> {
     match command {
-        "navigate" => tabs::navigate(tab, page, args).await,
+        "navigate" => tabs::navigate(tab, page, args, deadline).await,
         "snapshot" => see::snapshot(tab, page, args).await,
         "find" => see::find(tab, page, args).await,
         "click" | "fill" | "type" | "press" | "select" | "check" | "hover" | "scroll" => {
-            input::run(tab, page, command, args).await
+            input::run(tab, page, command, args, deadline).await
         }
-        "wait_for" => wait::wait_for(tab, page, args).await,
+        "wait_for" => wait::wait_for(tab, page, args, deadline).await,
         // The daemon only routes a command this host registered, so this is a
         // wiring fault rather than a caller's mistake — and it is reported as
         // such rather than as an empty answer.

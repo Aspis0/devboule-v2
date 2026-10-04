@@ -7,6 +7,7 @@ use super::*;
 use crate::browser::test_support::{ax_fixture, box_model, function_answer, parked_tab, FakePage};
 use devboule_protocol::{BrowserCaller, BrowserErrorCode};
 use serde_json::json;
+use std::time::Duration;
 
 fn caller() -> BrowserCaller {
     BrowserCaller {
@@ -35,8 +36,18 @@ fn form_page() -> FakePage {
 
 fn run(page: &FakePage, command: &str, args: Value) -> Result<Value, BrowserError> {
     let tab = parked_tab("tab-1");
-    tauri::async_runtime::block_on(on_tab(&tab, page, command, &args))
+    tauri::async_runtime::block_on(on_tab(
+        &tab,
+        page,
+        command,
+        &args,
+        Deadline::in_(TEST_BUDGET),
+    ))
 }
+
+/// Long enough that no test is about time, short enough that a mistake in the
+/// budget cannot hang the suite.
+const TEST_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
 
 fn refused_by(error: BrowserError, code: BrowserErrorCode) {
     assert_eq!(error.code, code, "wrong code: {}", error.message);
@@ -253,6 +264,28 @@ fn a_tab_of_another_workspace_is_exactly_as_unknown_as_a_tab_that_is_not_there()
         resolve(&registry, &caller(), "tab-1").is_ok(),
         "and its own workspace's tab resolves"
     );
+}
+
+#[test]
+fn a_wait_cannot_use_the_time_its_own_answer_needs() {
+    // The contract lets a caller ask for 12 s and the daemon's budget is 15 s;
+    // a command that waited for all of it and then read two trees would be cut
+    // off instead of answered.
+    let deadline = Deadline::from_now();
+    assert!(
+        deadline.wait_for() + ANSWER_RESERVE <= COMMAND_BUDGET,
+        "a wait plus its answer stays inside the budget: {:?} + {ANSWER_RESERVE:?} <= {COMMAND_BUDGET:?}",
+        deadline.wait_for()
+    );
+    assert!(
+        deadline.wait_for() < Duration::from_millis(12_000),
+        "and a caller who asks for 12 s is served less rather than timed out"
+    );
+
+    // A budget already spent leaves nothing to wait for, and not a negative.
+    let spent = Deadline::in_(Duration::from_secs(1));
+    std::thread::sleep(Duration::from_millis(20));
+    assert_eq!(spent.wait_for(), Duration::ZERO);
 }
 
 #[test]

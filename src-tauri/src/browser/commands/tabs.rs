@@ -17,6 +17,7 @@ use devboule_protocol::{BrowserCaller, BrowserError, BrowserErrorCode};
 use super::super::cdp::Page;
 use super::super::registry::{BrowserRegistry, TabInfo};
 use super::super::tab;
+use super::Deadline;
 use super::{act, host_error, refused, resolve, tab_not_found};
 
 /// The app-wide event the strip listens for. One name with a tag, because a
@@ -145,7 +146,13 @@ async fn new_tab(
     }))
 }
 
-fn list_tabs(registry: &BrowserRegistry, caller: &BrowserCaller) -> Result<Value, BrowserError> {
+/// The caller's own tabs. Public because the host loop's test drives the real
+/// command over a real connection: it is the one command that never touches a
+/// page, so it is the one the loop can be driven with without a window.
+pub fn list_tabs(
+    registry: &BrowserRegistry,
+    caller: &BrowserCaller,
+) -> Result<Value, BrowserError> {
     let workspace = workspace_of(caller)?;
     let tabs: Vec<Value> = registry
         .tabs_of(&workspace)
@@ -201,7 +208,12 @@ fn close_tab(
 /// WebView2 back/forward ones, so the answer can report where the page
 /// actually landed — and the webview's own gate still sees the navigation,
 /// because it is the webview navigating, whoever asked it to.
-pub async fn navigate(tab: &TabInfo, page: &dyn Page, args: &Value) -> Result<Value, BrowserError> {
+pub async fn navigate(
+    tab: &TabInfo,
+    page: &dyn Page,
+    args: &Value,
+    _deadline: Deadline,
+) -> Result<Value, BrowserError> {
     let asked: NavigateArgs = super::args_of(args)?;
     let start = act::read(tab, page).await?;
     act::ready(tab, page).await?;

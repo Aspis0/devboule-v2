@@ -19,6 +19,7 @@ use devboule_protocol::BrowserError;
 use super::super::cdp::Page;
 use super::super::registry::TabInfo;
 use super::act;
+use super::Deadline;
 use super::{args_of, host_error, node_of};
 
 #[derive(Deserialize)]
@@ -91,6 +92,7 @@ pub async fn run(
     page: &dyn Page,
     command: &str,
     args: &Value,
+    _deadline: Deadline,
 ) -> Result<Value, BrowserError> {
     match command {
         "click" => click(tab, page, args).await,
