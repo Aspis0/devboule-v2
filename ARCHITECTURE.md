@@ -793,7 +793,8 @@ in a `devboule-codex-home-<…>` tree, and the daemon's own startup sweep delete
 the next start (`crates/devboule-daemon/src/mcp_broker/config_files.rs`, `cleanup_stale_configs`). There is no
 migration, so for those rows the history shows and the resume button cannot honestly be offered.
 
-**Eleven tools**, in `tools/list` order, from one table that the Settings panel reads too, so the panel
+**Forty-one tools** — twenty-six `devboule_*` and the fifteen-name `browser_*` lane below — in
+`tools/list` order, from one table that the Settings panel reads too, so the panel
 and the wire cannot disagree (`crates/devboule-daemon/src/provider_catalog.rs`, `MCP_BROKER_TOOLS`):
 
 | Tool | Names | Disableable by policy? |
@@ -809,6 +810,20 @@ and the wire cannot disagree (`crates/devboule-daemon/src/provider_catalog.rs`, 
 | `devboule_agent_activity` | one agent's derived activity plus recent kinds, metadata only | Yes |
 | `devboule_stop_agent` | kill one own child's process tree, keeping its row and transcript | Yes |
 | `devboule_close_agent` | end one own child's session; history keeps the transcript | Yes |
+| `browser_*` | the fifteen browser commands (`new_tab`, `list_tabs`, `close_tab`, `navigate`, `snapshot`, `find`, `click`, `fill`, `type`, `press`, `select`, `check`, `hover`, `scroll`, `wait_for`) | Yes — and the `design` preset denies the whole lane, reads included (`ToolOverlay::DESIGN`) |
+
+**The browser lane is the only family named without the prefix.** `browser_new_tab` is the name an
+agent already knows from every other browser tool set, so a `devboule_` prefix would only make it
+miss. It is also the only family that does not run inside the daemon: a call is checked against the
+row in `mcp_broker/tools/browser_commands.rs` and then handed to the desktop app, which owns the
+pages, so every schema an agent is offered is the schema the daemon refuses against, read out of the
+same `Spec`. Two facts ride every description, because both cost an agent a turn otherwise: a `ref`
+dies with the page that printed it (`stale_ref`, take a new snapshot), and an action answers what it
+changed rather than the page again. A tab is scoped to the calling session's own workspace
+(`browser_affinity`) and to the per-device `browser` grant for a peer; the lane raises no card, so
+`pi` lists all fifteen as unmediated rather than prompting around each one
+(`session/pi_client.rs`, `PI_TOOL_POLICIES`), and the pi bridge registers them from the broker's own
+rows instead of typing out fifteen schemas a second time.
 
 **The creation call.** The caller is the session whose bearer authenticated the connection — "there is
 no `from_session` parameter to lie about" (the doc on `create_agent`, `crates/devboule-daemon/src/mcp_broker/tools/creation/run.rs`).

@@ -863,6 +863,28 @@ pub(crate) fn is_first_use_card(tool_call_id: &str) -> bool {
     tool_call_id.starts_with(FIRST_USE_CARD_PREFIX)
 }
 
+/// The browser lane as a provider bridge registers it: each served tool's name,
+/// the catalog's own description and the `tools/list` schema read out of the
+/// row the daemon checks the call against.
+///
+/// A bridge that serves MCP over its own protocol has to spell every tool
+/// out, so this is the projection that keeps it from becoming a second
+/// declaration: the names come from the catalog the Settings panel reads and
+/// the schemas from the same rows `tools/list` and `parse` use.
+pub(crate) fn browser_bridge_tools() -> Vec<Value> {
+    crate::provider_catalog::MCP_BROKER_TOOLS
+        .iter()
+        .filter(|(name, _)| tools::browser_commands::serves(name))
+        .map(|(name, description)| {
+            json!({
+                "name": name,
+                "description": description,
+                "parameters": tools::browser_commands::schema_for(name).unwrap_or(Value::Null),
+            })
+        })
+        .collect()
+}
+
 pub(crate) fn ready_timeout() -> Duration {
     std::env::var("DEVBOULE_MCP_READY_TIMEOUT_MS")
         .ok()

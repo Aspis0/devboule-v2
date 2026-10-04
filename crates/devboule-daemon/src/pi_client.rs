@@ -361,6 +361,71 @@ const PI_TOOL_POLICIES: &[PiToolPolicy] = &[
         name: crate::provider_catalog::MCP_KILL_TERMINAL_TOOL,
         requires_confirmation: false,
     },
+    // The browser lane, fifteen rows and one reason. What bounds a call is the
+    // tab's own workspace and, for a peer, the `browser` grant; what is left to
+    // decide is the page's own answer, which a generic confirm here would only
+    // pre-empt. The names come from the catalog so a rename breaks the build
+    // rather than silently unmediating nothing.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_BROWSER_NEW_TAB_TOOL,
+        requires_confirmation: false,
+    },
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_BROWSER_LIST_TABS_TOOL,
+        requires_confirmation: false,
+    },
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_BROWSER_CLOSE_TAB_TOOL,
+        requires_confirmation: false,
+    },
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_BROWSER_NAVIGATE_TOOL,
+        requires_confirmation: false,
+    },
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_BROWSER_SNAPSHOT_TOOL,
+        requires_confirmation: false,
+    },
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_BROWSER_FIND_TOOL,
+        requires_confirmation: false,
+    },
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_BROWSER_CLICK_TOOL,
+        requires_confirmation: false,
+    },
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_BROWSER_FILL_TOOL,
+        requires_confirmation: false,
+    },
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_BROWSER_TYPE_TOOL,
+        requires_confirmation: false,
+    },
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_BROWSER_PRESS_TOOL,
+        requires_confirmation: false,
+    },
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_BROWSER_SELECT_TOOL,
+        requires_confirmation: false,
+    },
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_BROWSER_CHECK_TOOL,
+        requires_confirmation: false,
+    },
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_BROWSER_HOVER_TOOL,
+        requires_confirmation: false,
+    },
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_BROWSER_SCROLL_TOOL,
+        requires_confirmation: false,
+    },
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_BROWSER_WAIT_FOR_TOOL,
+        requires_confirmation: false,
+    },
 ];
 static PERMISSION_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -411,10 +476,12 @@ static BRIDGE_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// The pi MCP bridge (S5): our own extension, ~130 lines TypeScript, sibling of
 /// `PERMISSION_EXTENSION_TEMPLATE`. First-class tools, not a proxy: one
-/// twenty-six `pi.registerTool` entries, one per broker tool, closed schemas matching the
+/// twenty-six `pi.registerTool` entries written out, one per broker tool, closed schemas matching the
 /// broker's `tools/list` documents, descriptions verbatim from
 /// `provider_catalog::MCP_BROKER_TOOLS` (pinned by the S5 walking test, so a
-/// catalog edit without a bridge edit fails).
+/// catalog edit without a bridge edit fails). The browser lane's fifteen are
+/// the one exception: a loop over the broker's own rows, so the schemas there
+/// cannot be typed out twice.
 ///
 /// Measured against pi 0.85.1 (spike): two `-e` load with permission-first order,
 /// `registerTool` round-trips stub bytes to the model, the stub logs
@@ -1016,6 +1083,24 @@ export default function (pi) {
       return { content: result?.content ?? [], details: result ?? {} };
     },
   });
+
+  // The browser lane: one registration per served tool, built from the
+  // broker's own tools/list rows rather than typed out here, so a browser tool
+  // cannot reach a Pi agent under a different name or a different schema than
+  // the broker answers, and a sixteenth tool reaches one with no edit here.
+  for (const tool of __BROWSER_TOOLS__) {
+    pi.registerTool({
+      name: tool.name,
+      label: tool.label,
+      description: tool.description,
+      parameters: tool.parameters,
+      async execute(_toolCallId, params, signal) {
+        await brokerSession(signal);
+        const result = await mcpRequest("tools/call", { name: tool.name, arguments: params ?? {} }, signal);
+        return { content: result?.content ?? [], details: result ?? {} };
+      },
+    });
+  }
 }
 "#;
 
@@ -1026,7 +1111,57 @@ export default function (pi) {
 fn bridge_extension() -> String {
     let card_wait_tools = serde_json::to_string(crate::provider_catalog::MCP_CARD_WAIT_TOOLS)
         .expect("Pi card-wait catalog is serializable");
-    BRIDGE_EXTENSION_TEMPLATE.replace("__MCP_CARD_WAIT_TOOLS__", &card_wait_tools)
+    BRIDGE_EXTENSION_TEMPLATE
+        .replace("__MCP_CARD_WAIT_TOOLS__", &card_wait_tools)
+        .replace("__BROWSER_TOOLS__", &browser_bridge_tools())
+}
+
+/// The browser lane's registrations as the template's `for` loop consumes them:
+/// a TypeScript array literal, because a description has to reach the
+/// extension verbatim — `serde_json` escapes the quotes in a snapshot's printed
+/// line, and the catalog's sentence is what the walking test reads. The
+/// schemas stay JSON: an object literal is the same syntax.
+fn browser_bridge_tools() -> String {
+    let rows: Vec<String> = crate::mcp_broker::browser_bridge_tools()
+        .iter()
+        .map(|tool| {
+            let name = tool["name"].as_str().unwrap_or_default();
+            format!(
+                r#"{{ name: {name}, label: {label}, description: `{description}`, parameters: {parameters} }}"#,
+                // JSON string escaping is valid JS too, so a name and its
+                // derived label ride as ordinary quoted literals.
+                name = serde_json::to_string(name).expect("a tool name is serializable"),
+                label = serde_json::to_string(&browser_label(name))
+                    .expect("a tool label is serializable"),
+                description = backtick_literal(
+                    tool["description"].as_str().unwrap_or_default()
+                ),
+                parameters = tool["parameters"],
+            )
+        })
+        .collect();
+    format!("[{}]", rows.join(","))
+}
+
+/// The text as a backtick-literal body: a backslash, a backtick or an
+/// interpolation would otherwise close the literal, or read the bridge's own
+/// variables.
+fn backtick_literal(text: &str) -> String {
+    text.replace('\\', "\\\\")
+        .replace('`', "\\`")
+        .replace("${", "\\${")
+}
+
+/// `browser_new_tab` reads as "New tab" beside the name in pi's tool list.
+fn browser_label(name: &str) -> String {
+    let command = name
+        .strip_prefix(crate::provider_catalog::BROWSER_TOOL_PREFIX)
+        .unwrap_or(name);
+    let mut label = command.replace('_', " ");
+    if let Some(first) = label.get_mut(..1) {
+        first.make_ascii_uppercase();
+    }
+    label
 }
 
 pub(crate) fn write_bridge_extension(path: &std::path::Path) -> io::Result<()> {

@@ -704,6 +704,48 @@ fn pi_mcp_launch_separates_env_from_argv() {
 }
 
 #[test]
+fn pi_bridge_registers_the_browser_lane_from_the_brokers_own_rows() {
+    // The lane is the one part of the bridge that is not written out by hand,
+    // so what has to hold is that the emitted registrations ARE the broker's
+    // rows: a hand-typed fifteenth tool could serve a schema the daemon never
+    // checks. That the loop head is valid TypeScript is the stub-pi test's
+    // job, which loads this exact string in node.
+    let template = bridge_extension();
+    let marker = "for (const tool of ";
+    let start = template
+        .find(marker)
+        .expect("the browser registration loop")
+        + marker.len();
+    let end = start
+        + template[start..]
+            .find("]) {")
+            .expect("the loop head's terminator")
+        + 1;
+    let head = &template[start..end];
+    let rows = crate::mcp_broker::browser_bridge_tools();
+    assert!(!rows.is_empty(), "the lane is not empty");
+    for row in &rows {
+        let name = row["name"].as_str().unwrap_or_default();
+        assert!(
+            head.contains(&serde_json::to_string(name).expect("a tool name is serializable")),
+            "{name} is registered"
+        );
+        assert!(
+            head.contains(row["description"].as_str().unwrap_or_default()),
+            "{name} carries the catalog's own description, unescaped"
+        );
+        assert!(
+            head.contains(&row["parameters"].to_string()),
+            "{name} carries the schema the daemon checks the call against"
+        );
+    }
+    // The label is read off the name rather than a fifteenth table: the prefix
+    // goes, the underscores become spaces, the first letter is raised.
+    assert!(head.contains(r#"label: "New tab""#), "browser_new_tab");
+    assert!(head.contains(r#"label: "Wait for""#), "browser_wait_for");
+}
+
+#[test]
 fn pi_bridge_drives_the_broker_shape_through_a_stub_pi() {
     // executable analogue of the measured spikes (which measured against the
     // real pi binary + stub broker/model): the persisted bridge file loads in
@@ -783,6 +825,10 @@ export const Type = {
   for (const name of ["devboule_list_agents", "devboule_list_profiles", "devboule_send_message", "devboule_create_agent", "devboule_set_agent_profile", "devboule_answer_permission"]) {
     if (!tools[name]) { console.error("missing tool " + name); process.exit(12); }
   }
+  // The browser lane arrives through the loop, not a written-out entry.
+  for (const name of ["browser_new_tab", "browser_click", "browser_wait_for"]) {
+    if (!tools[name]) { console.error("missing tool " + name); process.exit(28); }
+  }
   // session_start proves in-band with an authenticated tools/list.
   const listCalls = calls.filter((call) => {
     try { return JSON.parse(call.body).method === "tools/list"; } catch { return false; }
@@ -796,6 +842,12 @@ export const Type = {
   if (typeof last.body !== "string") process.exit(15);
   if (last.url !== process.env.DEVBOULE_MCP_URL) process.exit(16);
   if (!JSON.stringify(result).includes("STUB-OK")) process.exit(17);
+  // The emitted registrations have to be working tools, not just source text.
+  const clicked = await tools.browser_click.execute("t4", { browserId: "b-1", ref: "e12" }, undefined);
+  if (!JSON.stringify(clicked).includes("STUB-OK")) process.exit(31);
+  const browserCall = JSON.parse(calls[calls.length - 1].body);
+  if (browserCall.method !== "tools/call" || browserCall.params.name !== "browser_click") process.exit(32);
+  if (browserCall.params.arguments.ref !== "e12") process.exit(33);
   behavior = "refused";
   try {
     await tools.devboule_list_agents.execute("t2", {}, undefined);
@@ -819,6 +871,11 @@ export const Type = {
   const outcome = (((tools.devboule_answer_permission.parameters || {}).properties || {}).outcome || {});
   const values = outcome.anyOf ? outcome.anyOf.map((entry) => entry.const) : outcome.enum;
   if (!values || !values.includes("allow_once") || !values.includes("deny")) process.exit(24);
+  const click = tools.browser_click.parameters;
+  if (click.additionalProperties !== false) process.exit(29);
+  for (const key of ["browserId", "ref"]) {
+    if (!(click.required || []).includes(key)) process.exit(30);
+  }
   // tolerance: a failed startup list breaks nothing — the announce fired and
   // later calls still work. Refused broker, second startup, must resolve.
   behavior = "refused";
