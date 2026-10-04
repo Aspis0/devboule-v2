@@ -29,6 +29,28 @@ tauri-build = { version = "=2.6.3", features = ["config-json5"] }
 # `unstable` is `Window::add_child`: the browser tab is a child webview in
 # the main window, and that API is still behind the flag in Tauri 2.11.
 tauri = { version = "=2.11.5", features = ["config-json5", "protocol-asset", "tray-icon", "unstable"] }
+# Direct because `src-tauri/src/browser/cdp_ws.rs` is a websocket: the socket's
+# write and read halves are driven through `SinkExt` and `StreamExt`. Same
+# features tokio-tungstenite asks for, no more: no executor and no timer of its
+# own, so the app still runs on exactly one runtime.
+futures-util = { version = "=0.3.34", default-features = false, features = [
+    "sink",
+    "std",
+] }
+# The Chromium debugger transport, behind the same `Page` trait the WebView2
+# child answers. `connect` (plain `ws://` to loopback) and `handshake` only, so
+# `wss://` is refused by this module rather than half-supported by a TLS stack
+# this app would have to trust. 0.30.0 is the latest stable major crates.io
+# reports and drags tungstenite 0.30 in with it; JSON stays on the serde_json
+# already here.
+tokio-tungstenite = { version = "=0.30.0", default-features = false, features = [
+    "connect",
+    "handshake",
+] }
+# Direct because `cdp_ws.rs` hands each answer to exactly one waiter and cuts a
+# call to the command's own deadline: `sync` for the waiters and the event
+# channel, `time` for the cut. The same version the Tauri runtime resolves.
+tokio = { version = "=1.53.1", default-features = false, features = ["sync", "time"] }
 # Direct because the public session contract derives Serialize/Deserialize. The exact
 # version is already present transitively through Tauri; this does not add a new package.
 serde = { version = "=1.0.229", features = ["derive"] }
@@ -94,6 +116,10 @@ windows = { version = "=0.61.3", features = [
 [dev-dependencies]
 # Already in the workspace; used to assert the Tauri error payload JSON.
 serde_json = "=1.0.151"
+# The loopback listener the in-process CDP endpoint in
+# `browser/cdp_ws_fake.rs` accepts the transport's own tests on. The runtime
+# that drives it is Tauri's, as it is for every other browser test.
+tokio = { version = "=1.53.1", default-features = false, features = ["net"] }
 tauri = { version = "=2.11.5", features = ["test"] }
 # Used by the command-boundary fake embedder in Oracle runtime tests.
 anyhow = "1"

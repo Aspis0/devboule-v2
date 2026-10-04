@@ -12,6 +12,7 @@
 mod ax;
 pub mod cdp;
 pub mod cdp_events;
+mod cdp_ws;
 mod commands;
 mod console;
 pub(crate) mod credentials;

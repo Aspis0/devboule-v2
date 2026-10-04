@@ -150,7 +150,7 @@ pub async fn clear_override(page: &dyn Page) {
 
 /// Whether a call's parameters named a node, which is what makes a refusal of
 /// it a stale ref rather than a misspelled argument.
-fn addresses_node(params: &Value) -> bool {
+pub(super) fn addresses_node(params: &Value) -> bool {
     params
         .as_object()
         .is_some_and(|params| params.contains_key("backendNodeId"))
