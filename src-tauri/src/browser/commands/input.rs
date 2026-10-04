@@ -82,6 +82,15 @@ struct CheckArgs {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct PointArgs {
+    x: f64,
+    y: f64,
+    button: Option<String>,
+    click_count: Option<u32>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ScrollArgs {
     #[serde(rename = "ref")]
     reference: Option<String>,
@@ -104,6 +113,7 @@ pub async fn run(
         "select" => select(tab, page, args, deadline).await,
         "check" => check(tab, page, args, deadline).await,
         "hover" => hover(tab, page, args, deadline).await,
+        "click_at" => click_at(tab, page, args, deadline).await,
         _ => scroll(tab, page, args, deadline).await,
     }
 }
@@ -149,6 +159,36 @@ pub async fn hover(
     )
     .await?;
     act::answer(tab, page, deadline, start, Some(node)).await
+}
+
+/// Press a point the caller read off a screenshot, in the CSS pixels of the
+/// viewport that screenshot showed.
+///
+/// A point outside it is refused rather than dispatched: the page would take a
+/// point off its own edge as a click on whatever is nearest, which is never
+/// what was meant, and a canvas or a custom widget has no ref to fall back on.
+pub async fn click_at(
+    tab: &TabInfo,
+    page: &dyn Page,
+    args: &Value,
+    deadline: Deadline,
+) -> Result<Value, BrowserError> {
+    let asked: PointArgs = args_of(args)?;
+    let start = act::read(tab, page).await?;
+    act::ready(tab, page).await?;
+    let (width, height) = act::viewport(page).await?;
+    if asked.x < 0.0 || asked.y < 0.0 || asked.x > width || asked.y > height {
+        return Err(host_error(format!(
+            "That point is off the page: {} by {} is outside the viewport, which is {width} by {height}.",
+            asked.x, asked.y
+        )));
+    }
+    let at = (asked.x, asked.y);
+    let button = asked.button.as_deref().unwrap_or("left");
+    let count = asked.click_count.unwrap_or(1);
+    act::mouse(page, "mousePressed", at, button, count, 0).await?;
+    act::mouse(page, "mouseReleased", at, button, count, 0).await?;
+    act::answer(tab, page, deadline, start, None).await
 }
 
 /// Replace a field's contents: the clear is page script, the text is not.
@@ -295,3 +335,7 @@ async fn focus(page: &dyn Page, reference: &Option<String>) -> Result<Option<u64
 #[cfg(test)]
 #[path = "input_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "click_at_tests.rs"]
+mod click_at_tests;

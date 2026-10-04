@@ -24,6 +24,7 @@ use serde_json::json;
 use tauri::{AppHandle, Manager};
 
 use super::cdp::{Bounded, Page as _, WebviewPage};
+use super::console;
 use super::deadline::Deadline;
 use super::frames::{Frames, Observed};
 
@@ -46,6 +47,22 @@ const WATCHED: [&str; 5] = [
     "Page.loadEventFired",
     "Page.frameStoppedLoading",
 ];
+
+/// The domains whose events are a page's own voice, enabled on the blank
+/// bootstrap before it loads anything by [`listen`].
+const VOICED: [&str; 2] = ["Runtime", "Log"];
+
+/// Turn on the events a page speaks through, so that the first thing it says is
+/// heard. Asked for before the first navigation on purpose: an error thrown
+/// while a page is still loading is one of the ones an agent most needs.
+#[cfg(windows)]
+pub async fn listen(page: &dyn super::cdp::Page) {
+    for domain in VOICED {
+        if let Err(error) = page.call(&format!("{domain}.enable"), json!({})).await {
+            eprintln!("devboule: a browser page will not report {domain}: {error}");
+        }
+    }
+}
 
 /// What a tab's owner is told when the page says where it is.
 #[derive(Clone)]
@@ -98,9 +115,11 @@ fn counted(id: &str, read: impl Fn(&Counters) -> u64) -> u64 {
         .unwrap_or(0)
 }
 
-/// Drop a page's signal. The close is the only place this happens, and every
-/// close goes through it, so the map holds only live tabs.
+/// Drop a page's signal and what its console said. The close is the only place
+/// this happens, and every close goes through it, so the map holds only live
+/// tabs.
 pub fn forget(id: &str) {
+    console::forget(id);
     if let Some(pages) = QUIET_SIGNAL
         .lock()
         .expect("browser page signals poisoned")
@@ -116,6 +135,7 @@ pub fn forget(id: &str) {
 #[cfg(windows)]
 pub async fn watch(app: &AppHandle, id: &str, label: &str, deadline: Deadline, reports: Reports) {
     signal_for(id);
+    console::open(id);
     let webview = WebviewPage::new(app, label);
     let page = Bounded::new(&webview, deadline);
     // `Page.*` events arrive only after this, so it is asked for before any
@@ -130,7 +150,7 @@ pub async fn watch(app: &AppHandle, id: &str, label: &str, deadline: Deadline, r
         Ok(tree) => frames.learn_from_tree(&tree),
         Err(error) => eprintln!("devboule: browser page {id} has no known top frame: {error}"),
     }
-    for event in WATCHED {
+    for event in WATCHED.iter().chain(console::VOICE.iter()).copied() {
         let listener = Listener {
             id: id.to_owned(),
             frames: Arc::clone(&frames),
@@ -155,10 +175,17 @@ struct Listener {
 #[cfg(windows)]
 impl Listener {
     fn heard(&self, event: &str, params: &str) {
+        // What a page says is its voice, not movement: a page logging on a
+        // timer would otherwise hold every settle open to its cap.
+        if console::is_voice(event) {
+            console::record(&self.id, event, params);
+            return;
+        }
         bump(&self.id);
         match self.frames.observe(event, params) {
             Observed::NewDocument => {
                 bump_document(&self.id);
+                console::clear(&self.id);
                 (self.reports.committed)();
             }
             Observed::SameDocument(url) => (self.reports.within_document)(url),
@@ -255,6 +282,11 @@ pub async fn watch(
     // No event stream on this target, so `moved` never moves and every settle
     // ends on its first quiet. Nothing here blocks a command from running.
 }
+
+/// Nothing speaks on this target, and a page that says nothing has nothing to
+/// record.
+#[cfg(not(windows))]
+pub async fn listen(_page: &dyn super::cdp::Page) {}
 
 /// Wait without holding a runtime worker: this crate links no async timer, and
 /// every CDP call already blocks its worker for the length of the call.

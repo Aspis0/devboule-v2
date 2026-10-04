@@ -11,10 +11,14 @@
 //! command layer be driven by canned answers in a test.
 
 pub mod act;
+pub mod batch;
 pub mod input;
 pub mod keys;
+pub mod logs;
 pub mod page_script;
+pub mod read;
 pub mod see;
+pub mod shot;
 pub mod tabs;
 pub mod wait;
 
@@ -51,7 +55,7 @@ pub fn code_name(code: BrowserErrorCode) -> &'static str {
 /// list and the dispatch below are one thing: a name here that the dispatch
 /// does not know is a command the daemon would route and this app would
 /// refuse.
-pub const COMMANDS: [&str; 15] = [
+pub const COMMANDS: [&str; 20] = [
     "new_tab",
     "list_tabs",
     "close_tab",
@@ -67,6 +71,11 @@ pub const COMMANDS: [&str; 15] = [
     "hover",
     "scroll",
     "wait_for",
+    "act",
+    "screenshot",
+    "click_at",
+    "read_text",
+    "console_logs",
 ];
 
 /// A failure, in the protocol's own vocabulary.
@@ -158,7 +167,14 @@ pub async fn view_of(page: &dyn Page, mode: view::Mode) -> Result<view::View, Br
 /// would leave the pane's own present waiting just as long. They do put a
 /// parked page at its pane's size, which is safe without the lock because the
 /// override is checked against the live parked state on both sides of its call.
-const READS: [&str; 3] = ["snapshot", "find", "wait_for"];
+const READS: [&str; 6] = [
+    "snapshot",
+    "find",
+    "wait_for",
+    "screenshot",
+    "read_text",
+    "console_logs",
+];
 
 /// Run one command the daemon pushed to this host.
 pub async fn dispatch(
@@ -210,11 +226,17 @@ pub async fn on_tab(
     let page: &dyn Page = &bounded;
     match command {
         "navigate" => tabs::navigate(tab, page, args, deadline).await,
+        "act" => batch::run(tab, page, args, deadline).await,
         "snapshot" => see::snapshot(tab, page, args).await,
         "find" => see::find(tab, page, args).await,
-        "click" | "fill" | "type" | "press" | "select" | "check" | "hover" | "scroll" => {
-            input::run(tab, page, command, args, deadline).await
-        }
+        "screenshot" => shot::screenshot(tab, page, args).await,
+        "read_text" => read::read_text(tab, page, args).await,
+        // The one command that asks the page nothing: what the page said is
+        // already in this process, and a console entry is only worth reading
+        // after something has happened on the page.
+        "console_logs" => logs::logs(&tab.browser_id, args),
+        "click" | "fill" | "type" | "press" | "select" | "check" | "hover" | "scroll"
+        | "click_at" => input::run(tab, page, command, args, deadline).await,
         "wait_for" => wait::wait_for(tab, page, args, deadline).await,
         // The daemon only routes a command this host registered, so this is a
         // wiring fault rather than a caller's mistake — and it is reported as

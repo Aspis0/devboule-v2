@@ -1,4 +1,5 @@
 use crate::browser::delta::{between_input, Delta, Lists, Place};
+use crate::browser::delta_input::{Briefly, OTHER_LINES};
 use crate::browser::test_pages::{node, tree};
 use crate::browser::test_support::{ax_property, ax_text, ax_with, ax_with_property};
 use crate::browser::view::{Mode, View};
@@ -59,7 +60,7 @@ fn typed(before: &View, after: &View) -> Delta {
     between_input(before, after, &place(), &place(), Some(FIELD))
 }
 
-fn brief(delta: &Delta) -> &crate::browser::delta_input::Briefly {
+fn brief(delta: &Delta) -> &Briefly {
     match delta.changes.as_ref().expect("a change in one document") {
         Lists::Input(briefly) => briefly,
         Lists::Everything(_) => panic!("an input action is answered briefly"),
@@ -110,41 +111,76 @@ fn the_popups_that_opened_come_next_and_are_cut_at_eight() {
 
 #[test]
 fn the_rest_is_ten_lines_with_the_ones_near_the_field_first() {
-    // Three new links in the field's own form, twenty-five in the navigation.
-    let delta = typed(&page("", 0, 0, 0), &page("Web", 3, 25, 0));
+    // A page of thirty links inside the field's own form: all of them are
+    // news, and only the first ten are sent.
+    let delta = typed(&page("", 0, 0, 0), &page("Web", 30, 0, 0));
 
     let brief = brief(&delta);
-    assert_eq!(brief.added.len(), 10);
+    assert_eq!(brief.added.len(), OTHER_LINES);
+    assert_eq!(brief.more, 30 - OTHER_LINES, "and the rest are counted");
     assert!(
-        brief.added[..3].iter().all(|line| line.contains("In form")),
+        brief
+            .added
+            .iter()
+            .take(3)
+            .all(|line| line.contains("In form")),
         "{:?}",
         brief.added
     );
-    assert_eq!(brief.more, 28 - 10);
+}
+
+#[test]
+fn what_arrived_in_another_part_of_the_page_is_not_news() {
+    // Typing into the field brought in three links of its own form and twenty-
+    // five of the site navigation, which this page draws as the page is read.
+    let delta = typed(&page("", 0, 0, 0), &page("Web", 3, 25, 0));
+
+    let brief = brief(&delta);
+    assert_eq!(
+        brief.added,
+        vec![
+            r#"  - link "In form 20" [ref=e20]"#.to_owned(),
+            r#"  - link "In form 21" [ref=e21]"#.to_owned(),
+            r#"  - link "In form 22" [ref=e22]"#.to_owned(),
+        ],
+        "the navigation's links are chrome the page drew late, and nothing else"
+    );
+    assert_eq!(brief.more, 0, "and they are not counted as left out either");
+}
+
+#[test]
+fn a_popup_from_another_part_of_the_page_is_still_news() {
+    // The listbox of suggestions is the one thing a typed letter opens
+    // somewhere else, and it is nowhere near the field's landmark.
+    let delta = typed(&page("", 0, 0, 0), &page("Web", 0, 0, 3));
+
+    let brief = brief(&delta);
+    assert_eq!(brief.opened.len(), 3, "{:?}", brief.opened);
+    assert!(brief.added.is_empty(), "a suggestion is not an addition");
 }
 
 #[test]
 fn a_changed_line_comes_before_an_added_one() {
-    let before = page("", 0, 1, 0);
-    let mut after = page("Web", 0, 12, 0);
+    let before = page("", 2, 0, 0);
+    let mut after = page("Web", 12, 0, 0);
     // The one link both pages have is the only node that differs.
     after.nodes.iter_mut().for_each(|node| {
-        if node.backend_id == 100 {
-            node.line = "  - link \"Elsewhere 100\" [selected] [ref=e100]".to_owned();
+        if node.backend_id == 21 {
+            node.line = r#"  - link "In form 21" [selected] [ref=e21]"#.to_owned();
         }
     });
 
     let delta = typed(&before, &after);
 
-    // Ten lines in all: the change takes one, and eleven additions share nine.
-    assert_eq!(brief(&delta).changed.len(), 1);
+    // Ten lines in all: the change takes one, and ten additions share nine.
+    assert_eq!(brief(&delta).changed.len(), 1, "{:?}", brief(&delta));
     assert_eq!(brief(&delta).added.len(), 9);
-    assert_eq!(brief(&delta).more, 2);
+    assert_eq!(brief(&delta).more, 1);
 }
 
 #[test]
 fn the_field_comes_before_everything_else_in_what_is_sent() {
-    let delta = typed(&page("", 0, 0, 0), &page("Web", 0, 3, 3));
+    let delta = typed(&page("", 0, 0, 0), &page("Web", 3, 0, 3));
 
     let sent = serde_json::to_string(&delta).expect("serializes");
     let target = sent.find("\"target\"").expect("target");

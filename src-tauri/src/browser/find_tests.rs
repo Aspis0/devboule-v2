@@ -1,6 +1,6 @@
 use super::*;
 use crate::browser::ax::AxTree;
-use crate::browser::test_pages::{bare_fields, encyclopedia, front_page, news};
+use crate::browser::test_pages::{bare_fields, encyclopedia, front_page, news, report};
 use crate::browser::test_support::{ax_fixture, ax_property, buttons};
 use crate::browser::view::Mode;
 use crate::browser::view_walk::compact;
@@ -318,4 +318,37 @@ fn a_nameless_match_says_what_it_is_and_a_named_one_does_not() {
     let named = find(&view, "email");
     assert_eq!(named[0].reference, "e2");
     assert_eq!(named[0].detail, "");
+}
+
+#[test]
+fn a_match_nothing_names_is_at_the_top_of_the_page_when_it_is_there() {
+    // A report is headings and links under one root: no row and no landmark
+    // names any of them, so an empty context would say nothing at all.
+    let view = interactive(&report());
+
+    let hits = find(&view, "archive");
+    assert_eq!(refs(&hits), ["e4"]);
+    assert_eq!(hits[0].context, TOP_OF_PAGE);
+}
+
+#[test]
+fn a_match_with_nothing_around_it_far_down_the_page_names_nothing() {
+    // Thirty links above it: "at top of page" would be a lie down there, so
+    // the context is left as it is rather than filled with a wrong place.
+    let mut view = interactive(&report());
+    let one = view.nodes.last().cloned().expect("the report has links");
+    let above: Vec<ViewNode> = (0..EARLY_NODES)
+        .map(|at| ViewNode {
+            backend_id: 5_000 + at as u64,
+            name: format!("next {at}"),
+            ..one.clone()
+        })
+        .collect();
+    view.nodes.splice(0..0, above);
+
+    let hits = find(&view, "archive");
+    assert_eq!(
+        hits[0].context, "",
+        "nothing names it, and it is not the top"
+    );
 }

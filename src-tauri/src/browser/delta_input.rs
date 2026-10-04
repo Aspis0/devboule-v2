@@ -4,6 +4,12 @@
 //! dialog), a few lines of the page's other changes with those near the field
 //! first, and a count of what was left out. The field's own line is `target`,
 //! which the delta carries ahead of all of this.
+//!
+//! What arrived in another part of the page is not in it at all. A page that
+//! draws its footer when it is scrolled to, or a table the typing re-rendered
+//! twenty rows down, would otherwise answer a `fill` with a page of lines that
+//! have nothing to do with the field — and those lines are the ones that push
+//! out the two that matter.
 
 use serde::Serialize;
 
@@ -54,6 +60,18 @@ pub fn briefly(before: &View, after: &View, target: Option<u64>) -> Briefly {
         .and_then(|id| after.nodes.iter().find(|node| node.backend_id == id))
         .or_else(|| after.focused());
     let near = |node: &ViewNode| anchor.is_some_and(|anchor| anchor.context == node.context);
+
+    // Typing re-renders more than the field: a lazy page brings in the footer it
+    // had not drawn yet, and the ten lines that survive would be its. Only a
+    // popup is news from another part of the page — that is the one thing an
+    // input opens somewhere else — so everything else that arrived outside the
+    // field's own landmark is dropped rather than counted.
+    let added: Vec<&ViewNode> = added
+        .into_iter()
+        .filter(|node| {
+            anchor.is_none_or(|anchor| anchor.landmark == node.landmark) || is_popup(node)
+        })
+        .collect();
 
     // Changes before additions before removals, and inside each the ones near
     // the field first; the sort is stable, so document order is what is left.

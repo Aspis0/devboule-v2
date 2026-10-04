@@ -310,8 +310,8 @@ pub async fn open(
     }
     // A parked page lays itself out at two pixels, so it is given the size a
     // pane would show it at while it is still the blank bootstrap, before it
-    // has a first layout to get wrong.
-    tab_reports::lay_out_before_loading(app, id, &label, &live, deadline).await;
+    // has a first layout to get wrong — and told to speak, for the same reason.
+    tab_reports::before_loading(app, id, &label, &live, deadline).await;
     if let Err(error) = webview.navigate(target) {
         let _ = webview.close();
         registry.release(id);

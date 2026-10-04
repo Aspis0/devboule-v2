@@ -13,6 +13,7 @@ mod ax;
 pub mod cdp;
 pub mod cdp_events;
 mod commands;
+mod console;
 mod deadline;
 mod delta;
 mod delta_input;

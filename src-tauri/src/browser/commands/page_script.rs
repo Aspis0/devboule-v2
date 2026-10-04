@@ -1,7 +1,8 @@
-//! Page script run on one node: the function, the node it runs on, and what it
-//! returned. Input goes through CDP's `Input.*`; this is for the two things a
-//! person's input cannot do, emptying a field and choosing an option, and they
-//! go through the page's own setters so a framework's value tracker sees them.
+//! Page script run on the page's own terms: the function, what it runs on, and
+//! what it returned. Input goes through CDP's `Input.*`; this is for the three
+//! things a person's input cannot do — emptying a field, choosing an option and
+//! reading a document's readable text — and they go through the page's own DOM
+//! so a framework's value tracker sees them.
 
 use serde_json::{json, Value};
 
@@ -22,14 +23,31 @@ pub async fn on_node(
     function: &str,
     args: Value,
 ) -> Result<Value, BrowserError> {
+    let object = object_of(page, node).await?;
+    on_object(page, &object, function, args).await
+}
+
+/// The `objectId` a node is reached by, resolved fresh. A dead node refuses
+/// here, and the runtime's one refusal for that is `stale_ref:`.
+pub async fn object_of(page: &dyn Page, node: u64) -> Result<String, BrowserError> {
     let resolved = call(page, "DOM.resolveNode", json!({ "backendNodeId": node })).await?;
-    let object = resolved
+    resolved
         .get("object")
         .and_then(|object| object.get("objectId"))
         .and_then(Value::as_str)
-        .ok_or_else(|| host_error("That node could not be resolved on the page."))?
-        .to_owned();
-    let answered = call(
+        .map(str::to_owned)
+        .ok_or_else(|| host_error("That node could not be resolved on the page."))
+}
+
+/// The same call on an object the page itself named — `document.body`, say,
+/// which has no `backendDOMNodeId` to resolve.
+pub async fn on_object(
+    page: &dyn Page,
+    object: &str,
+    function: &str,
+    args: Value,
+) -> Result<Value, BrowserError> {
+    run(
         page,
         "Runtime.callFunctionOn",
         json!({
@@ -39,7 +57,27 @@ pub async fn on_node(
             "returnByValue": true,
         }),
     )
-    .await?;
+    .await
+}
+
+/// The same call where the page stands, with no object to run it on: the
+/// expression invokes the function on whatever `this` names, which is how a
+/// whole document is read without resolving a node for it first.
+pub async fn evaluated(page: &dyn Page, expression: &str) -> Result<Value, BrowserError> {
+    run(
+        page,
+        "Runtime.evaluate",
+        json!({
+            "expression": expression,
+            "returnByValue": true,
+            "silent": true,
+        }),
+    )
+    .await
+}
+
+async fn run(page: &dyn Page, method: &str, params: Value) -> Result<Value, BrowserError> {
+    let answered = call(page, method, params).await?;
     // A function that threw is still a successful protocol answer, with the
     // failure beside an absent value: read as `null`, it would let `fill` type
     // into a field the clear never emptied.

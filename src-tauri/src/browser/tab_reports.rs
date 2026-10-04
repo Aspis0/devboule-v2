@@ -14,13 +14,18 @@ use std::sync::Arc;
 use tauri::AppHandle;
 
 use super::cdp::{self, Bounded, WebviewPage};
-use super::cdp_events::Reports;
+use super::cdp_events::{self, Reports};
 use super::deadline::Deadline;
 use super::live::Live;
 
-/// Lay a freshly built, still-blank page out at the size a pane would show it.
+/// Lay a freshly built, still-blank page out at the size a pane would show it,
+/// and turn on the events it will speak through. Both are asked for before the
+/// page loads anything: the layout because a responsive page builds itself from
+/// it, the domains because a console entry written before the first navigation
+/// is one of the ones an agent cannot get back later.
+///
 /// A failure is reported and nothing else: the page loads, at the size it has.
-pub async fn lay_out_before_loading(
+pub async fn before_loading(
     app: &AppHandle,
     id: &str,
     label: &str,
@@ -32,6 +37,7 @@ pub async fn lay_out_before_loading(
     if let Err(error) = cdp::present_for(&page, live, live.size()).await {
         eprintln!("devboule: browser page {id} was not given its layout size: {error}");
     }
+    cdp_events::listen(&page).await;
 }
 
 /// What the tab does when its page speaks: a move of the address within the

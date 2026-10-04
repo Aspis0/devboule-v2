@@ -24,6 +24,11 @@ pub const MAX_MATCHES: usize = 20;
 /// How many nodes from the top of the page count as the top of the page.
 const EARLY_NODES: usize = 30;
 
+/// What a match is said to be in when no row and no landmark names it. A
+/// control at the top of the page with nothing around it still has a place,
+/// and "in " on its own is not one.
+const TOP_OF_PAGE: &str = "at top of page";
+
 /// How much of a nearby label or description a match repeats.
 const DETAIL_MAX: usize = 60;
 
@@ -72,7 +77,7 @@ pub fn rank(view: &View, query: &Query) -> Vec<Match> {
                 reference: node.ref_text(),
                 role: node.role.clone(),
                 name: node.name.clone(),
-                context: node.context.clone(),
+                context: where_it_is(node, position),
                 detail: if node.name.is_empty() {
                     describe(node)
                 } else {
@@ -81,6 +86,17 @@ pub fn rank(view: &View, query: &Query) -> Vec<Match> {
             }
         })
         .collect()
+}
+
+/// Where a match is, as the contract names it back. Its own surroundings when
+/// a row or a landmark names them, and otherwise how near the top of the page
+/// it is — which is what tells two controls that share a name apart on a page
+/// whose landmarks are all unnamed and whose rows are all one table.
+fn where_it_is(node: &ViewNode, position: usize) -> String {
+    match (node.context.is_empty(), position < EARLY_NODES) {
+        (true, true) => TOP_OF_PAGE.to_owned(),
+        _ => node.context.clone(),
+    }
 }
 
 /// What a node with no name says about itself.

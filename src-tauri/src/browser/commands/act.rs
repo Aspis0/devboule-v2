@@ -92,7 +92,14 @@ pub async fn answer_input(
     Ok(json!({ "delta": delta }))
 }
 
-async fn settled(tab: &TabInfo, page: &dyn Page, deadline: Deadline) -> Result<View, BrowserError> {
+/// Settle the page and read the view an answer is built from. Public because a
+/// batch of steps takes its own after: one view at the end of ten steps is
+/// what the batch's one delta is measured against.
+pub async fn settled(
+    tab: &TabInfo,
+    page: &dyn Page,
+    deadline: Deadline,
+) -> Result<View, BrowserError> {
     super::super::cdp_events::settle(&tab.browser_id, deadline).await;
     super::view_of(page, Mode::Interactive).await
 }
@@ -116,6 +123,23 @@ pub async fn into_view(page: &dyn Page, node: u64) -> Result<(), BrowserError> {
 pub async fn centre(page: &dyn Page, node: u64) -> Result<(f64, f64), BrowserError> {
     let model = call(page, "DOM.getBoxModel", json!({ "backendNodeId": node })).await?;
     box_centre(&model).ok_or_else(|| host_error("That node has no box on the page right now."))
+}
+
+/// The page's own CSS layout viewport: the space a `click_at` point and a
+/// `screenshot` clip are written in, and the only size a point can be refused
+/// against. `cssLayoutViewport` and not `layoutViewport`, because the first is
+/// in CSS pixels and the second in the device's — which are not the same
+/// number on a display that scales.
+pub async fn viewport(page: &dyn Page) -> Result<(f64, f64), BrowserError> {
+    let metrics = call(page, "Page.getLayoutMetrics", json!({})).await?;
+    let side = |field: &str| {
+        metrics
+            .get("cssLayoutViewport")
+            .and_then(|viewport| viewport.get(field))
+            .and_then(Value::as_f64)
+            .ok_or_else(|| host_error("This page reports no layout viewport."))
+    };
+    Ok((side("clientWidth")?, side("clientHeight")?))
 }
 
 /// The middle of a node's own box, which is where a click belongs.

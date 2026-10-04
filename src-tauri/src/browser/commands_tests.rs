@@ -283,9 +283,9 @@ fn a_navigate_that_names_both_a_url_and_an_action_is_refused_before_the_page_is_
 
 #[test]
 fn a_command_this_app_does_not_run_is_a_refusal_and_not_an_empty_answer() {
-    let error = run(&form_page(), "screenshot", args(json!({}))).expect_err("not a 4b-1 command");
+    let error = run(&form_page(), "get_text", args(json!({}))).expect_err("not a command");
     assert_eq!(error.code, BrowserErrorCode::HostError);
-    assert!(error.message.contains("screenshot"), "{}", error.message);
+    assert!(error.message.contains("get_text"), "{}", error.message);
 }
 
 #[test]
@@ -336,5 +336,5 @@ fn the_registered_command_list_is_the_one_this_dispatch_runs() {
             "{command} is registered, so the dispatch reaches it"
         );
     }
-    assert_eq!(COMMANDS.len(), 15, "4b-1 is fifteen commands");
+    assert_eq!(COMMANDS.len(), 20, "4b-1 is fifteen and 4b-2 is five");
 }
