@@ -75,6 +75,25 @@ fn the_tab_event_is_the_shape_the_strip_reads() {
         closed,
         serde_json::json!({ "kind": "closed", "browserId": "tab-1" })
     );
+    let told = serde_json::to_value(TabEvent::State {
+        browser_id: "tab-1".to_owned(),
+        url: "https://example.test/report".to_owned(),
+        title: Some("Quarterly report".to_owned()),
+        favicon: None,
+    })
+    .expect("the event serialises");
+    assert_eq!(
+        told,
+        serde_json::json!({
+            "kind": "state",
+            "browserId": "tab-1",
+            "url": "https://example.test/report",
+            "title": "Quarterly report",
+            "favicon": null
+        }),
+        "what a page says for a tab nobody is showing"
+    );
+
     assert_eq!(TAB_EVENT, "browser:tab", "one name, both languages");
 }
 

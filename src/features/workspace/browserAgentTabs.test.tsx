@@ -138,6 +138,46 @@ describe("a tab an agent opened", () => {
     unmount();
   });
 
+  it("names the chip from the page itself, before anyone opens it", () => {
+    agentOpenedTab();
+    expect(browserLayoutSnapshot().tabs[0]?.title).toBeNull();
+
+    applyBrowserTabEvent({
+      kind: "state",
+      browserId: "tab-agent",
+      url: "https://example.test/report",
+      title: "Quarterly report",
+      favicon: null,
+    });
+
+    const tab = browserLayoutSnapshot().tabs[0];
+    expect(tab?.title).toBe("Quarterly report");
+    expect(tab?.url).toBe("https://example.test/report");
+    // And the pane the user is looking at has not moved.
+    expect(browserLayoutSnapshot().activeByWorkspace[WORKSPACE]).toBeUndefined();
+  });
+
+  it("keeps the last thing a page said", () => {
+    agentOpenedTab();
+    applyBrowserTabEvent({
+      kind: "state",
+      browserId: "tab-agent",
+      url: "https://example.test/report",
+      title: "Quarterly report",
+      favicon: null,
+    });
+    applyBrowserTabEvent({
+      kind: "state",
+      browserId: "tab-agent",
+      url: "https://example.test/report/2026",
+      title: null,
+      favicon: null,
+    });
+
+    expect(browserLayoutSnapshot().tabs[0]?.title).toBeNull();
+    expect(browserLayoutSnapshot().tabs[0]?.url).toBe("https://example.test/report/2026");
+  });
+
   it("leaves the chip behind when the user closes the pane's tab", () => {
     agentOpenedTab();
     applyBrowserTabEvent({ kind: "closed", browserId: "tab-agent" });
@@ -152,6 +192,8 @@ describe("a tab an agent opened", () => {
       { kind: "opened", browserId: "tab-2", workspaceId: "", url: "https://x.test" },
       { kind: "opened", browserId: "tab-2", workspaceId: "w-1" },
       { kind: "opened", browserId: "tab-2" },
+      { kind: "state", browserId: "tab-2", title: "no url" },
+      { kind: "state", browserId: "tab-2", url: "https://x.test", title: 7 },
       { kind: "closed" },
       "browser:tab",
       null,

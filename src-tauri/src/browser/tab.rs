@@ -9,8 +9,9 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 use tauri::Url;
-use tauri::{AppHandle, Manager, WebviewBuilder, WebviewUrl, Wry};
+use tauri::{AppHandle, Emitter, Manager, WebviewBuilder, WebviewUrl, Wry};
 
+use super::commands::tabs::{TabEvent, TAB_EVENT};
 use super::page_host;
 use super::registry::{profile_dir, BrowserRegistry, OwnedTab, PARK_RECT};
 use super::url;
@@ -72,8 +73,9 @@ pub enum BrowserChord {
     Reload,
 }
 
-/// The handles a webview's own hooks need: the channel it reports down and
-/// the state it edits. Cloned into each hook, because each takes ownership.
+/// The handles a webview's own hooks need: the channel it reports down, the
+/// state it edits, and enough of the app to tell the strip about a page no
+/// pane is showing. Cloned into each hook, because each takes ownership.
 ///
 /// The channel sits behind a lock because the page outlives any one watcher:
 /// a page an agent opened has no pane to report to until the user opens its
@@ -82,6 +84,9 @@ pub enum BrowserChord {
 struct TabHooks {
     sink: Arc<Mutex<Channel<BrowserUpdate>>>,
     state: Arc<Mutex<BrowserViewState>>,
+    app: AppHandle,
+    /// This tab's own id, which the strip's record is keyed by.
+    id: String,
 }
 
 impl TabHooks {
@@ -107,7 +112,31 @@ impl TabHooks {
             apply(&mut state);
             state.clone()
         };
-        self.send(BrowserUpdate::State(state));
+        self.send(BrowserUpdate::State(state.clone()));
+        self.tell_the_strip(&state);
+    }
+
+    /// Tell the strip what this page now says, for a tab no pane is showing.
+    ///
+    /// A tab an agent opened reports into a channel nothing has adopted yet, so
+    /// its chip kept the hostname until the user opened it and the page's title
+    /// arrived. The strip is app-lifetime state and the strip is what persists
+    /// the record, so this is where a watched-less page's title has to go. It
+    /// fires a handful of times per page load — navigation, title, load, icon —
+    /// and never carries anything a page's own text.
+    fn tell_the_strip(&self, state: &BrowserViewState) {
+        let event = TabEvent::State {
+            browser_id: self.id.clone(),
+            url: state.url.clone(),
+            title: state.title.clone(),
+            favicon: state.favicon.clone(),
+        };
+        if let Err(error) = self.app.emit(TAB_EVENT, &event) {
+            eprintln!(
+                "devboule: the strip was not told about {}: {error}",
+                self.id
+            );
+        }
     }
 }
 
@@ -224,6 +253,8 @@ pub async fn open(
     let hooks = TabHooks {
         sink: Arc::clone(&sink),
         state: Arc::clone(&state),
+        app: app.clone(),
+        id: id.to_owned(),
     };
     registry.claim(
         id,

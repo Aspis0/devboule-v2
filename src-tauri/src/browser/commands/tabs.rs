@@ -40,6 +40,15 @@ pub enum TabEvent {
     Closed {
         browser_id: String,
     },
+    /// What a page now says, for a tab no pane is showing. The strip persists
+    /// it, so an agent-opened chip is named by the page's own title from the
+    /// moment the page has one.
+    State {
+        browser_id: String,
+        url: String,
+        title: Option<String>,
+        favicon: Option<String>,
+    },
 }
 
 #[derive(Deserialize)]
