@@ -12,13 +12,17 @@
 
 use serde_json::Value;
 
+use crate::wire_json::broker_tool_name;
+
 /// How much of a value the row shows before it is cut.
 const MAX_VALUE_CHARS: usize = 40;
 const CUT: char = '\u{2026}';
 
-/// The row's line for one browser tool call, or `None` for any other tool.
+/// The row's line for one browser tool call, or `None` for any other tool. A
+/// provider may have qualified the name with this daemon's MCP server
+/// (`mcp__devboule__browser_click`), which is the same call.
 pub(crate) fn browser_tool_title(name: &str, input: &Value) -> Option<String> {
-    let row = match name {
+    let row = match broker_tool_name(name) {
         "browser_new_tab" => row("new tab", url(input)),
         "browser_list_tabs" => Some("list tabs".to_string()),
         "browser_close_tab" => Some("close tab".to_string()),

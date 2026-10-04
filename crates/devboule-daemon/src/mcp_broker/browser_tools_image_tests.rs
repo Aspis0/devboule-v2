@@ -11,15 +11,18 @@ use super::browser_tools_harness::{panel, FakeHost};
 use super::tools::browser_args::parse;
 use super::tools::browser_commands::spec_for;
 
-/// A host's screenshot, in the contract's shape.
+/// A host's screenshot, field for field as `browser/commands/shot.rs` writes
+/// it. The sizes are JSON **floats**: the host computes them as `f64` and
+/// `serde_json` writes `1280.0`, so a line that reads them as integers finds
+/// nothing and says `x px`.
 fn shot(clip: Option<Value>) -> Value {
     json!({
         "mimeType": "image/jpeg",
         "data": "QUJDRA",
-        "width": 1280,
-        "height": 720,
-        "cssWidth": 1280,
-        "cssHeight": 720,
+        "width": 1280.0,
+        "height": 720.0,
+        "cssWidth": 1024.0,
+        "cssHeight": 768.0,
         "clip": clip,
     })
 }
@@ -44,7 +47,7 @@ fn a_screenshot_answers_an_image_block_and_one_short_line() {
         &host,
         "browser_screenshot",
         json!({"browserId": "tab-1", "clip": {"x": 0, "y": 0, "width": 800, "height": 600}, "zoom": 2}),
-        shot(Some(json!({"x": 0, "y": 0, "width": 800, "height": 600}))),
+        shot(Some(json!({"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}))),
     );
     assert_eq!(request.command, "screenshot");
     let content = body["result"]["content"]
@@ -57,10 +60,10 @@ fn a_screenshot_answers_an_image_block_and_one_short_line() {
     assert_eq!(content[0]["data"], "QUJDRA", "{body}");
     let line = content[1]["text"].as_str().expect("text line").to_string();
     assert_eq!(content[1]["type"], "text", "{body}");
-    assert!(line.contains("1280x720"), "{line}");
-    assert!(line.contains("1280x720 css"), "{line}");
-    assert!(line.contains("clip 0,0,800,600"), "{line}");
-    assert!(line.len() < 200, "the line is short: {line}");
+    assert_eq!(
+        line, "image/jpeg 1280x720 px, viewport 1024x768 css px, clip 0,0,800,600",
+        "every number the host sent is read, as the host sent it"
+    );
     assert!(
         !line.contains("QUJDRA"),
         "the bytes are the image block, never the text: {line}"
@@ -90,8 +93,10 @@ fn the_bytes_travel_once_and_no_document_rides_beside_the_block() {
     let line = body["result"]["content"][1]["text"]
         .as_str()
         .expect("text line");
-    assert!(line.contains("1280x720"), "{line}");
-    assert!(!line.contains("clip"), "no clip was asked for: {line}");
+    assert_eq!(
+        line, "image/jpeg 1280x720 px, viewport 1024x768 css px",
+        "no clip was asked for, so none is named"
+    );
 }
 
 #[test]

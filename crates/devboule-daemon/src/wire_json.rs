@@ -42,15 +42,41 @@ pub(crate) fn blocks_text(content: &Value) -> String {
     String::new()
 }
 
+/// The name a broker tool has whatever qualifier a provider put in front of it.
+///
+/// A provider calls a tool by the name it was handed: the pi bridge and an ACP
+/// agent pass the broker's own (`browser_click`), while Claude qualifies a tool
+/// with the MCP server it came from (`mcp__devboule__browser_click`). Only our
+/// own server's qualifier comes off — another server's `browser_click` is that
+/// server's tool, and a row that showed it as ours would name a tool this
+/// daemon cannot serve.
+pub(crate) fn broker_tool_name(name: &str) -> &str {
+    [
+        format!("mcp__{MCP_SERVER_NAME}__"),
+        format!("{MCP_SERVER_NAME}_"),
+    ]
+    .iter()
+    .find_map(|prefix| name.strip_prefix(prefix.as_str()))
+    .unwrap_or(name)
+}
+
+/// The MCP server's own name, where a provider's view can read it. The broker
+/// declares it in `mcp_broker::MCP_SERVER_NAME`, which is a server-only module;
+/// `the_qualifier_is_the_brokers_server_name` reads that declaration back, so a
+/// rename there fails here rather than quietly matching nothing.
+const MCP_SERVER_NAME: &str = "devboule";
+
 /// Case-insensitive tool name to display kind: the union of the Claude table
 /// (`Read`, `Edit`/`Write`/`NotebookEdit`, `Bash`/`PowerShell`, `Glob`/`Grep`,
 /// `WebFetch`, `WebSearch`, `Agent`/`Task`, `Skill`/other) and the Pi table
 /// (`bash`/`powershell`, `read`, `edit`/`write`, `grep`/`find`/`ls`, other).
 ///
-/// `browser_*` is one family whatever the command: the row shows the one
-/// argument the call was given (`click e33`) beside the family's own name, so
-/// the kind carries no more than "this was the browser".
+/// `browser_*` is one family whatever the command and whatever the provider
+/// called it: the row shows the one argument the call was given (`click e33`)
+/// beside the family's own name, so the kind carries no more than "this was the
+/// browser".
 pub(crate) fn tool_kind_from_name(name: &str) -> &'static str {
+    let name = broker_tool_name(name);
     if name.starts_with(crate::provider_catalog::BROWSER_TOOL_PREFIX) {
         return "browser";
     }
@@ -150,6 +176,17 @@ mod tests {
     }
 
     #[test]
+    fn the_qualifier_is_the_brokers_server_name() {
+        assert_eq!(
+            broker_tool_name(&format!(
+                "mcp__{}__browser_click",
+                crate::mcp_broker::MCP_SERVER_NAME
+            )),
+            "browser_click",
+        );
+    }
+
+    #[test]
     fn every_name_of_the_browser_lane_is_one_kind() {
         for command in [
             "new_tab",
@@ -178,6 +215,32 @@ mod tests {
         }
         // A name that merely mentions the lane is not one of it.
         assert_eq!(tool_kind_from_name("mcp__probe__browser_click"), "other");
+    }
+
+    /// The provider's own spelling of one of our tools: Claude qualifies a
+    /// broker tool with the MCP server it came from (`mcp__devboule__`), Pi's
+    /// bridge and an ACP agent pass the bare name, and the row is the same call
+    /// under both. Another server's `browser_click` is that server's tool.
+    #[test]
+    fn a_provider_prefix_does_not_hide_the_lane() {
+        for name in [
+            "browser_click",
+            "mcp__devboule__browser_click",
+            "devboule_browser_click",
+        ] {
+            assert_eq!(tool_kind_from_name(name), "browser", "tool {name}");
+        }
+        for name in [
+            "mcp__probe__browser_click",
+            "mcp__devboule__devboule_send_message",
+        ] {
+            assert_ne!(tool_kind_from_name(name), "browser", "tool {name}");
+        }
+        // A name that qualifies into the lane's shape is the lane's shape: the
+        // served table is the broker's, and a name only reaches a row after the
+        // broker served it or an agent invented it. The frontend reads the same
+        // rule (`lib/browserToolName`).
+        assert_eq!(tool_kind_from_name("devboule_browser_nope"), "browser");
     }
 
     #[test]

@@ -152,4 +152,31 @@ describe("summarizeToolCallGroup", () => {
     ]);
     expect(summary).toBe("Used 2 other tools");
   });
+
+  it("counts browser calls as their own kind, not as other tools", () => {
+    expect(
+      summarizeToolCallGroup([
+        tool({ title: "click e33", kind: "browser" }),
+        tool({ title: "screenshot", kind: "browser" }),
+      ]),
+    ).toBe("Used 2 browser tools");
+    expect(
+      summarizeToolCallGroup([
+        tool({ title: "click e33", kind: "browser" }),
+        tool({ title: "git status", kind: "execute" }),
+      ]),
+    ).toBe("Ran 1 command and used 1 browser tool");
+  });
+
+  it("counts a browser row the daemon could not kind as a browser call", () => {
+    // A journal replays the kind the daemon gave the row at the time, so a row
+    // written before it learned Claude's spelling arrives as `other` with a
+    // prefixed name. It shows as a browser row, so it counts as one.
+    expect(
+      summarizeToolCallGroup([
+        tool({ title: "mcp__devboule__browser_click", kind: "other" }),
+        tool({ title: "git status", kind: "execute" }),
+      ]),
+    ).toBe("Ran 1 command and used 1 browser tool");
+  });
 });

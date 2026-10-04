@@ -52,6 +52,22 @@ describe("browser tool rows", () => {
     });
   });
 
+  it("recognises a row the daemon kinds as other but titled with a provider's name", () => {
+    // A journal replays what the daemon said at the time, so a row written
+    // before the daemon learned Claude's spelling still carries `other` and the
+    // prefixed name. `other` is nobody's claim: the title decides.
+    for (const [kind, title] of [
+      ["other", "mcp__devboule__browser_new_tab"],
+      [undefined, "mcp__devboule__browser_click"],
+      ["other", "devboule_browser_read_text"],
+    ] as const) {
+      expect(toolRowDisplay(tool({ kind, title }))).toEqual({
+        displayName: "Browser",
+        icon: "globe",
+      });
+    }
+  });
+
   it("reads no summary off a bare tool name and invents none", () => {
     for (const title of ["browser_click", "browser_screenshot", "browser_console_logs"]) {
       expect(toolRowDisplay(tool({ kind: "browser", title })).summary).toBeUndefined();
@@ -66,12 +82,13 @@ describe("browser tool rows", () => {
       summary: "browser_click",
       icon: "search",
     });
-    expect(toolRowDisplay(tool({ kind: "other", title: "browser_click" }))).toEqual({
-      displayName: "Browser click",
-      icon: "wrench",
-    });
+    // Another MCP server's own tool, whatever it is called.
     expect(toolRowDisplay(tool({ kind: "other", title: "mcp__probe__browser_click" }))).toEqual({
       displayName: "mcp__probe__browser_click",
+      icon: "wrench",
+    });
+    expect(toolRowDisplay(tool({ kind: "other", title: "mcp__probe__ping" }))).toEqual({
+      displayName: "mcp__probe__ping",
       icon: "wrench",
     });
   });
@@ -88,5 +105,20 @@ describe("browser tool rows", () => {
     // browser_click is recognised above, so the prefix this file holds is the
     // daemon's own.
     expect(toolRowDisplay(tool({ title: `${declared[1]}click` })).displayName).toBe("Browser");
+  });
+
+  it("reads the MCP server's name off the daemon too", () => {
+    // Claude qualifies a broker tool with the MCP server it came from, and
+    // that server's name is the broker's, not this file's to guess.
+    const source = readFileSync(
+      join("crates", "devboule-daemon", "src", "mcp_broker", "mod.rs"),
+      "utf8",
+    );
+    const declared = source.match(/pub\(crate\) const MCP_SERVER_NAME: &str = "([^"]+)"/);
+    if (declared === null) throw new Error("MCP_SERVER_NAME is not declared");
+    expect(toolRowDisplay(tool({ title: `mcp__${declared[1]}__browser_click` }))).toEqual({
+      displayName: "Browser",
+      icon: "globe",
+    });
   });
 });

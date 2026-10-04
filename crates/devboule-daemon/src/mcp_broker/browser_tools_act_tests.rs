@@ -28,6 +28,22 @@ fn batch(steps: Value) -> Value {
     json!({"browserId": "tab-1", "steps": steps})
 }
 
+/// The steps are read by an agent on every turn this tool is offered, so their
+/// size is a cost: a shape per command, built out of the rows, and nothing
+/// spelled a second time inside it. The bound is loose enough to survive a
+/// field gaining a description and tight enough to catch a schema that started
+/// carrying the whole lane twice.
+#[test]
+fn the_steps_an_agent_reads_stay_small() {
+    let schema = super::tools::browser_commands::schema_for("browser_act").expect("browser_act");
+    let printed = serde_json::to_string(&schema["properties"]["steps"]).expect("steps");
+    assert!(
+        printed.len() < 4_000,
+        "the steps schema is {} characters: {printed}",
+        printed.len()
+    );
+}
+
 #[test]
 fn a_batch_reaches_the_host_as_written_and_answers_unchanged() {
     let panel = panel("act");

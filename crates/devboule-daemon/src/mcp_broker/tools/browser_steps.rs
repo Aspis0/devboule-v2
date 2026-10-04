@@ -1,17 +1,17 @@
-//! The ten commands one `act` step may run, and whether a `steps` argument is a
-//! batch of them.
+//! The ten commands one `act` step may run, what a step may carry, and whether
+//! a `steps` argument is a batch of them.
 //!
 //! A step is checked against the row its own command declares — the same rows
 //! `tools/list` shows and the daemon refuses against — with the batch's tab
 //! standing in for the one that command declares. So there is no second spelling
-//! of ten commands' arguments here, and a step cannot offer an argument its own
-//! command would reject. The host receives the step exactly as the agent wrote
-//! it: the tab is added to the copy that is checked, never to the one that is
-//! sent.
+//! of ten commands' arguments here, neither in what an agent is offered nor in
+//! what is refused, and a step cannot offer an argument its own command would
+//! reject. The host receives the step exactly as the agent wrote it: the tab is
+//! added to the copy that is checked, never to the one that is sent.
 
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
-use super::browser_args::parse;
+use super::browser_args::{parse, Spec};
 use super::browser_commands::spec_of;
 
 /// The commands a batch may run, in the contract's order. `act` is absent, and
@@ -33,6 +33,38 @@ const TAB: &str = "browserId";
 /// to be an id a `Kind::Tab` accepts: nothing reads it but the row the step is
 /// checked against.
 const BATCH_TAB: &str = "tab-of-the-batch";
+
+/// What a step may carry, one shape per command: `command` pinned with
+/// `const`, and beside it the arguments that command itself takes, read out of
+/// the row the daemon refuses against. So a `fill` step is offered `ref` and
+/// `text` and not `value`, and an agent never has to guess a step's arguments
+/// and then be refused for guessing.
+pub(in crate::mcp_broker) fn step_schema() -> Value {
+    json!({
+        "oneOf": ACT_COMMANDS.iter().filter_map(|command| step_shape(command)).collect::<Vec<_>>(),
+    })
+}
+
+fn step_shape(command: &str) -> Option<Value> {
+    let spec = spec_of(command)?;
+    let mut properties = Map::from_iter([(
+        "command".to_string(),
+        json!({"type": "string", "const": command}),
+    )]);
+    let mut required = vec!["command"];
+    for field in spec.fields.iter().filter(|field| field.name != TAB) {
+        properties.insert(field.name.to_string(), field.schema());
+        if field.required {
+            required.push(field.name);
+        }
+    }
+    Some(json!({
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": false,
+    }))
+}
 
 /// Whether `value` is one to [`MAX_STEPS`] steps, each one a command the
 /// contract lists for a batch.
@@ -84,11 +116,12 @@ fn check_step(tool: &str, index: usize, step: &Value) -> Result<(), String> {
 /// The row a step's own command declares, and `None` for a command a batch may
 /// not run — a name that is not a command of the lane's, or one of the ten that
 /// has no row, which the served table keeps impossible.
-fn step_spec(command: &str) -> Option<&'static super::browser_args::Spec> {
-    ACT_COMMANDS
-        .contains(&command)
-        .then(|| spec_of(command))
-        .flatten()
+fn step_spec(command: &str) -> Option<&'static Spec> {
+    if ACT_COMMANDS.contains(&command) {
+        spec_of(command)
+    } else {
+        None
+    }
 }
 
 fn not_a_step_command(tool: &str, index: usize, command: &str) -> String {

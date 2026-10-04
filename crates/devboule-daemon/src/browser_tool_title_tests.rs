@@ -159,3 +159,34 @@ fn a_tool_outside_the_lane_keeps_the_title_its_own_view_gave_it() {
     );
     assert_eq!(browser_tool_title("browser_nope", &json!({})), None);
 }
+
+/// A provider calls a broker tool by the name it was given, and Claude gives a
+/// broker tool the MCP server's name in front of it
+/// (`mcp__devboule__browser_click`). The row is the same call either way.
+#[test]
+fn a_provider_prefix_does_not_hide_the_lane() {
+    let cases = [
+        ("mcp__devboule__browser_click", "click e33"),
+        ("browser_click", "click e33"),
+        ("devboule_browser_new_tab", "new tab news.ycombinator.com"),
+    ];
+    for (name, expected) in cases {
+        assert_eq!(
+            row(
+                name,
+                json!({"ref": "e33", "url": "https://news.ycombinator.com/newest"})
+            ),
+            expected,
+            "{name}"
+        );
+    }
+    // Another MCP server's own tool that happens to carry our names is not ours.
+    assert_eq!(
+        browser_tool_title("mcp__probe__browser_click", &json!({})),
+        None
+    );
+    assert_eq!(
+        browser_tool_title("devboule_browser_nope", &json!({})),
+        None
+    );
+}

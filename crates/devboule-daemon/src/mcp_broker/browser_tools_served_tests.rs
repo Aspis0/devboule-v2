@@ -5,7 +5,7 @@
 //! `tools::browser_commands` and `tools::browser_args`, and what is proved here
 //! is that the broker, the peer door and an agent's reading all see the same set.
 
-use serde_json::json;
+use serde_json::{json, Value};
 
 use super::browser_tools_harness::{design_panel, panel, tools_call, FakeHost};
 use super::tests::{http_request, response_json};
@@ -63,7 +63,8 @@ fn every_contract_command_is_served_under_its_browser_name() {
 
 /// The second wave's bounds are stated where an agent reads them: the batch
 /// length a step list may have, the zoom and the four clip numbers, and the
-/// closed console levels.
+/// closed console levels. A step's own arguments are stated too, because an
+/// agent that cannot see them guesses, and is then refused for guessing.
 #[test]
 fn the_second_waves_schema_states_the_bounds_the_daemon_enforces() {
     let act = browser_commands::schema_for("browser_act").expect("browser_act is served");
@@ -71,15 +72,49 @@ fn the_second_waves_schema_states_the_bounds_the_daemon_enforces() {
     assert_eq!(steps["type"], "array", "{steps}");
     assert_eq!(steps["minItems"], json!(1), "{steps}");
     assert_eq!(steps["maxItems"], json!(10), "{steps}");
+    let entries = steps["items"]["oneOf"]
+        .as_array()
+        .expect("one step shape per command");
     assert_eq!(
-        steps["items"]["properties"]["command"]["enum"],
+        Value::Array(
+            entries
+                .iter()
+                .map(|entry| entry["properties"]["command"]["const"].clone())
+                .collect::<Vec<_>>()
+        ),
         json!([
             "click", "fill", "type", "press", "select", "check", "hover", "scroll", "wait_for",
             "navigate"
         ]),
-        "a batch runs the contract's ten, and never an act inside one"
+        "the contract's ten, and never an act inside one"
     );
-    assert_eq!(steps["items"]["required"], json!(["command"]), "{steps}");
+    let entry = |command: &str| {
+        entries
+            .iter()
+            .find(|entry| entry["properties"]["command"]["const"] == json!(command))
+            .unwrap_or_else(|| panic!("{command} has a step shape: {steps}"))
+            .clone()
+    };
+    // The fill a live agent got wrong: the schema has to say `text`.
+    let fill = entry("fill");
+    assert_eq!(
+        fill["required"],
+        json!(["command", "ref", "text"]),
+        "{fill}"
+    );
+    assert_eq!(fill["additionalProperties"], json!(false), "{fill}");
+    assert_eq!(fill["properties"]["ref"]["pattern"], "^e\\d+$", "{fill}");
+    assert_eq!(
+        entry("click")["properties"]["clickCount"],
+        browser_commands::schema_for("browser_click").expect("click")["properties"]["clickCount"],
+        "a step takes the arguments the command itself takes"
+    );
+    for entry in entries {
+        assert!(
+            entry["properties"].get("browserId").is_none(),
+            "no step names a tab: {entry}"
+        );
+    }
 
     let screenshot = browser_commands::schema_for("browser_screenshot").expect("screenshot");
     assert_eq!(screenshot["properties"]["zoom"]["minimum"], json!(1));

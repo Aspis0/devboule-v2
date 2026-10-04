@@ -385,7 +385,7 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
     (
         MCP_BROWSER_ACT_TOOL,
-        "Runs 1 to 10 browser commands on one tab in the order you wrote them and stops at the first one that fails, answering each step's outcome and one delta for the batch. Use it for a sequence you already know - open a menu, choose an item, submit - instead of one tool call per step. A step's command is one of click, fill, type, press, select, check, hover, scroll, wait_for, navigate and its other arguments are that command's own; there is no browser_act inside a step, and no browserId: the batch's browserId is the tab. Refs from before the batch are dead after a step that navigates, and a step naming one answers stale_ref - take a new snapshot.",
+        "Runs 1 to 10 browser commands on one tab in the order you wrote them and stops at the first one that fails, answering each step's outcome and one delta for the batch. Use it for a sequence you already know - open a menu, choose an item, submit - instead of one tool call per step. A step takes its own command's arguments: click ref; fill ref, text; type text, ref; press key; select ref and value or label; check ref, checked; hover ref; scroll ref or direction and amount; wait_for text or url or ref and state and timeoutMs; navigate url or action. There is no browser_act inside a step and no browserId in one: the batch's browserId is the tab every step runs on. Refs from before the batch are dead after a step that navigates, and a step naming one answers stale_ref - take a new snapshot.",
     ),
     (
         MCP_BROWSER_SCREENSHOT_TOOL,

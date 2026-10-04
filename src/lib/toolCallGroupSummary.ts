@@ -1,3 +1,4 @@
+import { browserToolName } from "./browserToolName";
 import type { ToolChatItem } from "./toolCallGroups";
 
 export interface ToolCallGroupSummary {
@@ -5,6 +6,7 @@ export interface ToolCallGroupSummary {
   commandCount: number;
   readFileCount: number;
   searchCount: number;
+  browserCallCount: number;
   otherToolCount: number;
 }
 
@@ -12,13 +14,16 @@ export interface ToolCallGroupSummary {
  * Count a run: edited and read files dedupe by path, everything else counts
  * calls. A `fetch` is not one of the counted kinds here, so it lands in
  * `otherToolCount`. A location-less edit/read cannot name a file, so it
- * counts as another tool instead of guessing by title.
+ * counts as another tool instead of guessing by title. A browser call is one
+ * kind of its own: the row shows as one, and a run that hides twenty browser
+ * calls behind "other tools" says nothing about what the agent did.
  */
 export function countToolCallGroup(items: readonly ToolChatItem[]): ToolCallGroupSummary {
   const editedFiles = new Set<string>();
   const readFiles = new Set<string>();
   let commandCount = 0;
   let searchCount = 0;
+  let browserCallCount = 0;
   let otherToolCount = 0;
   for (const item of items) {
     const kind = item.kind?.trim().toLowerCase() ?? "";
@@ -31,6 +36,12 @@ export function countToolCallGroup(items: readonly ToolChatItem[]): ToolCallGrou
       commandCount += 1;
     } else if (kind === "search") {
       searchCount += 1;
+    } else if (kind === "browser" || (kind === "other" && isBrowserRowTitle(item.title))) {
+      // A journal replays the kind the daemon gave the row at the time, so a
+      // browser call written before it learned Claude's spelling arrives as
+      // `other` with the provider's name. `other` claims nothing, and the title
+      // is what the row itself is decided by.
+      browserCallCount += 1;
     } else {
       otherToolCount += 1;
     }
@@ -40,8 +51,13 @@ export function countToolCallGroup(items: readonly ToolChatItem[]): ToolCallGrou
     commandCount,
     readFileCount: readFiles.size,
     searchCount,
+    browserCallCount,
     otherToolCount,
   };
+}
+
+function isBrowserRowTitle(title: string): boolean {
+  return browserToolName(title) !== null;
 }
 
 // Summary strings copied from Paseo's locale (`packages/app/src/i18n/resources/en.ts:1853-1879`).
@@ -73,6 +89,7 @@ export function summarizeToolCallGroup(items: readonly ToolChatItem[]): string {
     [summary.commandCount, "ran {{count}} command", "ran {{count}} commands"],
     [summary.readFileCount, "read {{count}} file", "read {{count}} files"],
     [summary.searchCount, "searched {{count}} time", "searched {{count}} times"],
+    [summary.browserCallCount, "used {{count}} browser tool", "used {{count}} browser tools"],
     [summary.otherToolCount, "used {{count}} other tool", "used {{count}} other tools"],
   ] as const;
   for (const [count, one, other] of entries) {

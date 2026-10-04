@@ -82,13 +82,7 @@ impl Kind {
                 "type": "array",
                 "minItems": MIN_STEPS,
                 "maxItems": MAX_STEPS,
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "command": {"type": "string", "enum": super::browser_steps::ACT_COMMANDS}
-                    },
-                    "required": ["command"],
-                },
+                "items": super::browser_steps::step_schema(),
             }),
             Self::Clip => json!({
                 "type": "object",

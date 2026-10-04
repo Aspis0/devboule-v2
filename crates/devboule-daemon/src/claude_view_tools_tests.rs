@@ -445,6 +445,13 @@ fn a_browser_call_titles_its_own_row_and_kinds_as_the_family() {
             "click e33",
         ),
         (
+            // Claude qualifies a broker tool with the MCP server it came from,
+            // and the row must be the same call under either spelling.
+            "mcp__devboule__browser_click",
+            json!({"browserId": "tab-1", "ref": "e33"}),
+            "click e33",
+        ),
+        (
             "browser_new_tab",
             json!({"browserId": "tab-1", "url": "https://news.ycombinator.com/newest"}),
             "new tab news.ycombinator.com",

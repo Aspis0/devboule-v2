@@ -164,33 +164,46 @@ fn picture(result: &Value) -> Option<(Value, String)> {
     if data.is_empty() || !mime.starts_with("image/") {
         return None;
     }
-    let size = |key: &str| {
-        result
-            .get(key)
-            .and_then(Value::as_u64)
-            .map_or_else(String::new, |value| value.to_string())
-    };
     let mut line = format!(
-        "{mime} {}x{} px, viewport {}x{} css px",
-        size("width"),
-        size("height"),
-        size("cssWidth"),
-        size("cssHeight"),
+        "{mime} {} px, viewport {} css px",
+        size(result, "width", "height"),
+        size(result, "cssWidth", "cssHeight"),
     );
     if let Some(clip) = result.get("clip").filter(|clip| clip.is_object()) {
-        let corner = ["x", "y", "width", "height"]
-            .iter()
-            .map(|key| {
-                clip.get(*key)
-                    .and_then(Value::as_u64)
-                    .map_or_else(String::new, |value| value.to_string())
-            })
-            .collect::<Vec<_>>()
-            .join(",");
-        line.push_str(&format!(", clip {corner}"));
+        let corner = |key: &str| clip.get(key).map_or_else(String::new, number);
+        line.push_str(&format!(
+            ", clip {},{},{},{}",
+            corner("x"),
+            corner("y"),
+            corner("width"),
+            corner("height")
+        ));
     }
     Some((
         json!({"type": "image", "data": data, "mimeType": mime}),
         line,
     ))
+}
+
+/// The host computes every size it sends as an `f64`, so `serde_json` writes
+/// `1280.0`: a line that read them as integers found nothing and said `x px`.
+/// A whole size prints without its decimals; a fractional one keeps them,
+/// because there the decimal part is the size.
+fn number(value: &Value) -> String {
+    let Some(size) = value.as_f64() else {
+        return String::new();
+    };
+    if size.fract() == 0.0 {
+        format!("{}", size as i64)
+    } else {
+        format!("{size}")
+    }
+}
+
+fn size(at: &Value, first: &str, second: &str) -> String {
+    format!(
+        "{}x{}",
+        at.get(first).map_or_else(String::new, number),
+        at.get(second).map_or_else(String::new, number),
+    )
 }
