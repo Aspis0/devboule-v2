@@ -1595,6 +1595,7 @@ fn item_event(
             }
         }
         Some("webSearch") => web_search::web_search_events(id, item, completed),
+        Some("mcpToolCall") => mcp_rows::mcp_tool_events(id, item, completed),
         _ => Vec::new(),
     }
 }
@@ -1720,6 +1721,9 @@ fn turn_completed(params: &Value, usage: Option<TurnUsage>) -> Vec<SessionEvent>
 
 #[path = "codex_web_search.rs"]
 mod web_search;
+
+#[path = "codex_mcp_rows.rs"]
+mod mcp_rows;
 
 #[cfg(test)]
 #[path = "codex_plan_view_tests.rs"]
