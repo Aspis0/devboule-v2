@@ -22,6 +22,7 @@ use super::tab::BrowserViewState;
 pub struct FakePage {
     answers: HashMap<String, Value>,
     failures: HashMap<String, CdpError>,
+    hooks: HashMap<String, Box<dyn Fn() + Send + Sync>>,
     calls: Mutex<Vec<(String, Value)>>,
 }
 
@@ -31,6 +32,7 @@ impl FakePage {
         FakePage {
             answers: HashMap::new(),
             failures: HashMap::new(),
+            hooks: HashMap::new(),
             calls: Mutex::new(Vec::new()),
         }
     }
@@ -43,6 +45,13 @@ impl FakePage {
     /// A call that refuses, as a stale ref or a bad method would.
     pub fn refusing(mut self, method: &str, error: CdpError) -> Self {
         self.failures.insert(method.to_owned(), error);
+        self
+    }
+
+    /// Something that happens elsewhere while this call is in flight: the pane
+    /// presenting the page, say, between an override going out and coming back.
+    pub fn during(mut self, method: &str, happens: impl Fn() + Send + Sync + 'static) -> Self {
+        self.hooks.insert(method.to_owned(), Box::new(happens));
         self
     }
 
@@ -81,6 +90,9 @@ impl Page for FakePage {
             .lock()
             .expect("fake page poisoned")
             .push((method.to_owned(), params));
+        if let Some(happens) = self.hooks.get(method) {
+            happens();
+        }
         let answer = self.answers.get(method).cloned();
         let failure = self.failures.get(method).cloned();
         Box::pin(async move {
@@ -107,7 +119,7 @@ pub fn registry_with(id: &str) -> BrowserRegistry {
             OwnedTab {
                 label: format!("browser-{id}"),
                 rect: super::registry::PARK_RECT,
-                parked: true,
+                live: Arc::default(),
                 cancelled: false,
                 workspace: "ws-1".to_owned(),
                 state: Arc::new(Mutex::new(BrowserViewState {

@@ -170,7 +170,7 @@ pub fn list_tabs(
                 // Whether the page is the one in front of its pane. The strip's
                 // own active pointer lives in the frontend; this is the half
                 // Rust can answer without asking it.
-                "active": !tab.parked,
+                "active": !tab.live.parked(),
             })
         })
         .collect();
@@ -218,6 +218,13 @@ pub async fn navigate(
     deadline: Deadline,
 ) -> Result<Value, BrowserError> {
     let asked: NavigateArgs = super::args_of(args)?;
+    // Refused before the page is touched: two ways to go somewhere is a
+    // mistake in the call, and answering one of them would hide it.
+    if asked.action.is_some() && asked.url.is_some() {
+        return Err(host_error(
+            "navigate takes a url or an action, not both: send one.",
+        ));
+    }
     let start = act::read(tab, page).await?;
     act::ready(tab, page).await?;
     match (&asked.action, &asked.url) {

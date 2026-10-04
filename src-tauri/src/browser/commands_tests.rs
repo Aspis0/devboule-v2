@@ -266,6 +266,22 @@ fn a_step_that_way_with_no_history_that_way_goes_nowhere() {
 }
 
 #[test]
+fn a_navigate_that_names_both_a_url_and_an_action_is_refused_before_the_page_is_touched() {
+    let page = form_page();
+
+    let error = run(
+        &page,
+        "navigate",
+        json!({ "browserId": "tab-1", "url": "https://example.test/", "action": "reload" }),
+    )
+    .expect_err("two ways to go somewhere");
+
+    assert_eq!(error.code, BrowserErrorCode::HostError);
+    assert!(error.message.contains("not both"), "{}", error.message);
+    assert!(page.calls().is_empty(), "{:?}", page.calls());
+}
+
+#[test]
 fn a_command_this_app_does_not_run_is_a_refusal_and_not_an_empty_answer() {
     let error = run(&form_page(), "screenshot", args(json!({}))).expect_err("not a 4b-1 command");
     assert_eq!(error.code, BrowserErrorCode::HostError);

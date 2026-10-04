@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 use tauri::{LogicalPosition, LogicalSize};
 
+use super::live::Live;
 use super::tab::{BrowserUpdate, BrowserViewState};
 
 /// The folder name under the app's local data directory that holds every
@@ -63,7 +64,9 @@ impl LogicalRect {
 pub struct OwnedTab {
     pub label: String,
     pub rect: LogicalRect,
-    pub parked: bool,
+    /// Whether the page is parked and whether an override is on it, shared
+    /// with every command that addresses the page.
+    pub live: Arc<Live>,
     /// A close that arrived before the child existed. A claim is made before
     /// `add_child` runs, so this is the one thing a close can leave behind
     /// that the create itself has to act on.
@@ -113,8 +116,10 @@ pub struct TabInfo {
     pub url: String,
     pub title: Option<String>,
     /// Whether the page is parked, and therefore whether measuring it needs a
-    /// device-metrics override first.
-    pub parked: bool,
+    /// device-metrics override first. A handle and not a copy: it is read again
+    /// when the override is about to be applied, because the pane may have
+    /// presented the page since this was taken.
+    pub live: Arc<Live>,
     /// The size to measure against: the last presented one, or the default.
     pub size: Size,
     pub state: Arc<Mutex<BrowserViewState>>,
@@ -170,12 +175,18 @@ impl BrowserRegistry {
             .expect("browser registry poisoned")
             .get(id)
             .filter(|tab| !tab.cancelled)
-            .map(|tab| (tab.rect, tab.parked))
+            .map(|tab| (tab.rect, tab.live.parked()))
     }
 
-    pub fn set_rect(&self, id: &str, rect: LogicalRect, parked: bool) {
+    /// Record where the page was put. The answer is whether the page was
+    /// presented with a device-metrics override still on it, which the caller
+    /// must clear: only presenting restores the real geometry.
+    pub fn set_rect(&self, id: &str, rect: LogicalRect, parked: bool) -> bool {
         let mut tabs = self.tabs.lock().expect("browser registry poisoned");
-        if let Some(tab) = tabs.get_mut(id).filter(|tab| !tab.cancelled) {
+        let Some(tab) = tabs.get_mut(id).filter(|tab| !tab.cancelled) else {
+            return false;
+        };
+        {
             if !parked {
                 // The last real size, kept past the park: a parked page is
                 // measured against what the pane last showed it at.
@@ -185,8 +196,9 @@ impl BrowserRegistry {
                 });
             }
             tab.rect = rect;
-            tab.parked = parked;
+            tab.live.set_parked(parked);
         }
+        !parked && tab.live.take_overridden()
     }
 
     /// Everything one addressable tab is, or None when the id is unknown,
@@ -202,7 +214,7 @@ impl BrowserRegistry {
             workspace: tab.workspace.clone(),
             url: state.url.clone(),
             title: state.title.clone(),
-            parked: tab.parked,
+            live: Arc::clone(&tab.live),
             size: tab.presented.unwrap_or(DEFAULT_PRESENTED),
             state: Arc::clone(&tab.state),
         })
@@ -308,7 +320,7 @@ mod tests {
         OwnedTab {
             label: label.to_owned(),
             rect: PARK_RECT,
-            parked: true,
+            live: Arc::default(),
             cancelled: false,
             workspace: "ws-1".to_owned(),
             state: Arc::new(Mutex::new(BrowserViewState::default())),

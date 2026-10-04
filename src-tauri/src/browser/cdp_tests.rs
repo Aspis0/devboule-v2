@@ -1,5 +1,6 @@
 use super::*;
 use crate::browser::test_support::FakePage;
+use std::sync::Arc;
 
 fn parked() -> Size {
     Size {
@@ -11,11 +12,13 @@ fn parked() -> Size {
 #[test]
 fn a_parked_page_is_put_on_screen_at_the_size_its_pane_last_used() {
     let page = FakePage::new();
+    let live = Live::default();
     tauri::async_runtime::block_on(async {
-        present_for(&page, true, parked())
+        present_for(&page, &live, parked())
             .await
             .expect("the page takes the override");
     });
+    assert!(live.overridden(), "and the tab knows it carries one");
 
     let params = page
         .last_params("Emulation.setDeviceMetricsOverride")
@@ -29,11 +32,14 @@ fn a_parked_page_is_put_on_screen_at_the_size_its_pane_last_used() {
 #[test]
 fn a_page_in_front_is_left_exactly_as_it_is() {
     let page = FakePage::new();
+    let live = Live::default();
+    live.set_parked(false);
     tauri::async_runtime::block_on(async {
-        present_for(&page, false, parked())
+        present_for(&page, &live, parked())
             .await
             .expect("nothing to do is not a failure");
     });
+    assert!(!live.overridden());
 
     assert_eq!(
         page.called("Emulation.setDeviceMetricsOverride"),
@@ -136,4 +142,38 @@ fn a_stale_ref_says_so_in_words_a_caller_can_act_on() {
         "DOM.getBoxModel: refused",
         "a refused method carries the runtime's own text and no advice"
     );
+}
+
+#[test]
+fn a_page_the_pane_presents_while_the_override_is_in_flight_has_it_cleared() {
+    let live = Arc::new(Live::default());
+    let presents = Arc::clone(&live);
+    let page = FakePage::new().during("Emulation.setDeviceMetricsOverride", move || {
+        // What `set_rect` does for a presented page.
+        presents.set_parked(false);
+        presents.take_overridden();
+    });
+
+    tauri::async_runtime::block_on(present_for(&page, &live, parked())).expect("answered");
+
+    assert_eq!(
+        page.called("Emulation.clearDeviceMetricsOverride"),
+        1,
+        "an override that landed after the pane presented is taken off"
+    );
+    assert!(!live.overridden());
+}
+
+#[test]
+fn an_override_the_page_refused_leaves_no_flag_behind() {
+    let page = FakePage::new().refusing(
+        "Emulation.setDeviceMetricsOverride",
+        CdpError::Refused("no".to_owned()),
+    );
+    let live = Live::default();
+
+    let applied = tauri::async_runtime::block_on(present_for(&page, &live, parked()));
+
+    assert!(applied.is_err());
+    assert!(!live.overridden());
 }

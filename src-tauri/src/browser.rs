@@ -19,6 +19,7 @@ mod delta_input;
 mod find;
 mod find_query;
 pub mod host;
+mod live;
 mod page_host;
 pub(crate) mod registry;
 mod tab;
@@ -109,9 +110,18 @@ pub async fn browser_present(
     let (position, size) = rect.into_tauri();
     webview.set_position(position).map_err(|e| e.to_string())?;
     webview.set_size(size).map_err(|e| e.to_string())?;
-    registry.set_rect(&id, rect, false);
+    let overridden = registry.set_rect(&id, rect, false);
     webview.show().map_err(|e| e.to_string())?;
     page_host::raise(&webview);
+    if overridden {
+        // An agent measured this page while it was parked, and presenting does
+        // not take its override off: clear it, then put the page at the pane's
+        // size again so the layout is the pane's, whether or not that command
+        // is still running.
+        let label = registry.label_of(&id)?;
+        cdp::clear_override(&cdp::WebviewPage::new(&app, &label)).await;
+        webview.set_size(size).map_err(|e| e.to_string())?;
+    }
     trace_place(&id, rect, "active");
     Ok(())
 }
@@ -140,12 +150,13 @@ pub async fn browser_park(
 /// Navigate to a URL the address bar submits. The webview's own gate checks
 /// it again, so this one is a friendly refusal, not the boundary.
 #[tauri::command]
-pub fn browser_navigate(
+pub async fn browser_navigate(
     app: AppHandle,
     registry: State<'_, Arc<BrowserRegistry>>,
     id: String,
     url: String,
 ) -> Result<(), String> {
+    let _held = tab_guard::hold_for_pane(&registry, &id, tab_guard::PANE_WAIT).await;
     let webview = owned(&app, &registry, &id)?;
     webview
         .navigate(url::accept(&url)?)
@@ -159,16 +170,18 @@ pub async fn browser_history(
     id: String,
     act: Act,
 ) -> Result<(), String> {
+    let _held = tab_guard::hold_for_pane(&registry, &id, tab_guard::PANE_WAIT).await;
     let label = registry.label_of(&id)?;
     page_host::act(&app, &label, act).await
 }
 
 #[tauri::command]
-pub fn browser_reload(
+pub async fn browser_reload(
     app: AppHandle,
     registry: State<'_, Arc<BrowserRegistry>>,
     id: String,
 ) -> Result<(), String> {
+    let _held = tab_guard::hold_for_pane(&registry, &id, tab_guard::PANE_WAIT).await;
     owned(&app, &registry, &id)?
         .reload()
         .map_err(|e| e.to_string())

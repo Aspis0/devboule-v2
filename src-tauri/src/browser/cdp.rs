@@ -22,6 +22,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use super::deadline::Deadline;
+use super::live::Live;
 use super::registry::Size;
 
 /// A call in flight, so the layer above it never sees a lifetime.
@@ -104,24 +105,46 @@ impl Page for Bounded<'_> {
 ///
 /// Override before measuring, never after: a responsive page re-lays out when
 /// the metrics move, so a box model taken before the call is measured against
-/// a document that no longer exists. Clearing the override does not put the
-/// 1x1 layout back — only presenting the tab does, and a navigation drops it
-/// on its way — so this never tries to undo it.
-pub async fn present_for(page: &dyn Page, parked: bool, size: Size) -> Result<(), CdpError> {
-    if !parked {
+/// a document that no longer exists.
+///
+/// Whether the page is parked is read from `live` here, when the call is about
+/// to go out, and again once it has come back: the pane may have presented the
+/// page in between, and an override on a page in front of a person is a layout
+/// they did not ask for. A page presented meanwhile gets its override cleared at
+/// once, and the flag is on before the call so the pane clears it too if it
+/// presents after this has looked.
+pub async fn present_for(page: &dyn Page, live: &Live, size: Size) -> Result<(), CdpError> {
+    if !live.parked() {
         return Ok(());
     }
-    page.call(
-        "Emulation.setDeviceMetricsOverride",
-        json!({
-            "width": size.width.round(),
-            "height": size.height.round(),
-            "deviceScaleFactor": 1,
-            "mobile": false,
-        }),
-    )
-    .await
-    .map(|_| ())
+    live.set_overridden(true);
+    let applied = page
+        .call(
+            "Emulation.setDeviceMetricsOverride",
+            json!({
+                "width": size.width.round(),
+                "height": size.height.round(),
+                "deviceScaleFactor": 1,
+                "mobile": false,
+            }),
+        )
+        .await;
+    if applied.is_err() {
+        live.set_overridden(false);
+    } else if !live.parked() {
+        live.set_overridden(false);
+        clear_override(page).await;
+    }
+    applied.map(|_| ())
+}
+
+/// Take the device-metrics override off a page. It does not by itself put the
+/// real layout back — presenting the page again does — so the pane follows it
+/// with a resize. A failure is not reported: the page is in front either way.
+pub async fn clear_override(page: &dyn Page) {
+    let _ = page
+        .call("Emulation.clearDeviceMetricsOverride", json!({}))
+        .await;
 }
 
 /// Whether a call's parameters named a node, which is what makes a refusal of

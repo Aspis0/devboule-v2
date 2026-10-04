@@ -263,7 +263,7 @@ pub async fn open(
         OwnedTab {
             label: label.clone(),
             rect: PARK_RECT,
-            parked: true,
+            live: Arc::default(),
             cancelled: false,
             workspace: workspace.to_owned(),
             state: Arc::clone(&state),

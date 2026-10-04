@@ -31,7 +31,7 @@ pub struct Start {
 /// Put a parked page on screen, so the box model an action measures is the
 /// page's own and not a 1x1 pixel's.
 pub async fn ready(tab: &TabInfo, page: &dyn Page) -> Result<(), BrowserError> {
-    cdp::present_for(page, tab.parked, tab.size)
+    cdp::present_for(page, &tab.live, tab.size)
         .await
         .map_err(cdp_failure)
 }
