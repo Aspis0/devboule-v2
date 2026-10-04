@@ -551,7 +551,7 @@ No unresolved asset provenance remains: the icon is original project artwork car
 | generic-array | 0.14.7 | Rust transitive (lockfile) | MIT |
 | getrandom | 0.2.17 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | getrandom | 0.3.4 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
-| getrandom | 0.4.3 | Rust direct runtime optional Windows | MIT OR Apache-2.0 |
+| getrandom | 0.4.3 | Rust direct runtime optional | MIT OR Apache-2.0 |
 | ghash | 0.5.1 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
 | gif | 0.14.2 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | gio | 0.18.4 | Rust transitive (lockfile) | MIT |
@@ -938,14 +938,14 @@ No unresolved asset provenance remains: the icon is original project artwork car
 | selectors | 0.36.1 | Rust transitive (lockfile) | MPL-2.0 |
 | semver | 1.0.28 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | seq-macro | 0.3.6 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
-| serde | 1.0.229 | Rust direct runtime optional Windows | MIT OR Apache-2.0 |
+| serde | 1.0.229 | Rust direct runtime optional | MIT OR Apache-2.0 |
 | serde-sarif | 0.8.0 | Rust direct runtime | MIT |
 | serde-untagged | 0.1.9 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | serde_core | 1.0.229 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | serde_derive | 1.0.229 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | serde_derive_internals | 0.29.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | serde_derive_internals | 0.30.0 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
-| serde_json | 1.0.151 | Rust direct runtime test optional Windows | MIT OR Apache-2.0 |
+| serde_json | 1.0.151 | Rust direct runtime test optional | MIT OR Apache-2.0 |
 | serde_repr | 0.1.21 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | serde_spanned | 0.6.9 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | serde_spanned | 1.1.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
@@ -959,7 +959,7 @@ No unresolved asset provenance remains: the icon is original project artwork car
 | servo_arc | 0.4.3 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | sha1_smol | 1.0.1 | Rust transitive (lockfile) | BSD-3-Clause |
 | sha2 | 0.10.9 | Rust direct runtime optional | MIT OR Apache-2.0 |
-| sha2 | 0.11.0 | Rust direct runtime optional Windows | MIT OR Apache-2.0 |
+| sha2 | 0.11.0 | Rust direct runtime optional | MIT OR Apache-2.0 |
 | sharded-slab | 0.1.7 | Rust transitive (lockfile) | MIT |
 | shell-words | 1.1.1 | Rust transitive (lockfile) | MIT/Apache-2.0 |
 | shlex | 2.0.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
@@ -1022,16 +1022,16 @@ No unresolved asset provenance remains: the icon is original project artwork car
 | tauri-codegen | 2.6.3 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
 | tauri-macros | 2.6.3 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
 | tauri-plugin | 2.6.3 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
-| tauri-plugin-dialog | 2.7.3 | Rust direct Windows | Apache-2.0 OR MIT |
+| tauri-plugin-dialog | 2.7.3 | Rust direct runtime | Apache-2.0 OR MIT |
 | tauri-plugin-fs | 2.5.2 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
-| tauri-plugin-notification | 2.4.0 | Rust direct Windows | Apache-2.0 OR MIT |
-| tauri-plugin-opener | 2.5.5 | Rust direct Windows | Apache-2.0 OR MIT |
+| tauri-plugin-notification | 2.4.0 | Rust direct runtime | Apache-2.0 OR MIT |
+| tauri-plugin-opener | 2.5.5 | Rust direct runtime | Apache-2.0 OR MIT |
 | tauri-runtime | 2.11.3 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
 | tauri-runtime-wry | 2.11.4 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
 | tauri-utils | 2.9.3 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
 | tauri-winres | 0.3.6 | Rust transitive (lockfile) | MIT |
 | tauri-winrt-notification | 0.7.3 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
-| tempfile | 3.27.0 | Rust direct runtime test Windows | MIT OR Apache-2.0 |
+| tempfile | 3.27.0 | Rust direct runtime test | MIT OR Apache-2.0 |
 | tendril | 0.5.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | thiserror | 1.0.69 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | thiserror | 2.0.20 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
@@ -1108,7 +1108,7 @@ No unresolved asset provenance remains: the icon is original project artwork car
 | ureq | 3.4.0 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | ureq-proto | 0.6.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | uriparse | 0.6.4 | Rust transitive (lockfile) | MIT |
-| url | 2.5.8 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
+| url | 2.5.8 | Rust direct runtime | MIT OR Apache-2.0 |
 | urlpattern | 0.3.0 | Rust transitive (lockfile) | MIT |
 | utf8-ranges | 1.0.5 | Rust transitive (lockfile) | Unlicense/MIT |
 | utf8-zero | 0.8.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |

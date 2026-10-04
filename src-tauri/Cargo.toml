@@ -29,23 +29,6 @@ tauri-build = { version = "=2.6.3", features = ["config-json5"] }
 # `unstable` is `Window::add_child`: the browser tab is a child webview in
 # the main window, and that API is still behind the flag in Tauri 2.11.
 tauri = { version = "=2.11.5", features = ["config-json5", "protocol-asset", "tray-icon", "unstable"] }
-# Direct because `src-tauri/src/browser/page_host.rs` calls WebView2's COM
-# interfaces itself for the four things Tauri 2.11 does not expose: history,
-# stop, the page's favicon, and the permission answer. Versions must match
-# Cargo.lock exactly, so we name the SAME types wry and Tauri use. Windows
-# only; every other target compiles the refusals in the same module.
-[target.'cfg(windows)'.dependencies]
-webview2-com = "=0.38.2"
-# `Win32_System_Pipes` and `Win32_Storage_FileSystem` are for
-# `src-tauri/src/browser/host_wire_tests.rs`, which binds the daemon's own pipe
-# to drive the host loop over a real connection. No new package: these are
-# features of the crate already linked here for WebView2's COM interfaces.
-windows = { version = "=0.61.3", features = [
-    "Win32_Security",
-    "Win32_Storage_FileSystem",
-    "Win32_System_IO",
-    "Win32_System_Pipes",
-] }
 # Direct because the public session contract derives Serialize/Deserialize. The exact
 # version is already present transitively through Tauri; this does not add a new package.
 serde = { version = "=1.0.229", features = ["derive"] }
@@ -89,6 +72,24 @@ keyring = { version = "=4.2.0", default-features = false, features = ["v1"] }
 # serialises to — a comparison against a home-made canonicalisation is a
 # comparison against the wrong string. Same copy the workspace already resolves.
 url = "=2.5.8"
+
+# Direct because `src-tauri/src/browser/page_host.rs` calls WebView2's COM
+# interfaces itself for the four things Tauri 2.11 does not expose: history,
+# stop, the page's favicon, and the permission answer. Versions must match
+# Cargo.lock exactly, so we name the SAME types wry and Tauri use. Windows
+# only; every other target compiles the refusals in the same module.
+[target.'cfg(windows)'.dependencies]
+webview2-com = "=0.38.2"
+# `Win32_System_Pipes` and `Win32_Storage_FileSystem` are for
+# `src-tauri/src/browser/host_wire_tests.rs`, which binds the daemon's own pipe
+# to drive the host loop over a real connection. No new package: these are
+# features of the crate already linked here for WebView2's COM interfaces.
+windows = { version = "=0.61.3", features = [
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+] }
 
 [dev-dependencies]
 # Already in the workspace; used to assert the Tauri error payload JSON.
