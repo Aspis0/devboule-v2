@@ -105,6 +105,71 @@ fn a_clip_is_the_same_css_pixels_a_point_is_and_the_zoom_is_its_scale() {
     );
 }
 
+/// The answer's field names are a contract with the daemon, which reads them
+/// to write the line that says how big the picture is
+/// (`mcp_broker/tools/browser_tools.rs`, `picture`). A rename here makes that
+/// line read `x px`, so the names are pinned rather than asserted one at a time.
+#[test]
+fn the_answer_names_the_fields_the_daemon_reads() {
+    let plain = page_answering(base64_of(1000));
+    let answered = shoot(&plain, json!({ "browserId": "tab-1" })).expect("answered");
+    assert_eq!(
+        keys_of(&answered),
+        vec![
+            "cssHeight",
+            "cssWidth",
+            "data",
+            "height",
+            "mimeType",
+            "width"
+        ],
+        "a viewport picture, with nothing the daemon does not read"
+    );
+
+    let clipped = page_answering(base64_of(1000));
+    let answered = shoot(
+        &clipped,
+        json!({
+            "browserId": "tab-1",
+            "clip": { "x": 20, "y": 40, "width": 200, "height": 120 },
+        }),
+    )
+    .expect("answered");
+    assert_eq!(
+        keys_of(&answered),
+        vec![
+            "clip",
+            "cssHeight",
+            "cssWidth",
+            "data",
+            "height",
+            "mimeType",
+            "width",
+        ],
+        "a clipped picture adds the clip the daemon names"
+    );
+    assert_eq!(
+        keys_of(&answered["clip"]),
+        vec!["height", "width", "x", "y"],
+        "and the clip is the four numbers the daemon reads"
+    );
+    // The sizes are `f64` in this module, so they travel as JSON floats; a
+    // reader that wants integers has to ask for them as numbers.
+    assert!(answered["width"].is_f64(), "{}", answered["width"]);
+    assert!(answered["clip"]["x"].is_f64(), "{}", answered["clip"]["x"]);
+}
+
+fn keys_of(value: &Value) -> Vec<&str> {
+    let mut keys = value
+        .as_object()
+        .expect("an object")
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    keys.sort_unstable();
+    keys
+}
+
 #[test]
 fn a_picture_too_big_for_an_answer_is_taken_again_more_compressed() {
     // Every rung of the ladder answers as though it were the whole page.
