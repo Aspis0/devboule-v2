@@ -1,8 +1,9 @@
 use super::*;
 use crate::browser::ax::AxTree;
-use crate::browser::test_pages::{bare_fields, encyclopedia, front_page};
+use crate::browser::test_pages::{bare_fields, encyclopedia, front_page, news};
 use crate::browser::test_support::{ax_fixture, ax_property, buttons};
-use crate::browser::view::{compact, Mode};
+use crate::browser::view::Mode;
+use crate::browser::view_walk::compact;
 
 fn view_of(checked: &str) -> View {
     let mut fixture = ax_fixture();
@@ -93,12 +94,11 @@ fn a_query_nothing_says_matches_nothing_rather_than_everything() {
 fn the_best_match_comes_first_and_document_order_breaks_a_tie() {
     let view = view_of("false");
 
-    // Three nodes are named "Sign in" and all three are exact matches, so
-    // the words around them decide: the form and the button sit in a place
-    // that says it too, the heading does not.
+    // Three nodes are named "Sign in" and all three are exact matches: the same
+    // score, so the one earlier in the document comes first.
     let hits = find(&view, "sign in");
     let refs: Vec<&str> = hits.iter().map(|hit| hit.reference.as_str()).collect();
-    assert_eq!(refs[..3], ["e19", "e15", "e11"]);
+    assert_eq!(refs[..3], ["e11", "e19", "e15"]);
     assert_eq!(
         refs.len(),
         6,
@@ -135,8 +135,9 @@ fn a_search_box_is_the_field_in_the_search_landmark_whatever_it_is_called() {
     let view = interactive(&encyclopedia());
 
     let hits = find(&view, "search box");
-    // The "Search" button answers to the word and is not a box.
-    assert_eq!(refs(&hits), ["e905"]);
+    // The "Search" button answers to the word and is not a box: it is there,
+    // behind the field.
+    assert_eq!(refs(&hits), ["e905", "e906"]);
     assert_eq!(hits[0].role, "combobox");
     assert_eq!(hits[0].name, "", "and the page never named it");
     assert_eq!(hits[0].context, "in search");
@@ -153,7 +154,7 @@ fn every_way_to_ask_for_a_field_finds_the_same_one() {
         "the search textbox",
         "SEARCH BOX",
     ] {
-        assert_eq!(refs(&find(&view, asked)), ["e905"], "{asked}");
+        assert_eq!(refs(&find(&view, asked))[0], "e905", "{asked}");
     }
 }
 
@@ -189,7 +190,7 @@ fn a_kind_of_control_is_answered_by_that_kind_alone() {
 fn the_kind_and_the_name_narrow_together() {
     let view = interactive(&encyclopedia());
 
-    assert_eq!(refs(&find(&view, "search button")), ["e906"]);
+    assert_eq!(refs(&find(&view, "search button"))[0], "e906");
     assert_eq!(refs(&find(&view, "history link")), ["e908"]);
 }
 
@@ -217,8 +218,9 @@ fn a_control_in_the_navigation_comes_before_the_same_name_in_the_footer() {
 fn naming_the_footer_puts_the_footer_first() {
     let view = interactive(&encyclopedia());
 
-    assert_eq!(refs(&find(&view, "footer help")), ["e910"]);
-    assert_eq!(refs(&find(&view, "footer help link")), ["e910"]);
+    // The navigation's is still an answer, behind it.
+    assert_eq!(refs(&find(&view, "footer help")), ["e910", "e909"]);
+    assert_eq!(refs(&find(&view, "footer help link")), ["e910", "e909"]);
 }
 
 #[test]
@@ -246,4 +248,74 @@ fn a_link_in_the_top_bar_names_the_bar() {
     let hits = find(&view, "login");
     assert_eq!(refs(&hits), ["e904"]);
     assert_eq!(hits[0].context, r#"in navigation "top bar""#);
+}
+
+#[test]
+fn a_place_the_page_does_not_have_does_not_drop_the_link_the_name_finds() {
+    // The top bar of this page is a table row, not a navigation landmark, so
+    // "in the top bar" matches no place at all.
+    let view = interactive(&news(30));
+
+    // The other links of the bar are there too, behind it: they say "new"
+    // around them and are not called it.
+    let hits = find(&view, "new link in the top bar");
+    assert_eq!(refs(&hits)[0], "e904");
+
+    assert_eq!(
+        refs(&find(&view, "past link in the footer"))[0],
+        "e905",
+        "and a footer the page does not have is not a reason to find nothing"
+    );
+}
+
+#[test]
+fn the_top_of_the_page_comes_before_thirty_rows_that_repeat_the_name() {
+    let view = interactive(&news(30));
+
+    let hits = find(&view, "past");
+
+    assert_eq!(
+        hits.len(),
+        MAX_MATCHES,
+        "thirty-one links answer, twenty are kept"
+    );
+    assert_eq!(hits[0].reference, "e905", "the top bar's, not a row's");
+    assert_eq!(
+        refs(&hits)[1],
+        "e1018",
+        "and the rows follow in document order"
+    );
+}
+
+#[test]
+fn a_repeated_name_ranks_by_document_order_even_when_the_rows_say_it_too() {
+    // Every row's own words contain "past", which must not lift a row's link over
+    // the one that came first.
+    let view = interactive(&news(30));
+    let row = view
+        .nodes
+        .iter()
+        .find(|node| node.backend_id == 1_018)
+        .expect("the first row's link is a line");
+    assert!(row.context.contains("past"), "{}", row.context);
+
+    assert_eq!(find(&view, "past")[0].reference, "e905");
+}
+
+#[test]
+fn a_nameless_match_says_what_it_is_and_a_named_one_does_not() {
+    let mut view = interactive(&bare_fields());
+    view.nodes[0].hints = "type=search name=q".to_owned();
+    view.nodes[0].nearby = "Search the encyclopedia".to_owned();
+
+    let bare = find(&view, "search box");
+    assert_eq!(bare[0].reference, "e1");
+    assert_eq!(
+        bare[0].detail,
+        r#"type=search name=q, near "Search the encyclopedia""#
+    );
+
+    let named = find(&view, "email");
+    assert_eq!(named[0].reference, "e2");
+    assert_eq!(named[0].detail, "");
 }

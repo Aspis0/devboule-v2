@@ -2,7 +2,8 @@ use super::*;
 use crate::browser::ax::AxTree;
 use crate::browser::test_pages::{front_page, report};
 use crate::browser::test_support::{buttons, checkbox_tree, flat_tree};
-use crate::browser::view::{compact, Mode};
+use crate::browser::view::Mode;
+use crate::browser::view_walk::compact;
 
 fn place(url: &str) -> Place {
     Place {
@@ -17,10 +18,14 @@ fn view_of(tree: &AxTree) -> View {
 
 /// The lists of a delta inside one document, which is the only kind that has any.
 fn lists(delta: &Delta) -> &Changes {
-    delta
+    match delta
         .changes
         .as_ref()
         .expect("a change inside one document has lists")
+    {
+        Lists::Everything(changes) => changes,
+        Lists::Input(_) => panic!("this action lists everything"),
+    }
 }
 
 #[test]

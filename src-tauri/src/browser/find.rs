@@ -6,14 +6,26 @@
 //! what an agent sends is usually close to an accessible name ("the search
 //! box", "Sign in"), so the name carries the most and the text above it
 //! breaks the ties.
+//!
+//! A kind of control ("button") and a part of the page ("footer") only boost:
+//! a node of that kind or in that place ranks ahead of the rest, and nothing is
+//! dropped for lacking them. A page whose top bar is a table and not a
+//! `navigation` still answers "the new link in the top bar" by the name.
 
 use super::find_query::Query;
 use super::view::{View, ViewNode};
+use super::view_line::clip;
 
 /// The most matches one query answers with. A caller that wants more narrows
 /// the query: twenty is already a page of reading, and a hundred would be a
 /// page of guessing.
 pub const MAX_MATCHES: usize = 20;
+
+/// How many nodes from the top of the page count as the top of the page.
+const EARLY_NODES: usize = 30;
+
+/// How much of a nearby label or description a match repeats.
+const DETAIL_MAX: usize = 60;
 
 /// One node the query might mean, as the contract names it back.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,79 +34,92 @@ pub struct Match {
     pub role: String,
     pub name: String,
     pub context: String,
+    /// What a node with no name says about itself, so the caller can tell it
+    /// picked the right one: its markup, the label near it, how the page
+    /// described it. Empty for a node that has a name.
+    pub detail: String,
 }
 
-/// The matches for one question, best first. Nodes the query says nothing
-/// about are not matches.
-///
-/// A question that names a kind of control, or a part of the page, is answered
-/// from that kind in that part first: "search box" is the fields, and a button
-/// called "Search" is not one of them. Only when nothing there fits is the
-/// reading widened, so "sign in button" still finds the link a page styled as
-/// one, and "footer help" still finds a Help the page put somewhere else.
+/// How one node ranks. Field order is the order of importance: the kind and the
+/// place the question asked for come before how well the words fit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Rank {
+    kind: bool,
+    place: bool,
+    score: u32,
+}
+
+/// The matches for one question, best first, and in document order inside a
+/// rank so that the control at the top of the page comes before the same one
+/// repeated down it. Nodes the query says nothing about are not matches.
 pub fn rank(view: &View, query: &Query) -> Vec<Match> {
     if query.phrase.is_empty() {
         return Vec::new();
     }
-    let mut scored = Vec::new();
-    for (of_the_kind, in_the_place) in [(true, true), (true, false), (false, true), (false, false)]
-    {
-        // A pass that narrows by something the question never said is one a
-        // wider pass already is.
-        if (of_the_kind && query.roles.is_empty()) || (in_the_place && query.places.is_empty()) {
-            continue;
-        }
-        scored = scores(view, query, of_the_kind, in_the_place);
-        if !scored.is_empty() {
-            break;
-        }
-    }
-    // Best score first, and document order inside a score, so the answer is a
-    // list a reader can work down rather than a set to sort again.
-    scored.sort_by(|(one, first), (other, second)| second.cmp(first).then(one.cmp(other)));
-    scored
+    let mut ranked: Vec<(Rank, usize)> = view
+        .nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(position, node)| Some((score(node, position, query)?, position)))
+        .collect();
+    ranked.sort_by(|(one, at), (other, later)| other.cmp(one).then(at.cmp(later)));
+    ranked
         .into_iter()
         .take(MAX_MATCHES)
-        .map(|(position, _)| {
+        .map(|(_, position)| {
             let node = &view.nodes[position];
             Match {
                 reference: node.ref_text(),
                 role: node.role.clone(),
                 name: node.name.clone(),
                 context: node.context.clone(),
+                detail: if node.name.is_empty() {
+                    describe(node)
+                } else {
+                    String::new()
+                },
             }
         })
         .collect()
 }
 
-/// Every node the query says something about, with where it sits in the view.
-fn scores(view: &View, query: &Query, of_the_kind: bool, in_the_place: bool) -> Vec<(usize, u32)> {
-    view.nodes
-        .iter()
-        .enumerate()
-        .filter(|(_, node)| !of_the_kind || query.roles.contains(&node.role.as_str()))
-        .filter(|(_, node)| !in_the_place || query.places.contains(&node.landmark.as_str()))
-        .filter_map(|(position, node)| {
-            let score = score(node, query, of_the_kind);
-            (score > 0).then_some((position, score))
-        })
-        .collect()
+/// What a node with no name says about itself.
+pub fn describe(node: &ViewNode) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if !node.hints.is_empty() {
+        parts.push(node.hints.clone());
+    } else if !node.placeholder.is_empty() {
+        parts.push(format!(
+            "placeholder=\"{}\"",
+            clip(&node.placeholder, DETAIL_MAX)
+        ));
+    }
+    if !node.nearby.is_empty() {
+        parts.push(format!("near \"{}\"", clip(&node.nearby, DETAIL_MAX)));
+    }
+    if !node.description.is_empty() {
+        parts.push(format!(
+            "described as \"{}\"",
+            clip(&node.description, DETAIL_MAX)
+        ));
+    }
+    parts.join(", ")
 }
 
-/// How well one node answers the query. Every field is read, so a control with
-/// no name can still be found by its value, its markup, its label or the words
-/// above it.
+/// How well one node answers the query, or None when it says nothing about it.
+/// Every field is read, so a control with no name can still be found by its
+/// value, its markup, its label or the words above it.
 ///
-/// The name is a tier and everything else is the tie-break inside it, which is
-/// what "the name carries the most, the text above it breaks the ties" has to
-/// mean: the surroundings are worth at most 80, so they can order two nodes
-/// whose own names match the same way and can never lift one past a better
-/// name. What the node says about itself ranks between a name and its
+/// The name is a tier and everything else is the tie-break inside it: the
+/// surroundings are worth at most 59, so they can order two nodes whose own
+/// names match the same way and can never lift one past a better name. What a
+/// node of the asked-for kind says about itself ranks between a name and its
 /// surroundings, because it is the node's own word for what it is.
-fn score(node: &ViewNode, query: &Query, of_the_kind: bool) -> u32 {
+fn score(node: &ViewNode, position: usize, query: &Query) -> Option<Rank> {
     let name = node.name.to_lowercase();
     let needle = query.needle.as_str();
     let tokens = &query.words;
+    let kind = query.roles.contains(&node.role.as_str());
     let named = if needle.is_empty() {
         0
     } else if name == needle {
@@ -108,7 +133,7 @@ fn score(node: &ViewNode, query: &Query, of_the_kind: bool) -> u32 {
     };
     let tier = if named > 0 {
         named
-    } else if !of_the_kind {
+    } else if !kind {
         0
     } else if tokens.is_empty() {
         // The kind is the whole question: every control of it answers.
@@ -133,22 +158,27 @@ fn score(node: &ViewNode, query: &Query, of_the_kind: bool) -> u32 {
     {
         around += 15;
     }
-    if contains(&node.nearby, needle) || contains(&node.context, needle) {
+    // Words around a node whose own name is already the question say nothing
+    // more about it, and would put every repeat of it ahead of the first.
+    if named < 100 && (contains(&node.nearby, needle) || contains(&node.context, needle)) {
         around += 10;
     }
-    let signal = tier * 100 + around;
-    if signal == 0 {
-        return 0;
+    let mut score = tier * 100 + around;
+    if score == 0 {
+        return None;
     }
-    // What neither says anything about the words: being the kind asked for,
-    // and being in the part of the page a person looks at first.
-    if query.roles.contains(&node.role.as_str()) {
-        around += 30;
-    }
+    // Where a person looks first: the page's navigation and header, and its top.
     if !query.names_a_place() && matches!(node.landmark.as_str(), "navigation" | "banner") {
-        around += 5;
+        score += 8;
     }
-    tier * 100 + around
+    if position < EARLY_NODES {
+        score += 6;
+    }
+    Some(Rank {
+        kind,
+        place: query.places.contains(&node.landmark.as_str()),
+        score,
+    })
 }
 
 /// What a node says about itself, lowercased: its name, its role, what the

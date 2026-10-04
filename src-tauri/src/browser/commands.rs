@@ -12,12 +12,11 @@
 
 pub mod act;
 pub mod input;
+pub mod keys;
+pub mod page_script;
 pub mod see;
 pub mod tabs;
 pub mod wait;
-
-use std::sync::Arc;
-use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -26,14 +25,11 @@ use devboule_protocol::{BrowserCaller, BrowserError, BrowserErrorCode, BrowserEx
 
 use super::ax::AxTree;
 use super::cdp::{Bounded, CdpError, Page, WebviewPage};
-use super::cdp_events;
 use super::deadline::Deadline;
 use super::registry::{BrowserRegistry, TabInfo};
+use super::tab_guard;
 use super::view;
-
-/// How often a command waiting for its tab looks again. The wait is short by
-/// nature — the holder is another acting command or a pane moving the page.
-const LOCK_POLL: Duration = Duration::from_millis(25);
+use super::view_walk;
 
 /// The failure's wire name, for the one line this app writes per command. The
 /// daemon's own log spells it the same way, so the two read alike.
@@ -154,7 +150,7 @@ pub async fn tree_of(page: &dyn Page) -> Result<AxTree, BrowserError> {
 
 /// The view of one page, in the mode the caller asked for.
 pub async fn view_of(page: &dyn Page, mode: view::Mode) -> Result<view::View, BrowserError> {
-    Ok(view::compact(&tree_of(page).await?, mode))
+    Ok(view_walk::compact(&tree_of(page).await?, mode))
 }
 
 /// The commands that only read a page. They change nothing a pane or another
@@ -162,33 +158,6 @@ pub async fn view_of(page: &dyn Page, mode: view::Mode) -> Result<view::View, Br
 /// never hold it: a `wait_for` that polled for twelve seconds under the tab's
 /// lock would leave the pane's own present waiting just as long.
 const READS: [&str; 3] = ["snapshot", "find", "wait_for"];
-
-/// Take the tab for one acting command, waiting while another holds it.
-///
-/// The wait is cut to the command's own deadline, and the lock is taken by
-/// polling rather than queueing because the one thing waited for is a holder
-/// that is itself bounded by a deadline or a pane gesture.
-async fn hold(
-    registry: &BrowserRegistry,
-    browser_id: &str,
-    deadline: Deadline,
-) -> Result<impl Send, BrowserError> {
-    let guard = registry
-        .guard_of(browser_id)
-        .ok_or_else(|| tab_not_found(browser_id))?;
-    loop {
-        if let Ok(held) = Arc::clone(&guard).try_lock_owned() {
-            return Ok(held);
-        }
-        let left = deadline.left();
-        if left.is_zero() {
-            return Err(host_error(
-                "This tab is busy with another action; try again in a moment.",
-            ));
-        }
-        cdp_events::nap(LOCK_POLL.min(left)).await;
-    }
-}
 
 /// Run one command the daemon pushed to this host.
 pub async fn dispatch(
@@ -215,7 +184,7 @@ pub async fn dispatch(
         let page = WebviewPage::new(app, &tab.label);
         return on_tab(&tab, &page, command, &request.args, deadline).await;
     }
-    let _held = hold(registry, &browser_id, deadline).await?;
+    let _held = tab_guard::hold(registry, &browser_id, deadline).await?;
     // What the tab was when this command queued is not what it is now: the
     // pane may have shown, parked or closed it while the lock was held.
     let tab = resolve(registry, &request.caller, &browser_id)?;

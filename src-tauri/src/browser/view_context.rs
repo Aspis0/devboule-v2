@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::ax::{AxNode, AxTree};
-use super::view::clip;
+use super::view_line::clip;
 
 /// Roles that say which part of the page this is.
 const LANDMARKS: [&str; 10] = [

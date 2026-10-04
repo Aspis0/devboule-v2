@@ -2,6 +2,7 @@
 //! the page before it answers. The page is a table of canned answers.
 
 use super::super::*;
+use super::{attribute_values, FIELD_ATTRIBUTES};
 use crate::browser::test_support::{ax_fixture, ax_node, parked_tab, FakePage};
 use devboule_protocol::BrowserErrorCode;
 use serde_json::{json, Value};
@@ -196,4 +197,65 @@ fn only_the_first_twenty_fields_are_read() {
     run(&page, "find", json!({ "query": "text field" })).expect("answered");
 
     assert_eq!(page.called("DOM.describeNode"), 20);
+}
+
+#[test]
+fn a_field_the_question_read_the_markup_of_says_what_it_is() {
+    let page = two_fields();
+
+    let answered = run(&page, "find", json!({ "query": "search box" })).expect("answered");
+
+    assert_eq!(
+        answered["matches"][0]["detail"], "type=search name=q id=box",
+        "the markup the page gave the field, which is how a caller confirms it"
+    );
+}
+
+#[test]
+fn a_nameless_field_found_by_another_question_is_still_described() {
+    let tree = json!({ "nodes": [
+        ax_node("0", 900, "RootWebArea", "", &["1"]),
+        ax_node("1", 50, "search", "", &["2"]),
+        ax_node("2", 51, "combobox", "", &[]),
+    ]});
+    let page = FakePage::new()
+        .answering("Accessibility.getFullAXTree", tree)
+        .answering(
+            "DOM.describeNode",
+            json!({ "node": { "attributes": ["type", "search", "placeholder", "Search the site"] } }),
+        );
+
+    // Not a question about a field, so the markup was not read to rank it; it
+    // is read to describe what the question found.
+    let answered = run(&page, "find", json!({ "query": "search" })).expect("answered");
+
+    assert_eq!(answered["matches"][0]["ref"], "e51");
+    assert_eq!(
+        answered["matches"][0]["detail"],
+        r#"type=search placeholder="Search the site""#
+    );
+    assert_eq!(page.called("DOM.describeNode"), 1);
+}
+
+#[test]
+fn a_named_match_carries_no_detail() {
+    let page = two_fields();
+
+    let answered = run(&page, "find", json!({ "query": "email" })).expect("answered");
+
+    assert_eq!(answered["matches"][0]["ref"], "e42");
+    assert!(answered["matches"][0].get("detail").is_none());
+}
+
+#[test]
+fn attributes_are_read_as_name_equals_value_and_a_spaced_value_is_quoted() {
+    let described = json!({ "node": { "attributes": [
+        "class", "wide", "type", "search", "placeholder", "Find a page", "id", ""
+    ] } });
+
+    assert_eq!(
+        attribute_values(&described, &FIELD_ATTRIBUTES),
+        r#"type=search placeholder="Find a page""#
+    );
+    assert_eq!(attribute_values(&json!({}), &FIELD_ATTRIBUTES), "");
 }

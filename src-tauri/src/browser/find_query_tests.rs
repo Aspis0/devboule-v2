@@ -87,3 +87,15 @@ fn a_question_says_where_to_look_only_in_the_words_for_a_part_of_the_page() {
     assert!(!Query::parse("login").names_a_place());
     assert!(!Query::parse("search box").names_a_place());
 }
+
+#[test]
+fn the_word_that_joins_a_control_to_a_place_is_not_part_of_the_name() {
+    let query = Query::parse("new link in the top bar");
+
+    assert_eq!(query.roles, vec!["link"]);
+    assert_eq!(query.places, vec!["navigation"]);
+    assert_eq!(query.needle, "new");
+
+    // The same word inside a name is the name's: no place follows it.
+    assert_eq!(Query::parse("sign in button").needle, "sign in");
+}

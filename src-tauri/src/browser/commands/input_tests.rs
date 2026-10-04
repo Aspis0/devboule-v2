@@ -107,7 +107,14 @@ fn every_action_answers_with_a_delta_and_never_with_a_whole_view() {
         let answered = run(&form_page(), command, args(pairs)).expect(command);
         let delta = answered.get("delta").unwrap_or_else(|| panic!("{command}"));
         assert!(delta.get("url").is_some(), "{command} answers a delta");
-        assert!(delta.get("added").is_some(), "{command} lists what changed");
+        // The actions that put input into a field send only what is worth
+        // reading, so an empty list is not there to be read past.
+        let into_a_field = matches!(command, "fill" | "type" | "press" | "select" | "check");
+        assert_eq!(
+            delta.get("added").is_some(),
+            !into_a_field,
+            "{command} lists what changed, or says only what matters"
+        );
         assert!(answered.get("view").is_none(), "{command} sends no view");
     }
 }

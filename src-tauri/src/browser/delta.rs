@@ -13,7 +13,9 @@
 
 use serde::Serialize;
 
-use super::view::{clip, View, ViewNode, FIELD_ROLES};
+use super::delta_input::{self, Briefly};
+use super::view::{View, ViewNode, FIELD_ROLES};
+use super::view_line::clip;
 
 /// How many lines each list carries before the rest is counted instead.
 pub const LIST_CAP: usize = 40;
@@ -36,6 +38,10 @@ pub struct Delta {
     pub navigated: bool,
     pub url: String,
     pub title: Option<String>,
+    /// The node the command acted on, read again after the page settled: the
+    /// value or state that was verified, and so the first thing a caller reads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub focused: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -43,13 +49,20 @@ pub struct Delta {
     /// What came, went and differed inside the same document. A navigation has
     /// none: the page it left has nothing to be compared with.
     #[serde(flatten)]
-    pub changes: Option<Changes>,
+    pub changes: Option<Lists>,
     /// What the page the action landed on is made of; only a navigation has one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<Summary>,
-    /// The node the command acted on, read again after the page settled.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub target: Option<String>,
+}
+
+/// The changes inside one document, in the shape the action calls for.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum Lists {
+    /// Everything that came, went and differed, each list capped.
+    Everything(Changes),
+    /// What an action that put input into a field leaves worth reading.
+    Input(Briefly),
 }
 
 /// A dialog the page put up, which is the one thing an action can cause that
@@ -103,22 +116,65 @@ pub fn between(
     to: &Place,
     target: Option<u64>,
 ) -> Delta {
+    delta_of(before, after, from, to, target, |before, after| {
+        Lists::Everything(changes(before, after))
+    })
+}
+
+/// The same for an action that put input into a field: the field's own
+/// value first, then what popped up around it, then a few of the rest. The
+/// page's other changes — a typed letter re-renders its sidebar, its radios and
+/// its links — would otherwise bury the one line that says the field took it.
+pub fn between_input(
+    before: &View,
+    after: &View,
+    from: &Place,
+    to: &Place,
+    target: Option<u64>,
+) -> Delta {
+    delta_of(before, after, from, to, target, |before, after| {
+        Lists::Input(delta_input::briefly(before, after, target))
+    })
+}
+
+fn delta_of(
+    before: &View,
+    after: &View,
+    from: &Place,
+    to: &Place,
+    target: Option<u64>,
+    within_one_document: impl FnOnce(&View, &View) -> Lists,
+) -> Delta {
     let navigated = from != to;
+    let target_line = target.and_then(|id| after.line_of(id).map(str::to_owned));
     Delta {
         navigated,
         url: to.url.clone(),
         title: to.title.clone(),
-        focused: after.focused().map(|node| node.line.clone()),
+        // The focused node is what the caller acted on more often than not, and
+        // saying so twice would only be the second line to read past.
+        focused: after
+            .focused()
+            .map(|node| node.line.clone())
+            .filter(|line| Some(line) != target_line.as_ref()),
+        target: target_line,
         dialog: after
             .dialog()
             .map(|(kind, message)| Dialog { kind, message }),
-        changes: (!navigated).then(|| changes(before, after)),
+        changes: (!navigated).then(|| within_one_document(before, after)),
         summary: navigated.then(|| summarize(after)),
-        target: target.and_then(|id| after.line_of(id).map(str::to_owned)),
     }
 }
 
-fn changes(before: &View, after: &View) -> Changes {
+/// The nodes that came, the nodes that differ, and the nodes that went, in
+/// that order, each in document order.
+pub(super) struct Diff<'a> {
+    pub added: Vec<&'a ViewNode>,
+    pub changed: Vec<&'a ViewNode>,
+    pub removed: Vec<&'a ViewNode>,
+}
+
+pub(super) fn diff<'a>(before: &'a View, after: &'a View) -> Diff<'a> {
     let previous: std::collections::HashMap<u64, &ViewNode> = before
         .nodes
         .iter()
@@ -128,19 +184,35 @@ fn changes(before: &View, after: &View) -> Changes {
     let mut changed = Vec::new();
     for node in &after.nodes {
         match previous.get(&node.backend_id) {
-            None => added.push(node.line.clone()),
-            Some(before) if before.line != node.line => changed.push(node.line.clone()),
+            None => added.push(node),
+            Some(before) if before.line != node.line => changed.push(node),
             Some(_) => {}
         }
     }
     let live: std::collections::HashSet<u64> =
         after.nodes.iter().map(|node| node.backend_id).collect();
-    let removed: Vec<String> = before
+    let removed = before
         .nodes
         .iter()
         .filter(|node| !live.contains(&node.backend_id))
-        .map(|node| node.line.clone())
         .collect();
+    Diff {
+        added,
+        changed,
+        removed,
+    }
+}
+
+fn changes(before: &View, after: &View) -> Changes {
+    let found = diff(before, after);
+    let lines = |nodes: &[&ViewNode]| -> Vec<String> {
+        nodes.iter().map(|node| node.line.clone()).collect()
+    };
+    let (added, removed, changed) = (
+        lines(&found.added),
+        lines(&found.removed),
+        lines(&found.changed),
+    );
     Changes {
         added_more: added.len().saturating_sub(LIST_CAP),
         added: take(&added),

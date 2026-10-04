@@ -92,6 +92,48 @@ pub fn front_page() -> AxTree {
     tree(nodes)
 }
 
+/// A news front page whose top bar is a bare container, not a landmark: a
+/// cell of three links, then `stories` rows, each with
+/// its number, its title's link, its age and a "past" link. The top bar's own
+/// "past" is `e905`; the rows start at `e1000`, ten ids apiece.
+pub fn news(stories: u64) -> AxTree {
+    let mut nodes = vec![
+        node(900, "RootWebArea", "News", &[901]),
+        node(902, "generic", "", &[903]),
+        node(903, "cell", "", &[904, 905, 906]),
+        node(904, "link", "new", &[907]),
+        node(907, "StaticText", "new", &[]),
+        node(905, "link", "past", &[908]),
+        node(908, "StaticText", "past", &[]),
+        node(906, "link", "comments", &[909]),
+        node(909, "StaticText", "comments", &[]),
+    ];
+    let mut table = vec![902];
+    for story in 1..=stories {
+        let row = 1_000 + 10 * story;
+        table.push(row);
+        nodes.extend([
+            node(row, "row", "", &[row + 1, row + 2, row + 3]),
+            node(row + 1, "cell", "", &[row + 4]),
+            node(row + 4, "StaticText", &format!("{story}."), &[]),
+            node(row + 2, "cell", "", &[row + 5]),
+            node(
+                row + 5,
+                "link",
+                &format!("Story number {story}"),
+                &[row + 6],
+            ),
+            node(row + 6, "StaticText", &format!("Story number {story}"), &[]),
+            node(row + 3, "cell", "", &[row + 7, row + 8]),
+            node(row + 7, "StaticText", "3 hours ago", &[]),
+            node(row + 8, "link", "past", &[row + 9]),
+            node(row + 9, "StaticText", "past", &[]),
+        ]);
+    }
+    nodes.push(node(901, "table", "", &table));
+    tree(nodes)
+}
+
 /// One table row: `row` holds three cells, and the cells hold a number, the
 /// title's link and the comments' link, each link with the text it is made of.
 fn story_row(row: u64, number: &str, title: &str, comments: &str) -> Vec<Value> {

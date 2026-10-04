@@ -1,11 +1,10 @@
-//! How long a command may take and who it waits for: the deadline every call
-//! is cut to, and the tab's lock an acting command takes.
+//! How long a command may take: the deadline every call is cut to, and what a
+//! wait is allowed to do with it.
 
 use super::*;
-use crate::browser::test_support::{ax_fixture, box_model, parked_tab, registry_with, FakePage};
-use devboule_protocol::BrowserErrorCode;
+use crate::browser::test_support::{ax_fixture, box_model, parked_tab, FakePage};
 use serde_json::json;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn form_page() -> FakePage {
     FakePage::new()
@@ -64,75 +63,4 @@ fn a_wait_puts_no_parked_page_on_screen_because_it_only_reads() {
     .expect("answered");
 
     assert_eq!(page.called("Emulation.setDeviceMetricsOverride"), 0);
-}
-
-#[test]
-fn a_command_waits_for_a_tab_another_holds_and_then_takes_it() {
-    let registry = registry_with("tab-1");
-    let held = registry
-        .guard_of("tab-1")
-        .expect("the tab has a guard")
-        .try_lock_owned()
-        .expect("nobody holds it yet");
-    let release = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(150));
-        drop(held);
-    });
-
-    let started = Instant::now();
-    let taken = tauri::async_runtime::block_on(hold(
-        &registry,
-        "tab-1",
-        Deadline::in_(Duration::from_secs(5)),
-    ));
-
-    assert!(taken.is_ok(), "the holder let go inside the deadline");
-    assert!(
-        started.elapsed() >= Duration::from_millis(100),
-        "and it was waited for, not skipped: {:?}",
-        started.elapsed()
-    );
-    release.join().expect("the holder ends");
-}
-
-#[test]
-fn a_command_that_cannot_have_the_tab_in_time_says_it_is_busy() {
-    let registry = registry_with("tab-1");
-    let _held = registry
-        .guard_of("tab-1")
-        .expect("the tab has a guard")
-        .try_lock_owned()
-        .expect("nobody holds it yet");
-
-    let started = Instant::now();
-    let error = tauri::async_runtime::block_on(hold(
-        &registry,
-        "tab-1",
-        Deadline::in_(Duration::from_millis(120)),
-    ))
-    .err()
-    .expect("the tab never came free");
-
-    assert_eq!(error.code, BrowserErrorCode::HostError);
-    assert!(error.message.contains("busy"), "{}", error.message);
-    assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "the wait ended with the deadline: {:?}",
-        started.elapsed()
-    );
-}
-
-#[test]
-fn a_tab_that_is_gone_is_not_waited_for() {
-    let registry = registry_with("tab-1");
-
-    let error = tauri::async_runtime::block_on(hold(
-        &registry,
-        "tab-404",
-        Deadline::in_(Duration::from_secs(5)),
-    ))
-    .err()
-    .expect("no such tab");
-
-    assert_eq!(error.code, BrowserErrorCode::TabNotFound);
 }

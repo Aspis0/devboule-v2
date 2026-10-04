@@ -38,6 +38,9 @@ const PLACES: [(&str, &str); 6] = [
 /// Words that carry nothing a control is called by.
 const ARTICLES: [&str; 3] = ["the", "a", "an"];
 
+/// Words that join a control to a place in a sentence ("link in the footer").
+const FILLER: [&str; 8] = ["in", "on", "at", "of", "for", "to", "with", "from"];
+
 /// Other words that say where to look. A query that has one has already said
 /// which part of the page it means, so none is ranked ahead of another.
 const AREA_WORDS: [&str; 7] = ["main", "content", "menu", "row", "list", "dialog", "modal"];
@@ -60,11 +63,16 @@ pub struct Query {
 impl Query {
     pub fn parse(text: &str) -> Query {
         let phrase = text.trim().to_lowercase();
-        // Three ways to say one thing, written as two words and read as one.
+        // Ways to say one thing, written as two words and read as one.
         let normalized = phrase
             .replace("search bar", "search box")
             .replace("text box", "textbox")
-            .replace("check box", "checkbox");
+            .replace("check box", "checkbox")
+            .replace("top bar", "nav")
+            .replace("top menu", "nav")
+            .replace("menu bar", "nav")
+            .replace("nav bar", "nav")
+            .replace("navbar", "nav");
         let written: Vec<&str> = normalized.split_whitespace().collect();
         let meant: Vec<&str> = written
             .iter()
@@ -88,6 +96,13 @@ impl Query {
                     places.push(landmark);
                 }
                 place_words.push(token.to_owned());
+                // "in" before a place joins the sentence; it is not part of a name.
+                while words
+                    .last()
+                    .is_some_and(|word| FILLER.contains(&word.as_str()))
+                {
+                    words.pop();
+                }
             } else {
                 words.push(token.to_owned());
             }

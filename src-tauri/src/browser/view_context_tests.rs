@@ -1,5 +1,6 @@
 use crate::browser::test_pages::{encyclopedia, front_page, node, tree};
-use crate::browser::view::{compact, Mode, View, ViewNode};
+use crate::browser::view::{Mode, View, ViewNode};
+use crate::browser::view_walk::compact;
 
 fn at(view: &View, backend_id: u64) -> &ViewNode {
     view.nodes

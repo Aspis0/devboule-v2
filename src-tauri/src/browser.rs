@@ -15,12 +15,14 @@ pub mod cdp_events;
 mod commands;
 mod deadline;
 mod delta;
+mod delta_input;
 mod find;
 mod find_query;
 pub mod host;
 mod page_host;
 pub(crate) mod registry;
 mod tab;
+mod tab_guard;
 #[cfg(test)]
 mod test_pages;
 #[cfg(test)]
@@ -28,6 +30,8 @@ mod test_support;
 mod url;
 mod view;
 mod view_context;
+mod view_line;
+mod view_walk;
 
 use std::sync::Arc;
 
@@ -82,16 +86,6 @@ pub async fn browser_open(
     .await
 }
 
-/// Wait out an agent command that is acting on this tab's page, and keep the
-/// tab still while the caller moves or closes it. A tab with no guard is one
-/// that is not there, which the caller reports in its own words.
-async fn still(registry: &BrowserRegistry, id: &str) -> Option<impl Send> {
-    match registry.guard_of(id) {
-        Some(guard) => Some(guard.lock_owned().await),
-        None => None,
-    }
-}
-
 /// Where a page was put, for the app log. Sizes and positions only: an address
 /// is the page's, not this app's to write down.
 fn trace_place(id: &str, rect: LogicalRect, state: &str) {
@@ -110,7 +104,7 @@ pub async fn browser_present(
     id: String,
     rect: LogicalRect,
 ) -> Result<(), String> {
-    let _still = still(&registry, &id).await;
+    let _held = tab_guard::hold_for_pane(&registry, &id, tab_guard::PANE_WAIT).await;
     let webview = owned(&app, &registry, &id)?;
     let (position, size) = rect.into_tauri();
     webview.set_position(position).map_err(|e| e.to_string())?;
@@ -130,7 +124,7 @@ pub async fn browser_park(
     registry: State<'_, Arc<BrowserRegistry>>,
     id: String,
 ) -> Result<(), String> {
-    let _still = still(&registry, &id).await;
+    let _held = tab_guard::hold_for_pane(&registry, &id, tab_guard::PANE_WAIT).await;
     if registry.rect_of(&id).is_some_and(|(_, parked)| parked) {
         return Ok(());
     }
@@ -195,7 +189,7 @@ pub async fn browser_close(
     registry: State<'_, Arc<BrowserRegistry>>,
     id: String,
 ) -> Result<(), String> {
-    let _still = still(&registry, &id).await;
+    let _held = tab_guard::hold_for_pane(&registry, &id, tab_guard::PANE_WAIT).await;
     let Ok(label) = registry.label_of(&id) else {
         registry.cancel(&id);
         cdp_events::forget(&id);

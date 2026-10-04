@@ -20,6 +20,8 @@ use super::super::cdp::Page;
 use super::super::deadline::Deadline;
 use super::super::registry::TabInfo;
 use super::act;
+use super::keys;
+use super::page_script;
 use super::{args_of, host_error, node_of};
 
 #[derive(Deserialize)]
@@ -164,9 +166,9 @@ pub async fn fill(
     act::ready(tab, page).await?;
     act::into_view(page, node).await?;
     act::call(page, "DOM.focus", json!({ "backendNodeId": node })).await?;
-    act::on_node(page, node, act::CLEAR, json!([])).await?;
+    page_script::on_node(page, node, page_script::CLEAR, json!([])).await?;
     act::call(page, "Input.insertText", json!({ "text": asked.text })).await?;
-    act::answer(tab, page, deadline, start, Some(node)).await
+    act::answer_input(tab, page, deadline, start, Some(node)).await
 }
 
 pub async fn type_into(
@@ -180,7 +182,7 @@ pub async fn type_into(
     act::ready(tab, page).await?;
     let node = focus(page, &asked.reference).await?;
     act::call(page, "Input.insertText", json!({ "text": asked.text })).await?;
-    act::answer(tab, page, deadline, start, node).await
+    act::answer_input(tab, page, deadline, start, node).await
 }
 
 pub async fn press(
@@ -193,8 +195,8 @@ pub async fn press(
     let start = act::read(tab, page).await?;
     act::ready(tab, page).await?;
     let node = focus(page, &asked.reference).await?;
-    act::press_key(page, &asked.key).await?;
-    act::answer(tab, page, deadline, start, node).await
+    keys::press_key(page, &asked.key).await?;
+    act::answer_input(tab, page, deadline, start, node).await
 }
 
 pub async fn select(
@@ -211,17 +213,17 @@ pub async fn select(
     let start = act::read(tab, page).await?;
     act::ready(tab, page).await?;
     act::into_view(page, node).await?;
-    let chosen = act::on_node(
+    let chosen = page_script::on_node(
         page,
         node,
-        act::CHOOSE,
+        page_script::CHOOSE,
         json!([{ "value": asked.value, "label": asked.label }]),
     )
     .await?;
     if chosen.is_null() {
         return Err(host_error("This control has no such option."));
     }
-    act::answer(tab, page, deadline, start, Some(node)).await
+    act::answer_input(tab, page, deadline, start, Some(node)).await
 }
 
 /// Put a control in the state the caller asked for, and touch it only when it
@@ -243,7 +245,7 @@ pub async fn check(
         act::mouse(page, "mousePressed", at, "left", 1, 0).await?;
         act::mouse(page, "mouseReleased", at, "left", 1, 0).await?;
     }
-    act::answer(tab, page, deadline, start, Some(node)).await
+    act::answer_input(tab, page, deadline, start, Some(node)).await
 }
 
 pub async fn scroll(
