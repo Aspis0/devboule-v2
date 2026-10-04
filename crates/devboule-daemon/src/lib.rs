@@ -152,6 +152,8 @@ mod test_dirs;
 #[cfg(all(test, feature = "server"))]
 mod test_support;
 #[cfg(feature = "server")]
+mod text_cap;
+#[cfg(feature = "server")]
 mod tool_paths;
 #[cfg(feature = "server")]
 mod tool_policy;

@@ -8,6 +8,7 @@ use devboule_protocol::SessionEvent;
 use serde_json::json;
 
 use crate::claude_view::test_support::view;
+use crate::text_cap::{MAX_TEXT_BYTES, TRUNCATION_MARKER};
 
 #[test]
 fn agent_tool_use_carries_subagent_type_and_parentage() {
@@ -333,6 +334,34 @@ fn user_tool_result_success_and_error() {
             replace: false,
         }]
     );
+}
+
+#[test]
+fn a_tool_result_is_cut_to_the_shared_budget() {
+    // Three-byte characters against a budget that is not a multiple of three:
+    // the cut backs off to a character boundary instead of splitting one.
+    let kept = "\u{20ac}".repeat(MAX_TEXT_BYTES / 3);
+    let huge = format!("{kept}\u{20ac}");
+    let mut mapper = view();
+    let events = mapper.ingest(&json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "toolu_huge",
+                "content": [{"type": "text", "text": huge}]
+            }]
+        }
+    }));
+    match events.as_slice() {
+        [SessionEvent::AgentToolUpdate { text, .. }] => assert_eq!(
+            text.as_deref(),
+            Some(format!("{kept}{TRUNCATION_MARKER}").as_str()),
+            "the row shows what it keeps of the answer, and says it was cut"
+        ),
+        other => panic!("expected a tool update, got {other:?}"),
+    }
 }
 
 #[test]

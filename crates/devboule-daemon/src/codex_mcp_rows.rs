@@ -16,6 +16,7 @@ use serde_json::Value;
 
 use super::status_name;
 use crate::browser_tool_title::browser_tool_title;
+use crate::text_cap::capped;
 use crate::wire_json::{blocks_text, tool_kind_from_name};
 
 fn non_empty<'a>(item: &'a Value, key: &str) -> Option<&'a str> {
@@ -45,7 +46,8 @@ fn row_title(name: &str, item: &Value) -> String {
 /// The answer the row shows. A failure says what failed in its own words; a
 /// result contributes the text of its content blocks and nothing else — an
 /// image or an audio clip is not text, and copying its bytes into a journaled
-/// row would outlive the call.
+/// row would outlive the call. Either way the answer is held to the shared
+/// budget: a server answers with as much text as it likes.
 fn result_text(item: &Value) -> Option<String> {
     let error = item
         .get("error")
@@ -54,7 +56,8 @@ fn result_text(item: &Value) -> Option<String> {
         .pointer("/result/content")
         .map(blocks_text)
         .filter(|text| !text.is_empty());
-    error.map(str::to_string).or(result)
+    let text = error.map(str::to_string).or(result)?;
+    Some(capped(&text))
 }
 
 pub(super) fn mcp_tool_events(id: &str, item: &Value, completed: bool) -> Vec<SessionEvent> {

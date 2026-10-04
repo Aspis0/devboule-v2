@@ -11,6 +11,7 @@ use devboule_protocol::SessionEvent;
 use serde_json::{json, Value};
 
 use crate::codex_view::CodexView;
+use crate::text_cap::{MAX_TEXT_BYTES, TRUNCATION_MARKER};
 
 fn notification(method: &str, item: Value) -> Value {
     json!({
@@ -188,6 +189,38 @@ fn a_call_with_no_server_name_keeps_the_bare_tool() {
     let (_, title, kind, _) = call_of(item);
     assert_eq!(title, "click e1");
     assert_eq!(kind.as_deref(), Some("browser"));
+}
+
+#[test]
+fn a_huge_answer_is_cut_to_the_shared_budget() {
+    // Three-byte characters against a budget that is not a multiple of three:
+    // the cut backs off to a character boundary instead of splitting one.
+    let kept = "\u{20ac}".repeat(MAX_TEXT_BYTES / 3);
+    let item = json!({
+        "type": "mcpToolCall", "id": "mcp-11", "server": "devboule",
+        "tool": "browser_read_text", "arguments": {"scope": "body"},
+        "status": "completed",
+        "result": {"content": [{"type": "text", "text": format!("{kept}\u{20ac}")}]}
+    });
+    let (_, text, _, _) = update_of(item);
+    assert_eq!(
+        text.as_deref(),
+        Some(format!("{kept}{TRUNCATION_MARKER}").as_str())
+    );
+}
+
+#[test]
+fn a_huge_error_is_cut_to_the_shared_budget() {
+    let item = json!({
+        "type": "mcpToolCall", "id": "mcp-12", "server": "probe", "tool": "ping",
+        "arguments": {}, "status": "failed",
+        "error": {"message": "x".repeat(MAX_TEXT_BYTES + 1)}
+    });
+    let (_, text, _, _) = update_of(item);
+    assert_eq!(
+        text.as_deref(),
+        Some(format!("{}{TRUNCATION_MARKER}", "x".repeat(MAX_TEXT_BYTES)).as_str())
+    );
 }
 
 #[test]

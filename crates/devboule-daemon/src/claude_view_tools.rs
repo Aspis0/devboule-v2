@@ -7,6 +7,7 @@ use devboule_protocol::{SessionEvent, ToolLocation};
 use serde_json::Value;
 
 use crate::browser_tool_title::browser_tool_title;
+use crate::text_cap::capped;
 use crate::tool_paths::relativize_tool_path;
 use crate::wire_json::{blocks_text, shell_command_from_tool, tool_kind_from_name, tool_status};
 
@@ -132,7 +133,11 @@ pub(super) fn tool_update_from_result(
         .get("is_error")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let text = block.get("content").map(blocks_text);
+    // Every tool's answer lands here, so a `browser_read_text` of a large page
+    // would be the row's whole text; the shared budget keeps it out of a frame.
+    let text = block
+        .get("content")
+        .map(|content| capped(&blocks_text(content)));
     Some(SessionEvent::AgentToolUpdate {
         tool_call_id,
         status: Some(tool_status(failed).to_string()),

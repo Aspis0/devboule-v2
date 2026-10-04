@@ -6,6 +6,7 @@
 use devboule_protocol::{AvailableCommandView, NoticeSeverity, SessionEvent, TurnUsage};
 use serde_json::Value;
 
+use crate::text_cap::capped;
 use crate::wire_json::{blocks_text, shell_command_from_tool, tool_kind_from_name, tool_status};
 
 /// The one field that matters. The web tools of the `rpiv-web-tools`
@@ -349,7 +350,7 @@ fn tool_result_text(value: &Value) -> Option<String> {
         return None;
     }
     let text = blocks_text(content);
-    (!text.is_empty()).then_some(text)
+    (!text.is_empty()).then(|| capped(&text))
 }
 
 /// `exitCode` then `code` translated from Paseo's `resolveToolCallOutput` (pi/tool-call-mapper.ts).
@@ -577,6 +578,28 @@ mod tests {
                 if tool_call_id == "call_e855bd93a9d545228d528feb"
                     && status.as_deref() == Some("completed")
                     && text.as_deref() == Some("Successfully wrote to probe_tool.txt")
+        ));
+    }
+
+    #[test]
+    fn a_huge_execution_answer_is_cut_to_the_shared_budget() {
+        use crate::text_cap::{MAX_TEXT_BYTES, TRUNCATION_MARKER};
+        use serde_json::json;
+
+        // Three-byte characters against a budget that is not a multiple of
+        // three: the cut backs off to a character boundary instead of
+        // splitting one.
+        let kept = "\u{20ac}".repeat(MAX_TEXT_BYTES / 3);
+        let execution = json!({
+            "type": "tool_execution_end", "toolCallId": "call_huge",
+            "toolName": "browser_read_text",
+            "result": {"content": [{"type": "text", "text": format!("{kept}\u{20ac}")}]},
+            "isError": false
+        });
+        assert!(matches!(
+            events_from_line(&execution).as_slice(),
+            [SessionEvent::AgentToolUpdate { text: Some(text), .. }]
+                if text == &format!("{kept}{TRUNCATION_MARKER}")
         ));
     }
 

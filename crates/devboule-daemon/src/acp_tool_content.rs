@@ -7,8 +7,8 @@
 //! binary payloads (`data`, `blob`) are never copied.
 //!
 //! Two bounds hold for every extraction. The text is cut at
-//! `MAX_TEXT_BYTES`, which keeps the mapped event far under the 1 MiB frame
-//! cap even when every byte JSON-escapes to six (64 KiB becomes at most
+//! `text_cap::MAX_TEXT_BYTES`, which keeps the mapped event far under the 1 MiB
+//! frame cap even when every byte JSON-escapes to six (64 KiB becomes at most
 //! 384 KiB). Reading stops at the cut, and a long line is sliced before it is
 //! copied.
 
@@ -17,8 +17,8 @@ use std::borrow::Cow;
 use devboule_protocol::SessionEvent;
 use serde_json::Value;
 
-const MAX_TEXT_BYTES: usize = 64 * 1024;
-const TRUNCATION_MARKER: &str = "\n[output truncated]";
+use crate::text_cap::{self, MAX_TEXT_BYTES, TRUNCATION_MARKER};
+
 /// How much of one field is read: the budget plus one UTF-8 character, so a
 /// field longer than the budget still arrives longer than it and the cut is
 /// marked.
@@ -27,23 +27,12 @@ const MAX_FIELD_BYTES: usize = MAX_TEXT_BYTES + 4;
 /// first, so a call that never completes cannot grow the memory.
 const MAX_TRACKED_CALLS: usize = 64;
 
-fn clip(text: &str, max: usize) -> &str {
-    if text.len() <= max {
-        return text;
-    }
-    let mut end = max;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    &text[..end]
-}
-
 fn str_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
     value
         .get(key)
         .and_then(Value::as_str)
         .filter(|text| !text.is_empty())
-        .map(|text| clip(text, MAX_FIELD_BYTES))
+        .map(|text| text_cap::clip(text, MAX_FIELD_BYTES))
 }
 
 fn media_line(kind: &str, block: &Value) -> String {
@@ -119,18 +108,14 @@ impl Extracted {
             if separator == 1 {
                 self.body.push('\n');
             }
-            self.body.push_str(clip(line, room - separator));
+            self.body.push_str(text_cap::clip(line, room - separator));
         }
         self.truncated = true;
     }
 
     /// The text a row shows for this snapshot.
     fn shown(&self) -> String {
-        let mut text = self.body.clone();
-        if self.truncated {
-            text.push_str(TRUNCATION_MARKER);
-        }
-        text
+        text_cap::shown(&self.body, self.truncated)
     }
 
     /// What a row showing `self` can append so that it shows `next`: the app
