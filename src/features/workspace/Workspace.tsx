@@ -37,6 +37,7 @@ import { watchBrowserTabs } from "./browserTabEvents";
 import {
   activeBrowserTabFor,
   browserLayoutSnapshot,
+  closeBrowserTab,
   openBrowserTab,
   pruneBrowserTabs,
   routeBrowserPopup,
@@ -887,6 +888,7 @@ export function Workspace({
       for (const record of browserLayout.tabs) {
         if (!gone.has(makeBrowserTab(record.workspaceKey, record.browserId).id)) continue;
         closeBrowserPage(record.browserId);
+        closeBrowserTab(record.browserId);
       }
       setToolTabs((prev) => {
         for (const tab of prev) {

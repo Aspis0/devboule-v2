@@ -40,7 +40,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 import { BrowserTab } from "./BrowserTab";
 import { applyBrowserTabEvent } from "./browserTabEvents";
-import { resetBrowserPagesForTests } from "./browserPages";
+import { browserPagesSnapshot, resetBrowserPagesForTests } from "./browserPages";
 import { browserLayoutSnapshot, resetBrowserLayoutForTests } from "./browserTabs";
 import { localWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
 
@@ -183,6 +183,26 @@ describe("a tab an agent opened", () => {
     applyBrowserTabEvent({ kind: "closed", browserId: "tab-agent" });
 
     expect(browserLayoutSnapshot().tabs).toHaveLength(0);
+  });
+
+  it("forgets what the page last reported when the agent closes the tab", async () => {
+    agentOpenedTab();
+    const unmount = await mount(
+      <BrowserTab
+        browserId="tab-agent"
+        url="https://example.test/report"
+        workspaceKey={WORKSPACE}
+      />,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(browserPagesSnapshot().has("tab-agent")).toBe(true);
+
+    applyBrowserTabEvent({ kind: "closed", browserId: "tab-agent" });
+
+    expect(browserPagesSnapshot().has("tab-agent")).toBe(false);
+    unmount();
   });
 
   it("ignores an event that is not a tab it can file", () => {

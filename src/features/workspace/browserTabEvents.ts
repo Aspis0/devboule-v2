@@ -9,6 +9,7 @@
 // register one per mounted browser tab.
 
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { forgetBrowserPage } from "./browserPages";
 import { addAgentTab, closeBrowserTab, patchBrowserTab } from "./browserTabs";
 import { localWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
 
@@ -55,6 +56,9 @@ function isTabEvent(value: unknown): value is BrowserTabEvent {
 export function applyBrowserTabEvent(value: unknown): void {
   if (!isTabEvent(value)) return;
   if (value.kind === "closed") {
+    // Rust already disposed the webview; only the frontend's page state and
+    // the chip's record are left to drop.
+    forgetBrowserPage(value.browserId);
     closeBrowserTab(value.browserId);
     return;
   }
