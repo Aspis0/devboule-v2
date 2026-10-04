@@ -229,9 +229,20 @@ pub fn buttons(count: u64, name: &str) -> AxTree {
     flat_tree(&nodes)
 }
 
-/// What `DOM.getBoxModel` answers for a control in the middle of the form.
+/// What `DOM.getBoxModel` answers for a node, in the shape this WebView2
+/// really answers in: a flat array of eight numbers per box. The numbers are
+/// the spike's own recorded answer for a page's root element
+/// (`scout/browser-tabs/SPIKE-REPORT-cdp.md`), kept rather than invented
+/// because a click is measured against exactly this.
 pub fn box_model() -> Value {
-    json!({ "model": { "content": [[100, 200], [300, 200], [300, 260], [100, 260]] } })
+    json!({ "model": {
+        "border":  [0.0, 0.0, 817.6000366210938, 0.0, 817.6000366210938, 716.0, 0.0, 716.0],
+        "content": [30.0, 15.0, 92.0, 15.0, 92.0, 38.0, 30.0, 38.0],
+        "height": 23.0,
+        "margin":  [0.0, 0.0, 817.6000366210938, 0.0, 817.6000366210938, 716.0, 0.0, 716.0],
+        "padding": [30.0, 15.0, 92.0, 15.0, 92.0, 38.0, 30.0, 38.0],
+        "width": 62.0
+    }, "backendNodeId": 15 })
 }
 
 /// What `Runtime.callFunctionOn` answers when a page-side function returns.

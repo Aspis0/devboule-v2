@@ -52,8 +52,10 @@ fn a_click_scrolls_the_node_into_view_and_dispatches_two_real_events() {
         .last_params("Input.dispatchMouseEvent")
         .expect("a click");
     assert_eq!(pressed["type"], "mouseReleased");
-    assert_eq!(pressed["x"], 200.0, "the middle of the box, not its edge");
-    assert_eq!(pressed["y"], 230.0);
+    // The fixture's quad is (30,15) (92,15) (92,38) (30,38), so its middle is
+    // (61, 26.5) — a point inside the link, not on its border.
+    assert_eq!(pressed["x"], 61.0, "the middle of the box, not its edge");
+    assert_eq!(pressed["y"], 26.5);
     assert_eq!(pressed["clickCount"], 1);
 }
 

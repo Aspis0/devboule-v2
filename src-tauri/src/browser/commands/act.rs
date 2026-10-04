@@ -96,18 +96,28 @@ pub async fn centre(page: &dyn Page, node: u64) -> Result<(f64, f64), BrowserErr
     box_centre(&model).ok_or_else(|| host_error("That node has no box on the page right now."))
 }
 
+/// The middle of a node's own box, which is where a click belongs.
+///
+/// `content` is a FLAT array of eight numbers — four corners, x then y, top
+/// left, top right, bottom right, bottom left. That is what this WebView2
+/// answers with, recorded from a real call in
+/// `scout/browser-tabs/SPIKE-REPORT-cdp.md` (`"content":[0,0,802.4,0,802.4,716,
+/// 0,716]`), and it is the shape a link's box comes back in whatever the page
+/// does with it. A quad this app cannot read is a click that lands nowhere,
+/// which is exactly what a live run showed: every click on an ordinary link
+/// refused with "that node has no box" while the node itself was fine.
 pub fn box_centre(model: &Value) -> Option<(f64, f64)> {
     let quad = model.get("model")?.get("content")?.as_array()?;
-    let (mut x, mut y, mut points) = (0.0, 0.0, 0.0);
-    for point in quad {
-        let (Some(px), Some(py)) = (point.get(0)?.as_f64(), point.get(1)?.as_f64()) else {
-            continue;
-        };
-        x += px;
-        y += py;
-        points += 1.0;
+    let corners: Vec<f64> = quad.iter().filter_map(|number| number.as_f64()).collect();
+    if corners.len() < 8 {
+        return None;
     }
-    (points > 0.0).then(|| (x / points, y / points))
+    let (x, y) = corners[..8]
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .fold((0.0, 0.0), |(x, y), [px, py]| (x + px, y + py));
+    Some((x / 4.0, y / 4.0))
 }
 
 pub async fn mouse(
