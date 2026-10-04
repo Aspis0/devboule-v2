@@ -26,6 +26,8 @@ mod browser_broker;
 #[cfg(feature = "server")]
 mod browser_registry;
 #[cfg(feature = "server")]
+mod browser_tool_title;
+#[cfg(feature = "server")]
 mod claude_abort;
 #[cfg(feature = "server")]
 mod claude_catalog;

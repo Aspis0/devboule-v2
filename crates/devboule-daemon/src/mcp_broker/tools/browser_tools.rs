@@ -13,6 +13,13 @@
 //! malformed call instead, so an agent can tell "you asked wrong" from "the page
 //! said no". Every outcome is audited like every other tool's, so a row
 //! attributed to the calling device says what an agent did on these pages.
+//!
+//! One answer is not text: a screenshot answers the picture itself as an MCP
+//! image block, with one short line beside it. The bytes travel once — a
+//! `structuredContent` copy would carry the same base64 a second time — and a
+//! result that turns out to carry no image is read as text like any other, so a
+//! host that answered a screenshot with something else shows the agent exactly
+//! what came back.
 
 use std::sync::Arc;
 
@@ -77,7 +84,7 @@ pub(in crate::mcp_broker) fn call(
     ) {
         Ok(result) => {
             audit("ok");
-            Ok(Some(browser_reply(&id, result)))
+            Ok(Some(browser_reply(&id, spec.command, result)))
         }
         Err(error) => {
             audit("failed");
@@ -114,19 +121,76 @@ fn browser_caller(
     })
 }
 
-/// The host's result, unchanged, as text and as structured content.
-fn browser_reply(id: &Value, result: Value) -> Value {
-    let text = serde_json::to_string(&result).unwrap_or_else(|error| {
-        json!({"browser": "the result could not be encoded", "detail": error.to_string()})
-            .to_string()
-    });
+/// The host's result: text and a structured document, or — for a screenshot
+/// that really carries one — the picture and the one line that says how big it
+/// is.
+fn browser_reply(id: &Value, command: &str, result: Value) -> Value {
+    let picture = if command == "screenshot" {
+        picture(&result)
+    } else {
+        None
+    };
+    let Some((block, line)) = picture else {
+        let text = serde_json::to_string(&result).unwrap_or_else(|error| {
+            json!({"browser": "the result could not be encoded", "detail": error.to_string()})
+                .to_string()
+        });
+        return json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {
+                "content": [{"type": "text", "text": text}],
+                "structuredContent": result,
+                "isError": false,
+            },
+        });
+    };
     json!({
         "jsonrpc": "2.0",
         "id": id,
         "result": {
-            "content": [{"type": "text", "text": text}],
-            "structuredContent": result,
+            "content": [block, {"type": "text", "text": line}],
             "isError": false,
         },
     })
+}
+
+/// The picture a screenshot answers and the one line beside it, or `None` for
+/// anything that is not a picture: the bytes and the type are the host's own,
+/// so an answer without both is the text it is.
+fn picture(result: &Value) -> Option<(Value, String)> {
+    let mime = result.get("mimeType")?.as_str()?;
+    let data = result.get("data")?.as_str()?;
+    if data.is_empty() || !mime.starts_with("image/") {
+        return None;
+    }
+    let size = |key: &str| {
+        result
+            .get(key)
+            .and_then(Value::as_u64)
+            .map_or_else(String::new, |value| value.to_string())
+    };
+    let mut line = format!(
+        "{mime} {}x{} px, viewport {}x{} css px",
+        size("width"),
+        size("height"),
+        size("cssWidth"),
+        size("cssHeight"),
+    );
+    if let Some(clip) = result.get("clip").filter(|clip| clip.is_object()) {
+        let corner = ["x", "y", "width", "height"]
+            .iter()
+            .map(|key| {
+                clip.get(*key)
+                    .and_then(Value::as_u64)
+                    .map_or_else(String::new, |value| value.to_string())
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        line.push_str(&format!(", clip {corner}"));
+    }
+    Some((
+        json!({"type": "image", "data": data, "mimeType": mime}),
+        line,
+    ))
 }

@@ -39,22 +39,67 @@ fn every_contract_command_is_served_under_its_browser_name() {
         ("browser_hover", "hover"),
         ("browser_scroll", "scroll"),
         ("browser_wait_for", "wait_for"),
+        ("browser_act", "act"),
+        ("browser_screenshot", "screenshot"),
+        ("browser_click_at", "click_at"),
+        ("browser_read_text", "read_text"),
+        ("browser_console_logs", "console_logs"),
     ];
     assert_eq!(
         TOOLS,
         &contract[..],
-        "the served table is the contract's 4b-1 wave"
+        "the served table is the contract's two waves"
     );
     for (tool, command) in contract {
         assert_eq!(browser_commands::command_for(tool), Some(command), "{tool}");
         assert!(browser_commands::serves(tool), "{tool} is served");
     }
     assert!(!browser_commands::serves("devboule_browser_click"));
-    // 4b-2's commands are not served yet: a tool that always answers "no such
-    // tab" is a tool an agent will try.
-    assert_eq!(browser_commands::command_for("browser_act"), None);
-    assert_eq!(browser_commands::command_for("browser_screenshot"), None);
-    assert_eq!(browser_commands::command_for("browser_read_text"), None);
+    assert_eq!(
+        browser_commands::command_for("browser_screenshot_all"),
+        None
+    );
+}
+
+/// The second wave's bounds are stated where an agent reads them: the batch
+/// length a step list may have, the zoom and the four clip numbers, and the
+/// closed console levels.
+#[test]
+fn the_second_waves_schema_states_the_bounds_the_daemon_enforces() {
+    let act = browser_commands::schema_for("browser_act").expect("browser_act is served");
+    let steps = &act["properties"]["steps"];
+    assert_eq!(steps["type"], "array", "{steps}");
+    assert_eq!(steps["minItems"], json!(1), "{steps}");
+    assert_eq!(steps["maxItems"], json!(10), "{steps}");
+    assert_eq!(
+        steps["items"]["properties"]["command"]["enum"],
+        json!([
+            "click", "fill", "type", "press", "select", "check", "hover", "scroll", "wait_for",
+            "navigate"
+        ]),
+        "a batch runs the contract's ten, and never an act inside one"
+    );
+    assert_eq!(steps["items"]["required"], json!(["command"]), "{steps}");
+
+    let screenshot = browser_commands::schema_for("browser_screenshot").expect("screenshot");
+    assert_eq!(screenshot["properties"]["zoom"]["minimum"], json!(1));
+    assert_eq!(screenshot["properties"]["zoom"]["maximum"], json!(3));
+    let clip = &screenshot["properties"]["clip"]["properties"];
+    for corner in ["x", "y", "width", "height"] {
+        assert_eq!(clip[corner]["minimum"], json!(0), "{corner}");
+    }
+
+    let logs = browser_commands::schema_for("browser_console_logs").expect("console_logs");
+    assert_eq!(
+        logs["properties"]["level"]["enum"],
+        json!(["error", "warning", "all"])
+    );
+    let read_text = browser_commands::schema_for("browser_read_text").expect("read_text");
+    assert_eq!(read_text["required"], json!(["browserId"]));
+    assert_eq!(read_text["properties"]["scope"]["pattern"], "^e\\d+$");
+    let click_at = browser_commands::schema_for("browser_click_at").expect("click_at");
+    assert_eq!(click_at["required"], json!(["browserId", "x", "y"]));
+    assert_eq!(click_at["properties"]["clickCount"]["maximum"], json!(3));
 }
 
 /// The prefix the peer door judges on lives in another module on purpose, so no

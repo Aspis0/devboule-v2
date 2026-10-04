@@ -72,7 +72,7 @@ fn the_browser_grant_opens_the_lane_and_nothing_else() {
         );
         held.pop();
     }
-    assert_eq!(TOOLS.len(), 15, "every tool of the lane was walked");
+    assert_eq!(TOOLS.len(), 20, "every tool of the lane was walked");
 }
 
 /// `admin` alone is not the lane: a device the owner gave the whole surface

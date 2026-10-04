@@ -4,7 +4,7 @@ import { carriesCredentials } from "../../lib/urlCredentials";
 
 export type ToolItem = Extract<AgentChatItem, { role: "tool" }>;
 
-export type ToolIconName = "terminal" | "eye" | "pencil" | "search" | "bot" | "wrench";
+export type ToolIconName = "terminal" | "eye" | "pencil" | "search" | "bot" | "globe" | "wrench";
 
 export interface ToolRowModel {
   displayName: string;
@@ -40,7 +40,14 @@ const ICONS = new Map<string, ToolIconName>([
   ["fetch", "search"],
   ["think", "bot"],
   ["question", "bot"],
+  ["browser", "globe"],
 ]);
+
+// The prefix every name of the browser lane shares, the daemon's own spelling
+// (`provider_catalog::BROWSER_TOOL_PREFIX`). One row has to know it here, for a
+// provider that sends no kind of its own, so the value is pinned against the
+// Rust source rather than trusted to stay in step.
+const BROWSER_PREFIX = "browser_";
 
 // Not a cost bound — the split pass is linear: this is the INPUT length past
 // which a name is shown as sent instead of split. The function never
@@ -146,8 +153,38 @@ function parsedUrl(value: string): URL | null {
   }
 }
 
+/**
+ * Whether the row is one of the browser lane's. The provider's own kind is the
+ * classification and wins: a search row whose query happens to read
+ * `browser_click` is a search row. A provider that sent no kind at all is read
+ * by its title's prefix, and a name that merely mentions the lane
+ * (`mcp__probe__browser_click`) stays some other tool's row.
+ */
+function isBrowserRow(kind: string | undefined, title: string): boolean {
+  return kind !== undefined ? kind === "browser" : title.trim().startsWith(BROWSER_PREFIX);
+}
+
+/**
+ * A browser row's own line, or nothing when the row carries only the tool's
+ * name: the daemon titles the call with the argument it was given (`click e33`),
+ * and a provider that sends the bare name gives a reader nothing to add to the
+ * family's label.
+ */
+function browserSummary(title: string): string | undefined {
+  const trimmed = title.trim();
+  return trimmed.length > 0 && !trimmed.startsWith(BROWSER_PREFIX) ? trimmed : undefined;
+}
+
 export function toolRowDisplay(item: ToolItem): ToolRowModel {
   const kind = item.kind?.trim().toLowerCase();
+  if (isBrowserRow(kind, item.title)) {
+    const summary = browserSummary(item.title);
+    return {
+      displayName: "Browser",
+      ...(summary === undefined ? {} : { summary }),
+      icon: "globe",
+    };
+  }
   const label = kind !== undefined ? DISPLAY_NAMES.get(kind) : undefined;
   const fromBareName = label === undefined && isBareName(item.title);
   const displayName =

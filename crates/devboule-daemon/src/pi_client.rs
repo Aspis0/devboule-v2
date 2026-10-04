@@ -361,7 +361,7 @@ const PI_TOOL_POLICIES: &[PiToolPolicy] = &[
         name: crate::provider_catalog::MCP_KILL_TERMINAL_TOOL,
         requires_confirmation: false,
     },
-    // The browser lane, fifteen rows and one reason. What bounds a call is the
+    // The browser lane, one row per tool and one reason. What bounds a call is the
     // tab's own workspace and, for a peer, the `browser` grant; what is left to
     // decide is the page's own answer, which a generic confirm here would only
     // pre-empt. The names come from the catalog so a rename breaks the build
@@ -426,6 +426,26 @@ const PI_TOOL_POLICIES: &[PiToolPolicy] = &[
         name: crate::provider_catalog::MCP_BROWSER_WAIT_FOR_TOOL,
         requires_confirmation: false,
     },
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_BROWSER_ACT_TOOL,
+        requires_confirmation: false,
+    },
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_BROWSER_SCREENSHOT_TOOL,
+        requires_confirmation: false,
+    },
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_BROWSER_CLICK_AT_TOOL,
+        requires_confirmation: false,
+    },
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_BROWSER_READ_TEXT_TOOL,
+        requires_confirmation: false,
+    },
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_BROWSER_CONSOLE_LOGS_TOOL,
+        requires_confirmation: false,
+    },
 ];
 static PERMISSION_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -479,7 +499,7 @@ static BRIDGE_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 /// twenty-six `pi.registerTool` entries written out, one per broker tool, closed schemas matching the
 /// broker's `tools/list` documents, descriptions verbatim from
 /// `provider_catalog::MCP_BROKER_TOOLS` (pinned by the S5 walking test, so a
-/// catalog edit without a bridge edit fails). The browser lane's fifteen are
+/// catalog edit without a bridge edit fails). The browser lane's tools are
 /// the one exception: a loop over the broker's own rows, so the schemas there
 /// cannot be typed out twice.
 ///

@@ -46,7 +46,14 @@ pub(crate) fn blocks_text(content: &Value) -> String {
 /// (`Read`, `Edit`/`Write`/`NotebookEdit`, `Bash`/`PowerShell`, `Glob`/`Grep`,
 /// `WebFetch`, `WebSearch`, `Agent`/`Task`, `Skill`/other) and the Pi table
 /// (`bash`/`powershell`, `read`, `edit`/`write`, `grep`/`find`/`ls`, other).
+///
+/// `browser_*` is one family whatever the command: the row shows the one
+/// argument the call was given (`click e33`) beside the family's own name, so
+/// the kind carries no more than "this was the browser".
 pub(crate) fn tool_kind_from_name(name: &str) -> &'static str {
+    if name.starts_with(crate::provider_catalog::BROWSER_TOOL_PREFIX) {
+        return "browser";
+    }
     match name.to_ascii_lowercase().as_str() {
         "read" => "read",
         "edit" | "write" | "notebookedit" => "edit",
@@ -140,6 +147,37 @@ mod tests {
         for name in ["mcp__probe__ping", "custom_tool"] {
             assert_eq!(tool_kind_from_name(name), "other", "tool {name}");
         }
+    }
+
+    #[test]
+    fn every_name_of_the_browser_lane_is_one_kind() {
+        for command in [
+            "new_tab",
+            "list_tabs",
+            "close_tab",
+            "navigate",
+            "snapshot",
+            "find",
+            "click",
+            "fill",
+            "type",
+            "press",
+            "select",
+            "check",
+            "hover",
+            "scroll",
+            "wait_for",
+            "act",
+            "screenshot",
+            "click_at",
+            "read_text",
+            "console_logs",
+        ] {
+            let name = format!("{}{command}", crate::provider_catalog::BROWSER_TOOL_PREFIX);
+            assert_eq!(tool_kind_from_name(&name), "browser", "tool {name}");
+        }
+        // A name that merely mentions the lane is not one of it.
+        assert_eq!(tool_kind_from_name("mcp__probe__browser_click"), "other");
     }
 
     #[test]

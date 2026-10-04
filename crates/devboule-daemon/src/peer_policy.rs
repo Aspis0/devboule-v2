@@ -623,7 +623,7 @@ pub enum McpToolWire {
 /// - Terminal kill (`devboule_kill_terminal`) ends a terminal's live session:
 ///   `SessionClose`, the act `admin` names, like the close agent tool — the
 ///   destructive supervisor verb, whatever it is pointed at.
-/// - The fifteen `browser_*` tools are `Requires(CAP_BROWSER)`: a browser
+/// - The `browser_*` tools are `Requires(CAP_BROWSER)`: a browser
 ///   command has no wire frame — it runs inside the desktop app the agent is
 ///   not connected to — so the door checks the capability itself. It rides its
 ///   own name, off until granted, because what it reaches is this machine's

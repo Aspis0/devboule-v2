@@ -248,10 +248,10 @@ pub(super) fn enabled_tool_list(
         .filter(|(name, _)| overlay.allows(name))
         .map(|(name, description)| {
             let input_schema = if tools::browser_commands::serves(name) {
-                // Fifteen schemas in one table, spelled out where the
+                // The lane's schemas in one table, spelled out where the
                 // declaration is (`tools::browser_commands`) rather than as
-                // fifteen arms here. That same table is what the daemon checks
-                // a call against, so the two cannot disagree.
+                // one arm per tool here. That same table is what the daemon
+                // checks a call against, so the two cannot disagree.
                 tools::browser_commands::schema_for(name).unwrap_or(Value::Null)
             } else if *name == crate::provider_catalog::MCP_SEND_MESSAGE_TOOL {
                 json!({

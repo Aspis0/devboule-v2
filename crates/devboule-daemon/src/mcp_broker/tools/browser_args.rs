@@ -4,7 +4,8 @@
 //! The vocabulary is declared once and read twice — `Kind::schema` is what
 //! `tools/list` shows an agent, `Kind::check` is what the daemon refuses
 //! against — so a tool cannot offer an argument it then rejects, nor reject one
-//! it never offered. The commands that use them are `browser_commands`' rows.
+//! it never offered. The commands that use them are `browser_commands`' rows,
+//! and the ten commands a batch may run are `browser_steps`'.
 //!
 //! The checks here are the shapes an agent can get wrong and a host would only
 //! report as its own failure: a ref that is not a ref, a boolean written as a
@@ -16,6 +17,12 @@ use std::time::Duration;
 use serde_json::{json, Map, Value};
 
 use crate::browser_affinity::MAX_BROWSER_ID_BYTES;
+
+use super::browser_steps::{check_steps, MAX_STEPS, MIN_STEPS};
+
+/// The four numbers a screenshot's clip is made of. Named so the refusal says
+/// which of them is missing.
+const CLIP_FIELDS: [&str; 4] = ["x", "y", "width", "height"];
 
 /// One accepted argument's shape.
 #[derive(Clone, Copy)]
@@ -38,6 +45,11 @@ pub(in crate::mcp_broker) enum Kind {
     Choices(&'static [&'static str]),
     /// A list drawn from a closed vocabulary.
     Flags(&'static [&'static str]),
+    /// A batch of commands, each checked against the row it names
+    /// (`browser_steps`).
+    Steps,
+    /// A rectangle in CSS pixels: four whole numbers, none below zero.
+    Clip,
 }
 
 impl Kind {
@@ -66,6 +78,26 @@ impl Kind {
             Self::Flags(words) => {
                 json!({"type": "array", "items": {"type": "string", "enum": words}})
             }
+            Self::Steps => json!({
+                "type": "array",
+                "minItems": MIN_STEPS,
+                "maxItems": MAX_STEPS,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "enum": super::browser_steps::ACT_COMMANDS}
+                    },
+                    "required": ["command"],
+                },
+            }),
+            Self::Clip => json!({
+                "type": "object",
+                "properties": Map::from_iter(
+                    CLIP_FIELDS.map(|field| (field.to_string(), json!({"type": "integer", "minimum": 0}))),
+                ),
+                "required": CLIP_FIELDS,
+                "additionalProperties": false,
+            }),
         }
     }
 
@@ -121,8 +153,35 @@ impl Kind {
                 }
                 _ => Err(format!("{tool}: '{name}' must be a list of {}.", words.join(", "))),
             },
+            Self::Steps => check_steps(tool, name, value),
+            Self::Clip => clip_check(tool, name, value),
         }
     }
+}
+
+/// The rectangle's own check: four whole numbers from zero up, and nothing else
+/// beside them.
+fn clip_check(tool: &str, name: &str, value: &Value) -> Result<(), String> {
+    let wanted = CLIP_FIELDS.join(", ");
+    let clip = value
+        .as_object()
+        .ok_or_else(|| format!("{tool}: '{name}' must be an object with {wanted}."))?;
+    for key in clip.keys() {
+        if !CLIP_FIELDS.contains(&key.as_str()) {
+            return Err(format!("{tool}: '{name}' has no '{key}'. It is {wanted}."));
+        }
+    }
+    for field in CLIP_FIELDS {
+        match clip.get(field).and_then(Value::as_i64) {
+            Some(number) if number >= 0 => {}
+            _ => {
+                return Err(format!(
+                    "{tool}: '{name}' needs '{field}' as a non-negative whole number."
+                ))
+            }
+        }
+    }
+    Ok(())
 }
 
 /// One argument of one command.

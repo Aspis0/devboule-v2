@@ -48,6 +48,14 @@ function paths(name: ToolIconName): ReactNode {
           <path d="M9.5 17h5" />
         </>
       );
+    case "globe":
+      return (
+        <>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M3 12h18" />
+          <path d="M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18" />
+        </>
+      );
     case "wrench":
       return (
         <path d="M14.5 6.5a4 4 0 015.2 3.8L16 14l-2-2 3.7-3.7a4 4 0 01-5.2-3.8l2.6 2.6 2-2L14.5 6.5zM9 13l-5 5 2 2 5-5" />

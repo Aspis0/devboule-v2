@@ -894,6 +894,10 @@ pub(crate) fn ready_timeout() -> Duration {
         .unwrap_or(MCP_READY_TIMEOUT)
 }
 
+/// What one `act` batch accepts: a step checked against the command it names,
+/// the length a batch may have, and the frame the host receives.
+#[cfg(test)]
+mod browser_tools_act_tests;
 /// Tab ownership as the tools reach it: an id learned from `browser_new_tab` and
 /// forgotten by `browser_close_tab`, both through the loopback door.
 #[cfg(test)]
@@ -906,6 +910,10 @@ mod browser_tools_call_tests;
 /// host to answer for.
 #[cfg(test)]
 mod browser_tools_harness;
+/// What a screenshot answers: the image as an MCP image block, and the one
+/// short line beside it.
+#[cfg(test)]
+mod browser_tools_image_tests;
 /// Who may call a browser tool at all: a paired device's own capability switch.
 #[cfg(test)]
 mod browser_tools_peer_tests;

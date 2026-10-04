@@ -1,10 +1,11 @@
 //! The browser commands an agent is served: the name each answers to, and the
 //! arguments it offers.
 //!
-//! The rows are the contract's 4b-1 wave, and nothing else: a command nobody
+//! The rows are the contract's two waves, and nothing else: a command nobody
 //! serves yet has no row, because a tool that always answers "no such tab" is a
 //! tool an agent will try. The argument shapes and the check against them are
-//! `browser_args`; this file is the table that says which command takes which.
+//! `browser_args`; the ten commands a batch may run are `browser_steps`; this
+//! file is the table that says which command takes which.
 //!
 //! A tab travels to the host twice on purpose — inside `args`, because the host
 //! needs it, and beside it, because that is what the broker routes on.
@@ -12,11 +13,13 @@
 use serde_json::{json, Map, Value};
 
 use crate::provider_catalog::{
-    MCP_BROWSER_CHECK_TOOL, MCP_BROWSER_CLICK_TOOL, MCP_BROWSER_CLOSE_TAB_TOOL,
+    MCP_BROWSER_ACT_TOOL, MCP_BROWSER_CHECK_TOOL, MCP_BROWSER_CLICK_AT_TOOL,
+    MCP_BROWSER_CLICK_TOOL, MCP_BROWSER_CLOSE_TAB_TOOL, MCP_BROWSER_CONSOLE_LOGS_TOOL,
     MCP_BROWSER_FILL_TOOL, MCP_BROWSER_FIND_TOOL, MCP_BROWSER_HOVER_TOOL,
     MCP_BROWSER_LIST_TABS_TOOL, MCP_BROWSER_NAVIGATE_TOOL, MCP_BROWSER_NEW_TAB_TOOL,
-    MCP_BROWSER_PRESS_TOOL, MCP_BROWSER_SCROLL_TOOL, MCP_BROWSER_SELECT_TOOL,
-    MCP_BROWSER_SNAPSHOT_TOOL, MCP_BROWSER_TYPE_TOOL, MCP_BROWSER_WAIT_FOR_TOOL,
+    MCP_BROWSER_PRESS_TOOL, MCP_BROWSER_READ_TEXT_TOOL, MCP_BROWSER_SCREENSHOT_TOOL,
+    MCP_BROWSER_SCROLL_TOOL, MCP_BROWSER_SELECT_TOOL, MCP_BROWSER_SNAPSHOT_TOOL,
+    MCP_BROWSER_TYPE_TOOL, MCP_BROWSER_WAIT_FOR_TOOL,
 };
 
 use super::browser_args::{optional, required, Kind, Spec};
@@ -38,6 +41,11 @@ pub(in crate::mcp_broker) const TOOLS: &[(&str, &str)] = &[
     (MCP_BROWSER_HOVER_TOOL, "hover"),
     (MCP_BROWSER_SCROLL_TOOL, "scroll"),
     (MCP_BROWSER_WAIT_FOR_TOOL, "wait_for"),
+    (MCP_BROWSER_ACT_TOOL, "act"),
+    (MCP_BROWSER_SCREENSHOT_TOOL, "screenshot"),
+    (MCP_BROWSER_CLICK_AT_TOOL, "click_at"),
+    (MCP_BROWSER_READ_TEXT_TOOL, "read_text"),
+    (MCP_BROWSER_CONSOLE_LOGS_TOOL, "console_logs"),
 ];
 
 /// The longest wait an agent may ask for. Below the broker's own call deadline so
@@ -50,6 +58,7 @@ const SNAPSHOT_MODES: &[&str] = &["interactive", "full"];
 const NAVIGATE_ACTIONS: &[&str] = &["back", "forward", "reload"];
 const CLICK_BUTTONS: &[&str] = &["left", "middle", "right"];
 const MODIFIERS: &[&str] = &["Alt", "Control", "Meta", "Shift"];
+const CONSOLE_LEVELS: &[&str] = &["error", "warning", "all"];
 
 const SPECS: &[Spec] = &[
     Spec {
@@ -199,6 +208,64 @@ const SPECS: &[Spec] = &[
         alternatives: &[&["text"], &["url"], &["ref", "state"]],
         tab: true,
     },
+    Spec {
+        command: "act",
+        fields: &[
+            required("browserId", Kind::Tab),
+            required("steps", Kind::Steps).described(
+                "1 to 10 commands to run on that tab, in order, stopping at the first failure. Each step names one of the ten commands and takes that command's own arguments; no browserId and no nested batch.",
+            ),
+        ],
+        alternatives: &[],
+        tab: true,
+    },
+    Spec {
+        command: "screenshot",
+        fields: &[
+            required("browserId", Kind::Tab),
+            optional("clip", Kind::Clip).described(
+                "The part of the viewport to photograph, in CSS pixels - the same pixels browser_click_at takes.",
+            ),
+            optional("zoom", Kind::Integer(1, Some(3))).described("Enlarge the clip up to three times."),
+        ],
+        alternatives: &[],
+        tab: true,
+    },
+    Spec {
+        command: "click_at",
+        fields: &[
+            required("browserId", Kind::Tab),
+            required("x", Kind::Integer(0, None)),
+            required("y", Kind::Integer(0, None)),
+            optional("button", Kind::Choices(CLICK_BUTTONS)),
+            optional("clickCount", Kind::Integer(1, Some(3))).described("2 is a double click."),
+        ],
+        alternatives: &[],
+        tab: true,
+    },
+    Spec {
+        command: "read_text",
+        fields: &[
+            required("browserId", Kind::Tab),
+            optional("scope", Kind::Ref).described("Read one element's text instead of the page's."),
+            optional("cursor", Kind::Text)
+                .described("The cursor a truncated answer gave, to continue from."),
+        ],
+        alternatives: &[],
+        tab: true,
+    },
+    Spec {
+        command: "console_logs",
+        fields: &[
+            required("browserId", Kind::Tab),
+            optional("level", Kind::Choices(CONSOLE_LEVELS))
+                .described("Errors alone, errors and warnings (the default), or everything."),
+            optional("sinceMs", Kind::Integer(1, None))
+                .described("Look back this many milliseconds instead of the whole tab."),
+        ],
+        alternatives: &[],
+        tab: true,
+    },
 ];
 
 /// Whether the broker serves `tool`.
@@ -221,7 +288,7 @@ pub(in crate::mcp_broker) fn spec_for(tool: &str) -> Option<&'static Spec> {
     spec_of(command_for(tool)?)
 }
 
-fn spec_of(command: &str) -> Option<&'static Spec> {
+pub(in crate::mcp_broker) fn spec_of(command: &str) -> Option<&'static Spec> {
     SPECS.iter().find(|spec| spec.command == command)
 }
 

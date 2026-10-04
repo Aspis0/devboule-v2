@@ -6,6 +6,7 @@ use std::path::Path;
 use devboule_protocol::{SessionEvent, ToolLocation};
 use serde_json::Value;
 
+use crate::browser_tool_title::browser_tool_title;
 use crate::tool_paths::relativize_tool_path;
 use crate::wire_json::{blocks_text, shell_command_from_tool, tool_kind_from_name, tool_status};
 
@@ -40,8 +41,10 @@ fn tool_title(name: &str, input: &Value, cwd: Option<&Path>) -> String {
         "WebFetch" => field("url").unwrap_or_default().to_string(),
         "Agent" | "Task" => field("description").unwrap_or_default().to_string(),
         "Skill" => field("skill").unwrap_or_default().to_string(),
-        _ => field("description")
-            .map(str::to_string)
+        // The browser lane titles itself: `click e33` names the call, where the
+        // tool's name alone would name twenty tools and no argument at all.
+        _ => browser_tool_title(name, input)
+            .or_else(|| field("description").map(str::to_string))
             .or_else(|| field("command").map(truncated_command))
             .or_else(|| {
                 field("file_path")

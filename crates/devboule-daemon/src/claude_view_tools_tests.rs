@@ -435,6 +435,45 @@ fn grep_title_is_the_pattern() {
 }
 
 #[test]
+fn a_browser_call_titles_its_own_row_and_kinds_as_the_family() {
+    // The transcript's browser row is the label plus this line, so the line has
+    // to name the command and the one argument the call was given.
+    let cases = [
+        (
+            "browser_click",
+            json!({"browserId": "tab-1", "ref": "e33"}),
+            "click e33",
+        ),
+        (
+            "browser_new_tab",
+            json!({"browserId": "tab-1", "url": "https://news.ycombinator.com/newest"}),
+            "new tab news.ycombinator.com",
+        ),
+        ("browser_list_tabs", json!({}), "list tabs"),
+    ];
+    for (name, input, title) in cases {
+        let mut mapper = view();
+        let events = mapper.ingest(&json!({
+            "type": "assistant",
+            "message": {
+                "id": "m",
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "t", "name": name, "input": input}]
+            }
+        }));
+        match events.as_slice() {
+            [SessionEvent::AgentToolCall {
+                kind, title: got, ..
+            }] => {
+                assert_eq!(kind.as_deref(), Some("browser"), "{name}");
+                assert_eq!(got, title, "{name}");
+            }
+            other => panic!("expected a browser tool call, got {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn unknown_tool_falls_back_to_the_bare_tool_name() {
     for name in ["mcp__probe__ping", "custom_tool"] {
         let mut mapper = view();

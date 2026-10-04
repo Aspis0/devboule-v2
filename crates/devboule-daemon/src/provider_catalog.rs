@@ -383,6 +383,26 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
         MCP_BROWSER_WAIT_FOR_TOOL,
         "Waits for a tab to reach text, a url, or a state of a ref (one of those three), for at most timeoutMs milliseconds (default 5000, max 12000), and answers met and what changed. met false means it did not arrive in time. Prefer this to sleeping after an action that navigates. A ref the page no longer has answers stale_ref - take a new snapshot.",
     ),
+    (
+        MCP_BROWSER_ACT_TOOL,
+        "Runs 1 to 10 browser commands on one tab in the order you wrote them and stops at the first one that fails, answering each step's outcome and one delta for the batch. Use it for a sequence you already know - open a menu, choose an item, submit - instead of one tool call per step. A step's command is one of click, fill, type, press, select, check, hover, scroll, wait_for, navigate and its other arguments are that command's own; there is no browser_act inside a step, and no browserId: the batch's browserId is the tab. Refs from before the batch are dead after a step that navigates, and a step naming one answers stale_ref - take a new snapshot.",
+    ),
+    (
+        MCP_BROWSER_SCREENSHOT_TOOL,
+        "Photographs one tab and answers the picture itself, plus its size. Use it when the page's structure is not what you need to see: a canvas, an image, a chart, a map, or how a layout actually looks - a snapshot cannot show any of those. By default the whole viewport; clip plus zoom is the zoom-in, in the same CSS pixels browser_click_at takes. Take it once and read the coordinates off it rather than guessing where something is. Needs the app running.",
+    ),
+    (
+        MCP_BROWSER_CLICK_AT_TOOL,
+        "Clicks one point of the viewport by CSS pixel coordinates, and answers what the click changed. Use it only for something with no ref of its own - a canvas, a map, a drawn chart - and only with coordinates you read off the last browser_screenshot, which are the same pixels. Everything with a ref is better off clicked by that ref. button and clickCount narrow it.",
+    ),
+    (
+        MCP_BROWSER_READ_TEXT_TOOL,
+        "Reads a tab's readable text - headings as #, lists as -, links as [text](href) - and answers url, title and the text, capped at 12000 characters with a cursor to continue from. Use it to read an article or a search result instead of walking a control at a time; scope reads one element's subtree. It carries no refs, so snapshot before you act.",
+    ),
+    (
+        MCP_BROWSER_CONSOLE_LOGS_TOOL,
+        "Answers a tab's console: the errors and warnings of the page since the tab loaded, each with its source, and how many entries were dropped from the ring. level narrows it to error or widens it to all; sinceMs looks back that far. Use it after something failed with no visible sign - a blank panel, a spinner that never stops, a control that does nothing.",
+    ),
 ];
 
 /// Tools whose handlers can park on a host consent card.
@@ -638,8 +658,13 @@ pub const MCP_BROWSER_CHECK_TOOL: &str = "browser_check";
 pub const MCP_BROWSER_HOVER_TOOL: &str = "browser_hover";
 pub const MCP_BROWSER_SCROLL_TOOL: &str = "browser_scroll";
 pub const MCP_BROWSER_WAIT_FOR_TOOL: &str = "browser_wait_for";
-/// The prefix those fifteen names share. The peer door judges a call on this
-/// prefix and not on fifteen spelled-out names, so a tool added to the lane
+pub const MCP_BROWSER_ACT_TOOL: &str = "browser_act";
+pub const MCP_BROWSER_SCREENSHOT_TOOL: &str = "browser_screenshot";
+pub const MCP_BROWSER_CLICK_AT_TOOL: &str = "browser_click_at";
+pub const MCP_BROWSER_READ_TEXT_TOOL: &str = "browser_read_text";
+pub const MCP_BROWSER_CONSOLE_LOGS_TOOL: &str = "browser_console_logs";
+/// The prefix those twenty names share. The peer door judges a call on this
+/// prefix and not on twenty spelled-out names, so a tool added to the lane
 /// needs no second edit here;
 /// `the_browser_prefix_is_exactly_the_browser_table` proves the prefix and the
 /// broker's own table name the same tools.
@@ -1216,6 +1241,11 @@ const DESIGN_DENIED: &[&str] = &[
     MCP_BROWSER_HOVER_TOOL,
     MCP_BROWSER_SCROLL_TOOL,
     MCP_BROWSER_WAIT_FOR_TOOL,
+    MCP_BROWSER_ACT_TOOL,
+    MCP_BROWSER_SCREENSHOT_TOOL,
+    MCP_BROWSER_CLICK_AT_TOOL,
+    MCP_BROWSER_READ_TEXT_TOOL,
+    MCP_BROWSER_CONSOLE_LOGS_TOOL,
 ];
 
 #[cfg(feature = "server")]
