@@ -36,7 +36,16 @@ tauri = { version = "=2.11.5", features = ["config-json5", "protocol-asset", "tr
 # only; every other target compiles the refusals in the same module.
 [target.'cfg(windows)'.dependencies]
 webview2-com = "=0.38.2"
-windows = "=0.61.3"
+# `Win32_System_Pipes` and `Win32_Storage_FileSystem` are for
+# `src-tauri/src/browser/host_wire_tests.rs`, which binds the daemon's own pipe
+# to drive the host loop over a real connection. No new package: these are
+# features of the crate already linked here for WebView2's COM interfaces.
+windows = { version = "=0.61.3", features = [
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+] }
 # Direct because the public session contract derives Serialize/Deserialize. The exact
 # version is already present transitively through Tauri; this does not add a new package.
 serde = { version = "=1.0.229", features = ["derive"] }
