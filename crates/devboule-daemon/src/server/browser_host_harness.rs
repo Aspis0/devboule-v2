@@ -44,6 +44,12 @@ impl WireDaemon {
         )
         .expect("owner");
         let mut hello = ClientHello::m3a(owner, "devboule-test");
+        // The app's own hello offers `browser.host`, so a client that did not
+        // negotiate it is one whose hello had it taken out, not one that never
+        // had it.
+        hello
+            .capabilities
+            .retain(|cap| cap.as_str() != caps::BROWSER_HOST);
         if browser_host {
             hello.capabilities.push(Capability::new(caps::BROWSER_HOST));
         }
