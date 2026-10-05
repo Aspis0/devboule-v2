@@ -18,7 +18,7 @@ const DRAIN_GRACE: Duration = Duration::from_secs(1);
 
 /// The check's tree-reap bound: a successful wait means the job reported no active members;
 /// a failed wait leaves cleanup best effort, a kill-on-close drop only requests termination.
-#[cfg(windows)]
+#[cfg(any(windows, unix))]
 const REAP_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Test-only: the buffer the reader thread captured on the last
