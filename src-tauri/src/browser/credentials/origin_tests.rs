@@ -6,7 +6,7 @@
 //! address, because that is the string this app compares a frame's origin
 //! against.
 
-use super::canonical;
+use super::{canonical, of_page};
 
 fn ok(asked: &str) -> String {
     canonical(asked)
@@ -181,6 +181,47 @@ fn a_similar_site_is_never_the_same_origin() {
             canonical(other).expect("canonical"),
             wanted,
             "{other} is a different site, not a spelling of it"
+        );
+    }
+}
+
+/// A field lives on a page, not on a bare origin, so the page's own address is
+/// read down to its origin: the path a login form sits at is not part of what
+/// the saved login allows.
+#[test]
+fn a_page_address_is_compared_by_the_origin_under_it() {
+    let site = of_page("https://shop.example.test").expect("origin");
+    for page in [
+        "https://shop.example.test/sign-in",
+        "https://shop.example.test/sign-in?next=%2Fhome",
+        "https://shop.example.test/sign-in#password",
+        "https://shop.example.test:443/anything/else",
+    ] {
+        assert_eq!(of_page(page).expect(page), site, "{page}");
+    }
+    assert_eq!(
+        of_page("https://shop.example.test:8443/sign-in")
+            .expect("page")
+            .to_string(),
+        "https://shop.example.test:8443",
+        "a port that is not the scheme's default is part of the site"
+    );
+}
+
+/// An address with no origin to compare — an opaque one, or a scheme that is
+/// not the web's — is refused rather than read as any site at all.
+#[test]
+fn a_page_with_no_origin_to_compare_is_refused() {
+    for asked in [
+        "about:blank",
+        "data:text/html,<p>hi</p>",
+        "javascript:alert(1)",
+        "not a url",
+        "",
+    ] {
+        assert!(
+            of_page(asked).is_err(),
+            "{asked:?} must be refused: it names no site"
         );
     }
 }

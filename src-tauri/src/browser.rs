@@ -27,6 +27,7 @@ mod live;
 mod mask;
 mod page_host;
 pub(crate) mod registry;
+mod scrub;
 mod tab;
 mod tab_guard;
 mod tab_reports;
@@ -216,15 +217,18 @@ pub async fn browser_close(
     let Ok(label) = registry.label_of(&id) else {
         registry.cancel(&id);
         cdp_events::forget(&id);
+        scrub::forget(&id);
         return Ok(());
     };
     let Some(webview) = app.get_webview(&label) else {
         registry.cancel(&id);
         cdp_events::forget(&id);
+        scrub::forget(&id);
         return Ok(());
     };
     webview.close().map_err(|e| e.to_string())?;
     registry.release(&id);
     cdp_events::forget(&id);
+    scrub::forget(&id);
     Ok(())
 }

@@ -29,8 +29,10 @@ use devboule_protocol::{BrowserCaller, BrowserError, BrowserErrorCode, BrowserEx
 
 use super::ax::AxTree;
 use super::cdp::{Bounded, CdpError, Page, WebviewPage};
+use super::credentials::fill_login;
 use super::deadline::Deadline;
 use super::registry::{BrowserRegistry, TabInfo};
+use super::scrub;
 use super::tab_guard;
 use super::view;
 use super::view_walk;
@@ -55,7 +57,12 @@ pub fn code_name(code: BrowserErrorCode) -> &'static str {
 /// list and the dispatch below are one thing: a name here that the dispatch
 /// does not know is a command the daemon would route and this app would
 /// refuse.
-pub const COMMANDS: [&str; 20] = [
+///
+/// The two `fill_login` commands are here and not in the served table beside
+/// them because they are not tools: `fill_login_preview` is what the daemon
+/// asks before it puts the choice to a person, and it has no agent-facing
+/// name at all.
+pub const COMMANDS: [&str; 22] = [
     "new_tab",
     "list_tabs",
     "close_tab",
@@ -76,6 +83,8 @@ pub const COMMANDS: [&str; 20] = [
     "click_at",
     "read_text",
     "console_logs",
+    "fill_login_preview",
+    "fill_login",
 ];
 
 /// A failure, in the protocol's own vocabulary.
@@ -196,6 +205,28 @@ const READS: [&str; 6] = [
     "console_logs",
 ];
 
+/// Which of the dispatch's two page arms runs `command`.
+///
+/// The saved-login pair is dispatched beside this table rather than through
+/// [`on_tab`], because it builds this machine's vault out of the app handle.
+/// The arm is named here so that a name registered and not run cannot reach
+/// the dispatch as a refusal, which is what the registered-list test reads.
+#[derive(PartialEq, Eq, Debug)]
+enum Routed {
+    /// `on_tab`, on a page the tab lock has been taken for.
+    Tab,
+    /// A saved login, over the vault this machine owns.
+    SavedLogin,
+}
+
+fn routed(command: &str) -> Routed {
+    if fill_login::COMMANDS.contains(&command) {
+        Routed::SavedLogin
+    } else {
+        Routed::Tab
+    }
+}
+
 /// Run one command the daemon pushed to this host.
 pub async fn dispatch(
     app: &tauri::AppHandle,
@@ -205,31 +236,63 @@ pub async fn dispatch(
 ) -> Result<Value, BrowserError> {
     let command = request.command.as_str();
     if matches!(command, "new_tab" | "list_tabs") {
-        return tabs::run(
-            app,
-            registry,
-            &request.caller,
-            command,
-            &request.args,
-            deadline,
-        )
-        .await;
+        return scrubbed(
+            tabs::run(
+                app,
+                registry,
+                &request.caller,
+                command,
+                &request.args,
+                deadline,
+            )
+            .await,
+        );
     }
     let browser_id = browser_id(&request.args)?;
     let tab = resolve(registry, &request.caller, &browser_id)?;
+    // The page owns whatever was typed into it, so what this process typed on
+    // a site the tab has since left is dropped here, before the answer is
+    // built from whatever is on screen now.
+    scrub::left(&tab.browser_id, fill_login::origin_of(&tab).as_deref());
     if READS.contains(&command) {
         let page = WebviewPage::new(app, &tab.label);
-        return on_tab(&tab, &page, command, &request.args, deadline).await;
+        return scrubbed(on_tab(&tab, &page, command, &request.args, deadline).await);
     }
     let _held = tab_guard::hold(registry, &browser_id, deadline).await?;
     // What the tab was when this command queued is not what it is now: the
     // pane may have shown, parked or closed it while the lock was held.
     let tab = resolve(registry, &request.caller, &browser_id)?;
     if command == "close_tab" {
-        return tabs::close_tab(app, registry, &tab);
+        return scrubbed(tabs::close_tab(app, registry, &tab));
     }
     let page = WebviewPage::new(app, &tab.label);
-    on_tab(&tab, &page, command, &request.args, deadline).await
+    let outcome = match routed(command) {
+        // The one command beside `on_tab`, so the bound `on_tab` puts on a page
+        // has to be put here too: a saved login asks the page the same questions
+        // and may wait no longer for the answers.
+        Routed::SavedLogin => {
+            let bounded = Bounded::new(&page, deadline);
+            fill_login::run(app, &tab, &bounded, command, &request.args).await
+        }
+        Routed::Tab => on_tab(&tab, &page, command, &request.args, deadline).await,
+    };
+    scrubbed(outcome)
+}
+
+/// The answer of one command, or the refusal of one, with whatever this process
+/// typed into any tab taken out of it. The one place a browser answer leaves
+/// this app.
+fn scrubbed(outcome: Result<Value, BrowserError>) -> Result<Value, BrowserError> {
+    match outcome {
+        Ok(mut answer) => {
+            scrub::clean(&mut answer);
+            Ok(answer)
+        }
+        Err(mut error) => {
+            scrub::clean_text(&mut error.message);
+            Err(error)
+        }
+    }
 }
 
 /// Run one command against one page. Everything below the tab commands goes

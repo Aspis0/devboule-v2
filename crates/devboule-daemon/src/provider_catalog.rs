@@ -403,6 +403,10 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
         MCP_BROWSER_CONSOLE_LOGS_TOOL,
         "Answers a tab's console: the errors and warnings of the page since the tab loaded, each with its source, and how many entries were dropped from the ring. level narrows it to error or widens it to all; sinceMs looks back that far. Use it after something failed with no visible sign - a blank panel, a spinner that never stops, a control that does nothing.",
     ),
+    (
+        MCP_BROWSER_FILL_LOGIN_TOOL,
+        "Fills a login form from a login this person saved on this machine, and never sees it: give usernameRef, passwordRef, or both, each a ref from a snapshot of the field to fill. The password is read from this machine's own credential store at the last moment and typed into the page by the app; it reaches neither you, nor this tool's result, nor any log, transcript or paired device. The person at the keyboard is asked first - an unattended session still asks - and the card names the saved login and the site, so watch for it; they may allow one call, or that login on that site for the rest of the session. Only a field whose own frame is at a site that saved login allows, one exact site per call; a site with no saved login answers no_saved_login, a field that moves or a page that navigates answers that the field changed, and you should snapshot and look again. Answers filled: the arguments that were filled, and nothing else - no view, no delta, nothing to read back. Two-step login pages take one ref per call.",
+    ),
 ];
 
 /// Tools whose handlers can park on a host consent card.
@@ -414,6 +418,9 @@ pub(crate) const MCP_CARD_WAIT_TOOLS: &[&str] = &[
     MCP_CREATE_TERMINAL_TOOL,
     MCP_SEND_TERMINAL_KEYS_TOOL,
     MCP_KILL_TERMINAL_TOOL,
+    // The saved-login card is raised on every call and a person answers it in
+    // their own time, so the call is one no client may time out.
+    MCP_BROWSER_FILL_LOGIN_TOOL,
 ];
 
 #[cfg_attr(not(feature = "server"), allow(dead_code))]
@@ -663,6 +670,7 @@ pub const MCP_BROWSER_SCREENSHOT_TOOL: &str = "browser_screenshot";
 pub const MCP_BROWSER_CLICK_AT_TOOL: &str = "browser_click_at";
 pub const MCP_BROWSER_READ_TEXT_TOOL: &str = "browser_read_text";
 pub const MCP_BROWSER_CONSOLE_LOGS_TOOL: &str = "browser_console_logs";
+pub const MCP_BROWSER_FILL_LOGIN_TOOL: &str = "browser_fill_login";
 /// The prefix those twenty names share. The peer door judges a call on this
 /// prefix and not on twenty spelled-out names, so a tool added to the lane
 /// needs no second edit here;
@@ -1246,6 +1254,7 @@ const DESIGN_DENIED: &[&str] = &[
     MCP_BROWSER_CLICK_AT_TOOL,
     MCP_BROWSER_READ_TEXT_TOOL,
     MCP_BROWSER_CONSOLE_LOGS_TOOL,
+    MCP_BROWSER_FILL_LOGIN_TOOL,
 ];
 
 #[cfg(feature = "server")]

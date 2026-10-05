@@ -17,6 +17,7 @@ use devboule_protocol::{
 
 use super::tests::{http_request, owner, response_json};
 use super::tools::browser_commands::TOOLS;
+use super::tools::browser_login::PREVIEW;
 use super::{AgentLineage, McpServerHandle, McpSessionGuard, ServerState};
 use crate::outbound::ConnOut;
 use crate::provider_catalog::ToolOverlay;
@@ -30,17 +31,17 @@ pub(super) struct FakeHost {
 }
 
 impl FakeHost {
-    /// Register `conn_id` as a host that answers every command in the table.
+    /// Register `conn_id` as a host that answers every command in the table,
+    /// plus the saved login's preview: a host command the lane rides on with no
+    /// tool of its own, which is why the table does not carry it.
     pub(super) fn register(state: &ServerState, conn_id: u64) -> FakeHost {
         let out = ConnOut::new();
-        state.browser.register(
-            conn_id,
-            Arc::clone(&out),
-            TOOLS
-                .iter()
-                .map(|(_, command)| (*command).to_string())
-                .collect(),
-        );
+        let commands = TOOLS
+            .iter()
+            .map(|(_, command)| (*command).to_string())
+            .chain(std::iter::once(PREVIEW.to_string()))
+            .collect();
+        state.browser.register(conn_id, Arc::clone(&out), commands);
         FakeHost { conn_id, out }
     }
 

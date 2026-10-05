@@ -69,6 +69,31 @@ fn refusal(asked: &str, why: &str) -> String {
     format!("{asked:?} is not a site address this app can save: {why}.")
 }
 
+/// The origin a page's own address belongs to, which is what a field's frame
+/// is compared by. A page has a path, a query and a fragment — that is what
+/// makes it a page and not an address bar entry — so unlike [`canonical`] this
+/// accepts them and keeps only the origin underneath. What it refuses is an
+/// address with no origin to compare at all.
+pub fn of_page(raw: &str) -> Result<Origin, String> {
+    let asked = raw.trim();
+    let parsed = Url::parse(asked).map_err(|error| page_refusal(asked, &error.to_string()))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(page_refusal(
+            asked,
+            "only http and https pages have an origin to compare",
+        ));
+    }
+    let origin = parsed.origin();
+    if !origin.is_tuple() {
+        return Err(page_refusal(asked, "it has no origin this app can compare"));
+    }
+    Ok(Origin(origin.ascii_serialization()))
+}
+
+fn page_refusal(asked: &str, why: &str) -> String {
+    format!("{asked:?} is not a page address this app can compare: {why}.")
+}
+
 #[cfg(test)]
 #[path = "origin_tests.rs"]
 mod tests;

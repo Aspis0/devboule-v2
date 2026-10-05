@@ -15,12 +15,11 @@
 //! hold two passwords, one of which nothing can name.
 
 pub(crate) mod commands;
+mod field_frame;
+pub(super) mod fill_login;
 mod metadata;
 mod secrets;
 
-// `Origin` is compared and logged by the fill path; until that path lands,
-// only the tests read an origin beyond its canonical spelling.
-#[cfg_attr(not(test), allow(dead_code))]
 mod origin;
 
 use std::path::PathBuf;
@@ -265,7 +264,6 @@ impl Vault {
 
     /// The entries that may be used on `origin`, which a fill path asks for
     /// with the origin of the frame the field lives in. Metadata only.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn lookup_for_origin(
         &self,
         origin: &origin::Origin,
@@ -281,7 +279,6 @@ impl Vault {
 
     /// The password of one entry, for the fill that types it. `None` when the
     /// store has no item under that id, which is a fact and not a failure.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn password_for(&self, id: &str) -> Result<Option<String>, Refusal> {
         self.secrets.get(id).map_err(Refusal::Failed)
     }

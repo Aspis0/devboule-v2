@@ -17,6 +17,7 @@ use devboule_protocol::{BrowserCaller, BrowserError, BrowserErrorCode};
 use super::super::cdp::Page;
 use super::super::deadline::Deadline;
 use super::super::registry::{BrowserRegistry, TabInfo};
+use super::super::scrub;
 use super::super::tab;
 use super::{act, host_error, refused, tab_not_found};
 
@@ -193,6 +194,7 @@ pub fn close_tab(
         .map_err(|error| host_error(format!("The tab would not close: {error}")))?;
     registry.release(&tab.browser_id);
     super::super::cdp_events::forget(&tab.browser_id);
+    scrub::forget(&tab.browser_id);
     if let Err(error) = app.emit(
         TAB_EVENT,
         TabEvent::Closed {

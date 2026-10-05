@@ -910,6 +910,19 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
     }
 }
 
+/// The sentence a paired device is refused with for the one tool of the lane
+/// it may never call, whatever its set holds.
+///
+/// It is asked for before the capability table rather than as a row in it:
+/// `browser_fill_login` types a password of the person at this keyboard into a
+/// page, and no capability named here could be handed out to make that true.
+/// The check therefore has nothing to be granted, and a refusal is the only
+/// answer it can ever give.
+pub fn mcp_tool_locality(tool: &str) -> Option<&'static str> {
+    (tool == crate::provider_catalog::MCP_BROWSER_FILL_LOGIN_TOOL)
+        .then_some("a saved login of this machine is never used from a paired device")
+}
+
 /// Whether `tool` is one of the broker's `browser_*` tools: a **served** name
 /// carrying the lane's prefix. Both halves matter — the prefix alone would
 /// judge a name the broker never serves, and the served list alone would judge

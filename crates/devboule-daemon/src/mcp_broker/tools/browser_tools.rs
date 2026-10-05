@@ -101,7 +101,7 @@ pub(in crate::mcp_broker) fn call(
 ///
 /// `Ok(None)` is a real answer — a session started outside any workspace has one,
 /// and the broker's tab map gives such a caller a scope of its own.
-fn browser_caller(
+pub(in crate::mcp_broker) fn browser_caller(
     state: &ServerState,
     registration: &RegisteredSession,
     caller: &McpCaller,
@@ -124,7 +124,7 @@ fn browser_caller(
 /// The host's result: text and a structured document, or — for a screenshot
 /// that really carries one — the picture and the one line that says how big it
 /// is.
-fn browser_reply(id: &Value, command: &str, result: Value) -> Value {
+pub(in crate::mcp_broker) fn browser_reply(id: &Value, command: &str, result: Value) -> Value {
     let picture = if command == "screenshot" {
         picture(&result)
     } else {

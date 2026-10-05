@@ -81,15 +81,17 @@ pub(super) fn mcp_peer_door(
     let tool = tool_name?;
     match caller {
         McpCaller::Local => None,
-        McpCaller::Peer { role, caps, .. } => {
-            crate::peer_policy::mcp_tool_denial(*role, caps, tool).map(|reason| {
-                rpc_error(
-                    id.clone(),
-                    -32601,
-                    &crate::peer_policy::capability_refusal_message(reason),
-                )
-            })
-        }
+        McpCaller::Peer { role, caps, .. } => crate::peer_policy::mcp_tool_locality(tool)
+            .map(|sentence| rpc_error(id.clone(), -32601, sentence))
+            .or_else(|| {
+                crate::peer_policy::mcp_tool_denial(*role, caps, tool).map(|reason| {
+                    rpc_error(
+                        id.clone(),
+                        -32601,
+                        &crate::peer_policy::capability_refusal_message(reason),
+                    )
+                })
+            }),
         McpCaller::Unknown => Some(rpc_error(
             id.clone(),
             -32601,

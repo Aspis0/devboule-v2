@@ -187,8 +187,11 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// held remote-host frames on `remote_hosts`; protocol 24 adds the browser-host
 /// frames (`BrowserHostRegister`, `BrowserHostUnregister`,
 /// `BrowserExecuteResponse` and the daemon's `browser_execute_request`) on
-/// `browser.host`.
-pub const PROTOCOL_VERSION: u32 = 24;
+/// `browser.host`. Protocol 25 adds no frame: it marks the dialect in which a
+/// host may register `fill_login_preview` and `fill_login` and the broker may
+/// serve `browser_fill_login`, all three of which ride the frames above and are
+/// refused by a host that registered no such command.
+pub const PROTOCOL_VERSION: u32 = 25;
 /// Oldest dialect this crate still accepts. Protocols 17, 18 and 20 added only
 /// optional fields, so a v16 peer still interoperates — it just shows no
 /// command chip, turn time, cache, cost or chat-image thumbnails until

@@ -80,7 +80,7 @@ pub async fn saved_login_delete(app: tauri::AppHandle, id: String) -> Result<(),
 
 /// This machine's own folder, which is where the browser profile already lives
 /// and therefore where a person expects to find what the app saved.
-fn local_folder(app: &tauri::AppHandle) -> Result<PathBuf, CommandError> {
+pub(super) fn local_folder(app: &tauri::AppHandle) -> Result<PathBuf, CommandError> {
     app.path().app_local_data_dir().map_err(|error| {
         CommandError::new(
             ErrorCode::Internal,

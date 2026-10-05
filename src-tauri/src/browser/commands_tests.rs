@@ -321,8 +321,17 @@ fn a_command_without_a_browser_id_is_refused_rather_than_guessed_at() {
 fn the_registered_command_list_is_the_one_this_dispatch_runs() {
     // A name registered and not run would be a command the daemon routes and
     // this app refuses; a name run and not registered would never arrive.
+    let mut saved_login = Vec::new();
     for command in COMMANDS {
         if matches!(command, "new_tab" | "list_tabs" | "close_tab") {
+            continue;
+        }
+        if routed(command) == Routed::SavedLogin {
+            // Dispatched beside the table rather than through `on_tab`, so
+            // what is proved here is that the arm exists and names them: what
+            // they then do needs this machine's vault, which is built from the
+            // app handle and proved in `credentials::fill_login`.
+            saved_login.push(command);
             continue;
         }
         let answered = run(&form_page(), command, json!({}));
@@ -336,5 +345,30 @@ fn the_registered_command_list_is_the_one_this_dispatch_runs() {
             "{command} is registered, so the dispatch reaches it"
         );
     }
-    assert_eq!(COMMANDS.len(), 20, "4b-1 is fifteen and 4b-2 is five");
+    assert_eq!(saved_login, vec!["fill_login_preview", "fill_login"]);
+    assert_eq!(
+        COMMANDS.len(),
+        22,
+        "4b-1 is fifteen, 4b-2 is five, and a saved login is a preview and a fill"
+    );
+}
+
+/// Every answer and every refusal leaves this app through the one wrapper, and
+/// whatever this process typed into a tab is taken out on the way: an answer
+/// that carries it, and an error string that does, both leave without it.
+#[test]
+fn an_answer_and_a_refusal_leave_without_what_was_typed() {
+    let tab = "commands-scrubbed";
+    const SECRET: &str = "sentinel-typed-password";
+    scrub::remember(tab, "https://shop.example.test", SECRET);
+
+    let answered =
+        scrubbed(Ok(json!({"text": format!("the page said {SECRET}")}))).expect("an answer");
+    assert_eq!(answered["text"], json!("the page said [hidden]"));
+
+    let refused =
+        scrubbed(Err(host_error(format!("the page said {SECRET}")))).expect_err("a refusal");
+    assert_eq!(refused.message, "the page said [hidden]");
+
+    scrub::forget(tab);
 }

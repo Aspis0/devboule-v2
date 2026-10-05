@@ -3,6 +3,7 @@ pub(super) mod archive;
 mod archive_sessions;
 pub(super) mod browser_args;
 pub(super) mod browser_commands;
+pub(super) mod browser_login;
 pub(super) mod browser_steps;
 pub(super) mod browser_tools;
 pub(super) mod commands;

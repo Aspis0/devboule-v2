@@ -44,11 +44,12 @@ fn every_contract_command_is_served_under_its_browser_name() {
         ("browser_click_at", "click_at"),
         ("browser_read_text", "read_text"),
         ("browser_console_logs", "console_logs"),
+        ("browser_fill_login", "fill_login"),
     ];
     assert_eq!(
         TOOLS,
         &contract[..],
-        "the served table is the contract's two waves"
+        "the served table is the contract's two waves and the saved login"
     );
     for (tool, command) in contract {
         assert_eq!(browser_commands::command_for(tool), Some(command), "{tool}");
@@ -136,6 +137,38 @@ fn the_second_waves_schema_states_the_bounds_the_daemon_enforces() {
     let click_at = browser_commands::schema_for("browser_click_at").expect("click_at");
     assert_eq!(click_at["required"], json!(["browserId", "x", "y"]));
     assert_eq!(click_at["properties"]["clickCount"]["maximum"], json!(3));
+
+    let login = browser_commands::schema_for("browser_fill_login").expect("fill_login");
+    assert_eq!(login["required"], json!(["browserId"]), "{login}");
+    assert_eq!(
+        login["additionalProperties"],
+        json!(false),
+        "the entry a person chooses is not an argument an agent may send: {login}"
+    );
+    for field in ["usernameRef", "passwordRef"] {
+        assert_eq!(login["properties"][field]["pattern"], "^e\\d+$", "{field}");
+    }
+}
+
+/// The saved login is not a batch step: a batch would carry it inside another
+/// call's arguments, and a person approving a batch approves every step in it
+/// without naming which login any of them used.
+#[test]
+fn a_batch_step_may_not_be_a_saved_login_fill() {
+    let step = json!({
+        "command": "fill_login",
+        "passwordRef": "e14",
+    });
+    let refused = crate::mcp_broker::tools::browser_steps::check_steps(
+        "browser_act",
+        "steps",
+        &json!([step]),
+    )
+    .expect_err("a batch step may not fill a login");
+    assert!(
+        refused.contains("fill_login"),
+        "the refusal names the command: {refused}"
+    );
 }
 
 /// The prefix the peer door judges on lives in another module on purpose, so no

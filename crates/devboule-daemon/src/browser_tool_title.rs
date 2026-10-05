@@ -68,6 +68,10 @@ pub(crate) fn browser_tool_title(name: &str, input: &Value) -> Option<String> {
         "browser_click_at" => point(input),
         "browser_read_text" => row("read text", field(input, "scope")),
         "browser_console_logs" => row("console logs", field(input, "level")),
+        "browser_fill_login" => row(
+            "fill login",
+            join(field(input, "usernameRef"), field(input, "passwordRef")),
+        ),
         _ => return None,
     }?;
     Some(row)

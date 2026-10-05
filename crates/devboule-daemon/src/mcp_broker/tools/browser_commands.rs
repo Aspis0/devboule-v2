@@ -15,11 +15,11 @@ use serde_json::{json, Map, Value};
 use crate::provider_catalog::{
     MCP_BROWSER_ACT_TOOL, MCP_BROWSER_CHECK_TOOL, MCP_BROWSER_CLICK_AT_TOOL,
     MCP_BROWSER_CLICK_TOOL, MCP_BROWSER_CLOSE_TAB_TOOL, MCP_BROWSER_CONSOLE_LOGS_TOOL,
-    MCP_BROWSER_FILL_TOOL, MCP_BROWSER_FIND_TOOL, MCP_BROWSER_HOVER_TOOL,
-    MCP_BROWSER_LIST_TABS_TOOL, MCP_BROWSER_NAVIGATE_TOOL, MCP_BROWSER_NEW_TAB_TOOL,
-    MCP_BROWSER_PRESS_TOOL, MCP_BROWSER_READ_TEXT_TOOL, MCP_BROWSER_SCREENSHOT_TOOL,
-    MCP_BROWSER_SCROLL_TOOL, MCP_BROWSER_SELECT_TOOL, MCP_BROWSER_SNAPSHOT_TOOL,
-    MCP_BROWSER_TYPE_TOOL, MCP_BROWSER_WAIT_FOR_TOOL,
+    MCP_BROWSER_FILL_LOGIN_TOOL, MCP_BROWSER_FILL_TOOL, MCP_BROWSER_FIND_TOOL,
+    MCP_BROWSER_HOVER_TOOL, MCP_BROWSER_LIST_TABS_TOOL, MCP_BROWSER_NAVIGATE_TOOL,
+    MCP_BROWSER_NEW_TAB_TOOL, MCP_BROWSER_PRESS_TOOL, MCP_BROWSER_READ_TEXT_TOOL,
+    MCP_BROWSER_SCREENSHOT_TOOL, MCP_BROWSER_SCROLL_TOOL, MCP_BROWSER_SELECT_TOOL,
+    MCP_BROWSER_SNAPSHOT_TOOL, MCP_BROWSER_TYPE_TOOL, MCP_BROWSER_WAIT_FOR_TOOL,
 };
 
 use super::browser_args::{optional, required, Kind, Spec};
@@ -46,6 +46,7 @@ pub(in crate::mcp_broker) const TOOLS: &[(&str, &str)] = &[
     (MCP_BROWSER_CLICK_AT_TOOL, "click_at"),
     (MCP_BROWSER_READ_TEXT_TOOL, "read_text"),
     (MCP_BROWSER_CONSOLE_LOGS_TOOL, "console_logs"),
+    (MCP_BROWSER_FILL_LOGIN_TOOL, "fill_login"),
 ];
 
 /// The longest wait an agent may ask for. Below the broker's own call deadline so
@@ -263,6 +264,21 @@ const SPECS: &[Spec] = &[
                 .described("Errors alone, errors and warnings (the default), or everything."),
             optional("sinceMs", Kind::Integer(1, None))
                 .described("Look back this many milliseconds instead of the whole tab."),
+        ],
+        alternatives: &[],
+        tab: true,
+    },
+    // The one tool of the lane whose password never travels: it names the
+    // field to fill and nothing else, and the login behind it is chosen by the
+    // person, on this machine, off the tool's own arguments.
+    Spec {
+        command: "fill_login",
+        fields: &[
+            required("browserId", Kind::Tab),
+            optional("usernameRef", Kind::Ref)
+                .described("Fill this field with the saved login's username."),
+            optional("passwordRef", Kind::Ref)
+                .described("Fill this field with the saved login's password."),
         ],
         alternatives: &[],
         tab: true,

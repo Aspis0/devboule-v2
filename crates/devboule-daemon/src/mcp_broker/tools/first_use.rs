@@ -51,7 +51,12 @@ const CHOICE_SESSION: &str = "session";
 /// Whether a session may call a write group without asking again.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(in crate::mcp_broker) enum GateMark {
+    /// No grant, and none asked for: the next call raises the card.
+    None,
+    /// A card for it is out and unanswered. A second call refuses as pending
+    /// rather than spending the person's attention twice.
     Pending,
+    /// Granted for the rest of this session.
     Open,
 }
 
@@ -61,6 +66,34 @@ pub(in crate::mcp_broker) struct FirstUseGates {
 }
 
 impl McpBroker {
+    /// The mark for one session and one group, however that group came to be
+    /// asked about: the write groups are named in the table above, and a
+    /// consent whose scope is a choice keeps its own group per choice.
+    pub(in crate::mcp_broker) fn gate_mark(&self, session_id: &str, group: &str) -> GateMark {
+        self.write_gates
+            .marks
+            .lock()
+            .ok()
+            .and_then(|marks| {
+                marks
+                    .get(&(session_id.to_string(), group.to_string()))
+                    .copied()
+            })
+            .unwrap_or(GateMark::None)
+    }
+
+    /// Remember `mark` for one session and group.
+    pub(in crate::mcp_broker) fn remember_gate_mark(
+        &self,
+        session_id: &str,
+        group: &str,
+        mark: GateMark,
+    ) {
+        if let Ok(mut marks) = self.write_gates.marks.lock() {
+            marks.insert((session_id.to_string(), group.to_string()), mark);
+        }
+    }
+
     /// The gate mark for one session and group, if any. Test-only:
     /// production reads the gate through `ensure_write_allowed` alone.
     #[cfg(test)]
@@ -153,7 +186,7 @@ pub(in crate::mcp_broker) fn ensure_write_allowed(
             Some(GateMark::Pending) => {
                 return Err("permission pending; retry".to_string());
             }
-            None => {
+            None | Some(GateMark::None) => {
                 marks.insert(
                     (session_id.to_string(), group.to_string()),
                     GateMark::Pending,
@@ -163,7 +196,7 @@ pub(in crate::mcp_broker) fn ensure_write_allowed(
     }
     let card = write_gate_card(session_id, group, subject, facts);
     let card_id = gate_card_id(&card).to_string();
-    let outcome = request_write_card(state, session_id, owner, &card_id, card);
+    let outcome = request_card(state, session_id, owner, &card_id, card);
     let mut marks = broker
         .write_gates
         .marks
@@ -175,21 +208,21 @@ pub(in crate::mcp_broker) fn ensure_write_allowed(
     // clear a newer grant.
     let pending = marks.get(&key) == Some(&GateMark::Pending);
     match outcome {
-        WriteCardOutcome::Choice(CHOICE_SESSION) if pending => {
+        Answered::Chose(choice) if pending && choice == CHOICE_SESSION => {
             marks.insert(key, GateMark::Open);
             Ok(())
         }
-        WriteCardOutcome::Choice(CHOICE_ONCE) if pending => {
+        Answered::Chose(choice) if pending && choice == CHOICE_ONCE => {
             marks.remove(&key);
             Ok(())
         }
-        WriteCardOutcome::Choice("deny") => {
+        Answered::Chose(choice) if choice == "deny" => {
             if pending {
                 marks.remove(&key);
             }
             Err("permission refused".to_string())
         }
-        WriteCardOutcome::Undelivered => {
+        Answered::Undelivered => {
             if pending {
                 marks.remove(&key);
             }
@@ -204,27 +237,19 @@ pub(in crate::mcp_broker) fn ensure_write_allowed(
     }
 }
 
-/// Raise the approval card through the same road the creation card uses and
-/// wait for the person's answer. It distinguishes a delivery failure from a
-/// card that completed without an allow choice.
-enum WriteCardOutcome {
-    Choice(&'static str),
-    Undelivered,
-    Unanswered,
-}
-
-fn request_write_card(
+/// The card the gate raises, and the person's answer to it.
+fn request_card(
     state: &ServerState,
     session_id: &str,
     owner: &OwnerId,
     card_id: &str,
     card: SessionEvent,
-) -> WriteCardOutcome {
+) -> Answered {
     let Some(runtime) = state.sessions.live_runtime(session_id, owner) else {
-        return WriteCardOutcome::Undelivered;
+        return Answered::Undelivered;
     };
     let Some(card_broker) = runtime.permission_broker() else {
-        return WriteCardOutcome::Undelivered;
+        return Answered::Undelivered;
     };
     card_broker.watch_card_choice(card_id);
     let decision = state
@@ -232,23 +257,51 @@ fn request_write_card(
         .ask_creation_card_decision(session_id, owner, card);
     let choice = card_broker.take_card_choice(card_id).flatten();
     match decision {
-        None | Some(crate::session::HostCardDecision::Cancelled) => WriteCardOutcome::Undelivered,
-        Some(crate::session::HostCardDecision::Deny) => WriteCardOutcome::Choice("deny"),
-        Some(crate::session::HostCardDecision::Timeout) => WriteCardOutcome::Unanswered,
-        Some(crate::session::HostCardDecision::Allow) => choice
-            .and_then(|option| choice_as_static(Some(option)))
-            .map_or(WriteCardOutcome::Unanswered, WriteCardOutcome::Choice),
+        None | Some(crate::session::HostCardDecision::Cancelled) => Answered::Undelivered,
+        Some(crate::session::HostCardDecision::Deny) => Answered::Chose("deny".to_string()),
+        Some(crate::session::HostCardDecision::Timeout) => Answered::Unanswered,
+        Some(crate::session::HostCardDecision::Allow) => {
+            choice.map_or(Answered::Unanswered, Answered::Chose)
+        }
     }
 }
 
-/// The watched answer as the gate reads it. Kept beside the take so the
-/// two spellings of each choice cannot drift.
-fn choice_as_static(choice: Option<String>) -> Option<&'static str> {
-    match choice.as_deref() {
-        Some(CHOICE_ONCE) => Some(CHOICE_ONCE),
-        Some(CHOICE_SESSION) => Some(CHOICE_SESSION),
-        Some("deny") => Some("deny"),
-        _ => None,
+/// The answer to a card, before the gate reads it as one of its own choices:
+/// the option the person picked by id, or that the card was never delivered or
+/// never answered.
+enum Answered {
+    Chose(String),
+    Undelivered,
+    Unanswered,
+}
+
+/// Ask the person to allow this call, offering the card's own choices, and
+/// hand back the option they chose.
+///
+/// The one place a card is raised without consulting the session's mode for
+/// whether to raise it at all. An automatic mode proceeds without a card for
+/// every write group, because there is nothing in a write the person has to
+/// see; a saved-login fill has, so this card goes up however the session runs.
+/// A plan or read-only mode is refused before the card, exactly as the write
+/// gate refuses it: those modes do not act.
+pub(in crate::mcp_broker) fn ask_choice(
+    state: &ServerState,
+    session_id: &str,
+    owner: &OwnerId,
+    card: SessionEvent,
+) -> Result<String, String> {
+    if let Some(crate::provider_catalog::ModeGate::Refuse(sentence)) = state
+        .sessions
+        .live_runtime(session_id, owner)
+        .map(|runtime| runtime.mode_gate())
+    {
+        return Err(sentence);
+    }
+    let card_id = gate_card_id(&card).to_string();
+    match request_card(state, session_id, owner, &card_id, card) {
+        Answered::Chose(option) => Ok(option),
+        Answered::Undelivered => Err("permission card could not be delivered".to_string()),
+        Answered::Unanswered => Err("permission request was not answered".to_string()),
     }
 }
 
@@ -289,7 +342,7 @@ fn write_gate_card(
         )
     };
     SessionEvent::PermissionRequest {
-        tool_call_id: write_gate_card_id(session_id, group),
+        tool_call_id: card_id(session_id, group),
         title: format!("Approve request to {subject}"),
         description: Some(description),
         command: None,
@@ -397,7 +450,7 @@ fn gate_card_id(card: &SessionEvent) -> &str {
 
 /// The correlation id of one gate card. Distinct per call, so two sessions
 /// racing the same group cannot collide in the pending table.
-fn write_gate_card_id(session_id: &str, group: &str) -> String {
+pub(in crate::mcp_broker) fn card_id(session_id: &str, group: &str) -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(1);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

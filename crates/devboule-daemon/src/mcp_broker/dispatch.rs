@@ -214,6 +214,8 @@ pub(super) fn handle_rpc(
                 tools::terminal_writes::send_keys(state, broker, registration, caller, id, message)
             } else if tool_name == Some(crate::provider_catalog::MCP_KILL_TERMINAL_TOOL) {
                 tools::terminal_writes::kill(state, broker, registration, caller, id, message)
+            } else if tool_name == Some(crate::provider_catalog::MCP_BROWSER_FILL_LOGIN_TOOL) {
+                tools::browser_login::call(state, broker, registration, caller, id, message)
             } else if tool_name.is_some_and(tools::browser_commands::serves) {
                 tools::browser_tools::call(state, registration, caller, id, message)
             } else if tool_name != Some(crate::provider_catalog::MCP_ROSTER_TOOL) {
