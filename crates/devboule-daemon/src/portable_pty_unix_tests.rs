@@ -14,6 +14,7 @@ use portable_pty::{CommandBuilder, PtySize};
 /// thread so the wait is a timeout on the channel.
 fn read_until(reader: Box<dyn Read + Send>, needle: &[u8]) -> Vec<u8> {
     let (tx, rx) = mpsc::channel();
+    let needle = needle.to_vec();
     std::thread::spawn(move || {
         let mut reader = reader;
         let mut seen = Vec::new();
@@ -23,7 +24,7 @@ fn read_until(reader: Box<dyn Read + Send>, needle: &[u8]) -> Vec<u8> {
                 Ok(0) | Err(_) => break,
                 Ok(count) => {
                     seen.extend_from_slice(&buffer[..count]);
-                    if seen.windows(needle.len()).any(|window| window == needle) {
+                    if seen.windows(needle.len()).any(|window| window == needle.as_slice()) {
                         break;
                     }
                 }
