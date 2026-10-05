@@ -411,7 +411,7 @@ mod read;
 
 #[cfg(test)]
 #[path = "cdp_ws_fake.rs"]
-mod fake;
+pub(crate) mod fake;
 
 #[cfg(test)]
 #[path = "cdp_ws_cft_tests.rs"]
