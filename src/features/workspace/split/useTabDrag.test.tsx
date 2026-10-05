@@ -113,6 +113,20 @@ function travel(to: { x: number; y: number }, from = { x: 500, y: 60 }): void {
   move({ x: to.x + DRAG_SLOP_PX, y: to.y });
   move(to);
 }
+/** The pointer lifecycle events, addressed at a pointer: the gesture's own, or
+ * another one that happens to be ending at the same time. */
+function cancelPointer(pointerId: number): void {
+  act(() => {
+    window.dispatchEvent(
+      new PointerEvent("pointercancel", { clientX: 500, clientY: 900, pointerId }),
+    );
+  });
+}
+function loseCapture(pointerId: number): void {
+  act(() => {
+    CHIP.dispatchEvent(new PointerEvent("lostpointercapture", { bubbles: true, pointerId }));
+  });
+}
 function escape(): void {
   act(() => {
     window.dispatchEvent(
@@ -248,14 +262,45 @@ describe("every way out of a drag", () => {
     expect(dropped).toEqual([]);
   });
 
-  it("leaves the tab where it was when the pointer stream is cancelled", () => {
+  it.each([
+    ["a cancelled pointer", cancelPointer],
+    ["a capture the surface lost", loseCapture],
+  ])("leaves the tab where it was on %s of its own pointer", (_label, happen) => {
     travel({ x: 500, y: 900 });
-    act(() => {
-      window.dispatchEvent(
-        new PointerEvent("pointercancel", { clientX: 500, clientY: 900, pointerId: 1 }),
-      );
-    });
+
+    happen(1);
+
     expect(dropped).toEqual([]);
+    expect(preview()).toBeNull();
+    expect(dragging()).toBe(false);
+    expect(chipRelease).toHaveBeenCalledWith(1);
+    release({ x: 500, y: 900 });
+    expect(dropped).toEqual([]);
+  });
+
+  it.each([
+    ["a cancelled pointer", cancelPointer],
+    ["a capture another pointer lost", loseCapture],
+  ])("survives %s that is not the gesture's own pointer", (_label, happen) => {
+    travel({ x: 500, y: 900 });
+
+    happen(7);
+
+    expect(dragging()).toBe(true);
+    expect(previewZone()).toBe("bottom");
+    expect(chipRelease).not.toHaveBeenCalled();
+    // The gesture is still the one the pointer began: its own release drops.
+    release({ x: 500, y: 900 });
+    expect(dropped).toEqual([[TAB, "bottom"]]);
+  });
+
+  it("hands the pointer back when the layer is torn down mid-drag", () => {
+    travel({ x: 500, y: 900 });
+    expect(chipCapture).toHaveBeenCalledWith(1);
+
+    act(() => root.unmount());
+
+    expect(chipRelease).toHaveBeenCalledWith(1);
     expect(dragging()).toBe(false);
   });
 

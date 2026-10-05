@@ -151,7 +151,11 @@ export function useTabDrag({ boxes, onDrop, canDrag, hasTab }: UseTabDragOptions
       press.y = event.clientY;
       end(zoneAt(now().boxes(), event.clientX, event.clientY));
     };
-    const cancel = (): void => end(null);
+    const cancel = (event: PointerEvent): void => {
+      const press = pressRef.current;
+      if (press === null || event.pointerId !== press.pointerId) return;
+      end(null);
+    };
     const escape = (event: KeyboardEvent): void => {
       if (event.key !== "Escape" || pressRef.current === null) return;
       event.preventDefault();
@@ -163,9 +167,11 @@ export function useTabDrag({ boxes, onDrop, canDrag, hasTab }: UseTabDragOptions
     // A frozen page is the same thing a hidden one is, and it is what a window
     // the system has taken over looks like from here.
     const hidden = (): void => end(null);
-    const captured = (event: Event): void => {
-      if (pressRef.current === null) return;
-      if (event.target !== pressRef.current.owner) return;
+    const captured = (event: PointerEvent): void => {
+      const press = pressRef.current;
+      if (press === null) return;
+      if (event.pointerId !== press.pointerId) return;
+      if (event.target !== press.owner) return;
       end(null);
     };
     window.addEventListener("pointermove", move);
@@ -185,6 +191,9 @@ export function useTabDrag({ boxes, onDrop, canDrag, hasTab }: UseTabDragOptions
       document.removeEventListener("visibilitychange", hidden);
       document.removeEventListener("freeze", hidden);
       window.removeEventListener("lostpointercapture", captured);
+      // The layer can go while a drag is on, and a chip that kept the pointer
+      // would not give it back to the controls the pointer is over next.
+      releaseCapture(pressRef.current);
       pressRef.current = null;
       draggingRef.current = false;
       document.body.classList.remove("workspace-is-dragging-tab");
