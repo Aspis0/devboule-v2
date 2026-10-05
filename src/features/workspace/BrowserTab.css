@@ -25,7 +25,8 @@
   border-bottom: 1px solid var(--line-strong);
 }
 
-.browser-chrome-button {
+.browser-chrome-button,
+.browser-split-down {
   display: grid;
   flex: none;
   place-items: center;
@@ -38,7 +39,8 @@
   color: var(--ink-soft);
 }
 
-.browser-chrome-button:hover:not(:disabled) {
+.browser-chrome-button:hover:not(:disabled),
+.browser-split-down:hover {
   background: var(--panel-menu);
 }
 

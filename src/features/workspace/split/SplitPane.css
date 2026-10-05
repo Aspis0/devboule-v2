@@ -1,0 +1,144 @@
+/* The workspace centre with a split: the workspace's own pane, the divider,
+   and the pane below it with its own header. The divider is the same 1px
+   hairline the shell frame uses for its side panels, on its side. */
+
+.workspace-split {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* The divider owns the height: the pane above takes the share the store holds
+   and the pane below takes what is left. */
+.workspace-split-top {
+  flex: none;
+}
+
+.workspace-split-bottom {
+  flex: 1 1 0;
+}
+
+/* Each pane is its own query container: compact density is a fact about how
+   much room this pane has, not about how wide the window is. */
+.workspace-split-pane {
+  display: flex;
+  flex-direction: column;
+  container-type: size;
+  container-name: split-pane;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workspace-split-divider {
+  height: 5px;
+  padding: 0;
+  border: 0;
+  cursor: row-resize;
+  background: var(--region-edge);
+}
+
+.workspace-split-divider:hover,
+.workspace-split-divider:focus-visible {
+  background: var(--accent);
+}
+
+.workspace-split-is-dragging,
+.workspace-split-is-dragging * {
+  cursor: row-resize !important;
+  user-select: none !important;
+}
+
+.workspace-split-header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-8);
+  height: var(--control-bar);
+  padding: 0 var(--space-8) 0 var(--space-12);
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-side);
+}
+
+.workspace-split-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-soft);
+  font-family: var(--font-ui);
+  font-size: var(--type-interface);
+  font-weight: var(--weight-label);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Quiet until the pane is hovered or the control is reached: the merge is one
+   action, and it must not sit in every pane's face. Hidden, never absent, so
+   the keyboard finds the same button the pointer does. */
+.workspace-split-merge {
+  flex: none;
+  height: var(--control-default);
+  padding: 0 var(--space-8);
+  border: 0;
+  border-radius: var(--radius-6);
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: var(--type-interface);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.workspace-split-merge:hover,
+.workspace-split-merge:focus-visible {
+  background: var(--panel-menu);
+  color: var(--accent-text);
+  opacity: 1;
+}
+
+.workspace-split-bottom > .workspace-browser-pane {
+  min-height: 0;
+}
+
+/* A pane under about half a workspace centre steps down one notch: interface
+   14 to small 13, the pane's own header and the browser chrome one control
+   shorter. The 12px meta floor holds — nothing here names a type below
+   --type-small. The pane headers are named through the split ancestor because
+   their own sheet says a bare rule there loses the cascade. */
+@container split-pane ((max-height: 340px) or (max-width: 440px)) {
+  .workspace-split-header {
+    height: var(--control-dense);
+  }
+
+  .workspace-split-title,
+  .workspace-split-merge {
+    font-size: var(--type-small);
+  }
+
+  .workspace-split-merge {
+    height: var(--control-dense);
+    padding: 0 var(--space-6);
+  }
+
+  .workspace-split-bottom .browser-chrome {
+    height: var(--control-dense);
+  }
+
+  .workspace-split-bottom .browser-chrome-button {
+    width: var(--control-dense);
+    height: var(--control-dense);
+  }
+
+  .workspace-split-pane .workspace-agent-toolbar,
+  .workspace-split-pane .workspace-terminal-toolbar {
+    height: var(--control-dense);
+  }
+
+  .workspace-split-pane .workspace-agent-title,
+  .workspace-split-pane .workspace-terminal-title {
+    font-size: var(--type-small);
+  }
+}

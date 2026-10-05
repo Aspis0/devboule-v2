@@ -26,6 +26,7 @@ const SHEET_PATHS = [
   "src/features/workspace/OpenInEditorAction.css",
   "src/features/workspace/panel/panel.css",
   "src/features/workspace/panel/diffTab.css",
+  "src/features/workspace/split/SplitPane.css",
 ];
 const SHEETS = SHEET_PATHS.map((path) => readFileSync(resolve(rootDir, path), "utf8"));
 
@@ -45,7 +46,7 @@ function exempt(finding: { rule: string; px: number | null }): boolean {
 }
 
 describe("the workspace slice's 12px type floor", () => {
-  it("walks exactly the fifteen workspace sheets plus tokens, by name", () => {
+  it("walks exactly the sixteen workspace sheets plus tokens, by name", () => {
     expect(SHEET_PATHS.map((path) => basename(path))).toEqual([
       "tokens.css",
       "Workspace.css",
@@ -63,6 +64,7 @@ describe("the workspace slice's 12px type floor", () => {
       "OpenInEditorAction.css",
       "panel.css",
       "diffTab.css",
+      "SplitPane.css",
     ]);
   });
 

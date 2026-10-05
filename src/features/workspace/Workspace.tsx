@@ -43,8 +43,17 @@ import {
   routeBrowserPopup,
   subscribeBrowserLayout,
 } from "./browserTabs";
-import { normalizeBrowserUrl, BROWSER_START_URL } from "./browserUrl";
+import { browserTabLabel, normalizeBrowserUrl, BROWSER_START_URL } from "./browserUrl";
 import { closeBrowserPage } from "./browserPages";
+import { SplitPane } from "./split/SplitPane";
+import {
+  forgetSplitPanesFor,
+  mergeSplitPane,
+  setSplitPaneSize,
+  splitPaneDown,
+  splitPaneFor,
+  subscribeSplitPanes,
+} from "./split/splitPanes";
 import { ErrorTriangleIcon } from "./ErrorTriangleIcon";
 import { createToolContentCache, evictToolContent } from "./toolContentCache";
 import { localWorkspaceKey, parseWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
@@ -479,6 +488,7 @@ export function Workspace({
       return pruneToolTabsForWorkspaces(prev, knownWorkspaceKeys);
     });
     for (const browserId of pruneBrowserTabs(knownWorkspaceKeys)) closeBrowserPage(browserId);
+    forgetSplitPanesFor(knownWorkspaceKeys);
   }, [knownWorkspaceKeys, toolContentCache, workspaceKeyText]);
 
   const closingIds = useSyncExternalStore(closeActions.subscribe, closeActions.getClosingSnapshot);
@@ -578,6 +588,34 @@ export function Workspace({
     [projects, selectedKey],
   );
   const activeTool = visibleToolTabs.find((tab) => tab.id === activeToolTabId) ?? null;
+  /** The workspace's split: one tool tab in a pane below the pane the centre
+   * has always shown, and how tall that pane is. Scoped by workspace key, so
+   * switching workspaces never carries a split along. */
+  const split = useSyncExternalStore(subscribeSplitPanes, () =>
+    selectedKey === null ? null : splitPaneFor(selectedKey),
+  );
+  const lowerTabId = split?.lowerTabId ?? null;
+  /** The tab in the pane below, resolved against the tabs this workspace
+   * really has. A record naming a tab that has gone is not a split. */
+  const lowerTool = visibleToolTabs.find((tab) => tab.id === lowerTabId) ?? null;
+  const lowerBrowserId = lowerTool?.kind === "browser" ? lowerTool.browserId : null;
+  useEffect(() => {
+    // The pane below is empty: the workspace is one pane again, and the record
+    // of a tab that no longer exists is dropped with it.
+    if (selectedKey !== null && split !== null && lowerTool === null) mergeSplitPane(selectedKey);
+  }, [lowerTool, selectedKey, split]);
+  /** What the pane above renders. A page cannot be drawn in two panes at
+   * once, so the tab in the pane below never also fills the pane above: that
+   * pane falls back to the session the workspace was last on. */
+  const paneTool = lowerTabId !== null && activeTool?.id === lowerTabId ? null : activeTool;
+  /** What the pane below is showing, named in its header: the same words the
+   * strip's chip names the tab by. */
+  const lowerRecord =
+    lowerBrowserId === null
+      ? null
+      : (browserLayout.tabs.find((tab) => tab.browserId === lowerBrowserId) ?? null);
+  const lowerLabel =
+    lowerRecord === null ? "" : browserTabLabel(lowerRecord.title, lowerRecord.url);
   /** A browser tab's restored page, so the pane opens where the tab was. */
   const browserRecordFor = useCallback(
     (browserId: string) =>
@@ -819,6 +857,31 @@ export function Workspace({
     },
     [selectSession, standDownToolTab, writeToolTab],
   );
+  const resizeSplit = useCallback(
+    (size: number) => {
+      if (selectedKey !== null) setSplitPaneSize(selectedKey, size);
+    },
+    [selectedKey],
+  );
+  const mergeSplit = useCallback(() => {
+    if (selectedKey === null) return;
+    const merged = splitPaneFor(selectedKey)?.lowerTabId ?? null;
+    mergeSplitPane(selectedKey);
+    // Merged into the strip means merged into the pane: the tab comes back as
+    // the one the workspace is showing, so its page is presented again.
+    if (merged !== null) writeToolTab(merged);
+  }, [selectedKey, writeToolTab]);
+  /** Move the tab in front into the pane below, and put a session on top of
+   * it: the pane above is the workspace's own pane, and an empty one is not a
+   * split. This is the keyboard's road into the split (the drag is slice 2). */
+  const splitTabDown = useCallback(
+    (tab: ToolTab) => {
+      if (selectedKey === null) return;
+      splitPaneDown(selectedKey, tab.id);
+      selectSession(selectedSessionId ?? visibleSessions[0]?.id ?? null);
+    },
+    [selectSession, selectedKey, selectedSessionId, visibleSessions],
+  );
   // The roads that set the selected workspace WITHOUT choosing a tab for it:
   // the workspace this mount restores, a project list that no longer holds the
   // selection, a project row whose workspace the "+" reuses. Each lands on the
@@ -951,8 +1014,7 @@ export function Workspace({
   // The centre shows the tool tab while one is active; the session pane
   // only stands when no tool covers it — its queue, permission card and
   // header menu unmount with it, so none of them act on the hidden session.
-  const paneSession =
-    activeTool !== null ? null : paneSessionOf(selectedSessionId, visibleSessions);
+  const paneSession = paneTool !== null ? null : paneSessionOf(selectedSessionId, visibleSessions);
   // Primitive dependencies keep fileLinks stable across roster pushes so
   // unchanged messages retain their Markdown memo.
   // The pane's workspace, as the UI names it: the header menu reads it for the
@@ -1865,174 +1927,196 @@ export function Workspace({
           </div>
         ) : null}
 
-        {activeTool?.kind === "browser" ? (
-          <BrowserTab
-            key={activeTool.id}
-            browserId={activeTool.browserId}
-            url={browserRecordFor(activeTool.browserId)?.url ?? BROWSER_START_URL}
-            workspaceKey={activeTool.workspaceKey}
-          />
-        ) : activeTool !== null ? (
-          <div
-            id={WORKSPACE_TERMINAL_PANEL_ID}
-            className={`workspace-conversation workspace-scroll workspace-tool-pane${
-              activeTool.kind === "diff" ? " workspace-tool-pane-diff" : ""
-            }`}
-            role="tabpanel"
-            aria-label={activeTool.kind === "diff" ? "Diff" : "File"}
-          >
-            {activeTool.kind === "diff" ? (
-              <ToolDiffPane
-                key={activeTool.id}
-                workspaceKey={activeTool.workspaceKey}
-                path={activeTool.path}
-                refreshNonce={toolRefreshNonce}
-                cache={toolContentCache.diffs}
+        <SplitPane
+          split={split}
+          onResize={resizeSplit}
+          onMerge={mergeSplit}
+          lowerLabel={lowerLabel}
+          lower={
+            lowerTool?.kind === "browser" ? (
+              <BrowserTab
+                key={lowerTool.id}
+                browserId={lowerTool.browserId}
+                url={browserRecordFor(lowerTool.browserId)?.url ?? BROWSER_START_URL}
+                workspaceKey={lowerTool.workspaceKey}
               />
-            ) : (
-              <WorkspaceFileTab
-                key={activeTool.id}
-                workspaceKey={activeTool.workspaceKey}
-                path={activeTool.path}
-                refreshNonce={toolRefreshNonce}
-                cache={toolContentCache.fileCells}
-              />
-            )}
-          </div>
-        ) : paneSession !== null ? (
-          <>
-            <RecoveredSessionBar
-              key={`recovered-bar-${paneSession.id}`}
-              session={paneSession}
-              onReopened={handleReopenSession}
-              onResumeFailed={handleResumeFailed}
+            ) : null
+          }
+        >
+          {paneTool?.kind === "browser" ? (
+            <BrowserTab
+              key={paneTool.id}
+              browserId={paneTool.browserId}
+              url={browserRecordFor(paneTool.browserId)?.url ?? BROWSER_START_URL}
+              workspaceKey={paneTool.workspaceKey}
+              onSplitDown={
+                lowerTabId === null && visibleSessions.length > 0
+                  ? () => splitTabDown(paneTool)
+                  : undefined
+              }
             />
-            {isAgentKind(paneSession.kind) ? (
-              <AgentChatSurface
-                key={paneSession.id}
-                id={WORKSPACE_TERMINAL_PANEL_ID}
-                sessionId={paneSession.id}
-                title={sessionTitle(paneSession)}
-                cwd={paneSession.cwd}
-                fileLinks={chatFileLinks}
-                observedState={paneSession.state}
-                initialGoal={paneSession.goal}
-                elapsedMs={paneSession.elapsedMs}
-                activity={paneSession.activity}
-                attention={activeSessionAttention(paneSession)}
-                daemonState={daemon.state}
-                sessionRoster={sessions}
-                onOpenSubagent={handleOpenSubagent}
-                subagentAttention={subagentAttention}
-                onRefreshSubagents={refreshSessions}
-                headerMenuSeam={{
-                  workspaceKey: paneWorkspaceKey,
-                  closeEntries: buildTabCloseEntries(
-                    composedTabs.findIndex((tab) => tab.id === paneSession.id),
-                    composedTabs.length,
-                  ),
-                  onCloseEntry: (key) => tabClose.activatePaneEntry(paneSession.id, key),
-                  // Two gates, both daemon-side: the terminal's seam carries
-                  // no rename, and a journal-replayed (recovered) session is
-                  // refused by the daemon's one rename road (it reaches the
-                  // record only through a live process). An ended-but-live
-                  // session renames fine.
-                  onRename:
-                    renameSupported && paneSession.state.type !== "recovered"
-                      ? () => rename.openRename(paneSession.id)
-                      : null,
-                }}
-                deviceNames={peerNames}
-                hasPendingPermission={hasPendingPermission}
-                pendingPlanToolCallId={pendingPlanToolCallId}
-                // The daemon owns this session's follow-up queue (see
-                // `queueSupported`): the surface renders its snapshots, and
-                // Enter mid-turn queues instead of interrupting.
-                queueSupported={queueSupported}
-                gifWebpSupported={gifWebpSupported}
-                auxiliary={
-                  selectedPermission !== null ? (
-                    <WorkspacePermissionCard
-                      // Session and tool call: a new identity mounts a new
-                      // card, so its terminal flag starts from the queue item.
-                      key={`${paneSession.id}\n${selectedPermission.request.toolCallId}`}
-                      sessionId={paneSession.id}
-                      subscriptionId={selectedPermission.subscriptionId}
-                      request={selectedPermission.request}
-                      capabilities={daemon.capabilities}
-                      daemonState={daemon.state}
-                      origin={paneSession.origin}
-                      deviceNames={peerNames}
-                      resolution={selectedPermission.resolution ?? null}
-                      creatorId={paneSession.createdBy ?? null}
-                      stale={selectedPermission.stale === true}
-                      onStale={markPermissionStale}
-                      onResolved={dismissResolvedPermission}
-                    />
-                  ) : undefined
-                }
-                onPermissionRequest={handlePermissionRequest}
-                onPermissionResolved={handlePermissionResolved}
+          ) : paneTool !== null ? (
+            <div
+              id={WORKSPACE_TERMINAL_PANEL_ID}
+              className={`workspace-conversation workspace-scroll workspace-tool-pane${
+                paneTool.kind === "diff" ? " workspace-tool-pane-diff" : ""
+              }`}
+              role="tabpanel"
+              aria-label={paneTool.kind === "diff" ? "Diff" : "File"}
+            >
+              {paneTool.kind === "diff" ? (
+                <ToolDiffPane
+                  key={paneTool.id}
+                  workspaceKey={paneTool.workspaceKey}
+                  path={paneTool.path}
+                  refreshNonce={toolRefreshNonce}
+                  cache={toolContentCache.diffs}
+                />
+              ) : (
+                <WorkspaceFileTab
+                  key={paneTool.id}
+                  workspaceKey={paneTool.workspaceKey}
+                  path={paneTool.path}
+                  refreshNonce={toolRefreshNonce}
+                  cache={toolContentCache.fileCells}
+                />
+              )}
+            </div>
+          ) : paneSession !== null ? (
+            <>
+              <RecoveredSessionBar
+                key={`recovered-bar-${paneSession.id}`}
+                session={paneSession}
+                onReopened={handleReopenSession}
+                onResumeFailed={handleResumeFailed}
               />
-            ) : (
-              <TerminalSurface
-                key={paneSession.id}
-                id={WORKSPACE_TERMINAL_PANEL_ID}
-                workspaceKey={selectedKey}
-                sessionId={paneSession.id}
-                observedState={paneSession.state}
-                cwd={paneSession.cwd}
-                activity={paneSession.activity}
-                attention={activeSessionAttention(paneSession)}
-                autoFocus={terminalAutoFocus}
-                autoFocusGuard={mayTakeTerminalFocus}
-                onAutoFocusTaken={takeTerminalFocus}
-                onClosed={handleSessionClosed}
-                onExited={handleSessionClosed}
-                onCloseTab={() => tabClose.closeSingle(paneSession.id)}
-                headerMenuSeam={{
-                  workspaceKey: paneWorkspaceKey,
-                  closeEntries: buildTabCloseEntries(
-                    composedTabs.findIndex((tab) => tab.id === paneSession.id),
-                    composedTabs.length,
-                  ),
-                  onCloseEntry: (key) => tabClose.activatePaneEntry(paneSession.id, key),
-                }}
-                onPermissionRequest={handlePermissionRequest}
-                onPermissionResolved={handlePermissionResolved}
-              />
-            )}
-          </>
-        ) : (
-          <div
-            id={WORKSPACE_TERMINAL_PANEL_ID}
-            className="workspace-conversation workspace-scroll workspace-session-empty"
-            role="tabpanel"
-            aria-label="Terminal output"
-          >
-            {/* The empty state never carries the error: the failure has its
+              {isAgentKind(paneSession.kind) ? (
+                <AgentChatSurface
+                  key={paneSession.id}
+                  id={WORKSPACE_TERMINAL_PANEL_ID}
+                  sessionId={paneSession.id}
+                  title={sessionTitle(paneSession)}
+                  cwd={paneSession.cwd}
+                  fileLinks={chatFileLinks}
+                  observedState={paneSession.state}
+                  initialGoal={paneSession.goal}
+                  elapsedMs={paneSession.elapsedMs}
+                  activity={paneSession.activity}
+                  attention={activeSessionAttention(paneSession)}
+                  daemonState={daemon.state}
+                  sessionRoster={sessions}
+                  onOpenSubagent={handleOpenSubagent}
+                  subagentAttention={subagentAttention}
+                  onRefreshSubagents={refreshSessions}
+                  headerMenuSeam={{
+                    workspaceKey: paneWorkspaceKey,
+                    closeEntries: buildTabCloseEntries(
+                      composedTabs.findIndex((tab) => tab.id === paneSession.id),
+                      composedTabs.length,
+                    ),
+                    onCloseEntry: (key) => tabClose.activatePaneEntry(paneSession.id, key),
+                    // Two gates, both daemon-side: the terminal's seam carries
+                    // no rename, and a journal-replayed (recovered) session is
+                    // refused by the daemon's one rename road (it reaches the
+                    // record only through a live process). An ended-but-live
+                    // session renames fine.
+                    onRename:
+                      renameSupported && paneSession.state.type !== "recovered"
+                        ? () => rename.openRename(paneSession.id)
+                        : null,
+                  }}
+                  deviceNames={peerNames}
+                  hasPendingPermission={hasPendingPermission}
+                  pendingPlanToolCallId={pendingPlanToolCallId}
+                  // The daemon owns this session's follow-up queue (see
+                  // `queueSupported`): the surface renders its snapshots, and
+                  // Enter mid-turn queues instead of interrupting.
+                  queueSupported={queueSupported}
+                  gifWebpSupported={gifWebpSupported}
+                  auxiliary={
+                    selectedPermission !== null ? (
+                      <WorkspacePermissionCard
+                        // Session and tool call: a new identity mounts a new
+                        // card, so its terminal flag starts from the queue item.
+                        key={`${paneSession.id}\n${selectedPermission.request.toolCallId}`}
+                        sessionId={paneSession.id}
+                        subscriptionId={selectedPermission.subscriptionId}
+                        request={selectedPermission.request}
+                        capabilities={daemon.capabilities}
+                        daemonState={daemon.state}
+                        origin={paneSession.origin}
+                        deviceNames={peerNames}
+                        resolution={selectedPermission.resolution ?? null}
+                        creatorId={paneSession.createdBy ?? null}
+                        stale={selectedPermission.stale === true}
+                        onStale={markPermissionStale}
+                        onResolved={dismissResolvedPermission}
+                      />
+                    ) : undefined
+                  }
+                  onPermissionRequest={handlePermissionRequest}
+                  onPermissionResolved={handlePermissionResolved}
+                />
+              ) : (
+                <TerminalSurface
+                  key={paneSession.id}
+                  id={WORKSPACE_TERMINAL_PANEL_ID}
+                  workspaceKey={selectedKey}
+                  sessionId={paneSession.id}
+                  observedState={paneSession.state}
+                  cwd={paneSession.cwd}
+                  activity={paneSession.activity}
+                  attention={activeSessionAttention(paneSession)}
+                  autoFocus={terminalAutoFocus}
+                  autoFocusGuard={mayTakeTerminalFocus}
+                  onAutoFocusTaken={takeTerminalFocus}
+                  onClosed={handleSessionClosed}
+                  onExited={handleSessionClosed}
+                  onCloseTab={() => tabClose.closeSingle(paneSession.id)}
+                  headerMenuSeam={{
+                    workspaceKey: paneWorkspaceKey,
+                    closeEntries: buildTabCloseEntries(
+                      composedTabs.findIndex((tab) => tab.id === paneSession.id),
+                      composedTabs.length,
+                    ),
+                    onCloseEntry: (key) => tabClose.activatePaneEntry(paneSession.id, key),
+                  }}
+                  onPermissionRequest={handlePermissionRequest}
+                  onPermissionResolved={handlePermissionResolved}
+                />
+              )}
+            </>
+          ) : (
+            <div
+              id={WORKSPACE_TERMINAL_PANEL_ID}
+              className="workspace-conversation workspace-scroll workspace-session-empty"
+              role="tabpanel"
+              aria-label="Terminal output"
+            >
+              {/* The empty state never carries the error: the failure has its
                 one line under the strip, and this pane stays what the spec
                 says it is (SPEC-regions "Empty and error"). */}
-            {sessionsLoading ? (
-              <div role="status" className="workspace-empty-note">
-                Loading sessions…
-              </div>
-            ) : (
-              <div className="workspace-empty-state" role="status">
-                <p className="workspace-empty-title">No tabs yet</p>
-                {/* The spec's one outline action: the same agent flow as
+              {sessionsLoading ? (
+                <div role="status" className="workspace-empty-note">
+                  Loading sessions…
+                </div>
+              ) : (
+                <div className="workspace-empty-state" role="status">
+                  <p className="workspace-empty-title">No tabs yet</p>
+                  {/* The spec's one outline action: the same agent flow as
                     "+ → Agent", from the "+" itself. */}
-                <button
-                  type="button"
-                  className="workspace-empty-action"
-                  onClick={handleNewTabAgent}
-                >
-                  Open an agent
-                </button>
-              </div>
-            )}
-          </div>
-        )}
+                  <button
+                    type="button"
+                    className="workspace-empty-action"
+                    onClick={handleNewTabAgent}
+                  >
+                    Open an agent
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </SplitPane>
       </main>
 
       <button

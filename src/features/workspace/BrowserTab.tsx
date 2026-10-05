@@ -35,6 +35,9 @@ export interface BrowserTabProps {
   /** The workspace this tab belongs to. Rust scopes the page by it, so an
    * agent may only address the tabs of the workspace it is working in. */
   workspaceKey: WorkspaceKey;
+  /** Moves this tab's page into the pane below. Absent wherever there is no
+   * pane to move it into: already in one, or nothing to leave on top. */
+  onSplitDown?: () => void;
 }
 
 const IDLE: BrowserViewState = {
@@ -47,7 +50,7 @@ const IDLE: BrowserViewState = {
   error: null,
 };
 
-export function BrowserTab({ browserId, url, workspaceKey }: BrowserTabProps) {
+export function BrowserTab({ browserId, url, workspaceKey, onSplitDown }: BrowserTabProps) {
   const [page, setPage] = useState<BrowserViewState>({ ...IDLE, url });
   /** What the user has typed. Null while the bar shows the page's own
    * address, which is the only state in which a keystroke would move the
@@ -274,6 +277,20 @@ export function BrowserTab({ browserId, url, workspaceKey }: BrowserTabProps) {
             }
           }}
         />
+        {/* The keyboard's road into the split: the pane's own header is the
+            only place this belongs, because the drag that does the same thing
+            starts from the strip. */}
+        {onSplitDown === undefined ? null : (
+          <button
+            type="button"
+            className="browser-split-down"
+            aria-label="Move this page into the pane below"
+            title="Move this page into the pane below"
+            onClick={onSplitDown}
+          >
+            <BrowserGlyph d="M3 5.5h8M7 6v5M5 9.5l2 2 2-2" />
+          </button>
+        )}
       </form>
       {errorLine !== null ? (
         <div className="browser-error" role="alert">
