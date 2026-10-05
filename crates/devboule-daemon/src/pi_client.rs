@@ -446,6 +446,13 @@ const PI_TOOL_POLICIES: &[PiToolPolicy] = &[
         name: crate::provider_catalog::MCP_BROWSER_CONSOLE_LOGS_TOOL,
         requires_confirmation: false,
     },
+    // Saved-login fill: the daemon raises its own card, naming the saved login
+    // and the site, in every mode; a generic confirm would be a second card
+    // that names neither.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_BROWSER_FILL_LOGIN_TOOL,
+        requires_confirmation: false,
+    },
 ];
 static PERMISSION_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
