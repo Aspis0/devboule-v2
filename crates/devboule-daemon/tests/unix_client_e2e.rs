@@ -10,9 +10,10 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use devboule_daemon::{
-    connect_or_spawn, connect_within, kill_verified_daemon, test_owner, ClientHello, DaemonState,
-    ExitReason, RuntimePaths, ShutdownAnswer,
+    connect_or_spawn, connect_within, kill_verified_daemon, test_owner, DaemonState, ExitReason,
+    RuntimePaths, ShutdownAnswer,
 };
+use devboule_protocol::ClientHello;
 
 /// This test binary's only test shares the process with nothing else, so
 /// process-global selections cannot race a neighbor: the file secret store
