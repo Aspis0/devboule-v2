@@ -61,6 +61,7 @@ impl BoundDaemon {
         }
     }
 
+    #[cfg(windows)]
     fn client(&self) -> crate::client::DaemonClient {
         crate::client::connect(&self.paths, test_hello()).expect("connect")
     }
