@@ -734,6 +734,7 @@ fn a_checkout_that_is_a_file_still_refuses_and_keeps_its_row() {
 /// test (same seam): there the project gate read `is_dir()` and detached on
 /// any metadata failure.
 #[test]
+#[cfg(windows)]
 fn a_project_on_a_missing_volume_is_refused_not_detached() {
     let fix = refused_vanish_fixture("missingvol");
     std::fs::remove_dir_all(&fix.root).expect("remove the real project folder");
@@ -808,6 +809,7 @@ fn a_denied_project_path_is_refused_not_detached() {
 /// its volume root answers missing — unavailable, refused, row kept. The
 /// project answers present so the checkout gate is the one that decides.
 #[test]
+#[cfg(windows)]
 fn a_checkout_on_a_missing_volume_is_refused_not_judged_vanished() {
     let fix = refused_vanish_fixture("checkoutmissingvol");
     // The checkout and its volume root answer NotFound; everything else —

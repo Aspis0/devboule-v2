@@ -110,8 +110,10 @@ pub(super) fn plain_cwd(path: &Path) -> PathBuf {
 /// Only `NotFound` **on a present volume** is `Vanished`: on Windows an
 /// unassigned or deleted drive letter answers `NotFound` exactly like a
 /// deleted folder does, so the volume root — `X:\` or `\\server\share\` —
-/// must be there for that answer to be trusted. Every other metadata error
-/// is `Unavailable`, and a delete never acts on cannot-tell.
+/// must be there for that answer to be trusted; on Unix an unplugged disk or
+/// a dropped share answers the same, so the path's mount point must be there
+/// (`session_workspace_volume.rs`). Every other metadata error is
+/// `Unavailable`, and a delete never acts on cannot-tell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FolderPresence {
     Present,
@@ -119,42 +121,28 @@ pub(super) enum FolderPresence {
     Unavailable,
 }
 
-/// The volume root of `path` — `X:\`, `\\?\C:\`, `\\server\share\` on
-/// Windows, `/` on Unix: the path's disk/UNC prefix or filesystem root
-/// plus its root separator, which is itself statable. `None` for a path
-/// with no such prefix or no root separator (a relative path; a stored
-/// workspace path always has both), and the caller then answers
-/// `Unavailable`.
+/// The volume root of `path` — `X:\`, `\\?\C:\`, `\\server\share\`: the
+/// path's disk/UNC prefix plus its root separator, which is itself statable.
+/// `None` for a path with no such prefix or no root separator (a relative
+/// path; a stored workspace path always has both), and the caller then
+/// answers `Unavailable`.
+#[cfg(windows)]
 pub(super) fn volume_root(path: &Path) -> Option<PathBuf> {
-    #[cfg(not(windows))]
-    {
-        use std::path::Component;
-        match path.components().next()? {
-            Component::RootDir => Some(PathBuf::from(std::path::MAIN_SEPARATOR.to_string())),
-            _ => None,
-        }
+    use std::path::{Component, Prefix};
+    let mut components = path.components();
+    let prefix = match components.next()? {
+        Component::Prefix(prefix) => prefix,
+        _ => return None,
+    };
+    match components.next()? {
+        Component::RootDir => {}
+        _ => return None,
     }
-    #[cfg(windows)]
-    {
-        use std::path::{Component, Prefix};
-        let mut components = path.components();
-        let prefix = match components.next()? {
-            Component::Prefix(prefix) => prefix,
-            _ => return None,
-        };
-        match components.next()? {
-            Component::RootDir => {}
-            _ => return None,
+    match prefix.kind() {
+        Prefix::Disk(_) | Prefix::VerbatimDisk(_) | Prefix::UNC(..) | Prefix::VerbatimUNC(..) => {
+            Some(PathBuf::from(prefix.as_os_str()).join(std::path::MAIN_SEPARATOR.to_string()))
         }
-        match prefix.kind() {
-            Prefix::Disk(_)
-            | Prefix::VerbatimDisk(_)
-            | Prefix::UNC(..)
-            | Prefix::VerbatimUNC(..) => {
-                Some(PathBuf::from(prefix.as_os_str()).join(std::path::MAIN_SEPARATOR.to_string()))
-            }
-            _ => None,
-        }
+        _ => None,
     }
 }
 
@@ -321,12 +309,38 @@ impl super::SessionRegistry {
     fn folder_presence(&self, path: &Path) -> FolderPresence {
         match self.presence_metadata(path) {
             Ok(_) => FolderPresence::Present,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => match volume_root(path) {
-                Some(root) if self.presence_metadata(&root).is_ok() => FolderPresence::Vanished,
-                _ => FolderPresence::Unavailable,
-            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if self.volume_is_present(path) {
+                    FolderPresence::Vanished
+                } else {
+                    FolderPresence::Unavailable
+                }
+            }
             Err(_) => FolderPresence::Unavailable,
         }
+    }
+
+    #[cfg(windows)]
+    fn volume_is_present(&self, path: &Path) -> bool {
+        volume_root(path).is_some_and(|root| self.presence_metadata(&root).is_ok())
+    }
+
+    #[cfg(unix)]
+    fn volume_is_present(&self, path: &Path) -> bool {
+        use crate::session::session_workspace_volume::{volume_is_present, Entry};
+
+        volume_is_present(
+            path,
+            &|probed| {
+                self.presence_metadata(probed)
+                    .map(|metadata| Entry::of(&metadata))
+            },
+            &|dir| {
+                std::fs::read_dir(dir)
+                    .map(|mut entries| entries.next().is_none())
+                    .unwrap_or(true)
+            },
+        )
     }
 
     pub fn projects_list(&self) -> Result<Vec<Project>, WireError> {

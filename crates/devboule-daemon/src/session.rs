@@ -179,6 +179,9 @@ pub(crate) use provider::{
 };
 #[path = "session_types.rs"]
 mod session_types;
+#[cfg(unix)]
+#[path = "session_workspace_volume.rs"]
+mod session_workspace_volume;
 #[path = "session_workspaces.rs"]
 mod session_workspaces;
 #[path = "shell_command.rs"]
@@ -752,6 +755,9 @@ mod session_workspace_gate_tests;
 #[cfg(test)]
 #[path = "session_workspace_tests.rs"]
 mod session_workspace_tests;
+#[cfg(all(test, unix))]
+#[path = "session_workspace_unplugged_tests.rs"]
+mod session_workspace_unplugged_tests;
 #[cfg(test)]
 #[path = "session_tests.rs"]
 mod tests;
