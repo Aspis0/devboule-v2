@@ -196,7 +196,7 @@ mod tests {
         std::os::unix::fs::symlink(&target, &link).expect("link");
         let error = narrow_to_owner(&link, 0o600).expect_err("link refused");
         // O_NOFOLLOW fails the open itself: nothing was ever chmodded.
-        assert_eq!(error.kind(), io::ErrorKind::FilesystemLoop);
+        assert_eq!(error.raw_os_error(), Some(libc::ELOOP));
         assert_eq!(mode_of(&target), before, "target untouched");
     }
 }
