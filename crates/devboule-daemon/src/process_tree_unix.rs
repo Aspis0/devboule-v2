@@ -227,6 +227,12 @@ mod tests {
         job.terminate_and_wait(Duration::from_secs(5))
             .expect("the group empties");
 
+        // The killed grandchild is reparented and stays a zombie, which
+        // signal 0 still sees, until init reaps it.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while alive(grandchild) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
         assert!(
             !alive(grandchild),
             "the grandchild went with the group it stayed in"
