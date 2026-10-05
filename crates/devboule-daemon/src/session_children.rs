@@ -1280,6 +1280,25 @@ impl super::SessionRegistry {
         self.send_to_creator(creator, owner, text, false, mcp_timeout)
     }
 
+    /// One daemon notice for a live session that is not a child's creator —
+    /// the CI watch's verdict. The same road as [`Self::deliver_notice_to_creator`]:
+    /// it queues behind the session's running turn as a plain prompt and can
+    /// never steer or interrupt it.
+    pub(crate) fn deliver_daemon_notice(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        text: &str,
+    ) -> Result<Option<String>, WireError> {
+        self.send_to_creator(
+            session_id,
+            owner,
+            text,
+            false,
+            crate::mcp_broker::ready_timeout(),
+        )
+    }
+
     fn send_to_creator(
         &self,
         creator: &str,

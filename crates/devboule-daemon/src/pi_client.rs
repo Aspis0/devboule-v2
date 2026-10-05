@@ -390,6 +390,13 @@ const PI_TOOL_POLICIES: &[PiToolPolicy] = &[
         name: crate::provider_catalog::MCP_CLEANUP_PROCESSES_TOOL,
         requires_confirmation: false,
     },
+    // CI watch: read-only, answered from this machine's `gh` login; the
+    // verdict comes back as a daemon message, so a generic confirm would ask
+    // about nothing the origin door and the tool's own refusals do not say.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_CI_WATCH_TOOL,
+        requires_confirmation: false,
+    },
     // The browser lane, one row per tool and one reason. What bounds a call is the
     // tab's own workspace and, for a peer, the `browser` grant; what is left to
     // decide is the page's own answer, which a generic confirm here would only
@@ -1207,6 +1214,24 @@ export default function (pi) {
     async execute(_toolCallId, params, signal) {
       await brokerSession(signal);
       const result = await mcpRequest("tools/call", { name: "devboule_cleanup_processes", arguments: params }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_ci_watch",
+    label: "Watch Devboule CI",
+    description: `Watches CI for one commit you pushed and wakes you with a short verdict when its checks finish, so you do not poll GitHub yourself. sha is the full 40-character commit id (required); repo is optional owner/repo and defaults to the repository the calling session's own workspace's origin remote names. The daemon asks GitHub through the GitHub CLI login of the user that runs Devboule on this machine: with gh missing the call fails github_cli_missing, with no login github_auth_required, each with the step to take. It answers watchId, resolvedSha, state (queued, running, passed or failed), repo and wake (pending, delivered, or owner_session_ended when this session is gone and the verdict is kept). The verdict arrives later, once, as a daemon message in your own session: per job its name and conclusion and, for failed jobs, at most 10 matched error lines (secret-looking text removed, long lines cut, a truncation marker when more matched) with the run and job ids and the job URL; a cancelled job, or one no runner took, is labelled INFRA with its reason and every other failure CODE. Asking again for the same commit returns the same watch. Read-only: no card, and nothing is retried or rerun.`,
+    parameters: Type.Object(
+      {
+        sha: Type.String({ description: "The full 40-character commit id to watch." }),
+        repo: Type.Optional(Type.String({ description: "owner/repo. Default: the repository the workspace's origin remote names." })),
+      },
+      { required: ["sha"], additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_ci_watch", arguments: params }, signal);
       return { content: result?.content ?? [], details: result ?? {} };
     },
   });

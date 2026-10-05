@@ -32,6 +32,18 @@ mod browser_registry;
 #[cfg(feature = "server")]
 mod browser_tool_title;
 #[cfg(feature = "server")]
+mod ci_gh;
+#[cfg(feature = "server")]
+mod ci_summary;
+#[cfg(all(test, feature = "server"))]
+mod ci_test_support;
+#[cfg(feature = "server")]
+mod ci_wake;
+#[cfg(feature = "server")]
+mod ci_watch;
+#[cfg(feature = "server")]
+mod ci_watch_store;
+#[cfg(feature = "server")]
 mod claude_abort;
 #[cfg(feature = "server")]
 mod claude_catalog;

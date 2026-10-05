@@ -332,18 +332,18 @@ pub(crate) enum GitRunError {
 /// full pipe cannot deadlock the wait. Output is capped at the shared
 /// [`GIT_STDOUT_MAX_BYTES`] ceiling.
 pub(crate) fn run_git_args(args: &[String]) -> Result<GitOutput, GitRunError> {
-    run_git_args_bounded(args, GIT_STDOUT_MAX_BYTES, GIT_COMMAND_TIMEOUT)
+    run_program_args("git", &[], args, GIT_STDOUT_MAX_BYTES, GIT_COMMAND_TIMEOUT)
 }
 
-/// The captured-output git runner: closed argv, piped stdio, and the locale
+/// The captured-output command: closed argv, piped stdio, and the locale
 /// pinned to C so the removal and collision classifiers match Git's English
 /// diagnostics (informed by herdr `aff99878`). This is not the daemon's only
 /// spawn: the repository probe (`detect_git_repository_with_program`) builds
 /// its own command — it injects the program for its tests, reads no stderr,
 /// and classifies nothing by message text — so it stays unpinned. No network
-/// verbs run through this runner, so no credential helper inherits the pin.
-fn new_git_command(args: &[String]) -> Command {
-    let mut command = Command::new("git");
+/// git verbs run through it, so no credential helper inherits the pin.
+fn new_captured_command(program: &str, args: &[String]) -> Command {
+    let mut command = Command::new(program);
     command.args(args);
     command.env("LC_ALL", "C");
     command
@@ -366,7 +366,7 @@ pub(crate) fn run_git_args_with_cap(
     args: &[String],
     max_bytes: usize,
 ) -> Result<GitOutput, GitRunError> {
-    run_git_args_bounded(args, max_bytes, GIT_COMMAND_TIMEOUT)
+    run_program_args("git", &[], args, max_bytes, GIT_COMMAND_TIMEOUT)
 }
 
 /// The same runner under the caller's own ceiling. A caller that issues a
@@ -377,15 +377,24 @@ pub(crate) fn run_git_args_with_cap_and_timeout(
     max_bytes: usize,
     timeout: Duration,
 ) -> Result<GitOutput, GitRunError> {
-    run_git_args_bounded(args, max_bytes, timeout)
+    run_program_args("git", &[], args, max_bytes, timeout)
 }
 
-fn run_git_args_bounded(
+/// The captured-output runner every call above shares, and the one a program
+/// other than `git` goes through: closed argv, `env` added to the inherited
+/// environment, piped stdio drained concurrently under a Job Object, output
+/// capped at `max_bytes` and the process given at most `timeout`. The `gh`
+/// calls behind the CI watch take this road with their own env and their own
+/// deadline, so there is one spawn path to audit rather than two.
+pub(crate) fn run_program_args(
+    program: &str,
+    env: &[(&str, &str)],
     args: &[String],
     max_bytes: usize,
     timeout: Duration,
 ) -> Result<GitOutput, GitRunError> {
-    let command = new_git_command(args);
+    let mut command = new_captured_command(program, args);
+    command.envs(env.iter().copied());
 
     let mut process = match spawn_captured_git_process(command, max_bytes) {
         Ok(process) => process,
@@ -575,13 +584,13 @@ mod tests {
 
     use super::{
         append_git_stdout, bounded_reap, classify_git_probe, detect_git_repository,
-        detect_git_repository_with_program, new_git_command, parse_git_root, GitReapOutcome,
+        detect_git_repository_with_program, new_captured_command, parse_git_root, GitReapOutcome,
         GitReapPoll, GitRepositoryStatus, GIT_STDOUT_MAX_BYTES,
     };
 
     #[test]
     fn the_git_runner_pins_the_locale_to_c() {
-        let command = new_git_command(&["status".to_string()]);
+        let command = new_captured_command("git", &["status".to_string()]);
         assert_eq!(
             command
                 .get_envs()

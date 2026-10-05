@@ -929,6 +929,12 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
             session_id: String::new(),
             idempotency_key: None,
         }]))
+    } else if tool == crate::provider_catalog::MCP_CI_WATCH_TOOL {
+        // The CI watch spends this machine's own GitHub login on a
+        // repository this machine's workspace names, for a session that may
+        // originate from a paired device. No wire frame stands behind it, so
+        // the door checks the administrative capability directly.
+        Some(McpToolWire::Requires(CAP_ADMIN))
     } else if is_browser_tool(tool) {
         // The browser lane: read a page, click it, type into it, in the
         // desktop app this daemon is not itself. Nothing on the wire stands

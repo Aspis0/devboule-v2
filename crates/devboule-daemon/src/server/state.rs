@@ -97,6 +97,9 @@ pub struct ServerState {
     /// read-cadence rule lives at the store, and the nothing-reads-it test in
     /// `delegation_store.rs` holds this field to it.
     pub(crate) delegation: Arc<crate::delegation_store::DelegationStore>,
+    /// The persistent CI watches (`devboule_ci_watch`): started by the tool,
+    /// advanced and woken by the poll thread this state starts.
+    pub(crate) ci_watches: Arc<crate::ci_watch::CiWatches>,
     pub sessions: SessionRegistry,
     conn_ids: AtomicU64,
     pub(super) journal_error: Mutex<Option<String>>,
@@ -357,6 +360,23 @@ impl ServerState {
         paths: RuntimePaths,
         npm_install_runner: Arc<dyn NpmInstallRunner>,
     ) -> Result<Arc<Self>, DaemonError> {
+        Self::with_runners(
+            instance_id,
+            paths,
+            npm_install_runner,
+            Arc::new(crate::ci_gh::ProcessRunner),
+        )
+    }
+
+    /// The constructor every other one ends in: the processes the daemon
+    /// starts on its own (`npm`, `git`/`gh`) arrive as parameters so a test
+    /// can answer for them.
+    pub(crate) fn with_runners(
+        instance_id: String,
+        paths: RuntimePaths,
+        npm_install_runner: Arc<dyn NpmInstallRunner>,
+        ci_runner: Arc<dyn crate::ci_gh::CommandRunner>,
+    ) -> Result<Arc<Self>, DaemonError> {
         let _ = paths.ensure_dir();
         // Every preview copy rests in a folder the app has conceded to the
         // asset protocol for the life of its process, so the copies a
@@ -397,6 +417,10 @@ impl ServerState {
         // read-cadence rule is stated at the store), and a corrupt file
         // quarantines into read-off with one log line.
         let delegation = Arc::new(crate::delegation_store::DelegationStore::load(&paths.dir));
+        let ci_watches = Arc::new(crate::ci_watch::CiWatches::new(
+            crate::ci_watch_store::CiWatchStore::load(&paths.dir),
+            crate::ci_gh::GhClient::new(ci_runner),
+        ));
         let (journal, journal_error) = match Journal::open(&paths.journal_file()) {
             Ok(journal) => (Some(Arc::new(journal)), None),
             Err(error) => (None, Some(error.to_string())),
@@ -437,6 +461,7 @@ impl ServerState {
             provider_switches,
             agent_profiles,
             delegation,
+            ci_watches,
             sessions,
             conn_ids: AtomicU64::new(1),
             journal_error: Mutex::new(journal_error),
@@ -525,7 +550,38 @@ impl ServerState {
         {
             eprintln!("could not start quiet sweeper: {error}");
         }
+        // The CI watch poll thread: resumes every watch the store holds, then
+        // follows each new one. It dies with the state, like the sweeper.
+        let state_for_ci = Arc::downgrade(&state);
+        let ci_watches = Arc::clone(&state.ci_watches);
+        if let Err(error) = std::thread::Builder::new()
+            .name("ci-watch-poll".to_string())
+            .spawn(move || loop {
+                let Some(state) = state_for_ci.upgrade() else {
+                    return;
+                };
+                ci_watches.poll_once(&state.sessions);
+                drop(state);
+                ci_watches.wait_for_work(crate::ci_watch::POLL_INTERVAL);
+            })
+        {
+            eprintln!("could not start the CI watch poller: {error}");
+        }
         Ok(state)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_ci_runner(
+        instance_id: String,
+        runner: Arc<dyn crate::ci_gh::CommandRunner>,
+    ) -> Arc<Self> {
+        Self::with_runners(
+            instance_id,
+            RuntimePaths::from_dir(crate::test_dirs::test_temp_dir("devboule-test")),
+            Arc::new(ProcessNpmInstallRunner),
+            runner,
+        )
+        .expect("create daemon process job")
     }
 
     pub fn alloc_conn(&self) -> u64 {

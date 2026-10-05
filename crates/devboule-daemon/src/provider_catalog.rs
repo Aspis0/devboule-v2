@@ -340,6 +340,10 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
         "Stops the calling session's own proven processes - graceful first, then forced after graceMs (default 2000, at most 30000) - and answers terminated, stillRunning, unproven and skipped (each with its reason) pid lists. The session's agent process and its chain are never in the plan, no pid argument exists, and session-end cleanup still happens on its own. The card follows the session's mode like every Devboule write: in an automatic mode it approves itself and is only logged; in an asking mode it is shown every time and lists the exact processes and executables. The plan approved is the plan executed - members appearing after approval are left alone and reported as skipped.",
     ),
     (
+        MCP_CI_WATCH_TOOL,
+        "Watches CI for one commit you pushed and wakes you with a short verdict when its checks finish, so you do not poll GitHub yourself. sha is the full 40-character commit id (required); repo is optional owner/repo and defaults to the repository the calling session's own workspace's origin remote names. The daemon asks GitHub through the GitHub CLI login of the user that runs Devboule on this machine: with gh missing the call fails github_cli_missing, with no login github_auth_required, each with the step to take. It answers watchId, resolvedSha, state (queued, running, passed or failed), repo and wake (pending, delivered, or owner_session_ended when this session is gone and the verdict is kept). The verdict arrives later, once, as a daemon message in your own session: per job its name and conclusion and, for failed jobs, at most 10 matched error lines (secret-looking text removed, long lines cut, a truncation marker when more matched) with the run and job ids and the job URL; a cancelled job, or one no runner took, is labelled INFRA with its reason and every other failure CODE. Asking again for the same commit returns the same watch. Read-only: no card, and nothing is retried or rerun.",
+    ),
+    (
         MCP_BROWSER_NEW_TAB_TOOL,
         "Opens a new browser tab in this machine's desktop app and answers its browserId, url and title. Keep that browserId: every other browser tool takes it, and a tab of another workspace is not visible from here. You have no refs until you snapshot. Needs the app running; with no host registered this fails browser_no_host.",
     ),
@@ -663,6 +667,12 @@ pub const MCP_SEND_TERMINAL_KEYS_TOOL: &str = "devboule_send_terminal_keys";
 /// the call as the wire's `SessionClose`, under the administrative
 /// capability.
 pub const MCP_KILL_TERMINAL_TOOL: &str = "devboule_kill_terminal";
+/// The CI watch: one pushed commit's checks, followed by the daemon through
+/// this machine's own `gh` login, and a verdict delivered into the calling
+/// session once. Read-only (no card) and subject to the provider tool policy
+/// like the other reads; a paired device's agent needs the administrative
+/// capability, because the call spends this machine's GitHub credentials.
+pub const MCP_CI_WATCH_TOOL: &str = "devboule_ci_watch";
 
 /// Which proven session member owns a given port or pid — read-only, and it
 /// answers only from local proof: no hit is an empty match list, never an

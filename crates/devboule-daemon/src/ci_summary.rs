@@ -1,0 +1,344 @@
+//! The CI verdict for one commit: whether its checks are done and how they
+//! ended, and the bounded, redacted per-job summary an owner is woken with.
+//!
+//! One phrase: turn GitHub check runs and job logs into a short verdict.
+//! Whole logs never leave this module — a failed job contributes at most
+//! [`MAX_EXCERPT_LINES`] matched lines, each capped, each redacted before it
+//! is kept — and a cancelled or never-started job is labelled INFRA with its
+//! reason while every other failure reads as CODE.
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::diagnostics::redact_secret_tokens;
+
+pub(crate) const MAX_EXCERPT_LINES: usize = 10;
+pub(crate) const MAX_LINE_CHARS: usize = 240;
+const MAX_JOBS_LISTED: usize = 25;
+const MAX_SUMMARY_CHARS: usize = 6000;
+const MAX_NOTE_CHARS: usize = 2000;
+const TRUNCATED: &str = "[truncated]";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CiState {
+    Queued,
+    Running,
+    Passed,
+    Failed,
+}
+
+impl CiState {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Passed => "passed",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub(crate) fn is_terminal(self) -> bool {
+        matches!(self, Self::Passed | Self::Failed)
+    }
+}
+
+/// One check run of a commit; for GitHub Actions it is one job.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CheckRun {
+    pub(crate) id: u64,
+    pub(crate) name: String,
+    pub(crate) status: String,
+    pub(crate) conclusion: Option<String>,
+    pub(crate) url: String,
+    pub(crate) run_id: Option<u64>,
+    /// Whether `actions/jobs/<id>/logs` can answer for it.
+    pub(crate) actions: bool,
+    /// The check's own title, summary and text: where GitHub says why a job
+    /// never ran.
+    note: String,
+}
+
+pub(crate) fn parse_check_runs(document: &Value) -> Vec<CheckRun> {
+    let Some(runs) = document.get("check_runs").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    runs.iter()
+        .filter_map(|run| {
+            let text = |pointer: &str| run.pointer(pointer).and_then(Value::as_str).unwrap_or("");
+            let url = text("/html_url").to_string();
+            let note = format!(
+                "{} {} {}",
+                text("/output/title"),
+                text("/output/summary"),
+                text("/output/text")
+            );
+            Some(CheckRun {
+                id: run.get("id")?.as_u64()?,
+                name: text("/name").to_string(),
+                status: text("/status").to_string(),
+                conclusion: run
+                    .get("conclusion")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                run_id: run_id_of(&url),
+                actions: text("/app/slug") == "github-actions",
+                url,
+                note: note.chars().take(MAX_NOTE_CHARS).collect(),
+            })
+        })
+        .collect()
+}
+
+fn run_id_of(url: &str) -> Option<u64> {
+    let rest = url.split("/actions/runs/").nth(1)?;
+    rest.split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()
+}
+
+fn is_green(conclusion: Option<&str>) -> bool {
+    matches!(conclusion, Some("success" | "neutral" | "skipped"))
+}
+
+/// Where the commit's checks stand. Nothing registered yet reads as queued;
+/// a verdict waits for every check, so a failure does not end a watch while
+/// others still run.
+pub(crate) fn overall(runs: &[CheckRun]) -> CiState {
+    if runs.is_empty() {
+        return CiState::Queued;
+    }
+    if runs.iter().any(|run| run.status != "completed") {
+        let started = runs
+            .iter()
+            .any(|run| matches!(run.status.as_str(), "in_progress" | "completed"));
+        return if started {
+            CiState::Running
+        } else {
+            CiState::Queued
+        };
+    }
+    if runs.iter().all(|run| is_green(run.conclusion.as_deref())) {
+        CiState::Passed
+    } else {
+        CiState::Failed
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Cause {
+    Code,
+    Infra(&'static str),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct JobVerdict {
+    pub(crate) name: String,
+    pub(crate) conclusion: String,
+    pub(crate) cause: Option<Cause>,
+    pub(crate) run_id: Option<u64>,
+    pub(crate) job_id: u64,
+    pub(crate) url: String,
+    pub(crate) excerpt: Vec<String>,
+    pub(crate) more_lines: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Verdict {
+    pub(crate) state: CiState,
+    pub(crate) jobs: Vec<JobVerdict>,
+    pub(crate) jobs_omitted: usize,
+}
+
+/// Summarise finished checks. `fetch_log` is asked only for failed Actions
+/// jobs, and only the lines it matches are kept.
+pub(crate) fn build(
+    runs: &[CheckRun],
+    fetch_log: &mut dyn FnMut(&CheckRun) -> Option<String>,
+) -> Verdict {
+    let state = overall(runs);
+    let mut jobs = Vec::new();
+    for run in runs.iter().take(MAX_JOBS_LISTED) {
+        let conclusion = run.conclusion.clone().unwrap_or_else(|| run.status.clone());
+        let failed = !is_green(run.conclusion.as_deref());
+        let log = if failed && run.actions {
+            fetch_log(run).unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let (excerpt, more_lines) = if failed {
+            excerpt_of(&log)
+        } else {
+            (Vec::new(), 0)
+        };
+        jobs.push(JobVerdict {
+            name: redacted_line(&run.name),
+            conclusion,
+            cause: failed.then(|| infra_reason(run, &log).map_or(Cause::Code, Cause::Infra)),
+            run_id: run.run_id,
+            job_id: run.id,
+            url: run.url.clone(),
+            excerpt,
+            more_lines,
+        });
+    }
+    Verdict {
+        state,
+        jobs,
+        jobs_omitted: runs.len().saturating_sub(MAX_JOBS_LISTED),
+    }
+}
+
+/// A cancelled job, or one GitHub says no runner took, is the platform's
+/// doing; every other failure is the code's until proven otherwise.
+fn infra_reason(run: &CheckRun, log: &str) -> Option<&'static str> {
+    if run.conclusion.as_deref() == Some("cancelled") {
+        return Some("the job was cancelled");
+    }
+    let evidence = format!("{} {}", run.note, log).to_ascii_lowercase();
+    evidence
+        .contains("not acquired by runner")
+        .then_some("the job was not acquired by a runner")
+}
+
+fn excerpt_of(log: &str) -> (Vec<String>, usize) {
+    let mut kept: Vec<String> = Vec::new();
+    let mut matched = 0usize;
+    for raw in log.lines() {
+        let line = clean_log_line(raw);
+        if !is_error_line(&line) {
+            continue;
+        }
+        matched += 1;
+        if kept.len() < MAX_EXCERPT_LINES {
+            let line = redacted_line(&line);
+            if kept.last() != Some(&line) {
+                kept.push(line);
+            }
+        }
+    }
+    let shown = kept.len();
+    (kept, matched.saturating_sub(shown))
+}
+
+/// Markers of a line worth showing: compiler and test-runner errors, panics,
+/// failed assertions and the runner's own `##[error]` annotations.
+fn is_error_line(line: &str) -> bool {
+    const MARKERS: [&str; 12] = [
+        "##[error]",
+        "error[E",
+        "error:",
+        "Error:",
+        "ERROR",
+        "panicked at",
+        "FAILED",
+        "FAIL ",
+        "AssertionError",
+        "assertion failed",
+        "npm ERR!",
+        "fatal:",
+    ];
+    MARKERS.iter().any(|marker| line.contains(marker))
+}
+
+/// Drop the runner's timestamp prefix and any terminal escapes.
+fn clean_log_line(raw: &str) -> String {
+    let without_stamp = match raw.split_once(' ') {
+        Some((stamp, rest))
+            if stamp.len() >= 20
+                && stamp.ends_with('Z')
+                && stamp.contains('T')
+                && stamp.starts_with(|c: char| c.is_ascii_digit()) =>
+        {
+            rest
+        }
+        _ => raw,
+    };
+    let mut cleaned = String::with_capacity(without_stamp.len());
+    let mut chars = without_stamp.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            if chars.next_if_eq(&'[').is_some() {
+                for c in chars.by_ref() {
+                    if c.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        cleaned.push(c);
+    }
+    cleaned.trim().to_string()
+}
+
+/// Redact first, cap second: a secret cut in half by the cap would no longer
+/// look like one.
+fn redacted_line(line: &str) -> String {
+    let safe = if line.contains("-----BEGIN") {
+        "[redacted-secret]".to_string()
+    } else {
+        redact_secret_tokens(line)
+    };
+    if safe.chars().count() <= MAX_LINE_CHARS {
+        return safe;
+    }
+    let mut capped: String = safe.chars().take(MAX_LINE_CHARS).collect();
+    capped.push('…');
+    capped
+}
+
+impl Verdict {
+    /// The text an owner reads. Everything in it was redacted on the way in.
+    pub(crate) fn render(&self, header: &str) -> String {
+        let mut out = format!("{header}\n");
+        for job in &self.jobs {
+            out.push_str(&format!("- {}: {}", job.name, job.conclusion));
+            match &job.cause {
+                None => {}
+                Some(Cause::Code) => out.push_str(" [CODE]"),
+                Some(Cause::Infra(reason)) => out.push_str(&format!(" [INFRA: {reason}]")),
+            }
+            if job.cause.is_some() {
+                let run = job.run_id.map_or(String::new(), |id| format!("run {id}, "));
+                out.push_str(&format!(" ({run}job {}) {}", job.job_id, job.url));
+            }
+            out.push('\n');
+            for line in &job.excerpt {
+                out.push_str(&format!("    > {line}\n"));
+            }
+            if job.more_lines > 0 {
+                out.push_str(&format!(
+                    "    {TRUNCATED} {} more matching line(s) not shown\n",
+                    job.more_lines
+                ));
+            }
+        }
+        if self.jobs_omitted > 0 {
+            out.push_str(&format!(
+                "{TRUNCATED} {} more check(s) not listed\n",
+                self.jobs_omitted
+            ));
+        }
+        if out.chars().count() > MAX_SUMMARY_CHARS {
+            out = out.chars().take(MAX_SUMMARY_CHARS).collect();
+            out.push_str(&format!("\n{TRUNCATED}\n"));
+        }
+        out
+    }
+
+    /// Whether every failing job is the platform's doing.
+    pub(crate) fn only_infra(&self) -> bool {
+        let mut failing = self
+            .jobs
+            .iter()
+            .filter_map(|job| job.cause.as_ref())
+            .peekable();
+        failing.peek().is_some() && failing.all(|cause| matches!(cause, Cause::Infra(_)))
+    }
+}
+
+#[cfg(test)]
+#[path = "ci_summary_tests.rs"]
+mod tests;

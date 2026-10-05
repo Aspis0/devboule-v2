@@ -68,7 +68,7 @@ fn redact_identifiers(value: &str) -> String {
 /// test checks containment: this copy is intentionally the superset, while
 /// the two redactors remain separate to avoid a heavy oracle-core dependency
 /// in the daemon's client-only build.
-fn redact_secret_tokens(value: &str) -> String {
+pub(crate) fn redact_secret_tokens(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut spans = Vec::new();
     let keys = [
