@@ -109,6 +109,7 @@ pub(crate) mod fake {
         held: Mutex<HashMap<String, String>>,
         refusing: Mutex<Option<(Act, u32)>>,
         calls: Mutex<HashMap<Act, u32>>,
+        readers: Mutex<Vec<std::thread::ThreadId>>,
     }
 
     impl InMemory {
@@ -117,6 +118,7 @@ pub(crate) mod fake {
                 held: Mutex::new(HashMap::new()),
                 refusing: Mutex::new(None),
                 calls: Mutex::new(HashMap::new()),
+                readers: Mutex::new(Vec::new()),
             }
         }
 
@@ -133,6 +135,12 @@ pub(crate) mod fake {
         /// refuses the one that would put it back.
         pub fn fail_after(&self, act: Act, allowed: u32) {
             *self.refusing.lock().expect("fake store poisoned") = Some((act, allowed));
+        }
+
+        /// The thread of every password read so far, which is how a test tells
+        /// whether a caller read it where it was running or somewhere else.
+        pub fn readers(&self) -> Vec<std::thread::ThreadId> {
+            self.readers.lock().expect("fake store poisoned").clone()
         }
 
         /// What this store holds under `id`, for a test that looks at the
@@ -185,6 +193,10 @@ pub(crate) mod fake {
         }
 
         fn get(&self, id: &str) -> Result<Option<String>, String> {
+            self.readers
+                .lock()
+                .expect("fake store poisoned")
+                .push(std::thread::current().id());
             if self.refuses(Act::Get) {
                 return Err("the fake store refuses to read".to_owned());
             }

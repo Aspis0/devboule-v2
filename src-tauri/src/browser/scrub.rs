@@ -9,7 +9,7 @@
 //! this covers the value itself, wherever it turns up in an answer.
 //!
 //! One copy per tab and per site, from the fill until the tab's own frame
-//! leaves that site — a same-site redirect keeps it, because the page that
+//! leaves the site the tab was on when the value was typed — a same-site redirect keeps it, because the page that
 //! lands may still print what was typed into the one before — or until the tab
 //! closes. Nothing else keeps it: the OS store has its own, and this is the
 //! one that would travel.
@@ -25,14 +25,17 @@ const HIDDEN: &str = "[hidden]";
 
 static TYPED: Mutex<Option<HashMap<String, Vec<Typed>>>> = Mutex::new(None);
 
-/// One value typed into one tab, on one site.
+/// One value typed into one tab, while the tab was on `origin`. The field may
+/// have been in a frame of another site; the page it was typed into is the tab's.
 struct Typed {
     origin: String,
     secret: String,
 }
 
-/// A value this process has just typed into `tab` on `origin`.
-pub fn remember(tab: &str, origin: &str, secret: &str) {
+/// A value this process is about to type into `tab`, which is on `origin`.
+/// Whether it was not already held, so that a failed send withdraws only what
+/// it added.
+pub fn remember(tab: &str, origin: &str, secret: &str) -> bool {
     let mut typed = TYPED.lock().expect("browser scrub poisoned");
     let held = typed
         .get_or_insert_with(HashMap::new)
@@ -42,12 +45,21 @@ pub fn remember(tab: &str, origin: &str, secret: &str) {
         .iter()
         .any(|one| one.origin == origin && one.secret == secret)
     {
-        return;
+        return false;
     }
     held.push(Typed {
         origin: origin.to_owned(),
         secret: secret.to_owned(),
     });
+    true
+}
+
+/// A value that was registered and then never went into the page.
+pub fn withdraw(tab: &str, origin: &str, secret: &str) {
+    let mut typed = TYPED.lock().expect("browser scrub poisoned");
+    if let Some(held) = typed.as_mut().and_then(|typed| typed.get_mut(tab)) {
+        held.retain(|one| !(one.origin == origin && one.secret == secret));
+    }
 }
 
 /// The tab is gone: nothing of it is held any more.
@@ -58,9 +70,9 @@ pub fn forget(tab: &str) {
 }
 
 /// The tab's own frame is now on `origin`, or `None` when its address is one
-/// no site can be compared on. A value typed on any other site is of no use to
-/// whatever is on screen and is dropped, which is what bounds how long one is
-/// held.
+/// no site can be compared on; two such addresses count as the same place. A
+/// value typed while the tab was on any other site is of no use to whatever is
+/// on screen and is dropped, which is what bounds how long one is held.
 ///
 /// Dropped lazily, on the next command about this tab: a navigation is not an
 /// event this module is told about, and holding a value for one command longer
@@ -68,7 +80,7 @@ pub fn forget(tab: &str) {
 pub fn left(tab: &str, origin: Option<&str>) {
     let mut typed = TYPED.lock().expect("browser scrub poisoned");
     if let Some(held) = typed.as_mut().and_then(|typed| typed.get_mut(tab)) {
-        held.retain(|one| Some(one.origin.as_str()) == origin);
+        held.retain(|one| one.origin == origin.unwrap_or_default());
     }
 }
 

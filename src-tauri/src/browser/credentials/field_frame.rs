@@ -12,23 +12,31 @@ use super::super::commands::{act, host_error};
 use super::origin::{self, Origin};
 
 /// Every frame (id, address) of a `Page.getFrameTree` answer, parents before
-/// children, the page's own frame first.
-pub(super) fn frames_of(tree: &Value) -> Vec<(String, String)> {
-    fn walk(node: &Value, into: &mut Vec<(String, String)>) {
-        if let Some(frame) = node.get("frame") {
-            if let (Some(id), Some(url)) = (frame["id"].as_str(), frame["url"].as_str()) {
-                into.push((id.to_owned(), url.to_owned()));
-            }
+/// children, the page's own frame first. A frame the answer names without an
+/// id or an address is a refusal: leaving it out would leave its fields to be
+/// taken for the page's own.
+pub(super) fn frames_of(tree: &Value) -> Result<Vec<(String, String)>, BrowserError> {
+    fn walk(node: &Value, into: &mut Vec<(String, String)>) -> Result<(), BrowserError> {
+        let frame = &node["frame"];
+        let (Some(id), Some(url)) = (frame["id"].as_str(), frame["url"].as_str()) else {
+            return Err(host_error(
+                "This page's frame tree names a frame without an id or an address.",
+            ));
+        };
+        into.push((id.to_owned(), url.to_owned()));
+        for child in node
+            .get("childFrames")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            walk(child, into)?;
         }
-        if let Some(children) = node.get("childFrames").and_then(Value::as_array) {
-            for child in children {
-                walk(child, into);
-            }
-        }
+        Ok(())
     }
     let mut every = Vec::new();
-    walk(tree.get("frameTree").unwrap_or(&Value::Null), &mut every);
-    every
+    walk(&tree["frameTree"], &mut every)?;
+    Ok(every)
 }
 
 /// The canonical origin of one frame. A frame the tree does not carry, and an
@@ -62,8 +70,10 @@ fn holds(subtree: &Value, node: u64) -> bool {
 
 /// The frame a node is in. `DOM.describeNode` names a frame only for the
 /// element that owns it, so the answer is the deepest frame whose owner holds
-/// the node, else the page's own frame. A frame whose owner cannot be named is
-/// a refusal, not a guess: the field might be inside it.
+/// the node, else the page's own frame. A frame whose owner cannot be named or
+/// read is a refusal, not a guess: the field might be inside it. A frame that
+/// is out of this page's process has no document here to hold a node a ref of
+/// this page could name, so its owner holds nothing and is passed over.
 pub(super) async fn frame_of(
     page: &dyn Page,
     node: u64,
@@ -92,7 +102,12 @@ pub(super) async fn frame_of(
             json!({ "backendNodeId": owner, "depth": -1, "pierce": true }),
         )
         .await?;
-        if holds(&owned["node"], node) {
+        let Some(owned) = owned.get("node") else {
+            return Err(host_error(
+                "That field is not in a frame this app can name.",
+            ));
+        };
+        if holds(owned, node) {
             inside = frame.clone();
         }
     }

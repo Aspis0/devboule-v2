@@ -32,7 +32,7 @@ use crate::mcp_broker::dispatch::{rpc_error, tool_error};
 use crate::mcp_broker::tools::browser_args::{self, Call};
 use crate::mcp_broker::tools::browser_commands;
 use crate::mcp_broker::tools::browser_tools;
-use crate::mcp_broker::tools::first_use::{ask_choice, card_id, GateMark};
+use crate::mcp_broker::tools::first_use::{ask_choice, card_id, Claim, GateMark};
 use crate::mcp_broker::{McpBroker, RegisteredSession};
 use crate::provider_catalog::MCP_BROWSER_FILL_LOGIN_TOOL;
 use crate::server::ServerState;
@@ -153,6 +153,12 @@ pub(in crate::mcp_broker) fn call(
             return Ok(Some(tool_error(&id, &refusal.said)));
         }
     };
+    // The person may have answered and the agent withdrawn the call since: a
+    // call that was cancelled types nothing.
+    if crate::mcp_broker::current_mcp_call_withdrawn(&registration.session_id) {
+        audit("cancelled");
+        return Ok(Some(rpc_error(id, -32800, "Request cancelled")));
+    }
     match typed(state, &context, &requested, &chosen) {
         Ok(result) => {
             audit(&format!("filled {} on {site}", chosen.id));
@@ -268,18 +274,14 @@ fn choose(
     entries: &[Entry],
 ) -> Result<Entry, Refusal> {
     let session_id = registration.session_id.as_str();
-    for entry in entries {
-        match broker.gate_mark(session_id, &group(&entry.id, site)) {
-            GateMark::Open => return Ok(entry.clone()),
-            GateMark::Pending => return Err(Refusal::of("permission pending; retry", "denied")),
-            GateMark::None => {}
-        }
-    }
-    // Every entry is marked pending before the card goes up, so a second call
-    // racing this one waits for the answer instead of spending the person's
-    // attention a second time on the same question.
-    for entry in entries {
-        broker.remember_gate_mark(session_id, &group(&entry.id, site), GateMark::Pending);
+    // One look and one mark: the entries are marked pending before the card
+    // goes up, so a second call racing this one waits for the answer instead of
+    // spending the person's attention a second time on the same question.
+    let groups: Vec<String> = entries.iter().map(|entry| group(&entry.id, site)).collect();
+    match broker.claim_gate_marks(session_id, &groups) {
+        Claim::Granted(index) => return Ok(entries[index].clone()),
+        Claim::Pending => return Err(Refusal::of("permission pending; retry", "denied")),
+        Claim::Raised => {}
     }
     let answered = ask_choice(
         state,
@@ -430,6 +432,9 @@ fn card_options(entries: &[Entry], site: &str) -> Vec<PermissionOption> {
     options
 }
 
+#[cfg(test)]
+#[path = "mcp_browser_login_race_tests.rs"]
+mod race_tests;
 #[cfg(test)]
 #[path = "mcp_browser_login_tests.rs"]
 mod tests;

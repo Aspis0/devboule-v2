@@ -17,21 +17,27 @@
 //! The page can change under a field between the checks and the typing, and no
 //! check can be made atomic with the typing. What is left is to do the work
 //! that must not happen (focus, clear) first, read the password at the last
-//! moment, and re-read the field's frame and the page's own frame immediately
-//! before `Input.insertText`. A field that moved is refused and nothing is
-//! typed; a document that committed replaces the page's own frame id, which is
-//! the only document token a caller can see.
+//! moment, and re-read the field's frame and the page's own frame, and ask the
+//! page whether the field holds the focus, immediately before
+//! `Input.insertText`. A field that moved or lost the focus is refused and
+//! nothing is typed; a document that committed replaces the page's own frame
+//! id, which is the only document token a caller can see.
+
+use std::sync::Arc;
 
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use devboule_protocol::BrowserError;
+use devboule_protocol::{BrowserError, BrowserErrorCode};
+
+use crate::backend::blocking::off_main_thread;
 
 use super::super::cdp::Page;
 use super::super::commands::page_script;
 use super::super::commands::{act, args_of, host_error, node_of};
 use super::super::registry::TabInfo;
 use super::super::scrub;
+use super::field_check::{self, Kind};
 use super::field_frame;
 use super::origin::{self, Origin};
 use super::Vault;
@@ -78,7 +84,7 @@ pub async fn run(
     args: &Value,
 ) -> Result<Value, BrowserError> {
     let dir = super::commands::local_folder(app).map_err(|error| host_error(error.message))?;
-    let vault = Vault::in_dir(dir);
+    let vault = Arc::new(Vault::in_dir(dir));
     match command {
         "fill_login_preview" => preview(&vault, page, args).await,
         _ => fill(&vault, tab, page, args).await,
@@ -89,8 +95,10 @@ pub async fn run(
 /// vault stores and compares. `None` when its address is one no site can be
 /// compared on.
 ///
-/// The scrub bounds a typed password by this: it is kept while the tab is on
-/// the site it was typed into, and dropped when the tab is elsewhere.
+/// The scrub bounds a typed password by this: it is kept while the tab's own
+/// frame is on the site the tab was on when it was typed, and dropped when the
+/// tab is elsewhere. The field's frame can be another site's, so it is the
+/// tab's address and not the field's that stands for "the page".
 pub fn origin_of(tab: &TabInfo) -> Option<String> {
     let url = tab
         .state
@@ -132,7 +140,7 @@ async fn preview(vault: &Vault, page: &dyn Page, args: &Value) -> Result<Value, 
 
 /// Type one saved login into the fields the call named.
 async fn fill(
-    vault: &Vault,
+    vault: &Arc<Vault>,
     tab: &TabInfo,
     page: &dyn Page,
     args: &Value,
@@ -160,29 +168,21 @@ async fn fill(
     let mut filled: Vec<&str> = Vec::new();
     if let Some(field) = &target.username {
         prepared(page, field).await?;
-        unchanged(page, &target, field).await?;
-        typed(page, &entry.username).await?;
+        typed_into(page, &target, field, &entry.username, None).await?;
         filled.push("usernameRef");
     }
     if let Some(field) = &target.password {
         prepared(page, field).await?;
         // The store is read here and nowhere earlier: every check that could
-        // refuse has refused, and the next two things this process does with
-        // the string are to look at the page once more and type it.
-        let password = vault
-            .password_for(&entry.id)
-            .map_err(|refusal| host_error(refusal.sentence()))?
-            .ok_or_else(|| {
-                host_error(
-                    "This machine's credential store holds no password for that saved login.",
-                )
-            })?;
-        // Held from here, not from the insert: the value exists in this process
-        // from this line on, so every answer about this tab is scrubbed of it
-        // whatever the page or the next call does.
-        scrub::remember(&tab.browser_id, target.origin.as_str(), &password);
-        unchanged(page, &target, field).await?;
-        typed(page, &password).await?;
+        // refuse has refused, and the next things this process does with the
+        // string are to look at the page once more and type it.
+        let password = password_of(vault, &entry.id).await?;
+        let page_origin = origin_of(tab).unwrap_or_default();
+        let held = Held {
+            tab: &tab.browser_id,
+            page_origin: &page_origin,
+        };
+        typed_into(page, &target, field, &password, Some(held)).await?;
         filled.push("passwordRef");
     }
     Ok(json!({ "filled": filled }))
@@ -208,7 +208,7 @@ async fn resolve(page: &dyn Page, asked: &Refs) -> Result<Target, BrowserError> 
         .and_then(Value::as_str)
         .ok_or_else(|| host_error("This page reports no frame of its own."))?
         .to_owned();
-    let every = field_frame::frames_of(&tree);
+    let every = field_frame::frames_of(&tree)?;
     let mut found: Vec<(bool, Field, Origin)> = Vec::new();
     for (is_username, reference) in named {
         if reference.is_empty() {
@@ -217,6 +217,12 @@ async fn resolve(page: &dyn Page, asked: &Refs) -> Result<Target, BrowserError> 
         let node = node_of(reference)?;
         let frame = field_frame::frame_of(page, node, &every).await?;
         let origin = field_frame::origin_in(&every, &frame)?;
+        let kind = if is_username {
+            Kind::Username
+        } else {
+            Kind::Password
+        };
+        field_check::fillable(page, node, kind).await?;
         if let Some((_, _, here)) = found.first() {
             if *here != origin {
                 return Err(host_error(format!(
@@ -269,11 +275,17 @@ async fn settled(page: &dyn Page) -> Result<(), BrowserError> {
 }
 
 /// What the page is asked before any value may go in: bring the field into
-/// view, focus it, and empty it the way a person's typing empties it.
+/// view, focus it, and empty it the way a person's typing empties it. A field
+/// that cannot be emptied is not one this app types into.
 async fn prepared(page: &dyn Page, field: &Field) -> Result<(), BrowserError> {
     act::into_view(page, field.node).await?;
     act::call(page, "DOM.focus", json!({ "backendNodeId": field.node })).await?;
-    page_script::on_node(page, field.node, page_script::CLEAR, json!([])).await?;
+    let cleared = page_script::on_node(page, field.node, page_script::CLEAR, json!([])).await?;
+    if cleared != Value::Bool(true) {
+        return Err(host_error(
+            "That field could not be emptied, so nothing was typed; take a new snapshot and              look again.",
+        ));
+    }
     Ok(())
 }
 
@@ -294,7 +306,7 @@ async fn unchanged(page: &dyn Page, target: &Target, field: &Field) -> Result<()
     // A field that is simply gone is reported as the change it is: this check
     // asks precisely whether the page moved, and the advice a stale ref gives
     // is the advice this one wants to give.
-    let frame = field_frame::frame_of(page, field.node, &field_frame::frames_of(&tree))
+    let frame = field_frame::frame_of(page, field.node, &field_frame::frames_of(&tree)?)
         .await
         .map_err(|_| moved())?;
     if frame != field.frame || node_of(&field.reference)? != field.node {
@@ -303,13 +315,59 @@ async fn unchanged(page: &dyn Page, target: &Target, field: &Field) -> Result<()
     Ok(())
 }
 
-/// The value goes in as inserted text, which is what a person's typing arrives
-/// as and what a framework's value tracker sees.
-async fn typed(page: &dyn Page, text: &str) -> Result<(), BrowserError> {
-    act::call(page, "Input.insertText", json!({ "text": text })).await?;
-    Ok(())
+/// Where a typed secret is remembered for the scrub: the tab, and the site that
+/// tab was on.
+struct Held<'a> {
+    tab: &'a str,
+    page_origin: &'a str,
 }
 
+/// The last look at the field, and then the value, as inserted text: what a
+/// person's typing arrives as and what a framework's value tracker sees.
+///
+/// A secret is registered with the scrub right before it is sent and no await
+/// stands between the two, so nothing the page does with it can be answered
+/// before it is covered. A send the page refused took nothing in and the
+/// registration is withdrawn; one that ran out of time may have, and keeps it.
+async fn typed_into(
+    page: &dyn Page,
+    target: &Target,
+    field: &Field,
+    text: &str,
+    held: Option<Held<'_>>,
+) -> Result<(), BrowserError> {
+    unchanged(page, target, field).await?;
+    field_check::focused(page, field.node).await?;
+    let added = held
+        .as_ref()
+        .is_some_and(|held| scrub::remember(held.tab, held.page_origin, text));
+    let sent = act::call(page, "Input.insertText", json!({ "text": text })).await;
+    if let (Err(error), Some(held), true) = (&sent, &held, added) {
+        if error.code != BrowserErrorCode::Timeout {
+            scrub::withdraw(held.tab, held.page_origin, text);
+        }
+    }
+    sent.map(|_| ())
+}
+
+/// The password of one entry, read off the thread that serves other commands:
+/// an OS credential store can wait on a person.
+async fn password_of(vault: &Arc<Vault>, id: &str) -> Result<String, BrowserError> {
+    let (vault, id) = (Arc::clone(vault), id.to_owned());
+    off_main_thread(move || vault.password_for(&id))
+        .await
+        .map_err(|error| host_error(error.message))?
+        .ok_or_else(|| {
+            host_error("This machine's credential store holds no password for that saved login.")
+        })
+}
+
+#[cfg(test)]
+#[path = "fill_login_fixtures.rs"]
+mod fixtures;
+#[cfg(test)]
+#[path = "fill_login_target_tests.rs"]
+mod target_tests;
 #[cfg(test)]
 #[path = "fill_login_tests.rs"]
 mod tests;

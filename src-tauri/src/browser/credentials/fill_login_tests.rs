@@ -3,115 +3,16 @@
 //! types.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 
-use serde_json::{json, Value};
+use serde_json::json;
 
+use super::fixtures::{
+    asking, sign_in_page, tab, tab_named, typed, Over, FOREIGN, OTHER, PASSWORD, SECRET, SITE,
+    USER, USERNAME,
+};
 use super::*;
 use crate::browser::cdp::CdpError;
-use crate::browser::credentials::secrets::fake::{Act, InMemory};
-use crate::browser::test_support::{registry_with, FakePage};
-
-/// A value that is obviously a test's.
-const SECRET: &str = "SENTINEL-PW-7f3a";
-const SITE: &str = "https://shop.example.test";
-const OTHER: &str = "https://ads.example.test";
-const USER: &str = "person@example.test";
-
-/// One username field and one password field in the page's own frame, and a
-/// third field in a child frame of another site.
-const USERNAME: &str = "e13";
-const PASSWORD: &str = "e14";
-const FOREIGN: &str = "e21";
-
-struct Over {
-    _dir: tempfile::TempDir,
-    vault: Vault,
-    store: Arc<InMemory>,
-}
-
-impl Over {
-    fn new() -> Self {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let store = Arc::new(InMemory::empty());
-        let vault = Vault::new(dir.path().to_path_buf(), Box::new(Arc::clone(&store)));
-        Over {
-            _dir: dir,
-            vault,
-            store,
-        }
-    }
-
-    /// One saved login for `origin`, and the id its password is filed under.
-    fn save(&self, label: &str, origin: &str) -> String {
-        self.vault
-            .create(label, &[origin.to_owned()], USER, SECRET)
-            .expect("the login was saved")
-            .id
-    }
-}
-
-/// The tab the commands run on: parked, owned, at the fixture's address.
-fn tab() -> TabInfo {
-    registry_with("fill-login-tab")
-        .tab_of("fill-login-tab")
-        .expect("the fixture tab is claimed")
-}
-
-/// The `<iframe>` element that owns the child frame, whose document holds
-/// `FOREIGN` (node 21).
-const CHILD_OWNER: u64 = 900;
-
-/// What the browser says of a node: an `<iframe>` carries the document it
-/// owns, and nothing names the frame a plain input is in.
-fn described(asked: &Value) -> Value {
-    if asked["backendNodeId"] == json!(CHILD_OWNER) {
-        return json!({"node": {"backendNodeId": CHILD_OWNER, "nodeName": "IFRAME",
-            "contentDocument": {"backendNodeId": 901, "children": [
-                {"backendNodeId": 21, "nodeName": "INPUT"}]}}});
-    }
-    json!({"node": {"backendNodeId": asked["backendNodeId"], "nodeName": "INPUT"}})
-}
-
-/// A page whose own frame is `SITE`, with one child frame of `OTHER`, and the
-/// three fields above in one frame or the other.
-fn sign_in_page() -> FakePage {
-    FakePage::new()
-        .answering_with("Page.getFrameTree", |_| {
-            json!({"frameTree": {
-                "frame": {"id": "main", "url": format!("{SITE}/sign-in")},
-                "childFrames": [{"frame": {"id": "child", "url": format!("{OTHER}/widget")}}],
-            }})
-        })
-        .answering_with(
-            "DOM.getFrameOwner",
-            |_| json!({"backendNodeId": CHILD_OWNER}),
-        )
-        .answering_with("DOM.describeNode", described)
-        .answering_with(
-            "DOM.resolveNode",
-            |asked| json!({"object": {"objectId": format!("node-{}", asked["backendNodeId"])}}),
-        )
-        .answering_with(
-            "Runtime.evaluate",
-            |_| json!({ "result": { "type": "string", "value": "complete" } }),
-        )
-}
-
-/// What the page was asked to type, in the order it was asked.
-fn typed(page: &FakePage) -> Vec<Value> {
-    page.calls()
-        .into_iter()
-        .filter(|(method, _)| method == "Input.insertText")
-        .map(|(_, params)| params["text"].clone())
-        .collect()
-}
-
-fn asking(args: Value) -> Value {
-    let mut args = args;
-    args["browserId"] = json!("fill-login-tab");
-    args
-}
+use crate::browser::credentials::secrets::fake::Act;
 
 #[test]
 fn the_preview_answers_the_origin_and_the_labels_and_nothing_else() {
@@ -212,17 +113,9 @@ fn a_page_that_moved_between_the_preview_and_the_fill_is_refused() {
     .expect("the preview answered for the site that was there");
 
     // The same field id now lives in a frame of another site.
-    let moved = FakePage::new()
-        .answering_with("Page.getFrameTree", |_| {
-            json!({ "frameTree": { "frame": { "id": "main", "url": format!("{OTHER}/sign-in") } } })
-        })
-        .answering_with("DOM.describeNode", described)
-        .answering_with("DOM.resolveNode", |asked| {
-            json!({"object": {"objectId": format!("node-{}", asked["backendNodeId"])}})
-        })
-        .answering_with("Runtime.evaluate", |_| {
-            json!({ "result": { "type": "string", "value": "complete" } })
-        });
+    let moved = sign_in_page().answering_with("Page.getFrameTree", |_| {
+        json!({ "frameTree": { "frame": { "id": "main", "url": format!("{OTHER}/sign-in") } } })
+    });
 
     let refused = tauri::async_runtime::block_on(fill(
         &over.vault,
@@ -393,23 +286,13 @@ fn a_new_document_under_the_field_stops_the_fill() {
     let over = Over::new();
     let saved = over.save("Shop account", SITE);
     let seen = AtomicUsize::new(0);
-    let page = FakePage::new()
-        .answering_with("Page.getFrameTree", move |_| {
-            let first = seen.fetch_add(1, Ordering::SeqCst) == 0;
-            json!({"frameTree": {"frame": {
-                "id": if first { "main" } else { "next-document" },
-                "url": format!("{SITE}/sign-in"),
-            }}})
-        })
-        .answering_with("DOM.describeNode", described)
-        .answering_with(
-            "DOM.resolveNode",
-            |asked| json!({"object": {"objectId": format!("node-{}", asked["backendNodeId"])}}),
-        )
-        .answering_with(
-            "Runtime.evaluate",
-            |_| json!({ "result": { "type": "string", "value": "complete" } }),
-        );
+    let page = sign_in_page().answering_with("Page.getFrameTree", move |_| {
+        let first = seen.fetch_add(1, Ordering::SeqCst) == 0;
+        json!({"frameTree": {"frame": {
+            "id": if first { "main" } else { "next-document" },
+            "url": format!("{SITE}/sign-in"),
+        }}})
+    });
 
     let refused = tauri::async_runtime::block_on(fill(
         &over.vault,
@@ -450,4 +333,156 @@ fn a_typed_password_is_taken_out_of_what_the_tab_says_afterwards() {
         "the page's own words carried it: {words}"
     );
     scrub::forget("fill-login-tab");
+}
+
+/// A field in a frame of another site is typed into a page that is still the
+/// tab's own, and what the tab says of it a command later is still scrubbed:
+/// the tab, not the field's frame, is what "leaves the site".
+#[test]
+fn a_password_typed_in_another_sites_frame_is_still_scrubbed_on_the_next_command() {
+    // Its own value: the scrub removes every tab's values from every answer,
+    // so a password other tests also type would hide a failure here.
+    let password = "SENTINEL-FRAME-PW-9d2e";
+    let tab = tab_named("fill-in-a-frame");
+    let over = Over::new();
+    let saved = over
+        .vault
+        .create("Ad account", &[OTHER.to_owned()], USER, password)
+        .expect("the login was saved")
+        .id;
+    tauri::async_runtime::block_on(fill(
+        &over.vault,
+        &tab,
+        &sign_in_page(),
+        &asking(json!({"entryId": saved, "passwordRef": FOREIGN})),
+    ))
+    .expect("the login was typed into the child frame");
+
+    // What `dispatch` does before the next command about this tab.
+    scrub::left(&tab.browser_id, origin_of(&tab).as_deref());
+    let mut afterwards = json!({ "text": format!("the page showed {password}") });
+    scrub::clean(&mut afterwards);
+
+    assert!(
+        !afterwards.to_string().contains(password),
+        "the frame's site was taken for the page's: {afterwards}"
+    );
+    scrub::forget(&tab.browser_id);
+}
+
+/// The store is asked on a thread of its own, not on the one running the
+/// command: an OS store can wait on a person.
+#[test]
+fn the_password_is_read_off_the_thread_that_runs_the_command() {
+    let over = Over::new();
+    let saved = over.save("Shop account", SITE);
+    let tab = tab_named("fill-off-thread");
+
+    tauri::async_runtime::block_on(fill(
+        &over.vault,
+        &tab,
+        &sign_in_page(),
+        &asking(json!({"entryId": saved, "passwordRef": PASSWORD})),
+    ))
+    .expect("the login was typed");
+
+    let readers = over.store.readers();
+    assert_eq!(readers.len(), 1, "the store was read once");
+    assert_ne!(readers[0], std::thread::current().id());
+    scrub::forget(&tab.browser_id);
+}
+
+/// A value is registered for the scrub once the checks have passed, and not
+/// kept when the page refused it.
+#[test]
+fn a_password_the_page_refused_is_not_left_registered() {
+    let over = Over::new();
+    let saved = over.save("Shop account", SITE);
+    let tab = tab_named("fill-refused-send");
+    let page = sign_in_page().refusing(
+        "Input.insertText",
+        CdpError::Refused("the page said no".to_owned()),
+    );
+
+    tauri::async_runtime::block_on(fill(
+        &over.vault,
+        &tab,
+        &page,
+        &asking(json!({"entryId": saved, "passwordRef": PASSWORD})),
+    ))
+    .expect_err("the insert was refused");
+
+    assert_eq!(scrub::typed_of(&tab.browser_id), 0);
+}
+
+/// A send that ran out of time may have gone in, and the scrub keeps covering
+/// it.
+#[test]
+fn a_password_whose_send_ran_out_of_time_stays_registered() {
+    let over = Over::new();
+    let saved = over.save("Shop account", SITE);
+    let tab = tab_named("fill-timed-out-send");
+    let page = sign_in_page().refusing("Input.insertText", CdpError::OutOfTime);
+
+    tauri::async_runtime::block_on(fill(
+        &over.vault,
+        &tab,
+        &page,
+        &asking(json!({"entryId": saved, "passwordRef": PASSWORD})),
+    ))
+    .expect_err("the insert ran out of time");
+
+    assert_eq!(scrub::typed_of(&tab.browser_id), 1);
+    scrub::forget(&tab.browser_id);
+}
+
+/// A check that refuses before the insert leaves nothing registered, though the
+/// store has been read by then.
+#[test]
+fn a_password_stopped_by_the_last_check_is_not_registered() {
+    let over = Over::new();
+    let saved = over.save("Shop account", SITE);
+    let tab = tab_named("fill-stopped-check");
+    let page = sign_in_page().refusing_after(
+        "Runtime.callFunctionOn",
+        "DOM.describeNode",
+        CdpError::StaleRef,
+    );
+
+    tauri::async_runtime::block_on(fill(
+        &over.vault,
+        &tab,
+        &page,
+        &asking(json!({"entryId": saved, "passwordRef": PASSWORD})),
+    ))
+    .expect_err("the field went away");
+
+    assert_eq!(over.store.readers().len(), 1, "the store had been read");
+    assert_eq!(scrub::typed_of(&tab.browser_id), 0);
+}
+
+/// By the time the page is asked to take the value the scrub already holds it,
+/// so nothing the page does in between can be answered uncovered.
+#[test]
+fn the_scrub_holds_the_value_by_the_time_it_is_sent() {
+    let over = Over::new();
+    let saved = over.save("Shop account", SITE);
+    let tab = tab_named("fill-held-when-sent");
+    let id = tab.browser_id.clone();
+    let seen = std::sync::Arc::new(AtomicUsize::new(usize::MAX));
+    let looked = std::sync::Arc::clone(&seen);
+    let page = sign_in_page().during("Input.insertText", move || {
+        looked.store(scrub::typed_of(&id), Ordering::SeqCst);
+    });
+
+    tauri::async_runtime::block_on(fill(
+        &over.vault,
+        &tab,
+        &page,
+        &asking(json!({"entryId": saved, "passwordRef": PASSWORD})),
+    ))
+    .expect("the login was typed");
+
+    assert_eq!(seen.load(Ordering::SeqCst), 1);
+    scrub::forget(&tab.browser_id);
 }

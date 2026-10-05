@@ -49,8 +49,12 @@ fn page() -> FakePage {
 }
 
 fn frame_of_node(node: u64) -> String {
-    tauri::async_runtime::block_on(frame_of(&page(), node, &frames_of(&nested())))
-        .expect("the node is in a frame")
+    tauri::async_runtime::block_on(frame_of(
+        &page(),
+        node,
+        &frames_of(&nested()).expect("the tree is readable"),
+    ))
+    .expect("the node is in a frame")
 }
 
 #[test]
@@ -69,8 +73,12 @@ fn a_frame_whose_owner_cannot_be_named_refuses_instead_of_guessing() {
         .answering_with("DOM.describeNode", |_| json!({"node": {}}))
         .answering_with("DOM.getFrameOwner", |_| json!({}));
 
-    let refused = tauri::async_runtime::block_on(frame_of(&page, 5, &frames_of(&nested())))
-        .expect_err("the field might be inside the frame that has no owner");
+    let refused = tauri::async_runtime::block_on(frame_of(
+        &page,
+        5,
+        &frames_of(&nested()).expect("the tree is readable"),
+    ))
+    .expect_err("the field might be inside the frame that has no owner");
 
     assert!(
         refused.message.contains("frame this app can name"),
@@ -90,4 +98,30 @@ fn an_address_no_site_can_be_compared_on_is_refused() {
         "{}",
         refused.message
     );
+}
+
+#[test]
+fn a_frame_named_without_an_id_or_an_address_makes_the_tree_unreadable() {
+    for frame in [
+        json!({"id": "child"}),
+        json!({"url": "https://ads.example.test/"}),
+    ] {
+        let tree = json!({"frameTree": {
+            "frame": {"id": "main", "url": "https://shop.example.test/"},
+            "childFrames": [{"frame": frame}],
+        }});
+
+        let refused = frames_of(&tree).expect_err("a frame that cannot be placed");
+
+        assert!(
+            refused.message.contains("without an id or an address"),
+            "{}",
+            refused.message
+        );
+    }
+}
+
+#[test]
+fn an_answer_with_no_frame_tree_is_unreadable() {
+    frames_of(&json!({})).expect_err("no frame of the page's own");
 }

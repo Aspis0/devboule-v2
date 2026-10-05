@@ -18,33 +18,33 @@ use crate::provider_catalog::MCP_BROWSER_FILL_LOGIN_TOOL;
 /// A value that is obviously a test's, standing in for a password in whatever
 /// the host answers.
 const SECRET: &str = "SENTINEL-PW-7f3a";
-const SITE: &str = "https://shop.example.test";
-const ENTRY: &str = "aaaa0000bbbb1111cccc2222dddd3333";
+pub(super) const SITE: &str = "https://shop.example.test";
+pub(super) const ENTRY: &str = "aaaa0000bbbb1111cccc2222dddd3333";
 const OTHER: &str = "eeee4444ffff5555aaaa6666bbbb7777";
 
 /// The owner the harness registered the session under, which is who a card
 /// raised on it is looked up by.
-fn owner(tag: &str) -> OwnerId {
+pub(super) fn owner(tag: &str) -> OwnerId {
     OwnerId::new(format!("browser-user-{tag}"), "browser-client").expect("owner")
 }
 
 /// What the app answers when the daemon asks what a site may offer.
-fn preview(origin: &str, entries: Value) -> Value {
+pub(super) fn preview(origin: &str, entries: Value) -> Value {
     json!({ "origin": origin, "entries": entries })
 }
 
-fn one_entry() -> Value {
+pub(super) fn one_entry() -> Value {
     json!([{ "id": ENTRY, "label": "Shop account" }])
 }
 
-fn asking(refs: Value) -> Value {
+pub(super) fn asking(refs: Value) -> Value {
     let mut args = refs;
     args["browserId"] = json!("tab-1");
     args
 }
 
 /// The consent card this tool raised on the session, waited for.
-fn wait_for_card(panel: &Panel, tag: &str) -> (String, SessionEvent) {
+pub(super) fn wait_for_card(panel: &Panel, tag: &str) -> (String, SessionEvent) {
     for _ in 0..900 {
         if let Some(runtime) = panel.state.sessions.live_runtime("session", &owner(tag)) {
             if let Some(broker) = runtime.permission_broker() {
@@ -61,7 +61,13 @@ fn wait_for_card(panel: &Panel, tag: &str) -> (String, SessionEvent) {
     panic!("the saved-login card was never raised");
 }
 
-fn answer(panel: &Panel, tag: &str, card_id: &str, outcome: PermissionOutcome, option: &str) {
+pub(super) fn answer(
+    panel: &Panel,
+    tag: &str,
+    card_id: &str,
+    outcome: PermissionOutcome,
+    option: &str,
+) {
     panel
         .state
         .sessions

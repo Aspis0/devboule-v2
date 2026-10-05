@@ -65,21 +65,41 @@ pub(in crate::mcp_broker) struct FirstUseGates {
     marks: Mutex<HashMap<(String, String), GateMark>>,
 }
 
+/// What claiming a set of groups found.
+pub(in crate::mcp_broker) enum Claim {
+    /// The group at this index is already granted for the rest of the session.
+    Granted(usize),
+    /// A card for these groups is out and unanswered.
+    Pending,
+    /// Nothing was granted or pending: every group is now pending, and the
+    /// caller is the one to raise the card.
+    Raised,
+}
+
 impl McpBroker {
-    /// The mark for one session and one group, however that group came to be
-    /// asked about: the write groups are named in the table above, and a
-    /// consent whose scope is a choice keeps its own group per choice.
-    pub(in crate::mcp_broker) fn gate_mark(&self, session_id: &str, group: &str) -> GateMark {
-        self.write_gates
-            .marks
-            .lock()
-            .ok()
-            .and_then(|marks| {
-                marks
-                    .get(&(session_id.to_string(), group.to_string()))
-                    .copied()
-            })
-            .unwrap_or(GateMark::None)
+    /// Look at a set of groups for one session and, when none of them is
+    /// granted or has a card out, mark all of them pending: one look and one
+    /// write under one lock, so two calls racing the same question cannot both
+    /// be the one that raises the card.
+    pub(in crate::mcp_broker) fn claim_gate_marks(
+        &self,
+        session_id: &str,
+        groups: &[String],
+    ) -> Claim {
+        let Ok(mut marks) = self.write_gates.marks.lock() else {
+            return Claim::Pending;
+        };
+        for (index, group) in groups.iter().enumerate() {
+            match marks.get(&(session_id.to_string(), group.clone())) {
+                Some(GateMark::Open) => return Claim::Granted(index),
+                Some(GateMark::Pending) => return Claim::Pending,
+                Some(GateMark::None) | None => {}
+            }
+        }
+        for group in groups {
+            marks.insert((session_id.to_string(), group.clone()), GateMark::Pending);
+        }
+        Claim::Raised
     }
 
     /// Remember `mark` for one session and group.

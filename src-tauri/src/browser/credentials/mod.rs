@@ -15,6 +15,7 @@
 //! hold two passwords, one of which nothing can name.
 
 pub(crate) mod commands;
+mod field_check;
 mod field_frame;
 pub(super) mod fill_login;
 mod metadata;

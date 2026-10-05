@@ -177,6 +177,15 @@ pub(crate) fn current_mcp_call_cancelled(session_id: &str) -> bool {
 
 use crate::server::ServerState;
 
+/// Whether the caller of the current call has asked to withdraw it, whether or
+/// not the request has found a card to take down. A cancel that arrives while
+/// the call is between the person's answer and the act is recorded as asked.
+pub(crate) fn current_mcp_call_withdrawn(session_id: &str) -> bool {
+    current_mcp_call().is_some_and(|(active_session_id, _, call)| {
+        active_session_id == session_id && (call.is_cancelled() || call.is_requested())
+    })
+}
+
 mod caller;
 mod config_files;
 mod dispatch;
