@@ -96,6 +96,13 @@ const CLAIMED_PAIRS: ReadonlyArray<{ text: string; ground: string; why: string }
 ];
 
 /**
+ * Secondary text holds the reference muted contrast on the app ground, in
+ * both themes: the warm hue kept, lightness only.
+ */
+const SECONDARY_FLOOR_697: ReadonlyArray<{ text: string; ground: string; why: string }> = [
+  { text: "--muted", ground: "--ground-app", why: "secondary text on the app ground" },
+];
+/**
  * The dark primary ink sits on these grounds as body text; the slice
  * promises ≥7:1 on every one of them, in the dark theme only.
  */
@@ -178,6 +185,26 @@ describe("palette contrast (both themes, from tokens.css)", () => {
           );
         });
       }
+    }
+  }
+
+  for (const [theme, vars] of [
+    ["light", lightVars],
+    ["dark", darkVars],
+  ] as const) {
+    for (const pair of SECONDARY_FLOOR_697) {
+      it(`${theme}: ${pair.text} on ${pair.ground} ≥ 6.97 (${pair.why})`, () => {
+        const text = vars.get(pair.text);
+        const ground = vars.get(pair.ground);
+        expect(text, `${pair.text} missing from the ${theme} block`).toMatch(/^#[0-9a-fA-F]{6}$/);
+        expect(ground, `${pair.ground} missing from the ${theme} block`).toMatch(
+          /^#[0-9a-fA-F]{6}$/,
+        );
+        const ratio = contrastRatio(text!, ground!);
+        expect(ratio, `${pair.text} ${text} on ${pair.ground} ${ground}`).toBeGreaterThanOrEqual(
+          6.97,
+        );
+      });
     }
   }
 

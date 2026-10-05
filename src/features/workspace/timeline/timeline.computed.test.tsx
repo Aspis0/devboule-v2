@@ -36,12 +36,16 @@ describe("timeline computed styles", () => {
     document.body.appendChild(rail);
 
     const style = getComputedStyle(rail);
-    // Capped by the pane as well: min(760px, 100%) — the chat cap still
-    // applies wherever the pane is wider, and the box can never outgrow
-    // a narrower one.
-    expect(style.maxWidth).toBe("min(760px, 100%)");
+    // Capped by the pane as well as the column: min(760px, 100% - 32px) —
+    // the chat cap still applies wherever the pane is wider, the box can
+    // never outgrow a narrower one, and its outer edges land on the
+    // composer's card at every width.
+    expect(style.maxWidth).toBe("min(760px, calc(100% - 32px))");
     expect(style.marginLeft).toBe("auto");
     expect(style.marginRight).toBe("auto");
+    // Fills the pane up to the cap: width 100% with the auto margins keeps
+    // the column centred, instead of shrink-wrapping to the longest row.
+    expect(style.width).toBe("100%");
     expect(style.paddingTop).toBe("4px");
     expect(style.paddingRight).toBe("16px");
     expect(style.paddingBottom).toBe("0px");
@@ -51,12 +55,14 @@ describe("timeline computed styles", () => {
     rail.remove();
   });
 
-  it("declares the transcript wrapper unsquashed with its own 8 px entry gap", () => {
+  it("declares the transcript wrapper unsquashed with the rhythm on the rows", () => {
     // In a real browser a child's computed `gap` inherits the rail's 8 px,
     // so only the rule source can certify the wrapper's own declarations.
+    // The wrapper carries no gap of its own: turn boundary, group and
+    // compact edge each live on the lower row's top margin.
     const rules = workspaceCss.rulesFor(".workspace-conversation-content");
     expect(rules).toContain("flex: none");
-    expect(rules).toContain("gap: 8px");
+    expect(rules).toContain("gap: 0");
   });
 
   it("gives user messages the bubble width, inset, corner shape, fill, and ink", () => {
@@ -140,7 +146,8 @@ describe("timeline computed styles", () => {
     ) {
       throw new Error("Markdown or copy markup did not render");
     }
-    expect(getComputedStyle(assistant).fontSize).toBe("14px");
+    expect(getComputedStyle(assistant).fontSize).toBe("15px");
+    expect(getComputedStyle(assistant).lineHeight).toBe("21px");
     expect(heading).not.toBeNull();
     for (const level of [1, 2, 3, 4, 5, 6]) {
       const levelHeading = assistant.querySelector<HTMLElement>(`.plan-markdown-heading-${level}`);
@@ -235,7 +242,7 @@ describe("timeline computed styles", () => {
     document.body.append(system, rail);
 
     expect(getComputedStyle(system).fontSize).toBe("12px");
-    expect(getComputedStyle(system).color).toBe("#686256");
+    expect(getComputedStyle(system).color).toBe("#4b473e");
     expect(getComputedStyle(system).fontFamily).toContain("Inter");
     expect(getComputedStyle(typing).fontSize).toBe("12px");
     system.remove();
@@ -249,7 +256,7 @@ describe("timeline computed styles", () => {
     document.body.appendChild(footer);
 
     expect(getComputedStyle(footer).fontSize).toBe("12px");
-    expect(getComputedStyle(footer).color).toBe("#686256");
+    expect(getComputedStyle(footer).color).toBe("#4b473e");
     expect(getComputedStyle(footer).fontFamily).toContain("Inter");
     // The trigger is a control, so it is a 24 px target. happy-dom computes
     // no width on a <summary>, so its box is read off the rule.

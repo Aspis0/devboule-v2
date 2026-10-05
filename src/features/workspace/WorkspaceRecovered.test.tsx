@@ -66,8 +66,18 @@ vi.mock("../terminal/TerminalSurface", () => ({
 }));
 
 vi.mock("./AgentChatSurface", () => ({
-  AgentChatSurface: ({ sessionId }: { sessionId: string; auxiliary?: ReactNode }) => (
-    <div data-testid="agent-chat-surface">{sessionId}</div>
+  AgentChatSurface: ({
+    sessionId,
+    headerTrailing,
+  }: {
+    sessionId: string;
+    auxiliary?: ReactNode;
+    headerTrailing?: ReactNode;
+  }) => (
+    <div data-testid="agent-chat-surface">
+      {sessionId}
+      {headerTrailing}
+    </div>
   ),
 }));
 
@@ -185,9 +195,10 @@ describe("Workspace recovered path", () => {
     if (!recTab) throw new Error("recovered tab did not render");
     await act(async () => (recTab as HTMLButtonElement).click());
 
-    expect(container.querySelector('[data-testid="agent-chat-surface"]')?.textContent).toBe(
-      "rec-1",
-    );
+    // The mock surface forwards the header's trailing slot, so the bar's
+    // own copy sits inside the surface node beside the session id.
+    const surface = container.querySelector('[data-testid="agent-chat-surface"]');
+    expect(surface?.firstChild?.textContent).toBe("rec-1");
     expect(container.querySelector('[data-testid="recovered-reopen-bar"]')).not.toBeNull();
     expect(sessionResume).not.toHaveBeenCalled();
   });

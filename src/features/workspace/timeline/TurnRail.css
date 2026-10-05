@@ -24,6 +24,17 @@
   z-index: 2;
   width: 56px;
   pointer-events: none;
+  /* The rail is navigation, not reading chrome: it rests invisible and
+     answers hover, keyboard focus, or an open preview — never the
+     transcript at rest. Opacity keeps the dots tabbable while hidden, and
+     the flip is instant: this sheet carries no transition or animation. */
+  opacity: 0;
+}
+
+.workspace-conversation:hover .turn-rail,
+.workspace-conversation:focus-within .turn-rail,
+.turn-rail.is-preview-open {
+  opacity: 1;
 }
 
 .turn-rail-thread {

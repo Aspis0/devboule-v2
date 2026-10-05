@@ -179,6 +179,23 @@ describe("RecoveredSessionBar", () => {
     expect(sessionResume).not.toHaveBeenCalled();
   });
 
+  it("renders nothing for a live session even when the daemon calls it resumable", async () => {
+    // A live transcript is never read-only: the journal note and the Reopen
+    // control belong to a recovered transcript alone.
+    await renderBar(
+      recoveredSession({
+        id: "live-2",
+        state: { type: "live", generation: 1 },
+        resumable: true,
+      }),
+    );
+
+    expect(container.textContent).toBe("");
+    expect(container.querySelector('[data-testid="recovered-reopen-bar"]')).toBeNull();
+    expect(container.querySelector('[data-testid="recovered-unresumable"]')).toBeNull();
+    expect(sessionResume).not.toHaveBeenCalled();
+  });
+
   it("reports a refused resume instead of failing silently", async () => {
     vi.mocked(sessionResume).mockResolvedValueOnce({ type: "failed", message: "gone" });
     await renderBar(recoveredSession({ resumable: true }));

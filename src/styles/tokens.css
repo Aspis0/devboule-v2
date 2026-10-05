@@ -45,7 +45,9 @@
   /* text */
   --ink: #1c1a17;
   --ink-soft: #4a463e;
-  --muted: #686256;
+  /* Secondary text holds 6.97:1 on the app ground: the warm hue kept,
+     lightness only. */
+  --muted: #4b473e;
 
   /* lines */
   --line: #ded6c4;
@@ -243,7 +245,9 @@
 
   --ink: #d9d1c4;
   --ink-soft: #c8bfb0;
-  --muted: #978b7b;
+  /* Secondary text holds 6.97:1 on the app ground: the warm hue kept,
+     lightness only. */
+  --muted: #aea598;
 
   --line: #382f27;
   --line-strong: #4d4237;

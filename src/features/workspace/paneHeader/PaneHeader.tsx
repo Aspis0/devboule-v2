@@ -39,7 +39,10 @@ export function PaneHeader({
         {text}
         {display.srDetail === null ? null : <span className="sr-only"> — {display.srDetail}</span>}
       </span>
-      {agent ? null : trailingSlot}
+      {/* The recovered reopen bar on an agent pane, the interrupt/close on a
+          terminal one: either way the header's own row carries the pane's
+          extra control, and no second row is added for it. */}
+      {trailingSlot}
       {menu === null ? null : <PaneHeaderKebab menu={menu} />}
     </div>
   );

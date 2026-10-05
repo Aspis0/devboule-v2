@@ -2121,12 +2121,6 @@ export function Workspace({
             </div>
           ) : paneSession !== null ? (
             <>
-              <RecoveredSessionBar
-                key={`recovered-bar-${paneSession.id}`}
-                session={paneSession}
-                onReopened={handleReopenSession}
-                onResumeFailed={handleResumeFailed}
-              />
               {isAgentKind(paneSession.kind) ? (
                 <AgentChatSurface
                   key={paneSession.id}
@@ -2193,6 +2187,18 @@ export function Workspace({
                   }
                   onPermissionRequest={handlePermissionRequest}
                   onPermissionResolved={handlePermissionResolved}
+                  // The recovered notice rides the header's own row instead of
+                  // adding one: banner, state word and Reopen share the pane
+                  // header on a recovered transcript, and a live pane shows
+                  // nothing (the bar renders null off a recovered state).
+                  headerTrailing={
+                    <RecoveredSessionBar
+                      key={`recovered-bar-${paneSession.id}`}
+                      session={paneSession}
+                      onReopened={handleReopenSession}
+                      onResumeFailed={handleResumeFailed}
+                    />
+                  }
                 />
               ) : (
                 <TerminalSurface

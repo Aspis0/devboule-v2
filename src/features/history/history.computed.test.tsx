@@ -216,8 +216,8 @@ describe("History day headings (computed styles, real history.css)", () => {
     expect(style.height).toBe("28px");
     expect(style.textTransform).toBe("uppercase");
     expect(style.fontSize).toBe("12px");
-    // Light --muted is #686256.
-    expect(style.color).toBe("#686256");
+    // Light --muted is #4b473e.
+    expect(style.color).toBe("#4b473e");
   });
 
   it("keeps the compact section-heading style in the dark theme", async () => {
@@ -227,8 +227,8 @@ describe("History day headings (computed styles, real history.css)", () => {
     const style = getComputedStyle(heading);
     expect(style.display).toBe("flex");
     expect(style.textTransform).toBe("uppercase");
-    // Dark --muted is #978b7b.
-    expect(style.color).toBe("#978b7b");
+    // Dark --muted is #aea598.
+    expect(style.color).toBe("#aea598");
   });
 
   it.each(["light", "dark"] as const)(

@@ -133,6 +133,10 @@ interface AgentChatSurfaceProps {
   cwd?: string;
   id?: string;
   auxiliary?: ReactNode;
+  /** Extra controls at the header's trailing edge, after the status word:
+   * the recovered reopen bar on a recovered transcript, nothing on a live
+   * pane. The header owns the row; this only fills its end. */
+  headerTrailing?: ReactNode;
   onOpenSubagent?: (sessionId: string) => void;
   subagentAttention?: ReadonlyMap<string, string>;
   onRefreshSubagents?: () => Promise<void>;
@@ -339,6 +343,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   cwd,
   id,
   auxiliary,
+  headerTrailing,
   onOpenSubagent,
   subagentAttention,
   onRefreshSubagents,
@@ -732,6 +737,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         title={title || "Agent"}
         display={header}
         menu={headerMenu(cwd, headerMenuSeam, sessionId)}
+        trailingSlot={headerTrailing}
         subagentSlot={
           subagentRows.length > 0 ? (
             <SubagentMenu

@@ -430,7 +430,11 @@ function TurnRailInner({ scrollRef, contentRef, items }: TurnRailProps) {
   };
 
   return (
-    <nav className="turn-rail" aria-label="Turns" onKeyDown={onRailKeyDown}>
+    <nav
+      className={`turn-rail${openPreviewId !== null ? " is-preview-open" : ""}`}
+      aria-label="Turns"
+      onKeyDown={onRailKeyDown}
+    >
       <span className="turn-rail-thread" aria-hidden="true" />
       {turns.map((turn, index) => {
         if (measures === null) return null;

@@ -133,6 +133,27 @@
   white-space: nowrap;
 }
 
+/* The recovered reopen bar inside the agent header: the header's own row is
+   the transcript's one compact recovery row, so the bar drops its outer
+   margin and truncates instead of wrapping. The failed-reopen block drops
+   its box and keeps only the danger text. Descendants on purpose: the
+   shared bare rules in Workspace.css load after this sheet. */
+.workspace-agent-toolbar .workspace-session-recovered,
+.workspace-agent-toolbar .workspace-session-error {
+  min-width: 0;
+  flex: 0 1 auto;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.workspace-agent-toolbar .workspace-session-notice-text,
+.workspace-agent-toolbar .workspace-session-error-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .pane-header-menu {
   width: 220px;
   padding: var(--space-4);

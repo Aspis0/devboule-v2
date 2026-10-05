@@ -140,10 +140,11 @@ describe("turn rail computed styles", () => {
     const off = build(false);
     const on = build(true);
 
-    // The pane cap: min(760px, 100% of the 720 px parent) is 720 — the
-    // conversation is bounded by the pane and the chat cap in both states.
-    expect(getComputedStyle(off).maxWidth).toBe("min(760px, 100%)");
-    expect(getComputedStyle(on).maxWidth).toBe("min(760px, 100%)");
+    // The pane cap: min(760px, 100% - 32px of the 720 px parent) is 688 —
+    // the conversation is bounded by the pane and the chat cap in both
+    // states, inset like the composer card.
+    expect(getComputedStyle(off).maxWidth).toBe("min(760px, calc(100% - 32px))");
+    expect(getComputedStyle(on).maxWidth).toBe("min(760px, calc(100% - 32px))");
     // The gutter comes out of the column: the conversation's own padding
     // is the same with the rail on and off.
     expect(getComputedStyle(off).paddingLeft).toBe("16px");
@@ -335,6 +336,24 @@ describe("turn rail computed styles", () => {
     for (const rule of railRules) {
       expect(rule.body).not.toMatch(/transition|animation/);
     }
+  });
+
+  it("rests the rail invisible and answers hover, keyboard focus, or an open preview", () => {
+    railCss.inject([".turn-rail"]);
+    const rail = document.createElement("nav");
+    rail.className = "turn-rail";
+    document.body.appendChild(rail);
+    // At rest the rail is out of the reading path but still in the tab
+    // order: opacity hides, and happy-dom computes it.
+    expect(getComputedStyle(rail).opacity).toBe("0");
+    rail.remove();
+    // Hover and keyboard focus cannot be computed, so the rule text is the
+    // sanctioned proof for those two paths (cssProof.rulesFor).
+    expect(railCss.rulesFor(".workspace-conversation:hover .turn-rail")).toContain("opacity: 1");
+    expect(railCss.rulesFor(".workspace-conversation:focus-within .turn-rail")).toContain(
+      "opacity: 1",
+    );
+    expect(railCss.rulesFor(".turn-rail.is-preview-open")).toContain("opacity: 1");
   });
 
   it("resolves the rail's theme tokens in the dark theme as well", () => {

@@ -448,10 +448,18 @@
   flex: 1;
   min-height: 0;
   flex-direction: column;
-  /* Never wider than its parent: the box is fit-content, so an
-     unbreakable row could push it to the 760 cap and out of a narrower
-     pane, where the center panel's overflow: hidden clipped it. */
-  max-width: min(760px, 100%);
+  /* The width restores the fill the centering margins take away: auto
+     margins on a column flex item's cross axis cancel the stretch, so
+     without it the box shrink-wraps to its content and the lane width
+     follows the longest message instead of the pane. */
+  width: 100%;
+  /* Never wider than its parent, and inset like the composer: the 32 px
+     is this box's own side padding, so its outer edges land exactly on
+     the composer's card at every pane width, up to the 760 cap. (An
+     unbreakable row could otherwise push a fit-content box past the cap
+     and out of a narrower pane, where the center panel's overflow:
+     hidden clipped it.) */
+  max-width: min(760px, calc(100% - var(--space-32)));
   margin: 0 auto;
   gap: var(--space-8);
   padding: var(--space-4) var(--space-16) 0;
@@ -474,7 +482,9 @@
   display: flex;
   flex: none;
   flex-direction: column;
-  gap: var(--space-8);
+  /* No gap: the rhythm lives on the rows (see the spacing rules below),
+     so a turn boundary, a group and a compact edge each name one value. */
+  gap: 0;
 }
 
 /* The rail's gutter is reserved in the content box; the permission card
@@ -495,8 +505,11 @@
   flex: none;
   max-width: 100%;
   color: var(--ink);
-  font-size: var(--type-interface);
-  line-height: var(--leading-body);
+  /* Message body: 15px on a 21px line. The value is translated from the
+     reference message scale; every secondary line in the transcript
+     overrides down to --type-meta. */
+  font-size: 15px;
+  line-height: 21px;
   text-wrap: pretty;
   white-space: pre-wrap;
 }
@@ -510,9 +523,51 @@
   border-inline-start-style: dashed;
 }
 
+/* Transcript rhythm: every gap is the lower row's top margin, so a turn
+   boundary (16), an in-turn row (4) and a compact assistant edge (0) each
+   name one value and consecutive assistant texts touch. The two
+   first-child selectors cover the rail on and off: the rail's nav is the
+   content's first child only while it renders. */
+.workspace-chat-entry {
+  margin-top: var(--space-4);
+}
+
+/* An assistant row's standard padding; the compact edge below and the
+   turn boundary above both override it. */
+.workspace-chat-assistant {
+  margin-top: var(--space-12);
+}
+
+/* Same-turn flow: a tool or thought row inside the response, and the
+   assistant text that follows one, stay on the 4 px rhythm. */
+.workspace-chat-tool + .workspace-chat-assistant,
+.workspace-chat-tool-group + .workspace-chat-assistant,
+.workspace-chat-thought + .workspace-chat-assistant {
+  margin-top: var(--space-4);
+}
+
+.workspace-conversation-content > :first-child.workspace-chat-entry,
+.workspace-conversation-content > nav + .workspace-chat-entry {
+  margin-top: 0;
+}
+
+.workspace-chat-user + .workspace-chat-entry {
+  margin-top: var(--space-16);
+}
+
+.workspace-chat-user + .workspace-chat-user {
+  margin-top: var(--space-4);
+}
+
+.workspace-chat-assistant + .workspace-chat-assistant {
+  margin-top: 0;
+}
+
 .workspace-chat-user {
   align-self: flex-end;
   width: 100%;
+  /* A user row opens a turn: 16 separates it whatever came before. */
+  margin-top: var(--space-16);
 }
 
 .workspace-chat-label {
@@ -595,6 +650,7 @@
   color: var(--muted);
   font-family: var(--font-ui);
   font-size: var(--type-meta);
+  line-height: var(--leading-dense);
 }
 
 .workspace-chat-tool,
@@ -1048,6 +1104,7 @@
 
 .workspace-chat-typing {
   flex: none;
+  margin-top: var(--space-4);
   color: var(--silence);
   font-size: var(--type-meta);
 }

@@ -59,7 +59,10 @@ export function RecoveredSessionBar({
   // worded telling of the same failure.
   if (!isAgentKind(session.kind)) return null;
   const recovered = session.state.type === "recovered";
-  if (!recovered && !resumable) return null;
+  // A live transcript is never read-only: the daemon's verdict only opens
+  // this bar on a recovered one, so no live pane ever shows the journal
+  // note or the Reopen control.
+  if (!recovered) return null;
 
   const reopen = (): void => {
     if (resuming || !resumable) return;
