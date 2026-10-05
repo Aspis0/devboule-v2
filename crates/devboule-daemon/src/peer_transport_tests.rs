@@ -963,6 +963,23 @@ fn the_accept_loop_stops_on_the_listener_flag_alone() {
     let _ = accept.join();
 }
 
+/// A rebind drops the listener it replaces while its successor shares the
+/// stop flag: letting go of one must not stop the other.
+#[test]
+fn dropping_a_listener_does_not_stop_the_one_that_shares_its_flag() {
+    let stop = Arc::new(AtomicBool::new(false));
+    let loopback: Vec<IpAddr> = vec!["127.0.0.1".parse().expect("ip")];
+    let old = Tailnet::bind_peer_listener(&loopback, 0, Arc::clone(&stop)).expect("bind");
+    let successor = Tailnet::bind_peer_listener(&loopback, 0, Arc::clone(&stop)).expect("bind");
+
+    drop(old);
+
+    assert!(
+        !successor.is_stopped(),
+        "the replaced listener raised the flag its successor polls"
+    );
+}
+
 /// A transport that records every `pre_noise_filter` call and refuses, so
 /// the pairing branch is reachable while the accept path still reads the
 /// peer table for each connection.

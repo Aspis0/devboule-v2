@@ -769,12 +769,6 @@ impl PeerListener {
     }
 }
 
-impl Drop for PeerListener {
-    fn drop(&mut self) {
-        self.shutdown();
-    }
-}
-
 pub trait PeerTransport: Send + Sync {
     /// Bind the listener. `Err` means no listener at all (Tailscale absent, no
     /// tailnet address), and the caller reports that as the remote state.
@@ -1393,6 +1387,11 @@ pub fn accept_peers(
         // A failed spawn drops the guard with the closure, so the per-source
         // slot is released either way.
         continue;
+    }
+    // Not in `PeerListener`'s Drop: a rebind drops a listener whose successor
+    // shares the flag, and that must not stop the successor.
+    if let Some(listener) = &listener {
+        listener.shutdown();
     }
     // Bounded teardown. A parked pairing can wait up to `CONFIRM_WINDOW` for a
     // local answer, so joining every connection thread without a bound would
