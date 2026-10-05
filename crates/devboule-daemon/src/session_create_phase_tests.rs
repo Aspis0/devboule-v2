@@ -181,6 +181,9 @@ fn resolve_creation_inputs_honours_the_cwd_override_and_family_stamp() {
 /// a recovered row's stored `\\?\` cwd must be converted at the hand-off,
 /// or the recovered child's cmd.exe runs in `C:\Windows` while the row
 /// keeps the spelling it was written with.
+// `std::fs::canonicalize` mints the `\\?\` spelling only on Windows, so a
+// Unix temp dir cannot be the verbatim fixture these tests need.
+#[cfg(windows)]
 #[test]
 fn a_carried_verbatim_cwd_is_converted_for_the_child_and_recorded_raw() {
     let state = ServerState::new("create-phase-carried-cwd".to_string());
@@ -238,6 +241,9 @@ fn a_carried_verbatim_cwd_is_converted_for_the_child_and_recorded_raw() {
 /// Mutant: the birth row recording the child's plain cwd — the row keeps
 /// the workspace's stored verbatim spelling while the child and the wire
 /// metadata take the plain one.
+// `std::fs::canonicalize` mints the `\\?\` spelling only on Windows; see the
+// carried-cwd test above.
+#[cfg(windows)]
 #[test]
 fn the_birth_row_keeps_the_stored_verbatim_cwd_while_the_child_gets_plain() {
     let state = ServerState::new("create-phase-row-cwd".to_string());

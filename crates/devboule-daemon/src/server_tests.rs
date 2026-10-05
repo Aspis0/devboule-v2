@@ -2082,7 +2082,7 @@ fn a_vocabulary_read_answers_on_the_wire_as_the_spec_spells_it() {
 /// `probe_native_version` is the only function on the Claude vocabulary
 /// path that can start a process — a release build turns each entry into
 /// one `claude --version` — so the test counts entries at that seam on a
-/// synthetic native install (a `claude.exe` in a directory only this
+/// synthetic native install (a `claude` executable in a directory only this
 /// test scans), where the machine's own installs cannot reach the
 /// assertion. A cold read — version unknown — enters the seam exactly
 /// once, which is the honest cost the module doc states; a read whose
@@ -2091,8 +2091,18 @@ fn a_vocabulary_read_answers_on_the_wire_as_the_spec_spells_it() {
 #[test]
 fn a_claude_read_enters_the_version_probe_seam_only_while_the_version_is_unknown() {
     let temp = crate::test_dirs::test_temp_dir("devboule-vocabulary-seam");
-    let fake = temp.join("claude.exe");
+    let fake = temp.join(if cfg!(windows) {
+        "claude.exe"
+    } else {
+        "claude"
+    });
     std::fs::write(&fake, b"not really claude").expect("fake binary");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))
+            .expect("fake binary is executable");
+    }
 
     let state = ServerState::new("vocabulary-spawn-seam".to_string());
     let directories = vec![temp.clone()];
@@ -4045,6 +4055,9 @@ fn the_peer_table_is_loaded_once_and_refreshed_on_change() {
 /// stoppable. This is the machinery `PairingStart` relies on when it retries
 /// after the user starts Tailscale, exercised here with the stub transport
 /// (which binds loopback) so it needs no Tailscale.
+// The peer listener has no Unix implementation yet, so
+// `ensure_remote_listener` refuses there.
+#[cfg(windows)]
 #[test]
 fn the_remote_listener_starts_once_and_stops() {
     let (path, state) = temp_state("listener-lifecycle");

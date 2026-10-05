@@ -432,6 +432,13 @@ jobs:
         timeout-minutes: 10
         run: cargo test -p devboule-daemon --locked --test unix_client_e2e
 
+      # The ACP stub is a bin target, and a `--lib` test run builds no bin:
+      # the session tests spawn the stub from target/debug, so it must exist
+      # on disk before the whole-lib step (the Windows job gets it from
+      # `cargo test --workspace`).
+      - name: Build the ACP stub the session tests spawn
+        run: cargo build -p devboule-daemon --bin devboule-acp-stub --features test-support --locked
+
       # Slice 6: the whole daemon lib suite on macOS, not a filter — the PTY,
       # session and provider tests run here once they work on Unix.
       - name: Daemon lib tests (all)

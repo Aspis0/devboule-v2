@@ -8,6 +8,25 @@
 //! Predicate home: a predicate only one family's suites read stays in that
 //! family's own test support; the shared ones live here.
 
+/// A fixture project root that is absolute on the platform under test: the
+/// transcript views relativize only absolute paths, and a drive-letter path
+/// is relative on Unix.
+#[cfg(windows)]
+pub(crate) const FIXTURE_ROOT: &str = r"C:\work";
+#[cfg(not(windows))]
+pub(crate) const FIXTURE_ROOT: &str = "/work";
+
+/// A path under [`FIXTURE_ROOT`] spelled with the platform's own separators:
+/// a relativized remainder keeps the separators of the path it was cut from,
+/// so both sides of a comparison must be built the same way.
+pub(crate) fn fixture_path(relative: &str) -> std::path::PathBuf {
+    relative
+        .split('/')
+        .fold(std::path::PathBuf::from(FIXTURE_ROOT), |path, part| {
+            path.join(part)
+        })
+}
+
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,

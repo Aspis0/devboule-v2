@@ -2826,10 +2826,25 @@ mod tests {
 
     #[test]
     fn tool_call_forwards_kind_and_relativized_locations() {
-        let cwd = std::path::Path::new(r"C:\work");
-        let line = parse(
-            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01a06c70-ea2b-7882-ad27-aae8188fc243","update":{"sessionUpdate":"tool_call","toolCallId":"call-1","title":"Read lib.rs","status":"pending","kind":"read","locations":[{"path":"C:\\work\\src\\lib.rs","line":12}]}}}"#,
-        );
+        let cwd = std::path::Path::new(crate::test_support::FIXTURE_ROOT);
+        let line = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "01a06c70-ea2b-7882-ad27-aae8188fc243",
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "call-1",
+                    "title": "Read lib.rs",
+                    "status": "pending",
+                    "kind": "read",
+                    "locations": [{
+                        "path": crate::test_support::fixture_path("src/lib.rs").to_string_lossy(),
+                        "line": 12
+                    }]
+                }
+            }
+        });
         match view_from_envelope_in(&line, SESSION, Some(cwd)).as_slice() {
             [SessionEvent::AgentToolCall {
                 tool_call_id,
@@ -2855,10 +2870,23 @@ mod tests {
 
     #[test]
     fn tool_call_update_locations_replace_and_are_not_merged() {
-        let cwd = std::path::Path::new(r"C:\work");
-        let line = parse(
-            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01a06c70-ea2b-7882-ad27-aae8188fc243","update":{"sessionUpdate":"tool_call_update","toolCallId":"call-1","status":"completed","kind":"edit","locations":[{"path":"C:\\work\\src\\main.rs"}]}}}"#,
-        );
+        let cwd = std::path::Path::new(crate::test_support::FIXTURE_ROOT);
+        let line = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "01a06c70-ea2b-7882-ad27-aae8188fc243",
+                "update": {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "call-1",
+                    "status": "completed",
+                    "kind": "edit",
+                    "locations": [{
+                        "path": crate::test_support::fixture_path("src/main.rs").to_string_lossy()
+                    }]
+                }
+            }
+        });
         match view_from_envelope_in(&line, SESSION, Some(cwd)).as_slice() {
             [SessionEvent::AgentToolUpdate {
                 kind,

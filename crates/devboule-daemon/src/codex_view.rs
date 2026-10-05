@@ -2241,10 +2241,30 @@ mod tests {
 
     #[test]
     fn file_change_title_skips_a_pathless_first_change() {
-        let mut view = CodexView::new(Some(std::path::PathBuf::from(r"C:\w")));
-        let events = view.ingest(&parse(
-            r#"{"jsonrpc":"2.0","method":"item/started","params":{"item":{"type":"fileChange","id":"f1","status":"inProgress","changes":[{"kind":"delete"},{"kind":"update","path":"C:\\w\\src\\lib.rs"}]},"startedAtMs":1,"threadId":"th","turnId":"tu"}}"#,
-        ));
+        let mut view = CodexView::new(Some(std::path::PathBuf::from(
+            crate::test_support::FIXTURE_ROOT,
+        )));
+        let events = view.ingest(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "item/started",
+            "params": {
+                "item": {
+                    "type": "fileChange",
+                    "id": "f1",
+                    "status": "inProgress",
+                    "changes": [
+                        {"kind": "delete"},
+                        {
+                            "kind": "update",
+                            "path": crate::test_support::fixture_path("src/lib.rs").to_string_lossy()
+                        }
+                    ]
+                },
+                "startedAtMs": 1,
+                "threadId": "th",
+                "turnId": "tu"
+            }
+        }));
         let expected = std::path::PathBuf::from("src")
             .join("lib.rs")
             .to_string_lossy()

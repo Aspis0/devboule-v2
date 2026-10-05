@@ -14,14 +14,15 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// A child that stays alive and absorbs whatever is written to its stdin
-/// without ever answering: `ping -t` never reads the pipe (our frames sit
-/// in its buffer) and never writes anything a response could be mistaken
-/// for. A system binary, so the refusal test needs no `node` — whose
-/// execution on this box is guarded, and has been flaky (see the report).
+/// without ever answering: `ping -t` on Windows and `sleep` on Unix both
+/// hold the pipe open without reading it or writing anything a response
+/// could be mistaken for. A system binary, so the refusal test needs no
+/// `node`.
 fn absorbing_child() -> (
     std::process::Child,
     Arc<Mutex<Option<std::process::ChildStdin>>>,
 ) {
+    #[cfg(windows)]
     let mut child = std::process::Command::new("ping")
         .args(["-t", "127.0.0.1"])
         .stdin(Stdio::piped())
@@ -29,6 +30,14 @@ fn absorbing_child() -> (
         .stderr(Stdio::null())
         .spawn()
         .expect("ping is a Windows system binary");
+    #[cfg(unix)]
+    let mut child = std::process::Command::new("/bin/sleep")
+        .arg("600")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("/bin/sleep is a Unix system binary");
     let stdin = Arc::new(Mutex::new(Some(child.stdin.take().expect("stdin"))));
     (child, stdin)
 }

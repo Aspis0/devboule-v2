@@ -85,6 +85,9 @@ fn resume_locate_record_finds_the_row_by_id_and_keeps_its_own_refusals() {
 /// Mutant: the recorded cwd restored into the command as the row spells it —
 /// a legacy `\\?\` row must be converted at this hand-off, or the resumed
 /// child's cmd.exe runs in `C:\Windows` from a no-workspace session.
+// `std::fs::canonicalize` mints the `\\?\` spelling only on Windows, so a
+// Unix temp dir cannot be the verbatim fixture this test needs.
+#[cfg(windows)]
 #[test]
 fn a_recorded_verbatim_cwd_reaches_the_resumed_child_in_its_plain_spelling() {
     let fixture = ResumeFixture::new("stage-verbatim-cwd");

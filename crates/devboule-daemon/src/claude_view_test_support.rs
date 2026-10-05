@@ -8,9 +8,7 @@ use serde_json::{json, Value};
 use super::ClaudeView;
 
 pub(super) fn view() -> ClaudeView {
-    ClaudeView::new(Some(PathBuf::from(
-        r"C:\Users\gualt\AppData\Local\Temp\devboule-claude-perm2-allow-host-8r8qc09c",
-    )))
+    ClaudeView::new(Some(PathBuf::from(crate::test_support::FIXTURE_ROOT)))
 }
 
 // Reconstructed from recon/probes/claude-perm-probe2-allow-host.txt

@@ -139,21 +139,18 @@ mod tests {
         assert_ne!(a.pipe_name, b.pipe_name);
     }
 
+    #[cfg(windows)]
+    const RUNTIME_DIR: &str = r"C:\Users\Name With Spaces\AppData\Local\Devboule";
+    #[cfg(not(windows))]
+    const RUNTIME_DIR: &str = "/Users/Name With Spaces/AppData/Local/Devboule";
+
     #[test]
     fn lock_file_sits_inside_the_runtime_dir() {
-        let paths = RuntimePaths::from_dir(r"C:\Users\Name With Spaces\AppData\Local\Devboule");
-        assert_eq!(
-            paths.lock_file,
-            PathBuf::from(r"C:\Users\Name With Spaces\AppData\Local\Devboule\daemon.lock")
-        );
-        assert_eq!(
-            paths.journal_file(),
-            PathBuf::from(r"C:\Users\Name With Spaces\AppData\Local\Devboule\journal.db")
-        );
-        assert_eq!(
-            paths.device_file,
-            PathBuf::from(r"C:\Users\Name With Spaces\AppData\Local\Devboule\device.json")
-        );
+        let paths = RuntimePaths::from_dir(RUNTIME_DIR);
+        let root = PathBuf::from(RUNTIME_DIR);
+        assert_eq!(paths.lock_file, root.join("daemon.lock"));
+        assert_eq!(paths.journal_file(), root.join("journal.db"));
+        assert_eq!(paths.device_file, root.join("device.json"));
     }
 
     #[test]

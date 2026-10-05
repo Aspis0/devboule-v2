@@ -107,11 +107,11 @@ pub(super) fn plain_cwd(path: &Path) -> PathBuf {
 }
 
 /// What the filesystem says about a folder a delete is asked to judge.
-/// Only `NotFound` **on a present volume** is `Vanished`: an unassigned or
-/// deleted drive letter answers `NotFound` exactly like a deleted folder
-/// does, so the volume root — `X:\` or `\\server\share\` — must be there
-/// for that answer to be trusted. Every other metadata error is
-/// `Unavailable`, and a delete never acts on cannot-tell.
+/// Only `NotFound` **on a present volume** is `Vanished`: on Windows an
+/// unassigned or deleted drive letter answers `NotFound` exactly like a
+/// deleted folder does, so the volume root — `X:\` or `\\server\share\` —
+/// must be there for that answer to be trusted. Every other metadata error
+/// is `Unavailable`, and a delete never acts on cannot-tell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FolderPresence {
     Present,
@@ -119,27 +119,42 @@ pub(super) enum FolderPresence {
     Unavailable,
 }
 
-/// The volume root of `path` — `X:\`, `\\?\C:\`, `\\server\share\`: the
-/// path's disk/UNC prefix plus its root separator, which is itself statable.
-/// `None` for a path with no such prefix or no root separator (a relative
-/// path; a stored workspace path always has both), and the caller then
-/// answers `Unavailable`.
+/// The volume root of `path` — `X:\`, `\\?\C:\`, `\\server\share\` on
+/// Windows, `/` on Unix: the path's disk/UNC prefix or filesystem root
+/// plus its root separator, which is itself statable. `None` for a path
+/// with no such prefix or no root separator (a relative path; a stored
+/// workspace path always has both), and the caller then answers
+/// `Unavailable`.
 pub(super) fn volume_root(path: &Path) -> Option<PathBuf> {
-    use std::path::{Component, Prefix};
-    let mut components = path.components();
-    let prefix = match components.next()? {
-        Component::Prefix(prefix) => prefix,
-        _ => return None,
-    };
-    match components.next()? {
-        Component::RootDir => {}
-        _ => return None,
-    }
-    match prefix.kind() {
-        Prefix::Disk(_) | Prefix::VerbatimDisk(_) | Prefix::UNC(..) | Prefix::VerbatimUNC(..) => {
-            Some(PathBuf::from(prefix.as_os_str()).join(std::path::MAIN_SEPARATOR.to_string()))
+    #[cfg(not(windows))]
+    {
+        use std::path::Component;
+        match path.components().next()? {
+            Component::RootDir => Some(PathBuf::from(std::path::MAIN_SEPARATOR.to_string())),
+            _ => None,
         }
-        _ => None,
+    }
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        let mut components = path.components();
+        let prefix = match components.next()? {
+            Component::Prefix(prefix) => prefix,
+            _ => return None,
+        };
+        match components.next()? {
+            Component::RootDir => {}
+            _ => return None,
+        }
+        match prefix.kind() {
+            Prefix::Disk(_)
+            | Prefix::VerbatimDisk(_)
+            | Prefix::UNC(..)
+            | Prefix::VerbatimUNC(..) => {
+                Some(PathBuf::from(prefix.as_os_str()).join(std::path::MAIN_SEPARATOR.to_string()))
+            }
+            _ => None,
+        }
     }
 }
 

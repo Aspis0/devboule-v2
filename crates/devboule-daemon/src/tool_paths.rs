@@ -80,19 +80,17 @@ mod tests {
 
     #[test]
     fn path_outside_cwd_is_forwarded_absolute() {
-        let relativized = relativize_tool_path(
-            r"C:\Windows\Temp\secret.txt",
-            Some(Path::new(r"C:\Users\gualt\work")),
-        );
-        assert_eq!(relativized, r"C:\Windows\Temp\secret.txt");
+        let root = crate::test_support::FIXTURE_ROOT;
+        let outside = format!("{root}-elsewhere/secret.txt");
+        let relativized = relativize_tool_path(&outside, Some(Path::new(root)));
+        assert_eq!(relativized, outside);
     }
 
     #[test]
     fn path_under_cwd_is_relativized() {
-        let relativized = relativize_tool_path(
-            r"C:\Users\gualt\work\src\lib.rs",
-            Some(Path::new(r"C:\Users\gualt\work")),
-        );
+        let root = Path::new(crate::test_support::FIXTURE_ROOT);
+        let under = crate::test_support::fixture_path("src/lib.rs");
+        let relativized = relativize_tool_path(&under.to_string_lossy(), Some(root));
         assert_eq!(
             relativized,
             PathBuf::from("src").join("lib.rs").to_string_lossy()
