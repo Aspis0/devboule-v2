@@ -41,12 +41,14 @@ impl SingleInstanceLock {
     /// next to `daemon.lock` and is not a `RuntimePaths` field. The caller
     /// owns the directory — this only creates the file it locks.
     pub fn acquire_at(path: &Path) -> Result<Self, DaemonError> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)?;
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        // Owner-only from the first byte on Unix, mirroring the DACL the
+        // Windows path applies before serving: only the create is affected,
+        // an existing lock file keeps its mode.
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let file = options.open(path)?;
         if !try_lock_exclusive(&file)? {
             return Err(DaemonError::AlreadyRunning);
         }
@@ -91,7 +93,27 @@ fn try_lock_exclusive(file: &File) -> io::Result<bool> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+fn try_lock_exclusive(file: &File) -> io::Result<bool> {
+    use std::os::unix::io::AsRawFd;
+    // SAFETY: flock on our own open file; LOCK_NB keeps it non-blocking so
+    // a held lock answers instead of hanging the caller.
+    let held = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if held == 0 {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    // Held by another process: the same AlreadyRunning the Windows
+    // ERROR_LOCK_VIOLATION maps to. The lock dies with the fd, so a dead
+    // process cannot wedge a later one.
+    if error.raw_os_error() == Some(libc::EWOULDBLOCK) {
+        Ok(false)
+    } else {
+        Err(error)
+    }
+}
+
+#[cfg(all(not(windows), not(unix)))]
 fn try_lock_exclusive(_file: &File) -> io::Result<bool> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
@@ -99,7 +121,7 @@ fn try_lock_exclusive(_file: &File) -> io::Result<bool> {
     ))
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::paths::RuntimePaths;
@@ -149,6 +171,9 @@ mod tests {
     /// excludes this one. The byte this version locks is inside that range, so
     /// the two versions cannot both hold the daemon — which is what an app
     /// upgrade starts while its old daemon is still running.
+    /// Windows-only fixture: takes the old whole-file range with LockFileEx
+    /// directly, which has no Unix spelling.
+    #[cfg(windows)]
     #[test]
     fn a_whole_file_lock_from_an_older_daemon_still_excludes_this_one() {
         let (paths, _guard) = unique_dir();
@@ -195,6 +220,8 @@ mod tests {
     /// lock at once — same pipe name, two servers, split clients. The byte is
     /// taken here by its literal number, so moving `RECORD_CAPACITY` reddens
     /// this test before it ships the split.
+    /// Windows-only fixture: takes byte 4096 with LockFileEx directly.
+    #[cfg(windows)]
     #[test]
     fn the_lock_is_taken_at_the_literal_byte_4096() {
         let (paths, _guard) = unique_dir();
@@ -226,5 +253,23 @@ mod tests {
             }
             Err(error) => panic!("expected AlreadyRunning, got {error}"),
         }
+    }
+
+    /// The lock file is born owner-only: the record it will carry must never
+    /// sit world-readable, even briefly, however the umask reads. Fails
+    /// without the creation mode, and without a working Unix lock.
+    #[cfg(unix)]
+    #[test]
+    fn lock_file_is_born_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let (paths, _guard) = unique_dir();
+        paths.ensure_dir().expect("dir");
+        let _lock = SingleInstanceLock::acquire(&paths).expect("unix lock works");
+        let mode = std::fs::metadata(&paths.lock_file)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "lock file creation mode");
     }
 }

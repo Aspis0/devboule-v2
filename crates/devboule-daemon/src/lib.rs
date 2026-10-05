@@ -158,6 +158,8 @@ mod tool_paths;
 #[cfg(feature = "server")]
 mod tool_policy;
 mod transport;
+#[cfg(unix)]
+mod unix_modes;
 #[cfg(feature = "server")]
 mod usage_cost;
 #[cfg(feature = "server")]

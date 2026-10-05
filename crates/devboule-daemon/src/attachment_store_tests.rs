@@ -2298,3 +2298,37 @@ fn a_junction_in_the_root_is_not_part_of_the_stores_bytes() {
         "the walk charged this store for the tree the junction names"
     );
 }
+
+/// Attachment folders are owner-only on Unix: the open hardens what it
+/// finds and the session write hardens what it creates, however the
+/// umask reads.
+#[cfg(unix)]
+#[test]
+fn attachment_folders_are_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = TempDir::new();
+    let store = AttachmentStore::new(&temp.0);
+    let session = store.session("s.a.1").expect("session");
+    let bytes = clean_png(0x01);
+    let path = session
+        .materialize(&attachment("photo.png", "image/png", &encoded(&bytes)))
+        .expect("materialized");
+    let mut folders = Vec::new();
+    let mut current = path.parent();
+    while let Some(dir) = current {
+        if dir == temp.0 {
+            break;
+        }
+        folders.push(dir.to_path_buf());
+        current = dir.parent();
+    }
+    assert!(!folders.is_empty(), "materialized under the store root");
+    for folder in folders {
+        let mode = std::fs::metadata(&folder)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700, "owner-only folder: {}", folder.display());
+    }
+}
