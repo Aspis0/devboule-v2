@@ -2372,7 +2372,7 @@ pub fn kill_verified_daemon(paths: &RuntimePaths, expected_pid: u32) -> Result<(
 #[cfg(target_os = "macos")]
 fn daemon_exe_of(pid: u32) -> io::Result<PathBuf> {
     use std::os::unix::ffi::OsStrExt;
-    let mut buffer = vec![0 as libc::c_char; 1024];
+    let mut buffer = vec![0u8; 1024];
     // SAFETY: proc_pidpath fills the live buffer up to its length.
     let length = unsafe {
         libc::proc_pidpath(
