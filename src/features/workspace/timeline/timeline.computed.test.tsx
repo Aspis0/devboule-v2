@@ -36,16 +36,17 @@ describe("timeline computed styles", () => {
     document.body.appendChild(rail);
 
     const style = getComputedStyle(rail);
-    // Capped by the pane as well as the column: min(760px, 100% - 32px) —
-    // the chat cap still applies wherever the pane is wider, the box can
-    // never outgrow a narrower one, and its outer edges land on the
-    // composer's card at every width.
-    expect(style.maxWidth).toBe("min(760px, calc(100% - 32px))");
+    // Capped by the pane as well as the column: width 760 bound by
+    // max-width calc(100% - 32px) — the chat cap still applies wherever
+    // the pane is wider, the box can never outgrow a narrower one, and
+    // its outer edges land on the composer's card at every width.
+    expect(style.maxWidth).toBe("calc(100% - 32px)");
     expect(style.marginLeft).toBe("auto");
     expect(style.marginRight).toBe("auto");
-    // Fills the pane up to the cap: width 100% with the auto margins keeps
-    // the column centred, instead of shrink-wrapping to the longest row.
-    expect(style.width).toBe("100%");
+    // Fills the pane up to the cap: a definite width with the auto margins
+    // keeps the column centred, instead of shrink-wrapping to the longest
+    // row. Shared with the composer card and the queue track by one rule.
+    expect(style.width).toBe("760px");
     expect(style.paddingTop).toBe("4px");
     expect(style.paddingRight).toBe("16px");
     expect(style.paddingBottom).toBe("0px");

@@ -58,12 +58,20 @@
   align-items: center;
   justify-content: center;
   /* The target, WCAG 2.5.8's 24 px minimum; the glyph it holds keeps the
-     spec's 5/8/9 — only the button box is sized here. */
+     spec's 5/8/9 — only the button box is sized here. Inert while the rail
+     rests hidden, so a touch tap (no hover to reveal first) cannot fire an
+     invisible target: keyboard focus still lands, and focus reveals. */
   width: 24px;
   height: 24px;
   padding: 0;
   background: transparent;
   cursor: pointer;
+  pointer-events: none;
+}
+
+.workspace-conversation:hover .turn-rail .turn-rail-dot,
+.workspace-conversation:focus-within .turn-rail .turn-rail-dot,
+.turn-rail.is-preview-open .turn-rail-dot {
   pointer-events: auto;
 }
 

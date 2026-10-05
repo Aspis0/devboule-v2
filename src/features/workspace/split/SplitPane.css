@@ -167,7 +167,7 @@
   }
 
   .workspace-split-pane .workspace-composer-wrap {
-    padding: var(--space-4) var(--space-12) var(--space-8);
+    padding: var(--space-4) 0 var(--space-8);
   }
 
   .workspace-split-pane .workspace-composer {

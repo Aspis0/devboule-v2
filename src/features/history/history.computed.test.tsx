@@ -227,8 +227,8 @@ describe("History day headings (computed styles, real history.css)", () => {
     const style = getComputedStyle(heading);
     expect(style.display).toBe("flex");
     expect(style.textTransform).toBe("uppercase");
-    // Dark --muted is #aea598.
-    expect(style.color).toBe("#aea598");
+    // Dark --muted is #b0a79a.
+    expect(style.color).toBe("#b0a79a");
   });
 
   it.each(["light", "dark"] as const)(

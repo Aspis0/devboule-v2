@@ -89,11 +89,11 @@ describe("turn rail computed styles", () => {
     };
 
     // Rail off: no sibling takes an inset; the composer keeps its 12 and the
-    // track keeps the composer's box.
+    // track shares the lane rule, so it keeps the composer's box.
     const off = build(false);
     expect(getComputedStyle(off.aux).marginLeft).toBe("");
     expect(getComputedStyle(off.track).paddingLeft).toBe("");
-    expect(getComputedStyle(off.track).maxWidth).toBe("100%");
+    expect(getComputedStyle(off.track).maxWidth).toBe("calc(100% - 32px)");
     expect(getComputedStyle(off.composer).paddingLeft).toBe("12px");
     off.shell.remove();
 
@@ -104,7 +104,7 @@ describe("turn rail computed styles", () => {
     const on = build(true);
     expect(getComputedStyle(on.aux).marginLeft).toBe("32px");
     expect(getComputedStyle(on.track).paddingLeft).toBe("");
-    expect(getComputedStyle(on.track).maxWidth).toBe("100%");
+    expect(getComputedStyle(on.track).maxWidth).toBe("calc(100% - 32px)");
     expect(getComputedStyle(on.composer).paddingLeft).toBe("48px");
     on.shell.remove();
   });
@@ -140,11 +140,11 @@ describe("turn rail computed styles", () => {
     const off = build(false);
     const on = build(true);
 
-    // The pane cap: min(760px, 100% - 32px of the 720 px parent) is 688 —
-    // the conversation is bounded by the pane and the chat cap in both
-    // states, inset like the composer card.
-    expect(getComputedStyle(off).maxWidth).toBe("min(760px, calc(100% - 32px))");
-    expect(getComputedStyle(on).maxWidth).toBe("min(760px, calc(100% - 32px))");
+    // The pane cap: width 760 bound by max-width calc(100% - 32px) of the
+    // 720 px parent — the conversation is bounded by the pane and the chat
+    // cap in both states, inset like the composer card.
+    expect(getComputedStyle(off).maxWidth).toBe("calc(100% - 32px)");
+    expect(getComputedStyle(on).maxWidth).toBe("calc(100% - 32px)");
     // The gutter comes out of the column: the conversation's own padding
     // is the same with the rail on and off.
     expect(getComputedStyle(off).paddingLeft).toBe("16px");
@@ -312,12 +312,15 @@ describe("turn rail computed styles", () => {
     ).toContain("display: block");
   });
 
-  it("keeps the dot a pointer target with an accent focus ring and no motion", () => {
+  it("keeps the dot a keyboard target with an accent focus ring and no motion", () => {
     railCss.inject([".turn-rail", ".turn-rail-dot", ".turn-rail-dot:focus-visible"]);
     const dot = document.createElement("button");
     dot.className = "turn-rail-dot";
     document.body.appendChild(dot);
-    expect(getComputedStyle(dot).pointerEvents).toBe("auto");
+    // Inert while the rail rests hidden — a touch tap cannot fire what it
+    // cannot see — and answering under the same reveal as the rail itself.
+    // Opacity hides without touching tab order, so the keyboard still lands.
+    expect(getComputedStyle(dot).pointerEvents).toBe("none");
     expect(getComputedStyle(dot).backgroundColor).toBe("transparent");
     // WCAG 2.5.8's 24 px minimum target — only the button box is sized
     // here; the glyph inside stays the spec's 5/8/9.
@@ -326,6 +329,15 @@ describe("turn rail computed styles", () => {
     dot.remove();
     expect(railCss.rulesFor(".turn-rail-dot:focus-visible")).toContain("outline: 2px solid");
     expect(railCss.rulesFor(".turn-rail-dot:focus-visible")).toContain("#bd4a26");
+    expect(railCss.rulesFor(".workspace-conversation:hover .turn-rail .turn-rail-dot")).toContain(
+      "pointer-events: auto",
+    );
+    expect(
+      railCss.rulesFor(".workspace-conversation:focus-within .turn-rail .turn-rail-dot"),
+    ).toContain("pointer-events: auto");
+    expect(railCss.rulesFor(".turn-rail.is-preview-open .turn-rail-dot")).toContain(
+      "pointer-events: auto",
+    );
 
     // The working pulse is the one animation this design defines; the rail
     // adds no transition or animation of its own.

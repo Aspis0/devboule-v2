@@ -9,7 +9,7 @@ import type { AgentFinished } from "../../../lib/agentSession";
 import { TurnFooter } from "./TurnFooter";
 
 const FINISHED: AgentFinished = {
-  stopReason: "end_turn",
+  stopReason: "error",
   modelId: "grok-4.6",
   usage: {
     inputTokens: 20753,
@@ -50,20 +50,36 @@ afterEach(async () => {
 });
 
 describe("the turn footer's short line", () => {
+  it("takes no row at all for a normally finished turn", async () => {
+    await render({ ...FINISHED, stopReason: "end_turn" });
+    expect(container.textContent).toBe("");
+
+    await render({ ...FINISHED, stopReason: "completed" });
+    expect(container.textContent).toBe("");
+  });
+
   it("names the model, the stop reason and the cost, and nothing else", async () => {
     await render(FINISHED);
 
     expect(container.querySelector(".turn-footer-line")?.textContent).toBe(
-      "model grok-4.6 · stopped: end_turn · $0.0055",
+      "model grok-4.6 · stopped: error · $0.0055",
     );
     // The accounting sits in the disclosure, not in the line at a glance.
     expect(container.querySelector(".turn-footer-line")?.textContent).not.toContain("20,753");
   });
 
-  it("omits a value the daemon did not send rather than printing an empty one", async () => {
-    await render({ stopReason: "end_turn" });
+  it("keeps a cancelled or maxed-out turn's row", async () => {
+    await render({ stopReason: "cancelled" });
+    expect(container.querySelector(".turn-footer-line")?.textContent).toBe("stopped: cancelled");
 
-    expect(container.querySelector(".turn-footer-line")?.textContent).toBe("stopped: end_turn");
+    await render({ stopReason: "max_tokens" });
+    expect(container.querySelector(".turn-footer-line")?.textContent).toBe("stopped: max_tokens");
+  });
+
+  it("omits a value the daemon did not send rather than printing an empty one", async () => {
+    await render({ stopReason: "error" });
+
+    expect(container.querySelector(".turn-footer-line")?.textContent).toBe("stopped: error");
   });
 
   it("renders nothing at all for a turn that has not finished", async () => {
@@ -73,9 +89,9 @@ describe("the turn footer's short line", () => {
   });
 
   it("prints no cost figure for a cost of zero", async () => {
-    await render({ stopReason: "end_turn", usage: { costUsd: 0 } });
+    await render({ stopReason: "error", usage: { costUsd: 0 } });
 
-    expect(container.querySelector(".turn-footer-line")?.textContent).toBe("stopped: end_turn");
+    expect(container.querySelector(".turn-footer-line")?.textContent).toBe("stopped: error");
   });
 });
 
@@ -117,7 +133,7 @@ describe("the turn footer's token disclosure", () => {
   });
 
   it("offers no disclosure when the daemon sent no usage", async () => {
-    await render({ stopReason: "end_turn", modelId: "grok" });
+    await render({ stopReason: "error", modelId: "grok" });
 
     expect(disclosure()).toBeNull();
   });

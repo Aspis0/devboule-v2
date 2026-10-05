@@ -245,9 +245,9 @@
 
   --ink: #d9d1c4;
   --ink-soft: #c8bfb0;
-  /* Secondary text holds 6.97:1 on the app ground: the warm hue kept,
-     lightness only. */
-  --muted: #aea598;
+  /* One dark secondary tone across slices: warm hue kept, lightness only.
+     6.97:1 on the app, transcript and side grounds. */
+  --muted: #b0a79a;
 
   --line: #382f27;
   --line-strong: #4d4237;

@@ -361,7 +361,7 @@ describe("a pane too small to read at full size", () => {
       /font-size:\s*var\(--type-small\)/,
     );
     expect(bodyOf(query, ".workspace-split-pane .workspace-composer-wrap")).toMatch(
-      /padding:\s*var\(--space-4\) var\(--space-12\) var\(--space-8\)/,
+      /padding:\s*var\(--space-4\) 0 var\(--space-8\)/,
     );
   });
 

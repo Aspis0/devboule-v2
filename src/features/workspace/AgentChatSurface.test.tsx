@@ -411,7 +411,7 @@ describe("AgentChatSurface", () => {
       channelHarness.emit?.({ type: "agent_message", messageId: "answer-1", text: "lo" });
       channelHarness.emit?.({
         type: "agent_finished",
-        stopReason: "end_turn",
+        stopReason: "error",
         modelId: "grok",
         usage: { totalTokens: 3 },
       });
@@ -419,7 +419,7 @@ describe("AgentChatSurface", () => {
 
     expect(container.textContent).toContain("Hello");
     expect(container.querySelector(".turn-footer-line")?.textContent).toBe(
-      "model grok · stopped: end_turn",
+      "model grok · stopped: error",
     );
     // The ledger behind the line's disclosure: rendered, closed.
     expect(container.querySelector(".turn-footer-detail")?.hasAttribute("open")).toBe(false);
@@ -441,7 +441,7 @@ describe("AgentChatSurface", () => {
     await act(async () => {
       channelHarness.emit?.({
         type: "agent_finished",
-        stopReason: "end_turn",
+        stopReason: "error",
         modelId: "grok-4.6",
         usage: {
           inputTokens: 20753,
@@ -466,7 +466,7 @@ describe("AgentChatSurface", () => {
     await act(async () => {
       channelHarness.emit?.({
         type: "agent_finished",
-        stopReason: "end_turn",
+        stopReason: "error",
         modelId: "z-ai/glm-5.3-flash",
         usage: { inputTokens: 25848, outputTokens: 3, totalTokens: 25851 },
       });
@@ -480,7 +480,7 @@ describe("AgentChatSurface", () => {
     await act(async () => {
       channelHarness.emit?.({
         type: "agent_finished",
-        stopReason: "end_turn",
+        stopReason: "error",
         modelId: "claude-opus-5[1m]",
         usage: { inputTokens: 2, outputTokens: 4, costUsd: 0 },
       });

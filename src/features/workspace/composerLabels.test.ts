@@ -128,10 +128,10 @@ describe("the composer chrome's pinned values", () => {
     expect(rules).toContain("box-shadow: 0 0 0 2px color-mix(in srgb, #bd4a26 10%, transparent)");
   });
 
-  it("caps the command menu at the wrap's content box, not its padding box", () => {
+  it("caps the command menu on the lane's own inset", () => {
     const css = assembleCssProof(OWNED_SHEETS);
     const rules = css.rulesFor(".workspace-command-menu");
-    expect(rules).toContain("max-width: calc(100% - (24px * 2))");
+    expect(rules).toContain("max-width: calc(100% - 32px)");
     expect(rules).not.toContain("max-width: 100%");
   });
 

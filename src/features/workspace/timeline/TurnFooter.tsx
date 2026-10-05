@@ -35,9 +35,16 @@ function detailCopy(finished: AgentFinished): string | null {
  * The line is what a reader glances at; the ledger behind it answers "what did
  * that turn spend", and it is a <details> so the keyboard drives it without a
  * key handler and a screen reader gets the native disclosure for free.
+ * A normally finished turn takes no row at all: the reply speaks for
+ * itself and the composer's meter keeps the spend.
  */
 export function TurnFooter({ finished }: { finished: AgentFinished | null }) {
-  if (finished === null) return null;
+  if (
+    finished === null ||
+    finished.stopReason === "completed" ||
+    finished.stopReason === "end_turn"
+  )
+    return null;
   const summary = shortCopy(finished);
   if (summary === null) return null;
   const ledger = detailCopy(finished);

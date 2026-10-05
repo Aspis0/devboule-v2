@@ -76,6 +76,9 @@ const CLAIMED_PAIRS: ReadonlyArray<{ text: string; ground: string; why: string }
   { text: "--ink-soft", ground: "--panel-card", why: "secondary text on cards" },
   { text: "--ink-soft", ground: "--ground-center", why: "secondary text on the transcript" },
   { text: "--muted", ground: "--panel-card", why: "metadata text on cards" },
+  { text: "--muted", ground: "--panel-menu", why: "secondary text in menus and popovers" },
+  { text: "--muted", ground: "--fill-tool", why: "secondary text on tool rows" },
+  { text: "--muted", ground: "--fill-selected", why: "secondary text on the selected row" },
   {
     text: "--muted",
     ground: "--ground-center",
@@ -96,11 +99,25 @@ const CLAIMED_PAIRS: ReadonlyArray<{ text: string; ground: string; why: string }
 ];
 
 /**
- * Secondary text holds the reference muted contrast on the app ground, in
- * both themes: the warm hue kept, lightness only.
+ * Secondary text at the reference 6.97 floor, per theme and ground: the
+ * grounds dark muted clears it on (app, transcript, side) and the ones
+ * light muted clears it on (app, transcript, side, cards, tool rows).
+ * Dark cards, menus, tool rows and selected fills stay below the
+ * reference floor — they hold the 4.5 SPEC pairs below, never less.
  */
-const SECONDARY_FLOOR_697: ReadonlyArray<{ text: string; ground: string; why: string }> = [
-  { text: "--muted", ground: "--ground-app", why: "secondary text on the app ground" },
+const SECONDARY_FLOOR_697: ReadonlyArray<{
+  theme: "light" | "dark";
+  ground: string;
+  why: string;
+}> = [
+  { theme: "dark", ground: "--ground-app", why: "secondary text on the app ground" },
+  { theme: "dark", ground: "--ground-center", why: "secondary text on the transcript" },
+  { theme: "dark", ground: "--panel-side", why: "secondary text on the sidebar" },
+  { theme: "light", ground: "--ground-app", why: "secondary text on the app ground" },
+  { theme: "light", ground: "--ground-center", why: "secondary text on the transcript" },
+  { theme: "light", ground: "--panel-side", why: "secondary text on the sidebar" },
+  { theme: "light", ground: "--panel-card", why: "secondary text on cards" },
+  { theme: "light", ground: "--fill-tool", why: "secondary text on tool rows" },
 ];
 /**
  * The dark primary ink sits on these grounds as body text; the slice
@@ -188,24 +205,18 @@ describe("palette contrast (both themes, from tokens.css)", () => {
     }
   }
 
-  for (const [theme, vars] of [
-    ["light", lightVars],
-    ["dark", darkVars],
-  ] as const) {
-    for (const pair of SECONDARY_FLOOR_697) {
-      it(`${theme}: ${pair.text} on ${pair.ground} ≥ 6.97 (${pair.why})`, () => {
-        const text = vars.get(pair.text);
-        const ground = vars.get(pair.ground);
-        expect(text, `${pair.text} missing from the ${theme} block`).toMatch(/^#[0-9a-fA-F]{6}$/);
-        expect(ground, `${pair.ground} missing from the ${theme} block`).toMatch(
-          /^#[0-9a-fA-F]{6}$/,
-        );
-        const ratio = contrastRatio(text!, ground!);
-        expect(ratio, `${pair.text} ${text} on ${pair.ground} ${ground}`).toBeGreaterThanOrEqual(
-          6.97,
-        );
-      });
-    }
+  for (const pair of SECONDARY_FLOOR_697) {
+    const vars = pair.theme === "light" ? lightVars : darkVars;
+    it(`${pair.theme}: --muted on ${pair.ground} ≥ 6.97 (${pair.why})`, () => {
+      const text = vars.get("--muted");
+      const ground = vars.get(pair.ground);
+      expect(text, `--muted missing from the ${pair.theme} block`).toMatch(/^#[0-9a-fA-F]{6}$/);
+      expect(ground, `${pair.ground} missing from the ${pair.theme} block`).toMatch(
+        /^#[0-9a-fA-F]{6}$/,
+      );
+      const ratio = contrastRatio(text!, ground!);
+      expect(ratio, `--muted ${text} on ${pair.ground} ${ground}`).toBeGreaterThanOrEqual(6.97);
+    });
   }
 
   for (const entry of DARK_INK_FLOOR_7) {

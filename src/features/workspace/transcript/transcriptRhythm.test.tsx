@@ -23,6 +23,10 @@ const RHYTHM_SELECTORS = [
   ".workspace-chat-tool + .workspace-chat-assistant",
   ".workspace-chat-tool-group + .workspace-chat-assistant",
   ".workspace-chat-thought + .workspace-chat-assistant",
+  ".workspace-chat-system + .workspace-chat-assistant",
+  ".workspace-chat-permission-request + .workspace-chat-assistant",
+  ".workspace-chat-daemon-notice + .workspace-chat-assistant",
+  ".workspace-chat-a2a-message + .workspace-chat-assistant",
   ".workspace-conversation-content > :first-child.workspace-chat-entry",
   ".workspace-conversation-content > nav + .workspace-chat-entry",
   ".workspace-chat-user",
@@ -59,15 +63,16 @@ describe("transcript rhythm", () => {
       row("div", "workspace-chat-entry workspace-chat-user"),
       row("div", "workspace-chat-entry workspace-chat-user"),
       row("div", "workspace-chat-entry workspace-chat-assistant"),
-      row("div", "workspace-chat-entry workspace-chat-system"),
+      row("div", "workspace-chat-entry workspace-chat-error"),
       row("div", "workspace-chat-entry workspace-chat-assistant"),
     );
     document.body.appendChild(content);
 
     // first 0; assistant after user 16; tool in turn 4; assistant after
     // tool 4; assistant after assistant 0; user after assistant 16; user
-    // after user 4; assistant after user 16; system in turn 4; assistant
-    // after a notice back on the standard 12.
+    // after user 4; assistant after user 16; error in turn 4; assistant
+    // after an error opens on the standard 12 — a failed turn is a
+    // boundary, while a notice continues the run at 0 (next test).
     expect(margins(content)).toEqual([
       "0px",
       "16px",
@@ -77,6 +82,41 @@ describe("transcript rhythm", () => {
       "16px",
       "4px",
       "16px",
+      "4px",
+      "12px",
+    ]);
+    content.remove();
+  });
+
+  it("continues an assistant run across system lines and cards", () => {
+    workspaceCss.inject(RHYTHM_SELECTORS);
+    const content = document.createElement("div");
+    content.className = "workspace-conversation-content";
+    content.append(
+      row("div", "workspace-chat-entry workspace-chat-user"),
+      row("div", "workspace-chat-entry workspace-chat-assistant"),
+      row("div", "workspace-chat-entry workspace-chat-system"),
+      row("div", "workspace-chat-entry workspace-chat-assistant"),
+      row("details", "workspace-chat-entry workspace-chat-tool"),
+      row("div", "workspace-chat-entry workspace-chat-permission-request"),
+      row("div", "workspace-chat-entry workspace-chat-assistant"),
+      row("div", "workspace-chat-entry workspace-chat-error"),
+      row("div", "workspace-chat-entry workspace-chat-assistant"),
+    );
+    document.body.appendChild(content);
+
+    // first row 0; assistant after user 16; system in turn 4; assistant
+    // after a notice continues the run at 0; tool in turn 4; card in
+    // turn 4; assistant after a card 4; error in turn 4; assistant after
+    // an error opens on the standard 12 — a failed turn is a boundary.
+    expect(margins(content)).toEqual([
+      "0px",
+      "16px",
+      "4px",
+      "0px",
+      "4px",
+      "4px",
+      "4px",
       "4px",
       "12px",
     ]);

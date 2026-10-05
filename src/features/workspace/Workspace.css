@@ -443,38 +443,35 @@
   font-size: var(--type-meta);
 }
 
+/* The one centered column the transcript, the queued follow-ups and the
+   composer share: a single width rule, so their edges cannot diverge.
+   The width is definite (never shrink-wrapped to the longest row) and the
+   max binds it to the pane; together they act as the 760 cap. The 32 px
+   is the lane's inset from the pane — the wrap carries no side padding of
+   its own — and matches the conversation's own side padding. */
+.workspace-conversation,
+.workspace-composer-track,
+.workspace-composer {
+  width: 760px;
+  max-width: calc(100% - var(--space-32));
+  margin: 0 auto;
+}
+
 .workspace-conversation {
   display: flex;
   flex: 1;
   min-height: 0;
   flex-direction: column;
-  /* The width restores the fill the centering margins take away: auto
-     margins on a column flex item's cross axis cancel the stretch, so
-     without it the box shrink-wraps to its content and the lane width
-     follows the longest message instead of the pane. */
-  width: 100%;
-  /* Never wider than its parent, and inset like the composer: the 32 px
-     is this box's own side padding, so its outer edges land exactly on
-     the composer's card at every pane width, up to the 760 cap. (An
-     unbreakable row could otherwise push a fit-content box past the cap
-     and out of a narrower pane, where the center panel's overflow:
-     hidden clipped it.) */
-  max-width: min(760px, calc(100% - var(--space-32)));
-  margin: 0 auto;
   gap: var(--space-8);
   padding: var(--space-4) var(--space-16) 0;
   overflow-y: auto;
   overflow-anchor: none;
 }
 
-/* A short diff would otherwise shrink the column to its own width. */
-.workspace-tool-pane {
-  width: 100%;
-}
-
 /* The Diff tab is a code surface, not a chat column: full main-pane width.
    The File tab keeps the chat cap, its Markdown column being capped by spec. */
 .workspace-tool-pane-diff {
+  width: 100%;
   max-width: none;
 }
 
@@ -543,6 +540,19 @@
 .workspace-chat-tool + .workspace-chat-assistant,
 .workspace-chat-tool-group + .workspace-chat-assistant,
 .workspace-chat-thought + .workspace-chat-assistant {
+  margin-top: var(--space-4);
+}
+
+/* An assistant run continues across a system line with no break: the reply
+   after a notice is still the same turn's voice. Cards are heavier blocks,
+   so the text after one takes the 4 px rhythm instead of touching. */
+.workspace-chat-system + .workspace-chat-assistant {
+  margin-top: 0;
+}
+
+.workspace-chat-permission-request + .workspace-chat-assistant,
+.workspace-chat-daemon-notice + .workspace-chat-assistant,
+.workspace-chat-a2a-message + .workspace-chat-assistant {
   margin-top: var(--space-4);
 }
 
@@ -1186,15 +1196,9 @@
 .workspace-composer-wrap {
   position: relative;
   flex: none;
-  padding: var(--space-4) var(--space-16) var(--space-12);
-}
-
-/* The queued follow-ups sit on the composer's axis: the same 760 column,
-   centred the same way, so a row above the card never drifts off it. */
-.workspace-composer-track {
-  width: 760px;
-  max-width: 100%;
-  margin: 0 auto;
+  /* No side padding: the lane rule insets the card and the track, so a
+     second inset here would drift them off the transcript's edges. */
+  padding: var(--space-4) 0 var(--space-12);
 }
 
 .workspace-command-menu {
@@ -1203,9 +1207,10 @@
   left: 50%;
   z-index: 2;
   width: 760px;
-  /* An absolute element's 100% is the wrap's padding box, not its content
-     box: capped at 48 px short, the menu matches the card at every width. */
-  max-width: calc(100% - (var(--space-24) * 2));
+  /* An absolute element's 100% is the wrap's padding box — the pane, now
+     that the wrap carries no side padding — so 32 px short matches the
+     lane's own inset and the menu sits on the card's edges. */
+  max-width: calc(100% - var(--space-32));
   transform: translateX(-50%);
   display: flex;
   /* A window-height budget, so it is charged to the band like every other one:
@@ -1282,9 +1287,7 @@
 }
 
 .workspace-composer {
-  width: 760px;
-  max-width: 100%;
-  margin: 0 auto;
+  /* Sized by the shared lane rule above. */
   /* One line of text plus the control row, and no more until the textarea
      grows: the box must not read as an empty panel. The trailing 2px is the
      box's own 1px border a side — without it the floor sits under the height
