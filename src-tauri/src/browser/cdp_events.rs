@@ -1,4 +1,4 @@
-//! One event subscription per browser page, and the quiet it reports.
+//! One browser page's event ingestion, and the quiet it reports.
 //!
 //! Settling is the whole reason this exists. An action's answer is only worth
 //! anything if the page it happened on has stopped moving, and the way to know
@@ -10,25 +10,17 @@
 //! a move of the address with no load at all (`pushState`, a hash change),
 //! which the owner of the tab is told about through [`Reports`].
 //!
-//! One receiver per event per page, installed when the page is created and
-//! never removed: the handler belongs to the child webview, which a close
-//! disposes of, and a page watched twice would move its own counter twice. What
-//! a close does drop is the counter, so the map holds only live tabs. A
-//! websocket page has no receiver to install: its reader hands back one stream,
-//! and [`watch_ws`] drains it into the same listener.
+//! The two transports live beside this file and feed the same [`Listener`]:
+//! `cdp_events_windows.rs` installs one receiver per event on a WebView2 child,
+//! and `cdp_ws_events.rs` drains a websocket reader's streams. Nothing here
+//! knows which one carried an event.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::json;
-use tauri::{AppHandle, Manager};
-use tokio::sync::Notify;
 
-use super::cdp::{Bounded, Page as _, WebviewPage};
-use super::cdp_ws::{WsEvent, WsEvents};
 use super::console;
 use super::deadline::Deadline;
 use super::frames::{Frames, Observed};
@@ -40,18 +32,6 @@ pub const QUIET: Duration = Duration::from_millis(300);
 /// answer is the page's state as far as it got, which is what a caller can
 /// see anyway.
 pub const SETTLE_CAP: Duration = Duration::from_secs(3);
-
-/// The events one page is watched for. `DOM.documentUpdated` needs no enable;
-/// `Page.*` does, which is why [`watch`] enables the page before asking for
-/// them.
-#[cfg(windows)]
-const WATCHED: [&str; 5] = [
-    "DOM.documentUpdated",
-    "Page.frameNavigated",
-    "Page.navigatedWithinDocument",
-    "Page.loadEventFired",
-    "Page.frameStoppedLoading",
-];
 
 /// The domains whose events are a page's own voice, enabled on the blank
 /// bootstrap before it loads anything by [`listen`].
@@ -133,21 +113,31 @@ pub fn forget(id: &str) {
     }
 }
 
-/// Ask for the page's own events and learn which frame is the tab's own.
+fn bump(id: &str) {
+    count(id, |counters| {
+        counters.moved = counters.moved.wrapping_add(1);
+    });
+}
+
+fn bump_document(id: &str) {
+    count(id, |counters| {
+        counters.documents = counters.documents.wrapping_add(1);
+    });
+}
+
+fn count(id: &str, update: impl FnOnce(&mut Counters)) {
+    let mut pages = QUIET_SIGNAL.lock().expect("browser page signals poisoned");
+    if let Some(page) = pages.as_mut().and_then(|pages| pages.get_mut(id)) {
+        update(page);
+    }
+}
+
+/// `Page.enable` and the frame tree, into frames a listener already holds.
 ///
 /// `Page.enable` is what makes `Page.*` arrive at all, and the frame tree is
 /// what makes a same-document move the tab's address rather than an iframe's.
-/// A failure is reported and nothing else is done: the events that do arrive
-/// are still counted, and `frameNavigated` learns the frame a moment later.
-async fn page_events(page: &dyn super::cdp::Page, id: &str) -> Arc<Frames> {
-    let frames = Arc::new(Frames::default());
-    ask_for_events(page, id, &frames).await;
-    frames
-}
-
-/// The same two calls, into frames a listener already holds. The websocket
-/// listener is running before this is asked for, so the frames it reads are
-/// the ones learned here.
+/// A failure is reported and nothing else is done: a settle without the event
+/// falls back to its cap, and `frameNavigated` learns the frame a moment later.
 async fn ask_for_events(page: &dyn super::cdp::Page, id: &str, frames: &Arc<Frames>) {
     if let Err(error) = page.call("Page.enable", json!({})).await {
         eprintln!("devboule: browser page {id} will not report its loads: {error}");
@@ -155,195 +145,6 @@ async fn ask_for_events(page: &dyn super::cdp::Page, id: &str, frames: &Arc<Fram
     match page.call("Page.getFrameTree", json!({})).await {
         Ok(tree) => frames.learn_from_tree(&tree),
         Err(error) => eprintln!("devboule: browser page {id} has no known top frame: {error}"),
-    }
-}
-
-/// Watch a page for as long as `deadline` allows. What is not installed in time
-/// is not installed: the tab is already open, and a settle without the event
-/// falls back to its cap.
-#[cfg(windows)]
-pub async fn watch(app: &AppHandle, id: &str, label: &str, deadline: Deadline, reports: Reports) {
-    signal_for(id);
-    console::open(id);
-    let webview = WebviewPage::new(app, label);
-    let page = Bounded::new(&webview, deadline);
-    let frames = page_events(&page, id).await;
-    for event in WATCHED.iter().chain(console::VOICE.iter()).copied() {
-        let listener = Listener {
-            id: id.to_owned(),
-            frames: Arc::clone(&frames),
-            reports: reports.clone(),
-        };
-        if let Err(error) = subscribe(app, label, event, deadline.left(), listener).await {
-            // Without this event the settle falls back to its cap, which is
-            // slower and no worse than not settling at all.
-            eprintln!("devboule: browser page {id} is not watched for {event}: {error}");
-        }
-    }
-}
-
-/// Wire one websocket page's events into the ingestion the WebView2 path
-/// feeds: the same counters, ring and reports, from the same normalized
-/// payloads.
-///
-/// Called before the page is navigated. `Runtime` and `Log` are enabled for
-/// its voice, `DOM` for the document updates a raw target reports only after
-/// asking, and `Page` for the events that say where the tab is. What arrives
-/// afterwards is counted exactly as a child webview's events are.
-///
-/// The drain runs from before the first setup call, so nothing the page says
-/// while the domains are being switched on is lost to a queue holding it. It
-/// reads the state stream only once the frame tree has been asked for: a
-/// same-document move that arrived while the tree was still unknown is read
-/// against the frame it happened in. A state event the reader had to drop
-/// wakes the drain, which resynchronizes instead of forgetting it.
-///
-/// The guard is held for the tab's life: dropping it stops the drain task, and
-/// the reader's own end stops it too.
-#[cfg_attr(not(test), allow(dead_code))]
-pub async fn watch_ws(
-    page: &dyn super::cdp::Page,
-    id: &str,
-    events: WsEvents,
-    deadline: Deadline,
-    reports: Reports,
-) -> WsWatch {
-    signal_for(id);
-    console::open(id);
-    let frames = Arc::new(Frames::default());
-    let ready = Arc::new(AtomicBool::new(false));
-    let closed = Arc::new(AtomicBool::new(false));
-    let notice = Arc::clone(&events.notice);
-    let listener = Listener {
-        id: id.to_owned(),
-        frames: Arc::clone(&frames),
-        reports: unclosed(reports, Arc::clone(&closed)),
-    };
-    let drain = tauri::async_runtime::spawn(drain(
-        listener,
-        events,
-        Arc::clone(&ready),
-        Arc::clone(&closed),
-        Arc::clone(&notice),
-    ));
-
-    let page = Bounded::new(page, deadline);
-    listen(&page).await;
-    if let Err(error) = page.call("DOM.enable", json!({})).await {
-        eprintln!("devboule: browser page {id} will not report a new document: {error}");
-    }
-    ask_for_events(&page, id, &frames).await;
-    // The frame the move will be read against is only known now, so the stream
-    // that says where the tab is opens here.
-    ready.store(true, Ordering::SeqCst);
-    notice.notify_one();
-    WsWatch { drain, closed }
-}
-
-/// One websocket page's event drain. Held for the tab's life.
-#[cfg_attr(not(test), allow(dead_code))]
-pub struct WsWatch {
-    drain: tauri::async_runtime::JoinHandle<()>,
-    closed: Arc<AtomicBool>,
-}
-
-impl WsWatch {
-    /// Whether the drain has ended. What a test watches to prove a close
-    /// leaves no task behind.
-    #[cfg(test)]
-    pub(super) fn finished(&self) -> bool {
-        self.drain.inner().is_finished()
-    }
-}
-
-impl Drop for WsWatch {
-    fn drop(&mut self) {
-        // The flag is what the reports check, so the event the drain is already
-        // inside reaches no pane; the abort stops the events it has not read
-        // yet, so a dropped subscription cannot outlive its tab with a task
-        // still running.
-        self.closed.store(true, Ordering::SeqCst);
-        self.drain.inner().abort();
-    }
-}
-
-/// The tab's reports, with every callback checking that the watch is still
-/// open. A drain already inside `heard` when the close lands must not reach a
-/// pane whose tab is gone.
-fn unclosed(reports: Reports, closed: Arc<AtomicBool>) -> Reports {
-    let within_document = Arc::clone(&reports.within_document);
-    let committed = Arc::clone(&reports.committed);
-    let within_closed = Arc::clone(&closed);
-    Reports {
-        within_document: Arc::new(move |url| {
-            if !within_closed.load(Ordering::SeqCst) {
-                within_document(url);
-            }
-        }),
-        committed: Arc::new(move || {
-            if !closed.load(Ordering::SeqCst) {
-                committed();
-            }
-        }),
-    }
-}
-
-/// Drain one page's two streams into its listener.
-///
-/// The state stream is read only once `ready` says the frame tree has been
-/// asked for; voice events are read from the start, because what a page says
-/// says nothing about where the tab is. A state event the reader dropped is
-/// not forgotten: the loss is counted and this task is woken, and the listener
-/// resynchronizes. `closed` is checked before every event, so a subscription
-/// that has been dropped reports nothing more even though its task may still
-/// be finishing the event it was inside.
-async fn drain(
-    listener: Listener,
-    mut events: WsEvents,
-    ready: Arc<AtomicBool>,
-    closed: Arc<AtomicBool>,
-    notice: Arc<Notify>,
-) {
-    let mut state_open = true;
-    let mut voice_open = true;
-    let mut resynced_at = 0u64;
-    loop {
-        if closed.load(Ordering::SeqCst) || (!state_open && !voice_open) {
-            return;
-        }
-        let mut arrived: Option<WsEvent> = None;
-        tokio::select! {
-            event = events.state.recv(), if state_open && ready.load(Ordering::SeqCst) => match event {
-                Some(event) => arrived = Some(event),
-                None => state_open = false,
-            },
-            event = events.voice.recv(), if voice_open => match event {
-                Some(event) => arrived = Some(event),
-                None => {
-                    voice_open = false;
-                    // One `Feed` holds both senders, so a voice stream that
-                    // ended means the state stream is over too. Until `ready`
-                    // its branch is disabled, and a reader that is gone will
-                    // never make it ready: without this the drain would wait
-                    // for a frame tree it can no longer ask for.
-                    if !ready.load(Ordering::SeqCst) {
-                        state_open = false;
-                    }
-                }
-            },
-            _ = notice.notified() => {}
-        }
-        if closed.load(Ordering::SeqCst) {
-            return;
-        }
-        if let Some(event) = arrived {
-            listener.heard(&event.method, &event.params.to_string());
-        }
-        let dropped = events.dropped.state();
-        if dropped > resynced_at {
-            resynced_at = dropped;
-            listener.resync();
-        }
     }
 }
 
@@ -370,8 +171,8 @@ impl Listener {
         }
     }
 
-    /// A new document, or a loss that could have hidden one: the old one's refs
-    /// are stale and what it said is not what the page says now.
+    /// A new document, confirmed by the page's own event: what the old one
+    /// said is not what the page says now, and the pane is told.
     fn committed(&self) {
         bump_document(&self.id);
         console::clear(&self.id);
@@ -380,103 +181,43 @@ impl Listener {
 
     /// An event was dropped from the state stream, so the sequence this
     /// listener has counted is not the page's whole story: a navigation may be
-    /// missing from it. The document is invalidated as a committed one
-    /// invalidates it — every ref taken before is now stale — and the loss is
-    /// counted as movement, so a settle does not read it as quiet.
-    fn resync(&self) {
+    /// missing from it. What is known is only that the state is unknown, so
+    /// every ref taken before is treated as stale — the document count moves,
+    /// which is the delta's own "the page is not the one you measured" — and
+    /// the loss is movement, so a settle does not read it as quiet. Nothing
+    /// else is claimed: no commit is reported, and the ring keeps what the
+    /// page really said.
+    fn unknown_state(&self) {
         bump(&self.id);
-        self.committed();
+        bump_document(&self.id);
     }
 }
 
 #[cfg(windows)]
-async fn subscribe(
-    app: &AppHandle,
-    label: &str,
-    event: &str,
-    limit: Duration,
-    listener: Listener,
-) -> Result<(), String> {
-    use webview2_com::{take_pwstr, DevToolsProtocolEventReceivedEventHandler};
-    use windows::core::HSTRING;
-
-    let webview = app
-        .get_webview(label)
-        .ok_or_else(|| "This browser tab is no longer open.".to_owned())?;
-    let (tx, rx) = mpsc::channel();
-    let owned_event = event.to_owned();
-    webview
-        .with_webview(move |pw| {
-            let outcome = (|| {
-                let core = unsafe { pw.controller().CoreWebView2() }.map_err(com)?;
-                let watched = HSTRING::from(owned_event.as_str());
-                let receiver =
-                    unsafe { core.GetDevToolsProtocolEventReceiver(&watched) }.map_err(com)?;
-                let named = owned_event.clone();
-                let handler =
-                    DevToolsProtocolEventReceivedEventHandler::create(Box::new(move |_, args| {
-                        let mut params = String::new();
-                        if let Some(args) = args {
-                            let mut buffer = windows::core::PWSTR::default();
-                            if unsafe { args.ParameterObjectAsJson(&mut buffer) }.is_ok() {
-                                params = take_pwstr(buffer);
-                            }
-                        }
-                        listener.heard(&named, &params);
-                        Ok(())
-                    }));
-                // The token the runtime hands back is not kept: nothing here
-                // removes this handler, and the child webview it belongs to is
-                // what a close disposes of.
-                let mut token = 0i64;
-                unsafe { receiver.add_DevToolsProtocolEventReceived(&handler, &mut token) }
-                    .map_err(com)
-            })();
-            let _ = tx.send(outcome.map_err(|error| error.to_string()));
-        })
-        .map_err(|error| format!("with_webview: {error}"))?;
-    rx.recv_timeout(limit)
-        .unwrap_or(Err("The page did not answer.".to_owned()))
-}
-
+#[path = "cdp_events_windows.rs"]
+mod windows;
 #[cfg(windows)]
-fn bump(id: &str) {
-    count(id, |counters| {
-        counters.moved = counters.moved.wrapping_add(1);
-    });
-}
+pub use windows::watch;
 
-#[cfg(windows)]
-fn bump_document(id: &str) {
-    count(id, |counters| {
-        counters.documents = counters.documents.wrapping_add(1);
-    });
-}
-
-#[cfg(windows)]
-fn count(id: &str, update: impl FnOnce(&mut Counters)) {
-    let mut pages = QUIET_SIGNAL.lock().expect("browser page signals poisoned");
-    if let Some(page) = pages.as_mut().and_then(|pages| pages.get_mut(id)) {
-        update(page);
-    }
-}
-
-#[cfg(windows)]
-fn com(error: windows::core::Error) -> String {
-    error.to_string()
-}
-
+/// No event stream on this target, so `moved` never moves and every settle
+/// ends on its first quiet. Nothing here blocks a command from running.
 #[cfg(not(windows))]
 pub async fn watch(
-    _app: &AppHandle,
+    _app: &tauri::AppHandle,
     _id: &str,
     _label: &str,
     _deadline: Deadline,
     _reports: Reports,
 ) {
-    // No event stream on this target, so `moved` never moves and every settle
-    // ends on its first quiet. Nothing here blocks a command from running.
 }
+
+#[path = "cdp_ws_events.rs"]
+mod ws;
+// The published surface `tab.rs` and the slice-3 host call; the module itself
+// stays private. Nothing in production constructs it yet, hence the same
+// not-yet-wired allowance the items carry.
+#[cfg_attr(not(test), allow(unused_imports))]
+pub use ws::{watch_ws, WsWatch};
 
 /// Wait without holding a runtime worker: this crate links no async timer, and
 /// every CDP call already blocks its worker for the length of the call.

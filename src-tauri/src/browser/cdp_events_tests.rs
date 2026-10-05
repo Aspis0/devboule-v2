@@ -1,7 +1,7 @@
-//! The signal one page's events bump, and the promise that it is dropped with
-//! the tab. No page is opened here: what is tested is the bookkeeping that
-//! decides whether a settle waits on a signal that will ever move.
+//! The signal one page's events bump, the promise that it is dropped with the
+//! tab, and the close that has to hold: no page is opened here.
 
+use super::ws::Close;
 use super::*;
 
 #[test]
@@ -70,7 +70,7 @@ fn a_dropped_subscription_aborts_the_task_it_holds() {
         });
         let watch = WsWatch {
             drain,
-            closed: Arc::new(AtomicBool::new(false)),
+            close: Close::new(),
         };
 
         drop(watch);
@@ -86,33 +86,30 @@ fn a_dropped_subscription_aborts_the_task_it_holds() {
 }
 
 #[test]
-fn a_watch_that_has_been_closed_makes_its_reports_say_nothing() {
-    let said = Arc::new(Mutex::new(Vec::new()));
-    let heard = Arc::clone(&said);
-    let reports = Reports {
-        within_document: Arc::new(move |url| heard.lock().expect("said poisoned").push(url)),
-        committed: Arc::new({
-            let heard = Arc::clone(&said);
-            move || {
-                heard
-                    .lock()
-                    .expect("said poisoned")
-                    .push("committed".to_owned())
-            }
-        }),
-    };
-    let closed = Arc::new(AtomicBool::new(false));
-    let reports = unclosed(reports, Arc::clone(&closed));
+fn a_close_waits_for_the_event_in_flight_and_refuses_the_next() {
+    // The exclusion is what makes "no callback starts after the close" true:
+    // the close marks itself first, so nothing new enters, and then waits on
+    // the gate the event in flight holds.
+    let close = Close::new();
+    let in_flight = close.entered().expect("an open gate enters");
 
-    (reports.within_document)("https://example.test/while-open".to_owned());
-    (reports.committed)();
-    closed.store(true, Ordering::SeqCst);
-    (reports.within_document)("https://example.test/after-close".to_owned());
-    (reports.committed)();
+    let closing = std::thread::spawn({
+        let close = Arc::clone(&close);
+        move || close.stop_and_wait()
+    });
+    while !close.is_closed() {
+        std::thread::yield_now();
+    }
+    assert!(
+        !closing.is_finished(),
+        "the close waits for the event in flight"
+    );
 
-    assert_eq!(
-        *said.lock().expect("said poisoned"),
-        ["https://example.test/while-open", "committed"],
-        "a report that starts after the close must not reach the pane"
+    drop(in_flight);
+    closing.join().expect("the closing thread");
+
+    assert!(
+        close.entered().is_none(),
+        "nothing enters once the close has begun"
     );
 }

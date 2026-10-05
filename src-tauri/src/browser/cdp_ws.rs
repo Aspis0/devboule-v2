@@ -55,7 +55,8 @@ const CLOSE_WRITE: Duration = Duration::from_secs(2);
 /// yet. A full queue drops the newest event rather than blocking the reader,
 /// because a blocked reader stops routing ANSWERS and every command in flight
 /// would then run out of its budget instead. A drop from this queue is never
-/// silent: it is counted and the watcher is woken to resynchronize.
+/// silent: it is counted and the watcher is woken to treat its state as
+/// unknown.
 const STATE_QUEUE: usize = 256;
 
 /// How many of the page's own words — `Runtime.consoleAPICalled`,

@@ -159,11 +159,12 @@ fn an_event_that_arrives_before_the_frame_tree_is_reported_with_the_frame_it_nam
 }
 
 #[test]
-fn a_close_racing_an_in_flight_event_reports_nothing_more() {
+fn a_close_racing_an_in_flight_report_starts_nothing_after_it() {
     tauri::async_runtime::block_on(async {
         // Both events are queued before the watch exists, so the close races
-        // the drain and not the socket; the first blocks in its own report
-        // until the test has dropped the subscription.
+        // the drain and not the socket. The first blocks in its own report
+        // until the close has begun: that report is what the close must wait
+        // for, and the event behind it must never start.
         let mut steps = vec![
             Step::Event {
                 method: "Page.frameNavigated".to_owned(),
@@ -193,19 +194,25 @@ fn a_close_racing_an_in_flight_event_reports_nothing_more() {
             .recv_timeout(Duration::from_secs(5))
             .expect("the drain is held inside the first document's report");
 
-        drop(watch);
+        let close = watch.close_handle();
+        let closer = std::thread::spawn(move || drop(watch));
+        until(|| close.is_closed()).await;
+        assert!(
+            !closer.is_finished(),
+            "the close waits for the report in flight"
+        );
+
         open.send(()).expect("the drain is released");
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        closer.join().expect("the closing thread");
 
         assert!(
             said.moved_to().is_empty(),
-            "an event still in flight when the subscription drops is not \
-             reported"
+            "the event behind the held report never starts"
         );
         assert_eq!(
             cdp_events::moved(id),
             1,
-            "only the event the drain was already inside was counted"
+            "only the report the drain was already inside was counted"
         );
         assert_eq!(said.commits(), 1, "and only its own commit was reported");
 
