@@ -119,11 +119,14 @@ fn an_event_the_reader_saw_reaches_the_subscriber_and_is_not_an_answer() {
             .await
             .expect("the command that carried the event is answered");
 
-        let event = events.try_recv().expect("the event reached its subscriber");
+        let event = events
+            .state
+            .try_recv()
+            .expect("the event reached its subscriber");
         assert_eq!(event.method, "Page.loadEventFired");
         assert_eq!(event.params["timestamp"], 12.5);
         assert!(
-            events.try_recv().is_err(),
+            events.state.try_recv().is_err() && events.voice.try_recv().is_err(),
             "an event is not a second answer to the command that carried it"
         );
     });
@@ -142,7 +145,7 @@ fn a_frame_that_is_not_a_protocol_message_is_not_an_event() {
             .expect("the command is answered");
 
         assert!(
-            events.try_recv().is_err(),
+            events.state.try_recv().is_err() && events.voice.try_recv().is_err(),
             "an object with neither an id nor a method is not a notification, \
              and a subscriber with an empty name cannot act on one"
         );

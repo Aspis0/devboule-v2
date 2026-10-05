@@ -6,11 +6,15 @@
 
 use serde_json::json;
 
-use super::events_support::{before_navigation, say, until, watching, Said, MAIN};
+use super::events_support::{before_navigation, frame, say, until, watching, Said, MAIN};
 use super::fake::{FakeServer, Step};
 use crate::browser::cdp::{CdpError, Page as _};
 use crate::browser::cdp_events;
 use crate::browser::console::{self, Wanted};
+
+/// The ref a caller cached before the navigation, as a snapshot's node would
+/// have handed it over.
+const REF: u64 = 42;
 
 #[test]
 fn the_events_a_websocket_page_sends_are_what_a_settle_waits_on() {
@@ -80,7 +84,7 @@ fn a_move_within_the_document_over_the_socket_is_reported_as_the_tabs_address() 
 }
 
 #[test]
-fn a_new_document_over_the_socket_invalidates_what_the_old_one_held() {
+fn a_new_document_over_the_socket_clears_the_ring_and_moves_the_document_count() {
     tauri::async_runtime::block_on(async {
         let mut steps = before_navigation();
         steps.push(Step::Event {
@@ -93,11 +97,10 @@ fn a_new_document_over_the_socket_invalidates_what_the_old_one_held() {
         });
         steps.push(Step::Event {
             method: "Page.frameNavigated".to_owned(),
-            params: json!({ "frame": { "id": MAIN } }),
-        });
-        steps.push(Step::Error {
-            code: -32000,
-            message: "No node with given id found".to_owned(),
+            params: json!({
+                "frame": frame(MAIN, "https://example.test/next"),
+                "type": "Navigation",
+            }),
         });
         let (_server, page, events) = FakeServer::start(steps).await.attached().await;
         let id = "tab-ws-document";
@@ -120,13 +123,80 @@ fn a_new_document_over_the_socket_invalidates_what_the_old_one_held() {
             "what the page said about the page it left is not what it says now"
         );
 
-        // The refs a caller holds were taken against the old document: the
-        // runtime refuses one by name, and the transport answers a stale ref.
-        let refused = page
-            .call("DOM.getBoxModel", json!({ "backendNodeId": 15 }))
+        page.close().await;
+        drop(watch);
+        cdp_events::forget(id);
+    });
+}
+
+#[test]
+fn the_ref_a_caller_cached_is_refused_as_stale_once_a_navigation_commits() {
+    tauri::async_runtime::block_on(async {
+        let mut steps = before_navigation();
+        steps.push(Step::Ref);
+        steps.push(Step::Event {
+            method: "Page.frameNavigated".to_owned(),
+            params: json!({
+                "frame": frame(MAIN, "https://example.test/next"),
+                "type": "Navigation",
+            }),
+        });
+        steps.push(Step::Ref);
+        let (_server, page, events) = FakeServer::start(steps).await.attached().await;
+        let id = "tab-ws-stale";
+        let said = Said::default();
+        let watch = watching(&page, id, events, &said).await;
+
+        page.call("DOM.getBoxModel", json!({ "backendNodeId": REF }))
             .await
-            .expect_err("a node of the old document is gone");
-        assert_eq!(refused, CdpError::StaleRef);
+            .expect("the ref names a node of the document the caller is on");
+
+        say(&page).await;
+        until(|| cdp_events::documents(id) == 1).await;
+
+        let refused = page
+            .call("DOM.getBoxModel", json!({ "backendNodeId": REF }))
+            .await
+            .expect_err("the document the ref belonged to is gone");
+        assert_eq!(
+            refused,
+            CdpError::StaleRef,
+            "a ref the event invalidated is a stale ref, and the endpoint \
+             decided that from the navigation it sent"
+        );
+
+        page.close().await;
+        drop(watch);
+        cdp_events::forget(id);
+    });
+}
+
+#[test]
+fn the_same_ref_still_answers_when_the_navigation_event_never_arrives() {
+    tauri::async_runtime::block_on(async {
+        let mut steps = before_navigation();
+        steps.push(Step::Ref);
+        steps.push(Step::Echo);
+        steps.push(Step::Ref);
+        let (_server, page, events) = FakeServer::start(steps).await.attached().await;
+        let id = "tab-ws-live";
+        let said = Said::default();
+        let watch = watching(&page, id, events, &said).await;
+
+        page.call("DOM.getBoxModel", json!({ "backendNodeId": REF }))
+            .await
+            .expect("the ref names a node of the document the caller is on");
+
+        say(&page).await;
+
+        page.call("DOM.getBoxModel", json!({ "backendNodeId": REF }))
+            .await
+            .expect("nothing committed, so the ref's document is still current");
+        assert_eq!(
+            cdp_events::documents(id),
+            0,
+            "and no document was counted either"
+        );
 
         page.close().await;
         drop(watch);

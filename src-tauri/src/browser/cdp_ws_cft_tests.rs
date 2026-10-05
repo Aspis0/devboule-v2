@@ -217,7 +217,7 @@ fn a_page_target_over_a_websocket_navigates_evaluates_and_screenshots() {
             png.len()
         );
 
-        let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
+        let event = tokio::time::timeout(Duration::from_secs(10), events.state.recv())
             .await
             .expect("a page that has navigated says something within 10s")
             .expect("the reader is still reading while the target is open");

@@ -31,7 +31,7 @@ use futures_util::SinkExt;
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
+use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex, Notify};
 use tokio::time::{timeout_at, Instant};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
@@ -51,11 +51,19 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 /// will not drain must not hold a closing tab open.
 const CLOSE_WRITE: Duration = Duration::from_secs(2);
 
-/// How many events a reader holds for a subscriber that is not reading yet.
-/// A full channel drops the newest event rather than blocking the reader,
+/// How many state events a reader holds for a watcher that is not reading
+/// yet. A full queue drops the newest event rather than blocking the reader,
 /// because a blocked reader stops routing ANSWERS and every command in flight
-/// would then run out of its budget instead.
-const EVENT_QUEUE: usize = 256;
+/// would then run out of its budget instead. A drop from this queue is never
+/// silent: it is counted and the watcher is woken to resynchronize.
+const STATE_QUEUE: usize = 256;
+
+/// How many of the page's own words — `Runtime.consoleAPICalled`,
+/// `Runtime.exceptionThrown`, `Log.entryAdded` — a reader holds. They have
+/// their own queue so that a page which logs in a burst cannot crowd out the
+/// event that says its document changed. A drop here loses a console line and
+/// nothing that refs or settles hang on.
+const VOICE_QUEUE: usize = 256;
 
 /// The most one CDP message may be. The broker already refuses a browser answer
 /// whose payload passes `devboule_protocol::MAX_BROWSER_PAYLOAD_BYTES`, so a
@@ -93,6 +101,53 @@ pub struct WsEvent {
     pub params: Value,
 }
 
+/// What one page's reader had to drop because a queue was full, per stream.
+/// Readable while the page runs, which is the only way a loss is visible
+/// rather than silent.
+#[derive(Clone, Default)]
+pub struct Drops {
+    state: Arc<AtomicU64>,
+    voice: Arc<AtomicU64>,
+}
+
+impl Drops {
+    /// State events dropped: the page's movement, documents and frames.
+    pub fn state(&self) -> u64 {
+        self.state.load(Ordering::SeqCst)
+    }
+
+    /// Voice events dropped: console and log lines.
+    pub fn voice(&self) -> u64 {
+        self.voice.load(Ordering::SeqCst)
+    }
+}
+
+/// One page target's event streams: everything the ingestion counts (`state`),
+/// what the page said (`voice`), and the count of what the reader dropped.
+pub struct WsEvents {
+    pub(super) state: mpsc::Receiver<WsEvent>,
+    pub(super) voice: mpsc::Receiver<WsEvent>,
+    pub(super) dropped: Drops,
+    pub(super) notice: Arc<Notify>,
+}
+
+impl WsEvents {
+    /// The counts of what the reader dropped, held separately from the streams
+    /// so a watcher — or a test — can read them after the streams are moved.
+    pub fn drops(&self) -> Drops {
+        self.dropped.clone()
+    }
+}
+
+/// The writer half of one page's event streams: what the reader routes
+/// notifications into, and where a drop is counted and announced.
+pub(super) struct Feed {
+    pub(super) state: mpsc::Sender<WsEvent>,
+    pub(super) voice: mpsc::Sender<WsEvent>,
+    pub(super) dropped: Drops,
+    pub(super) notice: Arc<Notify>,
+}
+
 /// One page target's debugger socket.
 pub struct WsPage {
     writer: AsyncMutex<SplitSink<Socket, Message>>,
@@ -106,11 +161,11 @@ pub struct WsPage {
 }
 
 impl WsPage {
-    /// Open one page target's debugger socket, and hand back the stream of
+    /// Open one page target's debugger socket, and hand back the streams of
     /// events its reader sees. Only a `ws://` address on this machine's own
     /// loopback is opened: a debugger on another host is not a page this app
     /// owns.
-    pub async fn connect(url: &str) -> Result<(Self, mpsc::Receiver<WsEvent>), CdpError> {
+    pub async fn connect(url: &str) -> Result<(Self, WsEvents), CdpError> {
         loopback(url)?;
         let mut config = WebSocketConfig::default();
         config.max_message_size = Some(MAX_MESSAGE);
@@ -131,12 +186,20 @@ impl WsPage {
         };
         let (writer, reader) = socket.split();
         let pending: Pending = Arc::default();
-        let (events, seen) = mpsc::channel(EVENT_QUEUE);
+        let (state_events, state) = mpsc::channel(STATE_QUEUE);
+        let (voice_events, voice) = mpsc::channel(VOICE_QUEUE);
+        let dropped = Drops::default();
+        let notice = Arc::new(Notify::new());
         let gone = Arc::new(AtomicBool::new(false));
         let task = tauri::async_runtime::spawn(read(
             reader,
             Arc::clone(&pending),
-            events,
+            Feed {
+                state: state_events,
+                voice: voice_events,
+                dropped: dropped.clone(),
+                notice: Arc::clone(&notice),
+            },
             Arc::clone(&gone),
         ));
         Ok((
@@ -147,7 +210,12 @@ impl WsPage {
                 next_id: AtomicU64::new(0),
                 gone,
             },
-            seen,
+            WsEvents {
+                state,
+                voice,
+                dropped,
+                notice,
+            },
         ))
     }
 
@@ -367,6 +435,10 @@ mod events_support;
 #[cfg(test)]
 #[path = "cdp_ws_events_tests.rs"]
 mod events_tests;
+
+#[cfg(test)]
+#[path = "cdp_ws_loss_tests.rs"]
+mod loss_tests;
 
 #[cfg(test)]
 #[path = "cdp_ws_watch_tests.rs"]

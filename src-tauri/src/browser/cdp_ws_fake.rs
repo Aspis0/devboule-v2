@@ -12,11 +12,11 @@ use std::sync::Arc;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::Mutex;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 
-use super::{WsEvent, WsPage, MAX_MESSAGE};
+use super::{WsEvents, WsPage, MAX_MESSAGE};
 
 /// What the endpoint does with the next command it reads.
 #[derive(Clone)]
@@ -31,6 +31,11 @@ pub enum Step {
     Error { code: i64, message: String },
     /// Say an event, then answer the command with its own id and method.
     Event { method: String, params: Value },
+    /// Answer a call that names a node the way a page's own document does: a
+    /// box while the document the ref was taken in is current, and the
+    /// runtime's own refusal once a `Page.frameNavigated` has been sent. What
+    /// makes a stale-ref test prove the event did it, rather than a script.
+    Ref,
     /// Say a frame that is not a protocol message at all, then answer.
     NotAMessage,
     /// Answer with one message past the transport's cap, so the reader has to
@@ -73,6 +78,9 @@ impl FakeServer {
                 return;
             };
             let mut held: Vec<Value> = Vec::new();
+            // Whether this target has committed a document, which is what a
+            // ref taken before the last one no longer has.
+            let mut committed = false;
             while let Some(Ok(frame)) = socket.next().await {
                 let Message::Text(text) = frame else { continue };
                 let Ok(command) = serde_json::from_str::<Value>(text.as_str()) else {
@@ -88,10 +96,21 @@ impl FakeServer {
                 let answers = match step {
                     Step::Echo => vec![echoed],
                     Step::Answer(result) => vec![json!({ "id": id, "result": result })],
+                    Step::Ref => vec![if committed {
+                        json!({ "id": id, "error": { "code": -32000, "message": "No node with given id found" } })
+                    } else {
+                        json!({
+                            "id": id,
+                            "result": { "model": { "content": [0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0] } }
+                        })
+                    }],
                     Step::Error { code, message } => {
                         vec![json!({ "id": id, "error": { "code": code, "message": message } })]
                     }
                     Step::Event { method, params } => {
+                        if method == "Page.frameNavigated" {
+                            committed = true;
+                        }
                         let event = json!({ "method": method, "params": params });
                         vec![event, echoed]
                     }
@@ -146,9 +165,9 @@ impl FakeServer {
         self.seen.lock().await.clone()
     }
 
-    /// The endpoint and a page already attached to it, with the event stream
+    /// The endpoint and a page already attached to it, with the event streams
     /// that page's reader hands back.
-    pub async fn attached(self) -> (Self, WsPage, mpsc::Receiver<WsEvent>) {
+    pub async fn attached(self) -> (Self, WsPage, WsEvents) {
         let (page, events) = WsPage::connect(self.url())
             .await
             .expect("the loopback endpoint is opened");

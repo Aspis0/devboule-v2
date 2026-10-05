@@ -49,8 +49,13 @@ tokio-tungstenite = { version = "=0.30.0", default-features = false, features = 
 ] }
 # Direct because `cdp_ws.rs` hands each answer to exactly one waiter and cuts a
 # call to the command's own deadline: `sync` for the waiters and the event
-# channel, `time` for the cut. The same version the Tauri runtime resolves.
-tokio = { version = "=1.53.1", default-features = false, features = ["sync", "time"] }
+# channels, `time` for the cut, `macros` for the select that reads both event
+# streams in `cdp_events.rs`. The same version the Tauri runtime resolves.
+tokio = { version = "=1.53.1", default-features = false, features = [
+    "macros",
+    "sync",
+    "time",
+] }
 # Direct because the public session contract derives Serialize/Deserialize. The exact
 # version is already present transitively through Tauri; this does not add a new package.
 serde = { version = "=1.0.229", features = ["derive"] }

@@ -12,7 +12,8 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 
-use super::{Outcome, Pending, Socket, WsEvent};
+use super::{Feed, Outcome, Pending, Socket, WsEvent};
+use crate::browser::console;
 
 /// The waiters, taken past a poisoned lock. A sender is inserted whole or not
 /// at all, so the entries are still the truth about which calls are waiting —
@@ -53,12 +54,12 @@ impl Drop for ReleasedOnExit {
 }
 
 /// Route everything the socket says: a frame carrying an id is the answer to
-/// one call, and a frame carrying a method is an event. Ends when the socket
-/// does, which releases every waiter that will now never be answered.
+/// one call, and a frame carrying a method is a notification. Ends when the
+/// socket does, which releases every waiter that will now never be answered.
 pub(super) async fn read(
     mut socket: SplitStream<Socket>,
     pending: Pending,
-    events: mpsc::Sender<WsEvent>,
+    feed: Feed,
     gone: Arc<AtomicBool>,
 ) {
     let routed = Arc::clone(&pending);
@@ -66,10 +67,8 @@ pub(super) async fn read(
     while let Some(frame) = socket.next().await {
         let Ok(frame) = frame else { break };
         match frame {
-            Message::Text(text) => route(&routed, &events, text.as_str()).await,
-            Message::Binary(bytes) => {
-                route(&routed, &events, &String::from_utf8_lossy(&bytes)).await
-            }
+            Message::Text(text) => route(&routed, &feed, text.as_str()).await,
+            Message::Binary(bytes) => route(&routed, &feed, &String::from_utf8_lossy(&bytes)).await,
             Message::Close(_) => break,
             // A ping is answered by the socket itself, and a pong is an answer
             // to nothing this page asked.
@@ -78,7 +77,7 @@ pub(super) async fn read(
     }
 }
 
-async fn route(pending: &Pending, events: &mpsc::Sender<WsEvent>, text: &str) {
+async fn route(pending: &Pending, feed: &Feed, text: &str) {
     let Ok(message) = serde_json::from_str::<Value>(text) else {
         return;
     };
@@ -91,15 +90,43 @@ async fn route(pending: &Pending, events: &mpsc::Sender<WsEvent>, text: &str) {
                 let _ = waiter.send(outcome_of(&message));
             }
         }
-        (None, Some(method)) => {
-            let _ = events.try_send(WsEvent {
+        (None, Some(method)) => hand(
+            feed,
+            WsEvent {
                 method: method.to_owned(),
                 params: message.get("params").cloned().unwrap_or(Value::Null),
-            });
-        }
+            },
+        ),
         // Neither an id nor a method: the protocol did not send this, and a
         // notification with no name is nothing a subscriber could act on.
         (None, None) => {}
+    }
+}
+
+/// Hand one notification to its own stream, or count what a full queue would
+/// not take. A dropped state event wakes the watcher: it is an event a ref or
+/// a settle may hang on, and losing it silently is the one thing this must
+/// not do. A dropped voice event loses a console line, wakes nobody and is
+/// only counted.
+fn hand(feed: &Feed, event: WsEvent) {
+    let (stream, dropped, wakes) = if console::is_voice(&event.method) {
+        (&feed.voice, &feed.dropped.voice, false)
+    } else {
+        (&feed.state, &feed.dropped.state, true)
+    };
+    match stream.try_send(event) {
+        Ok(()) => {}
+        // The reader never waits on a full queue: a reader that stops routing
+        // answers stalls every call in flight behind it.
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            dropped.fetch_add(1, Ordering::SeqCst);
+            if wakes {
+                feed.notice.notify_one();
+            }
+        }
+        // Nothing is listening: the watcher was dropped, and a count nobody
+        // will read is not a loss.
+        Err(mpsc::error::TrySendError::Closed(_)) => {}
     }
 }
 

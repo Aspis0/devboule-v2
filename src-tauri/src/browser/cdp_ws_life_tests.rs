@@ -196,9 +196,9 @@ fn closing_releases_the_waiter_in_flight_and_stops_the_reader() {
         );
         assert_eq!(page.waiting().await, 0);
         assert!(
-            events.recv().await.is_none(),
-            "the reader ended: it dropped the event sender, so nothing can \
-             hold the channel open behind it"
+            events.state.recv().await.is_none() && events.voice.recv().await.is_none(),
+            "the reader ended: it dropped its senders, so nothing can hold \
+             either channel open behind it"
         );
         assert_eq!(
             page.call("Runtime.evaluate", json!({ "expression": "1" }))

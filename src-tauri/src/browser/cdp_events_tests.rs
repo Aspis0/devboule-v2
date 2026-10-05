@@ -68,7 +68,10 @@ fn a_dropped_subscription_aborts_the_task_it_holds() {
             let _held = held;
             std::future::pending::<()>().await;
         });
-        let watch = WsWatch { drain };
+        let watch = WsWatch {
+            drain,
+            closed: Arc::new(AtomicBool::new(false)),
+        };
 
         drop(watch);
 
@@ -80,4 +83,36 @@ fn a_dropped_subscription_aborts_the_task_it_holds() {
             "the task outlived the guard that was supposed to stop it"
         );
     });
+}
+
+#[test]
+fn a_watch_that_has_been_closed_makes_its_reports_say_nothing() {
+    let said = Arc::new(Mutex::new(Vec::new()));
+    let heard = Arc::clone(&said);
+    let reports = Reports {
+        within_document: Arc::new(move |url| heard.lock().expect("said poisoned").push(url)),
+        committed: Arc::new({
+            let heard = Arc::clone(&said);
+            move || {
+                heard
+                    .lock()
+                    .expect("said poisoned")
+                    .push("committed".to_owned())
+            }
+        }),
+    };
+    let closed = Arc::new(AtomicBool::new(false));
+    let reports = unclosed(reports, Arc::clone(&closed));
+
+    (reports.within_document)("https://example.test/while-open".to_owned());
+    (reports.committed)();
+    closed.store(true, Ordering::SeqCst);
+    (reports.within_document)("https://example.test/after-close".to_owned());
+    (reports.committed)();
+
+    assert_eq!(
+        *said.lock().expect("said poisoned"),
+        ["https://example.test/while-open", "committed"],
+        "a report that starts after the close must not reach the pane"
+    );
 }
