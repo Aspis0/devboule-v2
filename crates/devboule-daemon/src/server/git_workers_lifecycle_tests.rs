@@ -107,11 +107,13 @@ fn queued_frames_flow_while_a_git_status_waits_off_dispatch() {
         pong_arrived,
         "a cheap RPC did not answer during the git command"
     );
+    // The loop can still hand a frame over as the command is released: this
+    // transcript is queued ahead of the answer, so the wait has to read past
+    // it rather than take the next frame.
+    assert!(other.publish_agent_error("a frame ahead of the answer".to_string()));
     release_tx.send(()).expect("release the git command");
     assert!(matches!(
-        client
-            .recv_timeout::<DaemonMessage>(Duration::from_secs(5))
-            .expect("git status reply"),
+        wait_for_reply(&client, 50),
         DaemonMessage::WorkspaceGit { id: 50, .. }
     ));
     drop(client);

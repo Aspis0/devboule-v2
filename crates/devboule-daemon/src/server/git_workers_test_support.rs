@@ -250,6 +250,24 @@ pub(in crate::server) fn wait_for_worker_reply(
     }
 }
 
+/// The reply for `id` on a client's own connection, reading past whatever the
+/// loop sends ahead of it: a git arm answers off the loop, so a transcript
+/// frame or a pong can be queued before its answer. One bounded window per
+/// frame — the git command is real work — so the bound catches a lost reply,
+/// not a late one, and the answer is waited for rather than the next frame.
+#[cfg(windows)]
+pub(super) fn wait_for_reply(client: &Framed, id: u64) -> DaemonMessage {
+    for _ in 0..64 {
+        let frame = client
+            .recv_timeout::<DaemonMessage>(Duration::from_secs(30))
+            .expect("a reply while the client is open");
+        if reply_id(&frame) == Some(id) {
+            return frame;
+        }
+    }
+    panic!("no reply for {id} after 64 frames");
+}
+
 /// The queue key the dispatcher computes for a workspace — the resolved
 /// root, in the same spelling `git()` receives.
 pub(super) fn resolved_root(state: &ServerState, workspace_id: &str) -> String {
