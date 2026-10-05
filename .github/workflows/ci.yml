@@ -435,6 +435,7 @@ jobs:
       # Slice 6: the whole daemon lib suite on macOS, not a filter — the PTY,
       # session and provider tests run here once they work on Unix.
       - name: Daemon lib tests (all)
+        timeout-minutes: 30
         run: cargo test -p devboule-daemon --lib --locked
 
   # Slice 3 (CfT process manager) owns this job: the websocket transport is
