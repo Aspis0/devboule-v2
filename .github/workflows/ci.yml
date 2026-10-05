@@ -425,12 +425,11 @@ jobs:
         timeout-minutes: 10
         run: cargo test -p devboule-daemon --lib --locked unix_startup
 
-
-
       # Slice 5 Unix client end-to-end: connect_or_spawn starts the real
       # daemon binary, hello, ping, restart hands a new instance over,
       # shutdown. Spawns real processes; Unix-only.
       - name: Daemon Unix client tests
+        timeout-minutes: 10
         run: cargo test -p devboule-daemon --locked --test unix_client_e2e
 
   # Slice 3 (CfT process manager) owns this job: the websocket transport is
