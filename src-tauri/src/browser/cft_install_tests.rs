@@ -415,7 +415,7 @@ fn the_production_install_runs_the_real_signature_check() {
     );
     let refused = install_blocking(pin, win_platform(), app_data.path(), &Bytes { body });
     assert!(
-        matches!(refused, Err(InstallError::Untrusted(text)) if text.contains("signature check refused")),
+        matches!(refused, Err(InstallError::Untrusted(ref text)) if text.contains("signature check refused")),
         "the real check must run: {refused:?}"
     );
 }
