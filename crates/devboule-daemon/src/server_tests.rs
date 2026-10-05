@@ -893,19 +893,27 @@ fn counting_auth_probe(calls: &std::sync::Arc<std::sync::atomic::AtomicUsize>) -
     })
 }
 
+/// The coalescing test's gate: the step it guards runs only once the counter
+/// says the callers hold their flight — never on a clock.
+fn wait_for_auth_flight_joins(state: &ServerState, wanted: u64, step: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let joins = &state.auth_flight_joins;
+    while joins.load(std::sync::atomic::Ordering::SeqCst) < wanted {
+        assert!(
+            Instant::now() < deadline,
+            "callers never all joined the flight (waiting for {step})"
+        );
+        std::thread::yield_now();
+    }
+}
+
 #[test]
 fn concurrent_auth_check_callers_share_one_run() {
     let (path, state) = temp_state("auth-coalesce");
     let agent = installed_agent("claude");
-    let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-    // Each caller signals before entering, so the main thread can hold the
-    // probe until every caller is at the shared flight — no wall-clock
-    // guess about when the slowest thread gets there.
-    let (arrived_tx, arrived_rx) = std::sync::mpsc::channel::<()>();
     let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let probe_calls = std::sync::Arc::clone(&calls);
-    let probe_entered = entered_tx;
     let probe_release = std::sync::Arc::new(std::sync::Mutex::new(release_rx));
     *state
         .auth_probe
@@ -913,7 +921,6 @@ fn concurrent_auth_check_callers_share_one_run() {
         .unwrap_or_else(|error| error.into_inner()) = Some(std::sync::Arc::new(
         move |_agent: &crate::provider_catalog::InstalledAgent| {
             probe_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let _ = probe_entered.send(());
             let release = probe_release
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
@@ -922,24 +929,31 @@ fn concurrent_auth_check_callers_share_one_run() {
         },
     ));
     const CALLERS: usize = 4;
+    // The straggler stays out of the check until the others hold their
+    // flight, so every run exercises one caller arriving far behind while
+    // the first run is still open for it.
+    let (straggler_tx, straggler_rx) = std::sync::mpsc::channel::<()>();
+    let mut straggler_gate = Some(straggler_rx);
     let mut waiters = Vec::new();
-    for _ in 0..CALLERS {
+    for caller in 0..CALLERS {
         let state = Arc::clone(&state);
         let agent = agent.clone();
-        let arrived = arrived_tx.clone();
+        let gate = if caller == 0 {
+            straggler_gate.take()
+        } else {
+            None
+        };
         waiters.push(std::thread::spawn(move || {
-            let _ = arrived.send(());
+            if let Some(gate) = gate {
+                gate.recv_timeout(Duration::from_secs(10))
+                    .expect("the straggler is let in after the others");
+            }
             state.check_provider_auth(&agent, false)
         }));
     }
-    for _ in 0..CALLERS {
-        arrived_rx
-            .recv_timeout(Duration::from_secs(10))
-            .expect("every caller reached the shared check");
-    }
-    entered_rx
-        .recv_timeout(Duration::from_secs(10))
-        .expect("one caller entered the shared check");
+    wait_for_auth_flight_joins(&state, CALLERS as u64 - 1, "all but the straggler");
+    straggler_tx.send(()).expect("let the straggler in");
+    wait_for_auth_flight_joins(&state, CALLERS as u64, "the straggler");
     release_tx.send(()).expect("release the shared check");
     for waiter in waiters {
         assert_eq!(

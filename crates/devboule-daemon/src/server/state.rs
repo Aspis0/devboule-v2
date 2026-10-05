@@ -127,6 +127,12 @@ pub struct ServerState {
     /// without a process. `None` falls back to the crate's no-op checker.
     #[cfg(test)]
     pub(super) auth_probe: Mutex<Option<AuthProbe>>,
+    /// Test-only: how many callers hold an auth flight, counted where they
+    /// take it. The coalescing test holds the running probe open until this
+    /// covers every caller: an arrival signal sent before the call cannot
+    /// prove the thread got this far.
+    #[cfg(test)]
+    pub(super) auth_flight_joins: AtomicU64,
     /// Version declared by the provider's most recent successful ACP
     /// initialize handshake, keyed by provider id.
     provider_versions: Mutex<HashMap<String, String>>,
@@ -425,6 +431,8 @@ impl ServerState {
             provider_auth_inflight: Mutex::new(HashMap::new()),
             #[cfg(test)]
             auth_probe: Mutex::new(None),
+            #[cfg(test)]
+            auth_flight_joins: AtomicU64::new(0),
             provider_versions: Mutex::new(HashMap::new()),
             provider_cli_versions: Mutex::new(HashMap::new()),
             claude_version_probes: Mutex::new(HashSet::new()),
@@ -980,6 +988,10 @@ impl ServerState {
                 }
             }
         };
+        // Counted where the caller takes the flight, so the coalescing test
+        // can hold the running probe until every caller is past this line.
+        #[cfg(test)]
+        self.auth_flight_joins.fetch_add(1, Ordering::SeqCst);
         #[cfg(test)]
         let probe = {
             let guard = self.auth_probe.lock().unwrap_or_else(|e| e.into_inner());
