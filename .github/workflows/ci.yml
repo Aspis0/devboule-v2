@@ -404,6 +404,15 @@ jobs:
       - name: Daemon oracle endpoint tests
         run: cargo test -p devboule --lib --locked oracle::tests::endpoint
 
+
+
+      # Slice 2 Unix transport primitives: bind/connect round-trip, modes,
+      # path length, stale/live sockets, shutdown cleanup, peer identity.
+      # Unix-only tests; on other targets this filter matches the portable
+      # transport tests only.
+      - name: Daemon Unix transport tests
+        run: cargo test -p devboule-daemon --lib --locked transport
+
   # Slice 3 (CfT process manager) owns this job: the websocket transport is
   # cross-platform code and only a Mac can verify the mac-arm64 Chromium
   # lifecycle. Everything here is headless; a headed pane with compositor

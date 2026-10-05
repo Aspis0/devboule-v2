@@ -11,6 +11,10 @@ pub struct RuntimePaths {
     pub dir: PathBuf,
     pub lock_file: PathBuf,
     pub pipe_name: String,
+    /// Unix-domain-socket path, next to the lock file. The daemon and its
+    /// clients agree on it the way they agree on the pipe name: one path
+    /// derived from the runtime directory, no side channel.
+    pub socket_path: PathBuf,
     /// This device's persisted identity: the random `device_id`, the public
     /// half of the Noise static key, and the display name. The private half
     /// lives in the OS credential store (or the file store), never here.
@@ -22,24 +26,20 @@ impl RuntimePaths {
         if let Some(dir) = std::env::var_os("DEVBOULE_RUNTIME_DIR") {
             return Ok(Self::from_dir(PathBuf::from(dir)));
         }
-        let base = std::env::var_os("LOCALAPPDATA").ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "LOCALAPPDATA is not set; cannot place the daemon lock file",
-            )
-        })?;
-        Ok(Self::from_dir(PathBuf::from(base).join("Devboule")))
+        Ok(Self::from_dir(default_runtime_dir()?))
     }
 
     pub fn from_dir(dir: impl Into<PathBuf>) -> Self {
         let dir = dir.into();
         let lock_file = dir.join("daemon.lock");
         let pipe_name = pipe_name_for(&dir);
+        let socket_path = dir.join("daemon.sock");
         let device_file = dir.join("device.json");
         Self {
             dir,
             lock_file,
             pipe_name,
+            socket_path,
             device_file,
         }
     }
@@ -62,6 +62,32 @@ impl RuntimePaths {
     pub fn journal_file(&self) -> PathBuf {
         self.dir.join("journal.db")
     }
+}
+
+/// Where the runtime directory lives without an override: the platform
+/// app-data root on Windows, a short dot dir under home elsewhere — the
+/// socket path must fit the 104-byte `sun_path` budget, which a TMPDIR
+/// prefix cannot promise.
+#[cfg(windows)]
+fn default_runtime_dir() -> std::io::Result<PathBuf> {
+    let base = std::env::var_os("LOCALAPPDATA").ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "LOCALAPPDATA is not set; cannot place the daemon lock file",
+        )
+    })?;
+    Ok(PathBuf::from(base).join("Devboule"))
+}
+
+#[cfg(not(windows))]
+fn default_runtime_dir() -> std::io::Result<PathBuf> {
+    let home = std::env::var_os("HOME").ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "HOME is not set; cannot place the daemon socket",
+        )
+    })?;
+    Ok(PathBuf::from(home).join(".devboule"))
 }
 
 /// The one normalisation the pipe name and the credential-store username
@@ -127,6 +153,15 @@ mod tests {
         assert_eq!(
             paths.device_file,
             PathBuf::from(r"C:\Users\Name With Spaces\AppData\Local\Devboule\device.json")
+        );
+    }
+
+    #[test]
+    fn socket_path_sits_inside_the_runtime_dir() {
+        let paths = RuntimePaths::from_dir("/tmp/devboule probe");
+        assert_eq!(
+            paths.socket_path,
+            PathBuf::from("/tmp/devboule probe/daemon.sock")
         );
     }
 

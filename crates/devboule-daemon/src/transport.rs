@@ -1,5 +1,5 @@
-//! Byte transport. The protocol crate never sees this. A Unix socket can
-//! implement [`Listener`] later without touching wire types.
+//! Byte transport. The protocol crate never sees this. Windows speaks a
+//! named pipe, Unix a domain socket; both surface as `File` streams.
 
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -11,8 +11,14 @@ use std::time::Duration;
 
 use crate::paths::RuntimePaths;
 
+#[cfg(unix)]
+mod unix_socket;
+#[cfg(all(test, unix, feature = "server"))]
+mod unix_socket_tests;
 #[cfg(windows)]
 mod windows_pipe;
+#[cfg(all(unix, feature = "server"))]
+pub use unix_socket::{peer_identity, ListenerShutdown, UnixListener};
 #[cfg(windows)]
 pub use windows_pipe::{
     connect_pipe, connect_pipe_within, inspect_pipe_dacl, server_process_id,
@@ -21,17 +27,17 @@ pub use windows_pipe::{
 #[cfg(all(windows, feature = "server"))]
 pub use windows_pipe::{peer_identity, ListenerShutdown, NamedPipeListener};
 
-#[cfg(all(not(windows), feature = "server"))]
+#[cfg(all(not(windows), not(unix), feature = "server"))]
 #[derive(Clone)]
 pub struct ListenerShutdown;
 
-#[cfg(all(not(windows), feature = "server"))]
+#[cfg(all(not(windows), not(unix), feature = "server"))]
 impl ListenerShutdown {
     pub fn shutdown(&self) {}
 }
 
-/// Byte stream bound used by a future Unix-socket listener. Named pipes
-/// currently yield `std::fs::File`, which already implements it.
+/// Byte stream bound for listeners that do not yield files. Named pipes
+/// and Unix sockets both convert into `std::fs::File`, which implements it.
 #[allow(dead_code)]
 pub trait ByteStream: Read + Write + Send {}
 #[allow(dead_code)]
@@ -56,7 +62,13 @@ pub fn bind(
         let shutdown = inner.shutdown_handle();
         Ok((BoundListener::Windows(inner), shutdown))
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
+    {
+        let inner = UnixListener::bind(paths, stop)?;
+        let shutdown = inner.shutdown_handle();
+        Ok((BoundListener::Unix(inner), shutdown))
+    }
+    #[cfg(all(not(windows), not(unix)))]
     {
         let _ = (paths, stop);
         Err(io::Error::new(
@@ -71,7 +83,11 @@ pub fn connect(paths: &RuntimePaths) -> io::Result<File> {
     {
         connect_pipe(&paths.pipe_name)
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
+    {
+        unix_socket::connect(paths)
+    }
+    #[cfg(all(not(windows), not(unix)))]
     {
         let _ = paths;
         Err(io::Error::new(
@@ -87,7 +103,11 @@ pub fn connect_within(paths: &RuntimePaths, budget: Duration) -> io::Result<File
     {
         connect_pipe_within(&paths.pipe_name, budget)
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
+    {
+        unix_socket::connect_within(paths, budget)
+    }
+    #[cfg(all(not(windows), not(unix)))]
     {
         let _ = (paths, budget);
         Err(io::Error::new(
@@ -101,7 +121,9 @@ pub fn connect_within(paths: &RuntimePaths, budget: Duration) -> io::Result<File
 pub enum BoundListener {
     #[cfg(windows)]
     Windows(NamedPipeListener),
-    #[cfg(not(windows))]
+    #[cfg(unix)]
+    Unix(UnixListener),
+    #[cfg(all(not(windows), not(unix)))]
     Unsupported,
 }
 
@@ -113,7 +135,9 @@ impl Listener for BoundListener {
         match self {
             #[cfg(windows)]
             Self::Windows(inner) => inner.accept(),
-            #[cfg(not(windows))]
+            #[cfg(unix)]
+            Self::Unix(inner) => inner.accept(),
+            #[cfg(all(not(windows), not(unix)))]
             Self::Unsupported => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "devboule-daemon M3a targets Windows only",
@@ -125,7 +149,9 @@ impl Listener for BoundListener {
         match self {
             #[cfg(windows)]
             Self::Windows(inner) => inner.shutdown(),
-            #[cfg(not(windows))]
+            #[cfg(unix)]
+            Self::Unix(inner) => inner.shutdown(),
+            #[cfg(all(not(windows), not(unix)))]
             Self::Unsupported => Ok(()),
         }
     }
