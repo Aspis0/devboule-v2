@@ -458,7 +458,8 @@ mod tests {
                 Tailnet::bind_peer_listener(&["127.0.0.1".parse().expect("loopback")], 0, stop)
             }
             fn current_addresses(&self) -> Option<Vec<std::net::IpAddr>> {
-                Some(vec!["127.0.0.2".parse().expect("loopback")])
+                // Not 127.0.0.2: macOS binds only 127.0.0.1 on lo0.
+                Some(vec!["::1".parse().expect("loopback")])
             }
             fn bind_addresses(
                 &self,
@@ -503,7 +504,7 @@ mod tests {
         let (dir, server) = build("devboule-pairing-swap", false);
         let address = pairing_address(&server).expect("the swap lands");
         assert!(
-            address.starts_with("127.0.0.2:"),
+            address.starts_with("[::1]:"),
             "the proposed set is the one advertised: {address}"
         );
         server.stop_remote_listener();

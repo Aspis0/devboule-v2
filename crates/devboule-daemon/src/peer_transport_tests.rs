@@ -1367,6 +1367,12 @@ fn an_off_tailnet_source_with_a_code_active_is_closed_without_a_peek() {
     );
 }
 
+/// The second loopback address the rebind tests move to. Not `127.0.0.2`:
+/// Linux answers all of `127/8`, but macOS carries only `127.0.0.1` on `lo0`,
+/// so a bind there fails and the listener never comes back.
+#[cfg(not(windows))]
+const MOVED_TO: &str = "::1";
+
 /// A held listener must follow the tailnet's own address list: the refresh
 /// worker probes off the accept thread, and the accept thread closes the old
 /// listener and binds the new set — never two at once — so `Status.remote`
@@ -1446,10 +1452,10 @@ fn the_accept_loop_rebinds_when_the_tailnet_addresses_change() {
     *moving
         .addresses
         .lock()
-        .unwrap_or_else(|error| error.into_inner()) = vec!["127.0.0.2".parse().expect("loopback")];
+        .unwrap_or_else(|error| error.into_inner()) = vec![MOVED_TO.parse().expect("loopback")];
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        if state.remote_addresses() == vec!["127.0.0.2".to_string()] {
+        if state.remote_addresses() == vec![MOVED_TO.to_string()] {
             break;
         }
         assert!(
@@ -1463,7 +1469,7 @@ fn the_accept_loop_rebinds_when_the_tailnet_addresses_change() {
     // The bound set moved with it: the new address answers, the old one is
     // closed — there are never two listeners.
     let port = state.remote_port().expect("the rebind reported a port");
-    let new_address: SocketAddr = format!("127.0.0.2:{port}").parse().expect("addr");
+    let new_address: SocketAddr = format!("[{MOVED_TO}]:{port}").parse().expect("addr");
     let connected = std::net::TcpStream::connect_timeout(&new_address, Duration::from_secs(2));
     assert!(
         connected.is_ok(),
@@ -1494,7 +1500,7 @@ fn a_failed_rebind_retries_with_backoff_not_the_probe_timer() {
             Tailnet::bind_peer_listener(&["127.0.0.1".parse().expect("loopback")], 0, stop)
         }
         fn current_addresses(&self) -> Option<Vec<IpAddr>> {
-            Some(vec!["127.0.0.2".parse().expect("loopback")])
+            Some(vec![MOVED_TO.parse().expect("loopback")])
         }
         fn bind_addresses(
             &self,
@@ -1533,7 +1539,7 @@ fn a_failed_rebind_retries_with_backoff_not_the_probe_timer() {
     let started = Instant::now();
     let deadline = started + Duration::from_secs(3);
     loop {
-        if state.remote_addresses() == vec!["127.0.0.2".to_string()] {
+        if state.remote_addresses() == vec![MOVED_TO.to_string()] {
             break;
         }
         assert!(
