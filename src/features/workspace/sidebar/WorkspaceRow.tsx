@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -22,7 +23,7 @@ import type { WorkspaceStat } from "./useWorkspaceStats";
 
 /**
  * Where focus goes once this row's workspace is gone: the next row, the
- * previous one, or the project's New workspace control — never the body.
+ * previous one, or the project's own create control — never the body.
  */
 function focusTargetAfterRemoval(row: HTMLButtonElement): HTMLElement | null {
   const scope: ParentNode = row.closest(".workspace-project-items") ?? document;
@@ -31,7 +32,8 @@ function focusTargetAfterRemoval(row: HTMLButtonElement): HTMLElement | null {
   return (
     rows[index + 1] ??
     rows[index - 1] ??
-    scope.querySelector<HTMLButtonElement>(".workspace-new-row")
+    row.closest(".workspace-project")?.querySelector<HTMLButtonElement>(".workspace-project-add") ??
+    null
   );
 }
 
@@ -48,6 +50,37 @@ function focusSurvivor(target: HTMLElement | null, panel: Element | null): void 
   survivor?.focus({ preventScroll: true });
 }
 
+/**
+ * A workspace named like its project prints the branch instead: the heading
+ * above already said this name, and a row pair never says it twice. A workspace
+ * with no branch keeps its own name — there is nothing truer to put there.
+ */
+function rowLabel(
+  workspace: WorkspaceView,
+  projectName: string,
+  branch: string | undefined,
+): string {
+  if (workspace.displayTitle !== projectName) return workspace.displayTitle;
+  return branch ?? workspace.displayTitle;
+}
+
+/**
+ * What a tooltip carries for a row: where the workspace lives, what branch it
+ * sits on and what is uncommitted — the facts the row itself does not print.
+ */
+function rowDetail(
+  workspace: WorkspaceView,
+  branch: string | undefined,
+  stat: WorkspaceStat | undefined,
+): string | undefined {
+  const totals =
+    stat !== undefined && stat.additions + stat.deletions > 0
+      ? `+${stat.additions} −${stat.deletions}`
+      : null;
+  const parts = [workspace.path, branch, totals].filter((part): part is string => Boolean(part));
+  return parts.length > 0 ? parts.join(" · ") : undefined;
+}
+
 export interface WorkspaceRowProps {
   workspace: WorkspaceView;
   /** The row's identity in the UI; null only when the daemon's id is blank,
@@ -56,6 +89,9 @@ export interface WorkspaceRowProps {
   projectName: string;
   selected: boolean;
   stat: WorkspaceStat | undefined;
+  /** The branch the workspace's last status read reported; it also speaks the
+   *  row when the project's name above already said this workspace's name. */
+  branch: string | undefined;
   onSelect: (workspaceKey: WorkspaceKey) => void;
   /** Persists a new title and answers with the refusal, if one came back. */
   onRename: (workspaceId: string, title: string) => Promise<ErrorSentence | null>;
@@ -63,12 +99,18 @@ export interface WorkspaceRowProps {
   onDelete: (workspaceId: string) => Promise<ErrorSentence | null>;
 }
 
-export function WorkspaceRow({
+/**
+ * One workspace row. Memoised: the daemon republishes every two seconds and
+ * Workspace re-renders with it, so a row whose own facts did not change must
+ * not be re-rendered — the props above are all stable references or values.
+ */
+export const WorkspaceRow = memo(function WorkspaceRow({
   workspace,
   workspaceKey,
   projectName,
   selected,
   stat,
+  branch,
   onSelect,
   onRename,
   onDelete,
@@ -260,12 +302,16 @@ export function WorkspaceRow({
   };
 
   const fact = rowFact(workspace, stat);
-  const factClass =
-    fact?.dot === "attention" ? "workspace-row-fact sidebar-row-waiting" : "workspace-row-fact";
-  const ariaLabel =
-    fact === null
-      ? `${workspace.displayTitle}, ${projectName}`
-      : `${workspace.displayTitle}, ${projectName}, ${fact.label}`;
+  const label = rowLabel(workspace, projectName, branch);
+  // The visible label leads the name; a branch standing in for the title is
+  // followed by the title, so the row stays findable by what it is called —
+  // and the name says each thing once, never the project's name twice.
+  const nameParts = [label];
+  if (label !== workspace.displayTitle) nameParts.push(workspace.displayTitle);
+  if (!nameParts.includes(projectName)) nameParts.push(projectName);
+  if (fact !== null) nameParts.push(...fact.parts.map((part) => part.text));
+  const ariaLabel = nameParts.join(", ");
+  const detail = rowDetail(workspace, branch, stat);
   return (
     <div className="workspace-row-wrap" onContextMenu={openMenu}>
       {editing ? (
@@ -300,7 +346,7 @@ export function WorkspaceRow({
           }}
           aria-pressed={selected}
           aria-label={ariaLabel}
-          title={workspace.path ? workspace.path : undefined}
+          title={detail}
           onKeyDown={onRowKeyDown}
         >
           <span
@@ -310,9 +356,9 @@ export function WorkspaceRow({
           >
             {firstGrapheme(workspace.displayTitle)}
           </span>
-          <span className="workspace-row-title">{workspace.displayTitle}</span>
+          <span className="workspace-row-title">{label}</span>
           {fact === null ? null : (
-            <span className={factClass}>
+            <span className="workspace-row-fact">
               {fact.dot === null ? null : (
                 <span
                   aria-hidden="true"
@@ -321,7 +367,17 @@ export function WorkspaceRow({
                   }`}
                 />
               )}
-              {fact.label}
+              {fact.parts.map((part, index) => (
+                <span
+                  key={part.text}
+                  className={part.attention ? "sidebar-row-waiting" : undefined}
+                >
+                  {/* A flex item trims its own leading space, so the space
+                      before the dot cannot be an ordinary one. */}
+                  {index > 0 ? "\u00A0· " : ""}
+                  {part.text}
+                </span>
+              ))}
             </span>
           )}
         </button>
@@ -363,4 +419,4 @@ export function WorkspaceRow({
       />
     </div>
   );
-}
+});

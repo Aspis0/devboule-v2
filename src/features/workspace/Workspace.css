@@ -155,12 +155,6 @@
   background: transparent;
 }
 
-.workspace-new-row {
-  width: 100%;
-  text-align: left;
-  cursor: pointer;
-}
-
 .workspace-status-dot {
   display: inline-block;
   flex: none;

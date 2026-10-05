@@ -613,7 +613,8 @@ describe("Workspace sessions", () => {
     // the running dot breathes, and the isolation word is gone (spec).
     expect(row?.textContent).not.toContain("live session");
     expect(row?.querySelector(".sidebar-row-dot-pulse")).not.toBeNull();
-    expect(row?.title).toBe("C:\\devboule");
+    // Hover or focus says where the workspace lives and what it sits on.
+    expect(row?.title).toBe("C:\\devboule · main");
   });
 
   it("publishes the selected workspace for surfaces it never mounts alongside", async () => {
@@ -1132,9 +1133,10 @@ describe("Workspace sessions", () => {
 
     const rows = container.querySelectorAll<HTMLButtonElement>("button.workspace-row");
     expect(rows.length).toBe(2);
-    expect(rows[0]?.title).toBe("C:\\devboule.worktrees\\feature-x-9f2e1a");
+    expect(rows[0]?.title).toBe("C:\\devboule.worktrees\\feature-x-9f2e1a · main");
     expect(rows[0]?.textContent).not.toContain("C:\\devboule.worktrees\\feature-x-9f2e1a");
-    expect(rows[1]?.title).toBe("");
+    // No path was sent for this one, so the tooltip carries only the branch.
+    expect(rows[1]?.title).toBe("main");
   });
 
   it("keeps the project-load failure visible on a connected daemon until the user retries", async () => {
@@ -1472,7 +1474,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
 
@@ -1494,7 +1496,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
@@ -1545,7 +1547,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
@@ -1582,7 +1584,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
@@ -1603,7 +1605,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
@@ -1628,7 +1630,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
@@ -1704,7 +1706,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
@@ -1728,7 +1730,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
@@ -1759,7 +1761,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     const rowsBefore = container.querySelectorAll(".workspace-row").length;
 
@@ -1838,7 +1840,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
@@ -1903,7 +1905,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
@@ -2848,7 +2850,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
@@ -2880,7 +2882,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
@@ -2932,7 +2934,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
@@ -2967,7 +2969,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
@@ -3004,7 +3006,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
@@ -3041,7 +3043,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
@@ -3089,7 +3091,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);

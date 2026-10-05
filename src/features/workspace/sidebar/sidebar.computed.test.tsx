@@ -110,6 +110,14 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     expect(getComputedStyle(selected).borderRadius).toBe("6px");
   });
 
+  it("brightens the selected row's fact to the primary ink, the only tone that clears its fill", () => {
+    // The fill is warm and light; muted misses the 6.97 floor on it in both
+    // themes, so the fact paints with the name's own tone there.
+    expect(rulesFor(".workspace-row-selected .workspace-row-fact")).toContain(
+      `color: ${token("--ink")}`,
+    );
+  });
+
   it("avatars hold exactly one letter at 16px, the project avatar beside it", async () => {
     inject([".sidebar-avatar-workspace", ".sidebar-avatar-project", ".sidebar-avatar"]);
     await renderWorkspace();
@@ -126,24 +134,19 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     expect(getComputedStyle(projectAvatar).width).toBe("16px");
   });
 
-  it("project header, new row and foot carry their spec padding", async () => {
-    inject([".sidebar-project-head", ".workspace-new-row", ".sidebar-foot"]);
+  it("project header and foot carry their spec padding", async () => {
+    inject([".sidebar-project-head", ".sidebar-foot"]);
     await renderWorkspace();
 
     const projectHead = document.querySelector<HTMLElement>(".workspace-project-heading");
     if (projectHead === null) throw new Error("project header did not render");
     expect(getComputedStyle(projectHead).paddingLeft).toBe("12px");
 
-    const newRow = document.querySelector<HTMLElement>(".workspace-new-row");
-    if (newRow === null) throw new Error("new workspace row did not render");
-    expect(getComputedStyle(newRow).height).toBe("28px");
-    expect(getComputedStyle(newRow).paddingLeft).toBe("12px");
-
     const foot = document.querySelector<HTMLElement>(".sidebar-foot");
     if (foot === null) throw new Error("daemon foot did not render");
-    // The foot keeps the whole sentence for whoever cannot see the dot, and
-    // prints no label of its own.
-    expect(foot.textContent).toContain("daemon");
+    // The dot alone is drawn; what it stands for stays in the sentence the
+    // screen reader reads, never in a printed word of its own.
+    expect(foot.textContent).toContain("daemon ·");
     expect(foot.textContent).not.toContain("Daemon");
     expect(getComputedStyle(foot).paddingLeft).toBe("8px");
   });

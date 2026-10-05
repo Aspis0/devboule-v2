@@ -13,9 +13,11 @@ const DOT_LABELS: Record<WorkspaceStateDot, string> = {
 };
 
 export interface RowFact {
-  /** The dot drawn beside the label; null when the fact is not an agent state. */
+  /** The dot drawn beside the fact; null when the fact is not an agent state. */
   dot: WorkspaceStateDot | null;
-  label: string;
+  /** The pieces in print order. An approval owed comes first and is the only
+   *  one that carries the attention tone — the count beside it never buries it. */
+  parts: readonly { text: string; attention: boolean }[];
 }
 
 /**
@@ -25,15 +27,20 @@ export interface RowFact {
  */
 export function rowFact(workspace: WorkspaceView, stat: WorkspaceStat | undefined): RowFact | null {
   const { working, waiting } = workspace.agents;
-  if (waiting > 0) return { dot: workspace.stateDot, label: `${waiting} waiting` };
-  if (working > 0) return { dot: workspace.stateDot, label: `${working} working` };
-  if (workspace.stateDot !== null) {
-    return { dot: workspace.stateDot, label: DOT_LABELS[workspace.stateDot] };
+  const parts: { text: string; attention: boolean }[] = [];
+  if (waiting > 0) parts.push({ text: `${waiting} waiting`, attention: true });
+  if (working > 0) parts.push({ text: `${working} working`, attention: false });
+  if (parts.length === 0) {
+    if (workspace.stateDot !== null) {
+      parts.push({ text: DOT_LABELS[workspace.stateDot], attention: false });
+    } else {
+      const age = compactAge(workspace.elapsedMs);
+      if (age !== null) parts.push({ text: age, attention: false });
+      else if (stat !== undefined && stat.additions + stat.deletions > 0) {
+        parts.push({ text: `+${stat.additions} −${stat.deletions}`, attention: false });
+      }
+    }
   }
-  const age = compactAge(workspace.elapsedMs);
-  if (age !== null) return { dot: null, label: age };
-  if (stat !== undefined && stat.additions + stat.deletions > 0) {
-    return { dot: null, label: `+${stat.additions} −${stat.deletions}` };
-  }
-  return null;
+  if (parts.length === 0) return null;
+  return { dot: workspace.stateDot, parts };
 }

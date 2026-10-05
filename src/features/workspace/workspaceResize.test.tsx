@@ -10,6 +10,7 @@ import {
   INITIAL_RIGHT_WIDTH,
   MAX_LEFT_WIDTH,
   MAX_RIGHT_WIDTH,
+  MIN_CENTER_WIDTH,
   MIN_LEFT_WIDTH,
   MIN_RIGHT_WIDTH,
   clampPanelWidth,
@@ -108,6 +109,31 @@ describe("clampPanelWidth", () => {
     expect(clampPanelWidth(300, "right")).toBe(300);
     expect(clampPanelWidth(100, "right")).toBe(MIN_RIGHT_WIDTH);
     expect(clampPanelWidth(900, "right")).toBe(MAX_RIGHT_WIDTH);
+  });
+
+  it("gives the centre its floor at 1024px, on whichever side asks", () => {
+    // The screen draws two 6px handles between the panels and the centre, so
+    // the window owes the other panel 300, the centre 360 and the pair of
+    // handles 12: 1024 − 300 − 360 − 12 = 352, never the 600 the rail allows.
+    const room = { other: 300, viewport: 1024 };
+    const left = clampPanelWidth(MAX_LEFT_WIDTH, "left", room);
+    expect(left).toBe(352);
+    expect(left + 12 + MIN_CENTER_WIDTH + room.other).toBe(room.viewport);
+
+    const rightRoom = { other: 320, viewport: 1024 };
+    const right = clampPanelWidth(MAX_RIGHT_WIDTH, "right", rightRoom);
+    expect(right + 12 + MIN_CENTER_WIDTH + rightRoom.other).toBe(rightRoom.viewport);
+  });
+
+  it("keeps the side's own minimum when the window is smaller than both minima", () => {
+    expect(clampPanelWidth(MAX_LEFT_WIDTH, "left", { other: 400, viewport: 700 })).toBe(
+      MIN_LEFT_WIDTH,
+    );
+  });
+
+  it("leaves the bounds alone when no window is in question", () => {
+    expect(clampPanelWidth(MAX_LEFT_WIDTH, "left")).toBe(MAX_LEFT_WIDTH);
+    expect(clampPanelWidth(0, "left", { other: 300, viewport: 0 })).toBe(MIN_LEFT_WIDTH);
   });
 });
 
@@ -211,6 +237,7 @@ function Probe() {
   const {
     leftWidth,
     rightWidth,
+    leftMax,
     leftCollapsed,
     rightCollapsed,
     setLeftCollapsed,
@@ -219,6 +246,7 @@ function Probe() {
   return (
     <div>
       <p data-testid="frame">{`${leftWidth}/${rightWidth}/${leftCollapsed}/${rightCollapsed}`}</p>
+      <p data-testid="room">{`${leftMax}`}</p>
       <button type="button" data-testid="collapse-right" onClick={() => setRightCollapsed(true)}>
         collapse
       </button>
@@ -304,6 +332,15 @@ describe("the persisted collapsed flags", () => {
     expect(stored.rightCollapsed).toBe(false);
   });
 
+  it("reads the width the default once stored as the default it now is", () => {
+    // 248 was never a drag's answer, so it takes today's default; a width the
+    // user did choose stays exactly as they left it.
+    const storedDefault = fakeStorage({ [RECORD]: JSON.stringify({ left: 248, right: 300 }) });
+    expect(readStoredPanelFrame(storedDefault).left).toBe(INITIAL_LEFT_WIDTH);
+    const chosen = fakeStorage({ [RECORD]: JSON.stringify({ left: 340, right: 300 }) });
+    expect(readStoredPanelFrame(chosen).left).toBe(340);
+  });
+
   it("reads a legacy record without the flags as open, with its widths intact", () => {
     const storage = fakeStorage({ [RECORD]: JSON.stringify({ left: 312, right: 344 }) });
     expect(readStoredPanelFrame(storage)).toEqual({
@@ -333,5 +370,64 @@ describe("the persisted collapsed flags", () => {
       leftCollapsed: false,
       rightCollapsed: false,
     });
+  });
+});
+
+describe("the window's rule on the drawn widths", () => {
+  let holder: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+  const realInnerWidth = window.innerWidth;
+
+  function setWindowWidth(width: number): void {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+  }
+
+  beforeEach(() => {
+    localStorage.clear();
+    setWindowWidth(1024);
+    holder = document.createElement("div");
+    document.body.appendChild(holder);
+    root = createRoot(holder);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    holder.remove();
+    setWindowWidth(realInnerWidth);
+  });
+
+  async function mount(): Promise<void> {
+    await act(async () => {
+      root.render(<Probe />);
+    });
+  }
+
+  function shown(): string | undefined {
+    return holder.querySelector("[data-testid=frame]")?.textContent ?? undefined;
+  }
+
+  function handleMax(): string | undefined {
+    return holder.querySelector("[data-testid=room]")?.textContent ?? undefined;
+  }
+
+  it("draws a 600px rail as 352 at 1024px, and the whole rail once the window grows", async () => {
+    localStorage.setItem(
+      RECORD,
+      JSON.stringify({ left: 600, right: 300, leftCollapsed: false, rightCollapsed: false }),
+    );
+    await mount();
+
+    expect(shown()).toBe("352/300/false/false");
+    // The handle may not promise more than the window can show.
+    expect(handleMax()).toBe("352");
+
+    // The record still holds 600 — only what is drawn was clipped — so the
+    // rail comes back whole when the window does.
+    setWindowWidth(1440);
+    await act(async () => {
+      window.dispatchEvent(new Event("resize"));
+    });
+    expect(shown()).toBe("600/300/false/false");
+    expect(handleMax()).toBe("600");
   });
 });

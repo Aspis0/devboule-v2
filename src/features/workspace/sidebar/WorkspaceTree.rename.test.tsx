@@ -83,6 +83,7 @@ describe("the sidebar's workspace rows", () => {
           providerMenuAnchorProjectId={null}
           providerMenu={null}
           stats={new Map()}
+          branches={new Map()}
           onRenameWorkspace={onRename}
           onDeleteWorkspace={onDeleteWorkspace}
         />,

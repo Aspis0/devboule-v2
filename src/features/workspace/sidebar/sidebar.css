@@ -214,6 +214,16 @@
   white-space: nowrap;
 }
 
+/* Two projects may share a name; this is what their headers do not share. */
+.workspace-project-folder {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--type-meta);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .sidebar-avatar {
   display: grid;
   flex: none;
@@ -280,12 +290,6 @@
   border-radius: var(--radius-6);
 }
 
-.workspace-new-row {
-  width: 100%;
-  text-align: left;
-  cursor: pointer;
-}
-
 .workspace-row {
   cursor: pointer;
 }
@@ -315,18 +319,30 @@
   white-space: nowrap;
 }
 
-/* The row's one trailing fact, muted 12px against the name: what the
-   workspace is doing, else when it last spoke, else what is uncommitted.
-   It never wraps — the name is what gives way. */
+/* The row's one trailing fact, 12px against the name: what the workspace is
+   doing, else when it last spoke, else what is uncommitted — muted, except
+   the approval owed, which keeps the attention tone. It never wraps: the name
+   is what gives way. */
 .workspace-row-fact {
   display: flex;
   flex: none;
   align-items: center;
-  gap: var(--space-4);
   color: var(--muted);
   font-size: var(--type-meta);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+/* The dot is spaced by its own margin: a gap on the fact would double every
+   separator the parts print between themselves. */
+.workspace-row-fact .sidebar-row-dot {
+  margin-right: var(--space-4);
+}
+
+/* The selected fill is warm and light, and --ink is the only text tone that
+   clears 6.97:1 on it in both themes, so the fact brightens with the row. */
+.workspace-row-selected .workspace-row-fact {
+  color: var(--ink);
 }
 
 /* The row wraps its button so the context menu and the title editor are
@@ -427,38 +443,6 @@
   background: var(--tone-unattended);
 }
 
-.workspace-new-row-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.workspace-new-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  height: var(--control-default);
-  margin-top: var(--space-2);
-  padding: 0 var(--space-12);
-  color: var(--muted);
-  background: transparent;
-  border: 0;
-  border-radius: var(--radius-6);
-  font-size: var(--type-meta);
-  white-space: nowrap;
-}
-
-.workspace-new-row:hover,
-.workspace-new-row:focus-visible {
-  color: var(--ink);
-  background: var(--fill-hover);
-}
-
-.workspace-new-row > span {
-  font-size: var(--type-interface);
-  line-height: 1;
-}
-
 .workspace-empty {
   padding: var(--space-6) var(--space-12);
   color: var(--muted);
@@ -526,8 +510,8 @@
   height: 6px;
 }
 
-/* Visually hidden, readable by screen readers. */
-
+/* The line carries a tooltip, so keyboard focus has to reach it — and has to
+   look like it did. */
 .sidebar-foot:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;

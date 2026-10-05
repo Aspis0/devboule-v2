@@ -1,9 +1,9 @@
 // @vitest-environment happy-dom
 
-// What the workspace row prints: its name, and at most one trailing fact —
-// what the workspace is doing, else when it last spoke, else what is
-// uncommitted. The row's menu, its title editor and its delete ask are pinned
-// in WorkspaceTree.rename.
+// What the workspace row prints: its name (or the branch when the heading
+// above already printed that name), at most one trailing fact, and the detail
+// a tooltip carries for every row — reachable without selecting it. The row's
+// menu, its title editor and its delete ask are pinned in WorkspaceTree.rename.
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -58,7 +58,7 @@ describe("the workspace row's one line", () => {
 
   async function render(
     view: WorkspaceView,
-    facts: { stat?: WorkspaceStat } = {},
+    facts: { stat?: WorkspaceStat; branch?: string; projectName?: string } = {},
   ): Promise<HTMLElement> {
     root = createRoot(container);
     await act(async () => {
@@ -66,9 +66,10 @@ describe("the workspace row's one line", () => {
         <WorkspaceRow
           workspace={view}
           workspaceKey={localWorkspaceKey(view.id)}
-          projectName="devboule"
+          projectName={facts.projectName ?? "devboule"}
           selected={false}
           stat={facts.stat}
+          branch={facts.branch}
           onSelect={vi.fn()}
           onRename={vi.fn(async () => null)}
           onDelete={vi.fn(async () => null)}
@@ -92,16 +93,30 @@ describe("the workspace row's one line", () => {
     expect(row.querySelector(".sidebar-row-dot-pulse")).not.toBeNull();
   });
 
-  it("says an agent waits in the attention tone, beside its live dot", async () => {
+  it("prints the approval and the count beside it, never one instead of the other", async () => {
     const row = await render(
       workspace({ stateDot: "attention", agents: { working: 2, waiting: 1 } }),
     );
 
     const fact = row.querySelector<HTMLElement>(".workspace-row-fact");
     if (fact === null) throw new Error("the row printed no fact");
-    expect(fact.className).toContain("sidebar-row-waiting");
+    expect(fact.textContent).toBe("1 waiting\u00A0· 2 working");
+    // The ask keeps the attention tone; the count beside it stays muted.
+    expect(fact.querySelector(".sidebar-row-waiting")?.textContent).toBe("1 waiting");
     expect(fact.querySelector(".sidebar-row-dot-attention")).not.toBeNull();
+    expect(fact.querySelectorAll("span")).toHaveLength(3);
+  });
+
+  it("says an agent waits in the attention tone when it waits alone", async () => {
+    const row = await render(
+      workspace({ stateDot: "attention", agents: { working: 0, waiting: 1 } }),
+    );
+
+    const fact = row.querySelector<HTMLElement>(".workspace-row-fact");
+    if (fact === null) throw new Error("the row printed no fact");
     expect(fact.textContent).toBe("1 waiting");
+    expect(fact.className).toContain("workspace-row-fact");
+    expect(fact.querySelector(".sidebar-row-waiting")).not.toBeNull();
   });
 
   it("prints the name alone when the sidebar has no fact for it", async () => {
@@ -114,10 +129,7 @@ describe("the workspace row's one line", () => {
   it("falls back to the uncommitted totals when no agent and no clock fact exist", async () => {
     const row = await render(workspace(), { stat: { additions: 12, deletions: 3 } });
 
-    const fact = row.querySelector<HTMLElement>(".workspace-row-fact");
-    if (fact === null) throw new Error("the row printed no fact");
-    expect(fact.textContent).toBe("+12 −3");
-    expect(fact.querySelector(".sidebar-row-dot")).toBeNull();
+    expect(row.querySelector(".workspace-row-fact")?.textContent).toBe("+12 −3");
   });
 
   it("leaves out a clean tree's zero totals", async () => {
@@ -145,8 +157,6 @@ describe("the workspace row's one line", () => {
   });
 
   it("shows when a workspace's only session stopped", async () => {
-    // An ended row still reports its last output, so the age is real and must
-    // read as minutes — never as the epoch, never as nothing.
     const row = await render(
       workspaceView(workspace(), [
         rosterSession({
@@ -165,9 +175,54 @@ describe("the workspace row's one line", () => {
     expect(row.querySelector(".workspace-row-fact")).toBeNull();
   });
 
+  it("speaks the branch when the heading above already printed this name", async () => {
+    const row = await render(workspace({ displayTitle: "devboule" }), {
+      projectName: "devboule",
+      branch: "main",
+    });
+
+    expect(row.querySelector(".workspace-row-title")?.textContent).toBe("main");
+    // The title it stands in for stays in the accessible name.
+    expect(row.getAttribute("aria-label")).toBe("main, devboule");
+  });
+
+  it("keeps its own name when it differs from the project's", async () => {
+    const row = await render(workspace({ displayTitle: "figures" }), {
+      projectName: "paperlab-studio",
+      branch: "docs/figures",
+    });
+
+    expect(row.querySelector(".workspace-row-title")?.textContent).toBe("figures");
+    expect(row.getAttribute("aria-label")).toBe("figures, paperlab-studio");
+  });
+
+  it("keeps its own name when the project has no branch to speak instead", async () => {
+    const row = await render(workspace({ displayTitle: "devboule" }), { projectName: "devboule" });
+
+    expect(row.querySelector(".workspace-row-title")?.textContent).toBe("devboule");
+    expect(row.getAttribute("aria-label")).toBe("devboule");
+  });
+
   it("carries the fact in the row's accessible name", async () => {
     const row = await render(workspace({ stateDot: "pulse", agents: { working: 2, waiting: 0 } }));
 
     expect(row.getAttribute("aria-label")).toBe("devboule-v2, devboule, 2 working");
+  });
+
+  it("offers the branch and the totals to a pointer and to focus alike", async () => {
+    // The row prints one fact; the rest of what the sidebar knows about it is
+    // on the row itself, so nothing waits for a selection to become readable.
+    const row = await render(workspace(), {
+      branch: "feat/ux-sidebar-clean",
+      stat: { additions: 128, deletions: 4 },
+    });
+
+    expect(row.getAttribute("title")).toBe("C:\\devboule-v2 · feat/ux-sidebar-clean · +128 −4");
+  });
+
+  it("names only the path when branch and totals have nothing to say", async () => {
+    const row = await render(workspace(), { stat: { additions: 0, deletions: 0 } });
+
+    expect(row.getAttribute("title")).toBe("C:\\devboule-v2");
   });
 });

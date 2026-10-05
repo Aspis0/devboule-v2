@@ -166,7 +166,7 @@ describe("deleting a workspace from the sidebar", () => {
     expect(document.querySelector("button.workspace-row")).not.toBeNull();
   });
 
-  it("after a success the row leaves through the re-read, the tabs go empty, focus lands on New workspace", async () => {
+  it("after a success the row leaves through the re-read, the tabs go empty, focus lands on the project's create control", async () => {
     vi.mocked(workspacesList).mockResolvedValue([worktreeRow]);
     await renderWorkspace();
     vi.mocked(workspacesList).mockResolvedValue([]);
@@ -177,7 +177,7 @@ describe("deleting a workspace from the sidebar", () => {
     expect(workspaceDelete).toHaveBeenCalledTimes(1);
     expect(document.querySelector("button.workspace-row")).toBeNull();
     expect(document.body.textContent).toContain("No tabs yet");
-    expect(document.activeElement).toBe(document.querySelector(".workspace-new-row"));
+    expect(document.activeElement).toBe(document.querySelector(".workspace-project-add"));
     expect(document.activeElement).not.toBe(document.body);
   });
 
@@ -225,7 +225,7 @@ describe("deleting a workspace from the sidebar", () => {
     await clickDialogButton("Delete");
     await settle();
 
-    expect(document.querySelector(".workspace-new-row"), "the whole group left").toBeNull();
+    expect(document.querySelector(".workspace-project-add"), "the whole group left").toBeNull();
     expect(document.activeElement).toBe(search);
   });
 });

@@ -7,7 +7,8 @@ export type ResizeSide = "left" | "right";
  * The shell frame's widths: sidebar 320 (resizable 200–600, collapsible),
  * right panel 300 (its own bounds — the spec pins only the default). A width
  * persisted by an older build, outside the current bounds, is clamped into
- * its side's bounds on read.
+ * its side's bounds on read, and the two panels share what the window leaves
+ * after the centre's floor.
  */
 export const MIN_LEFT_WIDTH = 200;
 export const MAX_LEFT_WIDTH = 600;
@@ -16,7 +17,18 @@ export const MIN_RIGHT_WIDTH = 240;
 export const MAX_RIGHT_WIDTH = 420;
 export const INITIAL_RIGHT_WIDTH = 300;
 
+/** The centre pane keeps at least this much of the window: at 1024px the rail
+ *  stops at 352 instead of pushing the right panel off the screen. */
+export const MIN_CENTER_WIDTH = 360;
+
+/** The two 6px tracks between the panels and the centre. */
+const TRACK_TOTAL = 12;
+
 const WIDTHS_STORAGE_KEY = "devboule.workspacePanelWidths";
+
+/** A stored 248 was the default writing itself, never a drag: it takes the
+ *  current default on read, and the write that follows replaces it for good. */
+const DEFAULT_BEFORE_WIDENING = 248;
 
 /** The shell frame as the one guarded record holds it: both widths and
  *  both collapsed flags. The flags are optional on disk — a record from
@@ -34,10 +46,25 @@ export interface StorageLike {
   setItem(key: string, value: string): void;
 }
 
-export function clampPanelWidth(width: number, side: ResizeSide): number {
+/** What the window still owes the other panel: the room a width is judged in. */
+export interface PanelRoom {
+  other: number;
+  viewport: number;
+}
+
+/**
+ * Bounds first, then the window: a panel may not eat the centre's floor, so
+ * the clamp that answers "how wide may this side be" also knows what the other
+ * side already holds. A window too small for both minima keeps the side's own
+ * minimum — the floor gives way there, not the panel.
+ */
+export function clampPanelWidth(width: number, side: ResizeSide, room?: PanelRoom): number {
   const min = side === "left" ? MIN_LEFT_WIDTH : MIN_RIGHT_WIDTH;
   const max = side === "left" ? MAX_LEFT_WIDTH : MAX_RIGHT_WIDTH;
-  return Math.max(min, Math.min(max, width));
+  const bounded = Math.max(min, Math.min(max, width));
+  if (room === undefined || room.viewport <= 0) return bounded;
+  const ceiling = room.viewport - room.other - MIN_CENTER_WIDTH - TRACK_TOTAL;
+  return Math.max(min, Math.min(bounded, ceiling));
 }
 
 function isSideWidth(value: unknown): value is number {
@@ -59,8 +86,14 @@ export function readStoredPanelFrame(storage: StorageLike | null): StoredPanelFr
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return defaults;
     const row = parsed as Record<string, unknown>;
+    const left =
+      row.left === DEFAULT_BEFORE_WIDENING
+        ? INITIAL_LEFT_WIDTH
+        : isSideWidth(row.left)
+          ? clampPanelWidth(row.left, "left")
+          : defaults.left;
     return {
-      left: isSideWidth(row.left) ? clampPanelWidth(row.left, "left") : defaults.left,
+      left,
       right: isSideWidth(row.right) ? clampPanelWidth(row.right, "right") : defaults.right,
       leftCollapsed: typeof row.leftCollapsed === "boolean" ? row.leftCollapsed : false,
       rightCollapsed: typeof row.rightCollapsed === "boolean" ? row.rightCollapsed : false,
@@ -91,12 +124,39 @@ export function useWorkspacePanelResize() {
   const [frame, setFrame] = useState<StoredPanelFrame>(() =>
     readStoredPanelFrame(defaultStorage()),
   );
+  const [viewport, setViewport] = useState(() =>
+    typeof window === "undefined" ? 0 : window.innerWidth,
+  );
 
   const resizeRef = useRef<{ side: ResizeSide; startX: number; startWidth: number } | null>(null);
+  // The drag listeners stay mounted for the whole gesture — their cleanup also
+  // drops the cursor class — so they read the frame and the window from here.
+  const roomRef = useRef<{ frame: StoredPanelFrame; viewport: number }>({
+    frame,
+    viewport,
+  });
+
+  useEffect(() => {
+    roomRef.current = { frame, viewport };
+  });
+
+  useEffect(() => {
+    const onResize = () => setViewport(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   useEffect(() => {
     writeStoredPanelFrame(defaultStorage(), frame);
   }, [frame]);
+
+  // What the screen draws: the record keeps the width the user chose, the
+  // layout keeps the centre's floor at this window.
+  const leftRoom: PanelRoom = { other: frame.right, viewport };
+  const leftWidth = clampPanelWidth(frame.left, "left", leftRoom);
+  const rightWidth = clampPanelWidth(frame.right, "right", { other: leftWidth, viewport });
+  const leftMax = clampPanelWidth(MAX_LEFT_WIDTH, "left", leftRoom);
+  const rightMax = clampPanelWidth(MAX_RIGHT_WIDTH, "right", { other: leftWidth, viewport });
 
   useEffect(() => {
     const handleMove = (event: globalThis.MouseEvent) => {
@@ -105,7 +165,12 @@ export function useWorkspacePanelResize() {
 
       const distance = event.clientX - resize.startX;
       const signedDistance = resize.side === "left" ? distance : -distance;
-      const width = clampPanelWidth(resize.startWidth + signedDistance, resize.side);
+      const latest = roomRef.current;
+      const room: PanelRoom = {
+        other: resize.side === "left" ? latest.frame.right : latest.frame.left,
+        viewport: latest.viewport,
+      };
+      const width = clampPanelWidth(resize.startWidth + signedDistance, resize.side, room);
 
       setFrame((current) => ({ ...current, [resize.side]: width }));
     };
@@ -140,11 +205,13 @@ export function useWorkspacePanelResize() {
       resizeRef.current = {
         side,
         startX: event.clientX,
-        startWidth: side === "left" ? frame.left : frame.right,
+        // The width on screen, not the record's: a drag has to move the first
+        // pixel the pointer moves, even when the window had clipped the side.
+        startWidth: side === "left" ? leftWidth : rightWidth,
       };
       document.body.classList.add("workspace-is-resizing");
     },
-    [frame.left, frame.right],
+    [leftWidth, rightWidth],
   );
 
   const handleResizeKey = useCallback(
@@ -155,7 +222,7 @@ export function useWorkspacePanelResize() {
         return;
       }
 
-      const currentWidth = side === "left" ? frame.left : frame.right;
+      const currentWidth = side === "left" ? leftWidth : rightWidth;
       let nextWidth: number | null = null;
       if (event.key === "Home") nextWidth = side === "left" ? MIN_LEFT_WIDTH : MIN_RIGHT_WIDTH;
       if (event.key === "End") nextWidth = side === "left" ? MAX_LEFT_WIDTH : MAX_RIGHT_WIDTH;
@@ -166,11 +233,15 @@ export function useWorkspacePanelResize() {
 
       if (nextWidth !== null) {
         event.preventDefault();
-        const width = clampPanelWidth(nextWidth, side);
+        const room: PanelRoom = {
+          other: side === "left" ? frame.right : leftWidth,
+          viewport,
+        };
+        const width = clampPanelWidth(nextWidth, side, room);
         setFrame((current) => ({ ...current, [side]: width }));
       }
     },
-    [frame.left, frame.right, setCollapsed],
+    [leftWidth, rightWidth, frame.right, viewport, setCollapsed],
   );
 
   const setLeftCollapsed = useCallback(
@@ -183,8 +254,10 @@ export function useWorkspacePanelResize() {
   );
 
   return {
-    leftWidth: frame.left,
-    rightWidth: frame.right,
+    leftWidth,
+    rightWidth,
+    leftMax,
+    rightMax,
     leftCollapsed: frame.leftCollapsed,
     rightCollapsed: frame.rightCollapsed,
     setLeftCollapsed,

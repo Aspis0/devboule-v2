@@ -1,4 +1,4 @@
-import { type ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import { ErrorText } from "../../../components/ErrorText";
 import { firstGrapheme } from "../../../lib/graphemeBound";
 import type { ErrorSentence } from "../../../lib/errorSentence";
@@ -22,20 +22,30 @@ export interface WorkspaceTreeProps {
   onRenameWorkspace: (workspaceId: string, title: string) => Promise<ErrorSentence | null>;
   /** Deletes a row's workspace; answers with the refusal, if one came. */
   onDeleteWorkspace: (workspaceId: string) => Promise<ErrorSentence | null>;
-  /** The project whose new-row wrap hosts the provider choice UI. */
+  /** The project whose anchor hosts the provider choice UI. */
   providerMenuAnchorProjectId: string | null;
   /** The provider choice UI itself (popover or consent card). */
   providerMenu: ReactNode;
   stats: ReadonlyMap<WorkspaceKey, WorkspaceStat>;
+  /** Each workspace's branch, from the same status read as `stats`. */
+  branches: ReadonlyMap<WorkspaceKey, string>;
 }
 
 /**
- * The project tree: project headers with avatars and a hover-revealed "+",
- * the workspace rows (each its own component: label, one trailing fact,
- * context menu, in-place title editor and delete ask), and the quiet
- * "New workspace" row. A project whose one workspace carries its own name
- * prints that name once — the header would only repeat it — and keeps its
- * header while the workspaces it holds need it to tell them apart.
+ * The folder a project lives in: the one thing two projects sharing a name do
+ * not share. Null when the path gives no parent to name.
+ */
+function parentFolder(path: string): string | null {
+  const parts = path.split(/[\\/]+/).filter((part) => part !== "");
+  return parts.length >= 2 ? parts[parts.length - 2] : null;
+}
+
+/**
+ * The project tree: every project keeps its header — name, avatar and the "+"
+ * that creates its next workspace — above its rows, and a header whose name a
+ * row would only repeat carries the folder the project sits in instead of
+ * leaving two identical headers. What a row prints beside its name is decided
+ * by the row itself (WorkspaceRow).
  */
 export function WorkspaceTree({
   projects,
@@ -51,7 +61,18 @@ export function WorkspaceTree({
   providerMenuAnchorProjectId,
   providerMenu,
   stats,
+  branches,
 }: WorkspaceTreeProps) {
+  // Derived once per project list, not once per render: two headers may hold
+  // the same name, and only the folder separates them.
+  const sharedNames = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const project of projects) {
+      counts.set(project.name, (counts.get(project.name) ?? 0) + 1);
+    }
+    return counts;
+  }, [projects]);
+
   return (
     <>
       {loading ? (
@@ -78,39 +99,40 @@ export function WorkspaceTree({
             detail={providerError.detail}
             id="workspace-provider-error"
           />
+          <button type="button" className="workspace-secondary-action" onClick={onRetryProjects}>
+            Retry
+          </button>
         </div>
       ) : null}
       {projects.map((project) => {
-        const lone =
-          project.workspaces.length === 1 && project.workspaces[0]?.displayTitle === project.name;
+        const folder = (sharedNames.get(project.name) ?? 0) > 1 ? parentFolder(project.path) : null;
         return (
           <div
             className="workspace-project"
             key={project.id}
             role="group"
-            aria-label={project.name}
+            aria-label={folder === null ? project.name : `${project.name} in ${folder}`}
           >
-            {lone ? null : (
-              <div className="workspace-project-heading sidebar-project-head">
-                <span
-                  className="sidebar-avatar sidebar-avatar-project"
-                  style={avatarStyle(project.id)}
-                  aria-hidden="true"
-                >
-                  {firstGrapheme(project.name)}
-                </span>
-                <span className="workspace-project-name">{project.name}</span>
-                <button
-                  type="button"
-                  className="workspace-project-add"
-                  onClick={(event) => onNewWorkspace(event.currentTarget, project.id)}
-                  title="New workspace in this project"
-                  aria-label={`New workspace in ${project.name}`}
-                >
-                  +
-                </button>
-              </div>
-            )}
+            <div className="workspace-project-heading sidebar-project-head">
+              <span
+                className="sidebar-avatar sidebar-avatar-project"
+                style={avatarStyle(project.id)}
+                aria-hidden="true"
+              >
+                {firstGrapheme(project.name)}
+              </span>
+              <span className="workspace-project-name">{project.name}</span>
+              {folder === null ? null : <span className="workspace-project-folder">{folder}</span>}
+              <button
+                type="button"
+                className="workspace-project-add"
+                onClick={(event) => onNewWorkspace(event.currentTarget, project.id)}
+                title="New workspace in this project"
+                aria-label={`New workspace in ${project.name}`}
+              >
+                +
+              </button>
+            </div>
             {project.workspaceError !== undefined ? (
               <div className="workspace-project-error" role="alert">
                 <ErrorText
@@ -138,23 +160,15 @@ export function WorkspaceTree({
                     projectName={project.name}
                     selected={key !== null && selectedWorkspace === key}
                     stat={key === null ? undefined : stats.get(key)}
+                    branch={key === null ? undefined : branches.get(key)}
                     onSelect={onSelectWorkspace}
                     onRename={onRenameWorkspace}
                     onDelete={onDeleteWorkspace}
                   />
                 );
               })}
-              <div className="workspace-new-row-wrap">
-                <button
-                  type="button"
-                  className="workspace-new-row"
-                  onClick={(event) => onNewWorkspace(event.currentTarget, project.id)}
-                >
-                  <span aria-hidden="true">+</span>New workspace
-                </button>
-                {providerMenuAnchorProjectId === project.id ? providerMenu : null}
-              </div>
             </div>
+            {providerMenuAnchorProjectId === project.id ? providerMenu : null}
           </div>
         );
       })}

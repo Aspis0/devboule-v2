@@ -117,6 +117,7 @@ function sidebarProps(): SidebarProps {
       providerMenuAnchorProjectId: null,
       providerMenu: null,
       stats: new Map(),
+      branches: new Map(),
     },
     daemon: CONNECTED,
     daemonNote: null,
@@ -208,16 +209,12 @@ describe("the lone host's sidebar markup", () => {
 <span class="workspace-row-title">shell two</span>
 </button>
 </div>
-<div class="workspace-new-row-wrap">
-<button type="button" class="workspace-new-row">
-<span aria-hidden="true">+</span>New workspace</button>
-</div>
 </div>
 </div>
 </div>
 <div class="workspace-sidebar-footer">
 <button type="button" class="workspace-history-button sidebar-quiet-row" aria-pressed="false" aria-controls="~" title="Show history">History</button>
-<div class="workspace-daemon-status sidebar-foot" title="daemon · pid 42" tabindex="0">
+<div class="workspace-daemon-status sidebar-foot" role="status" title="daemon · pid 42" tabindex="0">
 <span class="workspace-status-dot workspace-dot-green">
 </span>
 <span class="sr-only">daemon · pid 42</span>

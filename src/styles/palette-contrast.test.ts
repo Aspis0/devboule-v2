@@ -163,6 +163,25 @@ function mixOver(fg: string, bg: string, percent: number): string {
   return `#${channels.join("")}`;
 }
 
+/**
+ * The selected row's fill as a colour: a named hex, or the one mix the light
+ * theme writes for it — the pair below is judged on what is painted, not on
+ * how the declaration spells it.
+ */
+function selectedFill(fill: string, vars: Map<string, string>): string {
+  if (/^#[0-9a-fA-F]{6}$/.test(fill)) return fill;
+  const mix = /^color-mix\(in srgb,\s*(#[0-9a-fA-F]{6})\s+(\d+)%,\s*var\((--[a-z-]+)\)\)$/.exec(
+    fill,
+  );
+  expect(
+    mix,
+    `--fill-selected-soft is neither a hex nor the mix this resolves: ${fill}`,
+  ).not.toBeNull();
+  const base = vars.get(mix![3]!);
+  expect(base, `${mix![3]} missing from the block`).toMatch(/^#[0-9a-fA-F]{6}$/);
+  return mixOver(mix![1]!, base!, Number(mix![2]!));
+}
+
 describe("palette contrast (both themes, from tokens.css)", () => {
   it("parsed both theme blocks with their colour tokens present", () => {
     expect(lightMatch, ":root block not found").not.toBeNull();
@@ -216,6 +235,22 @@ describe("palette contrast (both themes, from tokens.css)", () => {
       );
       const ratio = contrastRatio(text!, ground!);
       expect(ratio, `--muted ${text} on ${pair.ground} ${ground}`).toBeGreaterThanOrEqual(6.97);
+    });
+  }
+
+  // The selected row paints its fact with the primary ink — no muted tone
+  // clears the floor on that fill, so the fact brightens with the row — and
+  // the pair is judged on both themes' own fill.
+  for (const [theme, vars] of [
+    ["light", lightVars],
+    ["dark", darkVars],
+  ] as const) {
+    it(`${theme}: --ink on the selected row's fill ≥ 6.97`, () => {
+      const text = vars.get("--ink");
+      expect(text, `--ink missing from the ${theme} block`).toMatch(/^#[0-9a-fA-F]{6}$/);
+      const ground = selectedFill(vars.get("--fill-selected-soft") ?? "", vars);
+      const ratio = contrastRatio(text!, ground);
+      expect(ratio, `--ink ${text} on --fill-selected-soft ${ground}`).toBeGreaterThanOrEqual(6.97);
     });
   }
 

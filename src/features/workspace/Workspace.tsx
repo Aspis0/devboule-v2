@@ -77,13 +77,7 @@ import type { CloseIntent } from "./strip/closePolicy";
 import { usePairedDevices, useWorkspaceDaemon } from "./workspaceDaemon";
 import { reportSelection } from "./presence";
 import { createDaemonRecovery } from "./daemonRecovery";
-import {
-  MAX_LEFT_WIDTH,
-  MAX_RIGHT_WIDTH,
-  MIN_LEFT_WIDTH,
-  MIN_RIGHT_WIDTH,
-  useWorkspacePanelResize,
-} from "./workspaceResize";
+import { MIN_LEFT_WIDTH, MIN_RIGHT_WIDTH, useWorkspacePanelResize } from "./workspaceResize";
 import { keyOfWorkspace, useWorkspaceProjects } from "./workspaceProjects";
 import { getLastSelectedWorkspaceKey, setLastSelectedWorkspaceKey } from "./lastSelectedWorkspace";
 import { Sidebar } from "./sidebar/Sidebar";
@@ -282,6 +276,8 @@ export function Workspace({
   const {
     leftWidth,
     rightWidth,
+    leftMax,
+    rightMax,
     leftCollapsed,
     rightCollapsed,
     setLeftCollapsed,
@@ -1890,7 +1886,7 @@ export function Workspace({
         onResizeStart={handleResizeStart}
         onResizeKeyDown={handleResizeKeyDown}
         resizeMin={MIN_LEFT_WIDTH}
-        resizeMax={MAX_LEFT_WIDTH}
+        resizeMax={leftMax}
         historyOpen={historyOpen}
         onToggleHistory={handleToggleHistory}
         history={{
@@ -1924,6 +1920,7 @@ export function Workspace({
             providerAnchor?.kind === "project" ? providerAnchor.projectId : null,
           providerMenu: providerAnchor?.kind === "project" ? providerMenu : null,
           stats: workspaceStats,
+          branches: workspaceBranches,
         }}
       />
 
@@ -2275,7 +2272,7 @@ export function Workspace({
         aria-label="Resize side panel"
         aria-orientation="vertical"
         aria-valuemin={MIN_RIGHT_WIDTH}
-        aria-valuemax={MAX_RIGHT_WIDTH}
+        aria-valuemax={rightMax}
         aria-valuenow={rightWidth}
       />
 
