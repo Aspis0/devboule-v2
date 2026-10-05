@@ -275,6 +275,7 @@ fn stream_to_file(stream: UnixStream) -> File {
     unsafe { File::from_raw_fd(stream.into_raw_fd()) }
 }
 
+#[cfg(feature = "server")]
 fn current_uid() -> u32 {
     // SAFETY: getuid takes no arguments and cannot fail.
     unsafe { libc::getuid() }
@@ -282,10 +283,12 @@ fn current_uid() -> u32 {
 
 /// Same-user check behind the accept refusal: the kernel uid as a string
 /// is the whole comparison, so a client-supplied name never grants access.
+#[cfg(feature = "server")]
 pub fn peer_is_current(peer: &crate::agent_report::PeerIdentity) -> bool {
     peer.user == current_uid().to_string()
 }
 
+#[cfg(feature = "server")]
 fn peer_identity_from_fd(
     fd: std::os::unix::io::RawFd,
 ) -> io::Result<crate::agent_report::PeerIdentity> {
@@ -296,7 +299,7 @@ fn peer_identity_from_fd(
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(feature = "server", target_os = "macos"))]
 fn peer_credentials(fd: std::os::unix::io::RawFd) -> io::Result<(u32, u32)> {
     let mut uid: libc::uid_t = 0;
     let mut gid: libc::gid_t = 0;
@@ -332,7 +335,7 @@ fn peer_credentials(fd: std::os::unix::io::RawFd) -> io::Result<(u32, u32)> {
     Ok((uid as u32, pid as u32))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "server", target_os = "linux"))]
 fn peer_credentials(fd: std::os::unix::io::RawFd) -> io::Result<(u32, u32)> {
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
@@ -358,7 +361,7 @@ fn peer_credentials(fd: std::os::unix::io::RawFd) -> io::Result<(u32, u32)> {
     Ok((cred.uid, cred.pid as u32))
 }
 
-#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
+#[cfg(all(feature = "server", unix, not(any(target_os = "macos", target_os = "linux"))))]
 fn peer_credentials(fd: std::os::unix::io::RawFd) -> io::Result<(u32, u32)> {
     let _ = fd;
     Err(io::Error::new(
