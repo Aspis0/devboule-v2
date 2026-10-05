@@ -82,10 +82,10 @@ struct PipeInner {
 #[cfg(not(windows))]
 struct PipeInner {
     file: Arc<File>,
-    /// Serialises reads and writes over the one socket handle. The Windows
-    /// pipe has the same lock named for its write side; a socket needs it
-    /// around both, so a blocking read is never interleaved with a write.
-    io_lock: Arc<Mutex<()>>,
+    /// Keeps one frame's bytes contiguous. Writes only: a read parked on the
+    /// socket must never hold it, or the reply it waits for could not be
+    /// requested.
+    write_lock: Arc<Mutex<()>>,
 }
 
 impl Clone for FramedInner {
@@ -113,7 +113,7 @@ impl Clone for PipeInner {
     fn clone(&self) -> Self {
         Self {
             file: Arc::clone(&self.file),
-            io_lock: Arc::clone(&self.io_lock),
+            write_lock: Arc::clone(&self.write_lock),
         }
     }
 }
@@ -165,7 +165,7 @@ impl Framed {
             #[cfg(not(windows))]
             inner: FramedInner::Pipe(PipeInner {
                 file: Arc::new(file),
-                io_lock: Arc::new(Mutex::new(())),
+                write_lock: Arc::new(Mutex::new(())),
             }),
             buf: Arc::new(Mutex::new(Vec::new())),
             max_frame_bytes,
@@ -228,7 +228,10 @@ impl Framed {
             }
             #[cfg(not(windows))]
             FramedInner::Pipe(pipe) => {
-                let _io_lock = pipe.io_lock.lock().unwrap_or_else(|err| err.into_inner());
+                let _write_lock = pipe
+                    .write_lock
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner());
                 let mut file = &*pipe.file;
                 file.flush().map_err(DaemonError::from)
             }
@@ -252,7 +255,10 @@ impl Framed {
             }
             #[cfg(not(windows))]
             FramedInner::Pipe(pipe) => {
-                let _io_lock = pipe.io_lock.lock().unwrap_or_else(|err| err.into_inner());
+                let _write_lock = pipe
+                    .write_lock
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner());
                 write_frame(&pipe.file, value, self.max_frame_bytes, flush)
             }
             #[cfg(feature = "server")]
@@ -327,9 +333,19 @@ impl Framed {
     #[cfg(not(windows))]
     #[allow(dead_code)]
     pub fn cancel_read(&self) {
-        #[cfg(feature = "server")]
-        if let FramedInner::Stream(pair) = &self.inner {
-            let _ = pair.closer.shutdown(std::net::Shutdown::Read);
+        match &self.inner {
+            // Read side only, as on the pipe path: teardown still writes the
+            // connection's final events after this call.
+            FramedInner::Pipe(pipe) => {
+                #[cfg(unix)]
+                shutdown_read(&pipe.file);
+                #[cfg(not(unix))]
+                let _ = pipe;
+            }
+            #[cfg(feature = "server")]
+            FramedInner::Stream(pair) => {
+                let _ = pair.closer.shutdown(std::net::Shutdown::Read);
+            }
         }
     }
 
@@ -378,7 +394,10 @@ impl Framed {
             },
             #[cfg(not(windows))]
             FramedInner::Pipe(pipe) => {
-                let _io_lock = pipe.io_lock.lock().unwrap_or_else(|err| err.into_inner());
+                #[cfg(unix)]
+                if !wait_readable(&pipe.file, deadline)? {
+                    return Err(DaemonError::timed_out("reading a protocol frame"));
+                }
                 let mut file = &*pipe.file;
                 Ok(file.read(chunk)?)
             }
@@ -450,6 +469,49 @@ fn write_frame<T: Serialize>(
         }
     }
     Ok(())
+}
+
+/// Wait until the socket has bytes to read (or has hung up, which `read`
+/// then reports), `false` when `deadline` passes first. `None` waits without
+/// bound. The Windows pipe gets the same deadline from its overlapped wait.
+#[cfg(unix)]
+fn wait_readable(file: &File, deadline: Option<Instant>) -> io::Result<bool> {
+    use std::os::unix::io::AsRawFd;
+
+    let Some(deadline) = deadline else {
+        return Ok(true);
+    };
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        // Rounded up: a sub-millisecond remainder must not spin as a zero wait.
+        let millis = remaining.as_micros().div_ceil(1000).min(i32::MAX as u128) as libc::c_int;
+        let mut poll = libc::pollfd {
+            fd: file.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one live pollfd for a descriptor `file` keeps open.
+        match unsafe { libc::poll(&mut poll, 1, millis) } {
+            0 => return Ok(false),
+            ready if ready > 0 => return Ok(true),
+            _ => {
+                let error = io::Error::last_os_error();
+                if error.kind() != io::ErrorKind::Interrupted {
+                    return Err(error);
+                }
+            }
+        }
+    }
+}
+
+/// Wake a reader parked on this socket: it sees end of stream.
+#[cfg(unix)]
+fn shutdown_read(file: &File) {
+    use std::os::unix::io::AsRawFd;
+
+    // SAFETY: shutdown on a descriptor `file` keeps open; a failure (already
+    // closed by the peer) leaves nothing to wake.
+    let _ = unsafe { libc::shutdown(file.as_raw_fd(), libc::SHUT_RD) };
 }
 
 #[cfg(not(windows))]
@@ -728,3 +790,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "framing_unix_tests.rs"]
+mod unix_tests;

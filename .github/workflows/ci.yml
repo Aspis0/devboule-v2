@@ -345,6 +345,7 @@ jobs:
   # list of what does not: it checks every crate for the Mac target.
   macos:
     runs-on: macos-14
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -411,12 +412,17 @@ jobs:
       - name: Daemon Unix transport tests
         run: cargo test -p devboule-daemon --lib --locked transport
 
-
+      # The socket carries a duplex conversation: a parked read must not
+      # block a send, deadlines must hold, a parked reader must be wakeable.
+      - name: Daemon Unix framing tests
+        timeout-minutes: 10
+        run: cargo test -p devboule-daemon --lib --locked framing::unix_tests
 
       # Slice 4 Unix startup smoke: the real server on a temp runtime dir —
       # bind, hello, ping, refused second daemon, graceful shutdown, stale
       # socket cleanup, journal modes. Unix-only.
       - name: Daemon Unix startup tests
+        timeout-minutes: 10
         run: cargo test -p devboule-daemon --lib --locked unix_startup
 
   # Slice 3 (CfT process manager) owns this job: the websocket transport is
