@@ -404,8 +404,6 @@ jobs:
       - name: Daemon oracle endpoint tests
         run: cargo test -p devboule --lib --locked oracle::tests::endpoint
 
-
-
       # Slice 2 Unix transport primitives: bind/connect round-trip, modes,
       # path length, stale/live sockets, shutdown cleanup, peer identity.
       # Unix-only tests; on other targets this filter matches the portable
