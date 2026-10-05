@@ -52,6 +52,10 @@ impl SingleInstanceLock {
         if !try_lock_exclusive(&file)? {
             return Err(DaemonError::AlreadyRunning);
         }
+        // A lock file predating this version keeps whatever mode it was
+        // born with: narrow the descriptor just taken, owned or refused.
+        #[cfg(unix)]
+        crate::unix_modes::narrow_open_file(&file, 0o600)?;
         Ok(Self { file })
     }
 

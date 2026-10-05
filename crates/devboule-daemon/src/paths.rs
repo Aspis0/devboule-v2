@@ -145,7 +145,8 @@ mod tests {
     #[test]
     fn ensure_dir_is_owner_only() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = crate::test_dirs::test_temp_dir("devboule-paths").join("nested");
+        let base = crate::test_dirs::test_temp_dir("devboule-paths");
+        let dir = base.join("nested");
         RuntimePaths::from_dir(&dir).ensure_dir().expect("dir");
         let mode = std::fs::metadata(&dir)
             .expect("metadata")
@@ -153,5 +154,6 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o700);
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
