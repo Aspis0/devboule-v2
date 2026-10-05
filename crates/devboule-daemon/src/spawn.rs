@@ -30,10 +30,10 @@ pub fn resolve_daemon_binary() -> Result<PathBuf, DaemonError> {
         "daemon binary not found next to {} (set DEVBOULE_DAEMON)",
         exe.display()
     );
-    Err(DaemonError::Protocol(
-        "Devboule daemon not found. Set DEVBOULE_DAEMON or install devboule-daemon.exe beside the app."
-            .to_string(),
-    ))
+    Err(DaemonError::Protocol(format!(
+        "Devboule daemon not found. Set DEVBOULE_DAEMON or install {} beside the app.",
+        daemon_file_name()
+    )))
 }
 
 /// Spawn the daemon as a child of this process. No breakaway, no Service, no
@@ -67,9 +67,31 @@ fn spawn_with_env(
     let mut command = Command::new(binary);
     command
         .env("DEVBOULE_RUNTIME_DIR", &paths.dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdin(Stdio::null());
+    #[cfg(windows)]
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+    // The daemon outlives the app's terminal: its own session, and its
+    // output to the daemon log instead of an inherited pipe.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(paths.dir.join("daemon.log"))
+            .map_err(DaemonError::from)?;
+        let err_log = log.try_clone().map_err(DaemonError::from)?;
+        command.stdout(log).stderr(err_log);
+        // SAFETY: `pre_exec` runs between fork and exec; `setsid` takes no
+        // arguments. A failure (already a session leader) leaves the child
+        // in the parent's session rather than failing the spawn.
+        unsafe {
+            command.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+    }
     for (key, value) in extra_env {
         command.env(key, value);
     }
@@ -85,8 +107,15 @@ fn spawn_with_env(
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
     #[test]
     fn file_name_is_the_windows_exe() {
         assert_eq!(daemon_file_name(), "devboule-daemon.exe");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_name_has_no_extension_on_unix() {
+        assert_eq!(daemon_file_name(), "devboule-daemon");
     }
 }

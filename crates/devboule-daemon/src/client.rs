@@ -1,6 +1,10 @@
 use std::collections::HashMap;
 use std::fs::File;
+#[cfg(unix)]
+use std::io;
 use std::path::Path;
+#[cfg(unix)]
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
@@ -176,6 +180,11 @@ struct ClientInner {
     stop: AtomicBool,
     hello: DaemonHello,
     server_pid: Option<u32>,
+    /// The runtime this connection was opened on, for restart's wait and
+    /// re-spawn. Raw `handshake` clients have none and cannot restart.
+    /// Read on Unix only; the Windows restart kills by handle instead.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    runtime: Option<RuntimePaths>,
 }
 
 pub struct DaemonClient {
@@ -325,10 +334,48 @@ impl DaemonClient {
             )
             .map_err(DaemonError::from)
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, unix)))]
         {
             Err(DaemonError::UnsupportedPlatform)
         }
+        #[cfg(unix)]
+        {
+            self.restart_daemon_unix()
+        }
+    }
+
+    /// Graceful shutdown first, guarded kill only when the daemon is
+    /// unreachable but present: a daemon that refuses (other clients hold
+    /// it) is left alone, never killed out from under them.
+    #[cfg(unix)]
+    fn restart_daemon_unix(&self) -> Result<(), DaemonError> {
+        let paths = self.inner.runtime.clone().ok_or_else(|| {
+            DaemonError::Protocol("restart needs the runtime this connection opened on".to_string())
+        })?;
+        let old_instance = self.inner.hello.instance_id.clone();
+        match self.request_shutdown() {
+            Ok(ShutdownAnswer::Accepted) => {}
+            Ok(ShutdownAnswer::Refused(reason)) => {
+                return Err(DaemonError::Protocol(format!(
+                    "daemon refused shutdown: {reason}"
+                )));
+            }
+            Err(error) => {
+                eprintln!("daemon shutdown request failed, checking the process: {error}");
+            }
+        }
+        if daemon_present(&paths, &old_instance) {
+            let expected = self.inner.server_pid.ok_or_else(|| {
+                DaemonError::Protocol(
+                    "cannot prove the identity of the connected daemon".to_string(),
+                )
+            })?;
+            guarded_kill(&paths, expected)?;
+            wait_while_present(&paths, &old_instance)?;
+        }
+        let binary = resolve_daemon_binary()?;
+        let _child = spawn_daemon(&binary, &paths)?;
+        wait_for_instance(&paths, &old_instance)
     }
 
     pub fn session_create(
@@ -2216,9 +2263,132 @@ impl Drop for DaemonClient {
     }
 }
 
+/// Unix restart helpers: presence is read off the record, never off a
+/// remembered pid; killing needs a fresh peer check plus the executable.
+#[cfg(unix)]
+const RESTART_WAIT: Duration = Duration::from_secs(30);
+#[cfg(unix)]
+const RESTART_POLL: Duration = Duration::from_millis(100);
+
+/// A live record for this instance means the old daemon is still up.
+/// Anything else — absent, stale, stopped, another instance — counts as
+/// gone for the caller's purpose.
+#[cfg(unix)]
+fn daemon_present(paths: &RuntimePaths, instance: &str) -> bool {
+    match crate::DaemonState::read(&paths.lock_file) {
+        crate::DaemonState::Live(record) => record.ready && record.instance_id == instance,
+        _ => false,
+    }
+}
+
+#[cfg(unix)]
+fn wait_while_present(paths: &RuntimePaths, instance: &str) -> Result<(), DaemonError> {
+    let deadline = Instant::now() + RESTART_WAIT;
+    while daemon_present(paths, instance) {
+        if Instant::now() >= deadline {
+            return Err(DaemonError::timed_out("waiting for the daemon to stop"));
+        }
+        std::thread::sleep(RESTART_POLL);
+    }
+    Ok(())
+}
+
+/// The replacement, recognized by a live ready record under a new id.
+#[cfg(unix)]
+fn wait_for_instance(paths: &RuntimePaths, old_instance: &str) -> Result<(), DaemonError> {
+    let deadline = Instant::now() + RESTART_WAIT;
+    loop {
+        if let crate::DaemonState::Live(record) = crate::DaemonState::read(&paths.lock_file) {
+            if record.ready && record.instance_id != old_instance {
+                return Ok(());
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(DaemonError::timed_out("waiting for the restarted daemon"));
+        }
+        std::thread::sleep(RESTART_POLL);
+    }
+}
+
+/// Last resort for an unreachable-but-present daemon: reconnect, confirm
+/// the peer is still the expected one (same uid, same pid) and still the
+/// expected executable, and only then signal it. Anything unverifiable
+/// refuses instead of killing by a remembered number.
+#[cfg(unix)]
+fn guarded_kill(paths: &RuntimePaths, expected_pid: u32) -> Result<(), DaemonError> {
+    let file = transport::connect(paths).map_err(|error| {
+        DaemonError::Protocol(format!("cannot reach the daemon to verify it: {error}"))
+    })?;
+    let peer = transport::peer_identity(&file).map_err(DaemonError::from)?;
+    if peer.user != transport::local_uid().to_string() {
+        return Err(DaemonError::Protocol(
+            "refusing to kill a daemon socket held by another user".to_string(),
+        ));
+    }
+    if peer.pid != expected_pid {
+        return Err(DaemonError::Protocol(format!(
+            "daemon pid changed (expected {expected_pid}, holds {})",
+            peer.pid
+        )));
+    }
+    let actual = daemon_exe_of(peer.pid)?;
+    let wanted = std::fs::canonicalize(resolve_daemon_binary()?)?;
+    if actual != wanted {
+        return Err(DaemonError::Protocol(format!(
+            "daemon executable changed: {}",
+            actual.display()
+        )));
+    }
+    // SAFETY: pid and identity were verified above; ESRCH (already gone)
+    // already satisfies the caller, every other failure refuses.
+    let killed = unsafe { libc::kill(peer.pid as libc::pid_t, libc::SIGKILL) };
+    if killed != 0 {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ESRCH) {
+            return Err(DaemonError::from(error));
+        }
+    }
+    Ok(())
+}
+
+/// What `/proc` (Linux) or the kernel (macOS) says this pid executes.
+/// Anything unreadable refuses the kill that asked.
+#[cfg(target_os = "macos")]
+fn daemon_exe_of(pid: u32) -> io::Result<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut buffer = vec![0 as libc::c_char; 1024];
+    // SAFETY: proc_pidpath fills the live buffer up to its length.
+    let length = unsafe {
+        libc::proc_pidpath(
+            pid as libc::pid_t,
+            buffer.as_mut_ptr() as *mut libc::c_void,
+            buffer.len() as u32,
+        )
+    };
+    if length <= 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let bytes = &buffer[..length as usize];
+    Ok(PathBuf::from(std::ffi::OsStr::from_bytes(bytes)))
+}
+
+#[cfg(target_os = "linux")]
+fn daemon_exe_of(pid: u32) -> io::Result<PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/exe"))
+}
+
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
+fn daemon_exe_of(pid: u32) -> io::Result<PathBuf> {
+    let _ = pid;
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "peer executable lookup is implemented for macOS and Linux only",
+    ))
+}
+
 pub fn connect(paths: &RuntimePaths, hello: ClientHello) -> Result<DaemonClient, DaemonError> {
     let file = transport::connect(paths)?;
-    handshake(file, hello)
+    handshake_with_runtime(file, hello, Some(paths.clone()))
 }
 
 /// [`connect`] for a caller that cannot wait out a busy pipe: it stops waiting
@@ -2229,7 +2399,7 @@ pub fn connect_within(
     budget: Duration,
 ) -> Result<DaemonClient, DaemonError> {
     let file = transport::connect_within(paths, budget)?;
-    handshake(file, hello)
+    handshake_with_runtime(file, hello, Some(paths.clone()))
 }
 
 /// Connect, spawning the daemon binary if the pipe is not up yet. Racing
@@ -2287,9 +2457,19 @@ where
 }
 
 pub fn handshake(file: File, hello: ClientHello) -> Result<DaemonClient, DaemonError> {
+    handshake_with_runtime(file, hello, None)
+}
+
+fn handshake_with_runtime(
+    file: File,
+    hello: ClientHello,
+    runtime: Option<RuntimePaths>,
+) -> Result<DaemonClient, DaemonError> {
     #[cfg(windows)]
     let server_pid = crate::transport::server_process_id(&file).ok();
-    #[cfg(not(windows))]
+    #[cfg(unix)]
+    let server_pid = Some(verify_server_peer(&file)?);
+    #[cfg(not(any(windows, unix)))]
     let server_pid = None;
     let framed = Framed::new(file);
     framed.send(&ClientMessage::Hello(hello))?;
@@ -2316,6 +2496,7 @@ pub fn handshake(file: File, hello: ClientHello) -> Result<DaemonClient, DaemonE
                 stop: AtomicBool::new(false),
                 hello: daemon_hello,
                 server_pid,
+                runtime,
             });
             let reader_inner = Arc::clone(&inner);
             let reader = std::thread::Builder::new()
@@ -2330,6 +2511,21 @@ pub fn handshake(file: File, hello: ClientHello) -> Result<DaemonClient, DaemonE
         DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
         other => unexpected(other),
     }
+}
+
+/// Kernel check on the server end before the hello goes out: the socket
+/// must be held by this user, so a path planted by another account is
+/// refused instead of talked to.
+#[cfg(unix)]
+fn verify_server_peer(file: &File) -> Result<u32, DaemonError> {
+    let peer = crate::transport::peer_identity(file).map_err(DaemonError::from)?;
+    if peer.user != crate::transport::local_uid().to_string() {
+        return Err(DaemonError::Handshake(WireError::new(
+            ErrorCode::Unauthorized,
+            "refusing a daemon socket held by another user",
+        )));
+    }
+    Ok(peer.pid)
 }
 
 pub fn test_owner(client: &str) -> Result<OwnerId, DaemonError> {

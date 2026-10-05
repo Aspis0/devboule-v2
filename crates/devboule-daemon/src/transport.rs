@@ -17,8 +17,10 @@ mod unix_socket;
 mod unix_socket_tests;
 #[cfg(windows)]
 mod windows_pipe;
+#[cfg(unix)]
+pub use unix_socket::peer_identity;
 #[cfg(all(unix, feature = "server"))]
-pub use unix_socket::{peer_identity, ListenerShutdown, UnixListener};
+pub use unix_socket::{ListenerShutdown, UnixListener};
 #[cfg(windows)]
 pub use windows_pipe::{
     connect_pipe, connect_pipe_within, inspect_pipe_dacl, server_process_id,
@@ -76,6 +78,16 @@ pub fn bind(
             "devboule-daemon M3a targets Windows only",
         ))
     }
+}
+
+/// OS-derived identity of a local peer. Never taken from a frame: the
+/// kernel answers for the handle this process is actually connected to.
+/// `user` is a Windows SID or a Unix uid string; `pid` is the peer process
+/// for diagnostics, never an authorization principal on its own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeerIdentity {
+    pub user: String,
+    pub pid: u32,
 }
 
 /// This process's kernel uid: the owner name Unix clients present and the

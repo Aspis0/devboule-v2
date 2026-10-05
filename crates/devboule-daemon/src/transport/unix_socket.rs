@@ -7,7 +7,6 @@
 use std::fs::File;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
-#[cfg(feature = "server")]
 use std::os::unix::io::AsRawFd;
 use std::os::unix::io::{FromRawFd, IntoRawFd};
 use std::os::unix::net::{UnixListener as StdListener, UnixStream};
@@ -184,12 +183,11 @@ pub fn connect_within(paths: &RuntimePaths, budget: Duration) -> io::Result<File
     }
 }
 
-/// Kernel identity of the peer holding this stream, the way
-/// `transport::peer_identity` reports it on Windows: numeric uid as the
-/// user, kernel peer pid for diagnostics. Slice 4 plugs this into the
-/// connection's owner check; `accept` already refuses another uid above.
-#[cfg(feature = "server")]
-pub fn peer_identity(file: &File) -> io::Result<crate::agent_report::PeerIdentity> {
+/// Kernel identity of the peer holding this stream: numeric uid as the
+/// user, kernel peer pid for diagnostics. Available without the server
+/// feature so clients verify before the hello; the connection's owner
+/// check uses it server-side.
+pub fn peer_identity(file: &File) -> io::Result<super::PeerIdentity> {
     peer_identity_from_fd(file.as_raw_fd())
 }
 
@@ -276,23 +274,19 @@ fn stream_to_file(stream: UnixStream) -> File {
 
 /// Same-user check behind the accept refusal: the kernel uid as a string
 /// is the whole comparison, so a client-supplied name never grants access.
-#[cfg(feature = "server")]
-pub fn peer_is_current(peer: &crate::agent_report::PeerIdentity) -> bool {
+pub fn peer_is_current(peer: &super::PeerIdentity) -> bool {
     peer.user == super::local_uid().to_string()
 }
 
-#[cfg(feature = "server")]
-fn peer_identity_from_fd(
-    fd: std::os::unix::io::RawFd,
-) -> io::Result<crate::agent_report::PeerIdentity> {
+fn peer_identity_from_fd(fd: std::os::unix::io::RawFd) -> io::Result<super::PeerIdentity> {
     let (uid, pid) = peer_credentials(fd)?;
-    Ok(crate::agent_report::PeerIdentity {
+    Ok(super::PeerIdentity {
         user: uid.to_string(),
         pid,
     })
 }
 
-#[cfg(all(feature = "server", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 fn peer_credentials(fd: std::os::unix::io::RawFd) -> io::Result<(u32, u32)> {
     let mut uid: libc::uid_t = 0;
     let mut gid: libc::gid_t = 0;
@@ -328,7 +322,7 @@ fn peer_credentials(fd: std::os::unix::io::RawFd) -> io::Result<(u32, u32)> {
     Ok((uid as u32, pid as u32))
 }
 
-#[cfg(all(feature = "server", target_os = "linux"))]
+#[cfg(target_os = "linux")]
 fn peer_credentials(fd: std::os::unix::io::RawFd) -> io::Result<(u32, u32)> {
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
@@ -354,11 +348,7 @@ fn peer_credentials(fd: std::os::unix::io::RawFd) -> io::Result<(u32, u32)> {
     Ok((cred.uid, cred.pid as u32))
 }
 
-#[cfg(all(
-    feature = "server",
-    unix,
-    not(any(target_os = "macos", target_os = "linux"))
-))]
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
 fn peer_credentials(fd: std::os::unix::io::RawFd) -> io::Result<(u32, u32)> {
     let _ = fd;
     Err(io::Error::new(

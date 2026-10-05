@@ -117,6 +117,7 @@ fn connection_failure_answers_pending_requests_with_connection_lost_code() {
         stop: AtomicBool::new(false),
         hello: DaemonHello::plugin_backend("connection-loss-test", std::process::id()),
         server_pid: None,
+        runtime: None,
     };
 
     fail_connection(&inner, DaemonError::ConnectionLost);
@@ -1307,6 +1308,7 @@ fn trace_stub_inner(dir: &std::path::Path) -> Arc<ClientInner> {
         stop: AtomicBool::new(false),
         hello: DaemonHello::plugin_backend("trace-test", std::process::id()),
         server_pid: None,
+        runtime: None,
     })
 }
 

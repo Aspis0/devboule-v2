@@ -9,13 +9,9 @@ use devboule_protocol::{AgentActivityState, ErrorCode, WireError};
 mod agent_report_state;
 
 pub use agent_report_state::AgentReportState;
-
-/// OS-derived identity of a named-pipe peer. Never taken from a frame.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PeerIdentity {
-    pub user: String,
-    pub pid: u32,
-}
+// Peer identity lives in transport, beside the readers that derive it;
+// re-exported here so existing paths keep working.
+pub use crate::transport::PeerIdentity;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentReport {

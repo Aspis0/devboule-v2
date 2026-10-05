@@ -2053,10 +2053,10 @@ fn locate_daemon_binary() -> Result<PathBuf, String> {
         exe.display(),
         fallback.display()
     );
-    Err(
-        "Devboule daemon not found. Set DEVBOULE_DAEMON or install devboule-daemon.exe beside the app."
-            .to_string(),
-    )
+    Err(format!(
+        "Devboule daemon not found. Set DEVBOULE_DAEMON or install {} beside the app.",
+        daemon_file_name()
+    ))
 }
 
 fn set_status(status: &Mutex<UiDaemonStatus>, next: UiDaemonStatus) {
