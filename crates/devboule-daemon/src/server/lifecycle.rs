@@ -103,22 +103,34 @@ pub(super) fn fallback_instance_id() -> String {
 }
 
 pub fn run() -> Result<(), DaemonError> {
-    #[cfg(not(windows))]
+    #[cfg(any(windows, unix))]
+    {
+        run_shared()
+    }
+    #[cfg(not(any(windows, unix)))]
     {
         return Err(DaemonError::UnsupportedPlatform);
     }
-    #[cfg(windows)]
-    {
-        run_windows()
-    }
 }
 
-#[cfg(windows)]
-fn run_windows() -> Result<(), DaemonError> {
-    let paths = RuntimePaths::from_env()?;
+/// The daemon startup both platforms run: lock, record, state, broker,
+/// listen, serve, shut down. Platform differences are the small `cfg`
+/// blocks below (log sink, ConPTY line, endpoint name); order, messages
+/// and files are the same everywhere.
+#[cfg(any(windows, unix))]
+fn run_shared() -> Result<(), DaemonError> {
+    run_with_paths(RuntimePaths::from_env()?)
+}
+
+/// The shared startup with an explicit runtime dir: production passes the
+/// environment's, the smoke test passes a temp dir. Split out so tests
+/// drive the real sequence without touching process-global env.
+#[cfg(any(windows, unix))]
+pub(crate) fn run_with_paths(paths: RuntimePaths) -> Result<(), DaemonError> {
     let mut lock = SingleInstanceLock::acquire(&paths)?;
     // Only now — the single-instance lock is ours — may the log rotate: a
     // losing second daemon must never move the running daemon's log aside.
+    #[cfg(windows)]
     crate::daemon_log::rotate_after_lock(&paths.dir);
     // The vendored loader has no logger, so this line reports which ConPTY
     // implementation the process pinned; it sits below `rotate_after_lock`
@@ -131,13 +143,18 @@ fn run_windows() -> Result<(), DaemonError> {
     // fresh log — unless the writer's queue stayed full past
     // `ROTATE_RETRY` and the rotation was skipped and recorded in
     // `Status.logError` instead.
+    #[cfg(windows)]
     eprintln!("ConPTY: using {}", portable_pty::conpty_source());
     let pid = std::process::id();
     let instance_id = instance_id();
     // The record is written before anything can be served and re-read by
     // nobody here: it exists for the processes that will read it while this
     // one holds the lock.
-    let mut record = DaemonRecord::starting(pid, &instance_id, &paths.pipe_name);
+    #[cfg(windows)]
+    let endpoint = paths.pipe_name.clone();
+    #[cfg(unix)]
+    let endpoint = paths.socket_path.to_string_lossy().into_owned();
+    let mut record = DaemonRecord::starting(pid, &instance_id, &endpoint);
     lock.write_body(&record.body())?;
 
     let state = ServerState::with_paths(instance_id, paths.clone())?;
@@ -209,6 +226,7 @@ fn run_windows() -> Result<(), DaemonError> {
     }
     // Flush the log pipeline so the goodbye lines land, then hand stderr
     // back to the launcher's sink.
+    #[cfg(windows)]
     crate::log_pipeline::shutdown_log();
     drop(lock);
     Ok(())

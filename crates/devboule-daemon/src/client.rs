@@ -2338,9 +2338,14 @@ pub fn test_owner(client: &str) -> Result<OwnerId, DaemonError> {
         let user = crate::security::current_user_sid()?;
         OwnerId::new(user, client).map_err(DaemonError::Protocol)
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, unix)))]
     {
         OwnerId::new("unix", client).map_err(DaemonError::Protocol)
+    }
+    #[cfg(unix)]
+    {
+        let user = crate::transport::local_uid().to_string();
+        OwnerId::new(user, client).map_err(DaemonError::Protocol)
     }
 }
 

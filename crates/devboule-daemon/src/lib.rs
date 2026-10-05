@@ -289,5 +289,9 @@ pub use security::{
     apply_current_user_dacl, current_user_sid, dacl_is_current_user_only, dacl_sddl_for_path,
     user_only_sddl,
 };
+/// The owner name Unix clients present and the server derives. Exported
+/// for the app's client hello; the daemon side uses it through transport.
+#[cfg(unix)]
+pub use transport::local_uid;
 #[cfg(windows)]
 pub use transport::{connect_pipe, inspect_pipe_dacl};

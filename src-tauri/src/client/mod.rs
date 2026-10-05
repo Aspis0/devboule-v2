@@ -1980,10 +1980,13 @@ fn supervisor(inner: Arc<BridgeInner>, stop: Arc<AtomicBool>) {
 /// The hello every connection from this process presents: the owner names
 /// this app process, so the daemon can count two windows apart.
 fn client_hello() -> Result<ClientHello, String> {
-    // No SID off Windows; the daemon's own test owner uses the same word.
     #[cfg(windows)]
     let user = current_user_sid().map_err(|error| error.to_string())?;
-    #[cfg(not(windows))]
+    // The kernel uid, matching what the daemon derives from the socket
+    // peer: never a client-chosen name.
+    #[cfg(unix)]
+    let user = devboule_daemon::local_uid().to_string();
+    #[cfg(not(any(windows, unix)))]
     let user = "unix".to_string();
     let owner = devboule_protocol::OwnerId::new(user, format!("app-{}", std::process::id()))?;
     Ok(ClientHello::m3a(owner, "devboule-app"))

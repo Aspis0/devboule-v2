@@ -40,14 +40,20 @@ pub(crate) fn handle_client(
         send_shutting_down(&framed, None)?;
         return Ok(());
     }
-    // `as_file()` is `Option` because a stream connection has no pipe handle;
-    // that case is routine, so it is a branch and never an unwrap.
-    #[cfg(windows)]
+    // `as_file()` is `Option` because a stream connection has no file
+    // handle; that case is routine, so it is a branch and never an unwrap.
+    // The accept layer already refused a foreign uid, so a local peer here
+    // is this user; the owner below is still derived from the kernel
+    // identity, never from the hello's label.
+    #[cfg(any(windows, unix))]
     let peer: Option<crate::agent_report::PeerIdentity> = match framed.as_file() {
         Some(file) => match transport::peer_identity(&file) {
             Ok(peer) => Some(peer),
             Err(error) => {
+                #[cfg(windows)]
                 eprintln!("could not derive named-pipe peer identity: {error}");
+                #[cfg(unix)]
+                eprintln!("could not derive socket peer identity: {error}");
                 let _ = framed.send(&DaemonMessage::Error(WireError::new(
                     ErrorCode::Unauthorized,
                     "Could not verify the daemon client identity.",
@@ -57,11 +63,11 @@ pub(crate) fn handle_client(
         },
         None => None,
     };
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, unix)))]
     let peer: Option<crate::agent_report::PeerIdentity> = None;
 
     // Authority is `OwnerId.user`: a kernel SID (starts with `S-` on Windows)
-    // for a local client, `peer_<device_id>` for a remote one.
+    // or uid (a decimal string on Unix) for a local client, `peer_<device_id>` for a remote one.
     let true_owner = match &conn_peer {
         Some(ConnPeer::Remote {
             device_id, role, ..
@@ -78,8 +84,9 @@ pub(crate) fn handle_client(
                     return Err(DaemonError::Protocol(message));
                 }
             },
-            // No pipe identity on this platform: today's behaviour, the hello
-            // owner label. The peer case is handled above.
+            // No kernel identity for this connection (a remote stream, or a
+            // platform without one): fall back to the hello owner label.
+            // The peer case is handled above.
             None => client_hello.owner.clone(),
         },
     };

@@ -275,14 +275,16 @@ impl Framed {
         Ok(serde_json::from_slice(&line)?)
     }
 
-    /// The pipe handle, when this connection is a pipe.
+    /// The connection's file handle (named pipe on Windows, socket on
+    /// Unix), when this connection has one.
     ///
-    /// Kernel peer identity (`GetNamedPipeClientProcessId`) only exists on the
-    /// pipe path; a remote connection's identity is the Noise static key the
-    /// peer authenticated with, which is decided before `Framed` is built. A
-    /// caller that needs the handle must branch on this, never unwrap it: the
-    /// stream case is routine, not an error.
-    #[cfg(windows)]
+    /// Kernel peer identity (`GetNamedPipeClientProcessId`, respectively
+    /// the socket peer credentials) only exists on the file path; a remote
+    /// connection's identity is the Noise static key the peer authenticated
+    /// with, which is decided before `Framed` is built. A caller that needs
+    /// the handle must branch on this, never unwrap it: the stream case is
+    /// routine, not an error.
+    #[cfg(any(windows, unix))]
     pub fn as_file(&self) -> Option<Arc<File>> {
         match &self.inner {
             FramedInner::Pipe(pipe) => Some(Arc::clone(&pipe.file)),

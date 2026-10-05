@@ -78,6 +78,15 @@ pub fn bind(
     }
 }
 
+/// This process's kernel uid: the owner name Unix clients present and the
+/// server derives. Numeric, stable across restarts, and never shaped like
+/// a Windows SID, so the two namespaces cannot collide.
+#[cfg(unix)]
+pub fn local_uid() -> u32 {
+    // SAFETY: getuid takes no arguments and cannot fail.
+    unsafe { libc::getuid() }
+}
+
 pub fn connect(paths: &RuntimePaths) -> io::Result<File> {
     #[cfg(windows)]
     {

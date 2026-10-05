@@ -147,6 +147,10 @@ mod tests;
 #[path = "server/lifecycle_tests.rs"]
 mod lifecycle_tests;
 
+#[cfg(all(test, unix))]
+#[path = "server/unix_startup_tests.rs"]
+mod unix_startup_tests;
+
 #[cfg(test)]
 #[path = "server/create_size_tests.rs"]
 mod create_size_tests;

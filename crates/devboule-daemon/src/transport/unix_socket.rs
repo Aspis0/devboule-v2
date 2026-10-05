@@ -93,7 +93,7 @@ impl UnixListener {
                 format!(
                     "refusing daemon connection from uid {}, owned by {}",
                     peer.user,
-                    current_uid()
+                    super::local_uid()
                 ),
             ));
         }
@@ -274,17 +274,11 @@ fn stream_to_file(stream: UnixStream) -> File {
     unsafe { File::from_raw_fd(stream.into_raw_fd()) }
 }
 
-#[cfg(feature = "server")]
-fn current_uid() -> u32 {
-    // SAFETY: getuid takes no arguments and cannot fail.
-    unsafe { libc::getuid() }
-}
-
 /// Same-user check behind the accept refusal: the kernel uid as a string
 /// is the whole comparison, so a client-supplied name never grants access.
 #[cfg(feature = "server")]
 pub fn peer_is_current(peer: &crate::agent_report::PeerIdentity) -> bool {
-    peer.user == current_uid().to_string()
+    peer.user == super::local_uid().to_string()
 }
 
 #[cfg(feature = "server")]

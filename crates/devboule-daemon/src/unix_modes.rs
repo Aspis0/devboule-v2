@@ -19,6 +19,36 @@ pub fn create_private_file(path: &Path) -> io::Result<File> {
     options.open(path)
 }
 
+/// Ensure a sensitive file exists owner-only without touching its bytes:
+/// create 0600 when missing (never truncate), narrow when present and
+/// owned. SQLite creates WAL/SHM itself with no mode hook, so pre-created
+/// empty files keep their mode when the database adopts them.
+pub fn ensure_private_file(path: &Path) -> io::Result<()> {
+    loop {
+        match std::fs::symlink_metadata(path) {
+            // Present: narrow in place, refusing links and foreign owners.
+            // A name created between this check and the create below lands
+            // here on the next pass instead of being opened through.
+            Ok(_) => return narrow_to_owner(path, 0o600),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let mut options = OpenOptions::new();
+                options.write(true).create_new(true);
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+                match options.open(path) {
+                    Ok(file) => {
+                        drop(file);
+                        return Ok(());
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// Create a directory (parents included) that only its owner can enter,
 /// refusing a link, a non-directory, or another owner's dir instead of
 /// chmodding it: narrowing a foreign or redirected path would alter
@@ -63,12 +93,12 @@ pub fn narrow_to_owner(path: &Path, mode: u32) -> io::Result<()> {
 pub fn narrow_open_file(file: &File, mode: u32) -> io::Result<()> {
     use std::os::unix::fs::MetadataExt;
     let uid = fstat_uid(file)?;
-    if uid != current_uid() {
+    if uid != crate::transport::local_uid() {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!(
                 "refusing to narrow a file owned by uid {uid}, running as {}",
-                current_uid()
+                crate::transport::local_uid()
             ),
         ));
     }
@@ -115,11 +145,6 @@ fn fstat_uid(file: &File) -> io::Result<u32> {
         return Err(io::Error::last_os_error());
     }
     Ok(status.st_uid)
-}
-
-fn current_uid() -> u32 {
-    // SAFETY: getuid takes no arguments and cannot fail.
-    unsafe { libc::getuid() }
 }
 
 #[cfg(test)]
@@ -198,5 +223,35 @@ mod tests {
         // O_NOFOLLOW fails the open itself: nothing was ever chmodded.
         assert_eq!(error.raw_os_error(), Some(libc::ELOOP));
         assert_eq!(mode_of(&target), before, "target untouched");
+    }
+
+    #[test]
+    fn ensure_private_file_creates_owner_only() {
+        let dir = temp();
+        let path = dir.0.join("new.bin");
+        ensure_private_file(&path).expect("create");
+        assert_eq!(mode_of(&path), 0o600);
+        assert_eq!(std::fs::read(&path).expect("read"), b"");
+    }
+
+    #[test]
+    fn ensure_private_file_narrows_an_existing_wide_file() {
+        let dir = temp();
+        let path = dir.0.join("wide.bin");
+        std::fs::write(&path, b"wide").expect("write");
+        ensure_private_file(&path).expect("narrow");
+        assert_eq!(mode_of(&path), 0o600);
+        assert_eq!(std::fs::read(&path).expect("bytes kept"), b"wide");
+    }
+
+    #[test]
+    fn ensure_private_file_refuses_a_symlink() {
+        let dir = temp();
+        let target = dir.0.join("target.bin");
+        std::fs::write(&target, b"target").expect("write");
+        let link = dir.0.join("link.bin");
+        std::os::unix::fs::symlink(&target, &link).expect("link");
+        let error = ensure_private_file(&link).expect_err("link refused");
+        assert_eq!(error.raw_os_error(), Some(libc::ELOOP));
     }
 }

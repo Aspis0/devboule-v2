@@ -411,6 +411,14 @@ jobs:
       - name: Daemon Unix transport tests
         run: cargo test -p devboule-daemon --lib --locked transport
 
+
+
+      # Slice 4 Unix startup smoke: the real server on a temp runtime dir —
+      # bind, hello, ping, refused second daemon, graceful shutdown, stale
+      # socket cleanup, journal modes. Unix-only.
+      - name: Daemon Unix startup tests
+        run: cargo test -p devboule-daemon --lib --locked unix_startup
+
   # Slice 3 (CfT process manager) owns this job: the websocket transport is
   # cross-platform code and only a Mac can verify the mac-arm64 Chromium
   # lifecycle. Everything here is headless; a headed pane with compositor

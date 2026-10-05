@@ -5,7 +5,34 @@ use rusqlite::{Connection, OptionalExtension};
 
 use super::{JournalError, JOURNAL_SCHEMA_VERSION};
 
+/// SQLite sidecar path: the database name plus the suffix, no stem split.
+#[cfg(unix)]
+fn sidecar_path(db: &Path, suffix: &str) -> std::path::PathBuf {
+    let mut name = db.as_os_str().to_os_string();
+    name.push(suffix);
+    std::path::PathBuf::from(name)
+}
+
+#[cfg(unix)]
+fn wal_path(db: &Path) -> std::path::PathBuf {
+    sidecar_path(db, "-wal")
+}
+
+#[cfg(unix)]
+fn shm_path(db: &Path) -> std::path::PathBuf {
+    sidecar_path(db, "-shm")
+}
+
 pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
+    // Owner-only before SQLite ever opens: the database file itself, plus
+    // empty WAL/SHM stand-ins the database adopts with their mode intact
+    // (SQLite offers no creation-mode hook). A pre-existing wider database
+    // is narrowed here, owned or refused.
+    #[cfg(unix)]
+    for name in [path.to_path_buf(), wal_path(path), shm_path(path)] {
+        crate::unix_modes::ensure_private_file(&name)
+            .map_err(|error| JournalError::Unavailable(error.to_string()))?;
+    }
     let conn = Connection::open(path)?;
     conn.busy_timeout(Duration::from_secs(5))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
