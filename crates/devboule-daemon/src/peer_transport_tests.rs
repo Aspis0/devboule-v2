@@ -1425,7 +1425,7 @@ fn the_accept_loop_rebinds_when_the_tailnet_addresses_change() {
     // test watches the whole worker → channel → accept path in milliseconds.
     state.set_address_refresh_interval(Duration::from_millis(50));
     assert!(
-        state.set_peer_transport(Arc::clone(&moving)).is_ok(),
+        state.set_peer_transport(moving.clone()).is_ok(),
         "the stub transport is installed before anything picks the real one"
     );
     assert!(state.ensure_remote_listener(), "the listener starts");
@@ -1527,7 +1527,7 @@ fn a_failed_rebind_retries_with_backoff_not_the_probe_timer() {
         attempts: std::sync::atomic::AtomicUsize::new(0),
     });
     state.set_address_refresh_interval(Duration::from_millis(50));
-    assert!(state.set_peer_transport(Arc::clone(&failing)).is_ok());
+    assert!(state.set_peer_transport(failing.clone()).is_ok());
     assert!(state.ensure_remote_listener(), "the listener starts");
 
     let started = Instant::now();

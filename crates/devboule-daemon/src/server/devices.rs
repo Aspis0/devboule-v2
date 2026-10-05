@@ -439,9 +439,9 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn pairing_address_waits_for_a_proposed_swap_and_refuses_a_stale_one() {
+        use crate::peer_policy::TransportBinding;
         use crate::peer_transport::{
             BindingError, PeerListener, PeerTable, PeerTransport, RejectReason, Tailnet,
-            TransportBinding,
         };
         use std::sync::atomic::AtomicBool;
         use std::sync::Arc;
