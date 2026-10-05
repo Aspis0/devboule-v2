@@ -7,7 +7,9 @@
 use std::fs::File;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
+#[cfg(feature = "server")]
+use std::os::unix::io::AsRawFd;
+use std::os::unix::io::{FromRawFd, IntoRawFd};
 use std::os::unix::net::{UnixListener as StdListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -29,11 +31,27 @@ const CONNECT_RETRY_PAUSE: Duration = Duration::from_millis(20);
 
 /// The socket bind refuses to create: probe, stale handling and mode live
 /// here so `transport::bind` only picks the platform.
+///
+/// Startup order is the caller's contract (slice 4 holds the daemon's
+/// single-instance `flock` across probe, unlink and bind): without that
+/// serialization a competing binder could replace the path between those
+/// steps. What `bind` guarantees on its own is identity-tracked cleanup
+/// below: only the (dev, ino) it bound is ever unlinked.
 #[cfg(feature = "server")]
 pub struct UnixListener {
     listener: StdListener,
     socket_path: PathBuf,
+    socket_id: (u64, u64),
     stop: Arc<AtomicBool>,
+}
+
+#[cfg(feature = "server")]
+impl std::fmt::Debug for UnixListener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UnixListener")
+            .field("socket_path", &self.socket_path)
+            .finish()
+    }
 }
 
 #[cfg(feature = "server")]
@@ -43,10 +61,16 @@ impl UnixListener {
         prepare_socket_dir(&paths.socket_path)?;
         probe_before_unlink(&paths.socket_path)?;
         let listener = StdListener::bind(&paths.socket_path)?;
+        // The bind lands inside the just-verified 0700 dir, which only this
+        // user traverses: that containment is what makes the bind-then-chmod
+        // window below harmless. No umask change — the daemon is
+        // multithreaded and the umask is process-global.
         restrict_socket_permissions(&paths.socket_path)?;
+        let socket_id = fstat_dev_ino(listener.as_raw_fd())?;
         Ok(Self {
             listener,
             socket_path: paths.socket_path.clone(),
+            socket_id,
             stop,
         })
     }
@@ -91,15 +115,29 @@ impl Listener for UnixListener {
 
     fn shutdown(&mut self) -> io::Result<()> {
         self.shutdown_handle().shutdown();
-        let _ = std::fs::remove_file(&self.socket_path);
+        self.remove_owned_socket();
         Ok(())
+    }
+}
+
+#[cfg(feature = "server")]
+impl UnixListener {
+    /// Unlink only the socket this listener bound: a replaced path keeps
+    /// somebody else's entry, which must never be removed here.
+    fn remove_owned_socket(&self) {
+        use std::os::unix::fs::MetadataExt;
+        let same = std::fs::metadata(&self.socket_path)
+            .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == self.socket_id);
+        if same {
+            let _ = std::fs::remove_file(&self.socket_path);
+        }
     }
 }
 
 #[cfg(feature = "server")]
 impl Drop for UnixListener {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.socket_path);
+        self.remove_owned_socket();
     }
 }
 
@@ -127,14 +165,15 @@ pub fn connect(paths: &RuntimePaths) -> io::Result<File> {
 
 /// [`connect`] that keeps trying until about `budget` runs out, never
 /// sooner than one try: the daemon may be bound but not yet listening.
+/// Elapsed-time accounting, so no deadline can overflow.
 pub fn connect_within(paths: &RuntimePaths, budget: Duration) -> io::Result<File> {
     check_path_length(&paths.socket_path)?;
-    let deadline = Instant::now() + budget;
+    let start = Instant::now();
     loop {
         match UnixStream::connect(&paths.socket_path) {
             Ok(stream) => return Ok(stream_to_file(stream)),
             Err(error) => {
-                if Instant::now() >= deadline {
+                if start.elapsed() >= budget {
                     return Err(error);
                 }
                 std::thread::sleep(CONNECT_RETRY_PAUSE);
@@ -166,8 +205,9 @@ fn check_path_length(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// The socket's parent, created private: the daemon's per-user runtime dir
-/// must not stay at whatever the umask left behind.
+/// The socket's parent, verified private: no link, a real directory owned
+/// by this user, mode 0700. Refusing anything else is the point — binding
+/// into a foreign or redirected dir would chmod and serve from it.
 fn prepare_socket_dir(socket_path: &Path) -> io::Result<()> {
     let Some(parent) = socket_path.parent() else {
         return Err(io::Error::new(
@@ -175,9 +215,7 @@ fn prepare_socket_dir(socket_path: &Path) -> io::Result<()> {
             format!("socket path has no parent: {}", socket_path.display()),
         ));
     };
-    std::fs::create_dir_all(parent)?;
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+    crate::unix_modes::ensure_private_dir(parent)
 }
 
 fn restrict_socket_permissions(socket_path: &Path) -> io::Result<()> {
@@ -215,6 +253,18 @@ fn probe_before_unlink(socket_path: &Path) -> io::Result<()> {
         }
         Err(error) => Err(error),
     }
+}
+
+/// (dev, ino) of the open listener: shutdown cleanup compares against
+/// this, never trusts the pathname alone.
+#[cfg(feature = "server")]
+fn fstat_dev_ino(fd: std::os::unix::io::RawFd) -> io::Result<(u64, u64)> {
+    let mut status: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: fstat fills a live struct of exactly this type.
+    if unsafe { libc::fstat(fd, &mut status) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((status.st_dev as u64, status.st_ino as u64))
 }
 
 /// Owned descriptor transfer into the shared stream type: the `File` closes
@@ -271,6 +321,14 @@ fn peer_credentials(fd: std::os::unix::io::RawFd) -> io::Result<(u32, u32)> {
     {
         return Err(io::Error::last_os_error());
     }
+    // A truncated answer or a non-positive pid is not an identity: refuse
+    // it rather than reporting a fabricated process.
+    if len as usize != std::mem::size_of::<libc::pid_t>() || pid <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "peer pid answer was not a positive pid",
+        ));
+    }
     Ok((uid as u32, pid as u32))
 }
 
@@ -290,6 +348,12 @@ fn peer_credentials(fd: std::os::unix::io::RawFd) -> io::Result<(u32, u32)> {
     } != 0
     {
         return Err(io::Error::last_os_error());
+    }
+    if len as usize != std::mem::size_of::<libc::ucred>() || cred.pid <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "peer credential answer was not a positive pid",
+        ));
     }
     Ok((cred.uid, cred.pid as u32))
 }

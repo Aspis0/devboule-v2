@@ -19,11 +19,32 @@ pub fn create_private_file(path: &Path) -> io::Result<File> {
     options.open(path)
 }
 
-/// Create a directory (parents included) that only its owner can enter.
-/// Re-applied every time: a re-created directory keeps whatever mode it
-/// already had.
+/// Create a directory (parents included) that only its owner can enter,
+/// refusing a link, a non-directory, or another owner's dir instead of
+/// chmodding it: narrowing a foreign or redirected path would alter
+/// permissions on a tree this daemon must not touch.
 pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
-    std::fs::create_dir_all(path)?;
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("refusing a symlinked dir: {}", path.display()),
+            ));
+        }
+        Ok(metadata) if !metadata.is_dir() => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("private dir is not a directory: {}", path.display()),
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(path)?;
+        }
+        Err(error) => return Err(error),
+    }
+    // Re-verified inside: a link swapped in after the check above still
+    // fails the descriptor open, and foreign owners are refused there.
     narrow_to_owner(path, 0o700)
 }
 

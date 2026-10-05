@@ -4,17 +4,32 @@
 
 use std::io::{self, Read, Write};
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
-use std::sync::{atomic::AtomicBool, Arc};
+use std::path::{Path, PathBuf};
+use std::sync::{atomic::AtomicBool, mpsc, Arc};
 use std::time::Duration;
 
 use super::unix_socket::{connect, connect_within, peer_identity, peer_is_current, UnixListener};
 use super::Listener;
 use crate::paths::RuntimePaths;
 
-fn unique_paths() -> RuntimePaths {
-    let dir = crate::test_dirs::test_temp_dir("ux");
-    RuntimePaths::from_dir(dir)
+/// Unique temp runtime dir, removed on drop so repeated runs do not
+/// accumulate listener sockets and folders.
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn fresh() -> Self {
+        Self(crate::test_dirs::test_temp_dir("ux"))
+    }
+
+    fn paths(&self) -> RuntimePaths {
+        RuntimePaths::from_dir(&self.0)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 fn stop_flag() -> Arc<AtomicBool> {
@@ -31,8 +46,8 @@ fn file_mode(path: &Path) -> u32 {
 
 #[test]
 fn round_trip_moves_bytes_both_ways() {
-    let paths = unique_paths();
-    let listener = UnixListener::bind(&paths, stop_flag()).expect("bind");
+    let temp = TempDir::fresh();
+    let paths = temp.paths();
     let mut listener = UnixListener::bind(&paths, stop_flag()).expect("bind");
     let mut client = connect(&paths).expect("connect");
     let mut server = Listener::accept(&mut listener).expect("accept");
@@ -49,7 +64,8 @@ fn round_trip_moves_bytes_both_ways() {
 
 #[test]
 fn socket_dir_is_private_and_socket_is_owner_only() {
-    let paths = unique_paths();
+    let temp = TempDir::fresh();
+    let paths = temp.paths();
     let _listener = UnixListener::bind(&paths, stop_flag()).expect("bind");
     assert_eq!(file_mode(&paths.dir), 0o700, "runtime dir");
     assert_eq!(file_mode(&paths.socket_path), 0o600, "socket");
@@ -57,9 +73,9 @@ fn socket_dir_is_private_and_socket_is_owner_only() {
 
 #[test]
 fn too_long_path_is_refused_before_touching_the_fs() {
-    let dir = crate::test_dirs::test_temp_dir("ux");
-    let mut paths = RuntimePaths::from_dir(&dir);
-    paths.socket_path = dir.join("a".repeat(200) + ".sock");
+    let temp = TempDir::fresh();
+    let mut paths = temp.paths();
+    paths.socket_path = temp.0.join("a".repeat(200) + ".sock");
     let error = UnixListener::bind(&paths, stop_flag()).expect_err("too long");
     assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     assert!(
@@ -74,7 +90,8 @@ fn too_long_path_is_refused_before_touching_the_fs() {
 
 #[test]
 fn stale_socket_file_is_unlinked() {
-    let paths = unique_paths();
+    let temp = TempDir::fresh();
+    let paths = temp.paths();
     paths.ensure_dir().expect("runtime dir");
     {
         let lingering =
@@ -87,7 +104,8 @@ fn stale_socket_file_is_unlinked() {
 
 #[test]
 fn live_socket_refuses_a_second_bind() {
-    let paths = unique_paths();
+    let temp = TempDir::fresh();
+    let paths = temp.paths();
     let _first = UnixListener::bind(&paths, stop_flag()).expect("first bind");
     let error = UnixListener::bind(&paths, stop_flag()).expect_err("second bind");
     assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
@@ -98,8 +116,9 @@ fn live_socket_refuses_a_second_bind() {
 }
 
 #[test]
-fn shutdown_removes_the_owned_socket() {
-    let paths = unique_paths();
+fn shutdown_removes_only_the_owned_socket() {
+    let temp = TempDir::fresh();
+    let paths = temp.paths();
     let mut listener = UnixListener::bind(&paths, stop_flag()).expect("bind");
     assert!(paths.socket_path.exists());
     Listener::shutdown(&mut listener).expect("shutdown");
@@ -107,8 +126,25 @@ fn shutdown_removes_the_owned_socket() {
 }
 
 #[test]
+fn shutdown_leaves_a_replaced_socket_alone() {
+    let temp = TempDir::fresh();
+    let paths = temp.paths();
+    let mut listener = UnixListener::bind(&paths, stop_flag()).expect("bind");
+    // Attacker swap: the live entry is replaced by a planted file.
+    std::fs::remove_file(&paths.socket_path).expect("swap out");
+    std::fs::write(&paths.socket_path, b"planted").expect("plant");
+    Listener::shutdown(&mut listener).expect("shutdown");
+    assert_eq!(
+        std::fs::read(&paths.socket_path).expect("planted file"),
+        b"planted",
+        "a replacement is never unlinked"
+    );
+}
+
+#[test]
 fn peer_uid_is_read_and_same_uid_is_accepted() {
-    let paths = unique_paths();
+    let temp = TempDir::fresh();
+    let paths = temp.paths();
     let mut listener = UnixListener::bind(&paths, stop_flag()).expect("bind");
     let _client = connect(&paths).expect("connect");
     let server = Listener::accept(&mut listener).expect("same uid accepted");
@@ -140,19 +176,27 @@ fn different_uid_is_refused() {
 
 #[test]
 fn connect_within_waits_for_a_late_listener() {
-    let paths = unique_paths();
+    let temp = TempDir::fresh();
+    let paths = temp.paths();
     let late = paths.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(150));
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    let handle = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(500));
         let _listener = UnixListener::bind(&late, stop_flag()).expect("late bind");
-        std::thread::sleep(Duration::from_secs(5));
+        done_rx.recv().expect("done");
     });
+    // The listener is still hundreds of milliseconds out: a single attempt
+    // fails, only the retrying connect waits it out.
+    assert!(connect(&paths).is_err());
     connect_within(&paths, Duration::from_secs(10)).expect("waited out the late bind");
+    done_tx.send(()).expect("done");
+    handle.join().expect("listener thread joined");
 }
 
 #[test]
 fn connect_to_nothing_is_not_found_or_refused() {
-    let paths = unique_paths();
+    let temp = TempDir::fresh();
+    let paths = temp.paths();
     paths.ensure_dir().expect("runtime dir");
     let error = connect(&paths).expect_err("nobody listening");
     assert!(
