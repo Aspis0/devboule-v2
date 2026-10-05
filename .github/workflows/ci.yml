@@ -373,7 +373,7 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
-          key: macos-build
+          key: macos-build-ort
           cache-on-failure: true
 
       # --keep-going: one crate that does not build must not hide the next.
