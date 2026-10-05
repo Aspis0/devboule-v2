@@ -370,3 +370,23 @@ jobs:
       # --keep-going: one crate that does not build must not hide the next.
       - name: Check the workspace
         run: cargo check --workspace --all-targets --locked --keep-going
+
+      # Slice 1 owner-only file modes: the helper plus every per-site test
+      # whose name carries `owner_only`. One filter per step: cargo takes
+      # a single filter argument.
+      - name: Daemon owner-only file tests
+        run: cargo test -p devboule-daemon --lib --locked owner_only
+
+      - name: Daemon unix modes helper tests
+        run: cargo test -p devboule-daemon --lib --locked unix_modes
+
+      # Portable lock tests (now running on Unix via flock) plus the
+      # lock-file creation mode test.
+      - name: Daemon lock tests
+        run: cargo test -p devboule-daemon --lib --locked lock::tests
+
+      # The Oracle endpoint starts on its lock again with flock; this also
+      # covers the owner-only record assertion from the macOS build fixes.
+      # (The endpoint lives in the app crate, not the daemon.)
+      - name: Daemon oracle endpoint tests
+        run: cargo test -p devboule --lib --locked oracle::tests::endpoint

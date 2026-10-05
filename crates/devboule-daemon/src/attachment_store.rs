@@ -1280,22 +1280,20 @@ fn prepare_session_dir(root: &Path, dir: &Path) -> Result<(), WireError> {
     Ok(())
 }
 
-/// Give one path the daemon user's DACL, on Windows, through `security.rs`.
-///
-/// Windows only, and not as a shortcut: there is no DACL to set anywhere else.
-/// The branch that does nothing is spelled out rather than left out so that the
-/// other platform's behaviour is a decision on the page — and so that a build
-/// which compiles this module without the `server` feature (the feature
-/// `security.rs` puts `apply_current_user_dacl` behind) does not fail to build
-/// over a call it could not make. `lib.rs` compiles this module only under
-/// `server` today, so that arm is for the build that removes that gate, and it
-/// is a no-op for the same reason the POSIX one is: there is nothing to call.
+/// Narrow one attachment folder to the daemon user: a DACL on Windows,
+/// owner-only mode on Unix. The fallback arm stays spelled out so a build
+/// without the `server` feature still compiles over a call it cannot make.
 #[cfg(all(windows, feature = "server"))]
 fn restrict_to_current_user(path: &Path) -> std::io::Result<()> {
     crate::security::apply_current_user_dacl(path)
 }
 
-#[cfg(any(not(windows), not(feature = "server")))]
+#[cfg(unix)]
+fn restrict_to_current_user(path: &Path) -> std::io::Result<()> {
+    crate::unix_modes::narrow_to_owner(path, 0o700)
+}
+
+#[cfg(not(any(unix, all(windows, feature = "server"))))]
 fn restrict_to_current_user(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }

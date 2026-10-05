@@ -54,6 +54,7 @@
 //! entirely — an unknown list is not an empty one — and its keys are refused at
 //! spawn by the agent's own handshake, which is the stricter authority.
 
+#[cfg(not(unix))]
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -699,6 +700,9 @@ fn write_document(path: &Path, document: &AgentProfilesDocument) -> io::Result<(
             "agent profile file has no parent directory",
         )
     })?;
+    #[cfg(unix)]
+    crate::unix_modes::ensure_private_dir(parent)?;
+    #[cfg(not(unix))]
     std::fs::create_dir_all(parent)?;
     let temp = path.with_extension("tmp");
     let result = (|| {
@@ -708,11 +712,14 @@ fn write_document(path: &Path, document: &AgentProfilesDocument) -> io::Result<(
         // ever get past. Removing it removes the name, not whatever a symlink
         // at it points at.
         let _ = std::fs::remove_file(&temp);
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
         #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        let mut file = options.open(&temp)?;
+        let mut file = crate::unix_modes::create_private_file(&temp)?;
+        #[cfg(not(unix))]
+        let mut file = {
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            options.open(&temp)?
+        };
         // The document decides what a created agent may do, so the temp file
         // carries the same current-user-only DACL as the tool policy file —
         // applied here, after the create and before the first `write_all`.
@@ -1757,5 +1764,30 @@ mod tests {
             "a profile the document no longer holds reads as the default, not as its last value"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Profiles decide what agents may do: the written file and its new
+    /// parent dir are owner-only on Unix, however the umask reads.
+    #[cfg(unix)]
+    #[test]
+    fn written_profile_file_and_dir_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = temp_dir();
+        let dir = base.join("fresh");
+        let path = dir.join("profiles.json");
+        write_document(&path, &document(vec![])).expect("write");
+        let file_mode = std::fs::metadata(&path)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        let dir_mode = std::fs::metadata(&dir)
+            .expect("dir metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(file_mode, 0o600, "profile file");
+        assert_eq!(dir_mode, 0o700, "profile dir");
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

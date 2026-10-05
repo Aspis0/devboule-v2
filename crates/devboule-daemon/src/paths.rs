@@ -44,8 +44,17 @@ impl RuntimePaths {
         }
     }
 
+    /// The runtime dir holds lock, journal and device identity: private on
+    /// Unix however the umask reads, unchanged on Windows.
     pub fn ensure_dir(&self) -> std::io::Result<()> {
-        std::fs::create_dir_all(&self.dir)
+        #[cfg(unix)]
+        {
+            crate::unix_modes::ensure_private_dir(&self.dir)
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::create_dir_all(&self.dir)
+        }
     }
 
     /// SQLite WAL journal. Lives next to the lock file so a test runtime
@@ -128,5 +137,21 @@ mod tests {
         assert_eq!(a, b);
         assert_eq!(a.len(), 16);
         assert!(a.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+
+    /// The runtime dir holds lock, journal and identity: owner-only on Unix,
+    /// however the umask reads.
+    #[cfg(unix)]
+    #[test]
+    fn ensure_dir_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = crate::test_dirs::test_temp_dir("devboule-paths").join("nested");
+        RuntimePaths::from_dir(&dir).ensure_dir().expect("dir");
+        let mode = std::fs::metadata(&dir)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700);
     }
 }

@@ -10,6 +10,7 @@
 //! whole-file replace (tests, and a future compact-into-new-file).
 
 use std::fs;
+#[cfg(not(unix))]
 use std::fs::OpenOptions;
 use std::io;
 use std::io::Write;
@@ -108,6 +109,9 @@ pub(crate) fn write_protected_bytes(path: &Path, bytes: &[u8]) -> io::Result<()>
             "protected write target has no parent directory",
         )
     })?;
+    #[cfg(unix)]
+    crate::unix_modes::ensure_private_dir(parent)?;
+    #[cfg(not(unix))]
     fs::create_dir_all(parent)?;
     let temp = path.with_extension("tmp");
     let result = (|| {
@@ -116,11 +120,14 @@ pub(crate) fn write_protected_bytes(path: &Path, bytes: &[u8]) -> io::Result<()>
         // `create_new` refuses a file already at it). Removing it removes the
         // name, not whatever a symlink at it points at.
         let _ = fs::remove_file(&temp);
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
         #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        let mut file = options.open(&temp)?;
+        let mut file = crate::unix_modes::create_private_file(&temp)?;
+        #[cfg(not(unix))]
+        let mut file = {
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            options.open(&temp)?
+        };
         // Before the first byte: the secret is never on disk under a weaker
         // DACL. The helper lives in `security.rs`; off Windows there is none.
         #[cfg(windows)]
@@ -204,5 +211,25 @@ mod tests {
             calls, 1,
             "one protected writer: the DACL call must appear exactly once across atomic/broker/policy"
         );
+    }
+
+    /// The replacement carries the temp's narrow mode through the rename:
+    /// a secret stays 0600 across rewrites, not just on first creation.
+    #[cfg(unix)]
+    #[test]
+    fn protected_replace_keeps_owner_only_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tmp_dir();
+        let target = dir.join("secret.txt");
+        write_protected_bytes(&target, b"one").expect("first");
+        write_protected_bytes(&target, b"two").expect("replace");
+        let mode = std::fs::metadata(&target)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "replace kept the narrow mode");
+        assert_eq!(std::fs::read(&target).expect("read"), b"two");
+        let _ = fs::remove_dir_all(&dir);
     }
 }
