@@ -48,8 +48,11 @@ describe("timeline computed styles", () => {
     // row. Shared with the composer card and the queue track by one rule.
     expect(style.width).toBe("760px");
     expect(style.paddingTop).toBe("4px");
-    expect(style.paddingRight).toBe("16px");
+    expect(style.paddingRight).toBe("0px");
     expect(style.paddingBottom).toBe("0px");
+    // Rows span the lane full-bleed: message text meets the composer card's
+    // edges instead of sitting inside the conversation's padding.
+    expect(style.paddingLeft).toBe("0px");
     // The container's gap now only separates the transcript from the permission
     // card; the entry rhythm lives on the wrapper.
     expect(style.gap).toBe("8px");

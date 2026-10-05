@@ -448,7 +448,8 @@
    The width is definite (never shrink-wrapped to the longest row) and the
    max binds it to the pane; together they act as the 760 cap. The 32 px
    is the lane's inset from the pane — the wrap carries no side padding of
-   its own — and matches the conversation's own side padding. */
+   its own. Rows span the lane full-bleed, so message text meets the
+   composer's card edges instead of sitting 16 px inside them. */
 .workspace-conversation,
 .workspace-composer-track,
 .workspace-composer {
@@ -463,7 +464,7 @@
   min-height: 0;
   flex-direction: column;
   gap: var(--space-8);
-  padding: var(--space-4) var(--space-16) 0;
+  padding: var(--space-4) 0 0;
   overflow-y: auto;
   overflow-anchor: none;
 }
@@ -1296,9 +1297,8 @@
     var(--space-10) + (var(--type-interface) * var(--leading-body)) + var(--space-6) +
       var(--control-default) + var(--space-10) + 2px
   );
-  /* The rail adds 32 px to the composer's own text inset; the transcript meets
-     it within the composer's 1 px border when the conversation fills its
-     capped 760 column. */
+  /* While the rail shows, the shell rule below meets transcript text at
+     the gutter's 32 px inset. */
   padding: var(--space-10) var(--space-12);
   background: var(--panel-composer);
   border: 1px solid var(--line-strong);
@@ -1306,7 +1306,9 @@
 }
 
 .workspace-agent-shell.has-turn-rail .workspace-composer {
-  padding-left: 48px;
+  /* The rail's gutter reserves 32 px in the content box; the composer meets
+     transcript text at the same inset. */
+  padding-left: var(--space-32);
 }
 
 .workspace-composer:focus-within {

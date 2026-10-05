@@ -1,9 +1,8 @@
 /* The gutter is reserved inside the content box, not on the conversation:
-   the conversation's own padding — and with it the box's fit-content
-   behaviour at its own level — is identical with the rail on and off,
-   bounded by the pane cap in Workspace.css, and the content box gives up
-   32 px of its column instead. 16 (the conversation's padding) + 32 = 48:
-   the column and the thread land where the spec puts them. */
+   the conversation carries no side padding of its own, so rows span the
+   lane full-bleed and the content box gives up 32 px of its column for
+   the rail instead. The thread sits 8 px inside the lane, 24 short of
+   the text. */
 .workspace-conversation.has-turn-rail {
   position: relative;
 }
@@ -14,8 +13,8 @@
 }
 
 /* Reaching back from the content box into the gutter it reserved: the box
-   now starts 16 px in (the conversation's padding), so -16 reaches its
-   left edge and the thread stays at 16 px from it. */
+   starts at the lane's own edge, so -16 reaches 16 px past it and the
+   thread holds 8 px inside the lane. */
 .turn-rail {
   position: absolute;
   top: 0;
@@ -35,6 +34,18 @@
 .workspace-conversation:focus-within .turn-rail,
 .turn-rail.is-preview-open {
   opacity: 1;
+}
+
+/* Touch never hovers: under (hover: none) the pointer reveal above stays
+   off and the rail answers keyboard focus or an open preview alone. */
+@media (hover: none) {
+  .workspace-conversation:hover .turn-rail {
+    opacity: 0;
+  }
+
+  .workspace-conversation:hover .turn-rail .turn-rail-dot {
+    pointer-events: none;
+  }
 }
 
 .turn-rail-thread {

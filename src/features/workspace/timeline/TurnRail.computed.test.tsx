@@ -31,12 +31,12 @@ describe("turn rail computed styles", () => {
     conversation.appendChild(content);
     document.body.appendChild(conversation);
 
-    expect(getComputedStyle(conversation).paddingLeft).toBe("16px");
+    expect(getComputedStyle(conversation).paddingLeft).toBe("0px");
 
     conversation.classList.add("has-turn-rail");
     // The conversation's own box does not change with the rail; the
-    // content box gives up 32 px of column — 16 + 32 = 48 from the edge.
-    expect(getComputedStyle(conversation).paddingLeft).toBe("16px");
+    // content box gives up 32 px of column for the gutter.
+    expect(getComputedStyle(conversation).paddingLeft).toBe("0px");
     expect(getComputedStyle(content).paddingLeft).toBe("32px");
     expect(getComputedStyle(conversation).position).toBe("relative");
     expect(getComputedStyle(content).position).toBe("relative");
@@ -97,15 +97,16 @@ describe("turn rail computed styles", () => {
     expect(getComputedStyle(off.composer).paddingLeft).toBe("12px");
     off.shell.remove();
 
-    // The card takes the gutter as margin, the composer card as padding; the
-    // track takes no rail inset and keeps the card's box in both states.
+    // The card takes the gutter as margin, the composer meets transcript
+    // text at the gutter's inset; the track takes no rail inset and keeps
+    // the card's box in both states.
     // Separate trees per state with classes set at build: happy-dom keeps a
     // stale computed style for deeper descendants after a later class add.
     const on = build(true);
     expect(getComputedStyle(on.aux).marginLeft).toBe("32px");
     expect(getComputedStyle(on.track).paddingLeft).toBe("");
     expect(getComputedStyle(on.track).maxWidth).toBe("calc(100% - 32px)");
-    expect(getComputedStyle(on.composer).paddingLeft).toBe("48px");
+    expect(getComputedStyle(on.composer).paddingLeft).toBe("32px");
     on.shell.remove();
   });
 
@@ -145,10 +146,10 @@ describe("turn rail computed styles", () => {
     // cap in both states, inset like the composer card.
     expect(getComputedStyle(off).maxWidth).toBe("calc(100% - 32px)");
     expect(getComputedStyle(on).maxWidth).toBe("calc(100% - 32px)");
-    // The gutter comes out of the column: the conversation's own padding
-    // is the same with the rail on and off.
-    expect(getComputedStyle(off).paddingLeft).toBe("16px");
-    expect(getComputedStyle(on).paddingLeft).toBe("16px");
+    // The gutter comes out of the column: the conversation carries no
+    // side padding of its own in either state.
+    expect(getComputedStyle(off).paddingLeft).toBe("0px");
+    expect(getComputedStyle(on).paddingLeft).toBe("0px");
     expect(getComputedStyle(on.querySelector(".workspace-conversation-content")!).paddingLeft).toBe(
       "32px",
     );
@@ -366,6 +367,35 @@ describe("turn rail computed styles", () => {
       "opacity: 1",
     );
     expect(railCss.rulesFor(".turn-rail.is-preview-open")).toContain("opacity: 1");
+  });
+
+  it("keeps the hover reveal off touch hardware, focus reveal on", () => {
+    // The assembled proof flattens @media, so the scoping itself is read
+    // off the sheet source: the hover paths cancel under (hover: none)
+    // while the focus path stays global.
+    const source = read("src/features/workspace/timeline/TurnRail.css");
+    const mediaAt = source.indexOf("@media (hover: none)");
+    expect(mediaAt).toBeGreaterThan(-1);
+    let depth = 0;
+    let end = -1;
+    for (let i = source.indexOf("{", mediaAt); i < source.length; i += 1) {
+      if (source[i] === "{") depth += 1;
+      else if (source[i] === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          end = i;
+          break;
+        }
+      }
+    }
+    expect(end).toBeGreaterThan(mediaAt);
+    const mediaBody = source.slice(mediaAt, end);
+    expect(mediaBody).toContain(".workspace-conversation:hover .turn-rail");
+    expect(mediaBody).toContain("opacity: 0");
+    expect(mediaBody).toContain(".workspace-conversation:hover .turn-rail .turn-rail-dot");
+    expect(mediaBody).toContain("pointer-events: none");
+    expect(mediaBody).not.toContain("focus-within");
+    expect(mediaBody).not.toContain("is-preview-open");
   });
 
   it("resolves the rail's theme tokens in the dark theme as well", () => {
