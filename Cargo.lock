@@ -2788,6 +2788,7 @@ name = "devboule-plugin-rpc"
 version = "0.1.0"
 dependencies = [
  "devboule-daemon",
+ "devboule-plugin-rpc",
  "devboule-protocol",
  "libc",
  "serde",

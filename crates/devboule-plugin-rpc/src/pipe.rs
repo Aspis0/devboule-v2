@@ -306,7 +306,15 @@ pub fn open_host_channel(endpoint: &str, timeout: Duration) -> io::Result<File> 
         ));
     }
     set_receive_timeout(fd, SOCKET_READ_TICK)?;
-    Ok(unsafe { File::from_raw_fd(fd) })
+    // The host cleared close-on-exec to hand this fd over; restore it the
+    // moment it is adopted, so the backend's own children never inherit
+    // the live channel. Fail closed, closing the adoption with it.
+    let file = unsafe { File::from_raw_fd(fd) };
+    if let Err(error) = set_close_on_exec(fd) {
+        drop(file);
+        return Err(error);
+    }
+    Ok(file)
 }
 
 #[cfg(windows)]

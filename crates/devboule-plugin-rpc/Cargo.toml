@@ -9,10 +9,16 @@ publish = false
 # Test child for the Unix spawn tests: roles (serve, exit, fork a
 # grandchild) are keyed off DEVBOULE_PLUGIN_ID, so the integration tests
 # can drive real process-group behaviour without a production backend.
+# Test-only: built for test targets via the self dev-dependency below,
+# never for normal or release builds.
 [[bin]]
 name = "devboule-plugin-test-child"
 path = "tests/support/test_child.rs"
 test = false
+required-features = ["test-fixture"]
+
+[features]
+test-fixture = []
 
 [dependencies]
 devboule-protocol = { path = "../devboule-protocol" }
@@ -43,3 +49,8 @@ windows-sys = { version = "=0.61.2", features = [
 
 [dev-dependencies]
 tempfile = "3"
+# The fixture binary above needs its feature on every test build (plain
+# `cargo test` passes no --features flag): a dev-dependency on the crate
+# itself with the feature is what enables it, while normal and release
+# builds never see the feature and skip the binary entirely.
+devboule-plugin-rpc = { path = ".", features = ["test-fixture"] }

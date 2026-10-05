@@ -62,6 +62,23 @@ fn grandchild_pid_file() -> PathBuf {
     std::env::temp_dir().join(format!("devboule-plugin-orphan-{}", std::process::id()))
 }
 
+fn fd_report_file() -> PathBuf {
+    std::env::temp_dir().join(format!("devboule-plugin-fdreport-{}", std::process::id()))
+}
+
+fn wait_for_file(path: &Path) -> Option<String> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            return Some(text);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 #[test]
 fn a_spawned_child_handshakes_round_trips_and_dies_on_kill() {
     let session = PluginSession::spawn(spec("roundtrip")).expect("spawn and handshake");
@@ -76,6 +93,26 @@ fn a_spawned_child_handshakes_round_trips_and_dies_on_kill() {
         wait_until_gone(pid, Duration::from_secs(5)),
         "child {pid} must die with its process group"
     );
+}
+
+#[test]
+fn an_execd_reporter_does_not_inherit_the_channel() {
+    let report = fd_report_file();
+    let _ = std::fs::remove_file(&report);
+
+    let session = PluginSession::spawn(spec("exec-probe")).expect("spawn and handshake");
+    // The channel is live through the adopted fd: a ping proves it.
+    let value = session
+        .invoke(caps::PING, Some(serde_json::json!({ "probe": 1 })))
+        .expect("round trip");
+    assert_eq!(value, serde_json::json!({ "probe": 1 }));
+    assert_eq!(
+        wait_for_file(&report).as_deref(),
+        Some("closed"),
+        "the reporter must not see the channel fd after exec"
+    );
+    drop(session);
+    let _ = std::fs::remove_file(&report);
 }
 
 #[test]

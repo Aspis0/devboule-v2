@@ -97,14 +97,48 @@ impl SpawnedBackend {
         }
         #[cfg(not(windows))]
         {
-            let status = self.child.try_wait()?;
-            if status.is_some() && !self.group_signalled {
-                // The reap freed the group id (the leader's pid), so sweep
-                // descendants now; xnu's wrapping pid counter makes a reuse
-                // in this window impractical and macOS has no guarded kill.
+            // Peek before reaping: waitid with WNOWAIT learns the exit while
+            // the leader stays a zombie, so its pid cannot be reused between
+            // the group signal and the reap that follows. Reaping first
+            // (what Child::try_wait does) would free the pgid the sweep
+            // signals while descendants may still hold it.
+            if Self::exited_without_reaping(self.child.id())? && !self.group_signalled {
                 self.sweep_group()?;
             }
+            let status = self.child.try_wait()?;
             Ok(status.map(|status| status.code().unwrap_or_default() as u32))
+        }
+    }
+
+    /// Whether the leader already exited, without reaping it. `false` also
+    /// covers the already-reaped case: the try_wait below reports that.
+    /// waitid with WNOWAIT is POSIX and honored on macOS (XNU) and Linux;
+    /// only the peek leaves the zombie for the sweep that follows.
+    #[cfg(not(windows))]
+    fn exited_without_reaping(pid: u32) -> std::io::Result<bool> {
+        loop {
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            // SAFETY: waitid fills the live siginfo; WNOWAIT keeps the
+            // child waitable for the try_wait below.
+            let result = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    pid as libc::id_t,
+                    &mut info,
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            };
+            if result == 0 {
+                return Ok(info.si_signo != 0);
+            }
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            if error.raw_os_error() == Some(libc::ECHILD) {
+                return Ok(false);
+            }
+            return Err(error);
         }
     }
 
@@ -566,5 +600,82 @@ mod tests {
         .expect("suspended child");
         assert!(!child.primary_thread_handle().is_null());
         child.kill().expect("kill suspended child");
+    }
+
+    /// A grouped child like production spawns: its own pgid, so the sweep
+    /// below signals nothing but this group.
+    #[cfg(not(windows))]
+    fn spawn_grouped(program: &str, args: &[&str]) -> SpawnedBackend {
+        use std::os::unix::process::CommandExt;
+        let mut command = std::process::Command::new(program);
+        command
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        command.process_group(0);
+        let child = command.spawn().expect("spawn");
+        SpawnedBackend {
+            child,
+            group_signalled: false,
+        }
+    }
+
+    /// Polling a live child changes nothing: no reap, no group signal.
+    /// The connect loop calls try_wait on every attempt, so a poll with
+    /// side effects would kill backends still starting up.
+    #[cfg(not(windows))]
+    #[test]
+    fn live_child_try_wait_neither_reaps_nor_sweeps() {
+        let mut backend = spawn_grouped("sleep", &["30"]);
+        assert_eq!(backend.try_wait().expect("poll"), None);
+        assert!(
+            !backend.group_signalled,
+            "polling a live child must not signal its group"
+        );
+        backend.kill().expect("cleanup");
+    }
+
+    /// An exited child is swept while still a zombie and reaped after:
+    /// the pgid cannot be reused between the signal and the reap.
+    #[cfg(not(windows))]
+    #[test]
+    fn exited_child_is_swept_before_it_is_reaped() {
+        let mut backend = spawn_grouped("sh", &["-c", "exit 3"]);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let status = loop {
+            match backend.try_wait() {
+                Ok(Some(code)) => break code,
+                Ok(None) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the child never exited"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(error) => panic!("try_wait failed: {error}"),
+            }
+        };
+        assert_eq!(status, 3);
+        assert!(
+            backend.group_signalled,
+            "the sweep ran on the exited path, before the reap"
+        );
+    }
+
+    /// The peek itself disturbs nothing: a live child is still alive after.
+    #[cfg(not(windows))]
+    #[test]
+    fn peek_leaves_a_live_child_alone() {
+        let backend = spawn_grouped("sleep", &["30"]);
+        assert!(
+            !SpawnedBackend::exited_without_reaping(backend.id()).expect("peek"),
+            "a live child has no exit to report"
+        );
+        assert_eq!(
+            unsafe { libc::kill(backend.id() as libc::pid_t, 0) },
+            0,
+            "the peeked child is still alive"
+        );
     }
 }

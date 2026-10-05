@@ -177,11 +177,25 @@ pub fn confine_project_path(path: &Path) -> Result<PathBuf, String> {
         return Err("project root contains parent traversal".to_string());
     }
 
-    for ancestor in path.ancestors() {
-        let metadata = std::fs::symlink_metadata(ancestor)
+    // Unix system paths (/var, /tmp) are themselves symlinks, so only the
+    // root itself may not be one: ancestors above it resolve through
+    // canonicalize below, and the canonical path is what every caller uses.
+    // Windows keeps the full walk: a redirecting reparse point anywhere
+    // above the project redirects the whole tree below it, and per-user
+    // ancestors can carry one.
+    #[cfg(not(windows))]
+    {
+        let metadata = std::fs::symlink_metadata(path)
             .map_err(|error| format!("project root cannot be inspected: {error}"))?;
-        #[cfg(windows)]
+        if metadata.file_type().is_symlink() {
+            return Err(format!("project root is a symlink: {}", path.display()));
+        }
+    }
+    #[cfg(windows)]
+    for ancestor in path.ancestors() {
         {
+            let metadata = std::fs::symlink_metadata(ancestor)
+                .map_err(|error| format!("project root cannot be inspected: {error}"))?;
             use std::os::windows::fs::MetadataExt;
             const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
             if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
@@ -194,13 +208,6 @@ pub fn confine_project_path(path: &Path) -> Result<PathBuf, String> {
                     }
                 }
             }
-        }
-        #[cfg(not(windows))]
-        if metadata.file_type().is_symlink() {
-            return Err(format!(
-                "project root contains a symlink: {}",
-                ancestor.display()
-            ));
         }
         if ancestor.parent().is_none() {
             break;
@@ -286,6 +293,19 @@ mod path_tests {
             assert!(
                 error.contains("symlink") || error.contains("reparse"),
                 "{error}"
+            );
+        }
+
+        // A link below the root does not move the tree: the root itself is
+        // real, and the canonical path is what every caller uses.
+        #[cfg(unix)]
+        {
+            let inner = root.join("inner-link");
+            std::os::unix::fs::symlink(&root, &inner).expect("inner link");
+            let confined = confine_project_path(&root).expect("inner link is fine");
+            assert_eq!(
+                confined,
+                std::fs::canonicalize(&root).expect("canonical root")
             );
         }
 
