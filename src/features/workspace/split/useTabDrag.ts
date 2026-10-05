@@ -1,11 +1,13 @@
 // Why: a drag of a strip chip has to start as a click and become a drag later.
-// The pointer is captured only once it has moved past a slop, so the click that
-// selects a tab stays a click, and the tab row's own selection never fights the
-// drag for the same gesture.
+// The pointer is captured only once it has moved past a slop, on the element
+// that started the gesture, and released on every way out of it — so the click
+// that selects a tab stays a click, and a control the pointer happens to be
+// over is never the one left holding the pointer.
 //
 // Nothing here decides what a drop means: the gesture reports where the pointer
-// is, and the caller resolves that against the panes. Escape ends a drag without
-// acting, because a person who pressed it wants their tab back where it was.
+// is, and the caller resolves that against the panes. Escape, a lost pointer,
+// a hidden window and a dragged tab that has gone all end the gesture the same
+// way — without acting, and with the page presented again.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { resolveDropZone, type DropZone } from "./tabDropZones";
@@ -26,6 +28,8 @@ export interface TabDrag {
 interface Press {
   tabId: string;
   pointerId: number;
+  /** The element that owns the gesture: capture and release belong to it. */
+  owner: Element;
   /** Where the press began, which is what the slop is measured from. */
   startX: number;
   startY: number;
@@ -47,6 +51,11 @@ export interface UseTabDragOptions {
   boxes: () => TabDragBoxes;
   /** What a drop does, decided by the caller against the live panes. */
   onDrop: (tabId: string, zone: DropZone | "strip") => void;
+  /** Whether this tab may be picked up at all: only a tab the pane below can
+   * hold ever starts a gesture, so nothing else can reach a pane mutation. */
+  canDrag: (tabId: string) => boolean;
+  /** Whether the tab is still open. A tab an agent closes mid-gesture ends it. */
+  hasTab: (tabId: string) => boolean;
 }
 
 function zoneAt(boxes: TabDragBoxes, x: number, y: number): DropZone | "strip" | null {
@@ -66,101 +75,134 @@ function inside(rect: DOMRect, x: number, y: number): boolean {
   return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 }
 
-export function useTabDrag({ boxes, onDrop }: UseTabDragOptions): {
-  drag: TabDrag | null;
-  /** Called from the strip's own pointerdown, with the chip under the pointer. */
+export function useTabDrag({ boxes, onDrop, canDrag, hasTab }: UseTabDragOptions): {
+  /** The zone the preview answers, and nothing else: a pointer that moves
+   * inside one zone must not re-render the surface that owns this hook. */
+  zone: DropZone | "strip" | null;
+  /** The tab under the pointer, while a gesture is on. */
+  tabId: string | null;
+  /** Called from the strip's own pointerdown, with the chip that was pressed. */
   startDrag: (
     tabId: string,
+    owner: Element,
     event: { clientX: number; clientY: number; pointerId: number },
   ) => void;
 } {
   const [drag, setDrag] = useState<TabDrag | null>(null);
   const pressRef = useRef<Press | null>(null);
   const draggingRef = useRef(false);
-  // The latest caller values, read through refs and written after the render:
+  const optionsRef = useRef({ boxes, onDrop, canDrag, hasTab });
+  // The latest caller values, read through a ref and written after the render:
   // the listeners below are installed once, and re-installing them on every
   // render would take the drag's body class off while the drag is still on.
-  const onDropRef = useRef(onDrop);
-  const boxesRef = useRef(boxes);
   useEffect(() => {
-    onDropRef.current = onDrop;
-    boxesRef.current = boxes;
+    optionsRef.current = { boxes, onDrop, canDrag, hasTab };
   });
-  const boxesNow = useCallback((): TabDragBoxes => boxesRef.current(), []);
+  const now = useCallback(() => optionsRef.current, []);
 
-  const finish = useCallback(
-    (act: ((tabId: string, zone: DropZone | "strip") => void) | null) => {
+  const end = useCallback(
+    (zone: DropZone | "strip" | null) => {
       const press = pressRef.current;
       pressRef.current = null;
       if (!draggingRef.current) return;
       draggingRef.current = false;
       document.body.classList.remove("workspace-is-dragging-tab");
-      const zone = press === null ? null : zoneAt(boxesNow(), press.x, press.y);
+      // Every way out hands the pointer back, including the one where the
+      // pointer stream itself was lost.
+      releaseCapture(press);
       setDrag(null);
-      if (zone !== null && act !== null && press !== null) act(press.tabId, zone);
+      if (zone !== null && press !== null) now().onDrop(press.tabId, zone);
     },
-    [boxesNow],
+    [now],
   );
 
   useEffect(() => {
     const move = (event: PointerEvent): void => {
       const press = pressRef.current;
-      if (press === null) return;
-      if (event.pointerId !== press.pointerId) return;
+      if (press === null || event.pointerId !== press.pointerId) return;
+      // The tab this gesture is about has gone: a drop would name a tab the
+      // workspace no longer has.
+      if (!now().hasTab(press.tabId)) {
+        end(null);
+        return;
+      }
       if (!draggingRef.current) {
         const travelled = Math.hypot(event.clientX - press.startX, event.clientY - press.startY);
         if (travelled < DRAG_SLOP_PX) return;
-      }
-      press.x = event.clientX;
-      press.y = event.clientY;
-      if (!draggingRef.current) {
-        // Past the slop, and only now: the capture and the no-selection class
-        // belong to a drag, never to a press.
         draggingRef.current = true;
         document.body.classList.add("workspace-is-dragging-tab");
-        (event.target as Element | null)?.setPointerCapture?.(press.pointerId);
+        capture(press.owner, press.pointerId);
       }
-      const zone = zoneAt(boxesNow(), event.clientX, event.clientY);
-      setDrag({ tabId: press.tabId, zone });
-    };
-    const up = (event: PointerEvent): void => {
-      if (pressRef.current === null || event.pointerId !== pressRef.current.pointerId) return;
-      const press = pressRef.current;
       press.x = event.clientX;
       press.y = event.clientY;
-      finish((tabId, zone) => onDropRef.current(tabId, zone));
+      // Only the zone is state, and only when it changes: a pointer moving
+      // inside one destination must not re-render the surface.
+      const zone = zoneAt(now().boxes(), event.clientX, event.clientY);
+      setDrag((current) => (current?.zone === zone ? current : { tabId: press.tabId, zone }));
     };
-    const cancel = (event: PointerEvent): void => {
-      if (pressRef.current === null || event.pointerId !== pressRef.current.pointerId) return;
-      // A stream the app never finished: the tab is where it was.
-      finish(null);
+    const up = (event: PointerEvent): void => {
+      const press = pressRef.current;
+      if (press === null || event.pointerId !== press.pointerId) return;
+      if (!now().hasTab(press.tabId)) {
+        end(null);
+        return;
+      }
+      press.x = event.clientX;
+      press.y = event.clientY;
+      end(zoneAt(now().boxes(), event.clientX, event.clientY));
     };
+    const cancel = (): void => end(null);
     const escape = (event: KeyboardEvent): void => {
       if (event.key !== "Escape" || pressRef.current === null) return;
       event.preventDefault();
-      finish(null);
+      end(null);
+    };
+    // The pointer can leave the app without an event ever arriving: a window
+    // blur, a hidden tab, or a capture the surface took back. Each of those ends
+    // the gesture where it stands.
+    // A frozen page is the same thing a hidden one is, and it is what a window
+    // the system has taken over looks like from here.
+    const hidden = (): void => end(null);
+    const captured = (event: Event): void => {
+      if (pressRef.current === null) return;
+      if (event.target !== pressRef.current.owner) return;
+      end(null);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
     window.addEventListener("pointercancel", cancel);
     window.addEventListener("keydown", escape);
+    window.addEventListener("blur", hidden);
+    document.addEventListener("visibilitychange", hidden);
+    document.addEventListener("freeze", hidden);
+    window.addEventListener("lostpointercapture", captured);
     return () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", cancel);
       window.removeEventListener("keydown", escape);
-      // A drag cannot outlive the surface it is dragging over: the press, the
-      // flag and the body class all go with the listeners.
+      window.removeEventListener("blur", hidden);
+      document.removeEventListener("visibilitychange", hidden);
+      document.removeEventListener("freeze", hidden);
+      window.removeEventListener("lostpointercapture", captured);
       pressRef.current = null;
       draggingRef.current = false;
       document.body.classList.remove("workspace-is-dragging-tab");
     };
-  }, [boxesNow, finish]);
+  }, [end, now]);
 
   const startDrag = useCallback(
-    (tabId: string, event: { clientX: number; clientY: number; pointerId: number }) => {
+    (
+      tabId: string,
+      owner: Element,
+      event: { clientX: number; clientY: number; pointerId: number },
+    ) => {
+      // Only a tab the pane below can hold is picked up: a chip that cannot go
+      // below never starts a gesture, so it can never reach a pane mutation.
+      if (!canDrag(tabId)) return;
       pressRef.current = {
         tabId,
+        owner,
         pointerId: event.pointerId,
         startX: event.clientX,
         startY: event.clientY,
@@ -168,8 +210,27 @@ export function useTabDrag({ boxes, onDrop }: UseTabDragOptions): {
         y: event.clientY,
       };
     },
-    [],
+    [canDrag],
   );
 
-  return { drag, startDrag };
+  return { zone: drag?.zone ?? null, tabId: drag?.tabId ?? null, startDrag };
+}
+
+/** Capture is best-effort: a surface that refuses it still gets the gesture. */
+function capture(owner: Element, pointerId: number): void {
+  (owner as Element & { setPointerCapture?: (id: number) => void }).setPointerCapture?.(pointerId);
+}
+
+function releaseCapture(press: Press | null): void {
+  if (press === null) return;
+  const owner = press.owner as Element & {
+    releasePointerCapture?: (id: number) => void;
+    hasPointerCapture?: (id: number) => boolean;
+  };
+  if (owner.hasPointerCapture?.(press.pointerId) !== true) return;
+  try {
+    owner.releasePointerCapture?.(press.pointerId);
+  } catch {
+    // A capture the surface has already taken back is not a failure to release.
+  }
 }

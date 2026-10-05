@@ -6,6 +6,7 @@ import {
   CENTER_RATIO,
   EDGE_RATIO,
   resolveDropOutcome,
+  tabCanGoBelow,
   resolveDropZone,
   type DropContext,
 } from "./tabDropZones";
@@ -74,6 +75,19 @@ describe("what each drop does", () => {
 
   it("sends the dragged tab to the pane below from the bottom edge", () => {
     expect(resolveDropOutcome({ ...base, zone: "bottom" })).toEqual({ kind: "split-down" });
+  });
+
+  it("sends nothing below that the pane below cannot hold", () => {
+    // The pane below is one browser tab; a conversation or a diff tab has
+    // nowhere to go, so a bottom drop on one is a plain selection.
+    for (const tabId of ["session-1", "tool:diff:a:src/writer.ts", "tool:file:a:notes.md"]) {
+      expect(resolveDropOutcome({ ...base, zone: "bottom", draggedTabId: tabId })).toEqual({
+        kind: "select",
+      });
+    }
+    expect(tabCanGoBelow(base.draggedTabId)).toBe(true);
+    expect(tabCanGoBelow("tool:file:a:notes.md")).toBe(false);
+    expect(tabCanGoBelow("session-1")).toBe(false);
   });
 
   it("is a plain selection from the centre", () => {

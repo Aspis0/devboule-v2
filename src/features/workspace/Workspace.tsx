@@ -9,6 +9,7 @@ import {
   type ChangeEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
 import { ErrorText } from "../../components/ErrorText";
 import { ConfirmProvider } from "../../components/ConfirmHost";
@@ -46,9 +47,8 @@ import {
 import { browserTabLabel, normalizeBrowserUrl, BROWSER_START_URL } from "./browserUrl";
 import { closeBrowserPage } from "./browserPages";
 import { SplitPane } from "./split/SplitPane";
-import { SplitDropPreview } from "./split/SplitDropPreview";
-import { useTabDrag } from "./split/useTabDrag";
-import { resolveDropOutcome, type DropZone } from "./split/tabDropZones";
+import { SplitDragLayer, type SplitDragLayerHandle } from "./split/SplitDragLayer";
+import { resolveDropOutcome, tabCanGoBelow, type DropZone } from "./split/tabDropZones";
 import {
   forgetSplitPanesFor,
   mergeSplitPane,
@@ -883,12 +883,24 @@ export function Workspace({
    * removes, so focus has to land somewhere on purpose: on the tab that was
    * below, whose chip is where the eye already is. Applied after the commit
    * that removed the split, because the chip only exists then. */
-  const [focusAfterMerge, setFocusAfterMerge] = useState<string | null>(null);
+  const [movedTab, setMovedTab] = useState<{ tabId: string; sentence: string } | null>(null);
+  const [paneAnnouncement, setPaneAnnouncement] = useState("");
   useEffect(() => {
-    if (focusAfterMerge === null) return;
-    document.getElementById(sessionTabElementId(focusAfterMerge))?.focus({ preventScroll: true });
-    setFocusAfterMerge(null);
-  }, [focusAfterMerge]);
+    if (movedTab === null) return;
+    // The control that started the move is gone with the pane, so focus lands on
+    // the chip of the tab that moved. A keyboard that never saw the pane change
+    // hears the sentence instead, and it stays in the region: a status region
+    // that empties itself in the same commit announces nothing.
+    document.getElementById(sessionTabElementId(movedTab.tabId))?.focus({ preventScroll: true });
+    setPaneAnnouncement(movedTab.sentence);
+    setMovedTab(null);
+  }, [movedTab]);
+  /** Whether a tab id is still one of this strip's: an agent closing the dragged
+   * tab ends the gesture rather than letting a drop name a tab that is gone. */
+  const hasLiveTab = useCallback(
+    (tabId: string) => composedTabs.some((tab) => tab.id === tabId),
+    [composedTabs],
+  );
   const mergeSplit = useCallback(() => {
     if (selectedKey === null) return;
     const merged = splitPaneFor(selectedKey)?.lowerTabId ?? null;
@@ -897,7 +909,7 @@ export function Workspace({
     // the one the workspace is showing, so its page is presented again.
     if (merged === null) return;
     writeToolTab(merged);
-    setFocusAfterMerge(merged);
+    setMovedTab({ tabId: merged, sentence: "Moved out of the pane below." });
   }, [selectedKey, writeToolTab]);
   /** Move the tab in front into the pane below, and put a session on top of
    * it: the pane above is the workspace's own pane, and an empty one is not a
@@ -907,6 +919,7 @@ export function Workspace({
       if (selectedKey === null) return;
       splitPaneDown(selectedKey, tab.id);
       selectSession(selectedSessionId ?? visibleSessions[0]?.id ?? null);
+      setMovedTab({ tabId: tab.id, sentence: "Moved to the pane below." });
     },
     [selectSession, selectedKey, selectedSessionId, visibleSessions],
   );
@@ -941,17 +954,19 @@ export function Workspace({
       }
       if (outcome.kind === "split-up") {
         // The tab that was above moves below and the dragged one takes its place,
-        // so what the person pointed at is what they get.
+        // so what the person pointed at is what they get. Both are browser tabs:
+        // the rule refuses every other pair, and the pane renders nothing else.
         const moved = panes.upperTool?.id;
-        if (moved === undefined) return;
+        if (moved === undefined || !tabCanGoBelow(tabId)) return;
         splitPaneDown(selectedKey, moved);
         writeToolTab(tabId);
+        setMovedTab({ tabId, sentence: "Moved to the pane above." });
         return;
       }
       if (outcome.kind === "merge") {
         mergeSplitPane(selectedKey);
         writeToolTab(tabId);
-        setFocusAfterMerge(tabId);
+        setMovedTab({ tabId, sentence: "Moved out of the pane below." });
         return;
       }
       selectTab(tabId);
@@ -968,13 +983,15 @@ export function Workspace({
       writeToolTab,
     ],
   );
-  const { drag, startDrag: startTabDrag } = useTabDrag({
-    boxes: () => ({
-      area: centerRef.current,
-      strip: document.querySelector<HTMLElement>(".workspace-session-tabs"),
-    }),
-    onDrop: dropTab,
-  });
+  /** The drag belongs to the layer below, which also draws the preview: a
+   * pointer moving inside one destination must not re-render this surface. */
+  const dragLayerRef = useRef<SplitDragLayerHandle>(null);
+  const startTabDrag = useCallback(
+    (tabId: string, owner: Element, event: ReactPointerEvent<HTMLDivElement>) => {
+      dragLayerRef.current?.start(tabId, owner, event);
+    },
+    [],
+  );
   // The roads that set the selected workspace WITHOUT choosing a tab for it:
   // the workspace this mount restores, a project list that no longer holds the
   // selection, a project row whose workspace the "+" reuses. Each lands on the
@@ -1938,7 +1955,19 @@ export function Workspace({
           selectedSessionId={selectedSessionId}
           onStripPointerDown={startTabDrag}
         />
-        <SplitDropPreview zone={drag?.zone ?? null} />
+        <SplitDragLayer
+          ref={dragLayerRef}
+          hasTab={hasLiveTab}
+          onDrop={dropTab}
+          boxes={() => ({
+            area: centerRef.current,
+            strip: document.querySelector<HTMLElement>(".workspace-session-tabs"),
+          })}
+        />
+        {/* What a pane act did, for a keyboard that cannot see the pane move. */}
+        <div className="workspace-sr-only" role="status" aria-live="polite">
+          {paneAnnouncement}
+        </div>
         <DaemonRestartNotice
           instanceId={daemon.instanceId}
           hasRecovered={sessions.some(isRecoveredSession)}

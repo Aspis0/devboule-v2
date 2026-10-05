@@ -81,7 +81,11 @@ export interface SessionStripProps {
   /** The strip's own pointerdown, with the chip under the pointer: a press that
    * travels becomes a drag of that tab, and a press that does not stays the
    * click that selects it. */
-  onStripPointerDown?: (tabId: string, event: ReactPointerEvent<HTMLDivElement>) => void;
+  onStripPointerDown?: (
+    tabId: string,
+    owner: Element,
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) => void;
 }
 
 /** The tab strip region: the scrolling tablist, the fade on the sides that
@@ -380,10 +384,12 @@ export function SessionStrip({
   const chipUnder = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>): void => {
       if (onStripPointerDown === undefined || event.button !== 0) return;
-      const chip = (event.target as Element | null)?.closest?.(".workspace-session-tab");
+      const chip = (event.target as Element | null)?.closest?.(".workspace-session-tab") ?? null;
       const tabId = chip?.id.replace(/^workspace-session-tab-/, "");
-      if (tabId === undefined || tabId === "") return;
-      onStripPointerDown(tabId, event);
+      if (chip === null || tabId === undefined || tabId === "") return;
+      // The chip is the owner of the gesture: capture is taken on it and
+      // released on it, never on whatever the pointer is over later.
+      onStripPointerDown(tabId, chip, event);
     },
     [onStripPointerDown],
   );

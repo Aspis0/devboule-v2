@@ -1,0 +1,42 @@
+// Why the gesture lives here and not in the workspace: a drag reads two boxes
+// and writes one zone, and the surface above it has no other business knowing
+// where the pointer is. Only a zone the preview has to draw is state, so a
+// pointer moving inside one destination re-renders this layer and nothing above
+// it, and the strip's press reaches the gesture through this one handle.
+
+import { forwardRef, useImperativeHandle } from "react";
+import { SplitDropPreview } from "./SplitDropPreview";
+import { tabCanGoBelow, type DropZone } from "./tabDropZones";
+import { useTabDrag, type TabDragBoxes } from "./useTabDrag";
+
+/** What the strip's press needs to hand the gesture, and no more. */
+export interface SplitDragLayerHandle {
+  start: (
+    tabId: string,
+    owner: Element,
+    event: { clientX: number; clientY: number; pointerId: number },
+  ) => void;
+}
+
+export interface SplitDragLayerProps {
+  /** The two boxes a drop is read against, read live. */
+  boxes: () => TabDragBoxes;
+  /** Whether the tab is still open: a tab an agent closes ends the gesture. */
+  hasTab: (tabId: string) => boolean;
+  /** What a drop does, decided by the caller against the live panes. */
+  onDrop: (tabId: string, zone: DropZone | "strip") => void;
+}
+
+/** The drag, and the destination it is previewing over the workspace centre. */
+export const SplitDragLayer = forwardRef<SplitDragLayerHandle, SplitDragLayerProps>(
+  function SplitDragLayer({ boxes, hasTab, onDrop }, ref) {
+    const { zone, startDrag } = useTabDrag({
+      boxes,
+      hasTab,
+      onDrop,
+      canDrag: tabCanGoBelow,
+    });
+    useImperativeHandle(ref, () => ({ start: startDrag }), [startDrag]);
+    return <SplitDropPreview zone={zone} />;
+  },
+);

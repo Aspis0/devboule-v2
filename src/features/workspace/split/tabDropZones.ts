@@ -3,6 +3,16 @@
 // edges collapsed onto the two this layout can make. The numbers are that
 // file's: EDGE_RATIO 0.15, CENTER_RATIO 0.4.
 
+/** What the pane below may hold: one browser tool tab's id, which is what the
+ * split record stores and what `splitPaneStorage.ts` will read back. Nothing
+ * else can go below — a conversation has no lower pane to render, and a diff or
+ * a file tab's record does not survive a restart. */
+export const LOWER_PANE_TAB_PREFIX = "tool:browser:";
+
+export function tabCanGoBelow(tabId: string): boolean {
+  return tabId.startsWith(LOWER_PANE_TAB_PREFIX);
+}
+
 /** A band along one edge of the pane, as a share of its width or height. */
 export const EDGE_RATIO = 0.15;
 
@@ -92,17 +102,22 @@ export interface DropContext {
 /**
  * What a drop does.
  *
- * A conversation cannot move into the pane below, so a drop on the top edge
- * that would have to move one is a plain selection: the dragged tab becomes
- * the pane above and nothing is destroyed. That is the one place this layout
- * says no to the rule, and it says it by doing the smaller thing.
+ * Two drops are refused by this layout rather than by the rule's zones: a tab
+ * the pane below cannot hold goes nowhere but the front, and a drop on the top
+ * edge that would have to move a conversation downward is a selection too. Both
+ * say no by doing the smaller thing, so nothing is destroyed and no record is
+ * written that the layout cannot honour.
  */
 export function resolveDropOutcome(context: DropContext): DropOutcome {
   const { draggedTabId, lowerTabId, upperTabId, upperCanMoveBelow, zone } = context;
   if (zone === "strip") {
     return lowerTabId === draggedTabId ? { kind: "merge" } : { kind: "select" };
   }
-  if (zone === "bottom") return { kind: "split-down" };
+  if (zone === "bottom") {
+    // A tab the pane below cannot show is a selection, not a split that would
+    // be merged away again a frame later.
+    return tabCanGoBelow(draggedTabId) ? { kind: "split-down" } : { kind: "select" };
+  }
   if (zone === "center") return { kind: "select" };
   if (lowerTabId === draggedTabId) return { kind: "merge" };
   if (upperCanMoveBelow && upperTabId !== null && upperTabId !== draggedTabId) {

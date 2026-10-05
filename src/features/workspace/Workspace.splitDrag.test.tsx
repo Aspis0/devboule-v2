@@ -9,8 +9,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   afterEachHarness,
   beforeEachHarness,
+  defaultSessions,
   plainClick,
   renderWorkspace,
+  requestChildPermission,
+  restartWorkspace,
 } from "./bulkCloseHarness";
 
 const mocks = vi.hoisted(() => ({
@@ -35,7 +38,12 @@ vi.mock("@tauri-apps/api/event", () => ({
 import { act } from "react";
 import { resetBrowserPagesForTests } from "./browserPages";
 import { resetBrowserOverlaysForTests } from "./browserOverlays";
-import { openBrowserTab, resetBrowserLayoutForTests } from "./browserTabs";
+import {
+  browserTabsFor,
+  closeBrowserTab,
+  openBrowserTab,
+  resetBrowserLayoutForTests,
+} from "./browserTabs";
 import { localWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
 import { makeBrowserTab } from "./strip/toolTabs";
 import { resetSplitPanesForTests, splitPaneFor } from "./split/splitPanes";
@@ -104,10 +112,13 @@ async function frames(count = 3): Promise<void> {
 
 /** Press a chip, carry the pointer to `at`, and let go there. */
 async function dragChipTo(at: { x: number; y: number }, browserId: string): Promise<void> {
-  const chip = document.getElementById(
-    `workspace-session-tab-${makeBrowserTab(WORKSPACE, browserId).id}`,
-  );
-  if (chip === null) throw new Error("the browser chip did not render");
+  await dragChipByIdTo(at, makeBrowserTab(WORKSPACE, browserId).id);
+}
+
+/** The same gesture on any chip in the strip, named by its own id. */
+async function dragChipByIdTo(at: { x: number; y: number }, tabId: string): Promise<void> {
+  const chip = document.getElementById(`workspace-session-tab-${tabId}`);
+  if (chip === null) throw new Error(`the chip did not render: ${tabId}`);
   const chipBox = { x: 200, y: STRIP.top + 20 };
   await act(async () => {
     chip.dispatchEvent(
@@ -141,10 +152,19 @@ async function dragChipTo(at: { x: number; y: number }, browserId: string): Prom
   });
 }
 
+/** What every polite status region in the window is saying. */
+function politeRegions(): string[] {
+  return [...document.querySelectorAll('[role="status"][aria-live="polite"]')].map(
+    (region) => region.textContent ?? "",
+  );
+}
+
 /** Inside the centre's bottom band (15% of 800 is 120px). */
 const BOTTOM = { x: 500, y: CENTRE.top + CENTRE.height - 10 };
 /** Inside the centre's centred square (40% of each axis). */
 const MIDDLE = { x: 500, y: CENTRE.top + CENTRE.height / 2 };
+/** Inside the centre's top band. */
+const TOP_EDGE = { x: 500, y: CENTRE.top + 10 };
 
 beforeEach(() => {
   beforeEachHarness();
@@ -291,6 +311,163 @@ describe("dragging a browser tab into the centre", () => {
     expect(document.querySelector(`[data-browser-id="${record.browserId}"]`)).not.toBeNull();
   });
 
+  it("picks up no chip the pane below cannot hold, so none of them can reach a pane", async () => {
+    const browser = openBrowserTab(WORKSPACE, "https://example.test/");
+    await renderSplitWorkspace();
+
+    // A conversation, and a tool tab the pane below has no room for.
+    await dragChipByIdTo(BOTTOM, "agent-one");
+    expect(splitPaneFor(WORKSPACE)).toBeNull();
+    expect(document.querySelector(".workspace-split")).toBeNull();
+    expect(document.body.classList.contains("workspace-is-dragging-tab")).toBe(false);
+    // The drag changed nothing at all: the conversation is still what the
+    // workspace is showing, and the page is still where it was.
+    expect(document.querySelector(".workspace-session-tab[aria-selected='true']")?.id).toBe(
+      "workspace-session-tab-agent-one",
+    );
+    expect(browserTabsFor(WORKSPACE).map((tab) => tab.browserId)).toEqual([browser.browserId]);
+  });
+
+  it("swaps the panes on a top drop, and brings the swap back after a restart", async () => {
+    // Two pages with a place each, and a third the person drags in.
+    const below = openBrowserTab(WORKSPACE, "https://below.test/");
+    const front = openBrowserTab(WORKSPACE, "https://front.test/");
+    const dragged = openBrowserTab(WORKSPACE, "https://dragged.test/");
+    const belowId = makeBrowserTab(WORKSPACE, below.browserId).id;
+    const frontId = makeBrowserTab(WORKSPACE, front.browserId).id;
+    const draggedId = makeBrowserTab(WORKSPACE, dragged.browserId).id;
+    await renderSplitWorkspace();
+
+    // One page below: the control splits the tab in front into the pane below.
+    await plainClick(belowId);
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>(".browser-split-down")?.click();
+    });
+    expect(splitPaneFor(WORKSPACE)?.lowerTabId).toBe(belowId);
+
+    // A second page in front, and a third the person drags to the top edge: the
+    // page in front moves below and the dragged one takes the pane above.
+    await plainClick(frontId);
+    expect(splitPaneFor(WORKSPACE)?.lowerTabId).toBe(belowId);
+    await dragChipTo(TOP_EDGE, dragged.browserId);
+
+    expect(splitPaneFor(WORKSPACE)?.lowerTabId).toBe(frontId);
+    // Every page in this file answers the mocked open with the same url, so the
+    // chips all read alike: which tab is in front is its id.
+    expect(document.querySelector(".workspace-session-tab[aria-selected='true']")?.id).toBe(
+      `workspace-session-tab-${draggedId}`,
+    );
+    let panes = [...document.querySelectorAll(".workspace-split-pane")];
+    expect(panes[0]?.querySelector(`[data-browser-id="${dragged.browserId}"]`)).not.toBeNull();
+    expect(panes[1]?.querySelector(`[data-browser-id="${front.browserId}"]`)).not.toBeNull();
+
+    // A restart finds the swap: the pane below holds the page the swap put there.
+    // What was in front is not remembered — a browser tab is not a tab the next
+    // run can open — so the conversation is back in front, and its card with it.
+    await restartWorkspace(defaultSessions());
+    expect(splitPaneFor(WORKSPACE)?.lowerTabId).toBe(frontId);
+    panes = [...document.querySelectorAll(".workspace-split-pane")];
+    expect(panes[1]?.querySelector(`[data-browser-id="${front.browserId}"]`)).not.toBeNull();
+    expect(panes[0]?.querySelector("[data-browser-id]")).toBeNull();
+
+    // A page that is in neither pane, brought to the front, takes the card away
+    // with the surface it would have been shown on; the conversation brings it
+    // back. (Selecting the page already in the pane below leaves the
+    // conversation in front, and the card with it.)
+    await plainClick(belowId);
+    await requestChildPermission("agent-one", "agent-one");
+    expect(document.body.textContent).not.toContain("Run command");
+    await plainClick("agent-one");
+    await requestChildPermission("agent-one", "agent-one");
+    expect(document.body.textContent).toContain("Run command");
+  });
+
+  it("says what the keyboard's act did, and leaves the focus on the tab it moved", async () => {
+    const record = openBrowserTab(WORKSPACE, "https://example.test/");
+    await renderSplitWorkspace();
+    const tabId = makeBrowserTab(WORKSPACE, record.browserId).id;
+    const chip = document.getElementById(`workspace-session-tab-${tabId}`);
+    if (chip === null) throw new Error("the browser chip did not render");
+
+    await act(async () => {
+      chip.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+    });
+    const entry = [...document.querySelectorAll<HTMLButtonElement>("[role='menuitem']")].find(
+      (item) => item.textContent === "Move to the pane below",
+    );
+    expect(entry, "the menu did not offer the split").not.toBeUndefined();
+    await act(async () => entry?.click());
+
+    expect(splitPaneFor(WORKSPACE)?.lowerTabId).toBe(tabId);
+    expect(politeRegions()).toContain("Moved to the pane below.");
+    expect(document.activeElement).toBe(chip);
+  });
+
+  it("offers the way back out of the pane below, and says so", async () => {
+    const record = openBrowserTab(WORKSPACE, "https://example.test/");
+    await renderSplitWorkspace();
+    await plainClick(makeBrowserTab(WORKSPACE, record.browserId).id);
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>(".browser-split-down")?.click();
+    });
+    const tabId = makeBrowserTab(WORKSPACE, record.browserId).id;
+    await act(async () => {
+      document
+        .getElementById(`workspace-session-tab-${tabId}`)
+        ?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+    });
+    const entry = [...document.querySelectorAll<HTMLButtonElement>("[role='menuitem']")].find(
+      (item) => item.textContent === "Move out of the pane below",
+    );
+    expect(entry, "the menu did not offer the way out").not.toBeUndefined();
+    await act(async () => entry?.click());
+
+    expect(splitPaneFor(WORKSPACE)).toBeNull();
+    expect(politeRegions()).toContain("Moved out of the pane below.");
+    expect(document.activeElement).toBe(document.getElementById(`workspace-session-tab-${tabId}`));
+  });
+});
+
+describe("a page an agent closes mid-gesture", () => {
+  it("ends the gesture instead of dropping a tab that is gone", async () => {
+    const record = openBrowserTab(WORKSPACE, "https://example.test/");
+    await renderSplitWorkspace();
+    const tabId = makeBrowserTab(WORKSPACE, record.browserId).id;
+    const chip = document.getElementById(`workspace-session-tab-${tabId}`);
+    if (chip === null) throw new Error("the browser chip did not render");
+
+    await act(async () => {
+      chip.dispatchEvent(
+        new PointerEvent("pointerdown", { clientX: 200, clientY: 80, pointerId: 1, bubbles: true }),
+      );
+    });
+    await act(async () => {
+      window.dispatchEvent(
+        new PointerEvent("pointermove", { clientX: BOTTOM.x, clientY: BOTTOM.y, pointerId: 1 }),
+      );
+    });
+    expect(document.querySelector(".workspace-drop-preview")).not.toBeNull();
+
+    // The tab closes under the pointer.
+    await act(async () => {
+      closeBrowserTab(record.browserId);
+    });
+    await act(async () => {
+      window.dispatchEvent(
+        new PointerEvent("pointermove", {
+          clientX: BOTTOM.x,
+          clientY: BOTTOM.y - 40,
+          pointerId: 1,
+        }),
+      );
+    });
+
+    expect(document.querySelector(".workspace-drop-preview")).toBeNull();
+    expect(splitPaneFor(WORKSPACE)).toBeNull();
+  });
+});
+
+describe("the old suite's menu case", () => {
   it("offers the same act from the tab menu, for a keyboard that cannot drag", async () => {
     const record = openBrowserTab(WORKSPACE, "https://example.test/");
     await renderSplitWorkspace();
