@@ -966,7 +966,7 @@ No unresolved asset provenance remains: the icon is original project artwork car
 | sharded-slab | 0.1.7 | Rust transitive (lockfile) | MIT |
 | shell-words | 1.1.1 | Rust transitive (lockfile) | MIT/Apache-2.0 |
 | shlex | 2.0.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
-| signal-hook | 0.4.4 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
+| signal-hook | 0.4.4 | Rust direct runtime | MIT OR Apache-2.0 |
 | signal-hook-registry | 1.4.8 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | simd-adler32 | 0.3.10 | Rust transitive (lockfile) | MIT |
 | simd_helpers | 0.1.0 | Rust transitive (lockfile) | MIT |
