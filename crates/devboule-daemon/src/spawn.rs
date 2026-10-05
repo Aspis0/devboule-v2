@@ -42,6 +42,30 @@ pub fn spawn_daemon(binary: &Path, paths: &RuntimePaths) -> Result<Child, Daemon
     spawn_with_env(binary, paths, &[])
 }
 
+/// Hand a spawned daemon to a waiter thread and forget it.
+///
+/// The app never waits on its daemon — the daemon outlives the window — but
+/// on Unix a dropped `Child` stays a zombie on the app until the app exits,
+/// and a restart spawns a fresh child every time. One small thread per spawn
+/// calls `wait` and ends with the child; off Unix the call keeps the old
+/// behaviour, where dropping the child needs no reap.
+pub fn reap_spawned_daemon(child: Child) {
+    #[cfg(unix)]
+    {
+        let mut child = child;
+        let waiter = std::thread::Builder::new()
+            .name("daemon-reaper".to_string())
+            .spawn(move || {
+                let _ = child.wait();
+            });
+        if let Err(error) = waiter {
+            eprintln!("could not start the daemon reaper thread: {error}");
+        }
+    }
+    #[cfg(not(unix))]
+    drop(child);
+}
+
 /// [`spawn_daemon`] with extra environment for the daemon (and so for every
 /// provider it launches).
 ///

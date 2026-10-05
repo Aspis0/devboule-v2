@@ -208,6 +208,10 @@ pub use agent_env::{
 };
 #[cfg(feature = "server")]
 pub use atomic::atomic_write;
+/// The Unix restart's verified fallback kill; shared with the Unix end-to-end
+/// test's cleanup guard.
+#[cfg(unix)]
+pub use client::kill_verified_daemon;
 pub use client::{
     connect, connect_or_spawn, connect_within, handshake, test_owner, DaemonClient,
     DelegationChangedHandler, EventHandler, RemoteHostStatusHandler, SessionResetHandler,

@@ -27,7 +27,7 @@ use crate::diagnostics::DiagnosticsReport;
 use crate::error::DaemonError;
 use crate::framing::Framed;
 use crate::paths::RuntimePaths;
-use crate::spawn::{resolve_daemon_binary, spawn_daemon};
+use crate::spawn::{reap_spawned_daemon, resolve_daemon_binary, spawn_daemon};
 use crate::transport;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -370,11 +370,12 @@ impl DaemonClient {
                     "cannot prove the identity of the connected daemon".to_string(),
                 )
             })?;
-            guarded_kill(&paths, expected)?;
+            kill_verified_daemon(&paths, expected)?;
             wait_while_present(&paths, &old_instance)?;
         }
         let binary = resolve_daemon_binary()?;
-        let _child = spawn_daemon(&binary, &paths)?;
+        let child = spawn_daemon(&binary, &paths)?;
+        reap_spawned_daemon(child);
         wait_for_instance(&paths, &old_instance)
     }
 
@@ -2314,8 +2315,14 @@ fn wait_for_instance(paths: &RuntimePaths, old_instance: &str) -> Result<(), Dae
 /// the peer is still the expected one (same uid, same pid) and still the
 /// expected executable, and only then signal it. Anything unverifiable
 /// refuses instead of killing by a remembered number.
+///
+/// The Unix restart falls back to this when the daemon is unreachable but
+/// still present; the Unix end-to-end test's cleanup guard shares it so a
+/// leaked test daemon is stopped by the same rule.
 #[cfg(unix)]
-fn guarded_kill(paths: &RuntimePaths, expected_pid: u32) -> Result<(), DaemonError> {
+pub fn kill_verified_daemon(paths: &RuntimePaths, expected_pid: u32) -> Result<(), DaemonError> {
+    // Held open for the whole guard, re-read and signal: the peer's identity
+    // is taken from this connection, never from the remembered pid alone.
     let file = transport::connect(paths).map_err(|error| {
         DaemonError::Protocol(format!("cannot reach the daemon to verify it: {error}"))
     })?;
@@ -2339,9 +2346,18 @@ fn guarded_kill(paths: &RuntimePaths, expected_pid: u32) -> Result<(), DaemonErr
             actual.display()
         )));
     }
-    // SAFETY: pid and identity were verified above; ESRCH (already gone)
-    // already satisfies the caller, every other failure refuses.
-    let killed = unsafe { libc::kill(peer.pid as libc::pid_t, libc::SIGKILL) };
+    // While this end is connected the peer cannot have exited, so the pid it
+    // reports now cannot be a recycled one; the signal uses this last read.
+    let held = transport::peer_identity(&file).map_err(DaemonError::from)?;
+    if held.user != peer.user || held.pid != peer.pid {
+        return Err(DaemonError::Protocol(
+            "the daemon's peer identity changed before the signal".to_string(),
+        ));
+    }
+    // SAFETY: the pid was just re-read from the held connection and verified
+    // against the expected user, pid and executable above; ESRCH (already
+    // gone) already satisfies the caller, every other failure refuses.
+    let killed = unsafe { libc::kill(held.pid as libc::pid_t, libc::SIGKILL) };
     if killed != 0 {
         let error = std::io::Error::last_os_error();
         if error.raw_os_error() != Some(libc::ESRCH) {
@@ -2414,7 +2430,9 @@ pub fn connect_or_spawn(
         None => resolve_daemon_binary()?,
     };
     connect_or_spawn_with(paths, hello, &binary, connect, |binary, paths| {
-        spawn_daemon(binary, paths).map(|_| ())
+        let child = spawn_daemon(binary, paths)?;
+        reap_spawned_daemon(child);
+        Ok(())
     })
 }
 
