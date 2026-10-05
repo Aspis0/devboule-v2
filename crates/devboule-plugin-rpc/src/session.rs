@@ -15,7 +15,12 @@ use serde_json::Value;
 
 use crate::error::PluginError;
 use crate::pipe::verify_pipe_server_pid;
-use crate::spawn::{spawn_backend, unique_pipe_name, SpawnedBackend};
+#[cfg(not(windows))]
+use crate::pipe::{peer_pid, peer_pid_matches, socketpair_channel};
+use crate::receive::recv_frame;
+#[cfg(windows)]
+use crate::spawn::unique_pipe_name;
+use crate::spawn::{spawn_backend, SpawnedBackend};
 
 const CONNECT_ATTEMPTS: u32 = 50;
 const CONNECT_SLEEP: Duration = Duration::from_millis(100);
@@ -97,8 +102,7 @@ impl Drop for InflightGuard<'_> {
 
 impl PluginSession {
     pub fn spawn(spec: SpawnSpec) -> Result<Self, PluginError> {
-        let pipe_name = unique_pipe_name(&spec.plugin_id);
-        let connected = spawn_connected(&spec, pipe_name)?;
+        let connected = spawn_connected(&spec)?;
         Ok(Self {
             spec,
             process: Mutex::new(connected.process),
@@ -223,7 +227,7 @@ impl PluginSession {
             if remaining.is_zero() {
                 return Err(PluginError::timed_out("waiting for a plugin reply"));
             }
-            match framed.recv_timeout::<DaemonMessage>(remaining) {
+            match recv_frame::<DaemonMessage>(framed, remaining) {
                 Ok(message) => {
                     let message_id = match &message {
                         DaemonMessage::Error(error) => error.id,
@@ -349,7 +353,7 @@ impl PluginSession {
                         return Ok(message);
                     }
                 }
-                Err(error) => return Err(classify_io(error.into())),
+                Err(error) => return Err(classify_io(error)),
             }
         }
     }
@@ -376,8 +380,7 @@ impl PluginSession {
         }
         let mut spec = self.spec.clone();
         spec.hang_ms = None;
-        let pipe_name = unique_pipe_name(&spec.plugin_id);
-        let next = spawn_connected(&spec, pipe_name)?;
+        let next = spawn_connected(&spec)?;
         *self
             .process
             .lock()
@@ -449,9 +452,18 @@ pub fn workspace_root_from_value(value: &Value) -> Result<WorkspaceRootBody, Plu
     serde_json::from_value(value.clone()).map_err(PluginError::from)
 }
 
-fn spawn_connected(spec: &SpawnSpec, pipe_name: String) -> Result<Connected, PluginError> {
+fn spawn_connected(spec: &SpawnSpec) -> Result<Connected, PluginError> {
     let job = JobObject::new()?;
+    #[cfg(windows)]
+    let pipe_name = unique_pipe_name(&spec.plugin_id);
+    #[cfg(not(windows))]
+    let (host_end, child_end) = socketpair_channel().map_err(PluginError::from)?;
+
+    #[cfg(windows)]
     let mut child = spawn_backend(&spec.binary, &spec.plugin_id, &pipe_name, spec.hang_ms)?;
+    #[cfg(not(windows))]
+    let mut child = spawn_backend(&spec.binary, &spec.plugin_id, child_end, spec.hang_ms)?;
+
     #[cfg(windows)]
     {
         if let Err(error) =
@@ -463,6 +475,7 @@ fn spawn_connected(spec: &SpawnSpec, pipe_name: String) -> Result<Connected, Plu
         }
     }
 
+    #[cfg(windows)]
     let file = match connect_with_retry(&pipe_name, &mut child) {
         Ok(file) => file,
         Err(error) => {
@@ -471,7 +484,19 @@ fn spawn_connected(spec: &SpawnSpec, pipe_name: String) -> Result<Connected, Plu
             return Err(error);
         }
     };
-    #[cfg(windows)]
+    // The pair is connected at spawn, so readiness means the kernel names the
+    // child — not this process — as the accessor of its end, which happens on
+    // the child's first read. No frame is written before that check passes.
+    #[cfg(not(windows))]
+    let file = match wait_for_child_channel(&host_end, &mut child) {
+        Ok(()) => host_end,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
+
     if let Err(error) = verify_pipe_server_pid(&file, child.id()) {
         let _ = child.kill();
         let _ = child.wait();
@@ -490,12 +515,12 @@ fn spawn_connected(spec: &SpawnSpec, pipe_name: String) -> Result<Connected, Plu
         let _ = child.wait();
         return Err(error.into());
     }
-    let reply: DaemonMessage = match framed.recv_timeout(HANDSHAKE_TIMEOUT) {
+    let reply: DaemonMessage = match recv_frame(&framed, HANDSHAKE_TIMEOUT) {
         Ok(reply) => reply,
         Err(error) => {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(classify_io(error.into()));
+            return Err(classify_io(error));
         }
     };
     let daemon_hello = match reply {
@@ -531,44 +556,72 @@ fn spawn_connected(spec: &SpawnSpec, pipe_name: String) -> Result<Connected, Plu
     })
 }
 
+#[cfg(windows)]
 fn connect_with_retry(
     pipe_name: &str,
     child: &mut SpawnedBackend,
 ) -> Result<std::fs::File, PluginError> {
-    #[cfg(windows)]
-    {
-        let mut last = None;
-        for attempt in 0..CONNECT_ATTEMPTS {
-            if let Some(status) = child.try_wait().map_err(PluginError::from)? {
-                return Err(PluginError::Protocol(format!(
-                    "plugin backend exited before the pipe was up (status {status})"
-                )));
-            }
-            match connect_pipe(pipe_name) {
-                Ok(file) => return Ok(file),
-                Err(error) => {
-                    last = Some(error);
-                    if attempt + 1 == CONNECT_ATTEMPTS {
-                        break;
-                    }
-                    std::thread::sleep(CONNECT_SLEEP);
+    let mut last = None;
+    for attempt in 0..CONNECT_ATTEMPTS {
+        if let Some(status) = child.try_wait().map_err(PluginError::from)? {
+            return Err(PluginError::Protocol(format!(
+                "plugin backend exited before the channel was up (status {status})"
+            )));
+        }
+        match connect_pipe(pipe_name) {
+            Ok(file) => return Ok(file),
+            Err(error) => {
+                last = Some(error);
+                if attempt + 1 == CONNECT_ATTEMPTS {
+                    break;
                 }
+                std::thread::sleep(CONNECT_SLEEP);
             }
         }
-        Err(PluginError::from(last.unwrap_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "connecting to the plugin backend",
-            )
-        })))
     }
-    #[cfg(not(windows))]
-    {
-        let _ = (pipe_name, child);
-        Err(PluginError::Protocol(
-            "plugin named pipes are Windows-only".to_string(),
-        ))
+    Err(PluginError::from(last.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "connecting to the plugin backend",
+        )
+    })))
+}
+
+/// Wait until the kernel names `child`, not this process, as the accessor of
+/// the channel's other end. XNU re-stamps a socket's last accessor on every
+/// read/write; this process created both ends, so our own pid back means the
+/// child has not read yet, and any other pid means the descriptor moved.
+#[cfg(not(windows))]
+fn wait_for_child_channel(
+    file: &std::fs::File,
+    child: &mut SpawnedBackend,
+) -> Result<(), PluginError> {
+    let mut last: Option<std::io::Error> = None;
+    for attempt in 0..CONNECT_ATTEMPTS {
+        if let Some(status) = child.try_wait().map_err(PluginError::from)? {
+            return Err(PluginError::Protocol(format!(
+                "plugin backend exited before the channel was up (status {status})"
+            )));
+        }
+        match peer_pid(file) {
+            Ok(pid) if pid == child.id() => return Ok(()),
+            Ok(pid) if pid == std::process::id() => {}
+            Ok(pid) => {
+                let error = peer_pid_matches(pid, child.id())
+                    .expect_err("peer pid does not match the child");
+                return Err(PluginError::from(error));
+            }
+            Err(error) => last = Some(error),
+        }
+        if attempt + 1 == CONNECT_ATTEMPTS {
+            break;
+        }
+        std::thread::sleep(CONNECT_SLEEP);
     }
+    Err(match last {
+        Some(error) => PluginError::from(error),
+        None => PluginError::timed_out("the plugin child never claimed its channel"),
+    })
 }
 
 fn classify_io(error: PluginError) -> PluginError {

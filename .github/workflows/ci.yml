@@ -380,6 +380,9 @@ jobs:
       - name: Check the workspace
         run: cargo check --workspace --all-targets --locked --keep-going
 
+      - name: Plugin RPC tests
+        run: cargo test -p devboule-plugin-rpc --locked
+
   # Slice 3 (CfT process manager) owns this job: the websocket transport is
   # cross-platform code and only a Mac can verify the mac-arm64 Chromium
   # lifecycle. Everything here is headless; a headed pane with compositor

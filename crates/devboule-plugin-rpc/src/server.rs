@@ -7,7 +7,8 @@ use devboule_protocol::{
 };
 
 use crate::error::PluginError;
-use crate::pipe::{bind_and_accept, verify_pipe_client_pid};
+use crate::pipe::{open_host_channel, verify_pipe_client_pid};
+use crate::receive::recv_frame;
 use crate::spawn::HOST_PID_ENV;
 
 const ACCEPT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -22,7 +23,9 @@ pub struct PluginBackend {
 }
 
 impl PluginBackend {
-    /// Bind the pipe the host named, accept one client, complete handshake.
+    /// Open the one channel the host named — a pipe to bind on Windows, the
+    /// inherited fd number on Unix — verify the host peer, accept one client,
+    /// complete handshake.
     pub fn listen(pipe_name: &str) -> Result<Self, PluginError> {
         let raw_pid = std::env::var(HOST_PID_ENV).map_err(|_| {
             PluginError::Protocol(format!(
@@ -37,10 +40,10 @@ impl PluginBackend {
 
     /// Testable form of [`Self::listen`] for an in-process host/client pair.
     pub fn listen_for_host(pipe_name: &str, expected_host_pid: u32) -> Result<Self, PluginError> {
-        let file = bind_and_accept(pipe_name, ACCEPT_TIMEOUT).map_err(PluginError::Io)?;
+        let file = open_host_channel(pipe_name, ACCEPT_TIMEOUT).map_err(PluginError::Io)?;
         verify_pipe_client_pid(&file, expected_host_pid).map_err(PluginError::from)?;
         let mut framed = Framed::new(file);
-        let first: ClientMessage = framed.recv_timeout(HANDSHAKE_TIMEOUT)?;
+        let first: ClientMessage = recv_frame(&framed, HANDSHAKE_TIMEOUT)?;
         let ClientMessage::Hello(client_hello) = first else {
             let error = WireError::new(ErrorCode::InvalidRequest, "first frame must be hello");
             let _ = framed.send(&DaemonMessage::Error(error.clone()));
@@ -108,7 +111,7 @@ impl PluginBackend {
     }
 
     pub fn recv(&self, timeout: Duration) -> Result<ClientMessage, PluginError> {
-        Ok(self.framed.recv_timeout(timeout)?)
+        recv_frame(&self.framed, timeout)
     }
 
     pub fn send(&self, message: &DaemonMessage) -> Result<(), PluginError> {
@@ -246,6 +249,42 @@ mod tests {
             }
             Ok(_) => panic!("expected PID refusal, but the connection was accepted"),
             Err(other) => panic!("expected PID refusal, got {other}"),
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod unix_tests {
+    use super::*;
+    use std::os::unix::io::AsRawFd;
+    use std::os::unix::net::UnixStream;
+
+    #[test]
+    fn a_host_with_the_wrong_pid_is_refused_before_the_handshake() {
+        let (host, child) = UnixStream::pair().expect("socketpair");
+        let handoff = unsafe { libc::fcntl(child.as_raw_fd(), libc::F_DUPFD, 64) };
+        assert!(
+            handoff >= 64,
+            "fcntl(F_DUPFD): {}",
+            std::io::Error::last_os_error()
+        );
+        drop(child);
+        let wrong_pid = std::process::id().wrapping_add(1).max(1);
+        let listener = std::thread::spawn(move || {
+            let endpoint = handoff.to_string();
+            PluginBackend::listen_for_host(&endpoint, wrong_pid)
+        });
+        let result = listener.join().expect("listener thread");
+        drop(host);
+        match result {
+            Err(PluginError::Io(error)) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+                assert!(error.to_string().contains("not expected PID"), "{error}");
+            }
+            other => panic!(
+                "expected a PID refusal, got {:?}",
+                other.map(|_| "accepted")
+            ),
         }
     }
 }

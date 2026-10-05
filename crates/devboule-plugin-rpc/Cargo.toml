@@ -1,10 +1,18 @@
 [package]
 name = "devboule-plugin-rpc"
 version = "0.1.0"
-description = "Host-side plugin backend lifecycle: named pipe, Job Object, invoke"
+description = "Host-side plugin backend lifecycle: pipe/socketpair IPC, child group, invoke"
 edition = "2021"
 license = "Apache-2.0"
 publish = false
+
+# Test child for the Unix spawn tests: roles (serve, exit, fork a
+# grandchild) are keyed off DEVBOULE_PLUGIN_ID, so the integration tests
+# can drive real process-group behaviour without a production backend.
+[[bin]]
+name = "devboule-plugin-test-child"
+path = "tests/support/test_child.rs"
+test = false
 
 [dependencies]
 devboule-protocol = { path = "../devboule-protocol" }
@@ -14,6 +22,11 @@ devboule-daemon = { path = "../devboule-daemon", default-features = false }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 sha2 = "=0.10.9"
+
+[target.'cfg(unix)'.dependencies]
+# Peer identity (getpeereid, LOCAL_PEERPID), fd flags, SO_RCVTIMEO and
+# process-group signals — the Unix half of the channel and child lifecycle.
+libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 # Same pin as devboule-daemon. Pipe DACL, Job Object, process spawn flags.

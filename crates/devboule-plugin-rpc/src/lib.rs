@@ -1,12 +1,16 @@
 //! Host↔plugin-backend conversation over the same protocol frames as the daemon.
 //!
-//! The plugin backend binds a named pipe, the host connects, they handshake
-//! with plugin-scoped capabilities, and the host sends [`devboule_protocol::ClientMessage::Invoke`].
-//! Process membership is a Windows Job Object with `KILL_ON_JOB_CLOSE` so an
-//! orphan cannot outlive the host. Tested by killing the backend mid-request.
+//! The host and the backend meet on one channel: a named pipe the backend
+//! binds on Windows, a socketpair the host hands the child end to on Unix.
+//! They handshake with plugin-scoped capabilities, and the host sends
+//! [`devboule_protocol::ClientMessage::Invoke`].
+//! Process membership is a Windows Job Object with `KILL_ON_JOB_CLOSE` or a
+//! Unix process group signalled before the leader is reaped, so an orphan
+//! cannot outlive the host. Tested by killing the backend mid-request.
 
 mod error;
 mod pipe;
+mod receive;
 mod server;
 mod session;
 mod spawn;

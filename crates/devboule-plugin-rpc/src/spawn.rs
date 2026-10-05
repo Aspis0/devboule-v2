@@ -1,3 +1,9 @@
+#[cfg(not(windows))]
+use std::os::unix::io::AsRawFd;
+#[cfg(not(windows))]
+use std::os::unix::net::UnixStream;
+#[cfg(not(windows))]
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 #[cfg(not(windows))]
 use std::process::{Child, Command, Stdio};
@@ -26,6 +32,7 @@ pub const ORACLE_CHILD_OVERRIDE_ENV_VARS: &[&str] = &[
     "CKG_DB_PATH",
 ];
 
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(windows)]
 const CREATE_SUSPENDED: u32 = 0x0000_0004;
@@ -46,6 +53,10 @@ pub struct SpawnedBackend {
     pid: u32,
     #[cfg(not(windows))]
     child: Child,
+    /// True once the group signal has been sent. Every wait happens under it,
+    /// so no path reaps the leader while its group id is still unsignalled.
+    #[cfg(not(windows))]
+    group_signalled: bool,
 }
 
 // Windows kernel handles are process-wide capabilities and this owner never
@@ -86,9 +97,14 @@ impl SpawnedBackend {
         }
         #[cfg(not(windows))]
         {
-            self.child
-                .try_wait()
-                .map(|status| status.map(|status| status.code().unwrap_or_default() as u32))
+            let status = self.child.try_wait()?;
+            if status.is_some() && !self.group_signalled {
+                // The reap freed the group id (the leader's pid), so sweep
+                // descendants now; xnu's wrapping pid counter makes a reuse
+                // in this window impractical and macOS has no guarded kill.
+                self.sweep_group()?;
+            }
+            Ok(status.map(|status| status.code().unwrap_or_default() as u32))
         }
     }
 
@@ -107,14 +123,8 @@ impl SpawnedBackend {
         }
         #[cfg(not(windows))]
         {
-            match self.child.kill() {
-                Ok(()) => {
-                    let _ = self.child.wait();
-                    Ok(())
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => Ok(()),
-                Err(error) => Err(error),
-            }
+            // `wait` signals the group before it reaps; that is the kill.
+            self.wait()
         }
     }
 
@@ -136,8 +146,28 @@ impl SpawnedBackend {
         }
         #[cfg(not(windows))]
         {
+            self.sweep_group()?;
             self.child.wait().map(|_| ())
         }
+    }
+
+    /// SIGKILL the whole process group, guarded by `group_signalled`. The
+    /// group id is the leader's pid, which the kernel keeps reserved until
+    /// the leader is reaped; `ESRCH` just means the group is already empty.
+    #[cfg(not(windows))]
+    fn sweep_group(&mut self) -> std::io::Result<()> {
+        if self.group_signalled {
+            return Ok(());
+        }
+        let pgid = self.child.id() as libc::pid_t;
+        self.group_signalled = true;
+        if unsafe { libc::killpg(pgid, libc::SIGKILL) } != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ESRCH) {
+                return Err(error);
+            }
+        }
+        Ok(())
     }
 
     #[cfg(windows)]
@@ -161,6 +191,15 @@ impl Drop for SpawnedBackend {
     }
 }
 
+// Same containment as the Windows job object: a backend that is dropped
+// without an explicit kill still takes its whole process group with it.
+#[cfg(not(windows))]
+impl Drop for SpawnedBackend {
+    fn drop(&mut self) {
+        let _ = self.kill();
+    }
+}
+
 pub fn unique_pipe_name(plugin_id: &str) -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -175,35 +214,57 @@ pub fn unique_pipe_name(plugin_id: &str) -> String {
 
 /// Spawn the plugin backend. No breakaway: the Job Object the caller
 /// assigns this child to is what kills orphans when the host exits.
+#[cfg(windows)]
 pub fn spawn_backend(
     binary: &Path,
     plugin_id: &str,
     pipe_name: &str,
     hang_ms: Option<u64>,
 ) -> std::io::Result<SpawnedBackend> {
-    #[cfg(windows)]
-    {
-        spawn_backend_windows(binary, plugin_id, pipe_name, hang_ms)
-    }
+    spawn_backend_windows(binary, plugin_id, pipe_name, hang_ms)
+}
 
-    #[cfg(not(windows))]
-    {
-        let mut command = Command::new(binary);
-        command
-            .arg("--pipe")
-            .arg(pipe_name)
-            .env(PIPE_ENV, pipe_name)
-            .env(PLUGIN_ID_ENV, plugin_id)
-            .env(HOST_PID_ENV, std::process::id().to_string())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        sanitize_backend_environment(&mut command);
-        if let Some(hang_ms) = hang_ms {
-            command.env(HANG_MS_ENV, hang_ms.to_string());
-        }
-        command.spawn().map(|child| SpawnedBackend { child })
+/// Spawn the plugin backend over the inherited channel. The fd number
+/// travels on the same `--pipe`/env channel that carries the Windows pipe
+/// name, so the child-side protocol is unchanged. Only this one fd loses
+/// close-on-exec, and only inside this spawn; the parent's copy closes here.
+#[cfg(not(windows))]
+pub fn spawn_backend(
+    binary: &Path,
+    plugin_id: &str,
+    child_end: UnixStream,
+    hang_ms: Option<u64>,
+) -> std::io::Result<SpawnedBackend> {
+    let handoff = child_end.as_raw_fd();
+    let mut command = Command::new(binary);
+    command
+        .arg("--pipe")
+        .arg(handoff.to_string())
+        .env(PIPE_ENV, handoff.to_string())
+        .env(PLUGIN_ID_ENV, plugin_id)
+        .env(HOST_PID_ENV, std::process::id().to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    sanitize_backend_environment(&mut command);
+    if let Some(hang_ms) = hang_ms {
+        command.env(HANG_MS_ENV, hang_ms.to_string());
     }
+    // Its own process group: one signal must reach the child and everything
+    // it forks, and no other pid may sit in that group.
+    command.process_group(0);
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fcntl(handoff, libc::F_SETFD, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    command.spawn().map(|child| SpawnedBackend {
+        child,
+        group_signalled: false,
+    })
 }
 
 #[cfg(windows)]
@@ -287,6 +348,7 @@ fn sanitize_backend_environment(command: &mut std::process::Command) {
     command.env_remove(HANG_MS_ENV);
 }
 
+#[cfg(windows)]
 fn sanitize_backend_environment_map(
     environment: &mut std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>,
 ) {
@@ -390,13 +452,15 @@ mod tests {
 
     #[test]
     fn missing_backend_binary_fails_to_spawn() {
-        let error = spawn_backend(
-            std::path::Path::new("no-such-polis-backend.exe"),
-            "polis",
-            r"\\.\pipe\devboule-plugin-missing",
-            None,
-        )
-        .expect_err("missing binary");
+        let binary = std::path::Path::new("no-such-polis-backend.exe");
+        #[cfg(windows)]
+        let result = spawn_backend(binary, "polis", r"\\.\pipe\devboule-plugin-missing", None);
+        #[cfg(not(windows))]
+        let result = {
+            let (_host, child) = std::os::unix::net::UnixStream::pair().expect("socketpair");
+            spawn_backend(binary, "polis", child, None)
+        };
+        let error = result.expect_err("missing binary");
         assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
     }
 
@@ -421,6 +485,7 @@ mod tests {
             for key in ORACLE_CHILD_OVERRIDE_ENV_VARS {
                 command.env(key, "foreign-value");
             }
+            command.env(HANG_MS_ENV, "8000");
             sanitize_backend_environment(&mut command);
             for key in ORACLE_CHILD_OVERRIDE_ENV_VARS {
                 assert!(
@@ -430,21 +495,32 @@ mod tests {
                     "{key} must be removed from the child environment"
                 );
             }
-        }
-
-        let mut environment = std::collections::BTreeMap::new();
-        for key in ORACLE_CHILD_OVERRIDE_ENV_VARS {
-            environment.insert(
-                std::ffi::OsString::from(key),
-                std::ffi::OsString::from("foreign"),
+            assert!(
+                command
+                    .get_envs()
+                    .all(|(name, value)| name != std::ffi::OsStr::new(HANG_MS_ENV)
+                        || value.is_none()),
+                "hang_ms must be removed unless SpawnSpec set it"
             );
         }
-        sanitize_backend_environment_map(&mut environment);
-        assert!(ORACLE_CHILD_OVERRIDE_ENV_VARS
-            .iter()
-            .all(|key| !environment.contains_key(std::ffi::OsStr::new(key))));
+
+        #[cfg(windows)]
+        {
+            let mut environment = std::collections::BTreeMap::new();
+            for key in ORACLE_CHILD_OVERRIDE_ENV_VARS {
+                environment.insert(
+                    std::ffi::OsString::from(key),
+                    std::ffi::OsString::from("foreign"),
+                );
+            }
+            sanitize_backend_environment_map(&mut environment);
+            assert!(ORACLE_CHILD_OVERRIDE_ENV_VARS
+                .iter()
+                .all(|key| !environment.contains_key(std::ffi::OsStr::new(key))));
+        }
     }
 
+    #[cfg(windows)]
     #[test]
     fn hang_ms_is_stripped_from_inherited_environment() {
         let mut environment = std::collections::BTreeMap::new();

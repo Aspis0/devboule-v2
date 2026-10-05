@@ -1,12 +1,21 @@
-//! One-shot named pipe listener. The backend binds; the host connects.
+//! One-shot host↔backend channel. Windows: the backend binds a named pipe,
+//! the host connects. Unix: the host creates a socketpair and hands the
+//! child end to the backend as an inherited fd (no pathname, so no
+//! path-length or stale-socket problem), and the peer on each end is checked
+//! before the handshake.
 //!
-//! Copied from `devboule-daemon` named-pipe accept: overlapped connect,
-//! current-user DACL, `FILE_FLAG_FIRST_PIPE_INSTANCE`. Not the daemon's
-//! accept loop — a plugin backend serves one host connection.
+//! The Windows half is copied from `devboule-daemon` named-pipe accept:
+//! overlapped connect, current-user DACL, `FILE_FLAG_FIRST_PIPE_INSTANCE`.
+//! Not the daemon's accept loop — a plugin backend serves one host connection.
 
 use std::fs::File;
 use std::io;
 use std::time::Duration;
+
+#[cfg(unix)]
+use std::os::raw::c_int;
+#[cfg(unix)]
+use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
 
 #[cfg(windows)]
 use std::os::windows::io::{AsRawHandle, FromRawHandle, RawHandle};
@@ -36,7 +45,14 @@ use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 #[cfg(windows)]
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 
+#[cfg(windows)]
 const PIPE_BUFFER: u32 = 64 * 1024;
+
+/// How long one framed read may block before it surfaces as `WouldBlock`.
+/// The framing checks its deadline only between reads, so this tick is what
+/// makes a deadline reachable on a Unix socket at all.
+#[cfg(unix)]
+const SOCKET_READ_TICK: Duration = Duration::from_millis(100);
 
 fn startup_context(step: &str, error: io::Error) -> io::Error {
     let detail = error.to_string();
@@ -96,21 +112,13 @@ fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// Bind `pipe_name` and wait for one client. The host retries connect until
-/// this returns; a timeout here is a spawn failure, not a hang.
-pub fn bind_and_accept(pipe_name: &str, timeout: Duration) -> io::Result<File> {
-    #[cfg(windows)]
-    {
-        bind_and_accept_windows(pipe_name, timeout)
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (pipe_name, timeout);
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "plugin named pipes are Windows-only",
-        ))
-    }
+/// Open the one host connection. `endpoint` names the channel: a Windows
+/// pipe name, or — on Unix — the inherited fd number in this process. The
+/// timeout applies to the Windows accept; the Unix channel is connected from
+/// birth, so there is nothing to wait for.
+#[cfg(windows)]
+pub fn open_host_channel(endpoint: &str, timeout: Duration) -> io::Result<File> {
+    open_host_channel_windows(endpoint, timeout)
 }
 
 /// Compare the kernel-reported peer PID with the PID the other side expected.
@@ -122,7 +130,20 @@ pub fn peer_pid_matches(actual: u32, expected: u32) -> io::Result<()> {
     } else {
         Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            format!("named-pipe peer PID {actual} is not expected PID {expected}"),
+            format!("peer PID {actual} is not expected PID {expected}"),
+        ))
+    }
+}
+
+/// Same rule for the uid half of the peer check.
+#[cfg(unix)]
+pub fn peer_uid_matches(actual: u32, expected: u32) -> io::Result<()> {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("peer uid {actual} is not uid {expected}"),
         ))
     }
 }
@@ -155,26 +176,143 @@ pub fn verify_pipe_server_pid(file: &File, expected: u32) -> io::Result<()> {
         .map_err(|error| startup_context("verify_pipe_server_pid", error))
 }
 
-#[cfg(not(windows))]
-pub fn verify_pipe_client_pid(_file: &File, _expected: u32) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "plugin named pipes are Windows-only",
-    ))
+#[cfg(unix)]
+pub fn verify_pipe_client_pid(file: &File, expected: u32) -> io::Result<()> {
+    verify_peer(file, expected).map_err(|error| startup_context("verify_pipe_client_pid", error))
 }
 
-#[cfg(not(windows))]
-pub fn verify_pipe_server_pid(_file: &File, _expected: u32) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "plugin named pipes are Windows-only",
-    ))
+#[cfg(unix)]
+pub fn verify_pipe_server_pid(file: &File, expected: u32) -> io::Result<()> {
+    verify_peer(file, expected).map_err(|error| startup_context("verify_pipe_server_pid", error))
+}
+
+/// Same uid and same peer PID in one rule. The uid comes from the credentials
+/// frozen on the socket at creation; the PID is the peer socket's last
+/// accessor, so a descriptor handed to another process fails this check.
+#[cfg(unix)]
+fn verify_peer(file: &File, expected_pid: u32) -> io::Result<()> {
+    peer_uid_matches(peer_uid(file)?, unsafe { libc::geteuid() } as u32)?;
+    peer_pid_matches(peer_pid(file)?, expected_pid)
+}
+
+/// The peer socket's last accessor. XNU re-stamps it on every send, receive,
+/// accept or poll, which is how the host learns that the spawned child — not
+/// this process, and not a descriptor thief — now holds the other end.
+#[cfg(unix)]
+pub fn peer_pid(file: &File) -> io::Result<u32> {
+    let mut pid: libc::pid_t = 0;
+    let mut length = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    let result = unsafe {
+        libc::getsockopt(
+            file.as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            &mut pid as *mut libc::pid_t as *mut libc::c_void,
+            &mut length,
+        )
+    };
+    if result != 0 {
+        return Err(startup_context(
+            "getsockopt(LOCAL_PEERPID)",
+            io::Error::last_os_error(),
+        ));
+    }
+    if length as usize != std::mem::size_of::<libc::pid_t>() || pid < 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("LOCAL_PEERPID returned {pid} (length {length})"),
+        ));
+    }
+    Ok(pid as u32)
+}
+
+#[cfg(unix)]
+pub fn peer_uid(file: &File) -> io::Result<u32> {
+    let mut uid: libc::uid_t = 0;
+    let mut gid: libc::gid_t = 0;
+    if unsafe { libc::getpeereid(file.as_raw_fd(), &mut uid, &mut gid) } != 0 {
+        return Err(startup_context("getpeereid", io::Error::last_os_error()));
+    }
+    Ok(uid as u32)
+}
+
+/// A connected socketpair for one plugin spawn: the host end (already set up
+/// for framed reads) and the child end to hand over. Both ends close on exec
+/// so only the fd this spawn deliberately inherits survives into the child.
+#[cfg(unix)]
+pub(crate) fn socketpair_channel() -> io::Result<(File, std::os::unix::net::UnixStream)> {
+    let (host, child) = std::os::unix::net::UnixStream::pair()?;
+    set_close_on_exec(host.as_raw_fd())?;
+    set_close_on_exec(child.as_raw_fd())?;
+    set_receive_timeout(host.as_raw_fd(), SOCKET_READ_TICK)?;
+    set_receive_timeout(child.as_raw_fd(), SOCKET_READ_TICK)?;
+    Ok((unsafe { File::from_raw_fd(host.into_raw_fd()) }, child))
+}
+
+/// Cap one blocking read so a framed deadline can expire mid-wait.
+#[cfg(unix)]
+pub(crate) fn set_receive_timeout(fd: c_int, tick: Duration) -> io::Result<()> {
+    let timeval = libc::timeval {
+        tv_sec: tick.as_secs() as libc::time_t,
+        tv_usec: tick.subsec_micros() as libc::suseconds_t,
+    };
+    let result = unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_RCVTIMEO,
+            &timeval as *const libc::timeval as *const libc::c_void,
+            std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+        )
+    };
+    if result != 0 {
+        return Err(startup_context(
+            "setsockopt(SO_RCVTIMEO)",
+            io::Error::last_os_error(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_close_on_exec(fd: c_int) -> io::Result<()> {
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
+        return Err(startup_context(
+            "fcntl(FD_CLOEXEC)",
+            io::Error::last_os_error(),
+        ));
+    }
+    Ok(())
+}
+
+/// Adopt the already-connected fd the host put in `endpoint`.
+#[cfg(unix)]
+pub fn open_host_channel(endpoint: &str, timeout: Duration) -> io::Result<File> {
+    let _ = timeout;
+    let fd: c_int = endpoint.parse().map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("channel endpoint {endpoint:?} is not an inherited fd number: {error}"),
+        )
+    })?;
+    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(fd, &mut stat) } != 0 {
+        return Err(startup_context("fstat", io::Error::last_os_error()));
+    }
+    if stat.st_mode & libc::S_IFMT != libc::S_IFSOCK {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("channel fd {fd} is not a socket"),
+        ));
+    }
+    set_receive_timeout(fd, SOCKET_READ_TICK)?;
+    Ok(unsafe { File::from_raw_fd(fd) })
 }
 
 #[cfg(windows)]
-fn bind_and_accept_windows(pipe_name: &str, timeout: Duration) -> io::Result<File> {
+fn open_host_channel_windows(endpoint: &str, timeout: Duration) -> io::Result<File> {
     let security = PipeSecurity::current_user_only()?;
-    let name = wide(pipe_name);
+    let name = wide(endpoint);
     let sa = SECURITY_ATTRIBUTES {
         nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: security.descriptor,
@@ -193,7 +331,7 @@ fn bind_and_accept_windows(pipe_name: &str, timeout: Duration) -> io::Result<Fil
         )
     };
     if handle == INVALID_HANDLE_VALUE {
-        let step = format!("CreateNamedPipeW({pipe_name})");
+        let step = format!("CreateNamedPipeW({endpoint})");
         return Err(startup_context(&step, io::Error::last_os_error()));
     }
     if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } == 0 {
@@ -286,5 +424,15 @@ mod tests {
         let error = peer_pid_matches(wrong, expected).expect_err("wrong peer");
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         assert!(error.to_string().contains("not expected PID"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_wrong_peer_uid_is_refused() {
+        let mine = unsafe { libc::geteuid() } as u32;
+        let foreign = mine.wrapping_add(1);
+        let error = peer_uid_matches(foreign, mine).expect_err("foreign uid");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("is not uid"));
     }
 }
