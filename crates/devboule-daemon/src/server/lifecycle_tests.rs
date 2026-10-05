@@ -76,6 +76,7 @@ impl Drop for BoundDaemon {
     }
 }
 
+#[cfg(windows)]
 fn test_hello() -> devboule_protocol::ClientHello {
     let owner = devboule_protocol::OwnerId::new(
         crate::security::current_user_sid().expect("sid"),

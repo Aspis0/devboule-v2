@@ -31,8 +31,8 @@ static LAST_CAPTURED_OUTPUT: std::sync::Mutex<Option<Vec<u8>>> = std::sync::Mute
 /// test can check the whole tree against the processes it actually spawned.
 /// `None` when the runner cleared the seam at entry and no terminate
 /// recorded anything — the tree assertions must fail, not read the
-/// previous run's list.
-#[cfg(test)]
+/// previous run's list. Windows-only like the tree kill it observes.
+#[cfg(all(test, windows))]
 static LAST_JOB_PIDS: std::sync::Mutex<Option<Vec<u32>>> = std::sync::Mutex::new(None);
 
 /// Whether this provider's classification reads the captured stdout. The
@@ -58,7 +58,7 @@ pub(crate) fn last_captured_output() -> Option<Vec<u8>> {
         .clone()
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 pub(crate) fn last_job_pids() -> Vec<u32> {
     LAST_JOB_PIDS
         .lock()
@@ -70,7 +70,7 @@ pub(crate) fn last_job_pids() -> Vec<u32> {
 /// Test-only: records the job's member PIDs before a terminate, so the
 /// caller can assert the kill against exactly those processes. A failed
 /// record stores `None`, never the previous run's PIDs.
-#[cfg(test)]
+#[cfg(all(test, windows))]
 fn record_job_pids(job: &crate::process_tree::JobObject) {
     *LAST_JOB_PIDS
         .lock()
@@ -263,9 +263,12 @@ fn run_check_with_timeout(
         // Cleared at entry too: a failed record_job_pids must leave the
         // tree assertions with nothing to read, never the previous run's
         // PIDs.
-        *LAST_JOB_PIDS
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = None;
+        #[cfg(windows)]
+        {
+            *LAST_JOB_PIDS
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = None;
+        }
     }
     let exit_status = loop {
         match child.try_wait() {
@@ -274,7 +277,7 @@ fn run_check_with_timeout(
                 std::thread::sleep(Duration::from_millis(20));
             }
             _ => {
-                #[cfg(test)]
+                #[cfg(all(test, windows))]
                 record_job_pids(&_job);
                 #[cfg(windows)]
                 reap_check_job(&agent.id, "timeout", &_job);
@@ -284,7 +287,7 @@ fn run_check_with_timeout(
             }
         }
     };
-    #[cfg(test)]
+    #[cfg(all(test, windows))]
     record_job_pids(&_job);
     #[cfg(windows)]
     reap_check_job(&agent.id, "success", &_job);

@@ -99,7 +99,7 @@ fn try_lock_exclusive(_file: &File) -> io::Result<bool> {
     ))
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
     use crate::paths::RuntimePaths;
