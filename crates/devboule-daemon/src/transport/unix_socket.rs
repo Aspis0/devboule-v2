@@ -66,7 +66,9 @@ impl UnixListener {
         // window below harmless. No umask change — the daemon is
         // multithreaded and the umask is process-global.
         restrict_socket_permissions(&paths.socket_path)?;
-        let socket_id = fstat_dev_ino(listener.as_raw_fd())?;
+        // The path's own (dev, ino), not fstat on the descriptor: on macOS a
+        // socket fd reports the socket's identity, never the file the bind made.
+        let socket_id = path_dev_ino(&paths.socket_path)?;
         Ok(Self {
             listener,
             socket_path: paths.socket_path.clone(),
@@ -255,16 +257,13 @@ fn probe_before_unlink(socket_path: &Path) -> io::Result<()> {
     }
 }
 
-/// (dev, ino) of the open listener: shutdown cleanup compares against
+/// (dev, ino) of the bound socket file: shutdown cleanup compares against
 /// this, never trusts the pathname alone.
 #[cfg(feature = "server")]
-fn fstat_dev_ino(fd: std::os::unix::io::RawFd) -> io::Result<(u64, u64)> {
-    let mut status: libc::stat = unsafe { std::mem::zeroed() };
-    // SAFETY: fstat fills a live struct of exactly this type.
-    if unsafe { libc::fstat(fd, &mut status) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok((status.st_dev as u64, status.st_ino as u64))
+fn path_dev_ino(path: &Path) -> io::Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::symlink_metadata(path)?;
+    Ok((metadata.dev(), metadata.ino()))
 }
 
 /// Owned descriptor transfer into the shared stream type: the `File` closes
