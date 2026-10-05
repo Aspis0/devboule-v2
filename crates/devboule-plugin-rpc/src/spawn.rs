@@ -88,7 +88,7 @@ impl SpawnedBackend {
         {
             self.child
                 .try_wait()
-                .map(|status| status.map(|status| status.code().unwrap_or_default()))
+                .map(|status| status.map(|status| status.code().unwrap_or_default() as u32))
         }
     }
 

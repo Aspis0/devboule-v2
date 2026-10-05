@@ -340,3 +340,33 @@ jobs:
         # --no-fail-fast: one red test must not stop the run, or every
         # ignored test after it reports nothing at all.
         run: cargo test --workspace --exclude oracle-core --locked --no-fail-fast -- --ignored --test-threads=4
+
+  # The app must build on macOS too. Until this job is green, it is the
+  # list of what does not: it checks every crate for the Mac target.
+  macos:
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Show pinned Rust toolchain
+        run: rustup show active-toolchain
+
+      # Same reason as the windows job: src-tauri links oracle-core, whose
+      # lance build scripts compile .proto files with prost-build.
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "31.1"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-build
+          cache-on-failure: true
+
+      # --keep-going: one crate that does not build must not hide the next.
+      - name: Check the workspace
+        run: cargo check --workspace --all-targets --locked --keep-going
