@@ -535,6 +535,8 @@ fn tool_call_command_and_exit_code_round_trip_and_are_skipped_when_absent() {
         command: None,
         exit_code: Some(1),
         replace: false,
+
+        images: Vec::new(),
     };
     let encoded = serde_json::to_value(&update).expect("json");
     assert_eq!(encoded["exitCode"], 1);
@@ -592,6 +594,8 @@ fn tool_update(replace: bool) -> SessionEvent {
         command: None,
         exit_code: None,
         replace,
+
+        images: Vec::new(),
     }
 }
 
@@ -1327,6 +1331,8 @@ fn tool_call_kind_and_locations_are_camel_case_and_optional() {
         command: None,
         exit_code: None,
         replace: false,
+
+        images: Vec::new(),
     };
     let encoded = serde_json::to_value(&update).expect("json");
     assert_eq!(encoded["type"], "agent_tool_update");

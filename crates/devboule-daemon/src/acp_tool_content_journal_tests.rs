@@ -131,6 +131,8 @@ fn a_journaled_update_report_keeps_replace() {
             command: None,
             exit_code: None,
             replace,
+
+            images: Vec::new(),
         };
         let record = agent_report_record(id, 1, seq, &event).expect("record");
         journal.append_blocking(record).expect("append");

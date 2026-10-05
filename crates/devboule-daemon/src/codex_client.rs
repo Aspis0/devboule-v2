@@ -589,6 +589,20 @@ fn spawn_codex(
             terminate_shared_process(&process);
         })?;
 
+    // A provider-produced image is stored under the session the command was
+    // injected for; a command with no session id keeps the sink out and the
+    // image frames produce nothing, as they did before there was a store.
+    let image_sink = command
+        .env
+        .iter()
+        .find(|(key, _)| key == crate::agent_env::SESSION_ID)
+        .map(|(_, session_id)| {
+            crate::agent_image::AgentImageSink::new(
+                state.sessions.image_store(),
+                session_id.clone(),
+                command.cwd.clone(),
+            )
+        });
     let state = Arc::new(CodexState::new(
         handshake.thread_id,
         handshake.catalog,
@@ -664,6 +678,13 @@ fn spawn_codex(
         permission_broker: Arc::clone(&permission_broker),
         cancelled: Arc::new(AtomicBool::new(false)),
     };
+    // A provider-produced image is stored under the session the command was
+    // injected for; a command with no session id keeps the sink out and the
+    // image frames produce nothing, as they did before there was a store.
+    let mut view = crate::codex_view::CodexView::new(Some(command.cwd.clone()));
+    if let Some(sink) = image_sink {
+        view = view.with_images(sink);
+    }
     let reader = CodexReader {
         buffer: Vec::new(),
         discarding_oversized_line: false,
@@ -674,7 +695,7 @@ fn spawn_codex(
         }),
         commands,
         state,
-        view: crate::codex_view::CodexView::new(Some(command.cwd)),
+        view,
         permission_broker: Arc::clone(&permission_broker),
         response_ids,
         stdin: Arc::clone(&stdin),

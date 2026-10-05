@@ -925,6 +925,13 @@ impl SessionRegistry {
         &self.paths.dir
     }
 
+    /// The bytes store a provider-produced image lands in, cloned for the
+    /// reader that owns a session's frames. The store is a handle: the root
+    /// plus the write lock every clone shares.
+    pub(crate) fn image_store(&self) -> crate::attachment_store::AttachmentStore {
+        self.attachments.clone()
+    }
+
     /// Sweep attachment folders left behind by a session that never closed.
     ///
     /// Returns what it reclaimed — one entry per swept session, with the bytes

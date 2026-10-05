@@ -335,6 +335,8 @@ fn agent_envelope(
             text: text.to_string(),
             parent_tool_use_id: None,
             spawn_depth: None,
+
+            images: Vec::new(),
         },
     }
 }
@@ -750,6 +752,8 @@ fn attachment_registry_keeps_same_session_subscriptions_independent() {
             text: "shared event".to_string(),
             parent_tool_use_id: None,
             spawn_depth: None,
+
+            images: Vec::new(),
         },
     };
     client.emit("shared", event.clone());
@@ -923,6 +927,8 @@ fn a_failed_reattach_does_not_abort_the_remaining_tabs() {
                 text: "still live".to_string(),
                 parent_tool_use_id: None,
                 spawn_depth: None,
+
+                images: Vec::new(),
             },
         },
     );
@@ -970,6 +976,8 @@ fn a_failed_reattach_can_be_retried_for_a_later_user_action() {
                 text: "recovered".to_string(),
                 parent_tool_use_id: None,
                 spawn_depth: None,
+
+                images: Vec::new(),
             },
         },
     );

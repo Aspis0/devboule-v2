@@ -126,6 +126,8 @@ fn acp_publish_notifies_roster_when_leaving_silent() {
             text: "back".to_string(),
             parent_tool_use_id: None,
             spawn_depth: None,
+
+            images: Vec::new(),
         },
         None,
     );

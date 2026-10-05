@@ -69,6 +69,8 @@ pub(super) fn web_search_events(id: &str, item: &Value, completed: bool) -> Vec<
             command: None,
             exit_code: None,
             replace: false,
+
+            images: Vec::new(),
         }]
     } else {
         let shown = presentation.unwrap_or_else(|| Presentation {

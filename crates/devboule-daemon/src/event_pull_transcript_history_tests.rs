@@ -43,6 +43,8 @@ fn history_does_not_move_the_transcript_cursor_or_starve_the_reattach() {
                 text: "still here".into(),
                 parent_tool_use_id: None,
                 spawn_depth: None,
+
+                images: Vec::new(),
             },
             SessionEvent::Recovered { integrity },
         ],
@@ -142,6 +144,8 @@ fn live_agent_with_one_chat_row(
             text: "live row".to_string(),
             parent_tool_use_id: None,
             spawn_depth: None,
+
+            images: Vec::new(),
         },
         None,
         Some(seq),
@@ -230,6 +234,8 @@ fn reattach_to_history_serves_the_whole_conversation() {
                 text: "still here".into(),
                 parent_tool_use_id: None,
                 spawn_depth: None,
+
+                images: Vec::new(),
             },
             SessionEvent::Recovered { integrity },
         ],

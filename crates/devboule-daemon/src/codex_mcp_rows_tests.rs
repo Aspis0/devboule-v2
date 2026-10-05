@@ -146,7 +146,7 @@ fn an_image_in_the_result_is_not_text() {
     let (_, text, _, _) = update_of(item);
     assert_eq!(
         text.as_deref(),
-        Some("image/png 800 px, viewport 800 css px")
+        Some("[image]image/png 800 px, viewport 800 css px")
     );
 }
 
@@ -157,7 +157,6 @@ fn an_answer_with_no_text_leaves_the_rows_output_alone() {
         json!({}),
         json!({"content": []}),
         json!({"content": [{"type": "text", "text": ""}]}),
-        json!({"content": [{"type": "image", "mimeType": "image/png", "data": "iVBO"}]}),
     ] {
         let item = json!({
             "type": "mcpToolCall", "id": "mcp-6", "server": "probe", "tool": "pic",

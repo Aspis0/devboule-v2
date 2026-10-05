@@ -53,6 +53,8 @@ fn biggest_tail() -> SessionResumeTail {
             text: hostile_text(index, 2048),
             parent_tool_use_id: None,
             spawn_depth: None,
+
+            images: Vec::new(),
         };
         bytes += serde_json::to_vec(&event).expect("event bytes").len();
         if bytes > budget {
@@ -81,6 +83,8 @@ fn a_reset_is_tagged_and_its_reason_is_snake_case() {
                     text: "newest".into(),
                     parent_tool_use_id: None,
                     spawn_depth: None,
+
+                    images: Vec::new(),
                 }],
                 Cursor {
                     generation: 4,
@@ -178,6 +182,8 @@ fn escaping_expands_a_payload_far_past_its_stored_length() {
                     text,
                     parent_tool_use_id: None,
                     spawn_depth: None,
+
+                    images: Vec::new(),
                 }],
                 Cursor {
                     generation: 1,
@@ -265,6 +271,8 @@ fn a_reset_carries_exactly_the_keys_the_app_reads() {
                     text: "tail row".to_string(),
                     parent_tool_use_id: None,
                     spawn_depth: None,
+
+                    images: Vec::new(),
                 }],
                 tail_complete: false,
             },

@@ -27,6 +27,8 @@ fn stream_event_text_delta_becomes_agent_message() {
             text: "1".to_string(),
             parent_tool_use_id: None,
             spawn_depth: None,
+
+            images: Vec::new(),
         }]
     );
 }
@@ -85,6 +87,8 @@ fn consolidated_assistant_after_deltas_emits_only_the_remainder() {
             text: "\n10\n11\n12\n13\n14\n15".to_string(),
             parent_tool_use_id: None,
             spawn_depth: None,
+
+            images: Vec::new(),
         }]
     );
 }

@@ -190,6 +190,8 @@ fn view_from_session_update(
                 text: text.to_string(),
                 parent_tool_use_id: None,
                 spawn_depth: None,
+
+                images: Vec::new(),
             })
         }
         Some("available_commands_update") => {
@@ -254,6 +256,8 @@ fn view_from_session_update(
                 command,
                 exit_code,
                 replace,
+
+                images: Vec::new(),
             })
         }
         Some("plan") => {
@@ -1845,6 +1849,8 @@ mod tests {
                 text: "P".to_string(),
                 parent_tool_use_id: None,
                 spawn_depth: None,
+
+                images: Vec::new(),
             }
         );
         assert_eq!(
@@ -1854,6 +1860,8 @@ mod tests {
                 text: "ONG".to_string(),
                 parent_tool_use_id: None,
                 spawn_depth: None,
+
+                images: Vec::new(),
             }
         );
     }

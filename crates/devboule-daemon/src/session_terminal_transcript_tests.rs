@@ -668,6 +668,8 @@ fn the_transcript_store_holds_the_whole_history_whatever_the_cursor_says() {
             text: "after cursor".into(),
             parent_tool_use_id: None,
             spawn_depth: None,
+
+            images: Vec::new(),
         },
     )
     .unwrap();

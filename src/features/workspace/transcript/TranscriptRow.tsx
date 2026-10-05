@@ -10,7 +10,7 @@ import { ErrorTriangleIcon } from "../ErrorTriangleIcon";
 import { ThoughtRow } from "../ThoughtRow";
 import { MessageCopyButton } from "../timeline/MessageCopyButton";
 import { entryFrame } from "./entryFrame";
-import { UserImageThumbnails } from "./UserImageThumbnails";
+import { ChatImageThumbnails } from "./ChatImageThumbnails";
 import { PermissionRequestRow } from "./PermissionRequestRow";
 import { ToolCallGroupRow } from "./ToolCallGroupRow";
 import { ToolRow } from "./ToolRow";
@@ -78,7 +78,7 @@ export const TranscriptRow = memo(function TranscriptRow({
       <div className={className} data-turn-anchor={item.id} style={style}>
         <div className="workspace-chat-bubble">
           {item.images !== undefined && item.images.length > 0 ? (
-            <UserImageThumbnails images={item.images} />
+            <ChatImageThumbnails images={item.images} />
           ) : null}
           <div className="workspace-chat-copy">{item.text}</div>
           <MessageCopyButton text={item.text} />
@@ -95,6 +95,9 @@ export const TranscriptRow = memo(function TranscriptRow({
       <div className="workspace-chat-copy">
         <MarkdownText text={item.text} fileLinks={fileLinks} />
       </div>
+      {item.images !== undefined && item.images.length > 0 ? (
+        <ChatImageThumbnails images={item.images} />
+      ) : null}
       <MessageCopyButton text={item.text} />
     </div>
   );

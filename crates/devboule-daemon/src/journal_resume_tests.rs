@@ -43,6 +43,8 @@ fn live_agent(
             text: (*text).to_string(),
             parent_tool_use_id: None,
             spawn_depth: None,
+
+            images: Vec::new(),
         };
         journal
             .append_blocking(

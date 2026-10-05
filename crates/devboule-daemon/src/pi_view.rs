@@ -218,6 +218,8 @@ fn message_update_events(value: &Value) -> Vec<SessionEvent> {
                     text: text.to_string(),
                     parent_tool_use_id: None,
                     spawn_depth: None,
+
+                    images: Vec::new(),
                 }]
             })
             .unwrap_or_default(),
@@ -288,6 +290,8 @@ fn toolcall_end(value: &Value) -> Option<SessionEvent> {
         command,
         exit_code: None,
         replace: false,
+
+        images: Vec::new(),
     })
 }
 
@@ -307,6 +311,8 @@ fn tool_execution_start(value: &Value) -> Option<SessionEvent> {
         command: None,
         exit_code: None,
         replace: false,
+
+        images: Vec::new(),
     })
 }
 
@@ -333,6 +339,8 @@ fn tool_execution_end(value: &Value) -> Vec<SessionEvent> {
         command: None,
         exit_code: result_exit_code(value.get("result")),
         replace: false,
+
+        images: Vec::new(),
     }];
     if let Some(tool_name) = value.get("toolName").and_then(Value::as_str) {
         if let Some(items) =
@@ -537,6 +545,8 @@ mod tests {
                 text: "OK".to_string(),
                 parent_tool_use_id: None,
                 spawn_depth: None,
+
+                images: Vec::new(),
             }]
         );
         assert!(events_from_line(&text_end).is_empty());
@@ -921,6 +931,8 @@ mod tests {
                 text: "later".to_string(),
                 parent_tool_use_id: None,
                 spawn_depth: None,
+
+                images: Vec::new(),
             }]
         );
         assert!(!withheld, "the unrelated frame expires the marker");

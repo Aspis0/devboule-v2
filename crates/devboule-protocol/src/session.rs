@@ -798,6 +798,12 @@ pub enum SessionEvent {
         parent_tool_use_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         spawn_depth: Option<u32>,
+        /// Image references the agent produced for this message — a generated
+        /// image, or one it viewed. References only, never bytes or paths: the
+        /// display resolves them through the stored-bytes read, exactly as it
+        /// does a prompt attachment's.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<AttachmentReference>,
     },
     /// Echo of the user prompt, one ACP `user_message_chunk` at a time.
     ///
@@ -919,6 +925,11 @@ pub enum SessionEvent {
         /// the previous one, and for rows written before the field existed.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         replace: bool,
+        /// Image references a tool result produced (an MCP content block, a
+        /// provider's tool result): references only, resolved like a prompt
+        /// attachment's and rendered under this row.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<AttachmentReference>,
     },
     /// The response to one `session/prompt` request.
     AgentFinished {

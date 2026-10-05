@@ -1260,6 +1260,8 @@ fn subscription_identity_is_explicit_in_attach_reply_claim_and_events() {
                 text: "hello".to_string(),
                 parent_tool_use_id: None,
                 spawn_depth: None,
+
+                images: Vec::new(),
             },
         },
     };

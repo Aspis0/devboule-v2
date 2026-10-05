@@ -150,6 +150,8 @@ pub(super) fn tool_update_from_result(
         command: None,
         exit_code: None,
         replace: false,
+
+        images: Vec::new(),
     })
 }
 

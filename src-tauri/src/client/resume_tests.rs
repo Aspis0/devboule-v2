@@ -53,6 +53,8 @@ fn reset_reply(tail_rows: &[&str], cursor: Cursor) -> SessionResumeInfo {
                         text: (*text).to_string(),
                         parent_tool_use_id: None,
                         spawn_depth: None,
+
+                        images: Vec::new(),
                     })
                     .collect(),
                 tail_complete: false,

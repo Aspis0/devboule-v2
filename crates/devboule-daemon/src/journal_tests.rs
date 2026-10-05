@@ -1908,12 +1908,16 @@ fn replay_returns_whole_history_across_generations() {
         text: "gen-1 answer".into(),
         parent_tool_use_id: None,
         spawn_depth: None,
+
+        images: Vec::new(),
     };
     let answer_after = SessionEvent::AgentMessage {
         message_id: Some("m3".into()),
         text: "after resume".into(),
         parent_tool_use_id: None,
         spawn_depth: None,
+
+        images: Vec::new(),
     };
     journal
         .append_blocking(agent_report_record(id, 1, 1, &user_before).unwrap())
@@ -1983,6 +1987,8 @@ fn a_previous_generations_exit_row_does_not_speak_for_the_session() {
         text: "after resume".into(),
         parent_tool_use_id: None,
         spawn_depth: None,
+
+        images: Vec::new(),
     };
     journal
         .append_blocking(agent_report_record(id, 2, 1, &frame_after).unwrap())
@@ -2032,12 +2038,16 @@ fn agent_page_spans_generations_in_journal_order() {
         text: "gen-1 answer".into(),
         parent_tool_use_id: None,
         spawn_depth: None,
+
+        images: Vec::new(),
     };
     let answer_after = SessionEvent::AgentMessage {
         message_id: Some("m3".into()),
         text: "after resume".into(),
         parent_tool_use_id: None,
         spawn_depth: None,
+
+        images: Vec::new(),
     };
     journal
         .append_blocking(agent_report_record(id, 1, 1, &user_before).unwrap())
@@ -2089,6 +2099,8 @@ fn the_nothing_owed_sentinel_cannot_widen_a_page_range() {
         text: "after resume".into(),
         parent_tool_use_id: None,
         spawn_depth: None,
+
+        images: Vec::new(),
     };
     journal
         .append_blocking(agent_report_record(id, 1, 1, &user_before).unwrap())

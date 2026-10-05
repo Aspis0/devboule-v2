@@ -15,7 +15,7 @@ vi.mock("../../../lib/tauri", () => ({
 }));
 
 import { IDLE_URL_LIMIT, READ_TIMEOUT_MS, resetChatImageCacheForTests } from "./chatImageCache";
-import { UserImageThumbnails } from "./UserImageThumbnails";
+import { ChatImageThumbnails } from "./ChatImageThumbnails";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -67,7 +67,7 @@ async function render(images: readonly AttachmentReference[][]) {
     root!.render(
       <>
         {images.map((row, index) => (
-          <UserImageThumbnails key={index} images={row} />
+          <ChatImageThumbnails key={index} images={row} />
         ))}
       </>,
     );

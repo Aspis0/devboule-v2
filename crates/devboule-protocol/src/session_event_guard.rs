@@ -56,7 +56,8 @@ pub(crate) fn session_event_samples() -> Vec<SessionEvent> {
             text: String::new(),
             parent_tool_use_id: Some("toolu_parent".to_string()),
             spawn_depth: Some(1),
-        },
+
+            images: Vec::new(),},
         AgentUserMessage => SessionEvent::AgentUserMessage {
             message_id: None,
             text: String::new(),
@@ -121,7 +122,8 @@ pub(crate) fn session_event_samples() -> Vec<SessionEvent> {
             command: Some("cargo test".to_string()),
             exit_code: Some(1),
             replace: false,
-        },
+
+            images: Vec::new(),},
         AgentFinished => SessionEvent::AgentFinished {
             stop_reason: String::new(),
             model_id: None,

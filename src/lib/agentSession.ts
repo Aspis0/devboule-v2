@@ -53,9 +53,9 @@ export type AgentChatItem =
       /** When the daemon published this user message (Unix ms). Present for Composer messages and for kind-less native `agent_report` rows replayed from before `messageKind` existed; provider-envelope-derived `Unknown` rows have no turn time. */
       atMs?: number;
       /**
-       * Image references the composer deposited before sending, carried from
-       * the echo. Present only on user rows whose echo named them; a row
-       * without it is the text-only row it always was.
+       * Image references the agent produced for this row (a generated image,
+       * a viewed one). Present only on rows the daemon attached them to; a
+       * row without it is the text-only row it always was.
        */
       images?: AttachmentReference[];
     }
@@ -75,6 +75,8 @@ export type AgentChatItem =
       command?: string;
       /** The command's exit code. Absent while running or when unknown. */
       exitCode?: number;
+      /** Images a tool result produced, shown under this row. */
+      images?: AttachmentReference[];
     }
   | {
       id: string;
@@ -1010,6 +1012,8 @@ export class AgentSession {
           event.text,
           event.parentToolUseId,
           event.spawnDepth,
+          undefined,
+          event.images,
         );
         return;
       case "agent_thought":
@@ -1194,6 +1198,7 @@ export class AgentSession {
           event.command,
           event.exitCode,
           event.replace,
+          event.images,
         );
         return;
       case "exit":
@@ -1471,8 +1476,8 @@ export class AgentSession {
         messageId,
         ...itemParentage(parentToolUseId, spawnDepth),
         ...(atMs === undefined ? {} : { atMs }),
-        // Only the composer path passes images; an absent or empty list
-        // keeps the text-only shape every older row has.
+        // A composer echo and a provider image row both arrive this way; an
+        // absent or empty list keeps the text-only shape every older row has.
         ...(images === undefined || images.length === 0 ? {} : { images: [...images] }),
       };
       this.blocks.set(key, this.state.items.length);
@@ -1512,6 +1517,7 @@ export class AgentSession {
       output?: string;
       command?: string;
       exitCode?: number;
+      images?: readonly AttachmentReference[];
     } = {},
   ): void {
     const {
@@ -1523,6 +1529,7 @@ export class AgentSession {
       output = "",
       command,
       exitCode,
+      images,
     } = fields;
     const shellRow = kind === "execute";
     const currentKey = `tool:${this.turn}:${toolCallId}`;
@@ -1551,6 +1558,7 @@ export class AgentSession {
             ...(subagentType === undefined ? {} : { subagentType }),
             ...(shellRow && command !== undefined ? { command } : {}),
             ...(shellRow && exitCode !== undefined ? { exitCode } : {}),
+            ...(images === undefined || images.length === 0 ? {} : { images: [...images] }),
           },
         ],
       });
@@ -1578,6 +1586,7 @@ export class AgentSession {
     command?: string,
     exitCode?: number,
     replace?: boolean,
+    images?: readonly AttachmentReference[],
   ): void {
     const key = this.toolRows.get(toolCallId) ?? `tool:${this.turn}:${toolCallId}`;
     const index = this.blocks.get(key);
@@ -1599,6 +1608,7 @@ export class AgentSession {
           output: nextCommand === undefined && nextTitle === undefined ? "" : (text ?? ""),
           command,
           exitCode,
+          images,
         },
       );
       return;
@@ -1624,6 +1634,7 @@ export class AgentSession {
       ...(shellRow ? {} : { command: undefined, exitCode: undefined }),
       ...(shellRow && command !== undefined ? { command } : {}),
       ...(shellRow && exitCode !== undefined ? { exitCode } : {}),
+      ...(images === undefined || images.length === 0 ? {} : { images: [...images] }),
     };
     this.update({ items });
   }

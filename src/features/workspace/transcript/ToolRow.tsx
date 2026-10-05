@@ -12,6 +12,7 @@ import {
   isToolRunningStatus,
 } from "../interruptedTool";
 import { entryFrame } from "./entryFrame";
+import { ChatImageThumbnails } from "./ChatImageThumbnails";
 
 export const ToolRow = memo(function ToolRow({
   item,
@@ -94,6 +95,9 @@ export const ToolRow = memo(function ToolRow({
           <div className="workspace-chat-copy">
             {item.kind === "plan" ? <MarkdownText text={item.output} /> : item.output}
           </div>
+        ) : null}
+        {item.images !== undefined && item.images.length > 0 ? (
+          <ChatImageThumbnails images={item.images} />
         ) : null}
       </div>
     </details>

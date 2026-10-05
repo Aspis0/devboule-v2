@@ -218,6 +218,8 @@ fn subscription_events_route_by_their_subscription_id() {
                         text: "a-1".to_string(),
                         parent_tool_use_id: None,
                         spawn_depth: None,
+
+                        images: Vec::new(),
                     },
                 },
             })
@@ -246,6 +248,8 @@ fn subscription_events_route_by_their_subscription_id() {
                         text: "a-2".to_string(),
                         parent_tool_use_id: None,
                         spawn_depth: None,
+
+                        images: Vec::new(),
                     },
                 },
             })
@@ -269,6 +273,8 @@ fn subscription_events_route_by_their_subscription_id() {
                         text: "b-1".to_string(),
                         parent_tool_use_id: None,
                         spawn_depth: None,
+
+                        images: Vec::new(),
                     },
                 },
             })
@@ -405,6 +411,8 @@ fn session_detach_removes_only_its_subscription() {
                         text: "resurrected".to_string(),
                         parent_tool_use_id: None,
                         spawn_depth: None,
+
+                        images: Vec::new(),
                     },
                 },
             })

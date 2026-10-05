@@ -54,6 +54,8 @@ fn attach_replay_suppresses_codex_tasks_for_a_card_marked_turn() {
         command: None,
         exit_code: None,
         replace: false,
+
+        images: Vec::new(),
     };
     let mut rows = codex_plan_rows(session_id);
     rows.push(crate::journal::agent_report_record(session_id, 1, 3, &verdict).unwrap());

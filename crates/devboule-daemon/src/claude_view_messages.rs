@@ -82,6 +82,8 @@ impl ClaudeView {
                             text,
                             parent_tool_use_id: parent_tool_use_id.clone(),
                             spawn_depth,
+
+                            images: Vec::new(),
                         });
                     }
                 }
@@ -143,6 +145,8 @@ impl ClaudeView {
                                 command: None,
                                 exit_code: None,
                                 replace: false,
+
+                                images: Vec::new(),
                             });
                         }
                     }

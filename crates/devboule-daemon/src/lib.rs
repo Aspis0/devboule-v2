@@ -12,6 +12,8 @@ mod agent_activity;
 #[cfg(feature = "server")]
 mod agent_env;
 #[cfg(feature = "server")]
+mod agent_image;
+#[cfg(feature = "server")]
 mod agent_profiles;
 #[cfg(feature = "server")]
 mod agent_report;

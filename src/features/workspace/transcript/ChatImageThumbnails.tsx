@@ -66,7 +66,7 @@ function ChatImageThumbnail({
 }
 
 /** The row of one user message's image references, in echo order. */
-export function UserImageThumbnails({ images }: { images: readonly AttachmentReference[] }) {
+export function ChatImageThumbnails({ images }: { images: readonly AttachmentReference[] }) {
   const [open, setOpen] = useState<{
     index: number;
     firstIndex: number;

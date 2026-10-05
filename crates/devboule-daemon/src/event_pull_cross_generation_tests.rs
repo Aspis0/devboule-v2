@@ -31,12 +31,16 @@ fn transcript_replay_keeps_rows_from_different_generations() {
                 text: "gen-1 answer".into(),
                 parent_tool_use_id: None,
                 spawn_depth: None,
+
+                images: Vec::new(),
             },
             SessionEvent::AgentMessage {
                 message_id: Some("m3".into()),
                 text: "after resume".into(),
                 parent_tool_use_id: None,
                 spawn_depth: None,
+
+                images: Vec::new(),
             },
             SessionEvent::Recovered { integrity },
         ],

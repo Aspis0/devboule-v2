@@ -64,6 +64,8 @@ impl ClaudeView {
                             text: text.to_string(),
                             parent_tool_use_id: parent_tool_use_id.clone(),
                             spawn_depth,
+
+                            images: Vec::new(),
                         }]
                     }
                     Some("thinking_delta") => {

@@ -1668,7 +1668,7 @@ fn container_disagrees() -> WireError {
     )
 }
 
-fn extension_for(mime_type: &str) -> Option<&'static str> {
+pub(crate) fn extension_for(mime_type: &str) -> Option<&'static str> {
     match mime_type {
         "image/png" => Some("png"),
         "image/jpeg" => Some("jpg"),

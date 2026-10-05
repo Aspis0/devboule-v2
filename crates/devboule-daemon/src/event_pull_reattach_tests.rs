@@ -65,6 +65,8 @@ fn same_connection_reattach_preserves_agent_pending_once() {
                 text: text.to_string(),
                 parent_tool_use_id: None,
                 spawn_depth: None,
+
+                images: Vec::new(),
             },
             None,
             Some(seq),
@@ -224,6 +226,8 @@ fn third_live_agent_observer_keeps_the_shared_backlog() {
             text: "must survive".to_string(),
             parent_tool_use_id: None,
             spawn_depth: None,
+
+            images: Vec::new(),
         };
         let bytes = serde_json::to_vec(&event).unwrap().len();
         stream.agent_backlog.push_back(PendingItem::Agent {

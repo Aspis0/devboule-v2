@@ -60,12 +60,16 @@ fn live_agent_replay_delivers_the_generations_before_the_attach() {
         text: "gen-1 answer".into(),
         parent_tool_use_id: None,
         spawn_depth: None,
+
+        images: Vec::new(),
     };
     let answer_after = SessionEvent::AgentMessage {
         message_id: Some("m3".into()),
         text: "after resume".into(),
         parent_tool_use_id: None,
         spawn_depth: None,
+
+        images: Vec::new(),
     };
     journal
         .append_blocking(
@@ -422,6 +426,8 @@ fn live_agent_replay_stamps_history_envelopes_with_their_own_generation() {
         text: "gen-2 answer".into(),
         parent_tool_use_id: None,
         spawn_depth: None,
+
+        images: Vec::new(),
     };
     journal
         .append_blocking(

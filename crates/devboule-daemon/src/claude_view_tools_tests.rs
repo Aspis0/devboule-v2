@@ -304,6 +304,8 @@ fn user_tool_result_success_and_error() {
             command: None,
             exit_code: None,
             replace: false,
+
+            images: Vec::new(),
         }]
     );
     let err = mapper.ingest(&json!({
@@ -332,6 +334,8 @@ fn user_tool_result_success_and_error() {
             command: None,
             exit_code: None,
             replace: false,
+
+            images: Vec::new(),
         }]
     );
 }

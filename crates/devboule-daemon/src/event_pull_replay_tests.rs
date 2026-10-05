@@ -64,6 +64,8 @@ fn live_agent_replay_is_complete_ordered_deduplicated_and_not_pending() {
             text: "first".to_string(),
             parent_tool_use_id: None,
             spawn_depth: None,
+
+            images: Vec::new(),
         },
         None,
         Some(1),
@@ -114,6 +116,8 @@ fn live_agent_replay_is_complete_ordered_deduplicated_and_not_pending() {
             text: "live".to_string(),
             parent_tool_use_id: None,
             spawn_depth: None,
+
+            images: Vec::new(),
         },
         None,
     );
@@ -126,6 +130,8 @@ fn live_agent_replay_is_complete_ordered_deduplicated_and_not_pending() {
                 text: "first".to_string(),
                 parent_tool_use_id: None,
                 spawn_depth: None,
+
+                images: Vec::new(),
             },
             SessionEvent::AgentThought {
                 message_id: None,
@@ -138,6 +144,8 @@ fn live_agent_replay_is_complete_ordered_deduplicated_and_not_pending() {
                 text: "live".to_string(),
                 parent_tool_use_id: None,
                 spawn_depth: None,
+
+                images: Vec::new(),
             },
         ]
     );
@@ -369,6 +377,8 @@ fn live_agent_replay_recovers_live_tail_after_pending_overflow() {
                 text: format!("live-{seq}"),
                 parent_tool_use_id: None,
                 spawn_depth: None,
+
+                images: Vec::new(),
             },
             None,
             Some(journal_seq),

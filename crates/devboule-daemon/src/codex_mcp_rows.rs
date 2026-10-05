@@ -11,13 +11,14 @@
 //! understand. A tool of the browser lane is titled from the arguments it was
 //! given; every other tool keeps its own name.
 
-use devboule_protocol::SessionEvent;
+use devboule_protocol::{AttachmentReference, SessionEvent};
 use serde_json::Value;
 
 use super::status_name;
+use crate::agent_image::{image_block_source, AgentImageSink};
 use crate::browser_tool_title::browser_tool_title;
 use crate::text_cap::capped;
-use crate::wire_json::{blocks_text, tool_kind_from_name};
+use crate::wire_json::tool_kind_from_name;
 
 fn non_empty<'a>(item: &'a Value, key: &str) -> Option<&'a str> {
     item.get(key)
@@ -43,34 +44,60 @@ fn row_title(name: &str, item: &Value) -> String {
         .unwrap_or_else(|| name.to_string())
 }
 
-/// The answer the row shows. A failure says what failed in its own words; a
-/// result contributes the text of its content blocks and nothing else — an
-/// image or an audio clip is not text, and copying its bytes into a journaled
-/// row would outlive the call. Either way the answer is held to the shared
-/// budget: a server answers with as much text as it likes.
-fn result_text(item: &Value) -> Option<String> {
-    let error = item
+/// The answer the row shows and the images it carries. A failure says what
+/// failed in its own words; a result contributes the text of its content
+/// blocks with every image block named in place, and the images themselves
+/// are stored so only their references reach the journaled row.
+fn result_content(
+    item: &Value,
+    images: Option<&AgentImageSink>,
+) -> (Option<String>, Vec<AttachmentReference>) {
+    if let Some(error) = item
         .get("error")
-        .and_then(|error| non_empty(error, "message"));
-    let result = item
-        .pointer("/result/content")
-        .map(blocks_text)
-        .filter(|text| !text.is_empty());
-    let text = error.map(str::to_string).or(result)?;
-    Some(capped(&text))
+        .and_then(|error| non_empty(error, "message"))
+    {
+        return (Some(capped(error)), Vec::new());
+    }
+    let Some(content) = item.pointer("/result/content").and_then(Value::as_array) else {
+        return (None, Vec::new());
+    };
+    let mut text = String::new();
+    let mut stored = Vec::new();
+    for block in content {
+        if let Some(source) = image_block_source(block) {
+            if let Some(reference) = images.and_then(|sink| sink.store(&source)) {
+                stored.push(reference);
+            }
+            // Paseo names the dropped block in place, so a result that was
+            // only an image still reads as one.
+            text.push_str("[image]");
+            continue;
+        }
+        if let Some(part) = block.get("text").and_then(Value::as_str) {
+            text.push_str(part);
+        }
+    }
+    let text = (!text.is_empty()).then(|| capped(&text));
+    (text, stored)
 }
 
-pub(super) fn mcp_tool_events(id: &str, item: &Value, completed: bool) -> Vec<SessionEvent> {
+pub(super) fn mcp_tool_events(
+    id: &str,
+    item: &Value,
+    completed: bool,
+    images: Option<&AgentImageSink>,
+) -> Vec<SessionEvent> {
     let Some(name) = qualified_name(item) else {
         return Vec::new();
     };
     let kind = tool_kind_from_name(&name).to_string();
     let status = item.get("status").and_then(Value::as_str).map(status_name);
     if completed {
+        let (text, images) = result_content(item, images);
         vec![SessionEvent::AgentToolUpdate {
             tool_call_id: id.to_string(),
             status,
-            text: result_text(item),
+            text,
             // The item repeats the call's own presentation, and the app names
             // a row it never saw the call for from this title.
             title: Some(row_title(&name, item)),
@@ -81,6 +108,7 @@ pub(super) fn mcp_tool_events(id: &str, item: &Value, completed: bool) -> Vec<Se
             command: None,
             exit_code: None,
             replace: false,
+            images,
         }]
     } else {
         vec![SessionEvent::AgentToolCall {

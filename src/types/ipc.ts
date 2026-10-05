@@ -1319,6 +1319,8 @@ export type SessionEvent =
       text: string;
       parentToolUseId?: string;
       spawnDepth?: number;
+      /** Images the agent produced for this message: stored references, resolved like prompt attachments. */
+      images?: AttachmentReference[];
     }
   /** ACP tool call announced by the agent. */
   | {
@@ -1357,6 +1359,8 @@ export type SessionEvent =
        * Absent means false.
        */
       replace?: boolean;
+      /** Images a tool result produced: stored references, shown under this row. */
+      images?: AttachmentReference[];
     }
   /**
    * ACP prompt completion. `modelId` and `usage` are what the agent actually

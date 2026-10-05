@@ -450,6 +450,8 @@ fn plan_rows_and_agent_report_outcomes_replay_from_the_journal() {
             command: None,
             exit_code: None,
             replace: false,
+
+            images: Vec::new(),
         }));
     }
     journal.flush().expect("flush decision rows");

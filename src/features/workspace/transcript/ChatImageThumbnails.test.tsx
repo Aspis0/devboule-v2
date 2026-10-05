@@ -15,7 +15,7 @@ vi.mock("../../../lib/tauri", () => ({
 }));
 
 import { resetChatImageCacheForTests } from "./chatImageCache";
-import { UserImageThumbnails } from "./UserImageThumbnails";
+import { ChatImageThumbnails } from "./ChatImageThumbnails";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -36,7 +36,7 @@ const REF_B: AttachmentReference = {
 async function renderThumbnails(images: readonly AttachmentReference[]) {
   root = createRoot(container);
   await act(async () => {
-    root.render(<UserImageThumbnails images={images} />);
+    root.render(<ChatImageThumbnails images={images} />);
   });
   // The read resolves on mount; flush the microtask.
   await act(async () => {});
@@ -66,7 +66,7 @@ afterEach(async () => {
   vi.clearAllMocks();
 });
 
-describe("UserImageThumbnails", () => {
+describe("ChatImageThumbnails", () => {
   it("renders one thumbnail button per reference, in order", async () => {
     await renderThumbnails([REF_A, REF_B]);
     const buttons = thumbnailButtons();
@@ -149,7 +149,7 @@ describe("UserImageThumbnails", () => {
   });
 });
 
-describe("UserImageThumbnails failure and focus", () => {
+describe("ChatImageThumbnails failure and focus", () => {
   it("shows the quiet tile when the image bytes fail to decode", async () => {
     await renderThumbnails([REF_A]);
     const img = container.querySelector("img");

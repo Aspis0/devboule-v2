@@ -279,6 +279,8 @@ pub(crate) fn call_content_update(
         command: None,
         exit_code: None,
         replace: added.replace,
+
+        images: Vec::new(),
     })
 }
 

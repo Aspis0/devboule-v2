@@ -989,6 +989,8 @@ mod tests {
             command: None,
             exit_code: None,
             replace: false,
+
+            images: Vec::new(),
         };
         let (dir, path) = tmp_journal();
         let journal = Journal::open(&path).expect("open");

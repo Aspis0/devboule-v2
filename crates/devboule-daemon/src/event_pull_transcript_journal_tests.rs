@@ -124,6 +124,8 @@ fn a_stop_tail_cursor_owes_nothing_not_even_history() {
                 text: "still here".into(),
                 parent_tool_use_id: None,
                 spawn_depth: None,
+
+                images: Vec::new(),
             },
             SessionEvent::Recovered { integrity },
         ],

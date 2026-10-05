@@ -651,6 +651,8 @@ fn publish_outcome(runtime: &Arc<SessionRuntime>, text: String) {
         text,
         parent_tool_use_id: None,
         spawn_depth: None,
+
+        images: Vec::new(),
     });
 }
 
