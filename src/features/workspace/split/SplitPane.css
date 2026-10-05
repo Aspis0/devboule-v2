@@ -22,22 +22,27 @@
   overflow: hidden;
 }
 
-/* The divider owns the height: the pane above takes the share the store holds
-   and the pane below takes what is left. The two floors are the pixel
-   minimums from splitGeometry.ts, spelled here as well so a size restored from
-   a window that has since shrunk cannot crush a pane before the first
-   measurement lands. */
+/* The divider owns the height: the pane above takes the share the geometry
+   computed for this area (splitGeometry.ts, the only place a floor is written)
+   and the pane below takes what is left, so the three rows always add up to the
+   split's own height and the wrapper cannot overflow.
+
+   When the area is shorter than both floors the geometry collapses to the one
+   place the lower pane keeps its floor. Nothing scrolls at this level: each pane
+   clips its own overflow, the conversation's own scrollport scrolls inside the
+   pane above with the composer kept (it is a non-shrinking row), and the page
+   area below gives way to its chrome. A floor written here as well would be a
+   second answer, and one the stylesheet would win. */
 .workspace-split-top {
   flex: none;
-  min-height: 180px;
 }
 
 .workspace-split-bottom {
   flex: 1 1 0;
-  min-height: 192px;
 }
 
 .workspace-split-divider {
+  flex: none;
   height: 5px;
   padding: 0;
   border: 0;

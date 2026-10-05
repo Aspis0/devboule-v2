@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_SPLIT_SIZE,
+  DIVIDER_PX,
   MAX_SPLIT_SIZE,
   MIN_BOTTOM_PANE_PX,
   MIN_SPLIT_SIZE,
@@ -36,8 +37,9 @@ describe("where the pointer leaves the divider", () => {
   });
 
   it("stops where the pane below would stop being usable, not at a fraction", () => {
-    // 800 px tall: the top pane's 180 px floor is 22.5%, the lower pane's
-    // 192 px is 24%, so the pointer cannot reach the fraction bounds at all.
+    // 800 px tall: the top pane's 180 px floor is 22.5% and the lower pane's
+    // 192 px plus the divider's 5 is 24.6%, so the pointer cannot reach the
+    // fraction bounds at all.
     const lowest = splitSizeFromPointer(TOP + HEIGHT - 1, TOP, HEIGHT);
     const highest = splitSizeFromPointer(TOP + 1, TOP, HEIGHT);
     expect(highest * HEIGHT).toBeGreaterThanOrEqual(MIN_TOP_PANE_PX);
@@ -59,7 +61,10 @@ describe("the divider's clamp", () => {
 
   it("holds a size inside what a split area of that height can give both panes", () => {
     expect(clampSplitSizeForArea(0.05, HEIGHT)).toBeCloseTo(MIN_TOP_PANE_PX / HEIGHT, 5);
-    expect(clampSplitSizeForArea(0.99, HEIGHT)).toBeCloseTo(1 - MIN_BOTTOM_PANE_PX / HEIGHT, 5);
+    expect(clampSplitSizeForArea(0.99, HEIGHT)).toBeCloseTo(
+      1 - (MIN_BOTTOM_PANE_PX + DIVIDER_PX) / HEIGHT,
+      5,
+    );
     expect(clampSplitSizeForArea(0.5, HEIGHT)).toBeCloseTo(0.5, 5);
     // An unmeasured area falls back to the fraction bounds rather than a
     // division by zero.
@@ -71,7 +76,8 @@ describe("the divider's bounds in a split area of a given height", () => {
   it("gives each pane its pixel floor, and nothing wider", () => {
     const bounds = splitBoundsFor(HEIGHT);
     expect(bounds.min * HEIGHT).toBeCloseTo(MIN_TOP_PANE_PX, 5);
-    expect((1 - bounds.max) * HEIGHT).toBeCloseTo(MIN_BOTTOM_PANE_PX, 5);
+    // The lower pane's floor counts the divider: it is a row of the split.
+    expect((1 - bounds.max) * HEIGHT).toBeCloseTo(MIN_BOTTOM_PANE_PX + DIVIDER_PX, 5);
   });
 
   it("widens with the window, so a tall workspace keeps the fraction bounds", () => {
@@ -82,7 +88,7 @@ describe("the divider's bounds in a split area of a given height", () => {
     const short = 300;
     const bounds = splitBoundsFor(short);
     expect(bounds.min).toBe(bounds.max);
-    expect((1 - bounds.max) * short).toBeCloseTo(MIN_BOTTOM_PANE_PX, 5);
+    expect((1 - bounds.max) * short).toBeCloseTo(MIN_BOTTOM_PANE_PX + DIVIDER_PX, 5);
     // The upper pane takes what is left, which at this height is under its own
     // floor: the window cannot give both, and the divider does not resolve it
     // by throwing the split away.

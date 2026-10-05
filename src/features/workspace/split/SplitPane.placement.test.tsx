@@ -206,15 +206,16 @@ describe("a page in the lower pane", () => {
     // has it. A navigate, reload or history call in this list would be a reload
     // the split introduced, and a second open would be a second native child.
     const spoken = [
-      ...mocks.present.mock.calls.map(([id]) => `present:${id}`),
       ...mocks.park.mock.calls.map(([id]) => `park:${id}`),
+      ...mocks.present.mock.calls.map(([id]) => `present:${id}`),
       ...mocks.navigate.mock.calls.map(([id]) => `navigate:${id}`),
       ...mocks.reload.mock.calls.map(([id]) => `reload:${id}`),
       ...mocks.history.mock.calls.map(([id]) => `history:${id}`),
       ...mocks.open.mock.calls.map(([id]) => `open:${id}`),
     ];
-    expect(new Set(spoken)).toEqual(new Set(["present:tab-1", "park:tab-1"]));
-    // The last rectangle sent is the pane the page is in now.
+    // Ordered and counted: a repeated park or present fails here, and so does a
+    // command that is not one of these five.
+    expect(spoken).toEqual(["park:tab-1", "present:tab-1"]);
     expect(mocks.present).toHaveBeenLastCalledWith("tab-1", BOTTOM_PANE_RECT);
   });
 

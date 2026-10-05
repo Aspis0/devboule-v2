@@ -30,6 +30,10 @@ export const MIN_TOP_PANE_PX = 180;
  * chrome, and 120 px of page to read. */
 export const MIN_BOTTOM_PANE_PX = 192;
 
+/** The divider's own band. It is a row of the split, so it comes out of the
+ * pane below's budget: a floor that ignored it would be 5px optimistic. */
+export const DIVIDER_PX = 5;
+
 /**
  * The share the top pane may hold in a split area `height` px tall: the
  * tighter of the two fraction bounds and the two pixel floors.
@@ -44,12 +48,10 @@ export function splitBoundsFor(height: number): { min: number; max: number } {
   if (!Number.isFinite(height) || height <= 0) {
     return { min: MIN_SPLIT_SIZE, max: MAX_SPLIT_SIZE };
   }
+  const lowerFloor = 1 - (MIN_BOTTOM_PANE_PX + DIVIDER_PX) / height;
   const min = Math.max(MIN_SPLIT_SIZE, MIN_TOP_PANE_PX / height);
-  const max = Math.min(MAX_SPLIT_SIZE, 1 - MIN_BOTTOM_PANE_PX / height);
-  if (min >= max) {
-    const lowerFloor = 1 - MIN_BOTTOM_PANE_PX / height;
-    return { min: lowerFloor, max: lowerFloor };
-  }
+  const max = Math.min(MAX_SPLIT_SIZE, lowerFloor);
+  if (min >= max) return { min: lowerFloor, max: lowerFloor };
   return { min, max };
 }
 

@@ -7,6 +7,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type KeyboardEvent,
@@ -69,7 +70,10 @@ function SplitArea({
   const bounds = splitBoundsFor(areaHeight);
   const size = clampSplitSizeForArea(dragSize ?? split.size, areaHeight);
 
-  useEffect(() => {
+  // A layout effect, because the first measurement has to land before the first
+  // paint: the bounds are the only floor there is now, and a frame drawn at an
+  // unmeasured size would be a pane crushed for one frame.
+  useLayoutEffect(() => {
     const area = areaRef.current;
     if (area === null) return;
     const measure = (): void => setAreaHeight(area.getBoundingClientRect().height);
@@ -146,7 +150,10 @@ function SplitArea({
       <div
         className="workspace-split-pane workspace-split-top"
         data-pane="top"
-        style={{ height: `${Math.round(size * 100)}%` }}
+        // The share is written at the precision the geometry holds it: rounding
+        // it to a whole percent would hand the pane below back the few pixels
+        // the floor just took from it.
+        style={{ height: `${Number((size * 100).toFixed(3))}%` }}
       >
         {children}
       </div>

@@ -17,6 +17,7 @@ import { SplitPane } from "./SplitPane";
 import {
   COMPACT_MAX_HEIGHT,
   COMPACT_MAX_WIDTH,
+  DIVIDER_PX,
   DEFAULT_SPLIT_SIZE,
   MAX_SPLIT_SIZE,
   MIN_BOTTOM_PANE_PX,
@@ -88,10 +89,15 @@ async function areaMeasured(): Promise<void> {
   });
 }
 
-function topPane(): HTMLElement {
-  const pane = container.querySelector<HTMLElement>('[data-pane="top"]');
-  if (pane === null) throw new Error("the split did not render");
-  return pane;
+/** What the component would write for a share: the same three decimals the
+ * inline style carries, so a test cannot pass on a rounded number the browser
+ * would then render. */
+function splitSizeAtPane(size: number): string {
+  return `${Number((size * 100).toFixed(3))}%`;
+}
+
+function boundsOf(height: number): { min: number; max: number } {
+  return splitBoundsFor(height);
 }
 
 const LOWER_TAB = "tool:browser:a:page-1";
@@ -156,7 +162,10 @@ describe("a workspace with a split", () => {
     expect(panes.map((pane) => pane.getAttribute("data-pane"))).toEqual(["top", "bottom"]);
     expect(panes[0]?.textContent).toBe("chat");
     expect(panes[1]?.textContent).toContain("page");
+    // The share is written at the geometry's precision, not rounded to a whole
+    // percent: a rounded one hands the pane below the pixels the floor took.
     expect(panes[0]?.style.height).toBe("42%");
+    expect(splitSizeAtPane(boundsOf(700).min)).toBe("25.714%");
     // The divider owns the height: the pane below takes what the top leaves.
     expect(ruleBody(".workspace-split-top")).toMatch(/flex:\s*none/);
     expect(ruleBody(".workspace-split-bottom")).toMatch(/flex:\s*1 1 0/);
@@ -193,9 +202,13 @@ describe("a workspace with a split", () => {
     await areaMeasured();
     const bounds = splitBoundsFor(300);
     expect(separator().getAttribute("aria-valuenow")).toBe(String(Math.round(bounds.min * 100)));
-    expect(topPane().style.height).toBe(`${Math.round(bounds.min * 100)}%`);
-    // The lower pane keeps its floor; the upper one takes what is left.
-    expect((1 - bounds.min) * 300).toBeCloseTo(MIN_BOTTOM_PANE_PX, 5);
+    expect(splitSizeAtPane(bounds.min)).toBe("34.333%");
+    // The lower pane keeps its floor (plus the divider's band, which is a row
+    // of the split too); the upper one takes what is left.
+    expect((1 - bounds.min) * 300).toBeCloseTo(MIN_BOTTOM_PANE_PX + DIVIDER_PX, 5);
+    // The top pane is what is left of a 300px area, which is under its own
+    // floor: the floor the stylesheet no longer repeats is the only answer.
+    expect(bounds.min * 300).toBeLessThan(MIN_TOP_PANE_PX);
   });
 
   it("moves the divider with the arrow keys and hands the size on", () => {
@@ -362,10 +375,30 @@ describe("a pane too small to read at full size", () => {
     expect(DEFAULT_SPLIT_SIZE).toBeLessThan(MAX_SPLIT_SIZE);
   });
 
-  it("holds each pane at the pixel floor the divider maths uses", () => {
-    // The sheet cannot read a constant, so the two are pinned here: a restored
-    // size cannot crush a pane before the first measurement lands.
-    expect(ruleBody(".workspace-split-top")).toContain(`min-height: ${MIN_TOP_PANE_PX}px`);
-    expect(ruleBody(".workspace-split-bottom")).toContain(`min-height: ${MIN_BOTTOM_PANE_PX}px`);
+  it("leaves the floor to the geometry, so the two cannot disagree", () => {
+    // A `min-height` here would be a second answer to a question splitGeometry
+    // already answers, and the one the stylesheet would win: at a 300px area
+    // the geometry hands the pane above 108px and this floor would take 180.
+    expect(ruleBody(".workspace-split-top")).not.toMatch(/min-height/);
+    expect(ruleBody(".workspace-split-bottom")).not.toMatch(/min-height/);
+    // What the stylesheet does own is that the three rows add up to the split's
+    // own height, so nothing at this level can overflow.
+    expect(ruleBody(".workspace-split-top")).toMatch(/flex:\s*none/);
+    expect(ruleBody(".workspace-split-bottom")).toMatch(/flex:\s*1 1 0/);
+    expect(ruleBody(".workspace-split-divider")).toMatch(/flex:\s*none/);
+    // The divider's band is a row of the split and the lower pane's floor
+    // counts it, so the two numbers are pinned to each other here.
+    expect(ruleBody(".workspace-split-divider")).toContain(`height: ${DIVIDER_PX}px`);
+    // A pane clips what does not fit and lets its own scrollport scroll: the
+    // floor is the geometry's, the overflow is the pane's.
+    expect(ruleBody(".workspace-split-pane")).toMatch(/overflow:\s*hidden/);
+  });
+
+  it("has the first measurement land before the first paint, so no frame is drawn unmeasured", () => {
+    const source = readFileSync(resolve(import.meta.dirname, "SplitPane.tsx"), "utf8");
+    // A useEffect here would paint one frame at the unmeasured fraction bounds,
+    // which is what the CSS floor used to cover up.
+    expect(source).toMatch(/useLayoutEffect\(\(\) => \{\s*const area = areaRef\.current/);
+    expect(source).not.toMatch(/useEffect\(\(\) => \{\s*const area = areaRef\.current/);
   });
 });
