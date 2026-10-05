@@ -784,6 +784,14 @@ pub trait PeerTransport: Send + Sync {
         stop: Arc<AtomicBool>,
     ) -> io::Result<PeerListener>;
 
+    /// The addresses a `listen` would bind right now, or `None` when the
+    /// transport cannot answer — a status question, not a bind. The accept
+    /// loop compares this with its bound set at a low frequency so a held
+    /// listener follows address changes instead of outliving them.
+    fn current_addresses(&self) -> Option<Vec<IpAddr>> {
+        None
+    }
+
     /// Step 2, before any read from the socket.
     fn pre_noise_filter(&self, peer: &SocketAddr, peers: &PeerTable) -> Result<(), RejectReason>;
 
@@ -862,6 +870,14 @@ impl PeerTransport for Tailnet {
         let listener = Self::bind_peer_listener(&node.addresses, port, stop)?;
         let _ = paths;
         Ok(listener)
+    }
+
+    #[cfg(not(windows))]
+    fn current_addresses(&self) -> Option<Vec<IpAddr>> {
+        crate::tailscale_localapi::LocalApiClient::new()
+            .self_node_fresh()
+            .ok()
+            .map(|node| node.addresses)
     }
 
     fn pre_noise_filter(&self, peer: &SocketAddr, peers: &PeerTable) -> Result<(), RejectReason> {
@@ -1198,11 +1214,16 @@ impl PairingHook for PairingDisabled {
 /// Runs `handle_client` for an authenticated peer on its own thread, exactly
 /// as the pipe accept loop does: one connection never blocks the next.
 pub fn accept_peers(
-    mut listener: PeerListener,
+    listener: PeerListener,
     transport: Arc<dyn PeerTransport>,
     state: Arc<ServerState>,
     pairing: Arc<dyn PairingHook>,
 ) {
+    // `None` only on unix, while a rebind is being attempted or has failed;
+    // Windows refreshes nothing and keeps its listener for the whole run.
+    let mut listener = Some(listener);
+    #[cfg(not(windows))]
+    let mut last_refresh = Instant::now();
     let caps = Arc::new(AcceptCaps::default());
     let mut threads: Vec<std::thread::JoinHandle<()>> = Vec::new();
     loop {
@@ -1210,11 +1231,29 @@ pub fn accept_peers(
         // shutdown path) and the listener's (a caller that only holds the
         // listener). Without the second, a test that stops only the listener
         // would spin here forever.
-        if state.stop_flag().load(Ordering::SeqCst) || listener.is_stopped() {
+        if state.stop_flag().load(Ordering::SeqCst) {
             break;
         }
+        if listener
+            .as_ref()
+            .is_some_and(|listener| listener.is_stopped())
+        {
+            break;
+        }
+        #[cfg(not(windows))]
+        {
+            if address_refresh_due(&state, &mut last_refresh) {
+                refresh_listener(&state, &transport, &mut listener);
+            }
+        }
+        let Some(active) = listener.as_mut() else {
+            // A rebind failed, so nothing is bound: the transport may come
+            // back, and `Status.remote` already says why it is down.
+            std::thread::sleep(HOUSEKEEPING_TICK);
+            continue;
+        };
         pairing.housekeeping(Instant::now());
-        let accepted = listener.accept();
+        let accepted = active.accept();
         let (stream, peer_addr) = match accepted {
             Ok(accepted) => accepted,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -1224,7 +1263,7 @@ pub fn accept_peers(
                 std::thread::sleep(HOUSEKEEPING_TICK);
                 continue;
             }
-            Err(_) if state.stop_flag().load(Ordering::SeqCst) || listener.is_stopped() => break,
+            Err(_) if state.stop_flag().load(Ordering::SeqCst) || active.is_stopped() => break,
             Err(_) => {
                 std::thread::sleep(HOUSEKEEPING_TICK);
                 continue;
@@ -1286,6 +1325,70 @@ pub fn accept_peers(
         if handle.is_finished() {
             let _ = handle.join();
         }
+    }
+}
+
+/// How often the accept loop re-checks the tailnet addresses behind its
+/// listener: a Mac wakes or Tailscale restarts without this daemon seeing
+/// it, and the bound set would otherwise outlive the addresses it came from.
+#[cfg(not(windows))]
+const ADDRESS_REFRESH: Duration = Duration::from_secs(30);
+
+#[cfg(not(windows))]
+fn address_refresh_due(state: &ServerState, last_refresh: &mut Instant) -> bool {
+    // A pairing-address request asks for now; the timer covers everything else.
+    if !state.take_address_refresh_request() && last_refresh.elapsed() < ADDRESS_REFRESH {
+        return false;
+    }
+    *last_refresh = Instant::now();
+    true
+}
+
+/// Rebind when the transport's current addresses differ from the bound set.
+/// The old listener closes first, so there are never two listeners; a rebind
+/// that fails leaves none, and the accept loop retries on its next tick with
+/// `Status.remote` already saying why.
+#[cfg(not(windows))]
+fn refresh_listener(
+    state: &ServerState,
+    transport: &Arc<dyn PeerTransport>,
+    listener: &mut Option<PeerListener>,
+) {
+    let Some(fresh) = transport.current_addresses() else {
+        // No answer (Tailscale unreachable): keep what is bound rather than
+        // tearing down a listener on unknown evidence.
+        return;
+    };
+    let bound: Option<Vec<IpAddr>> = listener.as_ref().map(|listener| {
+        listener
+            .addrs()
+            .iter()
+            .map(|address| address.ip())
+            .collect()
+    });
+    if bound.as_ref() == Some(&fresh) {
+        return;
+    }
+    *listener = None;
+    match transport.listen(&state.paths, Arc::clone(&state.peer_stop)) {
+        Ok(new_listener) => {
+            let addresses: Vec<IpAddr> = new_listener
+                .addrs()
+                .iter()
+                .map(|address| address.ip())
+                .collect();
+            let port = new_listener
+                .addrs()
+                .first()
+                .map(|address| address.port())
+                .unwrap_or_else(peer_port);
+            state
+                .set_remote_state(crate::device_identity::RemoteState::Enabled { addresses, port });
+            *listener = Some(new_listener);
+        }
+        Err(error) => state.set_remote_state(crate::device_identity::RemoteState::Disabled(
+            error.to_string(),
+        )),
     }
 }
 

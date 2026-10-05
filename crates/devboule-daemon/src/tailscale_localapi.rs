@@ -470,20 +470,18 @@ fn read_unix_socket(
 ) -> Result<Vec<u8>, LocalApiError> {
     use std::os::unix::net::UnixStream;
 
-    let stream = UnixStream::connect(path).map_err(|error| {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(LocalApiError::Timeout);
+    }
+    let stream = UnixStream::connect_timeout(path, remaining).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             LocalApiError::Absent(missing_socket_reason(path))
         } else {
             LocalApiError::Transport(error.to_string())
         }
     })?;
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    if remaining.is_zero() {
-        return Err(LocalApiError::Timeout);
-    }
-    let _ = stream.set_read_timeout(Some(remaining));
-    let _ = stream.set_write_timeout(Some(remaining));
-    exchange_stream(stream, request)
+    exchange_stream(stream, request, deadline)
 }
 
 /// One attempt's contribution to a chain refusal: the message an `Absent`
@@ -496,20 +494,56 @@ fn reason_text(error: LocalApiError) -> String {
     }
 }
 
-/// Write one request and read one framed response over an already-connected
-/// stream: the caller owns connecting and whatever deadlines its transport
-/// needs. Shared by the unix socket and the macOS app-variant TCP leg.
+/// A stream whose per-operation timeouts can be re-armed — the loop below
+/// resets them from the one absolute deadline before every blocking call, so
+/// a peer that trickles bytes cannot stretch the request past it.
 #[cfg(not(windows))]
-fn exchange_stream<S: Read + Write>(
+trait TimedStream {
+    fn reset_timeouts(&self, remaining: Duration) -> std::io::Result<()>;
+}
+
+#[cfg(not(windows))]
+impl TimedStream for std::os::unix::net::UnixStream {
+    fn reset_timeouts(&self, remaining: Duration) -> std::io::Result<()> {
+        self.set_read_timeout(Some(remaining))?;
+        self.set_write_timeout(Some(remaining))
+    }
+}
+
+#[cfg(not(windows))]
+impl TimedStream for std::net::TcpStream {
+    fn reset_timeouts(&self, remaining: Duration) -> std::io::Result<()> {
+        self.set_read_timeout(Some(remaining))?;
+        self.set_write_timeout(Some(remaining))
+    }
+}
+
+/// Write one request and read one framed response over an already-connected
+/// stream, all under the caller's absolute deadline. Shared by the unix
+/// socket and the macOS app-variant TCP leg.
+#[cfg(not(windows))]
+fn exchange_stream<S: Read + Write + TimedStream>(
     mut stream: S,
     request: &[u8],
+    deadline: Instant,
 ) -> Result<Vec<u8>, LocalApiError> {
+    let arm = |stream: &S| -> Result<(), LocalApiError> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(LocalApiError::Timeout);
+        }
+        stream
+            .reset_timeouts(remaining)
+            .map_err(|error| map_io(error, "setting the socket timeout"))
+    };
+    arm(&stream)?;
     stream
         .write_all(request)
         .map_err(|error| map_io(error, "writing the request"))?;
     let mut raw = Vec::new();
     let mut chunk = [0u8; 8192];
     loop {
+        arm(&stream)?;
         match stream.read(&mut chunk) {
             Ok(0) => break,
             Ok(read) => raw.extend_from_slice(&chunk[..read]),

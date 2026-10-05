@@ -167,7 +167,7 @@ pub struct ServerState {
     /// Runtime paths, kept so the secret store can be selected lazily.
     /// Probing the OS credential store here would put a credential read into
     /// every unit test that builds a `ServerState`.
-    pub(super) paths: RuntimePaths,
+    pub(crate) paths: RuntimePaths,
     /// The same journal handle the session registry writes through, kept for
     /// the `peers` and `audit` tables (schema v8). `None` when the journal
     /// could not be opened.
@@ -207,7 +207,11 @@ pub struct ServerState {
     /// process-lifetime resource the state owns (C5): `run_windows` starts it
     /// through `ensure_remote_listener` and stops it through
     /// `stop_remote_listener`, and `PairingStart` can start it late.
-    pub(super) peer_stop: Arc<AtomicBool>,
+    pub(crate) peer_stop: Arc<AtomicBool>,
+    /// Set when something asked the accept loop to re-check the tailnet
+    /// addresses behind its listener now rather than on the next timer tick.
+    #[cfg(not(windows))]
+    peer_refresh_requested: AtomicBool,
     peer_listener: Mutex<Option<JoinHandle<()>>>,
     /// The transport the peer listener uses, and that the initiator side of a
     /// pairing uses for its own `whois` on the responder's address. One
@@ -454,6 +458,8 @@ impl ServerState {
             peer_table: Mutex::new(PeerTableView::default()),
             peer_table_load: Mutex::new(()),
             peer_stop: Arc::new(AtomicBool::new(false)),
+            #[cfg(not(windows))]
+            peer_refresh_requested: AtomicBool::new(false),
             peer_listener: Mutex::new(None),
             peer_transport: OnceLock::new(),
             outbound_dials: super::peer_dial::DialSlots::default(),
@@ -1703,6 +1709,21 @@ impl ServerState {
     #[cfg(test)]
     pub(crate) fn listener_starts(&self) -> u64 {
         self.listener_starts.load(Ordering::Relaxed)
+    }
+
+    /// Ask the accept loop to re-check the tailnet addresses behind its
+    /// listener now — the pairing panel is about to display them. A no-op on
+    /// Windows, which has no address refresh.
+    pub(crate) fn request_address_refresh(&self) {
+        #[cfg(not(windows))]
+        self.peer_refresh_requested.store(true, Ordering::SeqCst);
+    }
+
+    /// Take the request [`Self::request_address_refresh`] left behind. Unix
+    /// only: the accept loop's refresh, and its only caller.
+    #[cfg(not(windows))]
+    pub(crate) fn take_address_refresh_request(&self) -> bool {
+        self.peer_refresh_requested.swap(false, Ordering::SeqCst)
     }
 
     /// Stop the tailnet listener if one is running and join it.

@@ -245,9 +245,10 @@ Tailscale Inc. & Contributors, `safesocket/safesocket_darwin.go` at commit
 - `ipn/localapi/localapi.go` `RequiredPassword` (HTTP basic auth; only the
   password is checked)
 
-Divergences: this client prefers the file evidence and consults `lsof`
-second, where the Go source scans `lsof` first and falls back to the files;
-and the discovery runs against our own `/Library/Tailscale`, never the
+Divergences: the discovery follows the Go order (`lsof` first, the
+Macsys files second) but reads `lsof -F` output as records and accepts the
+marker only inside a filename field, where the Go source scans raw lines for
+the marker; and it runs against our own `/Library/Tailscale`, never the
 `TS_MACOS_CLI_SHARED_DIR` sandbox directory that only a CLI launched inside
 the Tailscale.app sandbox has. No Go code ships.
 

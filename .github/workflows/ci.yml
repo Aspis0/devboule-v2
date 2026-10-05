@@ -453,7 +453,7 @@ jobs:
       # token instead of a socket: discovery, auth header and attempt order.
       - name: Tailscale app LocalAPI tests (macOS)
         timeout-minutes: 10
-        run: cargo test -p devboule-daemon --lib --locked tailscale_app_localapi
+        run: cargo test -p devboule-daemon --lib --locked app_localapi
 
   # Slice 3 (CfT process manager) owns this job: the websocket transport is
   # cross-platform code and only a Mac can verify the mac-arm64 Chromium

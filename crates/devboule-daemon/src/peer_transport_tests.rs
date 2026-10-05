@@ -1366,3 +1366,100 @@ fn an_off_tailnet_source_with_a_code_active_is_closed_without_a_peek() {
         "the daemon must close an off-tailnet source, not answer it"
     );
 }
+
+/// A held listener must follow the tailnet's own address list: when
+/// addresses change (Mac sleep, Tailscale restart) the accept loop closes
+/// the old listener and binds the new set — never two at once — and
+/// `Status.remote` carries the addresses a pairing code will advertise.
+#[cfg(not(windows))]
+#[test]
+fn the_accept_loop_rebinds_when_the_tailnet_addresses_change() {
+    // A transport whose address list the test can move, standing in for the
+    // fresh `status` answer the real one reads.
+    struct MovingAddresses {
+        addresses: Mutex<Vec<IpAddr>>,
+    }
+    impl MovingAddresses {
+        fn current(&self) -> Vec<IpAddr> {
+            self.addresses
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone()
+        }
+    }
+    impl PeerTransport for MovingAddresses {
+        fn listen(
+            &self,
+            _paths: &crate::paths::RuntimePaths,
+            stop: Arc<AtomicBool>,
+        ) -> io::Result<PeerListener> {
+            Tailnet::bind_peer_listener(&self.current(), 0, stop)
+        }
+        fn current_addresses(&self) -> Option<Vec<IpAddr>> {
+            Some(self.current())
+        }
+        fn pre_noise_filter(
+            &self,
+            _peer: &SocketAddr,
+            _peers: &PeerTable,
+        ) -> Result<(), RejectReason> {
+            Ok(())
+        }
+        fn binding(&self, _peer: &SocketAddr) -> Result<TransportBinding, BindingError> {
+            Err(BindingError::Mismatch)
+        }
+    }
+
+    let state = crate::server::ServerState::new("peer-refresh".to_string());
+    let moving = Arc::new(MovingAddresses {
+        addresses: Mutex::new(vec!["127.0.0.1".parse().expect("loopback")]),
+    });
+    let stop = Arc::new(AtomicBool::new(false));
+    let listener = Tailnet::bind_peer_listener(
+        &["127.0.0.1".parse().expect("loopback")],
+        0,
+        Arc::clone(&stop),
+    )
+    .expect("bind");
+    let old_address = listener.addrs()[0];
+    let transport: Arc<dyn PeerTransport> = Arc::clone(&moving);
+    let pairing: Arc<dyn PairingHook> = Arc::new(PairingDisabled);
+    let accept_state = Arc::clone(&state);
+    let accept = std::thread::spawn(move || {
+        accept_peers(listener, transport, accept_state, pairing);
+    });
+
+    // The addresses move; the pairing panel's request is what asks now.
+    *moving
+        .addresses
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = vec!["127.0.0.2".parse().expect("loopback")];
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        state.request_address_refresh();
+        if state.remote_addresses() == vec!["127.0.0.2".to_string()] {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the listener never followed the address change: {:?}",
+            state.remote_addresses()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // The bound set moved with it: the new address answers, the old one is
+    // closed — there are never two listeners.
+    let port = state.remote_port().expect("the rebind reported a port");
+    let new_address: SocketAddr = format!("127.0.0.2:{port}").parse().expect("addr");
+    let connected = std::net::TcpStream::connect_timeout(&new_address, Duration::from_secs(2));
+    assert!(
+        connected.is_ok(),
+        "the new bound address accepts: {connected:?}"
+    );
+    let old = std::net::TcpStream::connect_timeout(&old_address, Duration::from_millis(500));
+    assert!(old.is_err(), "the old bound address is closed");
+
+    state.stop_flag().store(true, Ordering::SeqCst);
+    join_bounded(accept, "the peer accept loop");
+}

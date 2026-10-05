@@ -304,6 +304,9 @@ fn devices_reply(
 
 /// Where this device can be reached, for the code it displays.
 fn pairing_address(state: &Arc<ServerState>) -> Result<String, WireError> {
+    // The panel is about to show this device's address, so the accept loop
+    // should re-check Tailscale's now instead of on its next timer tick.
+    state.request_address_refresh();
     // No address yet? The listener is started at daemon start-up, but Tailscale
     // may have come up since (or been started precisely because the panel said
     // to). Try once more before refusing (C5), so the instruction this error
