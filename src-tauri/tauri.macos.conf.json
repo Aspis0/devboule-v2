@@ -1,0 +1,27 @@
+{
+  // Merged over tauri.conf.json only by `pnpm build:mac-app`
+  // (tauri build --config). Mirrors the installer-config pattern: the base
+  // config leaves bundling off so a bare `tauri build` never ships a
+  // half-stocked app, and this overlay turns on exactly the unsigned Mac
+  // .app. No signing, no notarization (declared); Gatekeeper handling is in
+  // scout/RUN-ON-MAC.md. Nothing in the Windows NSIS path changes.
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "icon": ["icons/icon.icns"],
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    },
+    // The GUI spawns the daemon it finds beside its own executable, which
+    // inside a Mac .app is Contents/MacOS/ — exactly where external
+    // binaries land. Tauri resolves each entry with the build triple
+    // suffix, so beforeBuildCommand below copies the release daemon to
+    // devboule-daemon-<triple> first; there is no unsuffixed fallback.
+    "externalBin": ["../target/release/devboule-daemon"]
+  },
+  // Replaces the base build command wholesale (config merge overrides
+  // strings): same daemon release build and frontend build, plus the
+  // triple-suffixed daemon copy externalBin resolves. The triple comes
+  // from rustc so arm64 and x86_64 Macs both work.
+  "beforeBuildCommand": "cargo build --release -p devboule-daemon && cp target/release/devboule-daemon \"target/release/devboule-daemon-$(rustc -vV | sed -n 's/^host: //p')\" && pnpm build"
+}

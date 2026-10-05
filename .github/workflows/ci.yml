@@ -533,3 +533,98 @@ jobs:
           test -x "$DEVBOULE_CFT_CHROME"
           cargo test -p devboule --lib browser::cft_process::cft --locked \
             -- --ignored --nocapture --test-threads=1
+
+  # Unsigned Mac .app for the owner to download: proves the bundle wires the
+  # daemon beside the executable and produces a runnable artifact. No signing
+  # or notarization (declared); Gatekeeper handling is in scout/RUN-ON-MAC.md.
+  # Runs on main pushes and by hand only — not on every branch — except the
+  # proving run this job was added for (that commit has no `if` line).
+  macos-app:
+    runs-on: macos-14
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # pnpm must be installed BEFORE setup-node: `cache: pnpm` resolves the
+      # store path by running `pnpm store path`, which fails if pnpm is not
+      # on PATH yet.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.33.2
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Same reason as the other jobs: src-tauri links oracle-core, whose
+      # lance build scripts compile .proto files with prost-build.
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "31.1"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # The ort build script records a link path into this cache; a restored
+      # target/ without it fails to link with "could not find onnxruntime".
+      - name: Cache the ort runtime download
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ort.pyke.io
+          key: ort-dfbin-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ort-dfbin-${{ runner.os }}-
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-app
+          cache-on-failure: true
+
+      - name: Show pinned Rust toolchain
+        run: rustup show active-toolchain
+
+      # Release daemon + frontend + unsigned .app, daemon beside the executable
+      # via bundle.externalBin (see src-tauri/tauri.macos.conf.json).
+      - name: Build the unsigned Mac app
+        run: pnpm build:mac-app
+
+      - name: List the bundle tree
+        run: find src-tauri/target/release/bundle/macos -maxdepth 4 | sort
+
+      # Informational: an unsigned build is either ad hoc or not signed at
+      # all. The hard asserts are the daemon checks below it.
+      - name: Show the code signature
+        run: |
+          APP=$(echo src-tauri/target/release/bundle/macos/*.app)
+          echo "APP=$APP"
+          codesign --display --verbose "$APP" 2>&1 || true
+
+      - name: Check the daemon shipped beside the executable
+        run: |
+          set -euo pipefail
+          APP=$(echo src-tauri/target/release/bundle/macos/*.app)
+          DAEMON="$APP/Contents/MacOS/devboule-daemon"
+          test -f "$DAEMON"
+          test -x "$DAEMON"
+          file "$DAEMON"
+
+      - name: Zip the app
+        run: |
+          set -euo pipefail
+          APP=$(echo src-tauri/target/release/bundle/macos/*.app)
+          ditto -c -k --keepParent "$APP" Devboule-mac-arm64.zip
+          ls -la Devboule-mac-arm64.zip
+
+      - name: Upload the unsigned app
+        uses: actions/upload-artifact@v4
+        with:
+          name: Devboule-mac-arm64
+          path: Devboule-mac-arm64.zip
+          retention-days: 14
