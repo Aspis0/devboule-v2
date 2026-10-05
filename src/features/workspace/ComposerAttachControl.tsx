@@ -1,5 +1,8 @@
-import { useRef, useState } from "react";
+import { useRef } from "react";
+import { base64Of } from "../../lib/base64";
 import type { PromptAttachment } from "../../types/ipc";
+import { ComposerFileChips } from "./ComposerFileChips";
+import type { AttachedFile } from "./useFileAttachments";
 
 /**
  * Largest raw image the picker reads (128 KiB): the wire's per-attachment
@@ -27,14 +30,47 @@ const WITH_GIF_WEBP_MIME_TYPES: readonly AcceptedMimeType[] = [
   ...GIF_WEBP_MIME_TYPES,
 ];
 
-/** Base64 without blowing the argument list: one 32 KiB chunk at a time. */
-function base64Of(bytes: Uint8Array): string {
-  let text = "";
-  const STEP = 0x8000;
-  for (let offset = 0; offset < bytes.length; offset += STEP) {
-    text += String.fromCharCode(...bytes.subarray(offset, offset + STEP));
+/** The image types this composer offers: GIF and WebP join only for a daemon
+ * that agreed `attachments.gif_webp`. */
+export function acceptedImageTypes(gifWebpSupported: boolean): readonly AcceptedMimeType[] {
+  return gifWebpSupported ? WITH_GIF_WEBP_MIME_TYPES : BASE_MIME_TYPES;
+}
+
+/** One pick, split by where each file goes. */
+export interface PickedRoute {
+  /** Read now and carried inline on the send. */
+  images: readonly PromptAttachment[];
+  /** Handed to the file route, their bytes untouched until it chunks them. */
+  files: readonly File[];
+}
+
+/**
+ * Split one pick — a multi-select or a drop — between the image route and the
+ * file route.
+ *
+ * The image route takes a file whose MIME type is accepted, whose size the
+ * deposit can carry (128 KiB), and for which there is still `room` left; every
+ * other file is a file attachment, and its bytes are not read here at all.
+ */
+export async function routePickedFiles(
+  picked: readonly File[],
+  acceptedTypes: readonly AcceptedMimeType[],
+  room: number,
+): Promise<PickedRoute> {
+  const images: PromptAttachment[] = [];
+  const files: File[] = [];
+  let remaining = Math.max(0, room);
+  for (const file of picked) {
+    const mimeType = acceptedTypes.find((candidate) => candidate === file.type);
+    if (mimeType === undefined || file.size > MAX_CHAT_IMAGE_BYTES || remaining <= 0) {
+      files.push(file);
+      continue;
+    }
+    remaining -= 1;
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    images.push({ name: file.name, mimeType, data: base64Of(bytes) });
   }
-  return btoa(text);
+  return { images, files };
 }
 
 function previewUrl(attachment: PromptAttachment): string {
@@ -42,21 +78,31 @@ function previewUrl(attachment: PromptAttachment): string {
 }
 
 /**
- * The composer's image attach control: the button, the file input, the
- * previews with their remove buttons, and the refusal sentences. It
- * validates picks and reads their bytes; the picked list itself lives in
- * the composer, which sends it.
+ * The composer's attach control: the button, the hidden multi-select input,
+ * the image previews with their remove buttons, the attached-file chips, and
+ * the refusal sentence.
+ *
+ * One pick is partitioned here: an image the composer can carry inline is read
+ * and handed to `onAdd` as a prompt attachment, and everything else — another
+ * type, an image past the 128 KiB the deposit accepts, an image with no room
+ * left — is handed to `onAddFiles` as the raw `File`, whose bytes the file
+ * route reads in chunks later. An image pick therefore never costs the memory
+ * of a file the composer will not carry inline.
  */
-export function ComposerImagePicker({
+export function ComposerAttachControl({
   images,
+  files,
   disabled,
   sending,
   overflowNotice,
   gifWebpSupported,
   onAdd,
   onRemove,
+  onAddFiles,
+  onRemoveFile,
 }: {
   images: readonly PromptAttachment[];
+  files: readonly AttachedFile[];
   disabled: boolean;
   /** A send is in flight: picks and removals wait for its answer. */
   sending: boolean;
@@ -66,43 +112,27 @@ export function ComposerImagePicker({
   gifWebpSupported: boolean;
   onAdd: (images: readonly PromptAttachment[]) => void;
   onRemove: (index: number) => void;
+  /** Absent for a composer that carries no file attachments: the file route
+   * files are then dropped rather than read. */
+  onAddFiles?: (files: readonly File[]) => void;
+  onRemoveFile: (id: string) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
-  const [pickRefusal, setPickRefusal] = useState<string | null>(null);
   const pickerDisabled = disabled || sending;
-  const refusal = overflowNotice ?? pickRefusal;
-  const acceptedTypes: readonly AcceptedMimeType[] = gifWebpSupported
-    ? WITH_GIF_WEBP_MIME_TYPES
-    : BASE_MIME_TYPES;
+  const acceptedTypes = acceptedImageTypes(gifWebpSupported);
 
-  async function handleFiles(files: FileList | null) {
-    if (files === null) return;
-    const accepted: PromptAttachment[] = [];
-    let refused: string | null = null;
-    for (const file of Array.from(files)) {
-      if (images.length + accepted.length >= MAX_COMPOSER_IMAGES) {
-        refused = `The composer carries at most ${MAX_COMPOSER_IMAGES} images.`;
-        break;
-      }
-      const mimeType = acceptedTypes.find((accepted) => accepted === file.type);
-      if (mimeType === undefined) {
-        refused = `${file.name} is not an image the composer can attach.`;
-        continue;
-      }
-      if (file.size > MAX_CHAT_IMAGE_BYTES) {
-        refused = `${file.name} is larger than 128 KiB.`;
-        continue;
-      }
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      accepted.push({ name: file.name, mimeType, data: base64Of(bytes) });
-    }
-    setPickRefusal(refused);
-    if (accepted.length > 0) onAdd(accepted);
+  async function handleFiles(picked: FileList | null) {
+    if (picked === null) return;
+    const room = Math.max(0, MAX_COMPOSER_IMAGES - images.length);
+    const route = await routePickedFiles(Array.from(picked), acceptedTypes, room);
+    if (route.images.length > 0) onAdd(route.images);
+    if (route.files.length > 0) onAddFiles?.(route.files);
     if (inputRef.current !== null) inputRef.current.value = "";
   }
 
   return (
     <div className={`workspace-composer-images${sending ? " is-sending" : ""}`}>
+      <ComposerFileChips files={files} disabled={pickerDisabled} onRemove={onRemoveFile} />
       {images.length > 0 ? (
         <div className="workspace-composer-previews">
           {images.map((attachment, position) => (
@@ -125,16 +155,16 @@ export function ComposerImagePicker({
           ))}
         </div>
       ) : null}
-      {refusal !== null ? (
+      {overflowNotice !== null ? (
         <div className="workspace-composer-image-refusal" role="alert">
-          {refusal}
+          {overflowNotice}
         </div>
       ) : null}
       <button
         type="button"
         className="workspace-composer-attach"
-        aria-label="Attach image"
-        title="Attach image"
+        aria-label="Attach file"
+        title="Attach file"
         onClick={() => inputRef.current?.click()}
         disabled={pickerDisabled}
       >
@@ -160,7 +190,6 @@ export function ComposerImagePicker({
         type="file"
         className="workspace-composer-image-input"
         data-testid="composer-image-input"
-        accept={acceptedTypes.join(",")}
         multiple
         disabled={pickerDisabled}
         onChange={(event) => void handleFiles(event.currentTarget.files)}

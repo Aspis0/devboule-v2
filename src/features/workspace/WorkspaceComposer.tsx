@@ -11,13 +11,19 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, DragEvent as ReactDragEvent } from "react";
 import { composerActionLabel } from "../../lib/sendBehavior";
 import { COMMAND_MENU_KEY, composerChordLabel, composerKeyAction } from "../../lib/keymap";
 import { isImeComposition } from "../../lib/imeComposition";
-import type { PromptAttachment } from "../../types/ipc";
+import type { AttachmentReference, PromptAttachment } from "../../types/ipc";
 import { rankCommandMatches } from "./commandMatch";
-import { ComposerImagePicker, MAX_COMPOSER_IMAGES } from "./ComposerImagePicker";
+import {
+  acceptedImageTypes,
+  ComposerAttachControl,
+  MAX_COMPOSER_IMAGES,
+  routePickedFiles,
+} from "./ComposerAttachControl";
+import type { AttachedFile } from "./useFileAttachments";
 import { WorkspaceCommandMenu, type WorkspaceCommand } from "./WorkspaceCommandMenu";
 
 /** Height cap of the growing textarea: eight 20px lines. */
@@ -45,14 +51,27 @@ interface WorkspaceComposerProps {
   queueUnsupportedReason?: string | null;
   /** The daemon agreed `attachments.gif_webp`: the picker offers GIF and WebP. */
   gifWebpSupported?: boolean;
+  /** The composer's attached files, owned by the parent: they upload as they
+   * arrive and clear once a send has settled. */
+  files?: readonly AttachedFile[];
+  onAddFiles?: (files: readonly File[]) => void;
+  onRemoveFile?: (id: string) => void;
   disabled?: boolean;
   disabledReason: string | null;
   availableCommands?: readonly WorkspaceCommand[];
-  onSend: (text: string, attachments: readonly PromptAttachment[]) => Promise<boolean>;
+  onSend: (
+    text: string,
+    attachments: readonly PromptAttachment[],
+    fileReferences: readonly AttachmentReference[],
+  ) => Promise<boolean>;
   /** Queue the composer's text while the turn runs; absent, Enter always sends.
    * Settles when the daemon has answered, which is what holds a second
    * activation of the same intent off the wire. */
-  onQueue?: (text: string, attachments: readonly PromptAttachment[]) => void | Promise<void>;
+  onQueue?: (
+    text: string,
+    attachments: readonly PromptAttachment[],
+    fileReferences: readonly AttachmentReference[],
+  ) => void | Promise<void>;
   /** The resolved setting: Enter queues while the turn runs (the permission rule flips it to steer). */
   enterQueues?: boolean;
   onStop?: () => void;
@@ -102,6 +121,9 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   queueAllowed = true,
   queueUnsupportedReason = null,
   gifWebpSupported = false,
+  files = [],
+  onAddFiles,
+  onRemoveFile,
   disabled = false,
   disabledReason,
   availableCommands = [],
@@ -125,6 +147,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   // Restored images that did not fit beside the current picks; named once
   // in the picker's refusal line, cleared by the next pick or removal.
   const [restoreOverflow, setRestoreOverflow] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState(false);
   const [menuDismissed, setMenuDismissed] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -134,6 +157,16 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   const parkedRestoreRef = useRef<{ text: string; focus: boolean } | null>(null);
   const pendingPrefixRef = useRef<string | null>(null);
   const menuId = useId();
+  // A file that is not ready — an upload in flight, or a refusal the user has
+  // to remove — holds the send off exactly as an in-flight image send does.
+  const filesBlocked = files.some((file) => file.state !== "ready");
+  const fileReferences = useMemo(
+    () =>
+      files
+        .filter((file) => file.state === "ready" && file.reference !== undefined)
+        .map((file) => file.reference as AttachmentReference),
+    [files],
+  );
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -231,14 +264,55 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
     if (input.startsWith(refused)) pendingPrefixRef.current = null;
   }, [input]);
 
+  // The image route's landing: capped at the composer's bound, the overflow
+  // named once in the refusal line instead of silently dropped.
+  const addPickedImages = useCallback((picked: readonly PromptAttachment[]) => {
+    setRestoreOverflow(null);
+    setAttachedImages((current) => {
+      const room = Math.max(0, MAX_COMPOSER_IMAGES - current.length);
+      const fitting = picked.slice(0, room);
+      const dropped = picked.length - fitting.length;
+      if (dropped > 0) {
+        setRestoreOverflow(
+          `${dropped} picked image${dropped === 1 ? "" : "s"} omitted: the composer carries at most ${MAX_COMPOSER_IMAGES} images.`,
+        );
+      }
+      return [...current, ...fitting];
+    });
+  }, []);
+
+  // A drop is the picker's own partition, run from the composer's root: the
+  // files that fit the image route are read here, and the rest go to the file
+  // route without their bytes being touched.
+  const handleDrop = useCallback(
+    (event: ReactDragEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      setDropTarget(false);
+      const dropped = Array.from(event.dataTransfer?.files ?? []);
+      if (dropped.length === 0 || disabled) return;
+      const room = Math.max(0, MAX_COMPOSER_IMAGES - attachedImages.length);
+      void routePickedFiles(dropped, acceptedImageTypes(gifWebpSupported), room).then((route) => {
+        if (route.images.length > 0) addPickedImages(route.images);
+        if (route.files.length > 0) onAddFiles?.(route.files);
+      });
+    },
+    [addPickedImages, attachedImages.length, disabled, gifWebpSupported, onAddFiles],
+  );
+
+  // Only a drag that is carrying files is ours: a text selection dragged over
+  // the composer keeps its own browser behaviour.
+  const dragCarriesFiles = (event: ReactDragEvent<HTMLDivElement>): boolean =>
+    Array.from(event.dataTransfer?.types ?? []).includes("Files");
+
   const sendInput = useCallback(() => {
     const text = input.trim();
-    if (!text || disabled || sendingImages) return;
-    // Imageless sends keep the fire-and-forget they always had. A send with
-    // images takes a snapshot and waits for the answer: the picks stay put
-    // as sending and clear only on success, so a failure keeps the
-    // submission whole without a hand-back.
-    if (attachedImages.length === 0) {
+    if (!text || disabled || sendingImages || filesBlocked) return;
+    // Imageless sends keep the fire-and-forget they always had. A send that
+    // carries anything else takes a snapshot and waits for the answer: the
+    // picks stay put as sending and clear only on success, so a failure keeps
+    // the submission whole without a hand-back. The parent clears its files
+    // once its own send settles.
+    if (attachedImages.length === 0 && fileReferences.length === 0) {
       onSend(text, attachedImages);
       setInput("");
       return;
@@ -248,7 +322,11 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
     setRestoreOverflow(null);
     setInput("");
     void Promise.resolve()
-      .then(() => onSend(text, snapshot))
+      .then(() =>
+        fileReferences.length === 0
+          ? onSend(text, snapshot)
+          : onSend(text, snapshot, fileReferences),
+      )
       .then(
         (sent) => {
           setSendingImages(false);
@@ -258,20 +336,33 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
         },
         () => setSendingImages(false),
       );
-  }, [attachedImages, disabled, input, onSend, sendingImages, setInput]);
+  }, [
+    attachedImages,
+    disabled,
+    fileReferences,
+    filesBlocked,
+    input,
+    onSend,
+    sendingImages,
+    setInput,
+  ]);
 
   const queueInput = useCallback(() => {
     const text = input.trim();
     // Blocked while an image send is in flight, like the buttons: the
     // in-flight picks still belong to that send, and queueing them again
     // would send them twice.
-    if (!text || disabled || sendingImages || onQueue === undefined) return;
+    if (!text || disabled || sendingImages || filesBlocked || onQueue === undefined) return;
     // One intent, one frame. A second activation inside this render still reads
     // the text the first press is about to clear, so the daemon would see two
     // adds of the same words under two ids.
     if (queuePendingRef.current) return;
     queuePendingRef.current = true;
-    void Promise.resolve(onQueue(text, attachedImages))
+    void Promise.resolve(
+      fileReferences.length === 0
+        ? onQueue(text, attachedImages)
+        : onQueue(text, attachedImages, fileReferences),
+    )
       .catch(() => undefined)
       .finally(() => {
         queuePendingRef.current = false;
@@ -279,7 +370,16 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
     setRestoreOverflow(null);
     setAttachedImages([]);
     setInput("");
-  }, [attachedImages, disabled, input, onQueue, sendingImages, setInput]);
+  }, [
+    attachedImages,
+    disabled,
+    fileReferences,
+    filesBlocked,
+    input,
+    onQueue,
+    sendingImages,
+    setInput,
+  ]);
 
   const queueAvailable = turnActive && queueAllowed && !disabled && onQueue !== undefined;
   const defaultActionQueues = enterQueues && queueAvailable;
@@ -400,7 +500,21 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
         activeOptionId={activeOptionId}
         onSelect={selectCommand}
       />
-      <div className="workspace-composer">
+      <div
+        className={`workspace-composer${dropTarget ? " is-drop-target" : ""}`}
+        onDragEnter={(event) => {
+          if (!dragCarriesFiles(event)) return;
+          event.preventDefault();
+          setDropTarget(true);
+        }}
+        onDragOver={(event) => {
+          if (!dragCarriesFiles(event)) return;
+          event.preventDefault();
+          setDropTarget(true);
+        }}
+        onDragLeave={() => setDropTarget(false)}
+        onDrop={handleDrop}
+      >
         <textarea
           ref={(element) => {
             textareaRef.current = element;
@@ -438,30 +552,20 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
         />
         <div className="workspace-composer-bar">
           <div className="workspace-composer-controls">
-            <ComposerImagePicker
+            <ComposerAttachControl
               images={attachedImages}
+              files={files}
               disabled={disabled}
               sending={sendingImages}
               overflowNotice={restoreOverflow}
               gifWebpSupported={gifWebpSupported}
-              onAdd={(picked) => {
-                setRestoreOverflow(null);
-                setAttachedImages((current) => {
-                  const room = Math.max(0, MAX_COMPOSER_IMAGES - current.length);
-                  const fitting = picked.slice(0, room);
-                  const dropped = picked.length - fitting.length;
-                  if (dropped > 0) {
-                    setRestoreOverflow(
-                      `${dropped} picked image${dropped === 1 ? "" : "s"} omitted: the composer carries at most ${MAX_COMPOSER_IMAGES} images.`,
-                    );
-                  }
-                  return [...current, ...fitting];
-                });
-              }}
+              onAdd={addPickedImages}
               onRemove={(position) => {
                 setRestoreOverflow(null);
                 setAttachedImages((current) => current.filter((_, at) => at !== position));
               }}
+              onAddFiles={onAddFiles}
+              onRemoveFile={(id) => onRemoveFile?.(id)}
             />
             {controls}
             {disabled && disabledReason !== null ? (
@@ -480,7 +584,11 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
               aria-label={queueUnsupportedReason ?? actionLabel}
               onClick={runDefaultAction}
               disabled={
-                queueUnsupportedReason != null || disabled || sendingImages || !input.trim()
+                queueUnsupportedReason != null ||
+                disabled ||
+                sendingImages ||
+                filesBlocked ||
+                !input.trim()
               }
             >
               {/* A clock while the action queues: it sends later. The
@@ -544,7 +652,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
               title={`Send · ${composerChordLabel("submit")} (${composerChordLabel("newline")} for a new line)`}
               aria-label="Send"
               onClick={sendInput}
-              disabled={disabled || sendingImages || !input.trim()}
+              disabled={disabled || sendingImages || filesBlocked || !input.trim()}
             >
               <svg
                 width={14}

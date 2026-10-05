@@ -21,6 +21,7 @@ mod agent_report;
 mod atomic;
 #[cfg(feature = "server")]
 mod attachment_store;
+mod attachment_upload;
 #[cfg(feature = "server")]
 mod browser_affinity;
 #[cfg(feature = "server")]

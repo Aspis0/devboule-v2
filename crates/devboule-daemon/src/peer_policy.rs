@@ -212,6 +212,15 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         // not allowed to send must not be able to deposit, or it writes bytes
         // into a session folder that nothing on this machine can consume.
         ClientMessage::SessionDeposit { .. } => with_capability(caps, CAP_SEND),
+        // The upload half of the same road: a peer that may not deposit may not
+        // stage bytes either. The dispatch gate refuses every upload frame from
+        // a paired device, so this is the policy statement, not the refusal
+        // that fires.
+        ClientMessage::SessionUploadBegin { .. }
+        | ClientMessage::SessionUploadStatus { .. }
+        | ClientMessage::SessionUploadChunk { .. }
+        | ClientMessage::SessionUploadFinish { .. }
+        | ClientMessage::SessionUploadAbort { .. } => with_capability(caps, CAP_SEND),
         ClientMessage::SessionPermissionRespond { .. } => {
             with_capability(caps, CAP_ANSWER_PERMISSIONS)
         }
@@ -1508,6 +1517,7 @@ pub(crate) mod tests {
                     session_id: "s.a.1".to_string(),
                     digest: "b".repeat(64),
                     stored_bytes: 512,
+                    name: String::new(),
                 },
             },
             ClientMessage::SessionDetach {
@@ -1685,12 +1695,13 @@ pub(crate) mod tests {
         }
     }
 
-    /// The eighteen frames no `Deny` arm has ever covered: the handshake pair,
-    /// the twelve act-named arms, and the five queue frames — which ride `send`
-    /// for the same reason `SessionSend` does. Spelled as wire names so the walk
-    /// above can prove it covers every *other* variant — with `VARIANT_COUNT` that
-    /// is a closed statement, not a guess.
-    const ALWAYS_ALLOWED_VARIANTS: [&str; 19] = [
+    /// The frames no `Deny` arm has ever covered: the handshake pair, the
+    /// act-named arms including the five upload frames, and the five queue
+    /// frames — which ride `send` for the same reason `SessionSend` does.
+    /// Spelled as wire names so the walk above can prove it covers every
+    /// *other* variant — with `VARIANT_COUNT` that is a closed statement, not a
+    /// guess.
+    const ALWAYS_ALLOWED_VARIANTS: [&str; 24] = [
         "Hello",
         "Ping",
         "SessionsList",
@@ -1701,6 +1712,11 @@ pub(crate) mod tests {
         "SessionSend",
         "AgentMessageSend",
         "SessionDeposit",
+        "SessionUploadBegin",
+        "SessionUploadStatus",
+        "SessionUploadChunk",
+        "SessionUploadFinish",
+        "SessionUploadAbort",
         "SessionPermissionRespond",
         "SessionSetMode",
         "SessionSetName",
@@ -2588,6 +2604,12 @@ pub(crate) mod tests {
             // not allowed to send must not, or it writes bytes into a session
             // folder nothing on this machine can consume.
             ClientMessage::SessionDeposit { .. } => under(CAP_SEND),
+            // The upload half of the same road.
+            ClientMessage::SessionUploadBegin { .. }
+            | ClientMessage::SessionUploadStatus { .. }
+            | ClientMessage::SessionUploadChunk { .. }
+            | ClientMessage::SessionUploadFinish { .. }
+            | ClientMessage::SessionUploadAbort { .. } => under(CAP_SEND),
             // The read half of the deposit: a content read, so it rides the
             // administrative capability — scope still decides which reference resolves.
             ClientMessage::SessionAttachmentRead { .. } => administrative(),
@@ -2666,7 +2688,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 84;
+    pub(crate) const VARIANT_COUNT: usize = 89;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -2692,6 +2714,11 @@ pub(crate) mod tests {
             ClientMessage::SessionQueueMove { .. } => "SessionQueueMove",
             ClientMessage::SessionQueueSendNow { .. } => "SessionQueueSendNow",
             ClientMessage::SessionDeposit { .. } => "SessionDeposit",
+            ClientMessage::SessionUploadBegin { .. } => "SessionUploadBegin",
+            ClientMessage::SessionUploadStatus { .. } => "SessionUploadStatus",
+            ClientMessage::SessionUploadChunk { .. } => "SessionUploadChunk",
+            ClientMessage::SessionUploadFinish { .. } => "SessionUploadFinish",
+            ClientMessage::SessionUploadAbort { .. } => "SessionUploadAbort",
             ClientMessage::SessionAttachmentRead { .. } => "SessionAttachmentRead",
             ClientMessage::AgentMessageSend { .. } => "AgentMessageSend",
             ClientMessage::SessionResize { .. } => "SessionResize",
@@ -2867,7 +2894,37 @@ pub(crate) mod tests {
                     session_id: "s.a.1".to_string(),
                     digest: "b".repeat(64),
                     stored_bytes: 512,
+                    name: String::new(),
                 },
+            },
+            ClientMessage::SessionUploadBegin {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                upload_id: "up-1".to_string(),
+                name: "report.pdf".to_string(),
+                total_bytes: 64,
+            },
+            ClientMessage::SessionUploadStatus {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                upload_id: "up-1".to_string(),
+            },
+            ClientMessage::SessionUploadChunk {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                upload_id: "up-1".to_string(),
+                offset: 0,
+                data: "AA==".to_string(),
+            },
+            ClientMessage::SessionUploadFinish {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                upload_id: "up-1".to_string(),
+            },
+            ClientMessage::SessionUploadAbort {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                upload_id: "up-1".to_string(),
             },
             ClientMessage::AgentMessageSend {
                 id: 1,
@@ -3244,6 +3301,7 @@ pub(crate) mod tests {
                 session_id: "s.a.1".to_string(),
                 digest: "b".repeat(64),
                 stored_bytes: 512,
+                name: String::new(),
             },
         };
         for role in [PeerRole::Client, PeerRole::Daemon] {

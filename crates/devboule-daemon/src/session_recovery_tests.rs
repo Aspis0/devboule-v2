@@ -546,6 +546,7 @@ fn deposited_ref(
         session_id: "s.old".to_string(),
         digest: deposited.digest.clone(),
         stored_bytes: deposited.stored_bytes,
+        name: String::new(),
     };
     (deposited.path, reference)
 }

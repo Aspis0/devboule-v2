@@ -74,6 +74,7 @@ pub(crate) fn session_event_samples() -> Vec<SessionEvent> {
                 session_id: "s.owner.sample".to_string(),
                 digest: "a".repeat(64),
                 stored_bytes: 12,
+                name: String::new(),
             }],
         },
         Steered => SessionEvent::Steered {
@@ -359,6 +360,7 @@ pub(crate) fn session_event_samples() -> Vec<SessionEvent> {
                     session_id: "s.1.1".to_string(),
                     digest: "a".repeat(64),
                     stored_bytes: 12,
+                    name: String::new(),
                 }],
                 error: Some("the message was not sent.".to_string()),
             }],

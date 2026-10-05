@@ -858,6 +858,117 @@ impl DaemonClient {
         }
     }
 
+    /// Open one chunked file upload, or adopt the one already in progress under
+    /// `upload_id`, and answer the offset it stands at.
+    ///
+    /// The upload id is the caller's, because a reconnecting client has to
+    /// name the same upload to resume it. The daemon answers zero for a fresh
+    /// one and the bytes already received when the same id and declaration are
+    /// opened again, so a retry after a lost acknowledgement continues instead
+    /// of starting over.
+    pub fn session_upload_begin(
+        &self,
+        session_id: &str,
+        upload_id: &str,
+        name: &str,
+        total_bytes: u64,
+    ) -> Result<u64, DaemonError> {
+        self.require_agreed(devboule_protocol::caps::ATTACHMENTS_UPLOAD)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionUploadBegin {
+            id,
+            session_id: session_id.to_string(),
+            upload_id: upload_id.to_string(),
+            name: name.to_string(),
+            total_bytes,
+        })? {
+            DaemonMessage::SessionUploadProgress { received_bytes, .. } => Ok(received_bytes),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// How many bytes of one upload the daemon holds.
+    pub fn session_upload_status(
+        &self,
+        session_id: &str,
+        upload_id: &str,
+    ) -> Result<u64, DaemonError> {
+        self.require_agreed(devboule_protocol::caps::ATTACHMENTS_UPLOAD)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionUploadStatus {
+            id,
+            session_id: session_id.to_string(),
+            upload_id: upload_id.to_string(),
+        })? {
+            DaemonMessage::SessionUploadProgress { received_bytes, .. } => Ok(received_bytes),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Append one chunk at exactly the offset the upload stands at, and answer
+    /// the new offset.
+    pub fn session_upload_chunk(
+        &self,
+        session_id: &str,
+        upload_id: &str,
+        offset: u64,
+        data: &str,
+    ) -> Result<u64, DaemonError> {
+        self.require_agreed(devboule_protocol::caps::ATTACHMENTS_UPLOAD)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionUploadChunk {
+            id,
+            session_id: session_id.to_string(),
+            upload_id: upload_id.to_string(),
+            offset,
+            data: data.to_string(),
+        })? {
+            DaemonMessage::SessionUploadProgress { received_bytes, .. } => Ok(received_bytes),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Close one fully received upload and answer the reference a send names.
+    pub fn session_upload_finish(
+        &self,
+        session_id: &str,
+        upload_id: &str,
+    ) -> Result<AttachmentReference, DaemonError> {
+        self.require_agreed(devboule_protocol::caps::ATTACHMENTS_UPLOAD)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionUploadFinish {
+            id,
+            session_id: session_id.to_string(),
+            upload_id: upload_id.to_string(),
+        })? {
+            DaemonMessage::SessionDeposited { reference, .. } => Ok(reference),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Discard one upload and the bytes received so far.
+    pub fn session_upload_abort(
+        &self,
+        session_id: &str,
+        upload_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.require_agreed(devboule_protocol::caps::ATTACHMENTS_UPLOAD)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionUploadAbort {
+            id,
+            session_id: session_id.to_string(),
+            upload_id: upload_id.to_string(),
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     #[cfg(feature = "server")]
     pub fn session_resize(
         &self,
@@ -2912,6 +3023,7 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::AgentMessageReceipt { id, .. }
         | DaemonMessage::Resume { id, .. }
         | DaemonMessage::SessionDeposited { id, .. }
+        | DaemonMessage::SessionUploadProgress { id, .. }
         | DaemonMessage::SessionAttachment { id, .. }
         | DaemonMessage::RemoteHostList { id, .. }
         | DaemonMessage::InvokeResult { id, .. } => Some(*id),

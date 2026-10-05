@@ -135,6 +135,14 @@ pub(super) fn peer_refusal_before_mode(
         ClientMessage::SessionSend { attachments, .. }
         | ClientMessage::SessionQueueAdd { attachments, .. } => !attachments.is_empty(),
         ClientMessage::SessionDeposit { .. } => true,
+        // Every upload frame belongs to the flow that carries one, including
+        // the ones that carry no bytes themselves: refusing only the chunk
+        // would leave an open upload record and a part file behind.
+        ClientMessage::SessionUploadBegin { .. }
+        | ClientMessage::SessionUploadStatus { .. }
+        | ClientMessage::SessionUploadChunk { .. }
+        | ClientMessage::SessionUploadFinish { .. }
+        | ClientMessage::SessionUploadAbort { .. } => true,
         _ => false,
     };
     if carries_attachment && !crate::session::session_origin_for(conn_peer).is_local() {
@@ -292,6 +300,13 @@ pub(super) fn peer_mode_refusal_for_conn(
         // later names the deposited reference is the frame this gate stops, and
         // it is already covered by the `SessionSend` arm above.
         ClientMessage::SessionDeposit { .. } => None,
+        // The upload frames write bytes into a folder and never reach the
+        // agent: nothing is prompted, so there is no mode to vet.
+        ClientMessage::SessionUploadBegin { .. }
+        | ClientMessage::SessionUploadStatus { .. }
+        | ClientMessage::SessionUploadChunk { .. }
+        | ClientMessage::SessionUploadFinish { .. }
+        | ClientMessage::SessionUploadAbort { .. } => None,
         ClientMessage::Ping { .. } => None,
         ClientMessage::Status { .. } => None,
         ClientMessage::DaemonDiagnostics { .. } => None,
@@ -554,6 +569,11 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::SessionQueueMove { session_id, .. }
         | ClientMessage::SessionQueueSendNow { session_id, .. }
         | ClientMessage::SessionDeposit { session_id, .. }
+        | ClientMessage::SessionUploadBegin { session_id, .. }
+        | ClientMessage::SessionUploadStatus { session_id, .. }
+        | ClientMessage::SessionUploadChunk { session_id, .. }
+        | ClientMessage::SessionUploadFinish { session_id, .. }
+        | ClientMessage::SessionUploadAbort { session_id, .. }
         | ClientMessage::AgentMessageSend {
             to_session: session_id,
             ..

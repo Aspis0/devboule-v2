@@ -102,8 +102,10 @@ mod resume_tests;
 pub use attachments::{
     attachment_name_too_long_message, attachment_reference_session_mismatch_message,
     empty_attachment_message, invalid_attachment_digest_message, invalid_base64_message,
-    is_gif_webp_mime, unsupported_attachment_type_message, validate_attachment_references,
-    validate_attachments, validate_session_send_attachments, ATTACHMENT_MIME_TYPES,
+    is_gif_webp_mime, sanitize_attachment_name, unsupported_attachment_type_message,
+    upload_extension, validate_attachment_references, validate_attachments,
+    validate_session_send_attachments, validate_upload_begin, validate_upload_chunk,
+    validate_upload_id, ATTACHMENT_MIME_TYPES,
 };
 pub use browser::{
     BrowserCaller, BrowserError, BrowserErrorCode, BrowserExecuteRequest, BrowserOutcome,
@@ -190,8 +192,12 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// `browser.host`. Protocol 25 adds no frame: it marks the dialect in which a
 /// host may register `fill_login_preview` and `fill_login` and the broker may
 /// serve `browser_fill_login`, all three of which ride the frames above and are
-/// refused by a host that registered no such command.
-pub const PROTOCOL_VERSION: u32 = 25;
+/// refused by a host that registered no such command. Protocol 26 adds the
+/// chunked file uploads (`SessionUploadBegin`/`Chunk`/`Status`/`Finish`/
+/// `Abort` and the `SessionUploadProgress` reply), all gated on
+/// `attachments.upload`, so a peer that never negotiated the name is never sent
+/// one and the floor stays put.
+pub const PROTOCOL_VERSION: u32 = 26;
 /// Oldest dialect this crate still accepts. Protocols 17, 18 and 20 added only
 /// optional fields, so a v16 peer still interoperates — it just shows no
 /// command chip, turn time, cache, cost or chat-image thumbnails until
@@ -316,6 +322,15 @@ pub mod caps {
     /// before it sends, so it offers the types only to a daemon that agreed.
     /// In both lists for the reason `attachments.read` is.
     pub const ATTACHMENTS_GIF_WEBP: &str = "attachments.gif_webp";
+
+    /// Chunked file uploads (`SessionUploadBegin`/`Chunk`/`Status`/`Finish`/
+    /// `Abort` and the `SessionUploadProgress` reply).
+    ///
+    /// A client must not send an upload frame to a daemon that predates it:
+    /// the daemon's reader cannot deserialize the variant and the connection
+    /// would fail on a frame the old peer never knew. The app gates the whole
+    /// upload on this name, which is what it exists for.
+    pub const ATTACHMENTS_UPLOAD: &str = "attachments.upload";
 
     /// Agents create agents (`devboule_create_agent`) and the finish reports
     /// that come back.
@@ -541,28 +556,56 @@ pub const MAX_ATTACHMENTS_TOTAL_BYTES: usize = 384 * 1024;
 /// frame from ever being the thing that breaks.
 pub const MAX_ATTACHMENT_REFERENCES: usize = 200;
 
-/// Most stored bytes one owner may hold across their sessions (20 MiB).
+/// Most stored bytes one owner may hold across their sessions (72 MiB).
 ///
-/// Derived, not chosen. The renderer caps one rendered page at
-/// `PDF_DEFAULT_MAX_BYTES_PER_PAGE` = 96 KiB and one document at
-/// [`MAX_ATTACHMENT_REFERENCES`] pages, so the worst deck the renderer can
-/// produce is 200 x 96 KiB = 19,200 KiB. A prompt may also carry the inline
-/// budget ([`MAX_ATTACHMENTS_TOTAL_BYTES`] = 384 KiB, itself derived from the
-/// composer's 256 KiB of raw bytes), and both live in the same owner's tree:
+/// Two derivations meet here. The deck half is unchanged: the renderer caps
+/// one rendered page at `PDF_DEFAULT_MAX_BYTES_PER_PAGE` = 96 KiB and one
+/// document at [`MAX_ATTACHMENT_REFERENCES`] pages, so the worst deck the
+/// renderer can produce is 200 x 96 KiB = 19,200 KiB; a prompt may also carry
+/// the inline budget ([`MAX_ATTACHMENTS_TOTAL_BYTES`] = 384 KiB, itself derived
+/// from the composer's 256 KiB of raw bytes), and both live in the same
+/// owner's tree, which is 19.13 MiB. The upload half is [`MAX_UPLOAD_BYTES`] =
+/// 50 MiB for one file, and the two have to fit together or a 50 MiB file
+/// could never be stored by an owner who ever rendered a deck:
 ///
-/// 200 x 96 KiB + 384 KiB = 20,054,016 bytes
+/// 200 x 96 KiB + 384 KiB + 50 MiB = 71.13 MiB
 ///
-/// which is 19.13 MiB; 20 MiB is that with the headroom the neighbouring
-/// constants use. The multiplier is the *per-page ceiling*, not the measured
-/// 46.7 KiB average page, because the budget must hold the worst deck the
-/// renderer will produce rather than the typical one.
+/// which is why the budget is 72 MiB rather than 64. The multiplier is the
+/// *per-page ceiling*, not the measured 46.7 KiB average page, because the
+/// budget must hold the worst deck the renderer will produce.
 ///
 /// This is the cumulative bound. It is enforced by walking the owner's
 /// session folders under the store's write lock; there is no counter to drift
 /// out of step with the tree, because the tree is the truth. The per-prompt
 /// half of it is the sum of `AttachmentReference::stored_bytes` checked
 /// against this value in `attachments::validate_attachment_references`.
-pub const MAX_ATTACHMENT_OWNER_BYTES: usize = 20 * 1024 * 1024;
+pub const MAX_ATTACHMENT_OWNER_BYTES: usize = 72 * 1024 * 1024;
+
+/// One uploaded file's ceiling: 50 MiB, Paseo's per-file upload limit.
+///
+/// The bytes travel as base64 chunks of at most [`MAX_UPLOAD_CHUNK_BYTES`]
+/// raw, so this ceiling is never one frame; it is what `SessionUploadBegin`
+/// states and what the chunk arithmetic, the store and the owner budget all
+/// agree on.
+pub const MAX_UPLOAD_BYTES: u64 = 50 * 1024 * 1024;
+
+/// Raw bytes one `SessionUploadChunk` may carry (256 KiB).
+///
+/// Base64 is 4/3 of the raw size, about 341 KiB, leaving room under
+/// [`MAX_FRAME_BYTES`] for the frame's own JSON and a correlation id. Chosen
+/// over the inline attachment's 192 KiB of base64 because a chunked upload
+/// pays one round trip per chunk and 256 KiB keeps a 50 MiB file under 200 of
+/// them.
+pub const MAX_UPLOAD_CHUNK_BYTES: usize = 256 * 1024;
+
+/// How many uploaded files one message may carry (8).
+///
+/// A policy count like [`MAX_ATTACHMENT_COUNT`], not a frame bound: eight
+/// file chips stay a message's worth of context rather than a directory
+/// listing, and the store's owner budget is the hard total behind it. Mirrors
+/// the composer's own row cap (`MAX_COMPOSER_FILES` in
+/// `src/features/workspace/ComposerFileChips.tsx`).
+pub const MAX_UPLOADED_FILES: usize = 8;
 
 /// Default plugin-invoke payload budget, in bytes (16 MiB).
 ///
@@ -746,6 +789,11 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     // Same pairing, for the GIF and WebP types: the daemon strips and serves
     // them, and the app reads the name before it offers or sends one.
     capabilities.push(Capability::new(caps::ATTACHMENTS_GIF_WEBP));
+    // Same pairing, for chunked file uploads: the daemon serves the five
+    // frames, so the app must offer the name or the handshake would negotiate
+    // it away — and the app reads it before offering the attach control that
+    // would send them.
+    capabilities.push(Capability::new(caps::ATTACHMENTS_UPLOAD));
     // Same pairing again: `agent_create` names the MCP tool an agent may call
     // and the two events that come back from it. The daemon serves it, so the
     // app must offer it or the handshake would negotiate it away.
@@ -837,6 +885,10 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // Same pairing, for the GIF and WebP types: the app offers the name so the
     // intersection keeps it, and sends those types only when it was agreed.
     capabilities.push(Capability::new(caps::ATTACHMENTS_GIF_WEBP));
+    // Same pairing, for chunked file uploads: the app offers the name so the
+    // intersection keeps it, and sends no upload frame to a daemon that
+    // predates them.
+    capabilities.push(Capability::new(caps::ATTACHMENTS_UPLOAD));
     // Same pairing, for the creation surface: the app offers it so the
     // intersection keeps it, and reads it to know whether the daemon serves
     // `devboule_create_agent` and its two events.

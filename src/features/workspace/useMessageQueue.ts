@@ -57,7 +57,11 @@ export interface MessageQueueUi {
   readonly dropNote: string | null;
   /** Queues the composer's text. Settles when the daemon has answered or the
    * frame never got one, so a caller can hold one queue press at a time. */
-  queueMessage(text: string, images?: readonly PromptAttachment[]): Promise<void>;
+  queueMessage(
+    text: string,
+    images?: readonly PromptAttachment[],
+    fileReferences?: readonly AttachmentReference[],
+  ): Promise<void>;
   editRow(itemId: string, text: string): void;
   deleteRow(itemId: string): void;
   steerRow(itemId: string): void;
@@ -80,11 +84,8 @@ function answerNeverArrived(cause: unknown): boolean {
 
 /** The same picks, not the same picks again: a re-picked file is a new
  * attachment and therefore a new intent. */
-function sameImages(
-  before: readonly PromptAttachment[],
-  after: readonly PromptAttachment[],
-): boolean {
-  return before.length === after.length && before.every((image, at) => image === after[at]);
+function sameList<T>(before: readonly T[], after: readonly T[]): boolean {
+  return before.length === after.length && before.every((item, at) => item === after[at]);
 }
 
 /**
@@ -184,16 +185,21 @@ export function useMessageQueue(sessionId: string, options: MessageQueueOptions)
     readonly id: string;
     readonly text: string;
     readonly images: readonly PromptAttachment[];
+    readonly fileReferences: readonly AttachmentReference[];
   } | null>(null);
 
   const queueMessage = useCallback(
-    async (text: string, images: readonly PromptAttachment[] = []): Promise<void> => {
+    async (
+      text: string,
+      images: readonly PromptAttachment[] = [],
+      fileReferences: readonly AttachmentReference[] = [],
+    ): Promise<void> => {
       if (!optionsRef.current.supported) return;
       setError(null);
       const trimmed = text.trim();
       // The one check that stays here: a blank never leaves the composer, so
       // this text has nowhere else to be.
-      if (trimmed === "" && images.length === 0) {
+      if (trimmed === "" && images.length === 0 && fileReferences.length === 0) {
         setError(NOTHING_TO_QUEUE);
         optionsRef.current.onDraftBack(text, true, images);
         return;
@@ -201,12 +207,23 @@ export function useMessageQueue(sessionId: string, options: MessageQueueOptions)
       const lost = lostAddRef.current;
       lostAddRef.current = null;
       const clientOperationId =
-        lost !== null && lost.text === trimmed && sameImages(lost.images, images)
+        lost !== null &&
+        lost.text === trimmed &&
+        sameList(lost.images, images) &&
+        sameList(lost.fileReferences, fileReferences)
           ? lost.id
           : newOperationId();
-      const add = (attachmentReferences: readonly AttachmentReference[]) =>
+      // Composer images are deposited at queue time, like a send's: the add
+      // names what the deposits and the file uploads answered with, in that
+      // order.
+      const add = (imageReferences: readonly AttachmentReference[]) =>
         ask(
-          { kind: "add", text: trimmed, attachments: [], attachmentReferences },
+          {
+            kind: "add",
+            text: trimmed,
+            attachments: [],
+            attachmentReferences: [...imageReferences, ...fileReferences],
+          },
           clientOperationId,
         );
       try {
@@ -226,7 +243,7 @@ export function useMessageQueue(sessionId: string, options: MessageQueueOptions)
         // Only a lost answer leaves the daemon's state unknown; a refusal is an
         // answer, and the intent ended either way.
         lostAddRef.current = answerNeverArrived(cause)
-          ? { id: clientOperationId, text: trimmed, images }
+          ? { id: clientOperationId, text: trimmed, images, fileReferences }
           : null;
       }
     },

@@ -90,7 +90,7 @@ fn an_svg_reference_keeps_its_path_line_beside_an_inlined_png_reference() {
         plan.fallback_text,
         format!(
             "logo and photo\n\n[Image available at: {}]",
-            paths[1].display()
+            paths[1].path.display()
         ),
         "only the SVG keeps a line, and it comes last"
     );
@@ -138,7 +138,7 @@ fn an_svg_then_png_reference_order_groups_the_same_way_as_png_then_svg() {
         plan.fallback_text,
         format!(
             "logo and photo\n\n[Image available at: {}]",
-            paths[0].display()
+            paths[0].path.display()
         ),
         "the SVG line sits in the text even though it was listed first"
     );

@@ -210,6 +210,16 @@ pub struct AttachmentReference {
     /// daemon re-stats the file on disk and never uses this number for the
     /// budget it enforces.
     pub stored_bytes: u64,
+    /// The stored file's display name, sanitized
+    /// ([`crate::sanitize_attachment_name`]), for an uploaded file; empty for
+    /// an image deposit.
+    ///
+    /// Advisory, like `stored_bytes`. The daemon sanitizes it again before a
+    /// prompt line carries it, and the store never builds a path from it; it
+    /// travels so a prompt can name the file the person attached and a
+    /// transcript chip can show the name after a replay.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
 }
 
 /// The bytes of one stored attachment, as the daemon hands them back.
@@ -535,6 +545,76 @@ pub enum ClientMessage {
     SessionAttachmentRead {
         id: u64,
         reference: AttachmentReference,
+    },
+    /// Open one chunked file upload for a session, or adopt the one already in
+    /// progress under `upload_id`.
+    ///
+    /// `upload_id` is the **client's**, because a reconnect has to name the
+    /// same upload to resume it; it is a token
+    /// ([`crate::validate_upload_id`]). `name` is the display name on the
+    /// wire; the daemon sanitizes it before anything renders it. `total_bytes`
+    /// is the declared size, capped at [`crate::MAX_UPLOAD_BYTES`], and the
+    /// chunks are judged against it.
+    ///
+    /// The reply is [`DaemonMessage::SessionUploadProgress`] carrying the
+    /// offset the upload stands at: zero for a fresh one, the bytes already
+    /// received when the same id and the same declaration are opened again
+    /// after a lost acknowledgement.
+    SessionUploadBegin {
+        id: u64,
+        session_id: String,
+        upload_id: String,
+        name: String,
+        total_bytes: u64,
+    },
+    /// Ask how many bytes of an upload the daemon holds.
+    ///
+    /// A reconnect's first call: the reply
+    /// ([`DaemonMessage::SessionUploadProgress`]) is where the client
+    /// continues from, and an id the daemon no longer holds is refused with
+    /// the plain reason that the upload is not in progress.
+    SessionUploadStatus {
+        id: u64,
+        session_id: String,
+        upload_id: String,
+    },
+    /// Append one chunk at exactly the offset the upload stands at.
+    ///
+    /// `data` is base64 of at most [`crate::MAX_UPLOAD_CHUNK_BYTES`] raw
+    /// bytes. A chunk that does not start where the upload stands is refused
+    /// and the refusal names the offset it is at, never a blind retry: the
+    /// client asks [`ClientMessage::SessionUploadStatus`] and continues, or
+    /// aborts and starts again. The reply is
+    /// [`DaemonMessage::SessionUploadProgress`].
+    SessionUploadChunk {
+        id: u64,
+        session_id: String,
+        upload_id: String,
+        offset: u64,
+        data: String,
+    },
+    /// Close an upload whose every byte has arrived and answer the reference
+    /// to the stored file.
+    ///
+    /// The reply is [`DaemonMessage::SessionDeposited`], the same one a
+    /// one-frame [`ClientMessage::SessionDeposit`] answers with, so a
+    /// `session_send` refers to a chunked file exactly as it refers to an
+    /// image. The store content-addresses the bytes: an upload whose digest is
+    /// already stored adds no file and answers the existing reference.
+    SessionUploadFinish {
+        id: u64,
+        session_id: String,
+        upload_id: String,
+    },
+    /// Discard an upload and the bytes received so far.
+    ///
+    /// The reply is [`DaemonMessage::Ok`]. An id the daemon does not hold is
+    /// an `Ok`: there is nothing left to discard, which is what aborting
+    /// twice means.
+    SessionUploadAbort {
+        id: u64,
+        session_id: String,
+        upload_id: String,
     },
     SessionResize {
         id: u64,
@@ -1311,6 +1391,11 @@ impl ClientMessage {
             | Self::AgentMessageSend { id, .. }
             | Self::SessionDeposit { id, .. }
             | Self::SessionAttachmentRead { id, .. }
+            | Self::SessionUploadBegin { id, .. }
+            | Self::SessionUploadStatus { id, .. }
+            | Self::SessionUploadChunk { id, .. }
+            | Self::SessionUploadFinish { id, .. }
+            | Self::SessionUploadAbort { id, .. }
             | Self::SessionResize { id, .. }
             | Self::SessionInterrupt { id, .. }
             | Self::SessionSetModel { id, .. }
@@ -1430,6 +1515,11 @@ impl ClientMessage {
             | Self::SessionStop { .. }
             | Self::SessionDeposit { .. }
             | Self::SessionAttachmentRead { .. }
+            | Self::SessionUploadBegin { .. }
+            | Self::SessionUploadStatus { .. }
+            | Self::SessionUploadChunk { .. }
+            | Self::SessionUploadFinish { .. }
+            | Self::SessionUploadAbort { .. }
             | Self::SessionQueueAdd { .. }
             | Self::SessionQueueEdit { .. }
             | Self::SessionQueueRemove { .. }
@@ -1521,6 +1611,11 @@ impl ClientMessage {
             Self::AgentMessageSend { .. } => "AgentMessageSend",
             Self::SessionDeposit { .. } => "SessionDeposit",
             Self::SessionAttachmentRead { .. } => "SessionAttachmentRead",
+            Self::SessionUploadBegin { .. } => "SessionUploadBegin",
+            Self::SessionUploadStatus { .. } => "SessionUploadStatus",
+            Self::SessionUploadChunk { .. } => "SessionUploadChunk",
+            Self::SessionUploadFinish { .. } => "SessionUploadFinish",
+            Self::SessionUploadAbort { .. } => "SessionUploadAbort",
             Self::SessionResize { .. } => "SessionResize",
             Self::SessionInterrupt { .. } => "SessionInterrupt",
             Self::SessionSetModel { .. } => "SessionSetModel",
@@ -1619,6 +1714,7 @@ impl ClientMessage {
             | Self::DevicesList { .. }
             | Self::PeerAgentsList { .. }
             | Self::SessionAttachmentRead { .. }
+            | Self::SessionUploadStatus { .. }
             | Self::ToolPolicyGet { .. }
             | Self::AgentProfilesGet { .. }
             | Self::ProviderVocabularyGet { .. }
@@ -1641,6 +1737,10 @@ impl ClientMessage {
             | Self::SessionQueueSendNow { .. }
             | Self::AgentMessageSend { .. }
             | Self::SessionDeposit { .. }
+            | Self::SessionUploadBegin { .. }
+            | Self::SessionUploadChunk { .. }
+            | Self::SessionUploadFinish { .. }
+            | Self::SessionUploadAbort { .. }
             | Self::SessionResize { .. }
             | Self::SessionInterrupt { .. }
             | Self::SessionSetModel { .. }
@@ -1957,6 +2057,17 @@ pub enum DaemonMessage {
     SessionDeposited {
         id: u64,
         reference: AttachmentReference,
+    },
+    /// The reply to an upload frame that has not finished: the offset the
+    /// upload stands at.
+    ///
+    /// `received_bytes` is the store's own count of what arrived, which is why
+    /// the client continues from it rather than from a count it kept: a chunk
+    /// whose acknowledgement was lost is a chunk the daemon may or may not
+    /// hold, and only the daemon can say which.
+    SessionUploadProgress {
+        id: u64,
+        received_bytes: u64,
     },
     /// The reply to [`ClientMessage::SessionAttachmentRead`]: the stored
     /// bytes, base64, with the store's own MIME type for them.

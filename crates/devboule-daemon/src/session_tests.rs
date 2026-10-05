@@ -2449,6 +2449,7 @@ fn ownership_paths(
                         session_id: id.to_string(),
                         digest: "a".repeat(64),
                         stored_bytes: 0,
+                        name: String::new(),
                     },
                     owner,
                     conn,
@@ -2798,10 +2799,11 @@ fn a_daemon_peer_is_scoped_by_origin_and_delivers_agent_messages() {
 ///
 /// Frames that name a session but reach no row here — `SessionDetach`,
 /// `SessionDelete`, `SessionReportAgent`, `SessionResume`,
-/// `SessionsPresence` — are `None` on purpose: this harness calls the
-/// registry directly, and those five cannot be entered from it without the
-/// daemon's `ServerState` or a live process. Their ownership checks are
-/// covered where they live.
+/// `SessionsPresence` and the five upload frames — are `None` on purpose:
+/// this harness calls the registry directly, and those cannot be entered from
+/// it without the daemon's `ServerState` or a live process. Their ownership
+/// checks are covered where they live (`session_attachment_tests` for the
+/// upload doors).
 fn session_paths_of(request: &ClientMessage) -> Option<&'static [&'static str]> {
     match request {
         ClientMessage::SessionSend { .. } => Some(&["send"]),
@@ -2816,6 +2818,14 @@ fn session_paths_of(request: &ClientMessage) -> Option<&'static [&'static str]> 
         ClientMessage::SessionQueueSendNow { .. } => None,
         ClientMessage::SessionDeposit { .. } => Some(&["deposit"]),
         ClientMessage::SessionAttachmentRead { .. } => Some(&["read_attachment"]),
+        // The upload doors create their own state (a part file, a map entry),
+        // so this harness has no row for them; their ownership refusals live
+        // in `session_attachment_tests`.
+        ClientMessage::SessionUploadBegin { .. }
+        | ClientMessage::SessionUploadStatus { .. }
+        | ClientMessage::SessionUploadChunk { .. }
+        | ClientMessage::SessionUploadFinish { .. }
+        | ClientMessage::SessionUploadAbort { .. } => None,
         ClientMessage::AgentMessageSend { .. } => Some(&["agent_message_send"]),
         ClientMessage::SessionStop { .. } => Some(&["stop", "stop_with_subscription"]),
         ClientMessage::SessionClose { .. } => Some(&["close"]),

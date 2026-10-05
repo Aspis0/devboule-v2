@@ -44,6 +44,9 @@ pub(super) const RECOVERED_CUT_MARKER: &str = "the oldest turns were omitted";
 /// learns an image was there instead of reading a turn that never had one.
 const IMAGE_GONE_LINE: &str = "[Image no longer available]";
 
+/// The same for an uploaded file whose stored bytes are gone.
+const FILE_GONE_LINE: &str = "[Attached file no longer available]";
+
 /// One side of the conversation, as the renderer sees it. `id` is the
 /// message the provider chunked: two events carrying the same id are one turn,
 /// and two events with no id are two — a peer that does not name its messages
@@ -52,8 +55,9 @@ struct Turn {
     role: &'static str,
     id: Option<String>,
     text: String,
-    image_paths: Vec<std::path::PathBuf>,
+    references: Vec<super::ResolvedReference>,
     missing_images: usize,
+    missing_files: usize,
 }
 
 /// The recovered conversation and what happened to it on the way in.
@@ -123,13 +127,15 @@ fn conversation_turns(
         }
         // One missing file must not hide the resolved ones: each reference
         // resolves alone, under the rules the send path enforces.
-        let mut image_paths = Vec::with_capacity(images.len());
+        let mut resolved_references = Vec::with_capacity(images.len());
         let mut missing_images = 0;
+        let mut missing_files = 0;
         for reference in images {
             match resolve_attachment_references(store, session_id, std::slice::from_ref(reference))
             {
-                Ok(mut resolved) => image_paths.append(&mut resolved),
-                Err(_) => missing_images += 1,
+                Ok(mut resolved) => resolved_references.append(&mut resolved),
+                Err(_) if reference.name.is_empty() => missing_images += 1,
+                Err(_) => missing_files += 1,
             }
         }
         // Chunks of one message arrive as separate events carrying the same
@@ -139,15 +145,17 @@ fn conversation_turns(
         match turns.last_mut() {
             Some(last) if last.role == role && last.id.is_some() && last.id == id => {
                 last.text.push_str(text);
-                last.image_paths.extend(image_paths);
+                last.references.extend(resolved_references);
                 last.missing_images += missing_images;
+                last.missing_files += missing_files;
             }
             _ => turns.push(Turn {
                 role,
                 id,
                 text: text.to_string(),
-                image_paths,
+                references: resolved_references,
                 missing_images,
+                missing_files,
             }),
         }
     }
@@ -157,16 +165,18 @@ fn conversation_turns(
 fn rendered(turn: &Turn) -> String {
     let text = turn.text.trim_end();
     let mut line = format!("{}: {text}", turn.role);
-    push_reference_path_lines(&mut line, &turn.image_paths);
-    for index in 0..turn.missing_images {
-        // Beside other image lines, one break; after words, the paragraph
-        // break path lines use; on an image-only turn, the turn itself.
-        if index > 0 || !turn.image_paths.is_empty() {
+    push_reference_path_lines(&mut line, &turn.references);
+    let missing = std::iter::repeat_n(IMAGE_GONE_LINE, turn.missing_images)
+        .chain(std::iter::repeat_n(FILE_GONE_LINE, turn.missing_files));
+    for (index, marker) in missing.enumerate() {
+        // Beside other reference entries, one break; after words, the paragraph
+        // break path lines use; on a reference-only turn, the turn itself.
+        if index > 0 || !turn.references.is_empty() {
             line.push('\n');
         } else if !text.is_empty() {
             line.push_str("\n\n");
         }
-        line.push_str(IMAGE_GONE_LINE);
+        line.push_str(marker);
     }
     line
 }

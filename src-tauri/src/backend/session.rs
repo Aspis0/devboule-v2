@@ -374,6 +374,98 @@ pub async fn session_deposit(
     off_main_thread(move || client.session_deposit(&id, &attachment)).await
 }
 
+/// Open one chunked file upload, or adopt the one already in progress under
+/// `upload_id`, and answer the offset it stands at.
+///
+/// The forwarder is `session_deposit`'s, minus the attachment: the session is
+/// validated here under both names it travels by — the app's `id` and the
+/// frame's `sessionId` — the upload id is validated here by the same
+/// `validate_upload_id` the daemon runs, so a malformed token is refused
+/// instead of becoming a round trip, and the daemon's `Error` frame is mapped
+/// to a `CommandError` by the same `?`.
+#[tauri::command]
+pub async fn session_upload_begin(
+    bridge: State<'_, DaemonBridge>,
+    id: String,
+    session_id: String,
+    upload_id: String,
+    name: String,
+    total_bytes: u64,
+) -> Result<u64, CommandError> {
+    require_session_id(&id)?;
+    require_session_id(&session_id)?;
+    require_upload_id(&upload_id)?;
+    let client = require_client(&bridge)?;
+    off_main_thread(move || {
+        client.session_upload_begin(&session_id, &upload_id, &name, total_bytes)
+    })
+    .await
+}
+
+/// Ask how many bytes of one upload the daemon holds.
+#[tauri::command]
+pub async fn session_upload_status(
+    bridge: State<'_, DaemonBridge>,
+    id: String,
+    session_id: String,
+    upload_id: String,
+) -> Result<u64, CommandError> {
+    require_session_id(&id)?;
+    require_session_id(&session_id)?;
+    require_upload_id(&upload_id)?;
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.session_upload_status(&session_id, &upload_id)).await
+}
+
+/// Append one chunk of an upload at exactly the offset the upload stands at.
+#[tauri::command]
+pub async fn session_upload_chunk(
+    bridge: State<'_, DaemonBridge>,
+    id: String,
+    session_id: String,
+    upload_id: String,
+    offset: u64,
+    data: String,
+) -> Result<u64, CommandError> {
+    require_session_id(&id)?;
+    require_session_id(&session_id)?;
+    require_upload_id(&upload_id)?;
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.session_upload_chunk(&session_id, &upload_id, offset, &data))
+        .await
+}
+
+/// Close one fully received upload and answer the reference a send names.
+#[tauri::command]
+pub async fn session_upload_finish(
+    bridge: State<'_, DaemonBridge>,
+    id: String,
+    session_id: String,
+    upload_id: String,
+) -> Result<AttachmentReference, CommandError> {
+    require_session_id(&id)?;
+    require_session_id(&session_id)?;
+    require_upload_id(&upload_id)?;
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.session_upload_finish(&session_id, &upload_id)).await
+}
+
+/// Discard one upload and the bytes received so far. An id the daemon does not
+/// hold is an `Ok`: there is nothing left to discard.
+#[tauri::command]
+pub async fn session_upload_abort(
+    bridge: State<'_, DaemonBridge>,
+    id: String,
+    session_id: String,
+    upload_id: String,
+) -> Result<(), CommandError> {
+    require_session_id(&id)?;
+    require_session_id(&session_id)?;
+    require_upload_id(&upload_id)?;
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.session_upload_abort(&session_id, &upload_id)).await
+}
+
 /// Read back the bytes of one deposited attachment, by reference.
 ///
 /// The forwarder is `session_deposit`'s, minus the attachment: the reference
@@ -594,6 +686,18 @@ fn disconnected(message: String) -> CommandError {
 
 fn require_session_id(id: &str) -> Result<(), CommandError> {
     validate_session_id(id).map_err(|message| CommandError::new(ErrorCode::InvalidRequest, message))
+}
+
+/// The upload's client-chosen token, checked on this side of the pipe as well.
+///
+/// Same reason as [`require_attachment_limits`]: the daemon runs
+/// `validate_upload_id` on every upload frame, and an id this side invented
+/// wrong — empty, longer than 64 characters, or carrying a character outside
+/// the token alphabet — should cost the caller a rejection, not a round trip
+/// the daemon answers after the frame has already been queued.
+fn require_upload_id(upload_id: &str) -> Result<(), CommandError> {
+    devboule_protocol::validate_upload_id(upload_id)
+        .map_err(|message| CommandError::new(ErrorCode::InvalidRequest, message))
 }
 
 /// The send's retry identity, checked on this side of the pipe as well.
@@ -1052,6 +1156,7 @@ mod tests {
             session_id: session_id.to_string(),
             digest: digest.to_string(),
             stored_bytes: 1024,
+            name: String::new(),
         }
     }
 

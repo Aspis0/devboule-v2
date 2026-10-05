@@ -432,7 +432,11 @@ fn a_picked_skill_with_stored_references_sends_blocks_and_paths() {
         let store = store_dir.store();
         let raw = "/plotting sales.csv";
         let composed = format!("standing instructions\n\n{raw}");
-        let deck = PathBuf::from("/deck/sales.pdf");
+        let deck = crate::session::ResolvedReference {
+            path: PathBuf::from("/deck/sales.pdf"),
+            name: String::new(),
+            stored_bytes: 0,
+        };
         let plan = route
             .plan_prompt(
                 &store,

@@ -2724,7 +2724,7 @@ impl super::StaticImageSink for PiStaticPrompt {
         text: &str,
         _raw_text: &str,
         attachments: &[devboule_protocol::PromptAttachment],
-        reference_paths: &[PathBuf],
+        references: &[super::ResolvedReference],
     ) -> Result<Option<Box<dyn super::PlannedStaticPrompt>>, WireError> {
         // The catalog is read here, at prompt time: a model switched since
         // spawn must not be answered for with the inputs of the model that
@@ -2746,7 +2746,7 @@ impl super::StaticImageSink for PiStaticPrompt {
         };
         // References join this plan's text as path lines, never as `images[]`
         // entries: see `session::push_reference_path_lines`.
-        super::push_reference_path_lines(&mut plan.fallback_text, reference_paths);
+        super::push_reference_path_lines(&mut plan.fallback_text, references);
         Ok(Some(Box::new(PiPlannedPrompt {
             stdin: Arc::clone(&self.stdin),
             next_id: Arc::clone(&self.next_id),

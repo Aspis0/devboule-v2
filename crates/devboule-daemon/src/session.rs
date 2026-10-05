@@ -322,9 +322,9 @@ pub use session_items::{
 };
 pub(crate) use session_prompt_planning::StaticImageSink;
 use session_prompt_planning::{
-    plan_structured_prompt, prompt_text_with_fallback_paths, push_reference_path_lines,
-    resolve_attachment_references, with_attachment_paths, AcpImageBlock, AcpPromptSink,
-    ImageDelivery, PlannedStaticPrompt,
+    plan_structured_prompt, prompt_text_with_fallback_paths, push_reference_entries,
+    push_reference_path_lines, resolve_attachment_references, with_attachment_paths, AcpImageBlock,
+    AcpPromptSink, ImageDelivery, PlannedStaticPrompt, ResolvedReference,
 };
 use session_registry_state::{
     compose_first_prompt, AgentChild, AgentCreationTable, AgentCreatorCaps, ConnectionPresence,
@@ -819,6 +819,10 @@ pub struct SessionRegistry {
     /// are written here and never in the workspace: a workspace is a git
     /// checkout whose `git status` the user reads.
     attachments: AttachmentStore,
+    /// The chunked uploads still arriving. Part files are staged in the
+    /// session folders above; this is the offset and declaration state the
+    /// disk does not carry.
+    uploads: crate::attachment_upload::AttachmentUploads,
     transition_sink: Arc<Mutex<Option<TransitionSink>>>,
     presence: Arc<Mutex<HashMap<u64, ConnectionPresence>>>,
     /// Journal rows are the slow, mostly-static half of a roster. Keep them
@@ -945,8 +949,21 @@ impl SessionRegistry {
         &self,
         now: std::time::SystemTime,
     ) -> Vec<(String, Option<u64>)> {
-        self.attachments
-            .sweep_older_than(now, crate::attachment_store::ATTACHMENT_RETENTION)
+        let swept = self
+            .attachments
+            .sweep_older_than(now, crate::attachment_store::ATTACHMENT_RETENTION);
+        for (session_id, _) in &swept {
+            self.uploads.forget_session(session_id);
+        }
+        swept
+    }
+
+    /// Remove a closed session's attachment folder and any upload still staged
+    /// in it. One call, so no close path removes the bytes and leaves the
+    /// upload state naming a folder that is gone.
+    fn forget_session_attachments(&self, session_id: &str) -> Option<u64> {
+        self.uploads.forget_session(session_id);
+        self.attachments.remove_session(session_id)
     }
 
     pub(crate) fn pipe_name(&self) -> &str {
@@ -967,6 +984,7 @@ impl SessionRegistry {
             inner: Arc::new(Mutex::new(HashMap::new())),
             queues: session_queue::SessionQueues::new(epoch),
             attachments: AttachmentStore::new(&paths.dir),
+            uploads: crate::attachment_upload::AttachmentUploads::default(),
             paths,
             journal,
             transition_sink: Arc::new(Mutex::new(None)),
@@ -3456,7 +3474,7 @@ impl SessionRegistry {
                 // The attachments existed for this session's turns. Removing
                 // them here is the normal path; `sweep_attachments` on the next
                 // daemon start is the fallback for a close that never ran.
-                self.attachments.remove_session(session_id);
+                self.forget_session_attachments(session_id);
                 self.notify_session_transition(owner, session_id);
                 Ok(true)
             }
@@ -3471,7 +3489,7 @@ impl SessionRegistry {
                     journal.unpin(session_id);
                     self.invalidate_journal_roster();
                 }
-                self.attachments.remove_session(session_id);
+                self.forget_session_attachments(session_id);
                 self.notify_session_transition(owner, session_id);
                 Ok(false)
             }
@@ -3485,7 +3503,7 @@ impl SessionRegistry {
                         }
                         journal.try_mark_closed(session_id);
                         self.invalidate_journal_roster();
-                        self.attachments.remove_session(session_id);
+                        self.forget_session_attachments(session_id);
                         self.notify_session_transition(owner, session_id);
                         return Ok(false);
                     }

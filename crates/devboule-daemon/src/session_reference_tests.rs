@@ -225,6 +225,7 @@ fn a_reference_whose_digest_was_never_deposited_is_refused_not_dropped() {
         session_id: session_id.to_string(),
         digest: "a".repeat(64),
         stored_bytes: 4096,
+        name: String::new(),
     };
 
     let error = registry

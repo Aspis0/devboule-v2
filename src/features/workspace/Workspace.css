@@ -2059,6 +2059,93 @@
   display: none;
 }
 
+/* Composer file attachments: one chip per file with its size, its upload
+   state and a remove button. A chip that is not ready — an upload in flight,
+   or a refusal the user has to remove — holds the send off. */
+.workspace-composer-files {
+  display: flex;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+  margin-bottom: var(--space-2);
+}
+
+.workspace-composer-file-chip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  max-width: 100%;
+  padding: 2px var(--space-4) 2px var(--space-8);
+  color: var(--ink);
+  background: var(--panel-card);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-8);
+  font-size: var(--type-meta);
+}
+
+.workspace-composer-file-chip.is-refused {
+  border-color: var(--danger);
+}
+
+.workspace-composer-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-composer-file-size,
+.workspace-composer-file-state {
+  flex: none;
+  color: var(--muted);
+}
+
+.workspace-composer-file-refusal {
+  flex: none;
+  color: var(--danger);
+}
+
+.workspace-composer-file-remove {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: var(--control-icon-small);
+  height: var(--control-icon-small);
+  padding: 0;
+  color: var(--ink-soft);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  font-size: var(--type-meta);
+  line-height: 1;
+}
+
+.workspace-composer-file-remove:hover {
+  color: var(--ink);
+  background: var(--fill-hover);
+}
+
+.workspace-composer-file-remove:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.workspace-composer-file-remove:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+/* Composer files mid-send: the chips stay visible but wait for the answer. */
+.workspace-composer-images.is-sending .workspace-composer-file-chip {
+  opacity: 0.6;
+}
+
+/* A file dragged over the composer would be attached here. */
+.workspace-composer.is-drop-target {
+  border-color: var(--accent);
+  background: var(--fill-hover);
+}
+
 /* Composer images mid-send: picks stay visible but wait for the answer. */
 .workspace-composer-images.is-sending {
   opacity: 0.6;

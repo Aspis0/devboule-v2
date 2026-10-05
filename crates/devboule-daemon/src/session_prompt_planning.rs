@@ -16,7 +16,7 @@ use super::*;
 /// The prompt the writer receives: the user's text, a blank line, then one line
 /// per attachment naming the absolute path its bytes were written to.
 ///
-/// The line is the `[Image available at: <path>]` shape, and every
+/// The line is the `[Image available at: <path>]` shape, and every inline
 /// attachment gets one — including an SVG, which no provider accepts as an
 /// inline image block, so a path on disk is its only route to the agent both
 /// now and after the per-provider blocks land. Nothing else about the prompt
@@ -47,6 +47,21 @@ pub(super) fn with_attachment_paths(
     Ok(prompt)
 }
 
+/// One stored reference, resolved to the file a provider reads: the absolute
+/// path, the display name an uploaded file carries (empty for an image
+/// deposit) and the size the store states.
+///
+/// The name travels beside the path because the two renderers need it: an
+/// image is a path line, and an uploaded file is a named block the agent can
+/// match against what the person attached. The store never used the name as a
+/// path, so it is display data the whole way.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ResolvedReference {
+    pub path: PathBuf,
+    pub name: String,
+    pub stored_bytes: u64,
+}
+
 /// One `[Image available at: <path>]` line per path, separated by newlines.
 ///
 /// The one place that line is written, so the inline attachments and the
@@ -64,8 +79,8 @@ fn push_path_lines(prompt: &mut String, paths: &[PathBuf]) {
     }
 }
 
-/// Appends one path line per resolved reference to `prompt`, after whatever
-/// path lines it already carries.
+/// Appends one entry per resolved reference to `prompt`, after whatever path
+/// lines it already carries.
 ///
 /// The references come last and in the order the client listed them: every
 /// caller appends this after the inline attachments' own lines, which are the
@@ -74,6 +89,12 @@ fn push_path_lines(prompt: &mut String, paths: &[PathBuf]) {
 /// attachments first and the stored ones after them. An empty slice appends
 /// nothing, and a prompt with no references is byte for byte what it was
 /// before this existed.
+///
+/// An image deposit keeps the `[Image available at: <path>]` line it always
+/// had. An uploaded file gets Paseo's named block instead — the agent needs the
+/// name, the MIME and the size of a file it never previews, and that wording is
+/// the one the reference implementation shipped (`prompt-attachments.ts`,
+/// `uploaded_file`).
 ///
 /// # Why these routes keep a reference as a line
 ///
@@ -87,15 +108,54 @@ fn push_path_lines(prompt: &mut String, paths: &[PathBuf]) {
 /// composes what is left the same way this does (see
 /// `claude_client::plan_claude_prompt`).
 ///
-/// The path is the store's own absolute one. A reference carries a digest and
-/// a size and nothing else, so there is no client-supplied name here to quote
-/// and nothing untrusted to bound.
-pub(super) fn push_reference_path_lines(prompt: &mut String, reference_paths: &[PathBuf]) {
-    if reference_paths.is_empty() {
+/// The path is the store's own absolute one.
+pub(super) fn push_reference_path_lines(prompt: &mut String, references: &[ResolvedReference]) {
+    if references.is_empty() {
         return;
     }
     prompt.push_str("\n\n");
-    push_path_lines(prompt, reference_paths);
+    push_reference_entries(prompt, references);
+}
+
+/// The entries themselves, without the opening separator: one `[Image
+/// available at: …]` line per image deposit and one named block per uploaded
+/// file, in the order the client listed them. Split from
+/// [`push_reference_path_lines`] so a caller that opens its own block (Claude's
+/// fallback text) writes the same entries.
+pub(super) fn push_reference_entries(prompt: &mut String, references: &[ResolvedReference]) {
+    for (index, reference) in references.iter().enumerate() {
+        if index > 0 {
+            prompt.push('\n');
+        }
+        if reference.name.is_empty() {
+            prompt.push_str("[Image available at: ");
+            prompt.push_str(&reference.path.to_string_lossy());
+            prompt.push(']');
+        } else {
+            push_uploaded_file_block(prompt, reference);
+        }
+    }
+}
+
+/// One uploaded file, in Paseo's measured shape (`prompt-attachments.ts`,
+/// `uploaded_file`): the name the person saw, the absolute host path the agent
+/// reads, the MIME the store states from the extension and the stored size.
+fn push_uploaded_file_block(prompt: &mut String, reference: &ResolvedReference) {
+    let mime_type = reference
+        .path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .and_then(crate::attachment_store::mime_type_for_extension)
+        .unwrap_or("application/octet-stream");
+    prompt.push_str("Uploaded file: ");
+    prompt.push_str(&reference.name);
+    prompt.push_str("\nPath: ");
+    prompt.push_str(&reference.path.to_string_lossy());
+    prompt.push_str("\nMIME: ");
+    prompt.push_str(mime_type);
+    prompt.push_str("\nSize: ");
+    prompt.push_str(&reference.stored_bytes.to_string());
+    prompt.push_str(" bytes");
 }
 
 /// The paths of the stored attachments this request names, or the first reason
@@ -125,22 +185,27 @@ pub(super) fn resolve_attachment_references(
     store: &AttachmentStore,
     session_id: &str,
     references: &[AttachmentReference],
-) -> Result<Vec<PathBuf>, WireError> {
-    let mut paths = Vec::with_capacity(references.len());
+) -> Result<Vec<ResolvedReference>, WireError> {
+    let mut resolved = Vec::with_capacity(references.len());
     for reference in references {
-        // No extension hint: a reference carries a session, a digest and a
-        // size, and no MIME type, so this caller knows nothing that would name
-        // the file. The store's listing answers instead.
-        let (path, stored_bytes) = store.resolve(session_id, &reference.digest, None)?;
+        // The hint is the reference's own name, which is where an uploaded
+        // file's extension lives. An image deposit carries no name, so the
+        // store's listing answers as it always did.
+        let hint = crate::attachment_store::reference_extension_hint(reference);
+        let (path, stored_bytes) = store.resolve(session_id, &reference.digest, hint.as_deref())?;
         if stored_bytes != reference.stored_bytes {
             return Err(WireError::new(
                 ErrorCode::InvalidRequest,
                 stored_size_mismatch_message(reference, stored_bytes),
             ));
         }
-        paths.push(path);
+        resolved.push(ResolvedReference {
+            path,
+            name: reference.name.clone(),
+            stored_bytes,
+        });
     }
-    Ok(paths)
+    Ok(resolved)
 }
 
 /// The refusal for a reference whose `stored_bytes` is not the size the file
@@ -508,7 +573,7 @@ pub(crate) trait StaticImageSink: Send + Sync {
         text: &str,
         raw_text: &str,
         attachments: &[PromptAttachment],
-        reference_paths: &[PathBuf],
+        references: &[ResolvedReference],
     ) -> Result<Option<Box<dyn PlannedStaticPrompt>>, WireError>;
 }
 

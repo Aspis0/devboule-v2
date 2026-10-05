@@ -10,7 +10,9 @@
 //! agent's payload never enters — the only writes into a workspace are the
 //! user's named actions from the panel.
 //!
-//! Layout is `<runtime dir>/attachments/<session id>/<sha256>.<ext>`.
+//! Layout is `<runtime dir>/attachments/<session id>/<sha256>.<ext>`, with a
+//! chunked upload's staged bytes beside the stored ones as
+//! `upload-<id>.part` until its finish admits them.
 //!
 //! The file name is the sha256 of the bytes that were written, plus an
 //! extension taken from the MIME type. For an SVG those are the decoded bytes;
@@ -59,7 +61,8 @@ use std::time::{Duration, SystemTime};
 use base64::Engine;
 use devboule_protocol::{
     invalid_attachment_digest_message, invalid_base64_message, unsupported_attachment_type_message,
-    validate_session_id, ErrorCode, PromptAttachment, WireError, MAX_ATTACHMENT_OWNER_BYTES,
+    upload_extension, validate_session_id, AttachmentReference, ErrorCode, PromptAttachment,
+    WireError, MAX_ATTACHMENT_OWNER_BYTES,
 };
 use sha2::{Digest, Sha256};
 
@@ -667,9 +670,9 @@ impl AttachmentStore {
     /// session, a digest and a size, and no MIME type, so a caller often knows
     /// nothing that would name the file; when it does know, passing it here
     /// saves a `read_dir`, and when the hint is absent or wrong the folder's
-    /// listing answers instead. Only the three extensions this store writes are
-    /// ever built from a hint, so a hint cannot introduce a name the store did
-    /// not write.
+    /// listing answers instead. A hint is only ever an extension from the
+    /// store's own table or a safe bare extension
+    /// ([`safe_extension_hint`]), so it cannot climb out of the folder.
     ///
     /// The size is the file's own, read here: a stored attachment's size is
     /// the file's to state: the caller compares this
@@ -877,6 +880,88 @@ impl AttachmentStore {
             state.seeded = true;
         }
     }
+
+    /// The folder holding one session's attachments, created and narrowed, for
+    /// a caller that stages bytes beside the stored ones.
+    ///
+    /// A chunked upload writes a `.part` file into this folder before it has a
+    /// digest to store under, so it needs the folder made private before the
+    /// first byte rather than before the first admitted file. The same call
+    /// the store's own write path makes.
+    pub(crate) fn prepare_upload_dir(&self, session_id: &str) -> Result<PathBuf, WireError> {
+        let session = self.session(session_id).ok_or_else(no_such_session)?;
+        prepare_session_dir(&self.root, &session.dir)?;
+        Ok(session.dir)
+    }
+
+    /// Admit one staged upload as a stored attachment and report what was
+    /// written.
+    ///
+    /// The staged file is the bytes on disk and the digest is read from it, so
+    /// the name and the content cannot disagree. An upload whose digest and
+    /// extension are already stored adds no file: the staged copy is removed
+    /// and the existing file answers, which is what makes a retried finish
+    /// idempotent. The budget check and the rename are one critical section,
+    /// exactly as `admit_locked` keeps the check and the write.
+    ///
+    /// A refusal removes the staged copy: the upload cannot be retried in
+    /// place (the budget is a number the caller does not control and the digest
+    /// is already fixed), and leaving 50 MiB of unnameable scratch in the
+    /// folder would charge the budget the deposit was just refused for.
+    pub(crate) fn admit_upload(
+        &self,
+        session_id: &str,
+        name: &str,
+        staged: &Path,
+    ) -> Result<Deposited, WireError> {
+        let Some(session) = self.session(session_id) else {
+            return Err(no_such_session());
+        };
+        let extension = upload_extension(name).unwrap_or_else(|| "bin".to_string());
+        let digest = sha256_file(staged)?;
+        let path = session.dir.join(format!("{digest}.{extension}"));
+        let mut state = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        AttachmentStore::seed_locked(&self.root, &mut state);
+        if already_stored(&path)? {
+            let _ = std::fs::remove_file(staged);
+            return Ok(Deposited {
+                digest,
+                stored_bytes: stored_size(&path)?,
+                path,
+            });
+        }
+        let staged_bytes = staged_size(staged)?;
+        let Some(held) = store_total(&state) else {
+            let _ = std::fs::remove_file(staged);
+            return Err(budget_unknown());
+        };
+        let after = held.saturating_add(staged_bytes);
+        if after > MAX_ATTACHMENT_OWNER_BYTES as u64 {
+            let _ = std::fs::remove_file(staged);
+            return Err(over_budget(after));
+        }
+        let admitted = admit_staged(
+            &self.root,
+            &mut state,
+            session_id,
+            &session.dir,
+            &path,
+            staged,
+            staged_bytes,
+        );
+        if admitted.is_err() {
+            let _ = std::fs::remove_file(staged);
+        }
+        admitted?;
+        Ok(Deposited {
+            digest,
+            stored_bytes: stored_size(&path)?,
+            path,
+        })
+    }
 }
 
 /// What one accepted deposit produced.
@@ -989,6 +1074,50 @@ impl SessionAttachments {
         admit_locked(&self.root, &mut guard, &self.session_id, &path, &stored)?;
         Ok(path)
     }
+}
+
+/// Move one staged upload into its content-addressed name and charge it to
+/// the session, under the store's write lock.
+///
+/// Split from [`AttachmentStore::admit_upload`] so every refusal on the way —
+/// the folder's DACL, a redirect at the target — is one place that reports and
+/// one place the caller cleans the staged copy up after.
+fn admit_staged(
+    root: &Path,
+    state: &mut StoreState,
+    session_id: &str,
+    dir: &Path,
+    path: &Path,
+    staged: &Path,
+    staged_bytes: u64,
+) -> Result<(), WireError> {
+    prepare_session_dir(root, dir)?;
+    refuse_redirect(path, "the file this write would create")?;
+    // The scratch a killed write left is bytes the walk counts and no `resolve`
+    // can name; the store's own write path scrubs it for the same reason.
+    let scrubbed = discard_scratch(dir);
+    if scrubbed > 0 {
+        if let Some(SessionBytes::Known(bytes)) = state.sessions.get_mut(session_id) {
+            *bytes = bytes.saturating_sub(scrubbed);
+        }
+    }
+    // A rename, not a copy: the staged file is already on this volume and the
+    // target does not exist, so the agent can never observe a half-written
+    // file and no second copy of 50 MiB is made.
+    std::fs::rename(staged, path).map_err(|error| {
+        WireError::new(
+            ErrorCode::Io,
+            format!("Could not store an attached file: {error}"),
+        )
+    })?;
+    let entry = state
+        .sessions
+        .entry(session_id.to_string())
+        .or_insert(SessionBytes::Known(0));
+    if let SessionBytes::Known(bytes) = entry {
+        *bytes = bytes.saturating_add(staged_bytes);
+    }
+    Ok(())
 }
 
 /// Delete the scratch this store's own writer leaves behind, and report the bytes
@@ -1682,6 +1811,19 @@ pub(crate) fn extension_for(mime_type: &str) -> Option<&'static str> {
     }
 }
 
+/// The extension hint a reference names.
+///
+/// An uploaded file's display name carries the extension its bytes were stored
+/// under (or `bin` when the name had none), so a resolve can go straight to
+/// the file instead of listing the folder. An image deposit carries no name and
+/// the listing answers for it.
+pub(crate) fn reference_extension_hint(reference: &AttachmentReference) -> Option<String> {
+    if reference.name.is_empty() {
+        return None;
+    }
+    Some(upload_extension(&reference.name).unwrap_or_else(|| "bin".to_string()))
+}
+
 /// The MIME type the store's own extension names, for a read answer.
 ///
 /// The reverse of [`extension_for`], over the same table: the reply states
@@ -1695,6 +1837,28 @@ pub(crate) fn mime_type_for_extension(extension: &str) -> Option<&'static str> {
         "gif" => Some("image/gif"),
         "webp" => Some("image/webp"),
         "md" => Some("text/markdown"),
+        "pdf" => Some("application/pdf"),
+        "txt" | "log" => Some("text/plain"),
+        "csv" => Some("text/csv"),
+        "json" => Some("application/json"),
+        "xml" => Some("application/xml"),
+        "html" | "htm" => Some("text/html"),
+        "yaml" | "yml" => Some("application/yaml"),
+        "toml" => Some("application/toml"),
+        "zip" => Some("application/zip"),
+        "gz" => Some("application/gzip"),
+        "tar" => Some("application/x-tar"),
+        "doc" => Some("application/msword"),
+        "docx" => Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        "xls" => Some("application/vnd.ms-excel"),
+        "xlsx" => Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        "ppt" => Some("application/vnd.ms-powerpoint"),
+        "pptx" => Some("application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+        "mp3" => Some("audio/mpeg"),
+        "wav" => Some("audio/wav"),
+        "mp4" => Some("video/mp4"),
+        "mov" => Some("video/quicktime"),
+        "bin" => Some("application/octet-stream"),
         _ => None,
     }
 }
@@ -1718,10 +1882,12 @@ fn hinted_extension(hint: &str) -> Option<&'static str> {
 /// The file in one session folder that `digest` names, if it is there.
 ///
 /// The name is built and never taken: the stem is a validated digest, and the
-/// extension comes from the store's own table — or from `hint`, which is a type
-/// and not a path. Only one of the three extensions this store writes is ever
-/// joined to a digest, so a caller cannot widen the search by naming a file, and
-/// a hint that names anything else is simply not a shortcut this function takes.
+/// extension comes from the store's own table — or from `hint`, which is a
+/// type or a bare extension and not a path. A bare extension is only joined
+/// when its alphabet is small ([`safe_extension_hint`]: 1..=8 lowercase ASCII
+/// alphanumerics), and a MIME type is only joined when the store's table names
+/// its extension, so no spelling of a hint can reach outside one directory
+/// entry.
 ///
 /// The listing is what makes the answer independent of the hint: a reference
 /// carries a session, a digest and a size and no MIME type, so a caller often
@@ -1731,6 +1897,12 @@ fn hinted_extension(hint: &str) -> Option<&'static str> {
 /// the extension is not decoration: it is what makes those files not the file a
 /// digest names.
 fn find_stored(dir: &Path, digest: &str, hint: Option<&str>) -> Option<PathBuf> {
+    if let Some(extension) = hint.and_then(safe_extension_hint) {
+        let path = dir.join(format!("{digest}.{extension}"));
+        if is_regular_file(&path) {
+            return Some(path);
+        }
+    }
     if let Some(extension) = hint.and_then(hinted_extension) {
         let path = dir.join(format!("{digest}.{extension}"));
         // `is_regular_file` and not `is_file`: a link planted at the digest's
@@ -1754,6 +1926,18 @@ fn find_stored(dir: &Path, digest: &str, hint: Option<&str>) -> Option<PathBuf> 
     None
 }
 
+/// A bare extension a hint may name directly: 1..=8 lowercase ASCII
+/// alphanumerics. A MIME type never matches (it has a slash), so the store's
+/// own table still answers for those.
+fn safe_extension_hint(hint: &str) -> Option<&str> {
+    let safe = !hint.is_empty()
+        && hint.len() <= 8
+        && hint
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit());
+    safe.then_some(hint)
+}
+
 /// The size of a stored file, read from the filesystem rather than remembered.
 ///
 /// Every stored-byte number this file reports comes from here, so the size a
@@ -1772,6 +1956,54 @@ fn stored_size(path: &Path) -> Result<u64, WireError> {
             format!("Could not read a stored attachment's size: {error}"),
         )),
     }
+}
+
+/// The size of a staged upload file, read from the filesystem rather than
+/// remembered: the sender's declaration bounds the upload, and only the file
+/// says what arrived.
+fn staged_size(path: &Path) -> Result<u64, WireError> {
+    std::fs::metadata(path)
+        .map(|metadata| metadata.len())
+        .map_err(|error| {
+            WireError::new(
+                ErrorCode::Io,
+                format!("Could not read a staged upload: {error}"),
+            )
+        })
+}
+
+/// SHA-256 of a file, one streaming pass.
+///
+/// An upload is up to 50 MiB and is hashed where it lies, never loaded: the
+/// digest is the only thing the store needs from the bytes, and a second copy
+/// of the file in memory is what the chunked wire exists to avoid.
+fn sha256_file(path: &Path) -> Result<String, WireError> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).map_err(|error| {
+        WireError::new(
+            ErrorCode::Io,
+            format!("Could not read a staged upload: {error}"),
+        )
+    })?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(|error| {
+            WireError::new(
+                ErrorCode::Io,
+                format!("Could not read a staged upload: {error}"),
+            )
+        })?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 /// Every byte the store holds, summed over the sessions the cache knows, or

@@ -1423,7 +1423,7 @@ pub(super) fn claude_delivery() -> super::ImageDelivery {
 #[derive(Default)]
 struct ClaudeAttachmentSplit {
     images: Vec<super::AcpImageBlock>,
-    fallback_paths: Vec<PathBuf>,
+    fallback_references: Vec<super::ResolvedReference>,
     inline_base64: usize,
 }
 
@@ -1467,28 +1467,39 @@ impl ClaudeAttachmentSplit {
                 return Ok(());
             }
         }
-        self.fallback_paths.push(path.to_path_buf());
+        self.fallback_references.push(super::ResolvedReference {
+            path: path.to_path_buf(),
+            name: String::new(),
+            stored_bytes: std::fs::metadata(path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0),
+        });
         Ok(())
     }
 
     /// The digest the store named the file with is recomputed over what was read
     /// and the container comes from the signature; a mismatch keeps the path line.
-    fn push_reference(&mut self, path: &Path) -> Result<(), WireError> {
-        if let Some(bytes) = read_inline_candidate(path)? {
-            let named = path
-                .file_stem()
-                .and_then(std::ffi::OsStr::to_str)
-                .unwrap_or_default();
-            if named == crate::attachment_store::sha256_hex(&bytes) {
-                if let Some(raster) = crate::raster_metadata::sniff_raster_mime(&bytes) {
-                    let block = super::AcpImageBlock::from_bytes(&bytes, raster.as_mime_type());
-                    if self.take(block) {
-                        return Ok(());
+    /// An uploaded file (`name` non-empty) never inlines: it is not an image the
+    /// agent previews, it is a file the agent reads at the path the block names.
+    fn push_reference(&mut self, reference: &super::ResolvedReference) -> Result<(), WireError> {
+        if reference.name.is_empty() {
+            if let Some(bytes) = read_inline_candidate(&reference.path)? {
+                let named = reference
+                    .path
+                    .file_stem()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .unwrap_or_default();
+                if named == crate::attachment_store::sha256_hex(&bytes) {
+                    if let Some(raster) = crate::raster_metadata::sniff_raster_mime(&bytes) {
+                        let block = super::AcpImageBlock::from_bytes(&bytes, raster.as_mime_type());
+                        if self.take(block) {
+                            return Ok(());
+                        }
                     }
                 }
             }
         }
-        self.fallback_paths.push(path.to_path_buf());
+        self.fallback_references.push(reference.clone());
         Ok(())
     }
 
@@ -1526,9 +1537,9 @@ fn plan_claude_prompt(
     session_id: &str,
     text: &str,
     attachments: &[devboule_protocol::PromptAttachment],
-    reference_paths: &[PathBuf],
+    references: &[super::ResolvedReference],
 ) -> Result<Option<ClaudePromptPlan>, devboule_protocol::WireError> {
-    if attachments.is_empty() && reference_paths.is_empty() {
+    if attachments.is_empty() && references.is_empty() {
         return Ok(None);
     }
     // The static gate, read through the shared enum so a later change to
@@ -1548,11 +1559,16 @@ fn plan_claude_prompt(
         let path = session.materialize(attachment)?;
         split.push_attachment(&path, attachment.mime_type.as_str())?;
     }
-    for path in reference_paths {
-        split.push_reference(path)?;
+    for reference in references {
+        split.push_reference(reference)?;
+    }
+    let mut fallback_text = text.to_string();
+    if !split.fallback_references.is_empty() {
+        fallback_text.push_str("\n\n");
+        super::push_reference_entries(&mut fallback_text, &split.fallback_references);
     }
     Ok(Some(ClaudePromptPlan {
-        fallback_text: super::prompt_text_with_fallback_paths(text, &split.fallback_paths),
+        fallback_text,
         images: split.images,
     }))
 }
@@ -1606,9 +1622,9 @@ impl super::StaticImageSink for ClaudeStaticPrompt {
         text: &str,
         _raw_text: &str,
         attachments: &[devboule_protocol::PromptAttachment],
-        reference_paths: &[PathBuf],
+        references: &[super::ResolvedReference],
     ) -> Result<Option<Box<dyn super::PlannedStaticPrompt>>, WireError> {
-        let Some(plan) = plan_claude_prompt(store, session_id, text, attachments, reference_paths)?
+        let Some(plan) = plan_claude_prompt(store, session_id, text, attachments, references)?
         else {
             return Ok(None);
         };

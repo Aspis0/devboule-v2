@@ -49,7 +49,7 @@ fn a_same_size_replaced_reference_is_not_inlined() {
         plan.fallback_text,
         format!(
             "look at this\n\n[Image available at: {}]",
-            paths[0].display()
+            paths[0].path.display()
         ),
         "the replaced file keeps its path line"
     );
@@ -79,7 +79,7 @@ fn a_reference_replaced_by_an_over_cap_file_is_not_inlined() {
         plan.fallback_text,
         format!(
             "look at this\n\n[Image available at: {}]",
-            paths[0].display()
+            paths[0].path.display()
         )
     );
 }
@@ -126,10 +126,11 @@ fn a_png_named_file_with_svg_bytes_is_not_inlined() {
         session_id: session_id.to_string(),
         digest,
         stored_bytes: svg_bytes.len() as u64,
+        name: String::new(),
     };
     let paths = resolve_attachment_references(&store, session_id, std::slice::from_ref(&reference))
         .expect("resolved");
-    assert_eq!(paths[0], mislabeled);
+    assert_eq!(paths[0].path, mislabeled);
     let plan = plan_claude_prompt(&store, session_id, "look at this", &[], &paths)
         .expect("planned")
         .expect("a reference still plans a frame");
@@ -169,7 +170,7 @@ fn a_reference_over_the_per_image_cap_keeps_its_path_line() {
         .expect("resolved");
     {
         use base64::Engine;
-        let stored_bytes = std::fs::read(&paths[0]).expect("stored bytes");
+        let stored_bytes = std::fs::read(&paths[0].path).expect("stored bytes");
         assert!(
             base64::engine::general_purpose::STANDARD
                 .encode(&stored_bytes)
@@ -189,7 +190,7 @@ fn a_reference_over_the_per_image_cap_keeps_its_path_line() {
         plan.fallback_text,
         format!(
             "one huge file\n\n[Image available at: {}]",
-            paths[0].display()
+            paths[0].path.display()
         ),
         "the over-cap reference keeps its path line"
     );
@@ -228,7 +229,7 @@ fn stored_references_inline_only_inside_the_shared_aggregate_cap() {
         plan.fallback_text,
         format!(
             "three big files\n\n[Image available at: {}]",
-            paths[2].display()
+            paths[2].path.display()
         ),
         "the reference over the budget keeps its path line"
     );
@@ -274,7 +275,10 @@ fn stored_references_stop_at_the_attachment_count_cap() {
     );
     assert_eq!(
         plan.fallback_text,
-        format!("five tiles\n\n[Image available at: {}]", paths[4].display()),
+        format!(
+            "five tiles\n\n[Image available at: {}]",
+            paths[4].path.display()
+        ),
         "the reference past the count cap keeps its path line"
     );
 }
@@ -320,7 +324,7 @@ fn the_aggregate_budget_is_shared_by_a_fresh_image_and_references() {
         plan.fallback_text,
         format!(
             "fresh and stored\n\n[Image available at: {}]",
-            paths[1].display()
+            paths[1].path.display()
         ),
         "the second reference steps over the shared aggregate"
     );

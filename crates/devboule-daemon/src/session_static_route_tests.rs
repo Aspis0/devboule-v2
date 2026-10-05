@@ -45,7 +45,7 @@ impl StaticImageSink for RecordingStaticSink {
         _text: &str,
         _raw_text: &str,
         _attachments: &[PromptAttachment],
-        reference_paths: &[PathBuf],
+        reference_paths: &[ResolvedReference],
     ) -> Result<Option<Box<dyn PlannedStaticPrompt>>, WireError> {
         self.calls.fetch_add(1, Ordering::AcqRel);
         Ok(self.answer.map(|text| {
@@ -351,7 +351,7 @@ impl StaticImageSink for RawKeepingSink {
         text: &str,
         raw_text: &str,
         _attachments: &[PromptAttachment],
-        _reference_paths: &[PathBuf],
+        _reference_paths: &[ResolvedReference],
     ) -> Result<Option<Box<dyn PlannedStaticPrompt>>, WireError> {
         self.seen
             .lock()

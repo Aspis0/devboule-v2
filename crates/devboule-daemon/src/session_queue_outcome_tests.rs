@@ -24,6 +24,7 @@ fn a_refused_head_is_not_sent_again_until_a_client_acts() {
         session_id: id.clone(),
         digest: "b".repeat(64),
         stored_bytes: 12,
+        name: String::new(),
     };
     registry
         .queue_add(

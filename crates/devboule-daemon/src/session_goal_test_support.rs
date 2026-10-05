@@ -118,5 +118,6 @@ pub(super) fn stored_reference(session_id: &str) -> AttachmentReference {
         session_id: session_id.to_string(),
         digest: "a".repeat(64),
         stored_bytes: 1024,
+        name: String::new(),
     }
 }

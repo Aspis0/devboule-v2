@@ -1984,6 +1984,7 @@ fn user_message_images_round_trip_and_are_skipped_when_empty() {
         session_id: "s.owner.chat1".to_string(),
         digest: "a".repeat(64),
         stored_bytes: 1234,
+        name: String::new(),
     };
     let with_images = SessionEvent::AgentUserMessage {
         message_id: Some("devboule-user-1-9".to_string()),

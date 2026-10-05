@@ -75,6 +75,24 @@ fn write_failed(attempted: WriteAttempt) -> SendError {
     }
 }
 
+/// The references a transcript echo carries: the digests and sizes verbatim,
+/// and every uploaded file's display name sanitized, so a name a client sent
+/// reaches a chip in the same shape it reaches a prompt line.
+fn sanitized_references(references: &[AttachmentReference]) -> Vec<AttachmentReference> {
+    references
+        .iter()
+        .map(|reference| {
+            if reference.name.is_empty() {
+                return reference.clone();
+            }
+            AttachmentReference {
+                name: devboule_protocol::sanitize_attachment_name(&reference.name),
+                ..reference.clone()
+            }
+        })
+        .collect()
+}
+
 /// The refusal an interrupting send from a connection that may not interrupt
 /// gets. `interrupt` is the act `SessionInterrupt` decides and no capability
 /// opens to a peer, so it must not arrive the long way round through a send's
@@ -168,7 +186,113 @@ impl super::SessionRegistry {
             session_id: session_id.to_string(),
             digest: deposited.digest,
             stored_bytes: deposited.stored_bytes,
+            name: String::new(),
         })
+    }
+
+    /// Open one chunked file upload for a session, or adopt the one already in
+    /// progress under `upload_id`, and answer the offset it stands at.
+    pub(crate) fn begin_upload(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        conn: &ConnHandle,
+        upload_id: &str,
+        name: &str,
+        total_bytes: u64,
+    ) -> Result<u64, WireError> {
+        self.check_upload_owner(session_id, owner, conn)?;
+        self.uploads
+            .begin(&self.attachments, session_id, upload_id, name, total_bytes)
+    }
+
+    /// How many bytes of one upload the daemon holds.
+    pub(crate) fn upload_status(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        conn: &ConnHandle,
+        upload_id: &str,
+    ) -> Result<u64, WireError> {
+        self.check_upload_owner(session_id, owner, conn)?;
+        self.uploads.status(session_id, upload_id)
+    }
+
+    /// Append one chunk at exactly the offset the upload stands at.
+    pub(crate) fn upload_chunk(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        conn: &ConnHandle,
+        upload_id: &str,
+        offset: u64,
+        data: &str,
+    ) -> Result<u64, WireError> {
+        self.check_upload_owner(session_id, owner, conn)?;
+        self.uploads.chunk(session_id, upload_id, offset, data)
+    }
+
+    /// Close one fully received upload and answer the reference a send names.
+    pub(crate) fn finish_upload(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        conn: &ConnHandle,
+        upload_id: &str,
+    ) -> Result<AttachmentReference, WireError> {
+        self.check_upload_owner(session_id, owner, conn)?;
+        let (deposited, name) = self
+            .uploads
+            .finish(&self.attachments, session_id, upload_id)?;
+        // The same close race the deposit door closes: the store wrote outside
+        // the registry lock, so a close that landed in the meantime has already
+        // removed the session's folder and the file just admitted belongs to a
+        // session that no longer exists.
+        let gone = {
+            let map = self
+                .inner
+                .lock()
+                .map_err(|_| internal("Session state is unavailable."))?;
+            map.get(session_id).is_none()
+        };
+        if gone {
+            self.attachments.remove_session(session_id);
+            return Err(not_found());
+        }
+        Ok(AttachmentReference {
+            session_id: session_id.to_string(),
+            digest: deposited.digest,
+            stored_bytes: deposited.stored_bytes,
+            name,
+        })
+    }
+
+    /// Discard one upload and the bytes received so far.
+    pub(crate) fn abort_upload(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        conn: &ConnHandle,
+        upload_id: &str,
+    ) -> Result<(), WireError> {
+        self.check_upload_owner(session_id, owner, conn)?;
+        self.uploads.abort(session_id, upload_id)
+    }
+
+    /// The ownership door every upload frame walks, in the order the deposit
+    /// walks it: the session must be live and the caller's own scope must own it.
+    fn check_upload_owner(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        conn: &ConnHandle,
+    ) -> Result<(), WireError> {
+        let map = self
+            .inner
+            .lock()
+            .map_err(|_| internal("Session state is unavailable."))?;
+        let entry = map.get(session_id).ok_or_else(not_found)?;
+        check_user_owner(entry, owner, &conn.conn_peer)
     }
 
     /// Read back the bytes of one deposited attachment, verified.
@@ -211,9 +335,11 @@ impl super::SessionRegistry {
         }
         validate_attachment_references(&reference.session_id, std::slice::from_ref(reference))
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
-        let (path, _) = self
-            .attachments
-            .resolve(&reference.session_id, &reference.digest, None)?;
+        let (path, _) = self.attachments.resolve(
+            &reference.session_id,
+            &reference.digest,
+            crate::attachment_store::reference_extension_hint(reference).as_deref(),
+        )?;
         if reference.stored_bytes > MAX_AGENT_ARTIFACT_BYTES as u64 {
             return Err(WireError::new(
                 ErrorCode::InvalidRequest,
@@ -1412,7 +1538,10 @@ impl super::SessionRegistry {
                 // other kind journals the prompt as sent, path lines included.
                 // Neither carries the base64.
                 let (journaled, images) = if message_kind.is_user_turn() {
-                    (raw_text.to_string(), attachment_references.to_vec())
+                    (
+                        raw_text.to_string(),
+                        sanitized_references(attachment_references),
+                    )
                 } else {
                     (prompt.clone(), Vec::new())
                 };

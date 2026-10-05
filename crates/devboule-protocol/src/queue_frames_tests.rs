@@ -171,6 +171,7 @@ fn the_snapshot_event_names_its_epoch_revision_and_rows() {
                 session_id: "s.a.1".to_string(),
                 digest: "a".repeat(64),
                 stored_bytes: 12,
+                name: String::new(),
             }],
             error: Some("refused".to_string()),
         }],

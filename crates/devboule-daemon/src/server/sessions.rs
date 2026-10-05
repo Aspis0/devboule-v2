@@ -561,6 +561,78 @@ pub(super) fn dispatch_session(
             audit_peer_unauthorized(state, conn, "SessionDeposit", Some(session_id), &reply);
             reply
         }
+        // The chunked upload half of the same door: ownership, then the
+        // wire's per-frame rules inside the upload state, then the store on
+        // `finish`. No audit call on these arms: a peer's upload is refused
+        // by `peer_refusal_before_mode` before it can reach a handler.
+        ClientMessage::SessionUploadBegin {
+            id,
+            session_id,
+            upload_id,
+            name,
+            total_bytes,
+        } => reply_result(
+            id,
+            state
+                .sessions
+                .begin_upload(&session_id, owner, conn, &upload_id, &name, total_bytes)
+                .map(|received_bytes| DaemonMessage::SessionUploadProgress {
+                    id,
+                    received_bytes,
+                }),
+        ),
+        ClientMessage::SessionUploadStatus {
+            id,
+            session_id,
+            upload_id,
+        } => reply_result(
+            id,
+            state
+                .sessions
+                .upload_status(&session_id, owner, conn, &upload_id)
+                .map(|received_bytes| DaemonMessage::SessionUploadProgress {
+                    id,
+                    received_bytes,
+                }),
+        ),
+        ClientMessage::SessionUploadChunk {
+            id,
+            session_id,
+            upload_id,
+            offset,
+            data,
+        } => reply_result(
+            id,
+            state
+                .sessions
+                .upload_chunk(&session_id, owner, conn, &upload_id, offset, &data)
+                .map(|received_bytes| DaemonMessage::SessionUploadProgress {
+                    id,
+                    received_bytes,
+                }),
+        ),
+        ClientMessage::SessionUploadFinish {
+            id,
+            session_id,
+            upload_id,
+        } => reply_result(
+            id,
+            state
+                .sessions
+                .finish_upload(&session_id, owner, conn, &upload_id)
+                .map(|reference| DaemonMessage::SessionDeposited { id, reference }),
+        ),
+        ClientMessage::SessionUploadAbort {
+            id,
+            session_id,
+            upload_id,
+        } => reply_result(
+            id,
+            state
+                .sessions
+                .abort_upload(&session_id, owner, conn, &upload_id)
+                .map(|()| DaemonMessage::Ok { id }),
+        ),
         // The read half of the deposit: ownership is checked where the
         // deposit checks it, inside `read_attachment`, so a reference
         // resolves only in a session the caller's own scope owns.

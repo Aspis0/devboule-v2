@@ -173,6 +173,28 @@ export type CommandArgs = {
     attachmentReferences?: readonly AttachmentReference[];
   };
   session_deposit: { id: Id; attachment: PromptAttachment };
+  /**
+   * The upload id is the caller's token: letters, digits, `-` and `_`, 1 to 64
+   * of them. The daemon answers the offset the upload stands at, so opening the
+   * same id and declaration again resumes instead of starting over.
+   */
+  session_upload_begin: {
+    id: Id;
+    sessionId: string;
+    uploadId: string;
+    name: string;
+    totalBytes: number;
+  };
+  session_upload_status: { id: Id; sessionId: string; uploadId: string };
+  session_upload_chunk: {
+    id: Id;
+    sessionId: string;
+    uploadId: string;
+    offset: number;
+    data: string;
+  };
+  session_upload_finish: { id: Id; sessionId: string; uploadId: string };
+  session_upload_abort: { id: Id; sessionId: string; uploadId: string };
   session_queue_add: {
     id: Id;
     /**
@@ -364,6 +386,14 @@ type CommandResults = {
   session_send: boolean;
   /** The reference to the bytes the deposit stored, exactly as the daemon stated it. */
   session_deposit: AttachmentReference;
+  /** The offset the upload stands at: 0 for a fresh one, the bytes received when adopted. */
+  session_upload_begin: number;
+  session_upload_status: number;
+  /** The offset after this chunk landed. */
+  session_upload_chunk: number;
+  /** The reference the stored file is named by, `name` included. */
+  session_upload_finish: AttachmentReference;
+  session_upload_abort: void;
   session_queue_add: void;
   session_queue_edit: void;
   session_queue_remove: void;
@@ -547,6 +577,11 @@ export const COMMAND_ARG_KEYS = {
     "idempotencyKey",
   ],
   session_deposit: ["id", "attachment"],
+  session_upload_begin: ["id", "sessionId", "uploadId", "name", "totalBytes"],
+  session_upload_status: ["id", "sessionId", "uploadId"],
+  session_upload_chunk: ["id", "sessionId", "uploadId", "offset", "data"],
+  session_upload_finish: ["id", "sessionId", "uploadId"],
+  session_upload_abort: ["id", "sessionId", "uploadId"],
   session_queue_add: ["id", "clientOperationId", "text", "attachments", "attachmentReferences"],
   session_queue_edit: ["id", "clientOperationId", "itemId", "text"],
   session_queue_remove: ["id", "clientOperationId", "itemId"],
@@ -992,6 +1027,38 @@ export const sessionSend = (
  */
 export const sessionDeposit = (id: Id, attachment: PromptAttachment) =>
   invokeTyped("session_deposit", { id, attachment });
+
+/**
+ * The chunked alternative to `session_deposit`, for a file whose bytes do not
+ * fit one frame. Five frames, one upload: `session_upload_begin` opens it (or
+ * adopts the one already in progress under the same id and declaration) and
+ * names the offset it stands at, `session_upload_chunk` appends at exactly that
+ * offset, `session_upload_finish` answers the reference a send then names, and
+ * `session_upload_abort` discards what arrived.
+ *
+ * The daemon sanitizes the display name it was begun with and the finish
+ * answers it back on the reference, so the caller never derives one.
+ */
+export const sessionUploadBegin = (
+  id: Id,
+  sessionId: string,
+  uploadId: string,
+  name: string,
+  totalBytes: number,
+) => invokeTyped("session_upload_begin", { id, sessionId, uploadId, name, totalBytes });
+export const sessionUploadStatus = (id: Id, sessionId: string, uploadId: string) =>
+  invokeTyped("session_upload_status", { id, sessionId, uploadId });
+export const sessionUploadChunk = (
+  id: Id,
+  sessionId: string,
+  uploadId: string,
+  offset: number,
+  data: string,
+) => invokeTyped("session_upload_chunk", { id, sessionId, uploadId, offset, data });
+export const sessionUploadFinish = (id: Id, sessionId: string, uploadId: string) =>
+  invokeTyped("session_upload_finish", { id, sessionId, uploadId });
+export const sessionUploadAbort = (id: Id, sessionId: string, uploadId: string) =>
+  invokeTyped("session_upload_abort", { id, sessionId, uploadId });
 
 /**
  * The shared follow-up queue (protocol 22, `session.queue`). Five frames,

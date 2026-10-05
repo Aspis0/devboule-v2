@@ -891,6 +891,14 @@ export interface AttachmentReference {
   digest: string;
   /** The stored file's size, in bytes. */
   storedBytes: number;
+  /**
+   * The stored file's display name, sanitized by the daemon, for a file that
+   * rode the chunked upload; absent for an image deposit. Advisory, like
+   * `storedBytes`: the daemon sanitizes it again before a prompt line carries
+   * it. The wire omits it when empty, so a reference this side derives or
+   * reads back for an image has no key at all.
+   */
+  name?: string;
 }
 
 /**

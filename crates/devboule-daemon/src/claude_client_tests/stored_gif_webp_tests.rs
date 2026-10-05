@@ -13,7 +13,6 @@ use crate::raster_metadata::container_fixtures::{
 use crate::session::session_prompt_planning::resolve_attachment_references;
 use base64::Engine;
 use serde_json::Value;
-use std::path::PathBuf;
 
 const EXIF: u8 = 0x08;
 const SVG: &[u8] = b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
@@ -48,7 +47,7 @@ fn store_references(
     store: &AttachmentStore,
     session_id: &str,
     items: &[(&str, &str, &[u8])],
-) -> Vec<PathBuf> {
+) -> Vec<crate::session::ResolvedReference> {
     let references: Vec<_> = items
         .iter()
         .map(|(name, mime_type, bytes)| {
@@ -180,7 +179,7 @@ fn a_png_gif_and_svg_mix_gives_two_blocks_and_one_path_line() {
         plan.fallback_text,
         format!(
             "three files\n\n[Image available at: {}]",
-            paths[2].display()
+            paths[2].path.display()
         ),
         "only the SVG keeps a line"
     );
@@ -218,8 +217,8 @@ fn a_gif_or_webp_over_the_per_image_cap_keeps_its_path_line() {
         plan.fallback_text,
         format!(
             "two huge files\n\n[Image available at: {}]\n[Image available at: {}]",
-            paths[0].display(),
-            paths[1].display()
+            paths[0].path.display(),
+            paths[1].path.display()
         ),
         "each over-cap reference keeps its path line"
     );
@@ -248,6 +247,7 @@ fn a_gif_named_file_with_other_bytes_is_not_inlined() {
         session_id: session_id.to_string(),
         digest,
         stored_bytes: SVG.len() as u64,
+        name: String::new(),
     };
     let paths = resolve_attachment_references(&store, session_id, std::slice::from_ref(&reference))
         .expect("resolved");

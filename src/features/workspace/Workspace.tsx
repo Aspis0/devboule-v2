@@ -151,6 +151,8 @@ const WORKSPACE_GIT_LOG = "workspace.git_log";
 const SESSION_QUEUE_CAPABILITY = "session.queue";
 /** The negotiated capability GIF and WebP attachments are gated on. */
 const ATTACHMENTS_GIF_WEBP_CAPABILITY = "attachments.gif_webp";
+/** The negotiated capability the composer's chunked file upload is gated on. */
+const ATTACHMENTS_UPLOAD_CAPABILITY = "attachments.upload";
 
 export { WorkspacePermissionCard, formatPermissionCommand };
 
@@ -309,6 +311,7 @@ export function Workspace({
   const peerNames = useMemo(() => peerDeviceNames(devices.peers), [devices]);
   const queueSupported = daemon.capabilities.includes(SESSION_QUEUE_CAPABILITY);
   const gifWebpSupported = daemon.capabilities.includes(ATTACHMENTS_GIF_WEBP_CAPABILITY);
+  const fileUploadSupported = daemon.capabilities.includes(ATTACHMENTS_UPLOAD_CAPABILITY);
   // The empty provider picker's action hands the user to Settings → Providers
   // (the surface opens on that tab), so the flow needs the app's one switcher.
   const selectSurface = useAppStore((state) => state.selectSurface);
@@ -2164,6 +2167,7 @@ export function Workspace({
                   // Enter mid-turn queues instead of interrupting.
                   queueSupported={queueSupported}
                   gifWebpSupported={gifWebpSupported}
+                  fileUploadSupported={fileUploadSupported}
                   auxiliary={
                     selectedPermission !== null ? (
                       <WorkspacePermissionCard

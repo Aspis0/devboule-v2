@@ -1108,7 +1108,7 @@ impl super::StaticImageSink for CodexStaticPrompt {
         text: &str,
         raw_text: &str,
         attachments: &[devboule_protocol::PromptAttachment],
-        reference_paths: &[std::path::PathBuf],
+        references: &[super::ResolvedReference],
     ) -> Result<Option<Box<dyn super::PlannedStaticPrompt>>, WireError> {
         match plan_codex_prompt(store, session_id, text, attachments)? {
             Some(mut plan) => {
@@ -1120,7 +1120,7 @@ impl super::StaticImageSink for CodexStaticPrompt {
                     state: Arc::clone(&self.state),
                     plan,
                 };
-                planned.append_reference_path_lines(reference_paths);
+                planned.append_reference_path_lines(references);
                 Ok(Some(Box::new(planned)))
             }
             None => {
@@ -1147,7 +1147,7 @@ impl super::StaticImageSink for CodexStaticPrompt {
                         command_input: Some(input),
                     },
                 };
-                planned.append_reference_path_lines(reference_paths);
+                planned.append_reference_path_lines(references);
                 Ok(Some(Box::new(planned)))
             }
         }
@@ -1182,9 +1182,9 @@ impl CodexPlannedPrompt {
     /// The references join this plan's text as path lines, after the fallback
     /// lines its own attachments left there and never as `localImage` paths:
     /// see `session::push_reference_path_lines`.
-    fn append_reference_path_lines(&mut self, reference_paths: &[std::path::PathBuf]) {
+    fn append_reference_path_lines(&mut self, references: &[super::ResolvedReference]) {
         let original_len = self.plan.fallback_text.len();
-        super::push_reference_path_lines(&mut self.plan.fallback_text, reference_paths);
+        super::push_reference_path_lines(&mut self.plan.fallback_text, references);
         if let Some(input) = self.plan.command_input.as_mut() {
             let added = &self.plan.fallback_text[original_len..];
             if let Some(block) = input

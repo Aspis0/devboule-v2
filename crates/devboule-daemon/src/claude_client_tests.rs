@@ -1918,6 +1918,7 @@ fn reference_for(session_id: &str, path: &Path) -> AttachmentReference {
         session_id: session_id.to_string(),
         digest: crate::attachment_store::sha256_hex(&bytes),
         stored_bytes: bytes.len() as u64,
+        name: String::new(),
     }
 }
 

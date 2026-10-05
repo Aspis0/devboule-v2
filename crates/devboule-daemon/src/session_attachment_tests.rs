@@ -1200,3 +1200,113 @@ fn a_send_with_references_journals_the_users_text_without_path_lines() {
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A chunked file upload by the session's owner answers a reference whose
+/// name is the sanitized display name, and the prompt the send plan builds
+/// carries Paseo's named block with the path the agent reads.
+#[test]
+fn an_owners_chunked_upload_reaches_the_prompt_as_a_named_block() {
+    use base64::Engine as _;
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-upload-owner", "process-upload");
+    let id = compose_session_id(&owner.session_token(), "uplo01").expect("id");
+    insert_live(&registry, &id, owner.clone());
+    let conn = ConnHandle::new(4);
+    let bytes: Vec<u8> = b"%PDF-1.4 quarterly numbers".to_vec();
+    let total = bytes.len() as u64;
+    let encoded = |slice: &[u8]| base64::engine::general_purpose::STANDARD.encode(slice);
+    let split = bytes.len() / 2;
+
+    assert_eq!(
+        registry
+            .begin_upload(
+                &id,
+                &owner,
+                &conn,
+                "up-own-1",
+                "quarterly report.pdf",
+                total
+            )
+            .expect("the owner may open an upload"),
+        0
+    );
+    assert_eq!(
+        registry
+            .upload_chunk(&id, &owner, &conn, "up-own-1", 0, &encoded(&bytes[..split]))
+            .expect("first chunk"),
+        split as u64
+    );
+    assert_eq!(
+        registry
+            .upload_chunk(
+                &id,
+                &owner,
+                &conn,
+                "up-own-1",
+                split as u64,
+                &encoded(&bytes[split..])
+            )
+            .expect("second chunk"),
+        total
+    );
+    let reference = registry
+        .finish_upload(&id, &owner, &conn, "up-own-1")
+        .expect("the finish answers the reference");
+    assert_eq!(reference.session_id, id);
+    assert_eq!(reference.name, "quarterly report.pdf");
+    assert_eq!(reference.stored_bytes, total);
+    assert_eq!(
+        reference.digest,
+        crate::attachment_store::sha256_hex(&bytes)
+    );
+
+    let resolved =
+        resolve_attachment_references(&registry.attachments, &id, std::slice::from_ref(&reference))
+            .expect("the reference resolves");
+    let mut prompt = String::from("summarise the attached file");
+    push_reference_path_lines(&mut prompt, &resolved);
+    assert!(
+        prompt.starts_with(
+            "summarise the attached file\n\nUploaded file: quarterly report.pdf\nPath: "
+        ),
+        "{prompt}"
+    );
+    assert!(prompt.contains("\nMIME: application/pdf\n"), "{prompt}");
+    assert!(
+        prompt.ends_with(&format!("Size: {total} bytes")),
+        "{prompt}"
+    );
+
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// An upload by another user is refused at the ownership door, before any
+/// part file exists, and an upload for a session that is gone is refused
+/// too.
+#[test]
+fn an_upload_by_another_user_is_unauthorized_and_stages_nothing() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-upload-theirs", "process-upload-theirs");
+    let other = test_owner("S-1-5-21-upload-other", "process-upload-other");
+    let id = compose_session_id(&owner.session_token(), "uplo02").expect("id");
+    insert_live(&registry, &id, owner.clone());
+    let conn = ConnHandle::new(4);
+
+    let error = registry
+        .begin_upload(&id, &other, &conn, "up-their-1", "x.bin", 4)
+        .expect_err("another user may not open an upload");
+    assert_eq!(error.code, ErrorCode::Unauthorized, "{error:?}");
+    assert!(
+        !attachment_folder(&registry, &id).exists(),
+        "a refused upload must not create the session's folder"
+    );
+
+    let error = registry
+        .begin_upload("s.no.1", &owner, &conn, "up-gone-1", "x.bin", 4)
+        .expect_err("an unknown session is refused");
+    assert_eq!(error.code, ErrorCode::SessionNotFound, "{error:?}");
+
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -916,6 +916,7 @@ fn a_client_does_not_send_a_gif_or_webp_to_a_daemon_that_did_not_agree_them() {
                         session_id: "s.owner.1".to_string(),
                         digest: "0".repeat(64),
                         stored_bytes: 1,
+                        name: String::new(),
                     },
                 })
                 .expect("reply");

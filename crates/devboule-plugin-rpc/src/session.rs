@@ -251,6 +251,7 @@ impl PluginSession {
                         | DaemonMessage::AgentMessageReceipt { id, .. }
                         | DaemonMessage::Resume { id, .. }
                         | DaemonMessage::SessionDeposited { id, .. }
+                        | DaemonMessage::SessionUploadProgress { id, .. }
                         | DaemonMessage::SessionAttachment { id, .. }
                         | DaemonMessage::InvokeResult { id, .. }
                         // The device RPCs are not on a plugin backend's path.

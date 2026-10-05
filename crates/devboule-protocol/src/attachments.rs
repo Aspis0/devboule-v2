@@ -21,6 +21,7 @@ use crate::messages::{AttachmentReference, PromptAttachment};
 use crate::{
     MAX_ATTACHMENTS_TOTAL_BYTES, MAX_ATTACHMENT_COUNT, MAX_ATTACHMENT_DATA_BYTES,
     MAX_ATTACHMENT_NAME_BYTES, MAX_ATTACHMENT_OWNER_BYTES, MAX_ATTACHMENT_REFERENCES,
+    MAX_UPLOADED_FILES, MAX_UPLOAD_BYTES, MAX_UPLOAD_CHUNK_BYTES,
 };
 
 /// The media types a prompt may carry.
@@ -45,6 +46,144 @@ pub const ATTACHMENT_MIME_TYPES: [&str; 6] = [
 /// daemon that predates them is the client's, keyed on this.
 pub fn is_gif_webp_mime(mime_type: &str) -> bool {
     matches!(mime_type, "image/gif" | "image/webp")
+}
+
+/// The display name an uploaded file is kept under, made safe to put in a
+/// prompt line and on a chip.
+///
+/// The daemon never builds a path from this name — a stored file is named by
+/// its digest — so this is not the traversal guard; it is what keeps a wire
+/// name from being echoed as structure. Every separator is dropped by taking
+/// the basename, control characters (a newline could forge a prompt line) and
+/// the Windows-invalid set become `_`, a reserved device name is prefixed with
+/// `_` (a chip reading `CON` is a name nobody can act on), trailing dots and
+/// spaces are trimmed (Win32 would trim them anyway, so the name would not
+/// round-trip), and the result is cut to [`MAX_ATTACHMENT_NAME_BYTES`] bytes on
+/// a character boundary. Unicode is kept.
+pub fn sanitize_attachment_name(name: &str) -> String {
+    let basename = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let mut cleaned = String::with_capacity(basename.len());
+    for character in basename.trim_matches(' ').chars() {
+        if character.is_control() || matches!(character, '<' | '>' | ':' | '"' | '|' | '?' | '*') {
+            cleaned.push('_');
+        } else {
+            cleaned.push(character);
+        }
+    }
+    let trimmed = cleaned.trim_end_matches([' ', '.']);
+    let stem = trimmed.split('.').next().unwrap_or(trimmed);
+    let mut safe = if is_reserved_device_name(stem) {
+        format!("_{trimmed}")
+    } else {
+        trimmed.to_string()
+    };
+    if safe.is_empty() {
+        safe.push_str("file");
+    }
+    while safe.len() > MAX_ATTACHMENT_NAME_BYTES {
+        let mut cut = MAX_ATTACHMENT_NAME_BYTES;
+        while !safe.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        safe.truncate(cut);
+    }
+    safe
+}
+
+/// The Windows device names a plain namespace claims, whichever case and
+/// whichever extension follows them (`CON`, `con.txt`, `NUL.log`).
+fn is_reserved_device_name(stem: &str) -> bool {
+    const RESERVED: [&str; 22] = [
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    RESERVED
+        .iter()
+        .any(|device| stem.eq_ignore_ascii_case(device))
+}
+
+/// The extension a stored file is written under, from its display name:
+/// ASCII alphanumeric, at most eight characters, lowercased. Anything else is
+/// `None` and the store writes `bin`.
+///
+/// The extension is a name the store joins to a digest, so the alphabet is the
+/// point: a name cannot widen the search beyond one directory entry.
+pub fn upload_extension(name: &str) -> Option<String> {
+    let extension = name.rsplit_once('.')?.1.to_ascii_lowercase();
+    if extension.is_empty()
+        || extension.len() > 8
+        || !extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    {
+        return None;
+    }
+    Some(extension)
+}
+
+/// Whether `upload_id` is a token an in-progress upload may be keyed by:
+/// 1..=64 ASCII alphanumerics, `-` or `_`.
+///
+/// The id is the client's, because a reconnect has to name the same upload to
+/// resume it; the alphabet is what keeps an id from being a path or an empty
+/// key.
+pub fn validate_upload_id(upload_id: &str) -> Result<(), String> {
+    let shape = !upload_id.is_empty()
+        && upload_id.len() <= 64
+        && upload_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_');
+    if shape {
+        return Ok(());
+    }
+    Err("An upload id must be 1 to 64 letters, digits, '-' or '_'.".to_string())
+}
+
+/// The first reason an upload may not be opened as declared, or `Ok(())`.
+pub fn validate_upload_begin(total_bytes: u64) -> Result<(), String> {
+    if total_bytes == 0 {
+        return Err("An uploaded file is empty.".to_string());
+    }
+    if total_bytes > MAX_UPLOAD_BYTES {
+        return Err(format!(
+            "An uploaded file is {total_bytes} bytes; the limit is {MAX_UPLOAD_BYTES}."
+        ));
+    }
+    Ok(())
+}
+
+/// The first reason a chunk may not be appended to an upload at `received`, or
+/// `Ok(())`.
+///
+/// The offset rule is strict append: a chunk that does not start exactly where
+/// the upload stands is refused, and the refusal names both numbers so a client
+/// that lost an acknowledgement can ask [`crate::messages::ClientMessage::SessionUploadStatus`]
+/// and continue — or abort and start again.
+pub fn validate_upload_chunk(
+    data: &str,
+    offset: u64,
+    received: u64,
+    total_bytes: u64,
+) -> Result<(), String> {
+    if !is_valid_base64(data) {
+        return Err(invalid_base64_message());
+    }
+    let padding = data.bytes().rev().take_while(|byte| *byte == b'=').count();
+    let raw_len = ((data.len() / 4) * 3).saturating_sub(padding);
+    if raw_len > MAX_UPLOAD_CHUNK_BYTES {
+        return Err(format!(
+            "An upload chunk is {raw_len} bytes; the limit is {MAX_UPLOAD_CHUNK_BYTES}."
+        ));
+    }
+    if offset != received {
+        return Err(format!(
+            "The upload is at byte {received}; the chunk starts at {offset}."
+        ));
+    }
+    if received.saturating_add(raw_len as u64) > total_bytes {
+        return Err(format!(
+            "The chunk would take the upload past its declared {total_bytes} bytes."
+        ));
+    }
+    Ok(())
 }
 
 /// The number of hex characters a SHA-256 digest has (32 bytes).
@@ -239,6 +378,15 @@ pub fn validate_attachment_references(
         return Err(format!(
             "A prompt may refer to at most {MAX_ATTACHMENT_REFERENCES} stored attachments; {} were sent.",
             references.len()
+        ));
+    }
+    let uploaded = references
+        .iter()
+        .filter(|reference| !reference.name.is_empty())
+        .count();
+    if uploaded > MAX_UPLOADED_FILES {
+        return Err(format!(
+            "A prompt may carry at most {MAX_UPLOADED_FILES} uploaded files; {uploaded} were sent."
         ));
     }
     let mut total: u64 = 0;
@@ -530,7 +678,108 @@ mod tests {
             session_id: session_id.to_string(),
             digest: digest.to_string(),
             stored_bytes: 1024,
+            name: String::new(),
         }
+    }
+
+    #[test]
+    fn a_name_is_a_basename_and_never_structure() {
+        assert_eq!(sanitize_attachment_name("report.pdf"), "report.pdf");
+        assert_eq!(sanitize_attachment_name("dir/report.pdf"), "report.pdf");
+        assert_eq!(
+            sanitize_attachment_name("dir\\sub\\report.pdf"),
+            "report.pdf"
+        );
+        assert_eq!(sanitize_attachment_name(".."), "file");
+        assert_eq!(sanitize_attachment_name("../../etc/passwd"), "passwd");
+        assert_eq!(
+            sanitize_attachment_name("C:\\Windows\\evil.txt"),
+            "evil.txt"
+        );
+        assert_eq!(
+            sanitize_attachment_name("\"quote\"|pipe.txt"),
+            "_quote__pipe.txt"
+        );
+        assert_eq!(sanitize_attachment_name("a\nb.txt"), "a_b.txt");
+        assert_eq!(sanitize_attachment_name("nul"), "_nul");
+        assert_eq!(sanitize_attachment_name("CON.txt"), "_CON.txt");
+        assert_eq!(sanitize_attachment_name("lpt3.log"), "_lpt3.log");
+        assert_eq!(sanitize_attachment_name("trailing."), "trailing");
+        assert_eq!(sanitize_attachment_name("trailing "), "trailing");
+        assert_eq!(sanitize_attachment_name("  "), "file");
+        assert_eq!(sanitize_attachment_name("rapport-é.pdf"), "rapport-é.pdf");
+    }
+
+    #[test]
+    fn a_long_name_is_cut_on_a_character_boundary() {
+        let name = format!("{}.pdf", "é".repeat(400));
+        let safe = sanitize_attachment_name(&name);
+        assert!(safe.len() <= MAX_ATTACHMENT_NAME_BYTES, "{}", safe.len());
+        assert!(safe.len() > MAX_ATTACHMENT_NAME_BYTES - 4, "{}", safe.len());
+        assert!(std::str::from_utf8(safe.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn the_extension_is_a_small_ascii_alphabet() {
+        assert_eq!(upload_extension("report.PDF"), Some("pdf".to_string()));
+        assert_eq!(upload_extension("archive.tar.gz"), Some("gz".to_string()));
+        assert_eq!(upload_extension("no-extension"), None);
+        assert_eq!(upload_extension("bad.ext two"), None);
+        assert_eq!(upload_extension("too.longextension"), None);
+        assert_eq!(upload_extension("dot."), None);
+    }
+
+    #[test]
+    fn an_upload_id_is_a_token_not_a_path() {
+        assert!(validate_upload_id("0f7c-2a_9").is_ok());
+        for bad in ["", "../up", "a/b", "a\\b", "a b", "x".repeat(65).as_str()] {
+            assert!(validate_upload_id(bad).is_err(), "{bad:?} must be refused");
+        }
+    }
+
+    #[test]
+    fn an_upload_is_bounded_before_its_first_byte() {
+        assert!(validate_upload_begin(1).is_ok());
+        assert!(validate_upload_begin(MAX_UPLOAD_BYTES).is_ok());
+        assert!(validate_upload_begin(0)
+            .expect_err("empty")
+            .contains("empty"));
+        assert!(validate_upload_begin(MAX_UPLOAD_BYTES + 1)
+            .expect_err("oversize")
+            .contains(&MAX_UPLOAD_BYTES.to_string()));
+    }
+
+    #[test]
+    fn a_chunk_must_start_where_the_upload_stands() {
+        // "AAAA" is three raw bytes.
+        assert!(validate_upload_chunk("AAAA", 0, 0, 10).is_ok());
+        assert!(validate_upload_chunk("AAAA", 3, 3, 10).is_ok());
+        let stale = validate_upload_chunk("AAAA", 0, 3, 10).expect_err("stale offset");
+        assert!(stale.contains('3') && stale.contains('0'), "{stale}");
+        let past_end = validate_upload_chunk("AAAA", 8, 8, 10).expect_err("past the end");
+        assert!(past_end.contains("10"), "{past_end}");
+        assert!(validate_upload_chunk("not base64", 0, 0, 10).is_err());
+        assert!(validate_upload_chunk("====", 0, 0, 10).is_err());
+        let oversized = "A".repeat(MAX_UPLOAD_CHUNK_BYTES / 3 * 4 + 8);
+        assert!(validate_upload_chunk(&oversized, 0, 0, MAX_UPLOAD_BYTES)
+            .expect_err("chunk cap")
+            .contains(&MAX_UPLOAD_CHUNK_BYTES.to_string()));
+    }
+
+    #[test]
+    fn a_prompt_may_carry_at_most_eight_uploaded_files() {
+        let mut files = vec![reference("s.a.1", &digest_of('a')); MAX_UPLOADED_FILES];
+        for file in &mut files {
+            file.name = "report.pdf".to_string();
+        }
+        validate_attachment_references("s.a.1", &files).expect("eight files fit");
+        files.push(reference("s.a.1", &digest_of('b')));
+        files.last_mut().expect("one more").name = "ninth.log".to_string();
+        let message = validate_attachment_references("s.a.1", &files).expect_err("ninth");
+        assert!(
+            message.contains(&MAX_UPLOADED_FILES.to_string()),
+            "{message}"
+        );
     }
 
     #[test]

@@ -124,46 +124,46 @@ describe("WorkspaceComposer images", () => {
     expect(container.querySelector('[data-testid="composer-image-preview"]')).toBeNull();
   });
 
-  it("offers neither GIF nor WebP to a daemon that did not agree them", async () => {
-    await renderComposer(vi.fn());
-    expect(imageInput().accept).toBe("image/png,image/jpeg,image/svg+xml");
+  it("routes GIF and WebP to the file route for a daemon that did not agree them", async () => {
+    const onAddFiles = vi.fn();
+    await renderComposer(vi.fn(), { onAddFiles });
+    expect(imageInput().accept).toBe("");
     pickFiles(gifFile(), webpFile());
     await act(async () => {});
     expect(container.querySelector('[data-testid="composer-image-preview"]')).toBeNull();
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "is not an image the composer can attach.",
-    );
+    expect(onAddFiles).toHaveBeenCalledTimes(1);
+    const picked = onAddFiles.mock.calls[0]![0] as readonly File[];
+    expect(picked.map((file) => file.name)).toEqual(["loop.gif", "photo.webp"]);
   });
 
-  it("keeps the accepted files and says why the rest were refused in a mixed pick", async () => {
+  it("keeps the accepted image and routes the rest to the file route", async () => {
     const onSend = vi.fn();
-    await renderComposer(onSend);
+    const onAddFiles = vi.fn();
+    await renderComposer(onSend, { onAddFiles });
     pickFiles(pngFile(), gifFile());
     await act(async () => {});
     expect(container.querySelectorAll('[data-testid="composer-image-preview"]')).toHaveLength(1);
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
-      "loop.gif is not an image the composer can attach.",
-    );
+    const routed = onAddFiles.mock.calls[0]![0] as readonly File[];
+    expect(routed.map((file) => file.name)).toEqual(["loop.gif"]);
 
+    // An image over the image route's ceiling is a file too, never a
+    // refusal: the file route can carry it and the agent can read it.
     const oversized = new File([new Uint8Array(128 * 1024 + 1)], "big.png", { type: "image/png" });
     pickFiles(pngFile("second.png"), oversized);
     await act(async () => {});
     expect(container.querySelectorAll('[data-testid="composer-image-preview"]')).toHaveLength(2);
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
-      "big.png is larger than 128 KiB.",
-    );
-
-    pickFiles(pngFile("third.png"));
-    await act(async () => {});
-    expect(container.querySelector('[role="alert"]')).toBeNull();
+    const second = onAddFiles.mock.calls[1]![0] as readonly File[];
+    expect(second.map((file) => file.name)).toEqual(["big.png"]);
   });
 
   it("sends a picked GIF and WebP once the daemon agreed them", async () => {
     const onSend = vi.fn();
-    await renderComposer(onSend, { gifWebpSupported: true });
-    expect(imageInput().accept).toBe("image/png,image/jpeg,image/svg+xml,image/gif,image/webp");
+    const onAddFiles = vi.fn();
+    await renderComposer(onSend, { gifWebpSupported: true, onAddFiles });
+    expect(imageInput().accept).toBe("");
     pickFiles(gifFile(), webpFile());
     await act(async () => {});
+    expect(onAddFiles).not.toHaveBeenCalled();
     expect(container.querySelectorAll('[data-testid="composer-image-preview"]')).toHaveLength(2);
     await typeText("an animation and a photo");
     await act(async () => {
@@ -244,7 +244,7 @@ describe("WorkspaceComposer image sends", () => {
     });
     expect(imageInput().disabled).toBe(true);
     expect(
-      container.querySelector<HTMLButtonElement>('button[aria-label="Attach image"]')!.disabled,
+      container.querySelector<HTMLButtonElement>('button[aria-label="Attach file"]')!.disabled,
     ).toBe(true);
     expect(container.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!.disabled).toBe(
       true,

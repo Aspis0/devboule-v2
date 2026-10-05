@@ -1016,6 +1016,7 @@ fn session_deposited_carries_the_stored_digest_and_its_session() {
         session_id: "s.a.1".to_string(),
         digest: "a".repeat(64),
         stored_bytes: 4096,
+        name: String::new(),
     };
     let value = serde_json::to_value(DaemonMessage::SessionDeposited {
         id: 4,
@@ -1044,6 +1045,7 @@ fn session_attachment_read_names_itself_and_is_a_read() {
             session_id: "s.a.1".to_string(),
             digest: "b".repeat(64),
             stored_bytes: 512,
+            name: String::new(),
         },
     };
     assert_eq!(read.name(), "SessionAttachmentRead");
@@ -1060,6 +1062,7 @@ fn session_attachment_read_round_trips_with_a_camel_case_envelope() {
             session_id: "s.a.1".to_string(),
             digest: "b".repeat(64),
             stored_bytes: 512,
+            name: String::new(),
         },
     };
     let value = serde_json::to_value(&message).expect("json");
@@ -1100,6 +1103,7 @@ fn session_send_with_references_round_trips_beside_inline_attachments() {
         session_id: "s.a.1".to_string(),
         digest: seed.to_string().repeat(64),
         stored_bytes: 2048,
+        name: String::new(),
     };
     let message = ClientMessage::SessionSend {
         id: 7,
@@ -4250,5 +4254,132 @@ fn a_workspace_title_follows_the_display_name_rule_in_workspace_words() {
     assert_eq!(
         error,
         "A workspace title must not contain an invisible formatting character."
+    );
+}
+
+/// Protocol 26's five upload requests and their one reply: the wire words,
+/// the correlation ids, the audit verdicts and the reference's optional name,
+/// which must stay absent for an image deposit so a pre-upload peer reads the
+/// same frame it always did.
+#[test]
+fn file_upload_frames_round_trip_with_their_wire_words() {
+    let frames = [
+        ClientMessage::SessionUploadBegin {
+            id: 40,
+            session_id: "s.a.1".to_string(),
+            upload_id: "up-1".to_string(),
+            name: "report.pdf".to_string(),
+            total_bytes: 52_428_800,
+        },
+        ClientMessage::SessionUploadStatus {
+            id: 41,
+            session_id: "s.a.1".to_string(),
+            upload_id: "up-1".to_string(),
+        },
+        ClientMessage::SessionUploadChunk {
+            id: 42,
+            session_id: "s.a.1".to_string(),
+            upload_id: "up-1".to_string(),
+            offset: 262_144,
+            data: "AA==".to_string(),
+        },
+        ClientMessage::SessionUploadFinish {
+            id: 43,
+            session_id: "s.a.1".to_string(),
+            upload_id: "up-1".to_string(),
+        },
+        ClientMessage::SessionUploadAbort {
+            id: 44,
+            session_id: "s.a.1".to_string(),
+            upload_id: "up-1".to_string(),
+        },
+    ];
+    let variants = [
+        "session_upload_begin",
+        "session_upload_status",
+        "session_upload_chunk",
+        "session_upload_finish",
+        "session_upload_abort",
+    ];
+    for (index, frame) in frames.iter().enumerate() {
+        let json = serde_json::to_string(frame).expect("serialize");
+        assert!(
+            json.contains(&format!("\"type\":\"{}\"", variants[index])),
+            "{}: {json}",
+            variants[index]
+        );
+        assert_eq!(
+            serde_json::from_str::<ClientMessage>(&json).expect("parse"),
+            *frame,
+            "{}",
+            variants[index]
+        );
+        assert_eq!(frame.request_id(), Some(40 + index as u64));
+        assert_eq!(frame.idempotency_key(), None);
+    }
+    assert!(
+        serde_json::to_string(&frames[0])
+            .expect("json")
+            .contains("\"sessionId\":\"s.a.1\""),
+        "the fields are camelCase on the wire"
+    );
+    assert!(
+        serde_json::to_string(&frames[2])
+            .expect("json")
+            .contains("\"offset\":262144"),
+        "the chunk carries its offset"
+    );
+    assert_eq!(frames[0].name(), "SessionUploadBegin");
+    assert_eq!(frames[1].name(), "SessionUploadStatus");
+    assert_eq!(frames[2].name(), "SessionUploadChunk");
+    assert_eq!(frames[3].name(), "SessionUploadFinish");
+    assert_eq!(frames[4].name(), "SessionUploadAbort");
+    // A status and an abort touch no durable state on their own; the three
+    // that write bytes into a session folder are audited.
+    assert!(!frames[1].is_state_changing());
+    assert!(frames[0].is_state_changing());
+    assert!(frames[2].is_state_changing());
+    assert!(frames[3].is_state_changing());
+    assert!(frames[4].is_state_changing());
+
+    let progress = DaemonMessage::SessionUploadProgress {
+        id: 40,
+        received_bytes: 262_144,
+    };
+    let json = serde_json::to_string(&progress).expect("serialize");
+    assert!(
+        json.contains("\"type\":\"session_upload_progress\""),
+        "{json}"
+    );
+    assert!(json.contains("\"receivedBytes\":262144"), "{json}");
+    assert_eq!(
+        serde_json::from_str::<DaemonMessage>(&json).expect("parse"),
+        progress
+    );
+
+    // A named reference (an uploaded file) keeps the name; an image deposit's
+    // reference omits it, which is what keeps a pre-upload peer's frame
+    // byte-identical.
+    let named = AttachmentReference {
+        session_id: "s.a.1".to_string(),
+        digest: "a".repeat(64),
+        stored_bytes: 7,
+        name: "report.pdf".to_string(),
+    };
+    let json = serde_json::to_string(&named).expect("json");
+    assert!(json.contains("\"name\":\"report.pdf\""), "{json}");
+    assert_eq!(
+        serde_json::from_str::<AttachmentReference>(&json).expect("parse"),
+        named
+    );
+    let unnamed = AttachmentReference {
+        name: String::new(),
+        ..named
+    };
+    assert!(
+        !serde_json::to_string(&unnamed)
+            .expect("json")
+            .contains("name"),
+        "an empty name must not add a field"
     );
 }

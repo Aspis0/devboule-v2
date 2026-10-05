@@ -19,6 +19,11 @@ import {
   sessionSetFeature,
   sessionSetMode,
   sessionSetModel,
+  sessionUploadAbort,
+  sessionUploadBegin,
+  sessionUploadChunk,
+  sessionUploadFinish,
+  sessionUploadStatus,
   type AttachmentReference,
   type SubscriptionId,
   type SessionChannel,
@@ -46,6 +51,8 @@ import { headerMenu, type HeaderMenuSeam } from "./paneHeader/paneHeaderMenu";
 import { getPreferredEffort, setPreferredEffort } from "../../lib/modelPrefs";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 import { sendChatImagesByReference } from "./chatImageTransport";
+import { useFileAttachments } from "./useFileAttachments";
+import type { FileUploader } from "./fileUpload";
 import { SubagentMenu, type SubagentArchiveTarget } from "./SubagentMenu";
 import { childRow, deriveSubagentRows, isArchivable } from "./subagentRows";
 import { SessionContextMeter } from "./ContextMeter";
@@ -194,6 +201,9 @@ interface AgentChatSurfaceProps {
   queueSupported?: boolean;
   /** The connected daemon agreed `attachments.gif_webp`: the composer may attach GIF and WebP. */
   gifWebpSupported?: boolean;
+  /** The connected daemon agreed `attachments.upload`: the composer's files ride
+   * the chunked upload, and without it every file is refused with a chip. */
+  fileUploadSupported?: boolean;
   onPermissionRequest?: (
     sessionId: string,
     subscriptionId: SubscriptionId,
@@ -361,6 +371,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   pendingPlanToolCallId = null,
   queueSupported = false,
   gifWebpSupported = false,
+  fileUploadSupported = false,
   onPermissionRequest,
   onPermissionResolved,
 }: AgentChatSurfaceProps) {
@@ -443,6 +454,25 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     ),
   );
 
+  // The five upload frames, bound to this session: the file route calls them
+  // through the hook, which owns the chips and their state.
+  const fileUploader = useMemo<FileUploader>(
+    () => ({
+      begin: (id, uploadId, name, totalBytes) =>
+        sessionUploadBegin(id, id, uploadId, name, totalBytes),
+      status: (id, uploadId) => sessionUploadStatus(id, id, uploadId),
+      chunk: (id, uploadId, offset, data) => sessionUploadChunk(id, id, uploadId, offset, data),
+      finish: (id, uploadId) => sessionUploadFinish(id, id, uploadId),
+      abort: (id, uploadId) => sessionUploadAbort(id, id, uploadId),
+    }),
+    [],
+  );
+  const fileAttachments = useFileAttachments({
+    sessionId,
+    uploader: fileUploader,
+    supported: fileUploadSupported,
+  });
+
   // The composer takes the focus back when the queue hands it over (an emptied
   // track, a refused steer's or queue's text).
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -468,6 +498,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
       text: string,
       attachments: readonly PromptAttachment[] = [],
       activeTurnBehavior?: ActiveTurnBehavior,
+      fileReferences: readonly AttachmentReference[] = [],
     ): Promise<boolean> => {
       const session = sessionRef.current;
       if (session === null) return false;
@@ -478,17 +509,19 @@ export const AgentChatSurface = memo(function AgentChatSurface({
       };
       try {
         // Composer images travel by reference: one deposit each, then the
-        // send names what the deposits answered with. The echo carries the
-        // names, so replay resolves the stored bytes instead of the bytes
-        // the composer held.
+        // send names what the deposits answered with, ahead of the references
+        // the file uploads already deposited. The echo carries the names, so
+        // replay resolves the stored bytes instead of the bytes the composer
+        // held.
+        const send = (references: readonly AttachmentReference[]) =>
+          session.send(text, [], activeTurnBehavior, references, undefined, reportTurn);
         if (attachments.length === 0) {
-          return await session.send(text, [], activeTurnBehavior, [], undefined, reportTurn);
+          return await send(fileReferences);
         }
         return await sendChatImagesByReference({
           images: attachments,
           deposit: (attachment) => session.depositAttachment(attachment),
-          send: (references) =>
-            session.send(text, [], activeTurnBehavior, references, undefined, reportTurn),
+          send: (references) => send([...references, ...fileReferences]),
         });
       } finally {
         composerQueue.submissionSettled(submissionId, replyTurnActive);
@@ -809,6 +842,9 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         queueAllowed={!hasPendingPermission}
         queueUnsupportedReason={noQueue}
         gifWebpSupported={gifWebpSupported}
+        files={fileAttachments.files}
+        onAddFiles={fileAttachments.addFiles}
+        onRemoveFile={fileAttachments.removeFile}
         disabled={composerDisabled}
         disabledReason={recoveredAttach ? null : disabledReason}
         availableCommands={composerCommands}
@@ -818,7 +854,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         onQueue={queueSupported ? composerQueue.queueMessage : undefined}
         enterQueues={enterQueues}
         captureTextarea={captureComposerTextarea}
-        onSend={async (text, attachments) => {
+        onSend={async (text, attachments, fileReferences) => {
           // Images never join a running turn: the daemon refuses a steer
           // that carries them, so an image send waits in the queue behind
           // the turn or starts its own when nothing runs. The answer tells
@@ -826,14 +862,19 @@ export const AgentChatSurface = memo(function AgentChatSurface({
           // transfers and steers clear at once, a refused send keeps them.
           if (attachments.length > 0) {
             if (queueSupported && (turnActive || hasPendingPermission)) {
-              composerQueue.queueMessage(text, attachments);
+              composerQueue.queueMessage(text, attachments, fileReferences);
+              fileAttachments.clearReady();
               return true;
             }
             // Images stay in the composer while sending; only the cleared
-            // text rides a hand-back on failure, so the retry is whole.
+            // text rides a hand-back on failure, so the retry is whole. A
+            // file that reached the daemon is uploaded for good, so a refused
+            // send keeps its references for the retry and only a settled send
+            // clears the chips.
             try {
-              const sent = await sendSession(text, attachments);
+              const sent = await sendSession(text, attachments, undefined, fileReferences);
               if (!sent) handDraftBack(text, true);
+              if (sent) fileAttachments.clearReady();
               return sent;
             } catch {
               handDraftBack(text, true);
@@ -847,10 +888,13 @@ export const AgentChatSurface = memo(function AgentChatSurface({
           // sent later, and a queued row could not move until the turn the
           // user is interrupting had already ended.
           const steer = turnActive || hasPendingPermission;
-          return sendSession(text, [], steer ? "interrupt" : undefined).then((sent: boolean) => {
-            if (!sent) handDraftBack(text, true);
-            return sent;
-          });
+          return sendSession(text, [], steer ? "interrupt" : undefined, fileReferences).then(
+            (sent: boolean) => {
+              if (!sent) handDraftBack(text, true);
+              if (sent) fileAttachments.clearReady();
+              return sent;
+            },
+          );
         }}
         onStop={() => void sessionRef.current?.interrupt()}
         contextMeter={

@@ -276,6 +276,7 @@ fn stored_reference(session_id: &str, seed: char) -> AttachmentReference {
         session_id: session_id.to_string(),
         digest: seed.to_string().repeat(64),
         stored_bytes: 1024,
+        name: String::new(),
     }
 }
 
@@ -5737,6 +5738,7 @@ fn a_read_of_a_dead_reference_names_what_is_missing() {
             session_id: session_id.clone(),
             digest: "c".repeat(64),
             stored_bytes: 7,
+            name: String::new(),
         },
     );
     assert_eq!(error.code, ErrorCode::InvalidRequest, "{error:?}");

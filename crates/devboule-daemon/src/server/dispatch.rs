@@ -436,6 +436,11 @@ pub(super) fn dispatch_immediate(
         | ClientMessage::AgentMessageSend { .. }
         | ClientMessage::SessionDeposit { .. }
         | ClientMessage::SessionAttachmentRead { .. }
+        | ClientMessage::SessionUploadBegin { .. }
+        | ClientMessage::SessionUploadStatus { .. }
+        | ClientMessage::SessionUploadChunk { .. }
+        | ClientMessage::SessionUploadFinish { .. }
+        | ClientMessage::SessionUploadAbort { .. }
         | ClientMessage::SessionResize { .. }
         | ClientMessage::SessionInterrupt { .. }
         | ClientMessage::SessionSetModel { .. }
