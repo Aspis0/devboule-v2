@@ -70,6 +70,7 @@ pub(super) struct Said {
     moved_to: Arc<Mutex<Vec<String>>>,
     committed: Arc<AtomicUsize>,
     gate: Arc<Mutex<Option<Gate>>>,
+    owned: Arc<Mutex<Option<cdp_events::WsWatch>>>,
 }
 
 impl Said {
@@ -77,6 +78,7 @@ impl Said {
         let moved_to = Arc::clone(&self.moved_to);
         let committed = Arc::clone(&self.committed);
         let gate = Arc::clone(&self.gate);
+        let owned = Arc::clone(&self.owned);
         Reports {
             within_document: Arc::new(move |url| {
                 moved_to.lock().expect("reports poisoned").push(url);
@@ -89,9 +91,17 @@ impl Said {
                     // drain for: the test releases the gate itself.
                     let _ = gate.open.recv_timeout(Duration::from_secs(60));
                 }
+                let own = owned.lock().expect("owned poisoned").take();
+                drop(own);
                 committed.fetch_add(1, Ordering::SeqCst);
             }),
         }
+    }
+
+    /// Give the watch to the reports: the next commit report drops it, from
+    /// inside the drain, the way a tab host closing itself on a report would.
+    pub(super) fn let_go_of_the_watch_on_commit(&self, watch: cdp_events::WsWatch) {
+        *self.owned.lock().expect("owned poisoned") = Some(watch);
     }
 
     /// Hold the next commit report until the open end fires, and say when it

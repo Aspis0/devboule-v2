@@ -123,8 +123,9 @@ windows = { version = "=0.61.3", features = [
 serde_json = "=1.0.151"
 # The loopback listener the in-process CDP endpoint in
 # `browser/cdp_ws_fake.rs` accepts the transport's own tests on. The runtime
-# that drives it is Tauri's, as it is for every other browser test.
-tokio = { version = "=1.53.1", default-features = false, features = ["net"] }
+# that drives it is Tauri's, as it is for every other browser test. `rt` builds
+# the current-thread runtime a watch is dropped on in `cdp_ws_watch_tests.rs`.
+tokio = { version = "=1.53.1", default-features = false, features = ["net", "rt"] }
 tauri = { version = "=2.11.5", features = ["test"] }
 # Used by the command-boundary fake embedder in Oracle runtime tests.
 anyhow = "1"

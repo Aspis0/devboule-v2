@@ -1,7 +1,7 @@
 //! The signal one page's events bump, the promise that it is dropped with the
 //! tab, and the close that has to hold: no page is opened here.
 
-use super::ws::Close;
+use super::ws::{unclosed, Close};
 use super::*;
 
 #[test]
@@ -86,30 +86,37 @@ fn a_dropped_subscription_aborts_the_task_it_holds() {
 }
 
 #[test]
-fn a_close_waits_for_the_event_in_flight_and_refuses_the_next() {
-    // The exclusion is what makes "no callback starts after the close" true:
-    // the close marks itself first, so nothing new enters, and then waits on
-    // the gate the event in flight holds.
+fn a_closed_watch_makes_its_reports_say_nothing() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let said = Arc::new(AtomicUsize::new(0));
+    let reports = Reports {
+        within_document: Arc::new({
+            let said = Arc::clone(&said);
+            move |_| {
+                said.fetch_add(1, Ordering::SeqCst);
+            }
+        }),
+        committed: Arc::new({
+            let said = Arc::clone(&said);
+            move || {
+                said.fetch_add(1, Ordering::SeqCst);
+            }
+        }),
+    };
     let close = Close::new();
-    let in_flight = close.entered().expect("an open gate enters");
+    let reports = unclosed(&close, reports);
 
-    let closing = std::thread::spawn({
-        let close = Arc::clone(&close);
-        move || close.stop_and_wait()
-    });
-    while !close.is_closed() {
-        std::thread::yield_now();
-    }
-    assert!(
-        !closing.is_finished(),
-        "the close waits for the event in flight"
-    );
+    (reports.within_document)("https://example.test/open".to_owned());
+    (reports.committed)();
+    assert_eq!(said.load(Ordering::SeqCst), 2, "an open watch reports");
 
-    drop(in_flight);
-    closing.join().expect("the closing thread");
-
-    assert!(
-        close.entered().is_none(),
-        "nothing enters once the close has begun"
+    close.begin();
+    (reports.within_document)("https://example.test/closed".to_owned());
+    (reports.committed)();
+    assert_eq!(
+        said.load(Ordering::SeqCst),
+        2,
+        "a callback that starts after the close reaches no pane"
     );
 }

@@ -5,14 +5,14 @@
 //! here. A state event the reader had to drop is not forgotten: the loss is
 //! counted, the drain is woken, and the listener treats the state as unknown.
 //!
-//! **The close is an exclusion, not a flag.** The drain holds [`Close`]'s gate
-//! around every event it hands to the listener, and `Drop` marks the closing
-//! before it waits on that gate: a callback that has not started when the
-//! close is marked can never start, and the one already in flight is waited
-//! for.
+//! **The close never waits.** `Drop` marks [`Close`] and aborts the drain; the
+//! drain checks the mark before every event and before every unknown-state
+//! count, and the tab's reports check it before every callback. Nothing holds
+//! a lock across a callback, so a report may drop its own watch and a runtime
+//! thread may drop it while a report runs.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::Arc;
 
 use serde_json::json;
 use tokio::sync::Notify;
@@ -58,7 +58,7 @@ pub async fn watch_ws(
     let listener = Listener {
         id: id.to_owned(),
         frames: Arc::clone(&frames),
-        reports,
+        reports: unclosed(&close, reports),
     };
     let drain = tauri::async_runtime::spawn(drain(
         listener,
@@ -95,64 +95,62 @@ impl WsWatch {
     pub(in crate::browser) fn finished(&self) -> bool {
         self.drain.inner().is_finished()
     }
-
-    /// The exclusion a test watches to know the close has begun. Test-only
-    /// because the production holder drops the whole watch.
-    #[cfg(test)]
-    pub(in crate::browser) fn close_handle(&self) -> Arc<Close> {
-        Arc::clone(&self.close)
-    }
 }
 
 impl Drop for WsWatch {
+    /// Never waits, so it is safe from a report the drain is running and from
+    /// a runtime thread. The event the drain is already inside may still
+    /// finish; no event, count or callback starts after this.
     fn drop(&mut self) {
-        // Stop new events, wait for the one in flight, then stop the task that
-        // would read the next one. After this returns no callback can start
-        // and none is still running.
-        self.close.stop_and_wait();
+        self.close.begin();
         self.drain.inner().abort();
     }
 }
 
-/// The exclusion that makes a close total: the drain enters it around every
-/// event it hands to the listener, and `Drop` marks the closing and then waits
-/// on the same gate. A check-then-call on an atomic leaves a window between
-/// the check and the callback; the gate has none.
-pub(in crate::browser) struct Close {
-    closing: AtomicBool,
-    gate: Mutex<()>,
-}
+/// Whether the watch has been dropped. A flag and not a lock: a close must
+/// not wait for the callback the drain is running.
+pub(in crate::browser) struct Close(AtomicBool);
 
 impl Close {
     pub(super) fn new() -> Arc<Self> {
-        Arc::new(Close {
-            closing: AtomicBool::new(false),
-            gate: Mutex::new(()),
-        })
+        Arc::new(Close(AtomicBool::new(false)))
     }
 
-    /// Enter the exclusion for one event's whole ingestion, or `None` because
-    /// the close has begun. The guard is held across `heard`, so every report
-    /// inside it runs before a close that is waiting here.
-    pub(super) fn entered(&self) -> Option<MutexGuard<'_, ()>> {
-        let guard = self.gate.lock().unwrap_or_else(PoisonError::into_inner);
-        if self.closing.load(Ordering::SeqCst) {
-            return None;
-        }
-        Some(guard)
-    }
-
-    /// Mark the close first, so nothing new enters, and then wait for the
-    /// event in flight to leave. The mark is what a test can watch to know the
-    /// close has begun.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(super) fn stop_and_wait(&self) {
-        self.closing.store(true, Ordering::SeqCst);
-        let _in_flight = self.gate.lock().unwrap_or_else(PoisonError::into_inner);
+    pub(super) fn begin(&self) {
+        self.0.store(true, Ordering::SeqCst);
     }
 
-    pub(in crate::browser) fn is_closed(&self) -> bool {
-        self.closing.load(Ordering::SeqCst)
+    pub(super) fn is_closed(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+/// The tab's reports, each silent once the watch is dropped. The drain's own
+/// check is per event; this one is per callback, so an event that was already
+/// being counted when the close began still starts no report.
+pub(super) fn unclosed(close: &Arc<Close>, reports: Reports) -> Reports {
+    let Reports {
+        within_document,
+        committed,
+    } = reports;
+    Reports {
+        within_document: Arc::new({
+            let close = Arc::clone(close);
+            move |url| {
+                if !close.is_closed() {
+                    within_document(url);
+                }
+            }
+        }),
+        committed: Arc::new({
+            let close = Arc::clone(close);
+            move || {
+                if !close.is_closed() {
+                    committed();
+                }
+            }
+        }),
     }
 }
 
@@ -162,8 +160,8 @@ impl Close {
 /// asked for; voice events are read from the start, because what a page says
 /// says nothing about where the tab is. A state event the reader dropped is
 /// not forgotten: the loss is counted and this task is woken, and the listener
-/// treats the state as unknown. Every event is handed to the listener under
-/// the close's exclusion, so a dropped watch starts no callback.
+/// treats the state as unknown. A dropped watch hands the listener nothing
+/// more.
 async fn drain(
     listener: Listener,
     mut events: WsEvents,
@@ -204,13 +202,10 @@ async fn drain(
             return;
         }
         if let Some(event) = arrived {
-            let Some(_entered) = close.entered() else {
-                return;
-            };
             listener.heard(&event.method, &event.params.to_string());
         }
         let dropped = events.dropped.state();
-        if dropped > accounted_drops {
+        if dropped > accounted_drops && !close.is_closed() {
             accounted_drops = dropped;
             listener.unknown_state();
         }

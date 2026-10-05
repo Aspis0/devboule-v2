@@ -444,3 +444,7 @@ mod loss_tests;
 #[cfg(test)]
 #[path = "cdp_ws_watch_tests.rs"]
 mod watch_tests;
+
+#[cfg(test)]
+#[path = "cdp_ws_close_tests.rs"]
+mod close_tests;

@@ -3,11 +3,9 @@
 //! navigation, the reader stopped by a close, and the drain stopped by a
 //! dropped subscription.
 
-use std::time::Duration;
-
 use serde_json::json;
 
-use super::events_support::{before_navigation, burst, frame, say, until, watching, Said, MAIN};
+use super::events_support::{before_navigation, burst, say, until, watching, Said, MAIN};
 use super::fake::{FakeServer, Step};
 use crate::browser::cdp_events;
 
@@ -154,69 +152,6 @@ fn an_event_that_arrives_before_the_frame_tree_is_reported_with_the_frame_it_nam
 
         page.close().await;
         drop(watch);
-        cdp_events::forget(id);
-    });
-}
-
-#[test]
-fn a_close_racing_an_in_flight_report_starts_nothing_after_it() {
-    tauri::async_runtime::block_on(async {
-        // Both events are queued before the watch exists, so the close races
-        // the drain and not the socket. The first blocks in its own report
-        // until the close has begun: that report is what the close must wait
-        // for, and the event behind it must never start.
-        let mut steps = vec![
-            Step::Event {
-                method: "Page.frameNavigated".to_owned(),
-                params: json!({
-                    "frame": frame(MAIN, "https://example.test/one"),
-                    "type": "Navigation",
-                }),
-            },
-            Step::Event {
-                method: "Page.navigatedWithinDocument".to_owned(),
-                params: json!({
-                    "frameId": MAIN,
-                    "url": "https://example.test/late",
-                }),
-            },
-        ];
-        steps.extend(before_navigation());
-        let (_server, page, events) = FakeServer::start(steps).await.attached().await;
-        let id = "tab-ws-racing-close";
-        let said = Said::default();
-        let (entered, open) = said.hold_the_next_commit();
-
-        say(&page).await;
-        say(&page).await;
-        let watch = watching(&page, id, events, &said).await;
-        entered
-            .recv_timeout(Duration::from_secs(5))
-            .expect("the drain is held inside the first document's report");
-
-        let close = watch.close_handle();
-        let closer = std::thread::spawn(move || drop(watch));
-        until(|| close.is_closed()).await;
-        assert!(
-            !closer.is_finished(),
-            "the close waits for the report in flight"
-        );
-
-        open.send(()).expect("the drain is released");
-        closer.join().expect("the closing thread");
-
-        assert!(
-            said.moved_to().is_empty(),
-            "the event behind the held report never starts"
-        );
-        assert_eq!(
-            cdp_events::moved(id),
-            1,
-            "only the report the drain was already inside was counted"
-        );
-        assert_eq!(said.commits(), 1, "and only its own commit was reported");
-
-        page.close().await;
         cdp_events::forget(id);
     });
 }
