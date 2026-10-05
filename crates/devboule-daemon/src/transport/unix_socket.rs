@@ -361,7 +361,11 @@ fn peer_credentials(fd: std::os::unix::io::RawFd) -> io::Result<(u32, u32)> {
     Ok((cred.uid, cred.pid as u32))
 }
 
-#[cfg(all(feature = "server", unix, not(any(target_os = "macos", target_os = "linux"))))]
+#[cfg(all(
+    feature = "server",
+    unix,
+    not(any(target_os = "macos", target_os = "linux"))
+))]
 fn peer_credentials(fd: std::os::unix::io::RawFd) -> io::Result<(u32, u32)> {
     let _ = fd;
     Err(io::Error::new(
