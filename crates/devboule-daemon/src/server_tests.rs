@@ -4055,9 +4055,6 @@ fn the_peer_table_is_loaded_once_and_refreshed_on_change() {
 /// stoppable. This is the machinery `PairingStart` relies on when it retries
 /// after the user starts Tailscale, exercised here with the stub transport
 /// (which binds loopback) so it needs no Tailscale.
-// The peer listener has no Unix implementation yet, so
-// `ensure_remote_listener` refuses there.
-#[cfg(windows)]
 #[test]
 fn the_remote_listener_starts_once_and_stops() {
     let (path, state) = temp_state("listener-lifecycle");
