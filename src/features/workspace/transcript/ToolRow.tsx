@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useEffect, useRef } from "react";
 import type { ToolChatItem } from "../../../lib/toolCallGroups";
 import { ExternalLink } from "../../../components/ExternalLink";
 import { MarkdownText } from "../../../components/MarkdownText";
@@ -42,15 +42,26 @@ export const ToolRow = memo(function ToolRow({
   // block that actually carries one claims it.
   const hasSummary = model.summary !== undefined || planDecision !== undefined;
   // An image inside a collapsed body is an image nobody sees: the row opens
-  // itself while it carries one.
+  // itself the first time it carries one, and then stays where the person put
+  // it — the element owns its state, so no re-render drags it back open.
   const hasImages = item.images !== undefined && item.images.length > 0;
+  const details = useRef<HTMLDetailsElement | null>(null);
+  const collapsedByUser = useRef(false);
+  useEffect(() => {
+    if (hasImages && !collapsedByUser.current && details.current !== null) {
+      details.current.open = true;
+    }
+  }, [hasImages]);
   const toolClassName = `${className}${item.kind === "plan" ? " is-plan" : ""}${running ? " is-running" : ""}${failed ? " is-failed" : ""}${cancelled ? " is-cancelled" : ""}${interrupted ? ` ${INTERRUPTED_TOOL_CLASS}` : ""}`;
   return (
     <details
+      ref={details}
       className={toolClassName}
       key={item.id}
       style={style}
-      open={hasImages ? true : undefined}
+      onToggle={() => {
+        collapsedByUser.current = hasImages && details.current?.open === false;
+      }}
     >
       <summary className="workspace-chat-tool-summary">
         {commandRow ? null : <ToolIcon name={model.icon} />}

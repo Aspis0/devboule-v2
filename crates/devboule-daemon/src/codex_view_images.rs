@@ -16,6 +16,11 @@ use crate::agent_image::{
 };
 use crate::text_cap::capped;
 
+/// The key a prepared frame carries an image outcome in. A provider must not
+/// be able to write one itself, so every incoming occurrence is dropped before
+/// this daemon writes its own.
+pub(crate) const MARKER: &str = "devboule_image";
+
 /// Replace one frame's image sources with stored markers. A running item is
 /// only marked pending: the store is written once, when the item completes.
 pub(crate) fn prepare_images(value: &mut Value, sink: Option<&AgentImageSink>) {
@@ -25,6 +30,9 @@ pub(crate) fn prepare_images(value: &mut Value, sink: Option<&AgentImageSink>) {
     let Some(item) = value.pointer_mut("/params/item") else {
         return;
     };
+    if let Some(object) = item.as_object_mut() {
+        object.remove(MARKER);
+    }
     match item.get("type").and_then(Value::as_str) {
         Some("imageGeneration" | "imageView") => {
             let Some(source) = codex_image_source(item) else {
@@ -36,7 +44,7 @@ pub(crate) fn prepare_images(value: &mut Value, sink: Option<&AgentImageSink>) {
                 object.remove("saved_path");
                 object.remove("result");
                 object.remove("path");
-                object.insert("devboule_image".to_string(), stored.to_value());
+                object.insert(MARKER.to_string(), stored.to_value());
             }
         }
         Some("mcpToolCall") => prepare_result_blocks(item, completed, sink),
@@ -76,6 +84,9 @@ fn prepare_result_blocks(item: &mut Value, completed: bool, sink: Option<&AgentI
     };
     let mut taken = 0;
     for block in blocks.iter_mut() {
+        if let Some(object) = block.as_object_mut() {
+            object.remove(MARKER);
+        }
         let Some(source) = image_block_source(block) else {
             continue;
         };
@@ -91,7 +102,7 @@ fn prepare_result_blocks(item: &mut Value, completed: bool, sink: Option<&AgentI
 }
 
 fn marker(stored: StoredImage) -> Value {
-    json!({"devboule_image": stored.to_value()})
+    json!({ (MARKER): stored.to_value() })
 }
 
 /// One completed image item's events. A refused image is a notice, never a
@@ -111,14 +122,16 @@ pub(super) fn image_item_events(id: &str, item: &Value, completed: bool) -> Vec<
             spawn_depth: None,
             images: vec![reference],
         }],
-        StoredImage::Refused(reason) => vec![refusal_notice(&reason)],
+        StoredImage::Refused(reason) => vec![refusal_notice(&format!(
+            "An agent image was not stored: {reason}"
+        ))],
         StoredImage::Pending => Vec::new(),
     }
 }
 
-pub(super) fn refusal_notice(reason: &str) -> SessionEvent {
+pub(super) fn refusal_notice(text: &str) -> SessionEvent {
     SessionEvent::SessionNotice {
-        text: capped(&format!("An agent image was not stored: {reason}")),
+        text: capped(text),
         severity: devboule_protocol::NoticeSeverity::Warning,
     }
 }

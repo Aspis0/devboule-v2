@@ -2628,6 +2628,12 @@ mod delivery_tests;
 #[path = "codex_command_test_support.rs"]
 mod command_test_support;
 
+/// Image frames through the real dispatcher: the prepare-then-journal order,
+/// the tool-result replay road, and provider-forged markers.
+#[cfg(test)]
+#[path = "codex_client_image_tests.rs"]
+mod image_tests;
+
 /// The requests the commands write, the form a picked prompt or skill takes,
 /// and the launch line the version gate decides.
 #[cfg(test)]

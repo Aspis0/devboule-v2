@@ -161,7 +161,17 @@ impl AgentImageSink {
         {
             return Err("the named file is outside the session's folders".to_string());
         }
-        let file = std::fs::File::open(&resolved)
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // A FIFO swapped in after the path check must not block the open;
+            // the metadata check below is what refuses it.
+            options.custom_flags(libc::O_NONBLOCK);
+        }
+        let file = options
+            .open(&resolved)
             .map_err(|_| "the named file could not be read".to_string())?;
         // The open is the check's subject as well: a file swapped between the
         // path check and here is still refused unless it is a regular file of

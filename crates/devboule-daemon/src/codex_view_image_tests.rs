@@ -255,7 +255,7 @@ fn a_tool_result_image_lands_on_its_row_and_a_refusal_is_named() {
     let events = view.ingest(&refused);
     assert!(events.iter().any(|event| matches!(
         event,
-        SessionEvent::SessionNotice { text, .. } if text.contains("was not stored")
+        SessionEvent::SessionNotice { text, .. } if text.contains("1 image not shown")
     )));
     match events.first() {
         Some(SessionEvent::AgentToolUpdate { text, images, .. }) => {

@@ -212,3 +212,31 @@ fn refusals_are_short_reasons() {
         .store(&AgentImageSource::Path(workspace.join("tiny.png")))
         .is_err());
 }
+
+/// A FIFO swapped in after the path check: the non-blocking open succeeds and
+/// the metadata check refuses it, so the reader thread can never park here.
+#[cfg(unix)]
+#[test]
+fn a_fifo_is_refused_without_blocking() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let (workspace, images) = roots("fifo");
+    let fifo = workspace.join("swapped.png");
+    let c_path =
+        std::ffi::CString::new(fifo.as_os_str().as_bytes()).expect("the path carries no NUL");
+    // SAFETY: mkfifo creates one node at a path this test owns and passes no
+    // buffer.
+    assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let (thread_workspace, thread_images, thread_fifo) =
+        (workspace.clone(), images.clone(), fifo.clone());
+    std::thread::spawn(move || {
+        let sink = sink("fifo", &thread_workspace, &thread_images);
+        let _ = sender.send(sink.store(&AgentImageSource::Path(thread_fifo)));
+    });
+    let result = receiver
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the FIFO open must not block the reader");
+    assert!(result.is_err(), "a FIFO is not an image");
+}

@@ -62,7 +62,7 @@ fn result_content(item: &Value) -> (Option<String>, Vec<AttachmentReference>, Ve
     let mut refusals = Vec::new();
     for block in content {
         if let Some(stored) = block
-            .get("devboule_image")
+            .get(super::images::MARKER)
             .and_then(StoredImage::from_value)
         {
             match stored {
@@ -111,8 +111,14 @@ pub(super) fn mcp_tool_events(id: &str, item: &Value, completed: bool) -> Vec<Se
             replace: false,
             images,
         }];
-        for reason in refusals {
-            events.push(super::images::refusal_notice(&reason));
+        // One notice for the whole result, however many blocks were refused:
+        // a frame cannot turn itself into a wall of warning rows.
+        if let Some(first) = refusals.first() {
+            let count = refusals.len();
+            let noun = if count == 1 { "image" } else { "images" };
+            events.push(super::images::refusal_notice(&format!(
+                "{count} {noun} not shown: {first}"
+            )));
         }
         events
     } else {
