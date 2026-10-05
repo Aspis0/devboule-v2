@@ -92,8 +92,14 @@ fn open_no_follow(path: &Path) -> io::Result<File> {
         )
     })?;
     // SAFETY: O_RDONLY opens for metadata only; O_NOFOLLOW makes a trailing
-    // link fail instead of resolving. On success the fd is ours to own.
-    let fd = unsafe { libc::open(name.as_ptr(), libc::O_RDONLY | libc::O_NOFOLLOW) };
+    // link fail instead of resolving; O_NONBLOCK keeps a FIFO swapped in for
+    // the path from blocking the open. On success the fd is ours to own.
+    let fd = unsafe {
+        libc::open(
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        )
+    };
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }
