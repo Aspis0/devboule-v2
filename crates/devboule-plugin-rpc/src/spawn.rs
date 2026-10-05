@@ -188,6 +188,11 @@ impl SpawnedBackend {
     /// SIGKILL the whole process group, guarded by `group_signalled`. The
     /// group id is the leader's pid, which the kernel keeps reserved until
     /// the leader is reaped; `ESRCH` just means the group is already empty.
+    /// An `EPERM` with the leader known exited means the same thing: XNU
+    /// reports `EPERM` (not success) when a group holds only zombies
+    /// (`killpg1`, `killpg1_pgrpfilt` filters `SZOMB`, zero found with
+    /// posix=1 yields `EPERM`), so a peeked zombie downgrades it to done
+    /// while any other `EPERM` stays loud.
     #[cfg(not(windows))]
     fn sweep_group(&mut self) -> std::io::Result<()> {
         if self.group_signalled {
@@ -197,9 +202,15 @@ impl SpawnedBackend {
         self.group_signalled = true;
         if unsafe { libc::killpg(pgid, libc::SIGKILL) } != 0 {
             let error = std::io::Error::last_os_error();
-            if error.raw_os_error() != Some(libc::ESRCH) {
-                return Err(error);
+            if error.raw_os_error() == Some(libc::ESRCH) {
+                return Ok(());
             }
+            if error.raw_os_error() == Some(libc::EPERM)
+                && Self::exited_without_reaping(self.child.id()).unwrap_or(false)
+            {
+                return Ok(());
+            }
+            return Err(error);
         }
         Ok(())
     }
