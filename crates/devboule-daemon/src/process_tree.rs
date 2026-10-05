@@ -286,7 +286,11 @@ mod platform {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+#[path = "process_tree_unix.rs"]
+mod platform;
+
+#[cfg(all(not(windows), not(unix)))]
 mod platform {
     use std::io;
 
@@ -327,6 +331,34 @@ mod platform {
             None
         }
     }
+}
+
+/// Make a piped child the leader of its own process group. Windows contains a
+/// child by assigning it to a job after spawn; a Unix process cannot be moved
+/// into another group once it has exec'd, so the group is chosen before it
+/// runs. A platform with neither has nothing to do here.
+#[cfg(not(windows))]
+pub fn lead_own_group(command: &mut std::process::Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(not(unix))]
+    let _ = command;
+}
+
+/// Own a just-spawned child's own process group: on Unix the child leads it
+/// ([`lead_own_group`], or portable-pty's own `setsid`), and elsewhere there
+/// is nothing to own.
+#[cfg(not(windows))]
+pub fn contain_spawned(pid: u32) -> std::io::Result<JobObject> {
+    let job = JobObject::new()?;
+    #[cfg(unix)]
+    job.assign_group(pid)?;
+    #[cfg(not(unix))]
+    let _ = pid;
+    Ok(job)
 }
 
 // `JobObject` stays unconditional: lib.rs re-exports it as public API, so a

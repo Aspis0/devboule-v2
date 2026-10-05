@@ -1477,11 +1477,6 @@ impl super::SessionRegistry {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
         crate::agent_report::validate_announcement(&report)?;
-        #[cfg(not(windows))]
-        {
-            let _ = peer;
-            return Err(crate::agent_report::peer_identity_unavailable_on_platform());
-        }
         let runtime = {
             let map = self
                 .inner
@@ -1491,6 +1486,10 @@ impl super::SessionRegistry {
             let live = entry
                 .as_peer_visible()
                 .ok_or_else(|| not_found_while_configuring(entry))?;
+            // The announcing process must be the session's owner. Windows
+            // checks the kernel SID first; on Unix the peer name is the
+            // kernel uid the accept path already refused if it was not this
+            // user, so the owner comparison is the whole check.
             #[cfg(windows)]
             {
                 let daemon_sid = crate::security::current_user_sid().map_err(|error| {
@@ -1499,8 +1498,8 @@ impl super::SessionRegistry {
                     ))
                 })?;
                 crate::agent_report::verify_announcement_peer(peer, &daemon_sid)?;
-                crate::agent_report::verify_announcement_peer(peer, &live.owner.user)?;
             }
+            crate::agent_report::verify_announcement_peer(peer, &live.owner.user)?;
             Arc::clone(&live.runtime)
         };
         runtime.accept_agent_report(report)

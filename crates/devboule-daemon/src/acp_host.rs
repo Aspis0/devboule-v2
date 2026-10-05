@@ -1113,6 +1113,26 @@ fn spawn_acp_terminal(
             )));
         }
     }
+    #[cfg(unix)]
+    {
+        // portable-pty's Unix spawn calls setsid: the child leads its own
+        // process group, and owning it is what a later kill reaches the
+        // terminal tree with.
+        let Some(pid) = child.process_id() else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(RpcError::internal(
+                "ACP terminal process has no pid".to_string(),
+            ));
+        };
+        if let Err(error) = process_job.assign_group(pid) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(RpcError::internal(format!(
+                "Could not contain the ACP terminal process: {error}"
+            )));
+        }
+    }
     let killer = child.clone_killer();
     let reader = pair.master.try_clone_reader().map_err(|error| {
         let _ = child.kill();

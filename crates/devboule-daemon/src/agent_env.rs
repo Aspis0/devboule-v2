@@ -108,7 +108,15 @@ pub fn inject_session_env(
     paths: &RuntimePaths,
 ) {
     upsert_env(&mut command.env, ENV_MARKER, ENV_MARKER_VALUE);
-    upsert_env(&mut command.env, SOCKET_PATH, &paths.pipe_name);
+    // The address the child reopens to reach the daemon: the named pipe on
+    // Windows, the domain socket on Unix.
+    #[cfg(windows)]
+    let address = paths.pipe_name.clone();
+    #[cfg(unix)]
+    let address = paths.socket_path.to_string_lossy().into_owned();
+    #[cfg(all(not(windows), not(unix)))]
+    let address = paths.pipe_name.clone();
+    upsert_env(&mut command.env, SOCKET_PATH, &address);
     upsert_env(&mut command.env, SESSION_ID, session_id);
     if let Some(workspace_id) = workspace_id {
         if !workspace_id.is_empty() {
@@ -296,10 +304,13 @@ mod tests {
         let env: std::collections::BTreeMap<_, _> = command.env.into_iter().collect();
         assert_eq!(env.get("KEEP").map(String::as_str), Some("yes"));
         assert_eq!(env.get(ENV_MARKER).map(String::as_str), Some("1"));
-        assert_eq!(
-            env.get(SOCKET_PATH).map(String::as_str),
-            Some(paths.pipe_name.as_str())
-        );
+        #[cfg(windows)]
+        let expected_address = paths.pipe_name.clone();
+        #[cfg(unix)]
+        let expected_address = paths.socket_path.to_string_lossy().into_owned();
+        #[cfg(all(not(windows), not(unix)))]
+        let expected_address = paths.pipe_name.clone();
+        assert_eq!(env.get(SOCKET_PATH), Some(&expected_address));
         assert_eq!(env.get(SESSION_ID).map(String::as_str), Some("s.client.1"));
         assert_eq!(env.get(WORKSPACE_ID).map(String::as_str), Some("ws-9"));
         assert!(env.contains_key(BIN_PATH));

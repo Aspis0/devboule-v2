@@ -536,6 +536,8 @@ fn spawn_process_with_load(
         // every ACP agent process.
         process.creation_flags(0x0800_0000);
     }
+    #[cfg(not(windows))]
+    crate::process_tree::lead_own_group(&mut process);
     let mut child = process.spawn().map_err(|error| {
         WireError::new(
             ErrorCode::Io,
@@ -574,11 +576,11 @@ fn spawn_process_with_load(
     };
 
     #[cfg(not(windows))]
-    let process_job = JobObject::new().map_err(|error| {
+    let process_job = crate::process_tree::contain_spawned(child.id()).map_err(|error| {
         terminate_process(&mut child);
         WireError::new(
             ErrorCode::Io,
-            format!("Could not create the ACP process job: {error}"),
+            format!("Could not contain the ACP agent process: {error}"),
         )
     })?;
     #[cfg(not(windows))]
@@ -860,20 +862,22 @@ pub(crate) fn probe_declarations(
     // `DEVBOULE_ACP_COMMAND` happens to point at as though the named provider
     // had said it.
     let command = resolve_named(provider, &paths)?;
-    let mut child = Command::new(&command.program)
+    let mut feature_command = Command::new(&command.program);
+    feature_command
         .args(&command.args)
         .current_dir(&command.cwd)
         .envs(command.env.iter().map(|(key, value)| (key, value)))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| {
-            WireError::new(
-                ErrorCode::Io,
-                format!("could not start {provider} to read its features: {error}"),
-            )
-        })?;
+        .stderr(Stdio::piped());
+    #[cfg(not(windows))]
+    crate::process_tree::lead_own_group(&mut feature_command);
+    let mut child = feature_command.spawn().map_err(|error| {
+        WireError::new(
+            ErrorCode::Io,
+            format!("could not start {provider} to read its features: {error}"),
+        )
+    })?;
     // Contained the same way a real child is: the job is killed on close, so a
     // probe that outlives its own read cannot leave an agent running behind the
     // Settings window, and an npx wrapper's grandchild goes with it.
@@ -900,7 +904,15 @@ pub(crate) fn probe_declarations(
         Some(process_job)
     };
     #[cfg(not(windows))]
-    let process_job: Option<JobObject> = None;
+    let process_job: Option<JobObject> = Some(
+        crate::process_tree::contain_spawned(child.id()).map_err(|error| {
+            terminate_process(&mut child);
+            WireError::new(
+                ErrorCode::Io,
+                format!("could not contain the feature read: {error}"),
+            )
+        })?,
+    );
     // Every early road runs this: kill, wait, then release the job. Taking the
     // job out of the `Option` is why it is declared `mut` — a closure could not
     // move out of a captured variable, and a job dropped without the process

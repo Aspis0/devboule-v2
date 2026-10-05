@@ -57,6 +57,8 @@ impl NpmInstallRunner for ProcessNpmInstallRunner {
             use std::os::windows::process::CommandExt;
             command.creation_flags(CREATE_NO_WINDOW);
         }
+        #[cfg(not(windows))]
+        crate::process_tree::lead_own_group(&mut command);
 
         let mut child = match command.spawn() {
             Ok(child) => child,
@@ -82,7 +84,18 @@ impl NpmInstallRunner for ProcessNpmInstallRunner {
                 };
             }
         }
-        #[cfg(not(windows))]
+        #[cfg(unix)]
+        if let Err(error) = job.assign_group(child.id()) {
+            let _ = child.kill();
+            let exit_code = child.wait().ok().and_then(|status| status.code());
+            return NpmInstallResult {
+                exit_code,
+                log: bounded_log(
+                    format!("could not assign npm to its install group: {error}").as_bytes(),
+                ),
+            };
+        }
+        #[cfg(not(any(windows, unix)))]
         let _ = job;
 
         let stdout = child

@@ -29,9 +29,21 @@ fn refused_spawn_command() -> PtyCommand {
 }
 
 pub(super) fn echo_command() -> PtyCommand {
-    PtyCommand::new(
+    // The same echoed line from whichever shell the platform has: `cmd.exe`
+    // on Windows, `/bin/sh` on Unix, so the create road is exercised on both.
+    #[cfg(windows)]
+    let (program, args) = (
         "cmd.exe",
         vec!["/c".to_string(), "echo create-road".to_string()],
+    );
+    #[cfg(not(windows))]
+    let (program, args) = (
+        "/bin/sh",
+        vec!["-c".to_string(), "echo create-road".to_string()],
+    );
+    PtyCommand::new(
+        program,
+        args,
         crate::test_dirs::test_temp_dir("devboule-create-cwd"),
         Vec::new(),
     )

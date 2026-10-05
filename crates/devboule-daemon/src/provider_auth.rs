@@ -216,6 +216,8 @@ fn run_check_with_timeout(
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000);
     }
+    #[cfg(not(windows))]
+    crate::process_tree::lead_own_group(&mut command);
 
     let _job = match crate::process_tree::JobObject::new() {
         Ok(job) => job,
@@ -233,6 +235,12 @@ fn run_check_with_timeout(
             let _ = child.wait();
             return classify_failure(ProbeFailure::SpawnFailed);
         }
+    }
+    #[cfg(unix)]
+    if _job.assign_group(child.id()).is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+        return classify_failure(ProbeFailure::SpawnFailed);
     }
     let Some(mut stdout) = child.stdout.take() else {
         let _ = child.kill();
@@ -281,6 +289,8 @@ fn run_check_with_timeout(
                 record_job_pids(&_job);
                 #[cfg(windows)]
                 reap_check_job(&agent.id, "timeout", &_job);
+                #[cfg(unix)]
+                reap_check_job(&agent.id, "timeout", &_job);
                 let _ = child.kill();
                 let _ = child.wait();
                 return classify_failure(ProbeFailure::TimedOut);
@@ -290,6 +300,8 @@ fn run_check_with_timeout(
     #[cfg(all(test, windows))]
     record_job_pids(&_job);
     #[cfg(windows)]
+    reap_check_job(&agent.id, "success", &_job);
+    #[cfg(unix)]
     reap_check_job(&agent.id, "success", &_job);
     // claude and codex classify by exit code alone; waiting for the pipe on
     // their path would let a descendant that outlives the direct child turn
@@ -320,8 +332,10 @@ fn run_check_with_timeout(
 }
 
 /// A failed wait is printed, never returned: cleanup trouble is not evidence
-/// about credentials, so it must not change the classification.
-#[cfg(windows)]
+/// about credentials, so it must not change the classification. Unix has the
+/// same twin: the probe's whole group leaves with the check, so a helper it
+/// started cannot outlive it.
+#[cfg(any(windows, unix))]
 fn reap_check_job(provider_id: &str, path: &str, job: &crate::process_tree::JobObject) {
     report_failed_reap(
         provider_id,

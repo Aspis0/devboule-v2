@@ -1,11 +1,11 @@
 //! Tests for the announcement contract: peer verification, official
-//! sources, field validation, and the platform peer-identity error.
+//! sources, and field validation.
 
 use devboule_protocol::{AgentActivityState, ErrorCode};
 
 use super::{
-    is_official_agent_source, peer_identity_unavailable_on_platform, validate_announcement,
-    verify_announcement_peer, AgentReport, PeerIdentity, MAX_ANNOUNCEMENT_FIELD_BYTES,
+    is_official_agent_source, validate_announcement, verify_announcement_peer, AgentReport,
+    PeerIdentity, MAX_ANNOUNCEMENT_FIELD_BYTES,
 };
 
 pub(super) fn report(seq: Option<u64>, state: AgentActivityState) -> AgentReport {
@@ -95,21 +95,6 @@ fn overlong_field_is_rejected_by_name() {
             .message
             .contains(&MAX_ANNOUNCEMENT_FIELD_BYTES.to_string()),
         "error must name the limit, got {}",
-        error.message
-    );
-}
-
-#[test]
-fn platform_without_peer_identity_is_not_unauthorized() {
-    let error = peer_identity_unavailable_on_platform();
-    assert_ne!(
-        error.code,
-        ErrorCode::Unauthorized,
-        "missing platform support is not an authorization decision"
-    );
-    assert!(
-        error.message.to_ascii_lowercase().contains("platform"),
-        "error must name the platform cause, got {}",
         error.message
     );
 }

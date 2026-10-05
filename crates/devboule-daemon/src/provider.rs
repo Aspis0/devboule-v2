@@ -1232,12 +1232,28 @@ fn open_pty_session(
     };
 
     #[cfg(not(windows))]
-    let process_job = JobObject::new().map_err(|error| {
-        WireError::new(
-            ErrorCode::Io,
-            format!("Could not create the terminal process job: {error}"),
-        )
-    })?;
+    let process_job = match child.process_id() {
+        // portable-pty's Unix spawn calls setsid, so the child already leads
+        // its own process group; owning that group is what a later kill
+        // reaches the whole terminal tree with.
+        Some(pid) => match crate::process_tree::contain_spawned(pid) {
+            Ok(job) => job,
+            Err(error) => {
+                super::terminate_spawned_child(pair, child);
+                return Err(WireError::new(
+                    ErrorCode::Io,
+                    format!("Could not contain the terminal process: {error}"),
+                ));
+            }
+        },
+        None => {
+            super::terminate_spawned_child(pair, child);
+            return Err(WireError::new(
+                ErrorCode::Io,
+                "The terminal process has no pid.",
+            ));
+        }
+    };
     #[cfg(not(windows))]
     let os_handle = None;
 

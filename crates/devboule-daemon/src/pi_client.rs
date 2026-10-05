@@ -1688,6 +1688,8 @@ fn spawn_pi(
         use std::os::windows::process::CommandExt;
         process.creation_flags(0x0800_0000);
     }
+    #[cfg(not(windows))]
+    crate::process_tree::lead_own_group(&mut process);
     let mut child = match process.spawn() {
         Ok(child) => child,
         Err(error) => {
@@ -1735,15 +1737,18 @@ fn spawn_pi(
     };
 
     #[cfg(not(windows))]
-    let process_job = JobObject::new().map_err(|error| {
-        terminate_process(&mut child);
-        remove_permission_extension(&extension_path);
-        remove_bridge(&bridge_path);
-        WireError::new(
-            ErrorCode::Io,
-            format!("Could not create the Pi process job: {error}"),
-        )
-    })?;
+    let process_job = match crate::process_tree::contain_spawned(child.id()) {
+        Ok(job) => job,
+        Err(error) => {
+            terminate_process(&mut child);
+            remove_permission_extension(&extension_path);
+            remove_bridge(&bridge_path);
+            return Err(WireError::new(
+                ErrorCode::Io,
+                format!("Could not contain the Pi process: {error}"),
+            ));
+        }
+    };
     #[cfg(not(windows))]
     let os_handle = None;
 

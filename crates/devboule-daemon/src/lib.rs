@@ -109,6 +109,8 @@ mod plan_text;
 mod plan_usage_cache;
 #[cfg(all(test, feature = "server"))]
 mod portable_pty_tests;
+#[cfg(all(test, unix, feature = "server"))]
+mod portable_pty_unix_tests;
 mod process_tree;
 #[cfg(feature = "server")]
 mod profile_delivery;

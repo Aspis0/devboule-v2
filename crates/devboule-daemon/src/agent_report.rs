@@ -148,17 +148,6 @@ fn check_field(name: &str, value: &str) -> Result<(), WireError> {
     Ok(())
 }
 
-/// Used when this platform cannot identify a named-pipe peer. Must not be
-/// reported as authorization failure: we did not decide the peer is the
-/// wrong user, we could not tell who they are.
-#[cfg_attr(windows, allow(dead_code))]
-pub fn peer_identity_unavailable_on_platform() -> WireError {
-    WireError::new(
-        ErrorCode::Unimplemented,
-        "Peer identity is not available on this platform.",
-    )
-}
-
 /// herdr `normalize_session_start_source`: unknown values become `None`,
 /// they do not reject the rest of the report.
 pub fn normalize_session_start_source(value: Option<String>) -> Option<String> {

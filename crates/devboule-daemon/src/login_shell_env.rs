@@ -301,7 +301,7 @@ mod unix_execution {
         record_login_shell_capture_outcome(outcome);
     }
 
-    fn capture_login_environment() -> Result<EnvironmentMap, ()> {
+    pub(super) fn capture_login_environment() -> Result<EnvironmentMap, ()> {
         let shell = std::env::var_os("SHELL")
             .filter(|shell| !shell.is_empty())
             .unwrap_or_else(|| OsString::from("/bin/sh"));
@@ -611,5 +611,50 @@ mod tests {
 
         assert!(read_capture_file(&path).is_err());
         let _ = std::fs::remove_file(path);
+    }
+
+    /// The Unix road's whole contract is `$SHELL`, run as a login shell with
+    /// the capture script: a fake shell makes that deterministic, so no real
+    /// profile is sourced and no real `PATH` is touched. The writer is the
+    /// framed NUL format the parser and the real `env -0` road both speak.
+    #[cfg(unix)]
+    #[test]
+    fn the_capture_runs_the_shell_the_environment_names() {
+        use std::os::unix::fs::PermissionsExt;
+
+        static SHELL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = SHELL_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+
+        let dir = crate::test_dirs::test_temp_dir("devboule-login-shell");
+        let shell = dir.join("fake-shell");
+        std::fs::write(
+            &shell,
+            "#!/bin/sh\nprintf '\\000%s\\000' DEVBOULE_LOGIN_ENV_START\nprintf \
+             'PATH=/fake/bin\\000DEVBOULE_FAKE_SHELL=yes\\000'\nprintf '%s\\000' \
+             DEVBOULE_LOGIN_ENV_END\n",
+        )
+        .expect("the fake shell is written");
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755))
+            .expect("the fake shell is executable");
+
+        let previous = std::env::var_os("SHELL");
+        std::env::set_var("SHELL", &shell);
+        let captured = super::unix_execution::capture_login_environment();
+        match previous {
+            Some(value) => std::env::set_var("SHELL", value),
+            None => std::env::remove_var("SHELL"),
+        }
+
+        let captured = captured.expect("the named shell's environment is captured");
+        assert_eq!(
+            captured.get(b"PATH" as &[u8]),
+            Some(&b"/fake/bin".to_vec()),
+            "a login value is captured"
+        );
+        assert_eq!(
+            captured.get(b"DEVBOULE_FAKE_SHELL" as &[u8]),
+            Some(&b"yes".to_vec()),
+            "the fake shell is the one that ran"
+        );
     }
 }

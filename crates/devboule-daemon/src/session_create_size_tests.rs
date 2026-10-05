@@ -36,12 +36,14 @@ fn create_terminal(
         .expect("the spawn succeeds")
 }
 
-/// A `ping` child: alive for a few seconds after the create answers, so the
-/// registry entry (and with it the master and the runtime) is still there
-/// when the test reads the geometry back. `cmd /c echo` would exit-and-reap
-/// mid-assertion.
+/// A lingering child: alive for a few seconds after the create answers, so
+/// the registry entry (and with it the master and the runtime) is still there
+/// when the test reads the geometry back. An echo child would exit-and-reap
+/// mid-assertion. The platform's own long-lived program does the same job on
+/// both: `ping` on Windows, `sleep` on Unix.
 fn lingering_command(label: &str) -> super::PtyCommand {
-    super::PtyCommand::new(
+    #[cfg(windows)]
+    let (program, args) = (
         "cmd.exe",
         vec![
             "/c".to_string(),
@@ -50,6 +52,12 @@ fn lingering_command(label: &str) -> super::PtyCommand {
             "4".to_string(),
             "127.0.0.1".to_string(),
         ],
+    );
+    #[cfg(not(windows))]
+    let (program, args) = ("/bin/sleep", vec!["30".to_string()]);
+    super::PtyCommand::new(
+        program,
+        args,
         crate::test_dirs::test_temp_dir(label),
         Vec::new(),
     )

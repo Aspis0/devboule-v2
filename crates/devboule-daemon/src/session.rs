@@ -684,6 +684,17 @@ mod session_static_route_tests;
 #[cfg(test)]
 #[path = "session_stop_tests.rs"]
 mod session_stop_tests;
+/// The Unix tree test: a terminal's background child stays in the shell's own
+/// process group, and closing the session kills the group, not just the
+/// leader.
+#[cfg(all(test, unix))]
+#[path = "session_terminal_group_tests.rs"]
+mod session_terminal_group_tests;
+/// The Unix announcement gate: the kernel uid the socket transport minted is
+/// the peer identity the agent report is checked against.
+#[cfg(all(test, unix))]
+#[path = "session_agent_report_unix_tests.rs"]
+mod session_agent_report_unix_tests;
 /// The terminal-input tests carved out of `session_tests`: several observers
 /// sending complete inputs concurrently through one writer without interleaving,
 /// and only the resize owner being allowed to resize the terminal.

@@ -724,6 +724,8 @@ fn spawn_claude_child(
         use std::os::windows::process::CommandExt;
         process.creation_flags(0x0800_0000);
     }
+    #[cfg(not(windows))]
+    crate::process_tree::lead_own_group(&mut process);
     let mut child = process.spawn().map_err(|error| {
         WireError::new(
             ErrorCode::Io,
@@ -762,11 +764,11 @@ fn spawn_claude_child(
     };
 
     #[cfg(not(windows))]
-    let process_job = JobObject::new().map_err(|error| {
+    let process_job = crate::process_tree::contain_spawned(child.id()).map_err(|error| {
         terminate_process(&mut child);
         WireError::new(
             ErrorCode::Io,
-            format!("Could not create the Claude process job: {error}"),
+            format!("Could not contain the Claude process: {error}"),
         )
     })?;
     #[cfg(not(windows))]
