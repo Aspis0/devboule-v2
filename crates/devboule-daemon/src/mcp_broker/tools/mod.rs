@@ -6,6 +6,7 @@ pub(super) mod browser_commands;
 pub(super) mod browser_login;
 pub(super) mod browser_steps;
 pub(super) mod browser_tools;
+pub(super) mod collisions;
 pub(super) mod commands;
 pub(super) mod creation;
 pub(super) mod first_use;

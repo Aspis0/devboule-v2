@@ -68,6 +68,8 @@ mod device_identity;
 mod device_recovery;
 mod diagnostics;
 mod error;
+#[cfg(feature = "server")]
+mod file_collisions;
 mod framing;
 #[cfg(feature = "server")]
 mod git;
@@ -202,6 +204,8 @@ mod workspace_git_support;
 mod workspace_git_write;
 #[cfg(feature = "server")]
 mod worktree;
+#[cfg(feature = "server")]
+mod write_evidence;
 
 #[cfg(windows)]
 mod security;

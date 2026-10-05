@@ -54,6 +54,10 @@ pub(super) const WAITING_READ_CAP: usize = 12;
 /// queue. A freed read permit wakes it at once; this poll bounds only the
 /// wait for a write arriving behind a read that cannot take its permit.
 const PICK_POLL: Duration = Duration::from_millis(50);
+/// How long a [`GitQueue::read_value`] caller waits for its job. Longer than
+/// any one sweep's own bound so the sweep's own answer wins; short enough that
+/// a wedged queue refuses the call instead of holding the caller for ever.
+const VALUE_WAIT: Duration = Duration::from_secs(30);
 
 /// One queued unit of git work.
 pub(super) enum Job {
@@ -68,6 +72,14 @@ pub(super) enum Job {
     },
     /// A mutation or any non-poll arm: the closure answers its own caller.
     Write(Box<dyn FnOnce() + Send>),
+    /// A read whose answer is a value rather than a wire frame: an MCP tool
+    /// runs git and has no [`DaemonMessage`] to deliver. Runs in the read
+    /// lane and in this root's queue order, coalescing nothing.
+    ///
+    /// Its compute MUST NOT enqueue another job on this root and wait for
+    /// it: one root has one drain thread, so such a job would sit behind this
+    /// one forever.
+    Value(Box<dyn FnOnce() + Send>),
 }
 
 /// What one queued read is a repeat of, opaque to the substrate: the
@@ -262,7 +274,7 @@ fn queued_reads(inner: &Inner) -> usize {
     inner
         .jobs
         .iter()
-        .filter(|job| matches!(job, Job::Read { .. }))
+        .filter(|job| matches!(job, Job::Read { .. } | Job::Value(_)))
         .count()
 }
 
@@ -368,7 +380,7 @@ fn join_read(inner: &Inner, key: &ReadKey, sinks: &Arc<Mutex<Vec<Sink>>>) -> boo
                 sinks: queued_sinks,
                 ..
             }) => queued_sinks,
-            Some(Job::Write(_)) | None => return false,
+            Some(Job::Write(_) | Job::Value(_)) | None => return false,
         },
     };
     let mut incoming = sinks.lock().unwrap_or_else(|error| error.into_inner());
@@ -380,6 +392,32 @@ fn join_read(inner: &Inner, key: &ReadKey, sinks: &Arc<Mutex<Vec<Sink>>>) -> boo
 }
 
 impl GitQueue {
+    /// Run `compute` on `root`'s queue and hand its value back to the caller,
+    /// bounded by [`VALUE_WAIT`]. Nothing coalesces on this key and nothing
+    /// is counted as a write, but the read lane and the per-root order are the
+    /// same ones the workspace git arms take, so a sweep observes the tree as
+    /// the writes before it left it.
+    ///
+    /// The caller blocks here, on the thread that asked the question. `Err`
+    /// means the worker could not start the job, or the bound ran out with it
+    /// still queued — never a partial value.
+    pub(super) fn read_value<T, F>(&self, root: String, compute: F) -> Result<T, &'static str>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+    {
+        let (answer_tx, answer_rx) = std::sync::mpsc::sync_channel(1);
+        let job = Job::Value(Box::new(move || {
+            // A panic inside the compute drops the sender, and the caller
+            // reads that as the refusal it is.
+            let _ = answer_tx.send(compute());
+        }));
+        self.enqueue_job(root, job)?;
+        answer_rx
+            .recv_timeout(VALUE_WAIT)
+            .map_err(|_| "the repository's git queue did not answer in time")
+    }
+
     /// Queue one git job for `root`, spawning this root's worker when
     /// idle. A read joins the queue's last job only when that job is the
     /// same read — a join past a write would answer from before the write —
@@ -491,9 +529,13 @@ impl GitQueue {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
             inner.busy = false;
-            if let Some(Job::Write(_)) = inner.jobs.pop_front() {
-                // The job was never run; close the count taken for it.
-                self.shared.write_finished();
+            if let Some(unrun) = inner.jobs.pop_front() {
+                // The job was never run; a write's count is taken at enqueue
+                // and closes here, and a value job's sender is dropped with
+                // the job, so its caller reads a refusal instead of waiting.
+                if matches!(unrun, Job::Write(_)) {
+                    self.shared.write_finished();
+                }
             }
             return Err("could not start the workspace git request");
         }
@@ -637,6 +679,14 @@ fn drain(shared: Arc<Shared>, queue: Arc<RootQueue>) {
                     };
                     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
                 }
+            }
+            Job::Value(run) => {
+                acquire(&shared, Lane::Read);
+                let _permit = PermitGuard {
+                    shared: &shared,
+                    lane: Lane::Read,
+                };
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
             }
         }));
     }

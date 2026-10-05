@@ -539,6 +539,25 @@ impl ServerState {
         super::git_write_lock::acquire(&self.git_write_locks, root)
     }
 
+    /// Run a read-only git job on `root`'s queue and hand back its value.
+    /// The one way out of the queue for a caller with no wire frame to
+    /// deliver (the collision sweep), so `git_jobs` stays private.
+    pub(crate) fn read_git_value<T, F>(&self, root: &Path, compute: F) -> Result<T, &'static str>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+    {
+        self.git_jobs
+            .read_value(root.to_string_lossy().into_owned(), compute)
+    }
+
+    /// Which daemon answered — the instance id every queue snapshot already
+    /// carries as its epoch, and the field a result envelope stamps on every
+    /// answer so a caller can tell two hosts apart.
+    pub(crate) fn host_id(&self) -> &str {
+        &self.instance_id
+    }
+
     /// Test-only count of the map's live entries, so the retirement tests
     /// observe the registry without the map itself leaving this module.
     #[cfg(test)]

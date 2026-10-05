@@ -6,10 +6,11 @@
 //! way — two copies of a sentence a panel shows would be two truths.
 
 use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
 
 use crate::git::{
-    detect_git_repository, run_git_args, run_git_args_with_cap, GitOutput, GitRepositoryStatus,
-    GitRunError,
+    detect_git_repository, run_git_args, run_git_args_with_cap, run_git_args_with_cap_and_timeout,
+    GitOutput, GitRepositoryStatus, GitRunError, GIT_STDOUT_MAX_BYTES,
 };
 
 /// Test-only: the next `git` invocation per directory, armed by a test to
@@ -193,6 +194,22 @@ pub(crate) fn git_with_cap(
     let mut arguments = vec!["-C".to_string(), root.to_string_lossy().into_owned()];
     arguments.extend(subcommand.iter().map(|argument| (*argument).to_string()));
     run_git_args_with_cap(&arguments, max_bytes)
+}
+
+/// Run `git` in `root` under the caller's own deadline — the read arm of
+/// [`git`] for a caller that spends one command per worktree and must keep
+/// the whole sweep inside one tool call's time. Same closed argv, Job Object
+/// and stdout cap as [`git`].
+pub(crate) fn git_within(
+    root: &Path,
+    subcommand: &[&str],
+    timeout: Duration,
+) -> Result<GitOutput, GitRunError> {
+    #[cfg(test)]
+    hold_git_command_for_test(root);
+    let mut arguments = vec!["-C".to_string(), root.to_string_lossy().into_owned()];
+    arguments.extend(subcommand.iter().map(|argument| (*argument).to_string()));
+    run_git_args_with_cap_and_timeout(&arguments, GIT_STDOUT_MAX_BYTES, timeout)
 }
 
 /// A git that never started, timed out or is not installed — named by

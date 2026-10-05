@@ -312,6 +312,10 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
         "Archives a worktree in the calling session's own project after the human approves workspace archiving from this session the first time when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses). workspaceId names the target. The approval card names up to three live sessions owned by the caller and counts sessions of other users without showing their titles; their session rows and transcripts stay in history. Archive closes those sessions before removing the checkout and workspace row. A dirty worktree is refused and cannot be forced.",
     ),
     (
+        MCP_FILE_COLLISIONS_TOOL,
+        "Answers who else is changing one path in your own workspace's repository, so you can find out before you edit instead of at rebase time. It names every other git worktree of that repository with the branch it has checked out, the merge base it shares with your own HEAD, whether the path is committed differently there, and whether it is dirty in that checkout - each row carries the workspace id when Devboule knows that checkout, and 'branch' when it does not. path is relative to your workspace folder, or '.' for the whole repository; a path outside that folder, the repository's own .git folder, and a path reached through a symbolic link are refused by name. writers are the sessions that wrote this exact path through Devboule itself in the last lookbackMinutes (default 60, max 1440), with the kind of write and its confidence - a shell command, an editor and a person's terminal are never evidence, so an empty writers list never means nobody touched the file. capped says the sweep stopped at its own bound and did not read every checkout. Read-only: nothing is warned, written, cancelled or approved, and the repository is your own workspace's, never one named by an argument.",
+    ),
+    (
         MCP_CREATE_TERMINAL_TOOL,
         "Opens a new terminal in the calling session's own workspace and answers its id, title and working directory. The workspace comes from the calling session's row, never from an argument, so no argument can choose where the shell opens; name is optional and titles the terminal (trimmed, an empty name means untitled, at most 60 characters). The human is asked to approve terminal writes from this session the first time when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses), and a creator already holding its full share of live terminals is refused with a sentence that says how to make room. A retry carrying the same request id answers the terminal the first call opened rather than opening a second one, a daemon that is shutting down refuses the call, and this tool never creates an agent session.",
     ),
@@ -607,6 +611,11 @@ pub const MCP_CAPTURE_TERMINAL_TOOL: &str = "devboule_capture_terminal";
 /// The workspace write: removes one of the caller's project's worktrees,
 /// behind a separate first-use human card from workspace creation.
 pub const MCP_ARCHIVE_WORKSPACE_TOOL: &str = "devboule_archive_workspace";
+/// The read-only collision tool: one path, the repository's other checkouts
+/// and the sessions that wrote that path through this daemon. It asks no card
+/// and changes nothing — the whole point is to know before an edit, not after
+/// a conflict.
+pub const MCP_FILE_COLLISIONS_TOOL: &str = "devboule_file_collisions";
 /// The terminal write that opens a shell: a terminal in the calling
 /// session's own workspace, behind the terminal-write first-use card.
 ///
@@ -782,6 +791,33 @@ pub(crate) fn agent_activity_input_schema() -> serde_json::Value {
             }
         },
         "required": ["session"],
+        "additionalProperties": false
+    })
+}
+
+/// The `tools/list` input schema of [`MCP_FILE_COLLISIONS_TOOL`].
+///
+/// Closed, and bounded where the tool is: `lookbackMinutes` carries the same
+/// ceiling the writer log keeps rows across, so the document promises no
+/// window the daemon cannot answer. There is no workspace argument — the
+/// repository is the caller's own workspace, read from its session row.
+#[cfg(feature = "server")]
+pub(crate) fn file_collisions_input_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "A path relative to your workspace folder, or '.' for the whole repository."
+            },
+            "lookbackMinutes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1440,
+                "description": "How far back to look for sessions that wrote this path. Default 60."
+            }
+        },
+        "required": ["path"],
         "additionalProperties": false
     })
 }

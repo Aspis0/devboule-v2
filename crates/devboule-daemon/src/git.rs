@@ -332,7 +332,7 @@ pub(crate) enum GitRunError {
 /// full pipe cannot deadlock the wait. Output is capped at the shared
 /// [`GIT_STDOUT_MAX_BYTES`] ceiling.
 pub(crate) fn run_git_args(args: &[String]) -> Result<GitOutput, GitRunError> {
-    run_git_args_with_cap(args, GIT_STDOUT_MAX_BYTES)
+    run_git_args_bounded(args, GIT_STDOUT_MAX_BYTES, GIT_COMMAND_TIMEOUT)
 }
 
 /// The captured-output git runner: closed argv, piped stdio, and the locale
@@ -366,6 +366,25 @@ pub(crate) fn run_git_args_with_cap(
     args: &[String],
     max_bytes: usize,
 ) -> Result<GitOutput, GitRunError> {
+    run_git_args_bounded(args, max_bytes, GIT_COMMAND_TIMEOUT)
+}
+
+/// The same runner under the caller's own ceiling. A caller that issues a
+/// bounded number of commands — one read per worktree — cannot spend the
+/// house's 60 seconds on every one of them and still answer in useful time.
+pub(crate) fn run_git_args_with_cap_and_timeout(
+    args: &[String],
+    max_bytes: usize,
+    timeout: Duration,
+) -> Result<GitOutput, GitRunError> {
+    run_git_args_bounded(args, max_bytes, timeout)
+}
+
+fn run_git_args_bounded(
+    args: &[String],
+    max_bytes: usize,
+    timeout: Duration,
+) -> Result<GitOutput, GitRunError> {
     let command = new_git_command(args);
 
     let mut process = match spawn_captured_git_process(command, max_bytes) {
@@ -377,7 +396,7 @@ pub(crate) fn run_git_args_with_cap(
     };
     let mut exit_status = None;
     let outcome = bounded_reap(
-        Instant::now() + GIT_COMMAND_TIMEOUT,
+        Instant::now() + timeout,
         Instant::now,
         || match process.child.try_wait() {
             Ok(Some(status)) => {

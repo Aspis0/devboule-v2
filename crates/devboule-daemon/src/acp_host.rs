@@ -405,6 +405,17 @@ impl AcpHost {
         }
         std::fs::write(&path, request.content.as_bytes())
             .map_err(|error| fs_error(&path, error))?;
+        // The one place the daemon writes a file for an agent and knows the
+        // path it wrote, so this is where a collision report's writer list
+        // comes from. Only after the bytes are on disk, and only for the file:
+        // the parent folders this created are a side effect of the write.
+        crate::write_evidence::record_path_write(
+            request.session_id.0.as_ref(),
+            &crate::tool_paths::relativize_tool_path(
+                &request.path.to_string_lossy(),
+                Some(&self.cwd),
+            ),
+        );
         serde_json::to_value(WriteTextFileResponse::new())
             .map_err(|error| RpcError::internal(error.to_string()))
     }
@@ -1217,3 +1228,7 @@ fn spawn_acp_terminal(
 #[cfg(test)]
 #[path = "acp_host_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "acp_host_write_evidence_tests.rs"]
+mod write_evidence_tests;

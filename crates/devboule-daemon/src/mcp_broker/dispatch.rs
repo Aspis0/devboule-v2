@@ -202,6 +202,8 @@ pub(super) fn handle_rpc(
                 tools::workspaces::list(state, registration, id)
             } else if tool_name == Some(crate::provider_catalog::MCP_CREATE_WORKSPACE_TOOL) {
                 tools::workspaces::create(state, broker, caller, registration, id, message)
+            } else if tool_name == Some(crate::provider_catalog::MCP_FILE_COLLISIONS_TOOL) {
+                tools::collisions::collisions(state, registration, id, message)
             } else if tool_name == Some(crate::provider_catalog::MCP_LIST_TERMINALS_TOOL) {
                 tools::terminals::list(state, registration, caller, id)
             } else if tool_name == Some(crate::provider_catalog::MCP_CAPTURE_TERMINAL_TOOL) {
@@ -355,6 +357,8 @@ pub(super) fn enabled_tool_list(
                     "required": ["workspaceId"],
                     "additionalProperties": false,
                 })
+            } else if *name == crate::provider_catalog::MCP_FILE_COLLISIONS_TOOL {
+                crate::provider_catalog::file_collisions_input_schema()
             } else if *name == crate::provider_catalog::MCP_ORACLE_SEARCH_TOOL {
                 // Closed and bounded like its siblings: `limit` is clamped to
                 // the range the app's own route clamps to, and `root` is
