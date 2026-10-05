@@ -10,16 +10,6 @@
   min-height: 0;
 }
 
-/* The divider owns the height: the pane above takes the share the store holds
-   and the pane below takes what is left. */
-.workspace-split-top {
-  flex: none;
-}
-
-.workspace-split-bottom {
-  flex: 1 1 0;
-}
-
 /* Each pane is its own query container: compact density is a fact about how
    much room this pane has, not about how wide the window is. */
 .workspace-split-pane {
@@ -30,6 +20,21 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+}
+
+/* The divider owns the height: the pane above takes the share the store holds
+   and the pane below takes what is left. The two floors are the pixel
+   minimums from splitGeometry.ts, spelled here as well so a size restored from
+   a window that has since shrunk cannot crush a pane before the first
+   measurement lands. */
+.workspace-split-top {
+  flex: none;
+  min-height: 180px;
+}
+
+.workspace-split-bottom {
+  flex: 1 1 0;
+  min-height: 192px;
 }
 
 .workspace-split-divider {
@@ -74,12 +79,14 @@
   white-space: nowrap;
 }
 
-/* Quiet until the pane is hovered or the control is reached: the merge is one
-   action, and it must not sit in every pane's face. Hidden, never absent, so
-   the keyboard finds the same button the pointer does. */
+/* Quiet until the pane below is hovered or the focus is inside its header:
+   the merge is one action, and it must not sit in every pane's face — nor ask
+   a pointer to find an invisible button. Hidden, never absent, so the keyboard
+   finds the same control the pointer does, and never under 24px tall. */
 .workspace-split-merge {
   flex: none;
   height: var(--control-default);
+  min-height: 24px;
   padding: 0 var(--space-8);
   border: 0;
   border-radius: var(--radius-6);
@@ -92,6 +99,8 @@
   transition: opacity 120ms ease;
 }
 
+.workspace-split-bottom:hover .workspace-split-merge,
+.workspace-split-header:focus-within .workspace-split-merge,
 .workspace-split-merge:hover,
 .workspace-split-merge:focus-visible {
   background: var(--panel-menu);
@@ -104,10 +113,11 @@
 }
 
 /* A pane under about half a workspace centre steps down one notch: interface
-   14 to small 13, the pane's own header and the browser chrome one control
-   shorter. The 12px meta floor holds — nothing here names a type below
-   --type-small. The pane headers are named through the split ancestor because
-   their own sheet says a bare rule there loses the cascade. */
+   14 to small 13, tighter rows and controls, including the chat's transcript
+   and composer rather than only the headers around them. The 12px meta floor
+   holds — nothing here names a type below --type-small. The pane's own classes
+   are named through the split ancestor because their sheets say a bare rule
+   there loses the cascade. */
 @container split-pane ((max-height: 340px) or (max-width: 440px)) {
   .workspace-split-header {
     height: var(--control-dense);
@@ -140,5 +150,35 @@
   .workspace-split-pane .workspace-agent-title,
   .workspace-split-pane .workspace-terminal-title {
     font-size: var(--type-small);
+  }
+
+  .workspace-split-pane .workspace-conversation-content {
+    gap: var(--space-6);
+  }
+
+  .workspace-split-pane .workspace-chat-entry {
+    font-size: var(--type-small);
+    line-height: var(--leading-dense);
+  }
+
+  .workspace-split-pane .workspace-composer-wrap {
+    padding: var(--space-4) var(--space-12) var(--space-8);
+  }
+
+  .workspace-split-pane .workspace-composer {
+    min-height: calc(
+      var(--space-6) + (var(--type-small) * var(--leading-dense)) + var(--space-4) +
+        var(--control-dense) + var(--space-6) + 2px
+    );
+    padding: var(--space-6) var(--space-10);
+  }
+
+  .workspace-split-pane .workspace-composer textarea {
+    font-size: var(--type-small);
+    line-height: var(--leading-dense);
+  }
+
+  .workspace-split-pane .workspace-composer-bar {
+    margin-top: var(--space-4);
   }
 }

@@ -17,9 +17,12 @@ import { SplitPane } from "./SplitPane";
 import {
   COMPACT_MAX_HEIGHT,
   COMPACT_MAX_WIDTH,
-  MAX_SPLIT_SIZE,
-  MIN_SPLIT_SIZE,
   DEFAULT_SPLIT_SIZE,
+  MAX_SPLIT_SIZE,
+  MIN_BOTTOM_PANE_PX,
+  MIN_SPLIT_SIZE,
+  MIN_TOP_PANE_PX,
+  splitBoundsFor,
 } from "./splitGeometry";
 
 const sheet = readFileSync(resolve(import.meta.dirname, "SplitPane.css"), "utf8");
@@ -29,6 +32,66 @@ function ruleBody(selector: string): string {
   const at = sheet.indexOf(`${selector} {`);
   expect(at, `${selector} has no rule`).toBeGreaterThan(-1);
   return sheet.slice(at, sheet.indexOf("}", at));
+}
+
+/** The rule body a selector owns inside a larger sheet (the compact block). */
+function bodyOf(css: string, selector: string): string {
+  const at = css.indexOf(`${selector} {`);
+  expect(at, `${selector} has no rule`).toBeGreaterThan(-1);
+  return css.slice(at, css.indexOf("}", at));
+}
+
+/** The selectors that share the rule the reveal's own arm belongs to, with the
+ * `a:hover, b:focus` arms split back out. */
+/** The selectors that share the rule the reveal's own arm belongs to, with the
+ * `a:hover,` continuation lines walked back so the whole list comes out. */
+function revealRule(): { selectors: string[]; body: string } {
+  const at = sheet.indexOf(".workspace-split-merge:hover");
+  expect(at, "the merge reveal rule has no :hover arm").toBeGreaterThan(-1);
+  const open = sheet.indexOf("{", at);
+  let start = sheet.lastIndexOf(String.fromCharCode(10), open) + 1;
+  while (start > 0) {
+    const previous = sheet.lastIndexOf(String.fromCharCode(10), start - 2);
+    const line = sheet.slice(previous + 1, start - 1);
+    if (!line.trimEnd().endsWith(",")) break;
+    start = previous + 1;
+  }
+  return {
+    selectors: sheet
+      .slice(start, open)
+      .split(",")
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0),
+    body: sheet.slice(open, sheet.indexOf("}", open)),
+  };
+}
+
+/** The split area's own box, which happy-dom cannot lay out. */
+function stubArea(height: number): void {
+  const area = container.querySelector<HTMLElement>(".workspace-split");
+  if (area === null) throw new Error("the split did not render");
+  vi.spyOn(area, "getBoundingClientRect").mockReturnValue({
+    top: 0,
+    left: 0,
+    width: 600,
+    height,
+    right: 600,
+    bottom: height,
+    toJSON: () => ({}),
+  } as DOMRect);
+}
+
+/** One window resize, which is what tells a laid-out split area it moved. */
+async function areaMeasured(): Promise<void> {
+  await act(async () => {
+    window.dispatchEvent(new Event("resize"));
+  });
+}
+
+function topPane(): HTMLElement {
+  const pane = container.querySelector<HTMLElement>('[data-pane="top"]');
+  if (pane === null) throw new Error("the split did not render");
+  return pane;
 }
 
 const LOWER_TAB = "tool:browser:a:page-1";
@@ -104,10 +167,35 @@ describe("a workspace with a split", () => {
     const bar = separator();
     expect(bar.getAttribute("aria-orientation")).toBe("horizontal");
     expect(bar.getAttribute("aria-valuenow")).toBe("42");
+    // An area happy-dom cannot measure leaves the fraction bounds standing.
     expect(bar.getAttribute("aria-valuemin")).toBe(String(Math.round(MIN_SPLIT_SIZE * 100)));
     expect(bar.getAttribute("aria-valuemax")).toBe(String(Math.round(MAX_SPLIT_SIZE * 100)));
     expect(bar.tabIndex).toBe(0);
     expect(bar.getAttribute("aria-label")).toBe("Resize panes");
+  });
+
+  it("advertises the bounds the divider can really reach in the area it has", async () => {
+    render({ split: splitAt(0.5) });
+    stubArea(700);
+    await areaMeasured();
+    // 700 px: the top pane's 180 px floor is 25.7%, the lower pane's 192 px
+    // leaves 72.6% — so the advertised bounds are the pixels, not 20/80.
+    const bounds = splitBoundsFor(700);
+    expect(separator().getAttribute("aria-valuemin")).toBe(String(Math.round(bounds.min * 100)));
+    expect(separator().getAttribute("aria-valuemax")).toBe(String(Math.round(bounds.max * 100)));
+    expect(bounds.min).toBeCloseTo(MIN_TOP_PANE_PX / 700, 5);
+  });
+
+  it("holds a size the divider would have crushed, when the window is too short for both floors", async () => {
+    // A size left by a taller window: 20% of 300 px is a pane with no page in it.
+    render({ split: splitAt(0.2) });
+    stubArea(300);
+    await areaMeasured();
+    const bounds = splitBoundsFor(300);
+    expect(separator().getAttribute("aria-valuenow")).toBe(String(Math.round(bounds.min * 100)));
+    expect(topPane().style.height).toBe(`${Math.round(bounds.min * 100)}%`);
+    // The lower pane keeps its floor; the upper one takes what is left.
+    expect((1 - bounds.min) * 300).toBeCloseTo(MIN_BOTTOM_PANE_PX, 5);
   });
 
   it("moves the divider with the arrow keys and hands the size on", () => {
@@ -118,6 +206,11 @@ describe("a workspace with a split", () => {
     expect(onResize).toHaveBeenCalledWith(expect.closeTo(0.52, 5));
     act(() => {
       separator().dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }));
+    });
+    // Home is the separator's minimum value: the top pane's smallest share.
+    expect(onResize).toHaveBeenLastCalledWith(MIN_SPLIT_SIZE);
+    act(() => {
+      separator().dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
     });
     expect(onResize).toHaveBeenLastCalledWith(MAX_SPLIT_SIZE);
   });
@@ -190,19 +283,32 @@ describe("a workspace with a split", () => {
     expect(onMerge).toHaveBeenCalled();
   });
 
-  it("shows the merge control on hover and on keyboard focus, and hides it in neither", () => {
+  it("reveals the merge control when the pane below is hovered, not only the button", () => {
     const base = ruleBody(".workspace-split-merge");
     expect(base).toMatch(/opacity:\s*0/);
     expect(base).toMatch(/transition:[^;]*opacity/);
-    const revealed = sheet.slice(sheet.indexOf(".workspace-split-merge:hover"));
-    expect(revealed.slice(0, revealed.indexOf("}"))).toMatch(/opacity:\s*1/);
-    const focus = sheet.slice(sheet.indexOf(".workspace-split-merge:focus-visible"));
-    expect(focus.slice(0, focus.indexOf("}"))).toMatch(/opacity:\s*1/);
-    // Hidden, never removed: a keyboard that arrives at it must find it.
+    // The pointer must not have to find an invisible button first: the whole
+    // pane below reveals it, and so does the header holding the focus.
+    const reveal = revealRule();
+    expect(reveal.selectors).toContain(".workspace-split-bottom:hover .workspace-split-merge");
+    expect(reveal.selectors).toContain(
+      ".workspace-split-header:focus-within .workspace-split-merge",
+    );
+    expect(reveal.selectors).toContain(".workspace-split-merge:hover");
+    expect(reveal.selectors).toContain(".workspace-split-merge:focus-visible");
+    expect(reveal.body).toMatch(/opacity:\s*1/);
+  });
+
+  it("keeps the merge control at least 24 px tall and named for a screen reader", () => {
+    const base = ruleBody(".workspace-split-merge");
+    expect(base).toMatch(/min-height:\s*24px/);
+    // Hidden, never removed: a keyboard that arrives at it must find it, and it
+    // must carry a name without help from a tooltip.
     render({ split: splitAt() });
     const merge = container.querySelector<HTMLButtonElement>(".workspace-split-merge");
     expect(merge?.disabled).toBe(false);
     expect(merge?.tabIndex).toBe(0);
+    expect((merge?.textContent ?? "").trim()).toBe("Merge into tabs");
   });
 });
 
@@ -224,6 +330,28 @@ describe("a pane too small to read at full size", () => {
     expect(query).not.toMatch(/font-size:\s*var\(--type-meta\)/);
   });
 
+  it("compacts the transcript and the composer, not only the headers around them", () => {
+    const query = sheet.slice(sheet.indexOf("@container"));
+    const entry = bodyOf(query, ".workspace-split-pane .workspace-chat-entry");
+    expect(entry).toMatch(/font-size:\s*var\(--type-small\)/);
+    expect(entry).toMatch(/line-height:\s*var\(--leading-dense\)/);
+    // The rows sit a step closer together, and the composer gives back its
+    // padding: that is what a short middle pane is paying for.
+    expect(bodyOf(query, ".workspace-split-pane .workspace-conversation-content")).toMatch(
+      /gap:\s*var\(--space-6\)/,
+    );
+    const composer = bodyOf(query, ".workspace-split-pane .workspace-composer");
+    expect(composer).toMatch(/padding:\s*var\(--space-6\) var\(--space-10\)/);
+    expect(composer).toMatch(/min-height:\s*calc\(/);
+    expect(composer).toMatch(/--control-dense/);
+    expect(bodyOf(query, ".workspace-split-pane .workspace-composer textarea")).toMatch(
+      /font-size:\s*var\(--type-small\)/,
+    );
+    expect(bodyOf(query, ".workspace-split-pane .workspace-composer-wrap")).toMatch(
+      /padding:\s*var\(--space-4\) var\(--space-12\) var\(--space-8\)/,
+    );
+  });
+
   it("queries the pane's own box, so a wide workspace and a short one both compact", () => {
     expect(ruleBody(".workspace-split-pane")).toMatch(/container-type:\s*size/);
     expect(ruleBody(".workspace-split-pane")).toMatch(/container-name:\s*split-pane/);
@@ -232,5 +360,12 @@ describe("a pane too small to read at full size", () => {
   it("keeps the default size inside the bounds the divider enforces", () => {
     expect(DEFAULT_SPLIT_SIZE).toBeGreaterThan(MIN_SPLIT_SIZE);
     expect(DEFAULT_SPLIT_SIZE).toBeLessThan(MAX_SPLIT_SIZE);
+  });
+
+  it("holds each pane at the pixel floor the divider maths uses", () => {
+    // The sheet cannot read a constant, so the two are pinned here: a restored
+    // size cannot crush a pane before the first measurement lands.
+    expect(ruleBody(".workspace-split-top")).toContain(`min-height: ${MIN_TOP_PANE_PX}px`);
+    expect(ruleBody(".workspace-split-bottom")).toContain(`min-height: ${MIN_BOTTOM_PANE_PX}px`);
   });
 });

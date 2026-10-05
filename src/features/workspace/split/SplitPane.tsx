@@ -14,8 +14,8 @@ import {
   type ReactNode,
 } from "react";
 import {
-  MAX_SPLIT_SIZE,
-  MIN_SPLIT_SIZE,
+  clampSplitSizeForArea,
+  splitBoundsFor,
   splitSizeFromKey,
   splitSizeFromPointer,
 } from "./splitGeometry";
@@ -62,7 +62,29 @@ function SplitArea({
   const dragRef = useRef<Drag | null>(null);
   const [dragSize, setDragSize] = useState<number | null>(null);
   const [dragging, setDragging] = useState(false);
-  const size = dragSize ?? split.size;
+  /** The split area's own height, which is what the two pixel floors are a
+   * share OF. Measured, not assumed: the window is resizable and the floors are
+   * pixels. Zero until the observer reports, which leaves the fraction bounds. */
+  const [areaHeight, setAreaHeight] = useState(0);
+  const bounds = splitBoundsFor(areaHeight);
+  const size = clampSplitSizeForArea(dragSize ?? split.size, areaHeight);
+
+  useEffect(() => {
+    const area = areaRef.current;
+    if (area === null) return;
+    const measure = (): void => setAreaHeight(area.getBoundingClientRect().height);
+    measure();
+    // The area grows with the window and with the side panels, and the observer
+    // only reports the box it watches; the window event is what a side panel's
+    // own resize ends in, and it costs one measurement.
+    const observer = new ResizeObserver(measure);
+    observer.observe(area);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, []);
 
   const startDrag = useCallback(
     (event: PointerEvent<HTMLDivElement>) => {
@@ -109,14 +131,14 @@ function SplitArea({
 
   const onKeyDown = useCallback(
     (event: KeyboardEvent<HTMLDivElement>) => {
-      const next = splitSizeFromKey(event.key, size);
+      const next = splitSizeFromKey(event.key, size, areaHeight);
       // A key this divider does not use belongs to whatever the user is doing
       // in a pane, not to the divider.
       if (next === null) return;
       event.preventDefault();
       onResize(next);
     },
-    [onResize, size],
+    [areaHeight, onResize, size],
   );
 
   return (
@@ -133,8 +155,8 @@ function SplitArea({
         role="separator"
         aria-orientation="horizontal"
         aria-label="Resize panes"
-        aria-valuemin={Math.round(MIN_SPLIT_SIZE * 100)}
-        aria-valuemax={Math.round(MAX_SPLIT_SIZE * 100)}
+        aria-valuemin={Math.round(bounds.min * 100)}
+        aria-valuemax={Math.round(bounds.max * 100)}
         aria-valuenow={Math.round(size * 100)}
         tabIndex={0}
         onPointerDown={startDrag}

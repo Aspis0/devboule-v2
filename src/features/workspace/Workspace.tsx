@@ -59,7 +59,7 @@ import { createToolContentCache, evictToolContent } from "./toolContentCache";
 import { localWorkspaceKey, parseWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
 import { activeTabFor, forgetTab, pruneTabMemory, rememberActiveTab } from "./workspaceTabMemory";
 import { useTabSelection } from "./strip/useTabSelection";
-import { useTabCloseFlow } from "./strip/useTabCloseFlow";
+import { sessionTabElementId, useTabCloseFlow } from "./strip/useTabCloseFlow";
 import { useSessionRename } from "./strip/useSessionRename";
 import { buildTabCloseEntries } from "./strip/tabCloseMenu";
 import {
@@ -604,10 +604,23 @@ export function Workspace({
     // of a tab that no longer exists is dropped with it.
     if (selectedKey !== null && split !== null && lowerTool === null) mergeSplitPane(selectedKey);
   }, [lowerTool, selectedKey, split]);
-  /** What the pane above renders. A page cannot be drawn in two panes at
-   * once, so the tab in the pane below never also fills the pane above: that
-   * pane falls back to the session the workspace was last on. */
-  const paneTool = lowerTabId !== null && activeTool?.id === lowerTabId ? null : activeTool;
+  /**
+   * What each pane holds, in one answer. Every reader of "is a tool tab or a
+   * conversation on screen" asks this and not `activeTool`: a page cannot be
+   * drawn in two panes at once, so the tab in the pane below stops filling the
+   * pane above, and a reader keyed on the strip's selection alone would go on
+   * answering as if that pane were still covered.
+   */
+  const panes = useMemo(() => {
+    const upperTool = lowerTabId !== null && activeTool?.id === lowerTabId ? null : activeTool;
+    return {
+      lowerTool,
+      lowerBrowserId,
+      upperTool,
+      upperToolId: upperTool?.id ?? null,
+      upperSession: upperTool === null ? paneSessionOf(selectedSessionId, visibleSessions) : null,
+    };
+  }, [activeTool, lowerBrowserId, lowerTabId, lowerTool, selectedSessionId, visibleSessions]);
   /** What the pane below is showing, named in its header: the same words the
    * strip's chip names the tab by. */
   const lowerRecord =
@@ -869,8 +882,20 @@ export function Workspace({
     mergeSplitPane(selectedKey);
     // Merged into the strip means merged into the pane: the tab comes back as
     // the one the workspace is showing, so its page is presented again.
-    if (merged !== null) writeToolTab(merged);
+    if (merged === null) return;
+    writeToolTab(merged);
+    setFocusAfterMerge(merged);
   }, [selectedKey, writeToolTab]);
+  /** The control that merged the panes is inside the subtree that merge
+   * removes, so focus has to land somewhere on purpose: on the tab that was
+   * below, whose chip is where the eye already is. Applied after the commit
+   * that removed the split, because the chip only exists then. */
+  const [focusAfterMerge, setFocusAfterMerge] = useState<string | null>(null);
+  useEffect(() => {
+    if (focusAfterMerge === null) return;
+    document.getElementById(sessionTabElementId(focusAfterMerge))?.focus({ preventScroll: true });
+    setFocusAfterMerge(null);
+  }, [focusAfterMerge]);
   /** Move the tab in front into the pane below, and put a session on top of
    * it: the pane above is the workspace's own pane, and an empty one is not a
    * split. This is the keyboard's road into the split (the drag is slice 2). */
@@ -1011,10 +1036,13 @@ export function Workspace({
   // a row the strip hides (its close is in flight, the roster carried it away)
   // or another workspace's session must never keep a pane up — an empty strip
   // means the empty state.
-  // The centre shows the tool tab while one is active; the session pane
+  // The centre shows the tool tab while one is in front; the session pane
   // only stands when no tool covers it — its queue, permission card and
   // header menu unmount with it, so none of them act on the hidden session.
-  const paneSession = paneTool !== null ? null : paneSessionOf(selectedSessionId, visibleSessions);
+  // Both come out of `panes`, so every reader of "what is on screen" agrees
+  // with every other one, including while a split is open.
+  const paneTool = panes.upperTool;
+  const paneSession = panes.upperSession;
   // Primitive dependencies keep fileLinks stable across roster pushes so
   // unchanged messages retain their Markdown memo.
   // The pane's workspace, as the UI names it: the header menu reads it for the
@@ -1076,14 +1104,14 @@ export function Workspace({
   // excuse the hidden session. Reselecting a session reports it again.
   // The subscription below is app-lifetime: it is set up once and reads the
   // active tool through a ref, so a tool switch never churns the subscription.
-  const activeToolIdRef = useRef(activeToolId);
+  const upperToolIdRef = useRef(panes.upperToolId);
   useEffect(() => {
-    activeToolIdRef.current = activeToolId;
+    upperToolIdRef.current = panes.upperToolId;
   });
   useLayoutEffect(() => {
     const controller = sharedSessionController();
     const current = (): string | null =>
-      activeToolIdRef.current !== null ? null : controller.getState().selectedSessionId;
+      upperToolIdRef.current !== null ? null : controller.getState().selectedSessionId;
     let reported = current();
     reportSelection(reported);
     const unsubscribe = controller.subscribe(() => {
@@ -1101,9 +1129,9 @@ export function Workspace({
   // itself — the real value, never a transient.
   useLayoutEffect(() => {
     reportSelection(
-      activeToolId !== null ? null : sharedSessionController().getState().selectedSessionId,
+      panes.upperToolId === null ? sharedSessionController().getState().selectedSessionId : null,
     );
-  }, [activeToolId]);
+  }, [panes.upperToolId]);
   // Null under a tool tab is the decision, not an accident: the person is
   // not looking at the hidden session, so its raises still announce.
   const handleReopenSession = useCallback(
@@ -1601,10 +1629,12 @@ export function Workspace({
   // and said nothing about a second card existing. When nothing waits, the
   // resolved card stays on screen: it never vanishes on the strength of the
   // resolution event alone, and Clear is its removal path.
-  // While a tool tab is active its pane owns the centre: the hidden
-  // session's card has no surface to render on.
+  // While a tool tab is in front its pane owns the centre: the hidden
+  // session's card has no surface to render on. The gate reads the pane, not
+  // the strip's selection — a tab in the pane below has left the pane above
+  // free, and a waiting card must not disappear with it.
   const selectedPermission =
-    activeTool !== null
+    panes.upperTool !== null
       ? null
       : (permissionQueue.find(
           (item) => item.sessionId === selectedSessionId && item.resolution === undefined,
@@ -1772,7 +1802,7 @@ export function Workspace({
           projects,
           branches: workspaceBranches,
           onWorkspaceKeysChange: handleHistoryWorkspaceKeys,
-          selectedSessionId: activeToolId === null ? selectedSessionId : null,
+          selectedSessionId: panes.upperToolId === null ? selectedSessionId : null,
           onSearchChange: handleHistorySearchChange,
           onReopen: handleReopenSession,
           onReopenAgent: handleReopenAgent,

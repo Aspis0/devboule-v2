@@ -116,6 +116,9 @@ describe("a page in the lower pane", () => {
     mocks.open.mockReset();
     mocks.present.mockReset();
     mocks.park.mockReset();
+    mocks.navigate.mockReset();
+    mocks.reload.mockReset();
+    mocks.history.mockReset();
     mocks.open.mockResolvedValue({
       url: "https://example.test/",
       title: "Example",
@@ -156,13 +159,16 @@ describe("a page in the lower pane", () => {
     });
   });
 
-  it("follows the divider without being opened again, so the page never reloads", async () => {
+  it("moves the page across panes without opening it again or navigating it", async () => {
     renderWorkspace("top");
     await frames();
     expect(mocks.open).toHaveBeenCalledTimes(1);
     expect(mocks.present).toHaveBeenLastCalledWith("tab-1", TOP_PANE_RECT);
 
-    // The move: same page, same component identity, lower pane.
+    // The move. Moving a page between panes reparents the React element, so the
+    // upper view unmounts (which parks the child) and the lower one mounts (which
+    // presents it). What must not happen is a second create or any navigation:
+    // both would mean the page reloads and the person loses their place.
     stubLayout({
       x: BOTTOM_PANE_RECT.x,
       y: BOTTOM_PANE_RECT.y,
@@ -173,6 +179,42 @@ describe("a page in the lower pane", () => {
     await frames();
 
     expect(mocks.open).toHaveBeenCalledTimes(1);
+    expect(mocks.present).toHaveBeenLastCalledWith("tab-1", BOTTOM_PANE_RECT);
+    expect(mocks.navigate).not.toHaveBeenCalled();
+    expect(mocks.reload).not.toHaveBeenCalled();
+    expect(mocks.history).not.toHaveBeenCalled();
+  });
+
+  it("tells the controller bounds and park for the same id, and nothing else, after the open", async () => {
+    renderWorkspace("top");
+    await frames();
+    expect(mocks.open).toHaveBeenCalledTimes(1);
+    // Everything the controller heard from here on is what the move itself says.
+    for (const spy of [mocks.present, mocks.park, mocks.open]) spy.mockClear();
+
+    stubLayout({
+      x: BOTTOM_PANE_RECT.x,
+      y: BOTTOM_PANE_RECT.y,
+      width: BOTTOM_PANE_RECT.width,
+      height: BOTTOM_PANE_RECT.height,
+    });
+    renderWorkspace("bottom");
+    await frames();
+
+    // The whole command surface this app has for one page after it exists:
+    // park it when the view goes, present it with the rectangle of the view that
+    // has it. A navigate, reload or history call in this list would be a reload
+    // the split introduced, and a second open would be a second native child.
+    const spoken = [
+      ...mocks.present.mock.calls.map(([id]) => `present:${id}`),
+      ...mocks.park.mock.calls.map(([id]) => `park:${id}`),
+      ...mocks.navigate.mock.calls.map(([id]) => `navigate:${id}`),
+      ...mocks.reload.mock.calls.map(([id]) => `reload:${id}`),
+      ...mocks.history.mock.calls.map(([id]) => `history:${id}`),
+      ...mocks.open.mock.calls.map(([id]) => `open:${id}`),
+    ];
+    expect(new Set(spoken)).toEqual(new Set(["present:tab-1", "park:tab-1"]));
+    // The last rectangle sent is the pane the page is in now.
     expect(mocks.present).toHaveBeenLastCalledWith("tab-1", BOTTOM_PANE_RECT);
   });
 
