@@ -114,23 +114,32 @@ pub(super) fn refusal(body: &Value) -> &str {
 }
 
 /// The spawn override the create road consumes in debug builds: a terminal
-/// that answers pings for a minute and then leaves on its own, so a create
-/// here starts something cheap and a test that forgets to kill its terminals
+/// that lingers for a minute and then leaves on its own, so a create here
+/// starts something cheap and a test that forgets to kill its terminals
 /// does not leave a shell behind. Written before *each* create — the road
 /// consumes the file.
 pub(super) fn keepalive_spawn(state: &Arc<ServerState>) {
     let paths = crate::paths::RuntimePaths::from_dir(state.sessions.runtime_dir());
+    // The platform's own long-lived program does the same job on both:
+    // `ping` on Windows, `sleep` on Unix.
+    #[cfg(windows)]
+    let (program, args) = (
+        "cmd.exe",
+        vec![
+            "/c".to_string(),
+            "ping".to_string(),
+            "-n".to_string(),
+            "60".to_string(),
+            "127.0.0.1".to_string(),
+        ],
+    );
+    #[cfg(not(windows))]
+    let (program, args) = ("/bin/sleep", vec!["60".to_string()]);
     crate::session::write_test_pty_command(
         &paths,
         &crate::session::PtyCommand::new(
-            "cmd.exe",
-            vec![
-                "/c".to_string(),
-                "ping".to_string(),
-                "-n".to_string(),
-                "60".to_string(),
-                "127.0.0.1".to_string(),
-            ],
+            program,
+            args,
             crate::test_dirs::test_temp_dir("devboule-term-write-pty"),
             Vec::new(),
         ),

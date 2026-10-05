@@ -64,27 +64,50 @@ impl JobObject {
     /// Ask the whole group to stop. Nothing here waits: the bounded,
     /// forceful sweep is [`Self::terminate_and_wait`].
     pub fn terminate(&self) -> io::Result<()> {
-        match self.owned_group() {
-            Some(group) => signal_group(group, libc::SIGTERM),
-            None => Ok(()),
+        let mut guard = self.group();
+        let Some(group) = *guard else {
+            return Ok(());
+        };
+        if !leader_reserves(group) {
+            // The leader is gone and reaped: the number is no longer ours to
+            // signal, and a reused group id must not take this SIGTERM.
+            *guard = None;
+            return Ok(());
         }
+        signal_group(group, libc::SIGTERM)
     }
 
     /// SIGTERM the group, give it `grace` to leave, then SIGKILL what is
     /// left and wait `grace` more for the kernel to clear it. A group that
     /// never empties is a timeout, exactly as the Windows job's bounded wait
     /// is; the child's own waiter thread is what reaps the leader, so no
-    /// zombie is left to the caller.
+    /// zombie is left to the caller. The whole sequence runs under the
+    /// group lock, so a concurrent terminate on the same owner cannot signal
+    /// a stale number between the check and the kill, and an owner whose
+    /// leader has already been reaped signals nothing at all.
     pub fn terminate_and_wait(&self, grace: Duration) -> io::Result<()> {
-        let Some(group) = self.owned_group() else {
+        let mut guard = self.group();
+        let Some(group) = *guard else {
             return Ok(());
         };
+        if !leader_reserves(group) {
+            *guard = None;
+            return Ok(());
+        }
         signal_group(group, libc::SIGTERM)?;
         if wait_for_empty_group(group, Instant::now() + grace) {
+            *guard = None;
+            return Ok(());
+        }
+        if !leader_reserves(group) {
+            // Reaped during the grace: the id is no longer ours to signal,
+            // so the forceful phase is refused rather than aimed blind.
+            *guard = None;
             return Ok(());
         }
         signal_group(group, libc::SIGKILL)?;
         if wait_for_empty_group(group, Instant::now() + grace) {
+            *guard = None;
             return Ok(());
         }
         Err(io::Error::new(
@@ -96,10 +119,21 @@ impl JobObject {
     fn group(&self) -> MutexGuard<'_, Option<i32>> {
         self.group.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
 
-    fn owned_group(&self) -> Option<i32> {
-        *self.group()
+/// The leader still reserves the group id: `kill(pid, 0)` succeeds only
+/// while the pid is allocated — the child alive or a zombie — and the group
+/// it leads is the one stored here. A leader that has been reaped leaves the
+/// number free for the kernel to hand out again, and this owner must not
+/// signal whatever now wears it.
+fn leader_reserves(leader: i32) -> bool {
+    // SAFETY: signal 0 only asks the kernel whether the pid exists.
+    if unsafe { libc::kill(leader, 0) } != 0 {
+        return false;
     }
+    // SAFETY: getpgid reads a live or zombie pid's group.
+    let group = unsafe { libc::getpgid(leader) };
+    group == leader
 }
 
 fn invalid_pid(pid: u32) -> io::Error {
@@ -226,5 +260,46 @@ mod tests {
 
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    /// The order the reuse guard exists for: while the leader is alive (or a
+    /// zombie) the group id is reserved and the signal lands; once the leader
+    /// is reaped the number is free again, and an owner that still holds it
+    /// must refuse to signal — otherwise a reused id would take a SIGTERM
+    /// meant for this tree.
+    #[test]
+    fn a_reaped_leader_leaves_the_owner_nothing_to_signal() {
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", "sleep 300 & echo $!; exit 0"])
+            .stdout(Stdio::piped());
+        lead_own_group(&mut command);
+        let mut child = command.spawn().expect("the shell spawns");
+        let job = contain_spawned(child.id()).expect("the shell leads a group of its own");
+        let stdout = child.stdout.take().expect("the pid line is piped");
+        let mut line = String::new();
+        std::io::BufReader::new(stdout)
+            .read_line(&mut line)
+            .expect("the grandchild pid");
+        let grandchild: i32 = line.trim().parse().expect("a pid");
+        assert!(alive(grandchild), "the grandchild is running");
+
+        // The leader exits on its own; the reap frees its pid.
+        let _ = child.wait().expect("the leader is reaped");
+
+        // The group still holds the grandchild, but the leader that reserved
+        // the id is gone — this call must refuse rather than signal.
+        job.terminate_and_wait(Duration::from_secs(2))
+            .expect("a reaped leader refuses without error");
+        assert!(
+            alive(grandchild),
+            "no signal went to the freed group id: the grandchild still runs"
+        );
+        // Ownership was cleared with the refusal: a later call stays quiet.
+        job.terminate().expect("the cleared owner signals nothing");
+        assert!(alive(grandchild), "the cleared owner never signals");
+
+        // SAFETY: the test's own cleanup of the process it spawned.
+        assert_eq!(unsafe { libc::kill(grandchild, libc::SIGKILL) }, 0);
     }
 }

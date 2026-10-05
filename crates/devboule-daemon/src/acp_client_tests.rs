@@ -1505,3 +1505,73 @@ fn the_default_acp_route_carries_the_spawn_path_of_the_picked_agent() {
 
     fs::remove_dir_all(installed).expect("temporary directory cleanup");
 }
+
+/// An endless stream that never offers a newline is refused at the byte
+/// budget — the bound the Unix `poll` path exists to keep reachable. Without
+/// it the fill would block with the deadline unable to act and the `line`
+/// buffer would grow for as long as the agent keeps writing.
+#[cfg(unix)]
+#[test]
+fn an_endless_newlineless_stream_is_refused_at_the_byte_budget() {
+    use std::io::BufReader;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", "while :; do printf aaaa; done"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("the endless writer spawns");
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let mut reader = BufReader::new(stdout);
+
+    let error = super::read_line_bounded_with_limit(
+        &mut reader,
+        Instant::now() + Duration::from_secs(30),
+        Duration::from_secs(30),
+        64,
+    )
+    .expect_err("no newline will ever arrive");
+    assert!(
+        error.message.contains("more than 64 bytes"),
+        "{}",
+        error.message
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// A silent stream is refused at the deadline: `poll` waits out what is
+/// left of it and the loop's own check ends the wait, so nothing blocks
+/// past the budget the caller named.
+#[cfg(unix)]
+#[test]
+fn a_silent_stream_is_refused_at_the_deadline() {
+    use std::io::BufReader;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", "sleep 30"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("the silent writer spawns");
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let mut reader = BufReader::new(stdout);
+
+    let budget = Duration::from_secs(1);
+    let error =
+        super::read_line_bounded_with_limit(&mut reader, Instant::now() + budget, budget, 4096)
+            .expect_err("nothing will ever be written");
+    assert!(
+        error.message.contains("did not answer within"),
+        "{}",
+        error.message
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}

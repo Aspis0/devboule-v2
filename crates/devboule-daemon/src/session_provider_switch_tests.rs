@@ -24,9 +24,21 @@ fn switch_state(tag: &str) -> (std::path::PathBuf, Arc<ServerState>) {
 }
 
 fn echo_command() -> PtyCommand {
-    PtyCommand::new(
+    // The same echoed line from whichever shell the platform has: `cmd.exe`
+    // on Windows, `/bin/sh` on Unix, so the switch door is exercised on both.
+    #[cfg(windows)]
+    let (program, args) = (
         "cmd.exe",
         vec!["/c".to_string(), "echo switch-road".to_string()],
+    );
+    #[cfg(not(windows))]
+    let (program, args) = (
+        "/bin/sh",
+        vec!["-c".to_string(), "echo switch-road".to_string()],
+    );
+    PtyCommand::new(
+        program,
+        args,
         crate::test_dirs::test_temp_dir("devboule-switch-cwd"),
         Vec::new(),
     )

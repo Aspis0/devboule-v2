@@ -264,9 +264,14 @@ mod unix_execution {
         merge_environment, parse_capture, record_login_shell_capture_outcome, EnvironmentMap,
         LoginShellCaptureOutcome, LoginShellCaptureState,
     };
+    use crate::process_tree::JobObject;
 
     const LOGIN_SHELL_TIMEOUT: Duration = Duration::from_secs(5);
     const CHILD_REAP_TIMEOUT: Duration = Duration::from_secs(1);
+    /// Once the capture's own deadline has spent its five seconds, the
+    /// killed group gets half a second between TERM and KILL: wind-down,
+    /// not patience.
+    const STOP_GRACE: Duration = Duration::from_millis(500);
     const WAIT_POLL: Duration = Duration::from_millis(10);
     const CAPTURE_SCRIPT: &str = concat!(
         "set -e\n",
@@ -306,34 +311,38 @@ mod unix_execution {
             .filter(|shell| !shell.is_empty())
             .unwrap_or_else(|| OsString::from("/bin/sh"));
         let (path, output_file) = capture_file().ok_or(())?;
-        let mut child = match Command::new(shell)
+        let mut command = Command::new(shell);
+        command
             .args(["-ilc", CAPTURE_SCRIPT])
             .stdin(Stdio::null())
             .stdout(Stdio::from(output_file))
-            .stderr(Stdio::null())
-            .spawn()
-        {
+            .stderr(Stdio::null());
+        // The shell leads its own group, so the stop below can take the
+        // background processes a profile starts along with the shell —
+        // killing only the shell's PID would leave them holding the capture
+        // file descriptor.
+        crate::process_tree::lead_own_group(&mut command);
+        let mut child = match command.spawn() {
             Ok(child) => child,
             Err(_) => {
                 remove_capture_file(&path);
                 return Err(());
             }
         };
+        let group = crate::process_tree::contain_spawned(child.id());
 
         let deadline = Instant::now() + LOGIN_SHELL_TIMEOUT;
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break status,
                 Ok(None) if Instant::now() >= deadline => {
-                    let _ = child.kill();
-                    reap_after_kill(&mut child);
+                    stop_group_and_reap(&mut child, &group);
                     remove_capture_file(&path);
                     return Err(());
                 }
                 Ok(None) => thread::sleep(WAIT_POLL),
                 Err(_) => {
-                    let _ = child.kill();
-                    reap_after_kill(&mut child);
+                    stop_group_and_reap(&mut child, &group);
                     remove_capture_file(&path);
                     return Err(());
                 }
@@ -346,6 +355,22 @@ mod unix_execution {
             return Err(());
         }
         parse_capture(&bytes.ok_or(())?).map_err(|_| ())
+    }
+
+    /// Stop the capture's child the way the provider children stop: the
+    /// group first — the shell's startup descendants live in it — then the
+    /// leader reaped. The group owner refuses to signal once its leader is
+    /// reaped, so this order is what keeps the signal aimed at our tree.
+    fn stop_group_and_reap(child: &mut std::process::Child, group: &std::io::Result<JobObject>) {
+        match group {
+            Ok(job) => {
+                let _ = job.terminate_and_wait(STOP_GRACE);
+            }
+            Err(_) => {
+                let _ = child.kill();
+            }
+        }
+        reap_after_kill(child);
     }
 
     fn reap_after_kill(child: &mut std::process::Child) {
@@ -412,6 +437,12 @@ mod tests {
 
     const START: &[u8] = b"DEVBOULE_LOGIN_ENV_START";
     const END: &[u8] = b"DEVBOULE_LOGIN_ENV_END";
+
+    /// `SHELL` is process-global: every test that swaps it holds this lock
+    /// for the whole swap-and-restore, so no capture can read another
+    /// test's shell. Unix-only, like both tests that take it.
+    #[cfg(unix)]
+    static SHELL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn framed(records: &[&[u8]]) -> Vec<u8> {
         let mut raw = Vec::new();
@@ -622,7 +653,6 @@ mod tests {
     fn the_capture_runs_the_shell_the_environment_names() {
         use std::os::unix::fs::PermissionsExt;
 
-        static SHELL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _guard = SHELL_LOCK.lock().unwrap_or_else(|error| error.into_inner());
 
         let dir = crate::test_dirs::test_temp_dir("devboule-login-shell");
@@ -656,5 +686,63 @@ mod tests {
             Some(&b"yes".to_vec()),
             "the fake shell is the one that ran"
         );
+    }
+
+    /// The timeout path must take the shell's startup descendants with it: a
+    /// profile that starts a background process sits in the shell's own
+    /// group, and killing only the shell's PID would leave it running (and
+    /// holding the capture file descriptor) long after the capture failed.
+    #[cfg(unix)]
+    #[test]
+    fn a_capture_timeout_takes_the_shells_background_child_with_it() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = SHELL_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+
+        let dir = crate::test_dirs::test_temp_dir("devboule-login-hang");
+        let shell = dir.join("hanging-shell");
+        let pid_file = dir.join("sleeper.pid");
+        std::fs::write(
+            &shell,
+            format!(
+                "#!/bin/sh\nsleep 600 &\necho $! > '{}'\nsleep 600\n",
+                pid_file.display()
+            ),
+        )
+        .expect("the hanging shell is written");
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755))
+            .expect("the hanging shell is executable");
+
+        let previous = std::env::var_os("SHELL");
+        std::env::set_var("SHELL", &shell);
+        let captured = super::unix_execution::capture_login_environment();
+        match previous {
+            Some(value) => std::env::set_var("SHELL", value),
+            None => std::env::remove_var("SHELL"),
+        }
+
+        assert!(
+            captured.is_err(),
+            "a hanging shell cannot produce a capture"
+        );
+
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .expect("the sleeper announced itself before the deadline")
+            .trim()
+            .parse()
+            .expect("a pid");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            // SAFETY: signal 0 only asks the kernel whether the pid exists.
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the sleeper {pid} outlived the capture's group kill"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

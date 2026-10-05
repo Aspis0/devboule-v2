@@ -169,15 +169,41 @@ fn stdout_has_bytes_or_died(reader: &BufReader<ChildStdout>) -> Result<bool, ()>
     }
 }
 
-/// Where there is no pipe to peek, this question has no non-blocking answer.
-/// `Ok(true)` means one thing only: *proceed into the fill* — and on this
-/// platform that fill blocks until bytes arrive or the child dies, with the
-/// deadline unable to reach it. It must never be read as "bytes are
-/// available"; [`read_line_bounded`]'s platform paragraph states what bound
-/// does and does not exist here.
+/// Where there is no pipe to peek, the Unix readiness question is asked
+/// with `poll(2)` for the time left to `deadline`. `Ok(true)` means the fd
+/// became readable (or hung up, or errored): one `fill_buf` then answers
+/// immediately with bytes, EOF, or the error itself. `Ok(false)` means the
+/// wait slice ran out quiet — the loop above re-checks the deadline and
+/// sleeps, so a mute agent is still refused boundedly and a non-newline
+/// one still trips the byte budget between fills.
 #[cfg(not(windows))]
-fn stdout_blocks_until_bytes(_reader: &BufReader<ChildStdout>) -> Result<bool, ()> {
-    Ok(true)
+fn wait_for_stdout_bytes(reader: &BufReader<ChildStdout>, deadline: Instant) -> Result<bool, ()> {
+    use std::os::unix::io::AsRawFd;
+
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let millis = remaining.as_millis().min(i32::MAX as u128) as i32;
+    let mut descriptor = libc::pollfd {
+        fd: reader.get_ref().as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: one live, borrowed fd for the duration of the call; the kernel
+    // writes `revents` into the struct and nothing else touches it here.
+    let ready = unsafe { libc::poll(&mut descriptor, 1, millis) };
+    if ready < 0 {
+        let error = std::io::Error::last_os_error();
+        // EINTR means "still quiet": the caller's loop re-checks the
+        // deadline before it asks again.
+        return if error.kind() == std::io::ErrorKind::Interrupted {
+            Ok(false)
+        } else {
+            Err(())
+        };
+    }
+    if ready == 0 {
+        return Ok(false);
+    }
+    Ok(descriptor.revents != 0)
 }
 
 /// Read one newline-terminated line, bounded by `deadline` — on Windows.
@@ -194,16 +220,11 @@ fn stdout_blocks_until_bytes(_reader: &BufReader<ChildStdout>) -> Result<bool, (
 /// dribbling agent becomes an `Io` refusal naming the wait; a dead agent
 /// becomes the same EOF sentence the plain read produced.
 ///
-/// **On every other platform this read is not bounded.** There is no pipe
-/// peek in std to poll a child's stdout against a deadline, and no
-/// non-blocking mode without a libc this crate does not carry, so the
-/// deadline has no mechanism to act through: `deadline` is accepted to keep
-/// one call shape and is deliberately not honoured there. An agent that
-/// never answers — or answers in bytes that never form a newline — holds
-/// the creation on such a platform for as long as an unbounded read ever
-/// would. Windows is the only target this daemon is built and tested on; a
-/// platform added later must either give this function a real poll or keep
-/// this paragraph telling the truth.
+/// **On Unix the same bounds hold through `poll(2)`** — this crate carries
+/// libc there — so the fill that follows is entered only when the fd is
+/// actually readable or closed: a mute or dribbling agent reaches the same
+/// refusals as on Windows, bounded by `deadline` and
+/// [`MAX_ACP_PERMISSION_LINE_BYTES`] on both platforms.
 pub(crate) fn read_line_bounded(
     reader: &mut BufReader<ChildStdout>,
     deadline: Instant,
@@ -249,13 +270,13 @@ pub(crate) fn read_line_bounded_with_limit(
         }
         line.extend_from_slice(buffered);
         reader.consume(buffered.len());
-        // The Windows name asks what the peek sees; the other-platform name
-        // states that the following fill is the blocking step. Two names,
+        // The Windows name asks what the peek sees; the Unix name waits what
+        // is left of the deadline for the fd to become readable. Two names,
         // because the honest answer differs per platform.
         #[cfg(windows)]
         let peek = stdout_has_bytes_or_died(reader);
         #[cfg(not(windows))]
-        let peek = stdout_blocks_until_bytes(reader);
+        let peek = wait_for_stdout_bytes(reader, deadline);
         match peek {
             Ok(true) => match reader.fill_buf() {
                 Ok(bytes) => {
