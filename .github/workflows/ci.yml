@@ -461,6 +461,51 @@ jobs:
           ' src-tauri/src/browser/cft_manifest.rs)
           echo "DEVBOULE_CFT_CHROME=$DEVBOULE_CFT_APP_DATA/chrome-for-testing/$version/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing" >> "$GITHUB_ENV"
 
+      # TEMPORARY DIAGNOSTIC - remove before landing. The install step above
+      # refuses the bundle's signature; this unpacks the same archive with
+      # our extractor and with Apple's ditto, then names what differs.
+      - name: "TEMPORARY: ours vs ditto, signature and tree diff"
+        if: always()
+        env:
+          DEVBOULE_CFT_ARCHIVE: ${{ runner.temp }}/chrome-mac-arm64.zip
+        run: |
+          set -u
+          ours="$RUNNER_TEMP/diag-ours"
+          apple="$RUNNER_TEMP/diag-ditto"
+          rm -rf "$ours" "$apple"
+          mkdir -p "$apple"
+          DEVBOULE_CFT_DIAG_OUT="$ours" cargo test -p devboule --lib --locked \
+            cft_unpack_diag_writes_the_tree_for_the_ci_diff -- --ignored --nocapture
+          echo "ours unpack exit=$?"
+          ditto -x -k "$DEVBOULE_CFT_ARCHIVE" "$apple"
+          echo "ditto exit=$?"
+          apple="$apple/chrome-mac-arm64"
+          echo "== _CodeSignature entries in the archive: $(unzip -Z1 "$DEVBOULE_CFT_ARCHIVE" | grep -c '_CodeSignature')"
+          for tree in "$ours" "$apple"; do
+            echo "== codesign --verify --deep --strict -vvvv: $tree"
+            codesign --verify --deep --strict -vvvv "$tree/Google Chrome for Testing.app"
+            echo "exit=$?"
+            echo "== codesign -dvvv (bundle): $tree"
+            codesign -dvvv "$tree/Google Chrome for Testing.app" 2>&1 | head -n 25
+            echo "== spctl --assess -vv: $tree"
+            spctl --assess --type execute -vv "$tree/Google Chrome for Testing.app" 2>&1
+          done
+          echo "== codesign -dvvv (Widevine dylib)"
+          codesign -dvvv "$apple"/Google\ Chrome\ for\ Testing.app/Contents/Frameworks/*/Versions/*/Libraries/WidevineCdm/_platform_specific/mac_arm64/libwidevinecdm.dylib 2>&1 | head -n 25
+          listing() {
+            (cd "$1" && find . -print | sort > "$RUNNER_TEMP/$2.paths"
+             find . -exec stat -f '%Sp %N' {} + | sort > "$RUNNER_TEMP/$2.modes"
+             find . -type l -exec stat -f '%N -> %Y' {} + | sort > "$RUNNER_TEMP/$2.links"
+             find . -type f -exec shasum -a 256 {} + | sort -k2 > "$RUNNER_TEMP/$2.sums")
+          }
+          listing "$ours" ours
+          listing "$apple" apple
+          for kind in paths modes links sums; do
+            echo "== diff $kind (ours vs ditto), $(wc -l < "$RUNNER_TEMP/ours.$kind") vs $(wc -l < "$RUNNER_TEMP/apple.$kind") lines"
+            diff "$RUNNER_TEMP/ours.$kind" "$RUNNER_TEMP/apple.$kind" | head -n 60
+          done
+          exit 0
+
       # The ignored real-CfT tests: headless launch, DevToolsActivePort,
       # ownership probe, create target, navigate a data: URL, evaluate, close.
       - name: Real CfT lifecycle, headless
