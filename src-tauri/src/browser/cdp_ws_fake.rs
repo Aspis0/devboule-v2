@@ -24,6 +24,9 @@ pub enum Step {
     /// Answer with the command's own id and method, which is what tells a test
     /// which waiter a reply reached.
     Echo,
+    /// Answer with a result of the test's choosing instead of the echo, for a
+    /// command whose payload the test needs.
+    Answer(Value),
     /// Answer with the protocol's own error object.
     Error { code: i64, message: String },
     /// Say an event, then answer the command with its own id and method.
@@ -84,6 +87,7 @@ impl FakeServer {
                 let step = steps.lock().await.pop_front().unwrap_or(Step::Silence);
                 let answers = match step {
                     Step::Echo => vec![echoed],
+                    Step::Answer(result) => vec![json!({ "id": id, "result": result })],
                     Step::Error { code, message } => {
                         vec![json!({ "id": id, "error": { "code": code, "message": message } })]
                     }

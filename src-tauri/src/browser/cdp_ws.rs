@@ -359,3 +359,15 @@ mod life_tests;
 #[cfg(test)]
 #[path = "cdp_ws_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "cdp_ws_events_support.rs"]
+mod events_support;
+
+#[cfg(test)]
+#[path = "cdp_ws_events_tests.rs"]
+mod events_tests;
+
+#[cfg(test)]
+#[path = "cdp_ws_watch_tests.rs"]
+mod watch_tests;

@@ -57,3 +57,27 @@ fn the_quiet_a_settle_waits_for_is_shorter_than_the_cap_it_gives_up_at() {
         "a page that has not moved for a third of a second has settled"
     );
 }
+
+#[test]
+fn a_dropped_subscription_aborts_the_task_it_holds() {
+    tauri::async_runtime::block_on(async {
+        // The probe is dropped with the task's own future, so a probe that
+        // outlives the guard is a drain task nobody stopped.
+        let (held, released) = tokio::sync::oneshot::channel::<()>();
+        let drain = tauri::async_runtime::spawn(async move {
+            let _held = held;
+            std::future::pending::<()>().await;
+        });
+        let watch = WsWatch { drain };
+
+        drop(watch);
+
+        let outcome = tokio::time::timeout(Duration::from_secs(2), released).await;
+        assert!(
+            outcome
+                .expect("a dropped subscription aborts the task it holds")
+                .is_err(),
+            "the task outlived the guard that was supposed to stop it"
+        );
+    });
+}

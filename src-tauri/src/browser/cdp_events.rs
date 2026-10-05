@@ -13,7 +13,9 @@
 //! One receiver per event per page, installed when the page is created and
 //! never removed: the handler belongs to the child webview, which a close
 //! disposes of, and a page watched twice would move its own counter twice. What
-//! a close does drop is the counter, so the map holds only live tabs.
+//! a close does drop is the counter, so the map holds only live tabs. A
+//! websocket page has no receiver to install: its reader hands back one stream,
+//! and [`watch_ws`] drains it into the same listener.
 
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -24,6 +26,7 @@ use serde_json::json;
 use tauri::{AppHandle, Manager};
 
 use super::cdp::{Bounded, Page as _, WebviewPage};
+use super::cdp_ws::WsEvent;
 use super::console;
 use super::deadline::Deadline;
 use super::frames::{Frames, Observed};
@@ -55,7 +58,6 @@ const VOICED: [&str; 2] = ["Runtime", "Log"];
 /// Turn on the events a page speaks through, so that the first thing it says is
 /// heard. Asked for before the first navigation on purpose: an error thrown
 /// while a page is still loading is one of the ones an agent most needs.
-#[cfg(windows)]
 pub async fn listen(page: &dyn super::cdp::Page) {
     for domain in VOICED {
         if let Err(error) = page.call(&format!("{domain}.enable"), json!({})).await {
@@ -129,6 +131,24 @@ pub fn forget(id: &str) {
     }
 }
 
+/// Ask for the page's own events and learn which frame is the tab's own.
+///
+/// `Page.enable` is what makes `Page.*` arrive at all, and the frame tree is
+/// what makes a same-document move the tab's address rather than an iframe's.
+/// A failure is reported and nothing else is done: the events that do arrive
+/// are still counted, and `frameNavigated` learns the frame a moment later.
+async fn page_events(page: &dyn super::cdp::Page, id: &str) -> Arc<Frames> {
+    if let Err(error) = page.call("Page.enable", json!({})).await {
+        eprintln!("devboule: browser page {id} will not report its loads: {error}");
+    }
+    let frames = Arc::new(Frames::default());
+    match page.call("Page.getFrameTree", json!({})).await {
+        Ok(tree) => frames.learn_from_tree(&tree),
+        Err(error) => eprintln!("devboule: browser page {id} has no known top frame: {error}"),
+    }
+    frames
+}
+
 /// Watch a page for as long as `deadline` allows. What is not installed in time
 /// is not installed: the tab is already open, and a settle without the event
 /// falls back to its cap.
@@ -138,18 +158,7 @@ pub async fn watch(app: &AppHandle, id: &str, label: &str, deadline: Deadline, r
     console::open(id);
     let webview = WebviewPage::new(app, label);
     let page = Bounded::new(&webview, deadline);
-    // `Page.*` events arrive only after this, so it is asked for before any
-    // receiver is installed.
-    if let Err(error) = page.call("Page.enable", json!({})).await {
-        eprintln!("devboule: browser page {id} will not report its loads: {error}");
-    }
-    // Which frame is the tab's own is what makes a same-document move the tab's
-    // address. Without it none is believed.
-    let frames = Arc::new(Frames::default());
-    match page.call("Page.getFrameTree", json!({})).await {
-        Ok(tree) => frames.learn_from_tree(&tree),
-        Err(error) => eprintln!("devboule: browser page {id} has no known top frame: {error}"),
-    }
+    let frames = page_events(&page, id).await;
     for event in WATCHED.iter().chain(console::VOICE.iter()).copied() {
         let listener = Listener {
             id: id.to_owned(),
@@ -164,15 +173,77 @@ pub async fn watch(app: &AppHandle, id: &str, label: &str, deadline: Deadline, r
     }
 }
 
+/// Wire one websocket page's events into the ingestion the WebView2 path
+/// feeds: the same counters, ring and reports, from the same normalized
+/// payloads.
+///
+/// Called before the page is navigated. `Runtime` and `Log` are enabled for
+/// its voice, `DOM` for the document updates a raw target reports only after
+/// asking, and `Page` for the events that say where the tab is. What arrives
+/// afterwards is counted exactly as a child webview's events are.
+///
+/// The guard is held for the tab's life: dropping it stops the drain task, and
+/// the reader's own end stops it too.
+#[cfg_attr(not(test), allow(dead_code))]
+pub async fn watch_ws(
+    page: &dyn super::cdp::Page,
+    id: &str,
+    events: tokio::sync::mpsc::Receiver<WsEvent>,
+    deadline: Deadline,
+    reports: Reports,
+) -> WsWatch {
+    signal_for(id);
+    console::open(id);
+    let page = Bounded::new(page, deadline);
+    listen(&page).await;
+    if let Err(error) = page.call("DOM.enable", json!({})).await {
+        eprintln!("devboule: browser page {id} will not report a new document: {error}");
+    }
+    let frames = page_events(&page, id).await;
+    let listener = Listener {
+        id: id.to_owned(),
+        frames,
+        reports,
+    };
+    let drain = tauri::async_runtime::spawn(async move {
+        let mut events = events;
+        while let Some(event) = events.recv().await {
+            listener.heard(&event.method, &event.params.to_string());
+        }
+    });
+    WsWatch { drain }
+}
+
+/// One websocket page's event drain. Held for the tab's life.
+#[cfg_attr(not(test), allow(dead_code))]
+pub struct WsWatch {
+    drain: tauri::async_runtime::JoinHandle<()>,
+}
+
+impl WsWatch {
+    /// Whether the drain has ended. What a test watches to prove a close
+    /// leaves no task behind.
+    #[cfg(test)]
+    pub(super) fn finished(&self) -> bool {
+        self.drain.inner().is_finished()
+    }
+}
+
+impl Drop for WsWatch {
+    fn drop(&mut self) {
+        // The channel stays open for as long as the page's reader runs, so a
+        // dropped subscription would otherwise wait on a page still there.
+        self.drain.inner().abort();
+    }
+}
+
 /// What one event receiver needs to turn an event into a count and a report.
-#[cfg(windows)]
 struct Listener {
     id: String,
     frames: Arc<Frames>,
     reports: Reports,
 }
 
-#[cfg(windows)]
 impl Listener {
     fn heard(&self, event: &str, params: &str) {
         // What a page says is its voice, not movement: a page logging on a
@@ -282,11 +353,6 @@ pub async fn watch(
     // No event stream on this target, so `moved` never moves and every settle
     // ends on its first quiet. Nothing here blocks a command from running.
 }
-
-/// Nothing speaks on this target, and a page that says nothing has nothing to
-/// record.
-#[cfg(not(windows))]
-pub async fn listen(_page: &dyn super::cdp::Page) {}
 
 /// Wait without holding a runtime worker: this crate links no async timer, and
 /// every CDP call already blocks its worker for the length of the call.
