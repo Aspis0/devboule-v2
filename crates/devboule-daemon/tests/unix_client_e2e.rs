@@ -52,6 +52,9 @@ fn temp_paths() -> (RuntimePaths, TempGuard) {
 const GUARD_CONNECT: Duration = Duration::from_millis(500);
 const GUARD_WAIT: Duration = Duration::from_secs(15);
 const GUARD_POLL: Duration = Duration::from_millis(100);
+/// Above the sum of the restart's own bounded phases — the shutdown RPC, the
+/// graceful stop, the kill and the replacement, four waits of 30 s each.
+const RESTART_PHASE: Duration = Duration::from_secs(150);
 
 /// The runtime dir and, on drop — including on a failing assertion's unwind —
 /// the daemon that may still be running on it: ask it to stop, kill it through
@@ -160,6 +163,27 @@ fn wait_gone(pid: u32, what: &str) {
     }
 }
 
+/// Run one phase under its own ceiling: the phase's own waits are bounded,
+/// and this names a wedged call instead of leaving the failure to the step's
+/// timeout. The thread is detached on purpose — joining it would wait for the
+/// very call the ceiling rejects.
+fn within<T: Send + 'static>(
+    phase: &str,
+    budget: Duration,
+    run: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name(phase.to_string())
+        .spawn(move || {
+            let _ = sender.send(run());
+        })
+        .expect("the phase thread starts");
+    receiver
+        .recv_timeout(budget)
+        .unwrap_or_else(|_| panic!("{phase} did not finish within {budget:?}"))
+}
+
 #[test]
 fn connect_spawn_restart_and_shutdown_end_to_end() {
     let binary = daemon_bin();
@@ -183,7 +207,7 @@ fn connect_spawn_restart_and_shutdown_end_to_end() {
         "the refused kill left the daemon running"
     );
 
-    client.restart_daemon().expect("restart");
+    within("restart", RESTART_PHASE, move || client.restart_daemon()).expect("restart");
     assert_no_zombie(first_pid, "the daemon that exited for the restart");
 
     let again = connect_or_spawn(&paths, hello("uxc-second"), Some(&binary)).expect("reconnect");
@@ -208,7 +232,6 @@ fn connect_spawn_restart_and_shutdown_end_to_end() {
     ));
     drop(third);
     drop(again);
-    drop(client);
 
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {

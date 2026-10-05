@@ -344,17 +344,21 @@ impl DaemonClient {
         }
     }
 
-    /// Graceful shutdown first, guarded kill only when the daemon is
-    /// unreachable but present: a daemon that refuses (other clients hold
-    /// it) is left alone, never killed out from under them.
+    /// Graceful shutdown first, then the guarded kill as the fallback: a
+    /// daemon that refuses (other clients hold it) is never killed, and an
+    /// accepted stop is waited out on the record before any signal, because a
+    /// kill mid-drain leaves that record reading live for `STALE_AFTER`.
     #[cfg(unix)]
     fn restart_daemon_unix(&self) -> Result<(), DaemonError> {
         let paths = self.inner.runtime.clone().ok_or_else(|| {
             DaemonError::Protocol("restart needs the runtime this connection opened on".to_string())
         })?;
         let old_instance = self.inner.hello.instance_id.clone();
-        match self.request_shutdown() {
-            Ok(ShutdownAnswer::Accepted) => {}
+        let expected = self.inner.server_pid.ok_or_else(|| {
+            DaemonError::Protocol("cannot prove the identity of the connected daemon".to_string())
+        })?;
+        let graceful = match self.request_shutdown() {
+            Ok(ShutdownAnswer::Accepted) => wait_while_present(&paths, &old_instance),
             Ok(ShutdownAnswer::Refused(reason)) => {
                 return Err(DaemonError::Protocol(format!(
                     "daemon refused shutdown: {reason}"
@@ -362,16 +366,16 @@ impl DaemonClient {
             }
             Err(error) => {
                 eprintln!("daemon shutdown request failed, checking the process: {error}");
+                false
             }
-        }
-        if daemon_present(&paths, &old_instance) {
-            let expected = self.inner.server_pid.ok_or_else(|| {
-                DaemonError::Protocol(
-                    "cannot prove the identity of the connected daemon".to_string(),
-                )
-            })?;
+        };
+        if !graceful && daemon_present(&paths, &old_instance) {
             kill_verified_daemon(&paths, expected)?;
-            wait_while_present(&paths, &old_instance)?;
+        }
+        // The goodbye record is written while the singleton lock is still
+        // held, so the process itself is what says the slot is free.
+        if !wait_while_alive(expected) {
+            return Err(DaemonError::timed_out("waiting for the daemon to leave"));
         }
         let binary = resolve_daemon_binary()?;
         let child = spawn_daemon(&binary, &paths)?;
@@ -2264,8 +2268,9 @@ impl Drop for DaemonClient {
     }
 }
 
-/// Unix restart helpers: presence is read off the record, never off a
-/// remembered pid; killing needs a fresh peer check plus the executable.
+/// Unix restart helpers: a graceful stop is read off the record, a killed
+/// one off the process, since it writes no goodbye. Killing needs a fresh
+/// peer check plus the executable.
 #[cfg(unix)]
 const RESTART_WAIT: Duration = Duration::from_secs(30);
 #[cfg(unix)]
@@ -2282,16 +2287,43 @@ fn daemon_present(paths: &RuntimePaths, instance: &str) -> bool {
     }
 }
 
+/// Whether the record stopped naming `instance` within `RESTART_WAIT`: the
+/// graceful stop's own proof, its goodbye record.
 #[cfg(unix)]
-fn wait_while_present(paths: &RuntimePaths, instance: &str) -> Result<(), DaemonError> {
+fn wait_while_present(paths: &RuntimePaths, instance: &str) -> bool {
     let deadline = Instant::now() + RESTART_WAIT;
     while daemon_present(paths, instance) {
         if Instant::now() >= deadline {
-            return Err(DaemonError::timed_out("waiting for the daemon to stop"));
+            return false;
         }
         std::thread::sleep(RESTART_POLL);
     }
-    Ok(())
+    true
+}
+
+/// Whether `pid` left within `RESTART_WAIT`. A killed daemon writes no
+/// goodbye, so its record reads `Live` until `STALE_AFTER` — and even a
+/// graceful goodbye is written before the lock drops. The process is what the
+/// spawn needs gone, and the app's spawn waiter reaps it so this stops seeing
+/// it.
+#[cfg(unix)]
+fn wait_while_alive(pid: u32) -> bool {
+    let deadline = Instant::now() + RESTART_WAIT;
+    while process_alive(pid) {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(RESTART_POLL);
+    }
+    true
+}
+
+/// Whether the pid exists in any state, a zombie included: signal 0 asks the
+/// kernel nothing else.
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    // SAFETY: signal 0 delivers nothing; it only asks the kernel.
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
 }
 
 /// The replacement, recognized by a live ready record under a new id.
