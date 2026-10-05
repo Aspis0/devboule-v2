@@ -31,6 +31,15 @@ impl JobObject {
         })
     }
 
+    /// The group this owner still holds — the root of every membership
+    /// question the process index asks. `None` once ownership was cleared by
+    /// a confirmed-empty sweep, which honestly means there is nothing left
+    /// to prove membership of.
+    pub fn group_id(&self) -> Option<u32> {
+        let group = *self.group.lock().unwrap_or_else(PoisonError::into_inner);
+        group.and_then(|group| u32::try_from(group).ok())
+    }
+
     /// Own the group `pid` leads. The parent also calls `setpgid`, the other
     /// half of the standard two-sided protocol: whichever side wins, the
     /// group exists with the child as its leader by the time this returns.

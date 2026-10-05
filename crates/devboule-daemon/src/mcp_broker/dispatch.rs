@@ -216,6 +216,12 @@ pub(super) fn handle_rpc(
                 tools::terminal_writes::send_keys(state, broker, registration, caller, id, message)
             } else if tool_name == Some(crate::provider_catalog::MCP_KILL_TERMINAL_TOOL) {
                 tools::terminal_writes::kill(state, broker, registration, caller, id, message)
+            } else if tool_name == Some(crate::provider_catalog::MCP_PROCESS_OWNER_TOOL) {
+                tools::processes::owner(state, registration, caller, id, message)
+            } else if tool_name == Some(crate::provider_catalog::MCP_SESSION_PROCESSES_TOOL) {
+                tools::processes::list(state, registration, caller, id, message)
+            } else if tool_name == Some(crate::provider_catalog::MCP_CLEANUP_PROCESSES_TOOL) {
+                tools::processes::cleanup(state, broker, registration, caller, id, message)
             } else if tool_name == Some(crate::provider_catalog::MCP_BROWSER_FILL_LOGIN_TOOL) {
                 tools::browser_login::call(state, broker, registration, caller, id, message)
             } else if tool_name.is_some_and(tools::browser_commands::serves) {
@@ -432,6 +438,33 @@ pub(super) fn enabled_tool_list(
                 // One closed document for both verbs: they differ in what
                 // they do, not in what they accept.
                 crate::provider_catalog::agent_end_input_schema()
+            } else if *name == crate::provider_catalog::MCP_PROCESS_OWNER_TOOL {
+                // Exactly one key at runtime; the schema states both as
+                // optional because a JSON schema cannot express xor.
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "port": {"type": "integer", "minimum": 0, "maximum": 65535, "description": "A local TCP port to look up. Exactly one of port and pid."},
+                        "pid": {"type": "integer", "minimum": 0, "description": "A process id to look up. Exactly one of port and pid."},
+                    },
+                    "additionalProperties": false,
+                })
+            } else if *name == crate::provider_catalog::MCP_SESSION_PROCESSES_TOOL {
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "sessionId": {"type": "string", "description": "Only your own session id is accepted; omit it for the calling session."},
+                    },
+                    "additionalProperties": false,
+                })
+            } else if *name == crate::provider_catalog::MCP_CLEANUP_PROCESSES_TOOL {
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "graceMs": {"type": "integer", "minimum": 0, "maximum": 30000, "description": "Grace period for the graceful phase, in milliseconds. Default 2000."},
+                    },
+                    "additionalProperties": false,
+                })
             } else {
                 json!({"type": "object", "properties": {}, "additionalProperties": false})
             };

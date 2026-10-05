@@ -117,6 +117,12 @@ mod plan_usage_cache;
 mod portable_pty_tests;
 #[cfg(all(test, unix, feature = "server"))]
 mod portable_pty_unix_tests;
+#[cfg(feature = "server")]
+mod process_argv_redact;
+#[cfg(feature = "server")]
+mod process_index;
+#[cfg(feature = "server")]
+mod process_terminate;
 mod process_tree;
 #[cfg(feature = "server")]
 mod profile_delivery;

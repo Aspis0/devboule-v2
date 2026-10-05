@@ -328,6 +328,18 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
         "Kills one running terminal of the calling session's own workspace: its process tree dies and the live session ends, while the journal row and the transcript stay in history. The scope and the refusal are devboule_send_terminal_keys' own - the caller's own user, origin and workspace, a terminal that is running - so any other id answers 'No session with that id.' and an agent session is never killable through this tool. The human is asked to approve terminal writes from this session the first time when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses).",
     ),
     (
+        MCP_PROCESS_OWNER_TOOL,
+        "Finds which of this machine's own Devboule-managed processes owns a local TCP port or a pid: pass exactly one of port or pid. The answer lists only processes a live session proves it owns (its Job Object or process group, matched by pid and creation time), each with its start time, session, name, executable, redacted command line, listening ports and proof; if nothing proven matches, the list is empty - this tool never names a process outside a session's proof and never guesses from an image name.",
+    ),
+    (
+        MCP_SESSION_PROCESSES_TOOL,
+        "Lists the processes the calling session provably owns - pid, start time and age, executable, redacted command line, listening ports and proof. sessionId is optional and may only be the caller's own session; any other id answers not_owned, because this surface has no owner or admin context. A process the OS would not vouch for is omitted rather than guessed at.",
+    ),
+    (
+        MCP_CLEANUP_PROCESSES_TOOL,
+        "Stops the calling session's own proven processes - graceful first, then forced after graceMs (default 2000, at most 30000) - and answers terminated, stillRunning and unproven pid lists. The session's own agent process is never in the plan, no pid argument exists, and session-end cleanup still happens on its own. A person approves a card naming the session and the process count first, in every permission mode.",
+    ),
+    (
         MCP_BROWSER_NEW_TAB_TOOL,
         "Opens a new browser tab in this machine's desktop app and answers its browserId, url and title. Keep that browserId: every other browser tool takes it, and a tab of another workspace is not visible from here. You have no refs until you snapshot. Needs the app running; with no host registered this fails browser_no_host.",
     ),
@@ -422,6 +434,7 @@ pub(crate) const MCP_CARD_WAIT_TOOLS: &[&str] = &[
     MCP_CREATE_TERMINAL_TOOL,
     MCP_SEND_TERMINAL_KEYS_TOOL,
     MCP_KILL_TERMINAL_TOOL,
+    MCP_CLEANUP_PROCESSES_TOOL,
     // The saved-login card is raised on every call and a person answers it in
     // their own time, so the call is one no client may time out.
     MCP_BROWSER_FILL_LOGIN_TOOL,
@@ -650,6 +663,23 @@ pub const MCP_SEND_TERMINAL_KEYS_TOOL: &str = "devboule_send_terminal_keys";
 /// the call as the wire's `SessionClose`, under the administrative
 /// capability.
 pub const MCP_KILL_TERMINAL_TOOL: &str = "devboule_kill_terminal";
+
+/// Which proven session member owns a given port or pid — read-only, and it
+/// answers only from local proof: no hit is an empty match list, never an
+/// error and never a detail about anything outside a session's own job or
+/// process group.
+pub const MCP_PROCESS_OWNER_TOOL: &str = "devboule_process_owner";
+
+/// The calling session's own proven members. Another session's id answers
+/// `not_owned`: this surface has no owner or admin context, and a refusal
+/// must not confirm that the other session exists.
+pub const MCP_SESSION_PROCESSES_TOOL: &str = "devboule_session_processes";
+
+/// The carded cleanup of the calling session's own proven members: graceful
+/// then forced, the session's own root (the agent) excluded, and no pid
+/// argument to widen it with. The card names the session and the count, and
+/// an automatic mode still asks.
+pub const MCP_CLEANUP_PROCESSES_TOOL: &str = "devboule_cleanup_processes";
 
 // The browser tools: `browser_<command>` after the contract, and the bare
 // command the host answers is `mcp_broker::tools::browser_commands`' table.
@@ -1252,7 +1282,7 @@ impl Default for ToolOverlay {
     }
 }
 
-/// The `design` preset's deny list: the ten names beside the whole browser
+/// The `design` preset's deny list: the eleven names beside the whole browser
 /// lane. Spelled out because a preset's list has to stay `const` and a `const`
 /// cannot join two lists;
 /// `the_design_overlay_hides_its_writes_and_the_whole_browser_lane_and_keeps_the_roster`
@@ -1270,6 +1300,7 @@ const DESIGN_DENIED: &[&str] = &[
     MCP_STOP_AGENT_TOOL,
     MCP_CLOSE_AGENT_TOOL,
     MCP_ARCHIVE_WORKSPACE_TOOL,
+    MCP_CLEANUP_PROCESSES_TOOL,
     MCP_BROWSER_NEW_TAB_TOOL,
     MCP_BROWSER_LIST_TABS_TOOL,
     MCP_BROWSER_CLOSE_TAB_TOOL,

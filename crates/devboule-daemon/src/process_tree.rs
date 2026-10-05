@@ -22,7 +22,6 @@ mod platform {
     use windows_sys::Win32::Foundation::{
         DuplicateHandle, DUPLICATE_SAME_ACCESS, STILL_ACTIVE, WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
-    #[cfg(test)]
     use windows_sys::Win32::System::JobObjects::JobObjectBasicProcessIdList;
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
@@ -131,10 +130,10 @@ mod platform {
             }
         }
 
-        /// The PIDs currently assigned to this job. Test-only: a test that
-        /// kills a tree waits on these PIDs' own process objects rather than
-        /// a machine-wide image name, so a co-tenant process cannot fail it.
-        #[cfg(test)]
+        /// The PIDs currently assigned to this job: the proof that a process
+        /// belongs to this tree, read straight from the kernel object rather
+        /// than from a machine-wide image name, so a co-tenant process cannot
+        /// pass as a member.
         pub fn pids(&self) -> io::Result<Vec<u32>> {
             #[repr(C)]
             struct BasicProcessIdList {

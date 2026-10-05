@@ -1350,6 +1350,7 @@ fn the_design_overlay_hides_its_writes_and_the_whole_browser_lane_and_keeps_the_
     assert!(!design.allows(super::MCP_STOP_AGENT_TOOL));
     assert!(!design.allows(super::MCP_CLOSE_AGENT_TOOL));
     assert!(!design.allows(super::MCP_ARCHIVE_WORKSPACE_TOOL));
+    assert!(!design.allows(super::MCP_CLEANUP_PROCESSES_TOOL));
     assert!(design.allows(super::MCP_ROSTER_TOOL));
     assert!(design.allows(super::MCP_LIST_WORKSPACES_TOOL));
     assert!(design.allows(super::MCP_LIST_TERMINALS_TOOL));
@@ -1367,6 +1368,7 @@ fn the_design_overlay_hides_its_writes_and_the_whole_browser_lane_and_keeps_the_
             super::MCP_STOP_AGENT_TOOL,
             super::MCP_CLOSE_AGENT_TOOL,
             super::MCP_ARCHIVE_WORKSPACE_TOOL,
+            super::MCP_CLEANUP_PROCESSES_TOOL,
         ]
         .into_iter()
         // The lane's half is read out of the catalog, not spelled again here.

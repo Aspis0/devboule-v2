@@ -26,6 +26,9 @@ pub(in crate::mcp_broker) const TERMINAL_CREATE_GROUP: &str = "terminal_creation
 pub(in crate::mcp_broker) const TERMINAL_KEYS_GROUP: &str = "terminal_keys";
 /// See [`TERMINAL_CREATE_GROUP`].
 pub(in crate::mcp_broker) const TERMINAL_KILL_GROUP: &str = "terminal_kill";
+/// Cleanup asks even from an automatic mode: it names the processes a
+/// session is about to lose, and "auto" may not answer that itself.
+pub(in crate::mcp_broker) const PROCESS_CLEANUP_GROUP: &str = "process_cleanup";
 
 /// Every first-use group's label, one table for all of them: the approval
 /// card's button and its sentence both read from here, so a group id — the
@@ -38,6 +41,7 @@ const FIRST_USE_GROUP_LABELS: &[(&str, &str)] = &[
     (TERMINAL_CREATE_GROUP, "creating terminals"),
     (TERMINAL_KEYS_GROUP, "typing into terminals"),
     (TERMINAL_KILL_GROUP, "closing terminals"),
+    (PROCESS_CLEANUP_GROUP, "cleaning up processes"),
 ];
 
 /// The card choice that approves only the call it was raised for.
@@ -203,6 +207,31 @@ pub(in crate::mcp_broker) fn ensure_write_allowed(
         Some(crate::provider_catalog::ModeGate::Auto) => return Ok(()),
         Some(crate::provider_catalog::ModeGate::Refuse(sentence)) => return Err(sentence),
         _ => {}
+    }
+    ensure_carded(state, broker, session_id, owner, group, subject, facts)
+}
+
+/// The same card without the automatic-mode shortcut: some writes must be
+/// asked even from a session that approves its own permission prompts,
+/// because of what the action touches — cleanup names the processes it is
+/// about to kill, and an automatic mode may not answer that itself. A
+/// plan or read-only session still refuses here, before any card, with the
+/// same sentence the write gate uses.
+pub(in crate::mcp_broker) fn ensure_carded(
+    state: &ServerState,
+    broker: &McpBroker,
+    session_id: &str,
+    owner: &OwnerId,
+    group: &str,
+    subject: &str,
+    facts: &[(&str, &str)],
+) -> Result<(), String> {
+    let gate = state
+        .sessions
+        .live_runtime(session_id, owner)
+        .map(|runtime| runtime.mode_gate());
+    if let Some(crate::provider_catalog::ModeGate::Refuse(sentence)) = gate {
+        return Err(sentence);
     }
     {
         let mut marks = broker

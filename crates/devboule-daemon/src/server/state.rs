@@ -227,6 +227,9 @@ pub struct ServerState {
     /// instance for the process: a `Tailnet` on a real daemon is a unit struct,
     /// so this costs nothing and lets a test substitute a stub.
     peer_transport: OnceLock<Arc<dyn crate::peer_transport::PeerTransport>>,
+    /// The per-session process index, rooted in each live session's own job
+    /// or group proof.
+    pub(crate) process_index: crate::process_index::ProcessIndex,
     /// The outbound dial budget (`peer_dial.rs`): how many calls this daemon
     /// may have in flight toward the tailnet at once. The mirror of the
     /// accept path's per-source cap, held on the state so it is per-daemon
@@ -479,6 +482,7 @@ impl ServerState {
             ),
             peer_listener: Mutex::new(None),
             peer_transport: OnceLock::new(),
+            process_index: crate::process_index::ProcessIndex::new(),
             outbound_dials: super::peer_dial::DialSlots::default(),
             peer_links: super::peer_link::PeerLinks::new(),
             browser: crate::browser_broker::BrowserBroker::new(),

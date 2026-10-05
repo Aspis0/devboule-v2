@@ -2,11 +2,13 @@
 //! creation holds, the child readmit/release/notice/report roads, the quiet
 //! sweeper and the finish report.
 //!
-//! Split out of `session.rs` without a rewrite: every line below this header is
-//! byte-identical to its text there, apart from the `pub(super)` markers on the
+//! Split out of `session.rs` without a rewrite: the lines that came from there are
+//! byte-identical to its text, apart from the `pub(super)` markers on the
 //! methods a caller in the parent module or its sibling tests reaches in for.
 
 use super::*;
+
+use crate::process_index::SessionProof;
 
 impl super::SessionRegistry {
     /// Hold one creation's idempotency key for as long as the call that claimed
@@ -1360,5 +1362,33 @@ impl super::SessionRegistry {
             .collect::<Vec<_>>();
         sessions.sort_by(|left, right| left.session.id.cmp(&right.session.id));
         Ok(sessions)
+    }
+
+    /// Every spawned session's proof root for the process index: its id, the
+    /// metadata a match reports, and the job or group that proves membership.
+    /// `Transcript` sessions hold no process and are not roots.
+    pub(crate) fn live_process_roots(&self) -> Vec<SessionProof> {
+        let Ok(map) = self.inner.lock() else {
+            return Vec::new();
+        };
+        let mut roots: Vec<SessionProof> = map
+            .iter()
+            .filter_map(|(id, entry)| {
+                let child = entry.as_child_process()?;
+                Some(SessionProof {
+                    id: id.clone(),
+                    workspace_id: child.metadata.workspace_id.clone(),
+                    label: child
+                        .metadata
+                        .display_name
+                        .clone()
+                        .filter(|name| !name.is_empty())
+                        .unwrap_or_else(|| child.metadata.title.clone()),
+                    job: Arc::clone(&child.process_job),
+                })
+            })
+            .collect();
+        roots.sort_by(|left, right| left.id.cmp(&right.id));
+        roots
     }
 }
