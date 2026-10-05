@@ -75,7 +75,16 @@ pub enum LocalApiError {
 impl std::fmt::Display for LocalApiError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Absent(message) => write!(formatter, "tailscale is not running: {message}"),
+            Self::Absent(message) => {
+                // On macOS the app variants run LocalAPI from inside their
+                // extension and expose no socket at all, so "not running"
+                // would be false on a machine where Tailscale is up.
+                #[cfg(target_os = "macos")]
+                let text = format!("tailscale localapi is unavailable: {message}");
+                #[cfg(not(target_os = "macos"))]
+                let text = format!("tailscale is not running: {message}");
+                write!(formatter, "{text}")
+            }
             Self::Transport(message) => {
                 write!(formatter, "tailscale localapi transport: {message}")
             }
@@ -402,7 +411,7 @@ fn read_unix_socket(
 
     let stream = UnixStream::connect(path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
-            LocalApiError::Absent(format!("{} does not exist", path.display()))
+            LocalApiError::Absent(missing_socket_reason(path))
         } else {
             LocalApiError::Transport(error.to_string())
         }
@@ -435,6 +444,23 @@ fn read_unix_socket(
         }
     }
     Ok(raw)
+}
+
+/// Why the LocalAPI socket is not there, named precisely enough for the
+/// Devices panel. On macOS neither app variant (Standalone or App Store)
+/// exposes a filesystem socket — LocalAPI lives inside their system/network
+/// extension — so a bare "does not exist" would read as "Tailscale is not
+/// installed" on a machine where it is running.
+#[cfg(not(windows))]
+fn missing_socket_reason(path: &std::path::Path) -> String {
+    let found = format!("{} does not exist", path.display());
+    #[cfg(target_os = "macos")]
+    return format!(
+        "{found}; the macOS Tailscale app serves LocalAPI from its extension, not a \
+         filesystem socket (only the open-source tailscaled exposes one, or set {ENDPOINT_ENV})"
+    );
+    #[cfg(not(target_os = "macos"))]
+    return found;
 }
 
 fn map_io(error: std::io::Error, step: &str) -> LocalApiError {

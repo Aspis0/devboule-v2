@@ -4081,6 +4081,18 @@ fn the_remote_listener_starts_once_and_stops() {
         "a started listener is reported as enabled"
     );
     assert!(enabled.reason.is_none(), "nothing to explain when it is up");
+    // What the Devices panel dials: the stub binds loopback with an
+    // ephemeral port, so the advertised pair is loopback and a real port.
+    assert_eq!(
+        state.remote_addresses(),
+        vec!["127.0.0.1".to_string()],
+        "the bound address is advertised"
+    );
+    assert!(
+        matches!(state.remote_port(), Some(port) if port != 0),
+        "the bound port is advertised and never zero: {:?}",
+        state.remote_port()
+    );
 
     // Idempotent: further calls do not start a second listener.
     for _ in 0..3 {

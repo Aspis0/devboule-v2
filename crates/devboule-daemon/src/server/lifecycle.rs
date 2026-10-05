@@ -239,7 +239,6 @@ pub(crate) fn run_with_paths(paths: RuntimePaths) -> Result<(), DaemonError> {
 ///
 /// The body of [`ServerState::ensure_remote_listener`], split out so the
 /// idempotence and the join handle live with the state that owns them.
-#[cfg(windows)]
 pub(super) fn try_start_remote_listener(state: &Arc<ServerState>) -> Option<JoinHandle<()>> {
     // A missing key is a refusal, not an environment fact: creating a new one
     // would silently orphan every pairing this device has.
@@ -283,14 +282,6 @@ pub(super) fn try_start_remote_listener(state: &Arc<ServerState>) -> Option<Join
     // never say `listening` with nothing behind it.
     state.set_remote_state(RemoteState::Enabled { addresses, port });
     Some(handle)
-}
-
-#[cfg(not(windows))]
-pub(super) fn try_start_remote_listener(state: &Arc<ServerState>) -> Option<JoinHandle<()>> {
-    state.set_remote_state(RemoteState::Disabled(
-        "the daemon does not run on this platform yet".to_string(),
-    ));
-    None
 }
 
 pub(super) fn accept_loop(mut listener: transport::BoundListener, state: Arc<ServerState>) {

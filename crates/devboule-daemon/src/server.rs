@@ -157,6 +157,10 @@ mod lifecycle_tests;
 #[path = "server/unix_startup_tests.rs"]
 mod unix_startup_tests;
 
+#[cfg(all(test, unix))]
+#[path = "server/peer_listener_unix_tests.rs"]
+mod peer_listener_unix_tests;
+
 #[cfg(test)]
 #[path = "server/create_size_tests.rs"]
 mod create_size_tests;

@@ -445,6 +445,10 @@ jobs:
         timeout-minutes: 30
         run: cargo test -p devboule-daemon --lib --locked
 
+      - name: Peer listener tests (Unix)
+        timeout-minutes: 10
+        run: cargo test -p devboule-daemon --lib --locked remote_listener
+
   # Slice 3 (CfT process manager) owns this job: the websocket transport is
   # cross-platform code and only a Mac can verify the mac-arm64 Chromium
   # lifecycle. Everything here is headless; a headed pane with compositor
