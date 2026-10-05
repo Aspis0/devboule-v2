@@ -364,9 +364,11 @@ impl DaemonClient {
                     "daemon refused shutdown: {reason}"
                 )));
             }
+            // A lost reply or a racing restart can hide an accepted drain:
+            // give it the same wait before the kill can cut it short.
             Err(error) => {
                 eprintln!("daemon shutdown request failed, checking the process: {error}");
-                false
+                wait_while_present(&paths, &old_instance)
             }
         };
         if !graceful && daemon_present(&paths, &old_instance) {
