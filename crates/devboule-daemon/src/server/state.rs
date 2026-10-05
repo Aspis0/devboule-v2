@@ -208,10 +208,19 @@ pub struct ServerState {
     /// through `ensure_remote_listener` and stops it through
     /// `stop_remote_listener`, and `PairingStart` can start it late.
     pub(crate) peer_stop: Arc<AtomicBool>,
-    /// Set when something asked the accept loop to re-check the tailnet
-    /// addresses behind its listener now rather than on the next timer tick.
+    /// The address-update channel: the refresh worker and `pairing_address`
+    /// propose a probed set and the accept thread binds it. The receiver is
+    /// taken once, by the accept thread.
     #[cfg(not(windows))]
-    peer_refresh_requested: AtomicBool,
+    peer_address_updates: Mutex<Option<std::sync::mpsc::Receiver<Vec<std::net::IpAddr>>>>,
+    #[cfg(not(windows))]
+    peer_address_tx: OnceLock<std::sync::mpsc::Sender<Vec<std::net::IpAddr>>>,
+    /// The refresh worker's thread, stopped and joined with the listener.
+    #[cfg(not(windows))]
+    peer_refresh_worker: Mutex<Option<JoinHandle<()>>>,
+    /// The worker's probe cadence in milliseconds; tests shorten it.
+    #[cfg(not(windows))]
+    peer_refresh_interval_ms: AtomicU64,
     peer_listener: Mutex<Option<JoinHandle<()>>>,
     /// The transport the peer listener uses, and that the initiator side of a
     /// pairing uses for its own `whois` on the responder's address. One
@@ -459,7 +468,15 @@ impl ServerState {
             peer_table_load: Mutex::new(()),
             peer_stop: Arc::new(AtomicBool::new(false)),
             #[cfg(not(windows))]
-            peer_refresh_requested: AtomicBool::new(false),
+            peer_address_updates: Mutex::new(None),
+            #[cfg(not(windows))]
+            peer_address_tx: OnceLock::new(),
+            #[cfg(not(windows))]
+            peer_refresh_worker: Mutex::new(None),
+            #[cfg(not(windows))]
+            peer_refresh_interval_ms: AtomicU64::new(
+                crate::peer_transport::ADDRESS_REFRESH.as_millis() as u64,
+            ),
             peer_listener: Mutex::new(None),
             peer_transport: OnceLock::new(),
             outbound_dials: super::peer_dial::DialSlots::default(),
@@ -1711,25 +1728,70 @@ impl ServerState {
         self.listener_starts.load(Ordering::Relaxed)
     }
 
-    /// Ask the accept loop to re-check the tailnet addresses behind its
-    /// listener now — the pairing panel is about to display them. A no-op on
-    /// Windows, which has no address refresh.
-    pub(crate) fn request_address_refresh(&self) {
-        #[cfg(not(windows))]
-        self.peer_refresh_requested.store(true, Ordering::SeqCst);
-    }
-
-    /// Take the request [`Self::request_address_refresh`] left behind. Unix
-    /// only: the accept loop's refresh, and its only caller.
+    /// Create the address-update channel the accept thread consumes; the
+    /// worker and `pairing_address` keep clones of the sending half.
     #[cfg(not(windows))]
-    pub(crate) fn take_address_refresh_request(&self) -> bool {
-        self.peer_refresh_requested.swap(false, Ordering::SeqCst)
+    pub(crate) fn install_address_updates(
+        &self,
+        tx: std::sync::mpsc::Sender<Vec<std::net::IpAddr>>,
+        rx: std::sync::mpsc::Receiver<Vec<std::net::IpAddr>>,
+    ) {
+        let _ = self.peer_address_tx.set(tx);
+        *self
+            .peer_address_updates
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(rx);
     }
 
-    /// Stop the tailnet listener if one is running and join it.
+    /// The receiving half for the accept thread; `None` when no listener
+    /// started a channel (a caller that spawned the loop directly).
+    #[cfg(not(windows))]
+    pub(crate) fn take_address_updates(
+        &self,
+    ) -> Option<std::sync::mpsc::Receiver<Vec<std::net::IpAddr>>> {
+        self.peer_address_updates
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+    }
+
+    /// Propose a probed set for the accept thread to bind. `false` when no
+    /// listener channel exists.
+    #[cfg(not(windows))]
+    pub(crate) fn propose_addresses(&self, addresses: Vec<std::net::IpAddr>) -> bool {
+        self.peer_address_tx
+            .get()
+            .is_some_and(|tx| tx.send(addresses).is_ok())
+    }
+
+    #[cfg(not(windows))]
+    pub(crate) fn address_refresh_interval(&self) -> Duration {
+        Duration::from_millis(self.peer_refresh_interval_ms.load(Ordering::SeqCst))
+    }
+
+    /// Test-only: shorten the worker's probe cadence.
+    #[cfg(all(test, not(windows)))]
+    pub(crate) fn set_address_refresh_interval(&self, interval: Duration) {
+        self.peer_refresh_interval_ms
+            .store(interval.as_millis() as u64, Ordering::SeqCst);
+    }
+
+    /// The refresh worker's thread, stored when it is spawned.
+    #[cfg(not(windows))]
+    pub(crate) fn set_refresh_worker(&self, handle: Option<JoinHandle<()>>) {
+        *self
+            .peer_refresh_worker
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = handle;
+    }
+
+    /// Stop the tailnet listener and its refresh worker, and join both.
     ///
-    /// Bounded, like every other join in this file: the accept loop polls its
-    /// stop flag, so this is one `HOUSEKEEPING_TICK` at worst.
+    /// Bounded, like every other join in this file: the accept loop polls
+    /// its stop flag, and the worker's own probe is the transport's bounded
+    /// call — this budget covers an in-flight probe, and the accept loop's
+    /// bind site re-checks the stop flag, so nothing binds after this
+    /// returns.
     pub(crate) fn stop_remote_listener(&self) {
         self.peer_stop.store(true, Ordering::SeqCst);
         let handle = self
@@ -1739,6 +1801,17 @@ impl ServerState {
             .take();
         if let Some(handle) = handle {
             bounded_join(handle, JOIN_BUDGET);
+        }
+        #[cfg(not(windows))]
+        {
+            let worker = self
+                .peer_refresh_worker
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take();
+            if let Some(worker) = worker {
+                bounded_join(worker, WORKER_JOIN_BUDGET);
+            }
         }
     }
 

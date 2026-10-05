@@ -785,11 +785,23 @@ pub trait PeerTransport: Send + Sync {
     ) -> io::Result<PeerListener>;
 
     /// The addresses a `listen` would bind right now, or `None` when the
-    /// transport cannot answer — a status question, not a bind. The accept
-    /// loop compares this with its bound set at a low frequency so a held
-    /// listener follows address changes instead of outliving them.
+    /// transport cannot answer — a status question, not a bind. The refresh
+    /// worker probes this off the accept thread and proposes the set it gets.
     fn current_addresses(&self) -> Option<Vec<IpAddr>> {
         None
+    }
+
+    /// Bind a probed address set without consulting any status: the accept
+    /// thread's cheap half of a rebind. The conservative default refuses, so
+    /// a transport that never proposed a set is never asked to bind one.
+    fn bind_addresses(
+        &self,
+        _addresses: &[IpAddr],
+        _stop: Arc<AtomicBool>,
+    ) -> io::Result<PeerListener> {
+        Err(io::Error::other(
+            "this transport cannot re-bind a probed address set",
+        ))
     }
 
     /// Step 2, before any read from the socket.
@@ -878,6 +890,14 @@ impl PeerTransport for Tailnet {
             .self_node_fresh()
             .ok()
             .map(|node| node.addresses)
+    }
+
+    fn bind_addresses(
+        &self,
+        addresses: &[IpAddr],
+        stop: Arc<AtomicBool>,
+    ) -> io::Result<PeerListener> {
+        Self::bind_peer_listener(addresses, peer_port(), stop)
     }
 
     fn pre_noise_filter(&self, peer: &SocketAddr, peers: &PeerTable) -> Result<(), RejectReason> {
@@ -1222,8 +1242,12 @@ pub fn accept_peers(
     // `None` only on unix, while a rebind is being attempted or has failed;
     // Windows refreshes nothing and keeps its listener for the whole run.
     let mut listener = Some(listener);
+    // The refresh worker's proposals; `None` for a caller that spawned this
+    // loop directly (tests), which proposes nothing.
     #[cfg(not(windows))]
-    let mut last_refresh = Instant::now();
+    let updates = state.take_address_updates();
+    #[cfg(not(windows))]
+    let mut pending: Option<PendingBind> = None;
     let caps = Arc::new(AcceptCaps::default());
     let mut threads: Vec<std::thread::JoinHandle<()>> = Vec::new();
     loop {
@@ -1242,8 +1266,66 @@ pub fn accept_peers(
         }
         #[cfg(not(windows))]
         {
-            if address_refresh_due(&state, &mut last_refresh) {
-                refresh_listener(&state, &transport, &mut listener);
+            if let Some(updates) = &updates {
+                // Only the newest proposal matters: the accept thread must not
+                // replay a queue of intermediate address lists.
+                if let Some(desired) = updates.try_iter().last() {
+                    if bound_ips(&listener).as_ref() != Some(&desired) {
+                        // The same set re-proposed while its bind is pending
+                        // must not reset the backoff; only a genuinely new
+                        // set starts a new swap.
+                        let same_pending = pending
+                            .as_ref()
+                            .is_some_and(|bind| bind.addresses == desired);
+                        if !same_pending {
+                            // Close first: one fixed port means two listeners
+                            // can never overlap, and the swap is only the bind.
+                            listener = None;
+                            pending = Some(PendingBind::new(desired));
+                        }
+                    }
+                }
+            }
+            if let Some(bind) = pending.as_mut() {
+                if listener.is_none() && Instant::now() >= bind.next_attempt {
+                    if state.stop_flag().load(Ordering::SeqCst) {
+                        // A stopped listener never binds again.
+                        pending = None;
+                    } else {
+                        match transport
+                            .bind_addresses(&bind.addresses, Arc::clone(&state.peer_stop))
+                        {
+                            Ok(new_listener) => {
+                                let addresses: Vec<IpAddr> = new_listener
+                                    .addrs()
+                                    .iter()
+                                    .map(|address| address.ip())
+                                    .collect();
+                                let port = new_listener
+                                    .addrs()
+                                    .first()
+                                    .map(|address| address.port())
+                                    .unwrap_or_else(peer_port);
+                                state.set_remote_state(
+                                    crate::device_identity::RemoteState::Enabled {
+                                        addresses,
+                                        port,
+                                    },
+                                );
+                                listener = Some(new_listener);
+                                pending = None;
+                            }
+                            Err(error) => {
+                                state.set_remote_state(
+                                    crate::device_identity::RemoteState::Disabled(
+                                        error.to_string(),
+                                    ),
+                                );
+                                bind.failed();
+                            }
+                        }
+                    }
+                }
             }
         }
         let Some(active) = listener.as_mut() else {
@@ -1328,67 +1410,87 @@ pub fn accept_peers(
     }
 }
 
-/// How often the accept loop re-checks the tailnet addresses behind its
-/// listener: a Mac wakes or Tailscale restarts without this daemon seeing
-/// it, and the bound set would otherwise outlive the addresses it came from.
+/// How often the refresh worker asks the transport for its addresses: a Mac
+/// wakes or Tailscale restarts without this daemon seeing it, and the bound
+/// set would otherwise outlive the addresses it came from.
 #[cfg(not(windows))]
-const ADDRESS_REFRESH: Duration = Duration::from_secs(30);
+pub(crate) const ADDRESS_REFRESH: Duration = Duration::from_secs(30);
 
+/// How long a failed bind waits before trying again: 1 s, then 2 s, 4 s,
+/// doubling to a 30 s cap. Rebind retries ride this backoff, not the
+/// worker's probe timer.
 #[cfg(not(windows))]
-fn address_refresh_due(state: &ServerState, last_refresh: &mut Instant) -> bool {
-    // A pairing-address request asks for now; the timer covers everything else.
-    if !state.take_address_refresh_request() && last_refresh.elapsed() < ADDRESS_REFRESH {
-        return false;
-    }
-    *last_refresh = Instant::now();
-    true
+const RETRY_BACKOFF_MIN: Duration = Duration::from_secs(1);
+#[cfg(not(windows))]
+const RETRY_BACKOFF_MAX: Duration = Duration::from_secs(30);
+
+/// A proposed address set whose bind is pending: the first attempt fires as
+/// soon as the accept loop reaches it, later ones on the backoff schedule.
+#[cfg(not(windows))]
+struct PendingBind {
+    addresses: Vec<IpAddr>,
+    next_attempt: Instant,
+    backoff: Duration,
 }
 
-/// Rebind when the transport's current addresses differ from the bound set.
-/// The old listener closes first, so there are never two listeners; a rebind
-/// that fails leaves none, and the accept loop retries on its next tick with
-/// `Status.remote` already saying why.
 #[cfg(not(windows))]
-fn refresh_listener(
-    state: &ServerState,
-    transport: &Arc<dyn PeerTransport>,
-    listener: &mut Option<PeerListener>,
-) {
-    let Some(fresh) = transport.current_addresses() else {
-        // No answer (Tailscale unreachable): keep what is bound rather than
-        // tearing down a listener on unknown evidence.
-        return;
-    };
-    let bound: Option<Vec<IpAddr>> = listener.as_ref().map(|listener| {
+impl PendingBind {
+    fn new(addresses: Vec<IpAddr>) -> Self {
+        Self {
+            addresses,
+            next_attempt: Instant::now(),
+            backoff: RETRY_BACKOFF_MIN,
+        }
+    }
+
+    fn failed(&mut self) {
+        self.next_attempt = Instant::now() + self.backoff;
+        self.backoff = (self.backoff * 2).min(RETRY_BACKOFF_MAX);
+    }
+}
+
+#[cfg(not(windows))]
+fn bound_ips(listener: &Option<PeerListener>) -> Option<Vec<IpAddr>> {
+    listener.as_ref().map(|listener| {
         listener
             .addrs()
             .iter()
             .map(|address| address.ip())
             .collect()
-    });
-    if bound.as_ref() == Some(&fresh) {
-        return;
-    }
-    *listener = None;
-    match transport.listen(&state.paths, Arc::clone(&state.peer_stop)) {
-        Ok(new_listener) => {
-            let addresses: Vec<IpAddr> = new_listener
-                .addrs()
-                .iter()
-                .map(|address| address.ip())
-                .collect();
-            let port = new_listener
-                .addrs()
-                .first()
-                .map(|address| address.port())
-                .unwrap_or_else(peer_port);
-            state
-                .set_remote_state(crate::device_identity::RemoteState::Enabled { addresses, port });
-            *listener = Some(new_listener);
+    })
+}
+
+/// The address probe, off the accept thread: every `ADDRESS_REFRESH` it asks
+/// the transport for its addresses and hands the set to the accept thread,
+/// which owns the listener and does only the cheap swap. A probe is the
+/// transport's own bounded call (LocalAPI is two seconds), so shutdown can
+/// join this worker within its budget; a probe in flight when the stop flag
+/// is seen is dropped rather than delivered.
+#[cfg(not(windows))]
+pub fn refresh_worker(
+    transport: Arc<dyn PeerTransport>,
+    state: Arc<ServerState>,
+    updates: std::sync::mpsc::Sender<Vec<IpAddr>>,
+) {
+    loop {
+        let due = Instant::now() + state.address_refresh_interval();
+        while Instant::now() < due {
+            if state.stop_flag().load(Ordering::SeqCst) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
-        Err(error) => state.set_remote_state(crate::device_identity::RemoteState::Disabled(
-            error.to_string(),
-        )),
+        if state.stop_flag().load(Ordering::SeqCst) {
+            return;
+        }
+        if let Some(fresh) = transport.current_addresses() {
+            if state.stop_flag().load(Ordering::SeqCst) {
+                return;
+            }
+            if updates.send(fresh).is_err() {
+                return;
+            }
+        }
     }
 }
 

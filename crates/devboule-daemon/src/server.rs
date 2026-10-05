@@ -37,6 +37,11 @@ use crate::IDLE_SHUTDOWN_GRACE;
 
 const JOIN_SLICE: Duration = Duration::from_millis(10);
 const JOIN_BUDGET: Duration = Duration::from_millis(500);
+/// The refresh worker's join budget: a probe is the transport's own bounded
+/// call (LocalAPI is two seconds), so this covers one in flight without
+/// letting shutdown wait longer. Unix only — Windows runs no worker.
+#[cfg(not(windows))]
+const WORKER_JOIN_BUDGET: Duration = Duration::from_secs(5);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
 /// How long a loaded `peers` table is trusted by the accept path (M1). Every
 /// peer mutation also invalidates it, so this is a backstop for a mutation path

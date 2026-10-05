@@ -102,7 +102,12 @@ fn read_lsof(deadline: Instant) -> Option<(u16, String)> {
                 }
                 break;
             }
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(LSOF_POLL),
+            Ok(None) if Instant::now() < deadline => {
+                // Never sleep past the deadline: the kill path below runs on
+                // the very next iteration.
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                std::thread::sleep(LSOF_POLL.min(remaining));
+            }
             Ok(None) | Err(_) => {
                 // OUR child: kill and reap it, so a wedged lsof cannot
                 // outlive this call or leave a zombie behind.
@@ -125,10 +130,11 @@ fn read_lsof(deadline: Instant) -> Option<(u16, String)> {
 }
 
 /// `lsof -F` read as records: `p` starts a process, `c` names its command
-/// and must be the one the filter asked for, `f` starts a file, and only an
-/// `n` filename line inside such a file record may carry the marker — a
+/// and must be the one the filter asked for, `f` opens a file record, and
+/// only the first `n` filename line of that record may carry the marker — a
 /// continuation line from a crafted filename carries no field prefix and is
-/// ignored.
+/// ignored, and a second `n` line (a newline-spliced injection) arrives
+/// after the record has been consumed and is ignored too.
 fn parse_lsof_output(output: &[u8]) -> Option<(u16, String)> {
     let text = String::from_utf8_lossy(output);
     let mut command_matches = false;
@@ -155,6 +161,8 @@ fn parse_lsof_output(output: &[u8]) -> Option<(u16, String)> {
         let Some(name) = line.strip_prefix('n') else {
             continue;
         };
+        // One `n` per file record; whatever this line says, the record is spent.
+        file_record = false;
         let Some(at) = name.find(LSOF_MARKER) else {
             continue;
         };

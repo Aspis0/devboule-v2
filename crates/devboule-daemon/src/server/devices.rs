@@ -302,11 +302,51 @@ fn devices_reply(
     }
 }
 
+/// How long `pairing_address` waits for the accept thread to land a proposed
+/// address set: the loop wakes within one housekeeping tick and the bind is
+/// the cheap half of a swap, so this covers a first attempt and a first
+/// failure's reason.
+#[cfg(not(windows))]
+const ADDRESS_SWAP_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Where this device can be reached, for the code it displays.
 fn pairing_address(state: &Arc<ServerState>) -> Result<String, WireError> {
-    // The panel is about to show this device's address, so the accept loop
-    // should re-check Tailscale's now instead of on its next timer tick.
-    state.request_address_refresh();
+    // A pairing code shows where to type in: probe the tailnet now and, when
+    // its addresses differ from the bound set, propose the swap and wait
+    // (bounded) for the accept thread to land it. A failed or slow bind
+    // returns the reason; a stale address is never handed out.
+    #[cfg(not(windows))]
+    {
+        let _ = state.ensure_remote_listener();
+        if let Some(probed) = state.peer_transport().current_addresses() {
+            if !same_addresses(&probed, &state.remote_addresses())
+                && state.propose_addresses(probed.clone())
+            {
+                let deadline = std::time::Instant::now() + ADDRESS_SWAP_WAIT;
+                loop {
+                    if same_addresses(&probed, &state.remote_addresses()) {
+                        break;
+                    }
+                    let remote = state.remote_state();
+                    if remote.state == devboule_protocol::RemoteStateKind::Disabled {
+                        return Err(WireError::new(
+                            ErrorCode::Internal,
+                            remote.reason.unwrap_or_else(|| {
+                                "The tailnet address could not be bound.".to_string()
+                            }),
+                        ));
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return Err(WireError::new(
+                            ErrorCode::Internal,
+                            "The new tailnet address did not bind within two seconds; show a code again.",
+                        ));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            }
+        }
+    }
     // No address yet? The listener is started at daemon start-up, but Tailscale
     // may have come up since (or been started precisely because the panel said
     // to). Try once more before refusing (C5), so the instruction this error
@@ -333,6 +373,17 @@ fn remote_address(state: &Arc<ServerState>) -> Option<String> {
     let ip: std::net::IpAddr = addresses.first()?.parse().ok()?;
     let port = state.remote_port()?;
     Some(crate::peer_transport::compose_peer_address(ip, port))
+}
+
+/// Whether the probed set is the bound one, as sets — the order of either
+/// list carries no meaning.
+#[cfg(not(windows))]
+fn same_addresses(probed: &[std::net::IpAddr], bound: &[String]) -> bool {
+    let mut probed: Vec<std::net::IpAddr> = probed.to_vec();
+    let mut bound: Vec<std::net::IpAddr> = bound.iter().filter_map(|ip| ip.parse().ok()).collect();
+    probed.sort_unstable();
+    bound.sort_unstable();
+    probed == bound
 }
 
 fn no_tailnet_address() -> WireError {
@@ -377,6 +428,96 @@ mod tests {
             "the advertised address must be the bracketed listener: {address}"
         );
 
+        drop(server);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The pairing panel's "now": `pairing_address` probes the tailnet,
+    /// proposes a changed set and waits for the accept thread to bind it —
+    /// so the code it returns is the new address; and when the bind never
+    /// lands it returns the failure, never the stale address.
+    #[cfg(not(windows))]
+    #[test]
+    fn pairing_address_waits_for_a_proposed_swap_and_refuses_a_stale_one() {
+        use crate::peer_transport::{
+            BindingError, PeerListener, PeerTable, PeerTransport, RejectReason, Tailnet,
+            TransportBinding,
+        };
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+
+        struct ProposedSwap {
+            fail_bind: bool,
+        }
+        impl PeerTransport for ProposedSwap {
+            fn listen(
+                &self,
+                _paths: &crate::paths::RuntimePaths,
+                stop: Arc<AtomicBool>,
+            ) -> std::io::Result<PeerListener> {
+                Tailnet::bind_peer_listener(&["127.0.0.1".parse().expect("loopback")], 0, stop)
+            }
+            fn current_addresses(&self) -> Option<Vec<std::net::IpAddr>> {
+                Some(vec!["127.0.0.2".parse().expect("loopback")])
+            }
+            fn bind_addresses(
+                &self,
+                addresses: &[std::net::IpAddr],
+                stop: Arc<AtomicBool>,
+            ) -> std::io::Result<PeerListener> {
+                if self.fail_bind {
+                    return Err(std::io::Error::other("synthetic bind failure"));
+                }
+                Tailnet::bind_peer_listener(addresses, 0, stop)
+            }
+            fn pre_noise_filter(
+                &self,
+                _peer: &std::net::SocketAddr,
+                _peers: &PeerTable,
+            ) -> Result<(), RejectReason> {
+                Ok(())
+            }
+            fn binding(
+                &self,
+                _peer: &std::net::SocketAddr,
+            ) -> Result<TransportBinding, BindingError> {
+                Err(BindingError::Mismatch)
+            }
+        }
+
+        let build = |tag: &str, fail_bind: bool| -> (std::path::PathBuf, Arc<ServerState>) {
+            let dir = crate::test_dirs::test_temp_dir(tag);
+            let server = ServerState::with_paths(
+                format!("{tag}-state"),
+                crate::paths::RuntimePaths::from_dir(&dir),
+            )
+            .expect("state");
+            // The worker stays out of this test: pairing probes for itself.
+            server.set_address_refresh_interval(std::time::Duration::from_secs(60));
+            assert!(server
+                .set_peer_transport(Arc::new(ProposedSwap { fail_bind }))
+                .is_ok());
+            (dir, server)
+        };
+
+        let (dir, server) = build("devboule-pairing-swap", false);
+        let address = pairing_address(&server).expect("the swap lands");
+        assert!(
+            address.starts_with("127.0.0.2:"),
+            "the proposed set is the one advertised: {address}"
+        );
+        server.stop_remote_listener();
+        drop(server);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let (dir, server) = build("devboule-pairing-stale", true);
+        let error = pairing_address(&server).expect_err("no address for a failed bind");
+        assert!(
+            error.message.contains("synthetic bind failure"),
+            "{}",
+            error.message
+        );
+        server.stop_remote_listener();
         drop(server);
         let _ = std::fs::remove_dir_all(&dir);
     }

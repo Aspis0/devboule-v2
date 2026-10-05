@@ -274,6 +274,12 @@ pub(super) fn try_start_remote_listener(state: &Arc<ServerState>) -> Option<Join
         .map(|addr| addr.port())
         .unwrap_or_else(crate::peer_transport::peer_port);
     let accept_state = Arc::clone(state);
+    #[cfg(not(windows))]
+    let worker_transport = Arc::clone(&transport);
+    #[cfg(not(windows))]
+    let (address_tx, address_rx) = std::sync::mpsc::channel::<Vec<std::net::IpAddr>>();
+    #[cfg(not(windows))]
+    state.install_address_updates(address_tx.clone(), address_rx);
     let handle = std::thread::Builder::new()
         .name("daemon-peer-accept".into())
         .spawn(move || accept_peers(listener, transport, accept_state, pairing))
@@ -281,6 +287,20 @@ pub(super) fn try_start_remote_listener(state: &Arc<ServerState>) -> Option<Join
     // Published only once the thread is actually running, so `Status.remote` can
     // never say `listening` with nothing behind it.
     state.set_remote_state(RemoteState::Enabled { addresses, port });
+    // The probe runs off the accept thread so a slow LocalAPI never delays an
+    // accept; without a worker the listener simply stops following address
+    // changes, which is degraded, not refused.
+    #[cfg(not(windows))]
+    {
+        let worker_state = Arc::clone(state);
+        let worker = std::thread::Builder::new()
+            .name("daemon-peer-refresh".into())
+            .spawn(move || {
+                crate::peer_transport::refresh_worker(worker_transport, worker_state, address_tx)
+            })
+            .ok();
+        state.set_refresh_worker(worker);
+    }
     Some(handle)
 }
 

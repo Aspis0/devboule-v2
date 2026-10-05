@@ -1367,10 +1367,10 @@ fn an_off_tailnet_source_with_a_code_active_is_closed_without_a_peek() {
     );
 }
 
-/// A held listener must follow the tailnet's own address list: when
-/// addresses change (Mac sleep, Tailscale restart) the accept loop closes
-/// the old listener and binds the new set — never two at once — and
-/// `Status.remote` carries the addresses a pairing code will advertise.
+/// A held listener must follow the tailnet's own address list: the refresh
+/// worker probes off the accept thread, and the accept thread closes the old
+/// listener and binds the new set — never two at once — so `Status.remote`
+/// carries the addresses a pairing code will advertise.
 #[cfg(not(windows))]
 #[test]
 fn the_accept_loop_rebinds_when_the_tailnet_addresses_change() {
@@ -1398,6 +1398,13 @@ fn the_accept_loop_rebinds_when_the_tailnet_addresses_change() {
         fn current_addresses(&self) -> Option<Vec<IpAddr>> {
             Some(self.current())
         }
+        fn bind_addresses(
+            &self,
+            addresses: &[IpAddr],
+            stop: Arc<AtomicBool>,
+        ) -> io::Result<PeerListener> {
+            Tailnet::bind_peer_listener(addresses, 0, stop)
+        }
         fn pre_noise_filter(
             &self,
             _peer: &SocketAddr,
@@ -1414,29 +1421,34 @@ fn the_accept_loop_rebinds_when_the_tailnet_addresses_change() {
     let moving = Arc::new(MovingAddresses {
         addresses: Mutex::new(vec!["127.0.0.1".parse().expect("loopback")]),
     });
-    let stop = Arc::new(AtomicBool::new(false));
-    let listener = Tailnet::bind_peer_listener(
-        &["127.0.0.1".parse().expect("loopback")],
-        0,
-        Arc::clone(&stop),
+    // The worker probes on this cadence instead of production's 30 s, so the
+    // test watches the whole worker → channel → accept path in milliseconds.
+    state.set_address_refresh_interval(Duration::from_millis(50));
+    assert!(
+        state.set_peer_transport(Arc::clone(&moving)).is_ok(),
+        "the stub transport is installed before anything picks the real one"
+    );
+    assert!(state.ensure_remote_listener(), "the listener starts");
+    assert_eq!(
+        state.remote_addresses(),
+        vec!["127.0.0.1".to_string()],
+        "the first bound set is published"
+    );
+    let old_address: SocketAddr = format!(
+        "{}:{}",
+        state.remote_addresses()[0],
+        state.remote_port().expect("a port")
     )
-    .expect("bind");
-    let old_address = listener.addrs()[0];
-    let transport: Arc<dyn PeerTransport> = Arc::clone(&moving);
-    let pairing: Arc<dyn PairingHook> = Arc::new(PairingDisabled);
-    let accept_state = Arc::clone(&state);
-    let accept = std::thread::spawn(move || {
-        accept_peers(listener, transport, accept_state, pairing);
-    });
+    .parse()
+    .expect("addr");
 
-    // The addresses move; the pairing panel's request is what asks now.
+    // The addresses move; only the worker's next probe may learn that.
     *moving
         .addresses
         .lock()
         .unwrap_or_else(|error| error.into_inner()) = vec!["127.0.0.2".parse().expect("loopback")];
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        state.request_address_refresh();
         if state.remote_addresses() == vec!["127.0.0.2".to_string()] {
             break;
         }
@@ -1460,6 +1472,153 @@ fn the_accept_loop_rebinds_when_the_tailnet_addresses_change() {
     let old = std::net::TcpStream::connect_timeout(&old_address, Duration::from_millis(500));
     assert!(old.is_err(), "the old bound address is closed");
 
-    state.stop_flag().store(true, Ordering::SeqCst);
-    join_bounded(accept, "the peer accept loop");
+    state.stop_remote_listener();
+}
+
+/// A failed bind is not the end of the swap: the accept thread retries on
+/// its own backoff (1 s, 2 s, … capped at 30 s) instead of waiting for the
+/// worker's next probe, so a transient failure lands within a couple of
+/// seconds — and a re-proposal of the same set does not reset that timer.
+#[cfg(not(windows))]
+#[test]
+fn a_failed_rebind_retries_with_backoff_not_the_probe_timer() {
+    struct FailOnceBind {
+        attempts: std::sync::atomic::AtomicUsize,
+    }
+    impl PeerTransport for FailOnceBind {
+        fn listen(
+            &self,
+            _paths: &crate::paths::RuntimePaths,
+            stop: Arc<AtomicBool>,
+        ) -> io::Result<PeerListener> {
+            Tailnet::bind_peer_listener(&["127.0.0.1".parse().expect("loopback")], 0, stop)
+        }
+        fn current_addresses(&self) -> Option<Vec<IpAddr>> {
+            Some(vec!["127.0.0.2".parse().expect("loopback")])
+        }
+        fn bind_addresses(
+            &self,
+            addresses: &[IpAddr],
+            stop: Arc<AtomicBool>,
+        ) -> io::Result<PeerListener> {
+            let first = self
+                .attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                == 0;
+            if first {
+                return Err(io::Error::other("synthetic bind failure"));
+            }
+            Tailnet::bind_peer_listener(addresses, 0, stop)
+        }
+        fn pre_noise_filter(
+            &self,
+            _peer: &SocketAddr,
+            _peers: &PeerTable,
+        ) -> Result<(), RejectReason> {
+            Ok(())
+        }
+        fn binding(&self, _peer: &SocketAddr) -> Result<TransportBinding, BindingError> {
+            Err(BindingError::Mismatch)
+        }
+    }
+
+    let state = crate::server::ServerState::new("peer-backoff".to_string());
+    let failing = Arc::new(FailOnceBind {
+        attempts: std::sync::atomic::AtomicUsize::new(0),
+    });
+    state.set_address_refresh_interval(Duration::from_millis(50));
+    assert!(state.set_peer_transport(Arc::clone(&failing)).is_ok());
+    assert!(state.ensure_remote_listener(), "the listener starts");
+
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(3);
+    loop {
+        if state.remote_addresses() == vec!["127.0.0.2".to_string()] {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the retry never landed: {:?}",
+            state.remote_addresses()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "inside the backoff schedule, not the 30 s probe: {:?}",
+        started.elapsed()
+    );
+    assert!(
+        failing.attempts.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+        "the first attempt failed and a later one retried"
+    );
+
+    state.stop_remote_listener();
+}
+
+/// Shutdown covers an in-flight probe: the refresh worker is joined within
+/// its budget, and after `stop_remote_listener` returns nothing accepts —
+/// the accept thread re-checks the stop flag before any bind and exits.
+#[cfg(not(windows))]
+#[test]
+fn stop_during_an_inflight_probe_leaves_no_listener() {
+    struct SlowProbe;
+    impl PeerTransport for SlowProbe {
+        fn listen(
+            &self,
+            _paths: &crate::paths::RuntimePaths,
+            stop: Arc<AtomicBool>,
+        ) -> io::Result<PeerListener> {
+            Tailnet::bind_peer_listener(&["127.0.0.1".parse().expect("loopback")], 0, stop)
+        }
+        fn current_addresses(&self) -> Option<Vec<IpAddr>> {
+            std::thread::sleep(Duration::from_millis(1_200));
+            Some(vec!["127.0.0.1".parse().expect("loopback")])
+        }
+        fn pre_noise_filter(
+            &self,
+            _peer: &SocketAddr,
+            _peers: &PeerTable,
+        ) -> Result<(), RejectReason> {
+            Ok(())
+        }
+        fn binding(&self, _peer: &SocketAddr) -> Result<TransportBinding, BindingError> {
+            Err(BindingError::Mismatch)
+        }
+    }
+
+    let state = crate::server::ServerState::new("peer-slow-probe".to_string());
+    state.set_address_refresh_interval(Duration::from_millis(100));
+    assert!(state.set_peer_transport(Arc::new(SlowProbe)).is_ok());
+    assert!(state.ensure_remote_listener(), "the listener starts");
+    let bound: SocketAddr = format!(
+        "{}:{}",
+        state.remote_addresses()[0],
+        state.remote_port().expect("a port")
+    )
+    .parse()
+    .expect("addr");
+
+    // The worker's first probe (due at 100 ms) runs 1.2 s; stop mid-probe.
+    std::thread::sleep(Duration::from_millis(250));
+    let started = Instant::now();
+    state.stop_remote_listener();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(4),
+        "the join covers the in-flight probe instead of burning the whole budget: {elapsed:?}"
+    );
+    assert!(!state.has_remote_listener(), "no listener slot remains");
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        if std::net::TcpStream::connect_timeout(&bound, Duration::from_millis(200)).is_err() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the listener still accepts after stop_remote_listener returned"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }

@@ -474,7 +474,10 @@ fn read_unix_socket(
     if remaining.is_zero() {
         return Err(LocalApiError::Timeout);
     }
-    let stream = UnixStream::connect_timeout(path, remaining).map_err(|error| {
+    // A unix-domain connect does not wait on the network: it connects or
+    // fails at once, so the deadline binds it from here on through
+    // `exchange_stream`, which arms the socket timeouts before every I/O.
+    let stream = UnixStream::connect(path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             LocalApiError::Absent(missing_socket_reason(path))
         } else {
@@ -537,9 +540,24 @@ fn exchange_stream<S: Read + Write + TimedStream>(
             .map_err(|error| map_io(error, "setting the socket timeout"))
     };
     arm(&stream)?;
-    stream
-        .write_all(request)
-        .map_err(|error| map_io(error, "writing the request"))?;
+    // Chunked, not `write_all`: a partial write's next slice re-arms the
+    // deadline too, so the bound covers every byte of the request.
+    let mut written = 0;
+    while written < request.len() {
+        if written > 0 {
+            arm(&stream)?;
+        }
+        match stream.write(&request[written..]) {
+            Ok(0) => {
+                return Err(LocalApiError::Transport(
+                    "the connection closed during the request".to_string(),
+                ));
+            }
+            Ok(count) => written += count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(map_io(error, "writing the request")),
+        }
+    }
     let mut raw = Vec::new();
     let mut chunk = [0u8; 8192];
     loop {

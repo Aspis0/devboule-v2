@@ -114,6 +114,13 @@ fn lsof_output_records_carry_the_port_and_the_token() {
     );
     assert_eq!(
         parse_lsof_output(
+            b"p48221\ncIPNExtension\nf5r\nn/tmp/real-path\nn/spoof/group.ts.tailscale.ipn.macos/sameuserproof-9999-deadbeef\n"
+        ),
+        None,
+        "a newline-spliced second n line is past its file record and is ignored"
+    );
+    assert_eq!(
+        parse_lsof_output(
             b"p48221\ncIPNExtension\nf5r\nn/x/group.ts.tailscale.ipn.macos/sameuserproof-notaport-abc\n"
         ),
         None,
