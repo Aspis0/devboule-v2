@@ -13,10 +13,12 @@ use devboule_daemon::oracle_app_lock_path;
 use devboule_daemon::{current_user_sid, dacl_is_current_user_only, dacl_sddl_for_path};
 
 use super::host::{published, send, unique_paths, TestHost, QUERY_PATH as QUERY};
-use super::support::TestEnvironment;
+use super::support::{TestEnvironment, FIXTURE_ROOT};
 use crate::oracle::OracleEndpoint;
 
-const BODY: &str = r#"{"root":"C:\\x","query":"q","limit":10}"#;
+fn body() -> String {
+    format!(r#"{{"root":"{FIXTURE_ROOT}","query":"q","limit":10}}"#)
+}
 
 #[test]
 fn a_wrong_token_is_refused_with_401_before_anything_else() {
@@ -25,7 +27,7 @@ fn a_wrong_token_is_refused_with_401_before_anything_else() {
     endpoint.start_at(&paths, TestHost::bare()).expect("start");
     let record = published(&paths);
 
-    let (status, response) = send(record.port, "POST", QUERY, "Bearer wrong-token", BODY);
+    let (status, response) = send(record.port, "POST", QUERY, "Bearer wrong-token", &body());
     assert_eq!(status, 401, "{response}");
     assert!(
         response.contains(r#"{"error":"unauthorized"}"#),
@@ -49,7 +51,7 @@ fn a_wrong_token_on_an_unknown_path_is_still_401() {
         "POST",
         "/oracle/v1/nope",
         "Bearer wrong-token",
-        BODY,
+        &body(),
     );
     assert_eq!(status, 401, "{response}");
 
@@ -68,7 +70,7 @@ fn an_unknown_path_with_the_right_token_is_404() {
         "POST",
         "/oracle/v1/nope",
         &format!("Bearer {}", record.token),
-        BODY,
+        &body(),
     );
     assert_eq!(status, 404, "{response}");
     assert!(response.contains(r#"{"error":"not found"}"#), "{response}");
@@ -88,7 +90,7 @@ fn a_get_on_the_query_route_with_the_right_token_is_405() {
         "GET",
         QUERY,
         &format!("Bearer {}", record.token),
-        BODY,
+        &body(),
     );
     assert_eq!(status, 405, "{response}");
     assert!(
@@ -116,7 +118,7 @@ fn the_token_read_from_the_record_reaches_the_query_route() {
         "POST",
         QUERY,
         &format!("Bearer {}", record.token),
-        BODY,
+        &body(),
     );
     assert_eq!(status, 200, "{response}");
     assert!(
@@ -197,7 +199,7 @@ fn the_record_names_the_port_that_answers_and_is_removed_on_stop() {
         "POST",
         QUERY,
         &format!("Bearer {}", record.token),
-        BODY,
+        &body(),
     );
     assert_eq!(status, 200, "{response}");
 

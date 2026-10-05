@@ -21,6 +21,15 @@ use crate::oracle::OracleModelState;
 
 static ENV_LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
 
+/// A fixture project root that is absolute on the platform under test:
+/// `parse_request` refuses relative roots, and a drive-letter path is
+/// relative on Unix. The Windows half uses forward slashes so the same
+/// string embeds in a JSON body without escaping.
+#[cfg(windows)]
+pub(super) const FIXTURE_ROOT: &str = "C:/proj";
+#[cfg(not(windows))]
+pub(super) const FIXTURE_ROOT: &str = "/proj";
+
 pub(super) struct TestEnvironment {
     _lock: MutexGuard<'static, ()>,
     saved: Vec<(&'static str, Option<OsString>)>,

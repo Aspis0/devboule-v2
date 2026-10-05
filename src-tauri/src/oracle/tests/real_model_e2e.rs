@@ -166,6 +166,10 @@ fn real_model_choose_index_query() {
 ///
 ///     $env:ORACLE_REAL_REPO_ROOT='C:\\path\\to\\repo'; $env:ORACLE_REAL_REPO_QUERIES='C:\\path\\to\\queries.json'; cargo test -p devboule --lib oracle::tests::real_repo_index_and_query -- --ignored --nocapture
 ///
+/// or from a POSIX shell with:
+///
+///     ORACLE_REAL_REPO_ROOT=/path/to/repo ORACLE_REAL_REPO_QUERIES=/path/to/queries.json cargo test -p devboule --lib oracle::tests::real_repo_index_and_query -- --ignored --nocapture
+///
 /// The workspace is supplied by `ORACLE_REAL_REPO_ROOT`; only Oracle's
 /// data/config directories are temporary. The test is ignored because the
 /// sandbox cannot link or execute the local ONNX Runtime reliably.

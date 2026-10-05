@@ -7,40 +7,46 @@ use std::thread;
 
 use oracle_core::OracleDataPaths;
 
+use super::support::FIXTURE_ROOT;
 use crate::oracle::endpoint_query::{no_vectors_message, parse_request, WarmSlot};
 use crate::oracle::folder::{Artifact, FolderIndexProbe, ManifestProbe};
+
+/// One parser fixture: the platform-absolute root, a non-empty query and an
+/// optional `,"limit":…` tail, as raw JSON bytes.
+fn parser_input(query: &str, limit: &str) -> Vec<u8> {
+    format!(r#"{{"root":"{FIXTURE_ROOT}","query":"{query}"{limit}}}"#).into_bytes()
+}
 
 /// Clamp and validation, one parser call per case.
 #[test]
 fn the_parser_clamps_the_limit_and_validates_the_query() {
-    let request =
-        parse_request(br#"{"root":"C:\\proj","query":"q"}"#).expect("an absent limit is valid");
+    let request = parse_request(&parser_input("q", "")).expect("an absent limit is valid");
     assert_eq!(
         request.limit, 10,
         "absent limit defaults to the query limit"
     );
     assert_eq!(
-        parse_request(br#"{"root":"C:\\proj","query":"q","limit":5}"#)
+        parse_request(&parser_input("q", r#","limit":5"#))
             .expect("an in-range limit")
             .limit,
         5
     );
     assert_eq!(
-        parse_request(br#"{"root":"C:\\proj","query":"q","limit":0}"#)
+        parse_request(&parser_input("q", r#","limit":0"#))
             .expect("zero is clamped, not rejected")
             .limit,
         1,
         "limit 0 must clamp up to 1"
     );
     assert_eq!(
-        parse_request(br#"{"root":"C:\\proj","query":"q","limit":99}"#)
+        parse_request(&parser_input("q", r#","limit":99"#))
             .expect("a large limit is clamped, not rejected")
             .limit,
         10,
         "limit 99 must clamp down to the query limit"
     );
 
-    let bogus = parse_request(br#"{"root":"C:\\proj","query":"q","limit":"ten"}"#)
+    let bogus = parse_request(&parser_input("q", r#","limit":"ten""#))
         .expect_err("a string limit is not a number");
     assert!(
         bogus.message.contains("not valid JSON"),
@@ -49,7 +55,7 @@ fn the_parser_clamps_the_limit_and_validates_the_query() {
     );
     // A negative value never clamps: `Option<usize>` fails serde and the
     // route answers 400 — a malformed request is refused, not clamped (F-3).
-    let negative = parse_request(br#"{"root":"C:\\proj","query":"q","limit":-5}"#)
+    let negative = parse_request(&parser_input("q", r#","limit":-5"#))
         .expect_err("a negative limit is malformed, not clamped");
     assert!(
         negative.message.contains("not valid JSON"),
@@ -57,16 +63,15 @@ fn the_parser_clamps_the_limit_and_validates_the_query() {
         negative.message
     );
 
-    let empty = parse_request(br#"{"root":"C:\\proj","query":"   "}"#)
-        .expect_err("an empty query is refused");
+    let empty = parse_request(&parser_input("   ", "")).expect_err("an empty query is refused");
     assert!(
         empty.message.contains("cannot be empty"),
         "{}",
         empty.message
     );
 
-    let long = format!(r#"{{"root":"C:\\proj","query":"{}"}}"#, "a".repeat(4097));
-    let too_long = parse_request(long.as_bytes()).expect_err("a 4097-character query");
+    let long = parser_input(&"a".repeat(4097), "");
+    let too_long = parse_request(&long).expect_err("a 4097-character query");
     assert!(
         too_long.message.contains("too long"),
         "{}",
@@ -133,7 +138,7 @@ fn the_warm_slot_frees_itself_after_a_panic_and_on_the_normal_path() {
 /// itself is pinned here instead (measured, declared in the report).
 #[test]
 fn the_unreadable_store_refusal_names_the_store() {
-    let root = PathBuf::from(r"C:\ws\project");
+    let root = PathBuf::from(FIXTURE_ROOT);
     let probe = FolderIndexProbe {
         root: root.clone(),
         data: OracleDataPaths::from_root_without_env(&root),
