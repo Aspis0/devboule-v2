@@ -361,6 +361,15 @@ jobs:
           version: "31.1"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # The ort build script records a link path into this cache; a restored
+      # target/ without it fails to link with "could not find onnxruntime".
+      - name: Cache the ort runtime download
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ort.pyke.io
+          key: ort-dfbin-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ort-dfbin-${{ runner.os }}-
+
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
@@ -395,10 +404,19 @@ jobs:
           version: "31.1"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # The ort build script records a link path into this cache; a restored
+      # target/ without it fails to link with "could not find onnxruntime".
+      - name: Cache the ort runtime download
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ort.pyke.io
+          key: ort-dfbin-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ort-dfbin-${{ runner.os }}-
+
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
-          key: macos-cft
+          key: macos-cft-ort
           cache-on-failure: true
 
       - name: Check devboule
