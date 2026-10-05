@@ -898,6 +898,7 @@ fn unknown_server_request_gets_a_method_not_supported_error() {
         Arc::clone(&commands),
     ));
     let mut reader = CodexReader {
+        images: None,
         commands,
         available_commands: None,
         buffer: Vec::new(),
@@ -1291,6 +1292,7 @@ fn a_codex_steer_is_not_left_waiting_when_the_app_server_ends() {
         Arc::clone(&commands),
     ));
     let mut reader = CodexReader {
+        images: None,
         commands,
         available_commands: None,
         buffer: Vec::new(),

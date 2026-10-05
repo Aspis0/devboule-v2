@@ -26,16 +26,10 @@ const HELPER: &str = "test_dirs.rs";
 /// Production sites that may keep the token: relative path + the exact
 /// text of the allowed line. `concat!` spells it so this file's own scan
 /// does not meet the token in its own source; test code has no entries.
-const ALLOW: &[(&str, &str)] = &[
-    (
-        "login_shell_env.rs",
-        concat!("let directory = std::env", "::temp_dir();"),
-    ),
-    (
-        "agent_image.rs",
-        concat!("std::env", "::temp_dir().canonicalize().ok()?,"),
-    ),
-];
+const ALLOW: &[(&str, &str)] = &[(
+    "login_shell_env.rs",
+    concat!("let directory = std::env", "::temp_dir();"),
+)];
 
 #[test]
 fn no_code_line_outside_the_helper_asks_for_the_temp_dir() {

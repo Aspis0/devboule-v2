@@ -102,6 +102,10 @@ describe("agent-produced images", () => {
     expect(
       container.querySelector(".workspace-chat-tool-body .workspace-chat-image-thumb"),
     ).not.toBeNull();
+    // The image row is open, so the image is not behind a collapsed triangle.
+    expect(container.querySelector("details")?.hasAttribute("open")).toBe(true);
+    // An image-only assistant message renders no empty copy block.
+    expect(container.querySelectorAll(".workspace-chat-copy")).toHaveLength(1);
     expect(harness.sessionAttachmentRead).toHaveBeenCalledWith(REF);
   });
 });

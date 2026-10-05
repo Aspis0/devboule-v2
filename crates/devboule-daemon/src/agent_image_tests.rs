@@ -1,5 +1,6 @@
 //! The provider-image parser and its refusals: which wire strings are bytes,
-//! which are paths or URLs, and what a deposit refuses.
+//! which are paths or URLs, and what a deposit refuses without touching the
+//! network or a special file.
 
 use base64::Engine;
 use serde_json::json;
@@ -15,18 +16,22 @@ pub(super) fn tiny_png_bytes() -> Vec<u8> {
         .expect("the fixture decodes")
 }
 
-pub(super) fn workspace(tag: &str) -> std::path::PathBuf {
-    let dir = crate::test_dirs::test_temp_dir(&format!("devboule-agent-image-{tag}"));
-    std::fs::write(dir.join("tiny.png"), tiny_png_bytes()).expect("the fixture lands");
-    dir
+/// The session workspace with the fixture in it, beside the provider's own
+/// image folder: the two roots a frame may name a file in.
+pub(super) fn roots(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let workspace = crate::test_dirs::test_temp_dir(&format!("devboule-agent-image-{tag}"));
+    std::fs::write(workspace.join("tiny.png"), tiny_png_bytes()).expect("the fixture lands");
+    let images = crate::test_dirs::test_temp_dir(&format!("devboule-agent-image-{tag}-out"));
+    (workspace, images)
 }
 
-pub(super) fn sink(tag: &str, workspace: &Path) -> AgentImageSink {
+pub(super) fn sink(tag: &str, workspace: &Path, images: &Path) -> AgentImageSink {
     let store = crate::attachment_store::AttachmentStore::new(workspace);
     AgentImageSink::new(
         store,
         format!("s.agent.image.{tag}"),
         workspace.to_path_buf(),
+        images.to_path_buf(),
     )
 }
 
@@ -66,7 +71,7 @@ fn a_result_string_is_bytes_or_a_url() {
         other => panic!("bare base64 is bytes: {other:?}"),
     }
 
-    // Too short to be base64: a URL the app can fetch.
+    // Too short to be base64: a URL.
     match codex_image_source(
         &json!({"id": "i", "type": "imageGeneration", "result": "https://example.invalid/a.png"}),
     ) {
@@ -116,8 +121,8 @@ fn a_content_block_is_mcp_or_claude_shaped() {
 
 #[test]
 fn a_stored_image_answers_a_reference_the_store_resolves() {
-    let workspace = workspace("store");
-    let sink = sink("store", &workspace);
+    let (workspace, images) = roots("store");
+    let sink = sink("store", &workspace, &images);
     let reference = sink
         .store(&AgentImageSource::Path(workspace.join("tiny.png")))
         .expect("the workspace image is stored");
@@ -133,59 +138,77 @@ fn a_stored_image_answers_a_reference_the_store_resolves() {
 }
 
 #[test]
-fn refusals_are_none_not_errors() {
-    let workspace = workspace("refusals");
-    let sink = sink("refusals", &workspace);
+fn the_providers_own_folder_is_read_and_nothing_else_is() {
+    let (workspace, images) = roots("roots");
+    let sink = sink("roots", &workspace, &images);
+    let in_images = images.join("generated.png");
+    std::fs::write(&in_images, tiny_png_bytes()).expect("the provider fixture lands");
+    assert!(sink.store(&AgentImageSource::Path(in_images)).is_ok());
 
-    // Outside the workspace and the temp dir: the helper's own parent is the
-    // system temp root, and its parent is outside it.
-    let temp_root = crate::test_dirs::test_temp_dir("devboule-agent-image-root")
-        .parent()
-        .expect("the temp root is the helper's parent")
-        .to_path_buf();
-    let outside = temp_root
-        .parent()
-        .expect("the temp root has a parent")
-        .join("devboule-agent-image-outside.png");
-    std::fs::write(&outside, tiny_png_bytes()).expect("the outside fixture lands");
+    // Another temp folder is neither root, and a directory is no image.
+    let outside = crate::test_dirs::test_temp_dir("devboule-agent-image-outside");
+    let outside_file = outside.join("sneaky.png");
+    std::fs::write(&outside_file, tiny_png_bytes()).expect("the outside fixture lands");
+    assert!(sink.store(&AgentImageSource::Path(outside_file)).is_err());
     assert!(sink
-        .store(&AgentImageSource::Path(outside.clone()))
-        .is_none());
-    let _ = std::fs::remove_file(outside);
+        .store(&AgentImageSource::Path(workspace.clone()))
+        .is_err());
+}
+
+#[test]
+fn a_url_is_refused_without_a_fetch() {
+    let (workspace, images) = roots("url");
+    let sink = sink("url", &workspace, &images);
+    let error = sink
+        .store(&AgentImageSource::Url(
+            "http://127.0.0.1:1/tiny.png".to_string(),
+        ))
+        .expect_err("a URL is never fetched");
+    assert!(error.contains("remote image not fetched"), "{error}");
+}
+
+#[test]
+fn refusals_are_short_reasons() {
+    let (workspace, images) = roots("refusals");
+    let sink = sink("refusals", &workspace, &images);
 
     // The label disagrees with the bytes.
-    assert!(sink
+    let error = sink
         .store(&AgentImageSource::Base64 {
             mime_type: Some("image/jpeg".to_string()),
             data: TINY_PNG.to_string(),
         })
-        .is_none());
+        .expect_err("a disagreement is refused");
+    assert!(error.contains("does not match"), "{error}");
 
     // Bytes that are no image at all.
-    assert!(sink
+    let error = sink
         .store(&AgentImageSource::Base64 {
             mime_type: None,
             data: base64::engine::general_purpose::STANDARD.encode(b"not an image"),
         })
-        .is_none());
+        .expect_err("a non-image is refused");
+    assert!(error.contains("not an image"), "{error}");
 
     // A payload over the ceiling, refused before it is decoded.
     let oversized =
         base64::engine::general_purpose::STANDARD.encode(vec![0u8; MAX_AGENT_IMAGE_BYTES + 1]);
-    assert!(sink
+    let error = sink
         .store(&AgentImageSource::Base64 {
             mime_type: Some("image/png".to_string()),
             data: oversized,
         })
-        .is_none());
+        .expect_err("an oversized payload is refused");
+    assert!(error.contains("5 MiB"), "{error}");
 
-    // The store's own wire refusals still stand: a session id it cannot name.
+    // The store's own refusals still stand: a session id it cannot name.
     let wrong = AgentImageSink::new(
         crate::attachment_store::AttachmentStore::new(&workspace),
         "../escape".to_string(),
         workspace.clone(),
+        images.clone(),
     );
     assert!(wrong
         .store(&AgentImageSource::Path(workspace.join("tiny.png")))
-        .is_none());
+        .is_err());
 }

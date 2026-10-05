@@ -41,9 +41,17 @@ export const ToolRow = memo(function ToolRow({
   // The strip on the label is paid by the yielding text beside it: only a
   // block that actually carries one claims it.
   const hasSummary = model.summary !== undefined || planDecision !== undefined;
+  // An image inside a collapsed body is an image nobody sees: the row opens
+  // itself while it carries one.
+  const hasImages = item.images !== undefined && item.images.length > 0;
   const toolClassName = `${className}${item.kind === "plan" ? " is-plan" : ""}${running ? " is-running" : ""}${failed ? " is-failed" : ""}${cancelled ? " is-cancelled" : ""}${interrupted ? ` ${INTERRUPTED_TOOL_CLASS}` : ""}`;
   return (
-    <details className={toolClassName} key={item.id} style={style}>
+    <details
+      className={toolClassName}
+      key={item.id}
+      style={style}
+      open={hasImages ? true : undefined}
+    >
       <summary className="workspace-chat-tool-summary">
         {commandRow ? null : <ToolIcon name={model.icon} />}
         <span className={`workspace-chat-tool-text${hasSummary ? " has-summary" : ""}`}>
@@ -96,7 +104,7 @@ export const ToolRow = memo(function ToolRow({
             {item.kind === "plan" ? <MarkdownText text={item.output} /> : item.output}
           </div>
         ) : null}
-        {item.images !== undefined && item.images.length > 0 ? (
+        {hasImages && item.images !== undefined ? (
           <ChatImageThumbnails images={item.images} />
         ) : null}
       </div>

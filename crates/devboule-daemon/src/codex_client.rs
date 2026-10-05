@@ -591,7 +591,19 @@ fn spawn_codex(
 
     // A provider-produced image is stored under the session the command was
     // injected for; a command with no session id keeps the sink out and the
-    // image frames produce nothing, as they did before there was a store.
+    // image frames produce nothing, as they did before there was a store. The
+    // provider's own generated-image folder is the only root outside the
+    // workspace a frame may name a file in.
+    let codex_home = command
+        .env
+        .iter()
+        .find(|(key, _)| key == "CODEX_HOME")
+        .map(|(_, home)| std::path::PathBuf::from(home));
+    #[cfg(test)]
+    let codex_home =
+        codex_home.unwrap_or_else(|| crate::test_dirs::test_temp_dir("devboule-codex-spawn-home"));
+    #[cfg(not(test))]
+    let codex_home = codex_home.unwrap_or_else(crate::codex_command_catalog::resolve_home);
     let image_sink = command
         .env
         .iter()
@@ -601,6 +613,7 @@ fn spawn_codex(
                 state.sessions.image_store(),
                 session_id.clone(),
                 command.cwd.clone(),
+                codex_home.join("generated_images"),
             )
         });
     let state = Arc::new(CodexState::new(
@@ -681,10 +694,6 @@ fn spawn_codex(
     // A provider-produced image is stored under the session the command was
     // injected for; a command with no session id keeps the sink out and the
     // image frames produce nothing, as they did before there was a store.
-    let mut view = crate::codex_view::CodexView::new(Some(command.cwd.clone()));
-    if let Some(sink) = image_sink {
-        view = view.with_images(sink);
-    }
     let reader = CodexReader {
         buffer: Vec::new(),
         discarding_oversized_line: false,
@@ -695,7 +704,8 @@ fn spawn_codex(
         }),
         commands,
         state,
-        view,
+        view: crate::codex_view::CodexView::new(Some(command.cwd)),
+        images: image_sink,
         permission_broker: Arc::clone(&permission_broker),
         response_ids,
         stdin: Arc::clone(&stdin),
@@ -2006,6 +2016,9 @@ struct CodexReader {
     commands: Arc<CodexCommands>,
     state: Arc<CodexState>,
     view: crate::codex_view::CodexView,
+    /// Image frames are prepared (and stored) here, before the raw envelope is
+    /// journaled, so the journal carries the reference and not the bytes.
+    images: Option<crate::agent_image::AgentImageSink>,
     permission_broker: Arc<PermissionBroker>,
     response_ids: Arc<Mutex<HashMap<u64, CodexPendingResponse>>>,
     stdin: Arc<Mutex<Option<ChildStdin>>>,
@@ -2020,7 +2033,8 @@ impl CodexReader {
         let _ = runtime.publish_agent_event_with_seq(event, None, seq);
     }
 
-    fn dispatch_value(&mut self, value: Value, runtime: &Arc<SessionRuntime>) {
+    fn dispatch_value(&mut self, mut value: Value, runtime: &Arc<SessionRuntime>) {
+        crate::codex_view::images::prepare_images(&mut value, self.images.as_ref());
         let method = value.get("method").and_then(Value::as_str);
         let params = value.get("params").unwrap_or(&Value::Null);
         let root_thread = crate::codex_compaction::is_root_thread(params, &self.state.thread_id());

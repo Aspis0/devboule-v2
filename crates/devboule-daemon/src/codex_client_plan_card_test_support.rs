@@ -102,6 +102,7 @@ pub(super) fn plan_reader_observed_by(
         Arc::clone(&commands),
     ));
     let reader = CodexReader {
+        images: None,
         commands,
         available_commands: None,
         buffer: Vec::new(),

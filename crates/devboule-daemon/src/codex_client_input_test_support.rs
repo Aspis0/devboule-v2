@@ -65,6 +65,7 @@ fn question_reader(
         Arc::clone(&commands),
     ));
     CodexReader {
+        images: None,
         commands,
         available_commands: None,
         buffer: Vec::new(),

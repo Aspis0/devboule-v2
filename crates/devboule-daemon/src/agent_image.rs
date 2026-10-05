@@ -1,6 +1,6 @@
-//! Images a provider produced: parsed from its frames and materialised into
-//! the session's attachment store, so the transcript carries references the
-//! same way prompt attachments do.
+//! Images a provider produced: the wire forms it names them in, the checks
+//! that turn one into a stored reference, and the marker a prepared frame
+//! carries instead of bytes, so the journal holds a reference once.
 //!
 //! Behaviour follows Paseo `codex-app-server-agent.ts` / `provider-image-output.ts`
 //! (commit 4ed13fadb, Apache-2.0): `savedPath` wins over a `result`, a data
@@ -9,22 +9,22 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use base64::Engine;
 use devboule_protocol::{AttachmentReference, PromptAttachment};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::attachment_store::{extension_for, AttachmentStore};
 use crate::raster_metadata::{sniff_raster_mime, RasterMime};
 
-/// One image's ceiling, before decoding or reading. Well under the store's
-/// 20 MiB per-owner budget, which the deposit then charges.
-pub(crate) const MAX_AGENT_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+/// One image's ceiling. Chosen against both budgets it sits under: four of
+/// them fit the store's 20 MiB per-owner budget, and the base64 a frame would
+/// carry stays under the reader's 10 MiB line cap.
+pub(crate) const MAX_AGENT_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 
-/// A URL fetch's own ceiling: no provider-named origin may hold a session's
-/// ingest open indefinitely.
-const FETCH_TIMEOUT: Duration = Duration::from_secs(15);
+/// Images taken out of one frame. The rest of the blocks are left alone and
+/// counted here so a hostile result cannot turn one frame into unbounded work.
+pub(crate) const MAX_IMAGES_PER_FRAME: usize = 8;
 
 /// One provider-named image before it is stored. `Base64` carries whatever
 /// type the provider declared beside the bytes, if any.
@@ -38,32 +38,76 @@ pub(crate) enum AgentImageSource {
     },
 }
 
-/// The store, the session, and the one root a provider-named path may live in.
+/// What a prepared frame carries in place of an image source: the stored
+/// reference, the reason it was refused, or that the item is still running.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum StoredImage {
+    Reference(AttachmentReference),
+    Refused(String),
+    Pending,
+}
+
+impl StoredImage {
+    pub(crate) fn to_value(&self) -> Value {
+        match self {
+            Self::Reference(reference) => json!({"reference": reference}),
+            Self::Refused(reason) => json!({"refused": reason}),
+            Self::Pending => json!({"pending": true}),
+        }
+    }
+
+    pub(crate) fn from_value(value: &Value) -> Option<Self> {
+        if value.get("pending").and_then(Value::as_bool) == Some(true) {
+            return Some(Self::Pending);
+        }
+        if let Some(reference) = value.get("reference") {
+            return serde_json::from_value(reference.clone())
+                .ok()
+                .map(Self::Reference);
+        }
+        value
+            .get("refused")
+            .and_then(Value::as_str)
+            .map(|reason| Self::Refused(reason.to_string()))
+    }
+}
+
+/// The store, the session, and the roots a provider-named path may live in:
+/// the session's workspace, and the provider's own generated-image folder.
 pub(crate) struct AgentImageSink {
     store: AttachmentStore,
     session_id: String,
     workspace: PathBuf,
+    images_dir: PathBuf,
 }
 
 impl AgentImageSink {
-    pub(crate) fn new(store: AttachmentStore, session_id: String, workspace: PathBuf) -> Self {
+    pub(crate) fn new(
+        store: AttachmentStore,
+        session_id: String,
+        workspace: PathBuf,
+        images_dir: PathBuf,
+    ) -> Self {
         Self {
             store,
             session_id,
             workspace,
+            images_dir,
         }
     }
 
-    /// Store one source and answer its reference, or `None` when it is refused:
-    /// an unknown container, a payload over the ceiling, a path outside the
-    /// workspace and the temp dir, an unreadable file, or a fetch that failed.
-    pub(crate) fn store(&self, source: &AgentImageSource) -> Option<AttachmentReference> {
+    /// Store one source, or say in a short sentence why it cannot be shown.
+    /// This never touches the network: a URL is refused, not fetched.
+    pub(crate) fn store(&self, source: &AgentImageSource) -> Result<AttachmentReference, String> {
         let bytes = match source {
             AgentImageSource::Path(path) => self.read_path(path)?,
-            AgentImageSource::Url(url) => fetch_bounded(url)?,
+            AgentImageSource::Url(url) => {
+                return Err(format!("remote image not fetched ({url})"));
+            }
             AgentImageSource::Base64 { data, .. } => decode_bounded(data)?,
         };
-        let sniffed = sniff_raster_mime(&bytes)?;
+        let sniffed = sniff_raster_mime(&bytes)
+            .ok_or_else(|| "the bytes are not an image this daemon stores".to_string())?;
         if let AgentImageSource::Base64 {
             mime_type: Some(declared),
             ..
@@ -72,18 +116,22 @@ impl AgentImageSink {
             // The declared type is the sender's word; the bytes are the
             // evidence, and the store refuses a disagreement anyway.
             if RasterMime::from_mime_type(declared) != Some(sniffed) {
-                return None;
+                return Err("the declared type does not match the bytes".to_string());
             }
         }
         let mime_type = sniffed.as_mime_type();
-        let extension = extension_for(mime_type)?;
+        let extension = extension_for(mime_type)
+            .ok_or_else(|| "the image's container is not stored".to_string())?;
         let attachment = PromptAttachment {
             name: format!("agent-image.{extension}"),
             mime_type: mime_type.to_string(),
             data: base64::engine::general_purpose::STANDARD.encode(&bytes),
         };
-        let deposited = self.store.deposit(&self.session_id, &attachment).ok()?;
-        Some(AttachmentReference {
+        let deposited = self
+            .store
+            .deposit(&self.session_id, &attachment)
+            .map_err(|error| format!("the attachment store refused it ({})", error.message))?;
+        Ok(AttachmentReference {
             session_id: self.session_id.clone(),
             digest: deposited.digest,
             stored_bytes: deposited.stored_bytes,
@@ -91,60 +139,66 @@ impl AgentImageSink {
     }
 
     /// A provider-named path is read only inside the session's workspace or
-    /// the temp dir: the frame chooses neither, and an agent must not be able
-    /// to name an arbitrary file of the machine into the transcript.
-    fn read_path(&self, path: &Path) -> Option<Vec<u8>> {
-        let resolved = path.canonicalize().ok()?;
-        let allowed = [
-            self.workspace.canonicalize().ok()?,
-            std::env::temp_dir().canonicalize().ok()?,
-        ];
-        if !allowed.iter().any(|root| resolved.starts_with(root)) {
-            return None;
+    /// the provider's own image folder, and only when it is a regular file:
+    /// the frame chooses neither, and a FIFO or device would block the reader.
+    fn read_path(&self, path: &Path) -> Result<Vec<u8>, String> {
+        let metadata = std::fs::symlink_metadata(path)
+            .map_err(|_| "the named file could not be read".to_string())?;
+        if !metadata.file_type().is_file() {
+            return Err("the named path is not a regular file".to_string());
         }
-        read_bounded(&resolved)
+        let resolved = path
+            .canonicalize()
+            .map_err(|_| "the named file could not be read".to_string())?;
+        let allowed = [
+            self.workspace.canonicalize().ok(),
+            self.images_dir.canonicalize().ok(),
+        ];
+        if !allowed
+            .iter()
+            .flatten()
+            .any(|root| resolved.starts_with(root))
+        {
+            return Err("the named file is outside the session's folders".to_string());
+        }
+        let file = std::fs::File::open(&resolved)
+            .map_err(|_| "the named file could not be read".to_string())?;
+        // The open is the check's subject as well: a file swapped between the
+        // path check and here is still refused unless it is a regular file of
+        // a readable size.
+        let opened = file
+            .metadata()
+            .map_err(|_| "the named file could not be read".to_string())?;
+        if !opened.is_file() {
+            return Err("the named path is not a regular file".to_string());
+        }
+        if opened.len() > MAX_AGENT_IMAGE_BYTES as u64 {
+            return Err("the image is over the 5 MiB limit".to_string());
+        }
+        let mut bytes = Vec::new();
+        file.take(MAX_AGENT_IMAGE_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "the named file could not be read".to_string())?;
+        if bytes.len() > MAX_AGENT_IMAGE_BYTES {
+            return Err("the image is over the 5 MiB limit".to_string());
+        }
+        Ok(bytes)
     }
 }
 
-fn read_bounded(path: &Path) -> Option<Vec<u8>> {
-    let file = std::fs::File::open(path).ok()?;
-    let mut bytes = Vec::new();
-    file.take(MAX_AGENT_IMAGE_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    (bytes.len() <= MAX_AGENT_IMAGE_BYTES).then_some(bytes)
-}
-
-fn decode_bounded(data: &str) -> Option<Vec<u8>> {
+fn decode_bounded(data: &str) -> Result<Vec<u8>, String> {
     // Four base64 characters per three bytes, so an oversized payload is
     // refused before any of it is decoded.
     if data.len() > (MAX_AGENT_IMAGE_BYTES / 3 + 1) * 4 {
-        return None;
+        return Err("the image is over the 5 MiB limit".to_string());
     }
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(data)
-        .ok()?;
-    (bytes.len() <= MAX_AGENT_IMAGE_BYTES).then_some(bytes)
-}
-
-fn fetch_bounded(url: &str) -> Option<Vec<u8>> {
-    if !url.starts_with("http://") && !url.starts_with("https://") {
-        return None;
+        .map_err(|_| "the image's base64 could not be decoded".to_string())?;
+    if bytes.len() > MAX_AGENT_IMAGE_BYTES {
+        return Err("the image is over the 5 MiB limit".to_string());
     }
-    let client = reqwest::blocking::Client::builder()
-        .timeout(FETCH_TIMEOUT)
-        .build()
-        .ok()?;
-    let response = client.get(url).send().ok()?;
-    if !response.status().is_success() {
-        return None;
-    }
-    let mut bytes = Vec::new();
-    response
-        .take(MAX_AGENT_IMAGE_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    (bytes.len() <= MAX_AGENT_IMAGE_BYTES).then_some(bytes)
+    Ok(bytes)
 }
 
 fn non_empty<'a>(value: &'a Value, key: &str) -> Option<&'a str> {

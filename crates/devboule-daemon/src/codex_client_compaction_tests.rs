@@ -61,6 +61,7 @@ fn started_reader(
         Arc::clone(&commands),
     ));
     let reader = CodexReader {
+        images: None,
         available_commands: Some(SessionEvent::AvailableCommands {
             commands: commands.views(),
         }),

@@ -80,8 +80,8 @@ export const TranscriptRow = memo(function TranscriptRow({
           {item.images !== undefined && item.images.length > 0 ? (
             <ChatImageThumbnails images={item.images} />
           ) : null}
-          <div className="workspace-chat-copy">{item.text}</div>
-          <MessageCopyButton text={item.text} />
+          {item.text.length > 0 ? <div className="workspace-chat-copy">{item.text}</div> : null}
+          {item.text.length > 0 ? <MessageCopyButton text={item.text} /> : null}
         </div>
       </div>
     );
@@ -92,13 +92,15 @@ export const TranscriptRow = memo(function TranscriptRow({
       style={style}
       title={isSubagent && measuredDepth === null ? "Subagent depth unavailable" : undefined}
     >
-      <div className="workspace-chat-copy">
-        <MarkdownText text={item.text} fileLinks={fileLinks} />
-      </div>
+      {item.text.length > 0 ? (
+        <div className="workspace-chat-copy">
+          <MarkdownText text={item.text} fileLinks={fileLinks} />
+        </div>
+      ) : null}
       {item.images !== undefined && item.images.length > 0 ? (
         <ChatImageThumbnails images={item.images} />
       ) : null}
-      <MessageCopyButton text={item.text} />
+      {item.text.length > 0 ? <MessageCopyButton text={item.text} /> : null}
     </div>
   );
 });

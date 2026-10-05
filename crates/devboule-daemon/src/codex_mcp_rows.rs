@@ -15,7 +15,7 @@ use devboule_protocol::{AttachmentReference, SessionEvent};
 use serde_json::Value;
 
 use super::status_name;
-use crate::agent_image::{image_block_source, AgentImageSink};
+use crate::agent_image::StoredImage;
 use crate::browser_tool_title::browser_tool_title;
 use crate::text_cap::capped;
 use crate::wire_json::tool_kind_from_name;
@@ -44,33 +44,39 @@ fn row_title(name: &str, item: &Value) -> String {
         .unwrap_or_else(|| name.to_string())
 }
 
-/// The answer the row shows and the images it carries. A failure says what
-/// failed in its own words; a result contributes the text of its content
-/// blocks with every image block named in place, and the images themselves
-/// are stored so only their references reach the journaled row.
-fn result_content(
-    item: &Value,
-    images: Option<&AgentImageSink>,
-) -> (Option<String>, Vec<AttachmentReference>) {
+/// The answer the row shows, the images it carries, and the reasons it could
+/// not carry one: a prepared frame's image blocks are markers, and a refusal
+/// is named in the text rather than silently dropped.
+fn result_content(item: &Value) -> (Option<String>, Vec<AttachmentReference>, Vec<String>) {
     if let Some(error) = item
         .get("error")
         .and_then(|error| non_empty(error, "message"))
     {
-        return (Some(capped(error)), Vec::new());
+        return (Some(capped(error)), Vec::new(), Vec::new());
     }
     let Some(content) = item.pointer("/result/content").and_then(Value::as_array) else {
-        return (None, Vec::new());
+        return (None, Vec::new(), Vec::new());
     };
     let mut text = String::new();
-    let mut stored = Vec::new();
+    let mut images = Vec::new();
+    let mut refusals = Vec::new();
     for block in content {
-        if let Some(source) = image_block_source(block) {
-            if let Some(reference) = images.and_then(|sink| sink.store(&source)) {
-                stored.push(reference);
+        if let Some(stored) = block
+            .get("devboule_image")
+            .and_then(StoredImage::from_value)
+        {
+            match stored {
+                StoredImage::Reference(reference) => {
+                    text.push_str("[image]");
+                    images.push(reference);
+                }
+                StoredImage::Refused(reason) => {
+                    // Named, never shown as if it were there.
+                    text.push_str("[image not stored]");
+                    refusals.push(reason);
+                }
+                StoredImage::Pending => {}
             }
-            // Paseo names the dropped block in place, so a result that was
-            // only an image still reads as one.
-            text.push_str("[image]");
             continue;
         }
         if let Some(part) = block.get("text").and_then(Value::as_str) {
@@ -78,23 +84,18 @@ fn result_content(
         }
     }
     let text = (!text.is_empty()).then(|| capped(&text));
-    (text, stored)
+    (text, images, refusals)
 }
 
-pub(super) fn mcp_tool_events(
-    id: &str,
-    item: &Value,
-    completed: bool,
-    images: Option<&AgentImageSink>,
-) -> Vec<SessionEvent> {
+pub(super) fn mcp_tool_events(id: &str, item: &Value, completed: bool) -> Vec<SessionEvent> {
     let Some(name) = qualified_name(item) else {
         return Vec::new();
     };
     let kind = tool_kind_from_name(&name).to_string();
     let status = item.get("status").and_then(Value::as_str).map(status_name);
     if completed {
-        let (text, images) = result_content(item, images);
-        vec![SessionEvent::AgentToolUpdate {
+        let (text, images, refusals) = result_content(item);
+        let mut events = vec![SessionEvent::AgentToolUpdate {
             tool_call_id: id.to_string(),
             status,
             text,
@@ -109,7 +110,11 @@ pub(super) fn mcp_tool_events(
             exit_code: None,
             replace: false,
             images,
-        }]
+        }];
+        for reason in refusals {
+            events.push(super::images::refusal_notice(&reason));
+        }
+        events
     } else {
         vec![SessionEvent::AgentToolCall {
             tool_call_id: id.to_string(),

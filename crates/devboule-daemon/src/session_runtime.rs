@@ -2227,6 +2227,11 @@ impl SessionRuntime {
             SessionEvent::AgentMessage {
                 message_id, text, ..
             } => {
+                // An image-only message says nothing; it must not become a
+                // child's outcome or clobber one that carried text.
+                if text.is_empty() {
+                    return;
+                }
                 let Ok(mut slot) = self.agent_message.lock() else {
                     return;
                 };

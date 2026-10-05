@@ -1013,9 +1013,6 @@ pub(crate) struct CodexView {
     plan_mode: bool,
     capture_plan: bool,
     latest_plan: Option<String>,
-    /// Image frames this session produced become stored references through
-    /// this sink; absent in tests and in a view with no session to hold them.
-    images: Option<crate::agent_image::AgentImageSink>,
     /// The replay side of the tracked turn. The journal records no outbound
     /// requests, so the root `turn/started` frame is the only adoption a
     /// rebuild can prove; this mirrors what the live reader's state knows.
@@ -1032,15 +1029,9 @@ impl CodexView {
             plan_mode: false,
             capture_plan: true,
             latest_plan: None,
-            images: None,
             replay_tracked_turn: None,
             replay_adopted_turns: Vec::new(),
         }
-    }
-
-    pub(crate) fn with_images(mut self, images: crate::agent_image::AgentImageSink) -> Self {
-        self.images = Some(images);
-        self
     }
 
     pub(crate) fn set_plan_mode(&mut self, enabled: bool) {
@@ -1181,7 +1172,7 @@ impl CodexView {
                 return Vec::new();
             }
         }
-        item_event(item, completed, self.cwd.as_deref(), self.images.as_ref())
+        item_event(item, completed, self.cwd.as_deref())
     }
 
     pub(crate) fn take_context_window_update(&mut self) -> Option<u64> {
@@ -1473,7 +1464,6 @@ fn item_event(
     item: Option<&Value>,
     completed: bool,
     cwd: Option<&std::path::Path>,
-    images: Option<&crate::agent_image::AgentImageSink>,
 ) -> Vec<SessionEvent> {
     let Some(item) = item else {
         return Vec::new();
@@ -1615,9 +1605,15 @@ fn item_event(
             }
         }
         Some("webSearch") => web_search::web_search_events(id, item, completed),
-        Some("mcpToolCall") => mcp_rows::mcp_tool_events(id, item, completed, images),
-        Some("imageGeneration") => images::image_generation_events(id, item, completed, images),
-        Some("imageView") => images::image_view_events(id, item, images),
+        Some("mcpToolCall") => mcp_rows::mcp_tool_events(id, item, completed),
+        Some("imageGeneration") if images::is_failed_generation(item) => {
+            if completed {
+                images::failed_generation_events(id, item)
+            } else {
+                Vec::new()
+            }
+        }
+        Some("imageGeneration" | "imageView") => images::image_item_events(id, item, completed),
         _ => Vec::new(),
     }
 }
@@ -1629,7 +1625,7 @@ fn item_event(
 /// no status, which the app would strand at "running".
 pub(crate) fn plain_plan_row_events(tool_call_id: &str, text: &str) -> Vec<SessionEvent> {
     let started = serde_json::json!({ "id": tool_call_id, "type": "plan" });
-    item_event(Some(&started), false, None, None)
+    item_event(Some(&started), false, None)
         .into_iter()
         .chain(plan_text_update(tool_call_id, text))
         .collect()
@@ -1640,7 +1636,7 @@ pub(crate) fn plain_plan_row_events(tool_call_id: &str, text: &str) -> Vec<Sessi
 /// already has.
 pub(crate) fn plan_text_update(tool_call_id: &str, text: &str) -> Vec<SessionEvent> {
     let completed = serde_json::json!({ "id": tool_call_id, "type": "plan", "text": text });
-    item_event(Some(&completed), true, None, None)
+    item_event(Some(&completed), true, None)
 }
 
 fn first_change_path(value: Option<&Value>, cwd: Option<&std::path::Path>) -> Option<String> {
@@ -1748,7 +1744,7 @@ mod web_search;
 mod mcp_rows;
 
 #[path = "codex_view_images.rs"]
-mod images;
+pub(crate) mod images;
 
 #[cfg(test)]
 #[path = "codex_plan_view_tests.rs"]

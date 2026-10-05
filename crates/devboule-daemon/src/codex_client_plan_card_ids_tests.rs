@@ -76,6 +76,7 @@ fn two_spawns_of_one_session_each_register_their_plan_card() {
             Arc::clone(&commands),
         ));
         let mut reader = super::CodexReader {
+            images: None,
             commands,
             available_commands: None,
             buffer: Vec::new(),
