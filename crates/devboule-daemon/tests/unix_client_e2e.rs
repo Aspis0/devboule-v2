@@ -244,6 +244,9 @@ fn connect_spawn_restart_and_shutdown_end_to_end() {
         );
         std::thread::sleep(Duration::from_millis(100));
     }
+    // The socket goes before the goodbye is written; the goodbye lands
+    // before the process exits, so the exit is what makes it readable.
+    wait_gone(third_pid, "the daemon that shut down");
     assert!(
         matches!(
             DaemonState::read(&paths.lock_file),
