@@ -145,7 +145,7 @@ fn a_diff_burst_stays_bounded_and_answers_its_own_path() {
         "the burst must park at the per-root caps: four queued reads, five waitlisted"
     );
     release_tx.send(()).expect("release the first diff");
-    store.wait_len_within(10, Duration::from_secs(30));
+    store.wait_each_reply(10);
     stop.store(true, Ordering::SeqCst);
     let _ = collector.join();
     let mut ids = store.ids();
@@ -281,7 +281,7 @@ fn the_newest_waitlisted_read_is_admitted_first() {
         assert!(dispatch(&state, &owner, diff(id), &conn, true, true, true, true).is_none());
     }
     release_tx.send(()).expect("release the first diff");
-    store.wait_len_within(7, Duration::from_secs(30));
+    store.wait_each_reply(7);
     stop.store(true, Ordering::SeqCst);
     let _ = collector.join();
     assert_eq!(

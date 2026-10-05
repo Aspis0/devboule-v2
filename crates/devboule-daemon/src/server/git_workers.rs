@@ -332,3 +332,7 @@ mod lifecycle_tests;
 #[cfg(test)]
 #[path = "git_workers_lanes_tests.rs"]
 mod lanes_tests;
+
+#[cfg(test)]
+#[path = "git_workers_waitlist_tests.rs"]
+mod waitlist_tests;

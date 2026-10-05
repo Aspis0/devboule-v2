@@ -98,6 +98,15 @@ impl ReplyStore {
         self.wait_len_within(n, Duration::from_secs(30));
     }
 
+    /// Every one of `total` replies, one bounded wait per reply: the root
+    /// drains serially, so from one reply to the next lies exactly one
+    /// read's git work — a burst must not have to fit one window.
+    pub(super) fn wait_each_reply(&self, total: usize) {
+        for answered in 1..=total {
+            self.wait_len(answered);
+        }
+    }
+
     /// The same wait under an explicit budget: a released burst drains its
     /// reads one at a time through real git processes, which on a loaded box
     /// legitimately takes longer than the default.
