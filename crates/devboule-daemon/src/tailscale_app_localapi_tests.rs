@@ -2,7 +2,7 @@
 //! basic-auth header, the deadline bounds, the attempt order and the
 //! token's silence in errors.
 
-use super::super::{LocalApiClient, ENDPOINT_ENV};
+use super::super::{parse_http_response, Endpoint, LocalApiClient};
 use super::*;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -11,9 +11,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-/// The environment this file swaps — `DEVBOULE_TAILSCALE_ENDPOINT` and
-/// `PATH` — is process-global: every test that touches either holds this
-/// lock for the whole set-and-restore.
+/// `PATH`, which the fake `lsof` is put on, is process-global: every test
+/// that touches it holds this lock for the whole set-and-restore.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn env_guard() -> MutexGuard<'static, ()> {
@@ -74,11 +73,7 @@ fn install_fake_lsof(dir: &Path, script_body: &str) {
     );
 }
 
-fn restore_env(endpoint: Option<std::ffi::OsString>, path: Option<std::ffi::OsString>) {
-    match endpoint {
-        Some(value) => std::env::set_var(ENDPOINT_ENV, value),
-        None => std::env::remove_var(ENDPOINT_ENV),
-    }
+fn restore_path(path: Option<std::ffi::OsString>) {
     match path {
         Some(value) => std::env::set_var("PATH", value),
         None => std::env::remove_var("PATH"),
@@ -162,9 +157,10 @@ fn the_token_header_reaches_a_loopback_localapi() {
     let token = "f00dfaced00dfaced00dface12";
     let request = with_basic_auth(&sample_request(), token).expect("the header fits");
 
-    let body = exchange_tcp(port, &request, Instant::now() + Duration::from_secs(5))
+    let raw = exchange_tcp(port, &request, Instant::now() + Duration::from_secs(5))
         .expect("the fake LocalAPI answers");
-    assert_eq!(body, b"{}");
+    let (status, body) = parse_http_response(&raw).expect("a framed response");
+    assert_eq!((status, body.as_slice()), (200, b"{}".as_slice()));
 
     let captured = received
         .recv_timeout(Duration::from_secs(5))
@@ -225,7 +221,7 @@ fn a_wedged_lsof_fails_within_the_deadline() {
     let deadline = started + Duration::from_millis(500);
     let found = discover(Path::new("/nonexistent-tailscale-dir"), deadline);
     let elapsed = started.elapsed();
-    restore_env(None, previous_path);
+    restore_path(previous_path);
 
     assert!(found.is_err(), "a wedged lsof yields no endpoint");
     assert!(
@@ -289,7 +285,8 @@ fn the_chain_contacts_the_override_before_the_app_discovery() {
     );
 
     let contacts = Arc::new(AtomicUsize::new(0));
-    let socket_path = dir.join("override.sock");
+    let socket_dir = crate::test_dirs::short_test_dir("lapi");
+    let socket_path = socket_dir.join("override.sock");
     let listener =
         std::os::unix::net::UnixListener::bind(&socket_path).expect("the fake socket binds");
     let serve_contacts = Arc::clone(&contacts);
@@ -312,11 +309,10 @@ fn the_chain_contacts_the_override_before_the_app_discovery() {
         }
     });
 
-    let previous_endpoint = std::env::var_os(ENDPOINT_ENV);
     let previous_path = std::env::var_os("PATH");
-    std::env::set_var(ENDPOINT_ENV, &socket_path);
-    let refusal = LocalApiClient::new().get("/localapi/v0/status", true);
-    restore_env(previous_endpoint, previous_path);
+    let refusal = LocalApiClient::with_fallbacks(Endpoint::UnixSocket(socket_path))
+        .get("/localapi/v0/status", true);
+    restore_path(previous_path);
 
     assert!(
         refusal.is_err(),
@@ -335,6 +331,7 @@ fn the_chain_contacts_the_override_before_the_app_discovery() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&socket_dir);
 }
 
 /// The refusal after a dead chain names each place that was looked at, in
@@ -343,22 +340,22 @@ fn the_chain_contacts_the_override_before_the_app_discovery() {
 fn a_dead_chain_names_every_place_in_order() {
     let _guard = env_guard();
     let dir = crate::test_dirs::test_temp_dir("devboule-lapi-chain");
-    let gone_socket = dir.join("gone.sock");
+    let socket_dir = crate::test_dirs::short_test_dir("lapi");
+    let gone_socket = socket_dir.join("gone.sock");
     // A fake `lsof` that finds nothing keeps the outcome the same on a
     // developer Mac where Tailscale really runs.
     install_fake_lsof(&dir, "#!/bin/sh\nexit 1\n");
 
-    let previous_endpoint = std::env::var_os(ENDPOINT_ENV);
     let previous_path = std::env::var_os("PATH");
-    std::env::set_var(ENDPOINT_ENV, &gone_socket);
-    let refusal = LocalApiClient::new().get("/localapi/v0/status", true);
-    restore_env(previous_endpoint, previous_path);
+    let refusal = LocalApiClient::with_fallbacks(Endpoint::UnixSocket(gone_socket))
+        .get("/localapi/v0/status", true);
+    restore_path(previous_path);
 
     let LocalApiError::Absent(reason) = refusal.expect_err("nothing is reachable") else {
         panic!("a chain that found nothing is an Absent refusal");
     };
     let override_at = reason
-        .find(&dir.display().to_string().replace('\\', "/"))
+        .find(&socket_dir.display().to_string())
         .expect("the override path is named");
     let socket_at = reason
         .find(super::super::DEFAULT_UNIX_SOCKET)
@@ -369,4 +366,5 @@ fn a_dead_chain_names_every_place_in_order() {
     assert!(override_at < socket_at && socket_at < app_at, "{reason}");
 
     let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&socket_dir);
 }

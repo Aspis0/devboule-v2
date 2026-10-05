@@ -47,20 +47,30 @@ fn create_test_dir_in(parent: &Path, name: &str) -> PathBuf {
     }
 }
 
-/// A fresh temp dir no other run can inherit: `prefix-pid-nanos-counter`.
-pub(crate) fn test_temp_dir(prefix: &str) -> PathBuf {
+fn fresh_name(prefix: &str) -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(1);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("clock")
         .as_nanos();
-    let name = temp_dir_name(
+    temp_dir_name(
         prefix,
         std::process::id(),
         nanos,
         COUNTER.fetch_add(1, Ordering::Relaxed),
-    );
-    create_test_dir_in(&std::env::temp_dir(), &name)
+    )
+}
+
+/// A fresh temp dir no other run can inherit: `prefix-pid-nanos-counter`.
+pub(crate) fn test_temp_dir(prefix: &str) -> PathBuf {
+    create_test_dir_in(&std::env::temp_dir(), &fresh_name(prefix))
+}
+
+/// The same, directly under `/tmp`, for a unix-domain socket: `sun_path` holds
+/// 104 bytes on macOS, and the system temp dir there is most of that already.
+#[cfg(target_os = "macos")]
+pub(crate) fn short_test_dir(prefix: &str) -> PathBuf {
+    create_test_dir_in(Path::new("/tmp"), &fresh_name(prefix))
 }
 
 mod tests {

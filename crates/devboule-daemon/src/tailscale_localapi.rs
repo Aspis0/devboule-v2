@@ -170,12 +170,19 @@ impl LocalApiClient {
     pub fn new() -> Self {
         #[cfg(not(windows))]
         {
-            let mut client = Self::with_endpoint(default_endpoint(), DEFAULT_TIMEOUT);
-            client.fallbacks = true;
-            client
+            Self::with_fallbacks(default_endpoint())
         }
         #[cfg(windows)]
         Self::with_endpoint(default_endpoint(), DEFAULT_TIMEOUT)
+    }
+
+    /// `new()`'s attempt chain from a given first endpoint, so a test names
+    /// the override instead of setting the process-wide variable.
+    #[cfg(not(windows))]
+    fn with_fallbacks(endpoint: Endpoint) -> Self {
+        let mut client = Self::with_endpoint(endpoint, DEFAULT_TIMEOUT);
+        client.fallbacks = true;
+        client
     }
 
     /// Point the client at a non-default endpoint. The in-process test server
@@ -477,12 +484,15 @@ fn read_unix_socket(
     // A unix-domain connect does not wait on the network: it connects or
     // fails at once, so the deadline binds it from here on through
     // `exchange_stream`, which arms the socket timeouts before every I/O.
-    let stream = UnixStream::connect(path).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            LocalApiError::Absent(missing_socket_reason(path))
-        } else {
-            LocalApiError::Transport(error.to_string())
-        }
+    let stream = UnixStream::connect(path).map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => LocalApiError::Absent(missing_socket_reason(path)),
+        // A path past `sun_path` (104 bytes on macOS) never reaches the kernel;
+        // the OS's words alone do not say whose path it was.
+        std::io::ErrorKind::InvalidInput => LocalApiError::Transport(format!(
+            "{} cannot be used as a unix socket address: {error}",
+            path.display()
+        )),
+        _ => LocalApiError::Transport(error.to_string()),
     })?;
     exchange_stream(stream, request, deadline)
 }
@@ -1334,6 +1344,20 @@ mod tests {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .remove(&key);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn an_overlong_socket_path_is_refused_with_its_own_name() {
+        let path = std::path::PathBuf::from(format!("/{}", "a".repeat(200)));
+
+        let error = read_unix_socket(&path, b"", Instant::now() + Duration::from_secs(1))
+            .expect_err("no unix socket address is this long");
+
+        assert!(
+            matches!(&error, LocalApiError::Transport(text) if text.contains(&path.display().to_string())),
+            "the refusal names the path it could not use: {error}"
+        );
     }
 
     #[test]
