@@ -18,13 +18,26 @@ fn origins() -> Vec<String> {
     vec!["https://mail.example.test".to_owned()]
 }
 
-/// A folder path whose book can never be written, because the folder is not a
-/// folder: `metadata::read` answers an empty book (nothing is at that path) and
-/// `metadata::write` answers that it could not create it. Portable, and it
-/// exercises the same compensation every unwritable book does.
-fn a_folder_that_cannot_be_a_book(dir: &std::path::Path) -> std::path::PathBuf {
+/// A folder whose book can never be written, on any OS: the read answers
+/// an empty book while the write fails at staging, so both tests exercise
+/// the same compensation. The shape differs per platform — a file in a
+/// folder's place reads NotFound-as-empty on Windows but ENOTDIR on Unix,
+/// which tested two different failures — so Windows keeps that shape and
+/// Unix uses a read-only directory instead.
+#[cfg(windows)]
+fn a_dir_whose_book_cannot_be_written(dir: &std::path::Path) -> std::path::PathBuf {
     let blocked = dir.join("not-a-folder");
     fs::write(&blocked, b"this is a file where a folder belongs").expect("the blocker");
+    blocked
+}
+
+#[cfg(not(windows))]
+fn a_dir_whose_book_cannot_be_written(dir: &std::path::Path) -> std::path::PathBuf {
+    let blocked = dir.join("read-only-book");
+    fs::create_dir(&blocked).expect("the folder");
+    let mut permissions = fs::metadata(&blocked).expect("metadata").permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&blocked, permissions).expect("read-only");
     blocked
 }
 
@@ -33,7 +46,7 @@ fn a_save_whose_book_cannot_be_written_takes_the_password_back() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = Arc::new(InMemory::empty());
     let vault = Vault::new(
-        a_folder_that_cannot_be_a_book(dir.path()),
+        a_dir_whose_book_cannot_be_written(dir.path()),
         Box::new(Arc::clone(&store)),
     );
 
@@ -57,7 +70,7 @@ fn a_save_that_cannot_be_unwound_says_the_password_is_still_there() {
     // the state where a secret sits in the machine under an id no list shows.
     store.fail_after(Act::Delete, 0);
     let vault = Vault::new(
-        a_folder_that_cannot_be_a_book(dir.path()),
+        a_dir_whose_book_cannot_be_written(dir.path()),
         Box::new(Arc::clone(&store)),
     );
 

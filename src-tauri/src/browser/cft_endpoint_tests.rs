@@ -74,15 +74,17 @@ fn a_short_body_is_not_a_body_yet() {
 }
 
 /// A loopback stand-in for Chrome's `/json/version`, answering once with the
-/// body `make` builds from the port it bound.
+/// body `make` builds from the port it bound. Reads the whole request
+/// before answering: a server that responds to a partial read and drops
+/// the socket makes Windows reset the connection while the client is still
+/// reading (unread bytes in the buffer turn the close into a RST).
 fn version_server(make: impl Fn(u16) -> String) -> (u16, std::thread::JoinHandle<()>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
     let port = listener.local_addr().expect("the port").port();
     let body = make(port);
     let server = std::thread::spawn(move || {
         if let Ok((mut stream, _)) = listener.accept() {
-            let mut request = [0u8; 2048];
-            let _ = stream.read(&mut request);
+            read_http_request(&mut stream);
             let header = format!(
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
@@ -94,8 +96,29 @@ fn version_server(make: impl Fn(u16) -> String) -> (u16, std::thread::JoinHandle
     (port, server)
 }
 
+/// Drain one HTTP request: the client always sends complete headers, and
+/// only a fully-read request lets the close land as a FIN.
+fn read_http_request(stream: &mut std::net::TcpStream) {
+    let mut seen = Vec::new();
+    let mut chunk = [0u8; 512];
+    while !seen.ends_with(b"\r\n\r\n") {
+        match stream.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => seen.extend_from_slice(&chunk[..read]),
+        }
+    }
+}
+
 #[test]
 fn the_version_answer_must_be_this_ports_loopback() {
+    // Looped: this test caught a Windows-only connection reset from a
+    // server that answered a partial read and closed early.
+    for _ in 0..30 {
+        one_version_round();
+    }
+}
+
+fn one_version_round() {
     let (port, server) = version_server(|port| {
         format!(r#"{{"webSocketDebuggerUrl":"ws://127.0.0.1:{port}/devtools/browser/x"}}"#)
     });

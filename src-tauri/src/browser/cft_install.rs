@@ -78,6 +78,11 @@ impl Installed {
 /// Runs on a blocking worker so the app's own runtime is not held up. Takes
 /// the source by value because the worker is `'static`: a reference would
 /// not live long enough to cross into it.
+///
+/// The trust step is always the real one here; tests that need a fake use
+/// [`install_with_trust`]. Unwired until slice 4 wires the installer, so
+/// no test calls it yet.
+#[allow(dead_code)]
 pub async fn install<S>(
     pin: Pin,
     platform: Platform,
@@ -87,10 +92,27 @@ pub async fn install<S>(
 where
     S: ArchiveSource + Send + Sync + 'static,
 {
+    install_with_trust(pin, platform, app_data, source, cft_macos::trust).await
+}
+
+/// [`install`] with the trust step injected. Production passes the real
+/// signature check; tests pass a fake. A test below proves this wiring by
+/// calling the production constructor on macOS and watching the real
+/// check refuse a fixture with no bundle.
+pub async fn install_with_trust<S>(
+    pin: Pin,
+    platform: Platform,
+    app_data: &Path,
+    source: S,
+    trust: fn(&Path) -> Result<(), String>,
+) -> Result<Installed, InstallError>
+where
+    S: ArchiveSource + Send + Sync + 'static,
+{
     // Pin is Copy, PathBuf is owned: move both into the worker.
     let app_data = app_data.to_owned();
     tauri::async_runtime::spawn_blocking(move || {
-        install_blocking(pin, platform, &app_data, &source)
+        install_blocking_with_trust(pin, platform, &app_data, &source, &trust)
     })
     .await
     .map_err(|error| InstallError::Transfer(format!("the install worker ended: {error}")))?
@@ -108,6 +130,19 @@ pub fn install_blocking(
     platform: Platform,
     app_data: &Path,
     source: &dyn ArchiveSource,
+) -> Result<Installed, InstallError> {
+    install_blocking_with_trust(pin, platform, app_data, source, &cft_macos::trust)
+}
+
+/// [`install_blocking`] with the trust step injected: the signature check
+/// is a parameter so tests run the install logic with a fake, while this
+/// constructor always wires the real one.
+pub fn install_blocking_with_trust(
+    pin: Pin,
+    platform: Platform,
+    app_data: &Path,
+    source: &dyn ArchiveSource,
+    trust: &dyn Fn(&Path) -> Result<(), String>,
 ) -> Result<Installed, InstallError> {
     let archive_meta = pin.archive(platform);
     let home = app_data.join("chrome-for-testing");
@@ -156,7 +191,7 @@ pub fn install_blocking(
     // Apple's gate runs on the staged copy: a bundle this app does not trust
     // never reaches the directory the process manager launches out of. Off
     // macOS this is a no-op (SHA-256 alone is the trust).
-    cft_macos::trust(&staging).map_err(InstallError::Untrusted)?;
+    trust(&staging).map_err(InstallError::Untrusted)?;
 
     std::fs::write(
         staging.join(pin.marker(platform)),
@@ -294,6 +329,14 @@ fn swap_in(
 /// install, whatever the marker says.
 pub fn installed(pin: Pin, platform: Platform, app_data: &Path) -> Option<Installed> {
     let root = pin.install_dir(app_data);
+    // A crash between the swap's two renames leaves the destination missing
+    // with the old tree under `.previous`: repair here as well as on the
+    // next install, so a launch right after the crash finds its browser
+    // without waiting for one. A failed repair is None by the checks below.
+    if !root.exists() {
+        let home = app_data.join("chrome-for-testing");
+        let _ = restore_previous(&home, pin.version, &root);
+    }
     let marker = root.join(pin.marker(platform));
     let marked = std::fs::read_to_string(marker).ok()?;
     if !marked
