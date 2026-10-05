@@ -1,26 +1,27 @@
 import type { HostDotTone } from "./sidebarHosts";
 
 /**
- * The word is null where the header has always been the name and the dot alone
- * — with one host there is nothing for a word to tell apart.
+ * A host section's header: the host's name, its own status word and the dot,
+ * folded by the click. There is one of these per host, and only when the rail
+ * has more than one host to tell apart — a lone host gets no header at all
+ * (HostSections).
  */
 export interface HostSectionHeadProps {
   name: string;
   dot: HostDotTone;
-  word: string | null;
-  collapsed?: boolean;
-  /** Absent for a header with no body to hide, which is not a control. */
-  onToggle?: () => void;
+  word: string;
+  collapsed: boolean;
+  onToggle: () => void;
 }
-export function HostSectionHead({
-  name,
-  dot,
-  word,
-  collapsed = false,
-  onToggle,
-}: HostSectionHeadProps) {
-  const row = (
-    <>
+
+export function HostSectionHead({ name, dot, word, collapsed, onToggle }: HostSectionHeadProps) {
+  return (
+    <button
+      type="button"
+      className="sidebar-host-head"
+      aria-expanded={!collapsed}
+      onClick={onToggle}
+    >
       <svg
         className="sidebar-host-icon"
         viewBox="0 0 24 24"
@@ -37,21 +38,8 @@ export function HostSectionHead({
       </svg>
       {name}
       <span className="sidebar-top-spacer" />
-      {word === null ? null : <span className="sidebar-host-status">{word}</span>}
+      <span className="sidebar-host-status">{word}</span>
       <span className={`workspace-status-dot workspace-dot-${dot}`} />
-    </>
-  );
-  if (onToggle === undefined) {
-    return <div className="sidebar-host-head">{row}</div>;
-  }
-  return (
-    <button
-      type="button"
-      className="sidebar-host-head"
-      aria-expanded={!collapsed}
-      onClick={onToggle}
-    >
-      {row}
     </button>
   );
 }

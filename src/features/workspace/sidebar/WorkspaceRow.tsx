@@ -17,8 +17,7 @@ import { moveMenuFocus } from "../strip/menuNav";
 import type { WorkspaceView } from "../workspaceProjects";
 import type { WorkspaceKey } from "../hosts/hostIdentity";
 import { avatarStyle } from "./avatars";
-import { compactAge } from "./compactAge";
-import { DOT_LABELS, WorkspaceRowFacts } from "./WorkspaceRowFacts";
+import { rowFact } from "./rowFact";
 import type { WorkspaceStat } from "./useWorkspaceStats";
 
 /**
@@ -57,8 +56,6 @@ export interface WorkspaceRowProps {
   projectName: string;
   selected: boolean;
   stat: WorkspaceStat | undefined;
-  /** The branch the workspace's last status read reported. */
-  branch: string | undefined;
   onSelect: (workspaceKey: WorkspaceKey) => void;
   /** Persists a new title and answers with the refusal, if one came back. */
   onRename: (workspaceId: string, title: string) => Promise<ErrorSentence | null>;
@@ -72,7 +69,6 @@ export function WorkspaceRow({
   projectName,
   selected,
   stat,
-  branch,
   onSelect,
   onRename,
   onDelete,
@@ -263,8 +259,13 @@ export function WorkspaceRow({
     void saveRename();
   };
 
-  const dot = workspace.stateDot !== null ? `, ${DOT_LABELS[workspace.stateDot]}` : null;
-  const age = compactAge(workspace.elapsedMs);
+  const fact = rowFact(workspace, stat);
+  const factClass =
+    fact?.dot === "attention" ? "workspace-row-fact sidebar-row-waiting" : "workspace-row-fact";
+  const ariaLabel =
+    fact === null
+      ? `${workspace.displayTitle}, ${projectName}`
+      : `${workspace.displayTitle}, ${projectName}, ${fact.label}`;
   return (
     <div className="workspace-row-wrap" onContextMenu={openMenu}>
       {editing ? (
@@ -298,7 +299,7 @@ export function WorkspaceRow({
             if (workspaceKey !== null) onSelect(workspaceKey);
           }}
           aria-pressed={selected}
-          aria-label={`${workspace.displayTitle}, ${projectName}${dot ?? ""}`}
+          aria-label={ariaLabel}
           title={workspace.path ? workspace.path : undefined}
           onKeyDown={onRowKeyDown}
         >
@@ -309,18 +310,20 @@ export function WorkspaceRow({
           >
             {firstGrapheme(workspace.displayTitle)}
           </span>
-          <span className="workspace-row-copy">
-            <span className="workspace-row-line">
-              <span className="workspace-row-title">{workspace.displayTitle}</span>
-              {age === null ? null : <span className="workspace-row-age">{age}</span>}
+          <span className="workspace-row-title">{workspace.displayTitle}</span>
+          {fact === null ? null : (
+            <span className={factClass}>
+              {fact.dot === null ? null : (
+                <span
+                  aria-hidden="true"
+                  className={`sidebar-row-dot sidebar-row-dot-${fact.dot}${
+                    fact.dot === "pulse" ? " dot-pulse" : ""
+                  }`}
+                />
+              )}
+              {fact.label}
             </span>
-            <WorkspaceRowFacts
-              branch={branch}
-              stat={stat}
-              agents={workspace.agents}
-              stateDot={workspace.stateDot}
-            />
-          </span>
+          )}
         </button>
       )}
       {menuOpen ? (

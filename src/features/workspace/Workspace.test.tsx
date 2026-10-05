@@ -3215,7 +3215,7 @@ describe("Workspace sessions", () => {
 
       const strip = container.querySelector(".workspace-daemon-status");
       if (strip === null) throw new Error("daemon status strip did not render");
-      expect(strip.textContent).toContain("Daemon");
+      expect(strip.textContent).toContain("daemon");
       expect(strip.getAttribute("title")).toContain(UNRESPONSIVE_MESSAGE);
     });
 
@@ -3240,7 +3240,7 @@ describe("Workspace sessions", () => {
       // sentence rides in the tooltip.
       const strip = container.querySelector(".workspace-daemon-status");
       if (strip === null) throw new Error("daemon status strip did not render");
-      expect(strip.textContent).toContain("Daemon");
+      expect(strip.textContent).toContain("daemon");
       expect(strip.getAttribute("title")).toContain(UNRESPONSIVE_MESSAGE);
     });
 

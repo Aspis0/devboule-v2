@@ -117,7 +117,6 @@ function sidebarProps(): SidebarProps {
       providerMenuAnchorProjectId: null,
       providerMenu: null,
       stats: new Map(),
-      branches: new Map(),
     },
     daemon: CONNECTED,
     daemonNote: null,
@@ -159,7 +158,7 @@ describe("the lone host's sidebar markup", () => {
     vi.useRealTimers();
   });
 
-  it("is the markup it was before the host list existed", async () => {
+  it("prints the rail's own chrome, and no host header for a lone host", async () => {
     root = createRoot(container);
     await act(async () => {
       root.render(<Sidebar {...sidebarProps()} />);
@@ -190,20 +189,6 @@ describe("the lone host's sidebar markup", () => {
 </button>
 </div>
 <div class="workspace-scroll sidebar-body">
-<div class="sidebar-host">
-<div class="sidebar-host-head">
-<svg class="sidebar-host-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-<rect width="20" height="14" x="2" y="3" rx="2">
-</rect>
-<path d="M8 21h8">
-</path>
-<path d="M12 17v4">
-</path>
-</svg>This PC<span class="sidebar-top-spacer">
-</span>
-<span class="workspace-status-dot workspace-dot-green">
-</span>
-</div>
 <div class="workspace-project" role="group" aria-label="Alpha">
 <div class="workspace-project-heading sidebar-project-head">
 <span class="sidebar-avatar sidebar-avatar-project" aria-hidden="true">A</span>
@@ -214,21 +199,13 @@ describe("the lone host's sidebar markup", () => {
 <div class="workspace-row-wrap">
 <button type="button" class="workspace-row" aria-pressed="false" aria-label="shell one, Alpha" title="C:/code/alpha">
 <span class="sidebar-avatar sidebar-avatar-workspace" aria-hidden="true">s</span>
-<span class="workspace-row-copy">
-<span class="workspace-row-line">
 <span class="workspace-row-title">shell one</span>
-</span>
-</span>
 </button>
 </div>
 <div class="workspace-row-wrap">
 <button type="button" class="workspace-row" aria-pressed="false" aria-label="shell two, Alpha" title="C:/code/alpha">
 <span class="sidebar-avatar sidebar-avatar-workspace" aria-hidden="true">s</span>
-<span class="workspace-row-copy">
-<span class="workspace-row-line">
 <span class="workspace-row-title">shell two</span>
-</span>
-</span>
 </button>
 </div>
 <div class="workspace-new-row-wrap">
@@ -238,13 +215,11 @@ describe("the lone host's sidebar markup", () => {
 </div>
 </div>
 </div>
-</div>
 <div class="workspace-sidebar-footer">
 <button type="button" class="workspace-history-button sidebar-quiet-row" aria-pressed="false" aria-controls="~" title="Show history">History</button>
 <div class="workspace-daemon-status sidebar-foot" title="daemon · pid 42" tabindex="0">
 <span class="workspace-status-dot workspace-dot-green">
 </span>
-<span class="workspace-daemon-status-label">Daemon</span>
 <span class="sr-only">daemon · pid 42</span>
 </div>
 </div>`);

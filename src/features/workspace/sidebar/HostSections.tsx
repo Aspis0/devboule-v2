@@ -18,8 +18,10 @@ export interface HostSectionsProps {
 }
 
 /**
- * One host is not a list: with nothing to tell apart, the header keeps the name
- * and the dot it has always had. The grouping starts at two.
+ * One host is not a list: with nothing to tell apart, the rail draws no host
+ * header at all — a single host's name and health belong to Settings, which
+ * already carries both. The grouping, and the status word with it, starts at
+ * two.
  */
 export function HostSections({ daemon, children }: HostSectionsProps) {
   const devices = usePairedDevices();
@@ -31,12 +33,7 @@ export function HostSections({ daemon, children }: HostSectionsProps) {
   const remotes = useMemo(() => orderRemoteHosts(seen.remotes, order), [seen, order]);
 
   if (remotes.length === 0) {
-    return (
-      <div className="sidebar-host">
-        <HostSectionHead name={seen.local.name} dot={seen.local.status.dot} word={null} />
-        {children}
-      </div>
-    );
+    return <>{children}</>;
   }
 
   return (

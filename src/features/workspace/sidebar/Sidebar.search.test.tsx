@@ -73,7 +73,6 @@ function sidebarProps(overrides: Partial<SidebarProps> = {}): SidebarProps {
       providerMenuAnchorProjectId: null,
       providerMenu: null,
       stats: new Map(),
-      branches: new Map(),
     },
     daemon: CONNECTED,
     daemonNote: null,

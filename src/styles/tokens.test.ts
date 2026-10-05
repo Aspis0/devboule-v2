@@ -108,8 +108,6 @@ const SHARED_TOKENS = [
   "sidebar-min",
   "sidebar-max",
   "sidebar-top",
-  "workspace-row",
-  "workspace-row-meta",
   "group-row",
   "tab-height",
   "tab-chip",

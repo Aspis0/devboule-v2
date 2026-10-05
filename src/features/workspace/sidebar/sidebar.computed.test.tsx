@@ -47,10 +47,9 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     read("src/features/workspace/sidebar/sidebar.css"),
   ]);
 
-  it("workspace rows are laid out as spec'd: flex, padded 2/8, left-aligned", async () => {
+  it("workspace rows are laid out as spec'd: flex, padded 8/12, left-aligned", async () => {
     const body = rulesFor(".workspace-row");
-    expect(body).toContain("padding: 2px 8px");
-    expect(body).toContain("min-height: 32px");
+    expect(body).toContain("padding: 8px 12px");
 
     inject([".workspace-row"]);
     await renderWorkspace();
@@ -59,9 +58,17 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     const style = getComputedStyle(row);
     expect(style.display).toBe("flex");
     expect(style.textAlign).toBe("left");
-    expect(style.paddingLeft).toBe("8px");
-    expect(style.paddingTop).toBe("2px");
-    expect(style.minHeight).toBe("32px");
+    expect(style.paddingLeft).toBe("12px");
+    expect(style.paddingTop).toBe("8px");
+  });
+
+  it("spaces the list itself by 4px", async () => {
+    expect(rulesFor(".workspace-project-items")).toContain("gap: 4px");
+    inject([".workspace-project-items"]);
+    await renderWorkspace();
+    const items = document.querySelector<HTMLElement>(".workspace-project-items");
+    if (items === null) throw new Error("the project's item list did not render");
+    expect(getComputedStyle(items).gap).toBe("4px");
   });
 
   it("the row button fills its wrap, so the age sits against the right edge", async () => {
@@ -75,16 +82,16 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     expect(getComputedStyle(row).width).toBe("100%");
   });
 
-  it("a row carrying a facts line is the 40px row, and the name sits above it", () => {
-    expect(rulesFor(".workspace-row:has(.workspace-row-facts)")).toContain("min-height: 40px");
-    expect(rulesFor(".workspace-row-line")).toContain("display: flex");
-    expect(rulesFor(".workspace-row-title")).toContain("font-size: 13px");
+  it("prints one line: a 14px name, a 12px fact, and no mono in the rail", () => {
+    expect(rulesFor(".workspace-row-title")).toContain("font-size: 14px");
     expect(rulesFor(".workspace-row-title")).toContain("font-weight: 500");
-    expect(rulesFor(".workspace-row-age")).toContain("font-variant-numeric: tabular-nums");
-    // The branch is the only code on the row.
-    expect(rulesFor(".workspace-row-branch")).toContain("JetBrains Mono");
-    expect(rulesFor(".workspace-row-facts")).not.toContain("JetBrains Mono");
-    expect(rulesFor(".sidebar-row-waiting")).toContain(`color: ${token("--tone-attention-text")}`);
+    expect(rulesFor(".workspace-row-fact")).toContain("font-size: 12px");
+    expect(rulesFor(".workspace-row-fact")).toContain("font-variant-numeric: tabular-nums");
+    expect(rulesFor(".workspace-row-fact")).toContain(`color: ${token("--muted")}`);
+    // Neither rule may name a mono face: the rail's rows carry no code of
+    // their own.
+    expect(rulesFor(".workspace-row-fact")).not.toContain("JetBrains Mono");
+    expect(rulesFor(".workspace-row")).not.toContain("JetBrains Mono");
   });
 
   it("the selected row is the soft fill, and hover only tints", async () => {
@@ -119,32 +126,30 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     expect(getComputedStyle(projectAvatar).width).toBe("16px");
   });
 
-  it("host header, project header, new row and foot carry their spec padding", async () => {
-    inject([".sidebar-host-head", ".sidebar-project-head", ".workspace-new-row", ".sidebar-foot"]);
+  it("project header, new row and foot carry their spec padding", async () => {
+    inject([".sidebar-project-head", ".workspace-new-row", ".sidebar-foot"]);
     await renderWorkspace();
-    const hostHead = document.querySelector<HTMLElement>(".sidebar-host-head");
-    if (hostHead === null) throw new Error("host header did not render");
-    expect(hostHead.textContent).toContain("This PC");
-    expect(getComputedStyle(hostHead).paddingLeft).toBe("8px");
-    expect(getComputedStyle(hostHead).height).toBe("24px");
 
     const projectHead = document.querySelector<HTMLElement>(".workspace-project-heading");
     if (projectHead === null) throw new Error("project header did not render");
-    expect(getComputedStyle(projectHead).paddingLeft).toBe("8px");
+    expect(getComputedStyle(projectHead).paddingLeft).toBe("12px");
 
     const newRow = document.querySelector<HTMLElement>(".workspace-new-row");
     if (newRow === null) throw new Error("new workspace row did not render");
     expect(getComputedStyle(newRow).height).toBe("28px");
-    expect(getComputedStyle(newRow).paddingLeft).toBe("8px");
+    expect(getComputedStyle(newRow).paddingLeft).toBe("12px");
 
     const foot = document.querySelector<HTMLElement>(".sidebar-foot");
     if (foot === null) throw new Error("daemon foot did not render");
-    expect(foot.textContent).toContain("Daemon");
+    // The foot keeps the whole sentence for whoever cannot see the dot, and
+    // prints no label of its own.
+    expect(foot.textContent).toContain("daemon");
+    expect(foot.textContent).not.toContain("Daemon");
     expect(getComputedStyle(foot).paddingLeft).toBe("8px");
   });
 
   it("the wordmark row keeps the wordmark whole", async () => {
-    inject([".sidebar-top", ".sidebar-wordmark", ".sidebar-foot"]);
+    inject([".sidebar-top", ".sidebar-wordmark"]);
     await renderWorkspace();
 
     const top = document.querySelector<HTMLElement>(".sidebar-top");
@@ -158,10 +163,6 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     const wordmark = document.querySelector<HTMLElement>(".sidebar-wordmark");
     if (wordmark === null) throw new Error("wordmark did not render");
     expect(getComputedStyle(wordmark).whiteSpace).toBe("nowrap");
-
-    const foot = document.querySelector<HTMLElement>(".sidebar-foot");
-    if (foot === null) throw new Error("daemon foot did not render");
-    expect(getComputedStyle(foot).gap).toBe("8px");
   });
 
   it("the search takes its own row, the sidebar's whole width", async () => {

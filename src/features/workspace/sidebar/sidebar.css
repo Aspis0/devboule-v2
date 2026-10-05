@@ -1,10 +1,9 @@
 /* sidebar.css — the sidebar region's look (SPEC-regions.md "Sidebar"): the
-   40px wordmark row, the search row under it, the host header, project
-   headers with avatars and a hover-revealed "+", workspace rows with avatar,
-   last activity, a facts line (branch, diff stats, agent counts) and the
-   quiet "New workspace" row, and the foot. Behaviour class names
-   (workspace-row, workspace-project-add, …) are kept so the suite keeps
-   pinning the same behaviours. */
+   40px wordmark row, the search row under it, project headers with avatars
+   and a hover-revealed "+", one-line workspace rows (avatar, name, one
+   trailing fact) and the quiet "New workspace" row, and the foot. Behaviour
+   class names (workspace-row, workspace-project-add, …) are kept so the suite
+   keeps pinning the same behaviours. */
 
 .sidebar-top {
   display: flex;
@@ -137,26 +136,41 @@
 .sidebar-body {
   flex: 1;
   min-height: 0;
-  padding: var(--space-4) var(--space-8);
+  /* Body 4 + a row's own 12 = the 16px column the foot's rows land on at
+     8 + 8: every row in the rail has to start on one line. */
+  padding: var(--space-4);
   overflow-y: auto;
 }
 
-/* The lone host's block: one header plus the tree. Two hosts or more become
-   sections instead (below). */
-.sidebar-host {
-  margin-bottom: var(--space-4);
+/* History's rows keep their own 8px inset; body 4 + panel 4 + row 8 lands
+   them on the same 16px column the tree's rows start on. */
+.workspace-history-panel {
+  padding: 0 var(--space-4);
 }
 
+/* Only a section has a header, so a lone host draws nothing above the tree —
+   its name and health live in Settings. */
 .sidebar-host-head {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  width: 100%;
   height: var(--group-row);
-  padding: 0 var(--space-8);
+  padding: 0 var(--space-12);
+  text-align: left;
   color: var(--muted);
+  background: transparent;
+  border-radius: var(--radius-6);
+  cursor: pointer;
   font-size: var(--type-meta);
   font-weight: var(--weight-label);
   line-height: var(--leading-dense);
+}
+
+.sidebar-host-head:hover,
+.sidebar-host-head:focus-visible {
+  color: var(--ink);
+  background: var(--fill-hover);
 }
 
 .sidebar-host-icon {
@@ -164,25 +178,10 @@
   height: 12px;
   flex: none;
 }
+
 /* Two hosts or more: one section each, the local one first. */
 .sidebar-host-section {
   margin-bottom: var(--space-4);
-}
-
-/* A head that folds its section is a button, so it carries the row's own look
-   back: `.sidebar-host-head` already gives it the height, padding and type. */
-button.sidebar-host-head {
-  width: 100%;
-  text-align: left;
-  background: transparent;
-  border-radius: var(--radius-6);
-  cursor: pointer;
-}
-
-button.sidebar-host-head:hover,
-button.sidebar-host-head:focus-visible {
-  color: var(--ink);
-  background: var(--fill-hover);
 }
 
 .sidebar-host-status {
@@ -191,7 +190,7 @@ button.sidebar-host-head:focus-visible {
 
 .sidebar-host-note {
   margin: 0;
-  padding: var(--space-2) var(--space-8) var(--space-4);
+  padding: var(--space-2) var(--space-12) var(--space-4);
   color: var(--muted);
   font-size: var(--type-meta);
 }
@@ -205,7 +204,7 @@ button.sidebar-host-head:focus-visible {
   align-items: center;
   gap: var(--space-2);
   height: var(--group-row);
-  padding: 0 var(--space-8);
+  padding: 0 var(--space-12);
   color: var(--muted);
   font-size: var(--type-meta);
   font-weight: var(--weight-label);
@@ -225,14 +224,13 @@ button.sidebar-host-head:focus-visible {
 .sidebar-avatar-project {
   width: 16px;
   height: 16px;
-  font-family: var(--font-display);
-  font-size: 11px;
+  font-size: var(--type-meta);
 }
 
 .sidebar-avatar-workspace {
   width: 16px;
   height: 16px;
-  font-size: 11px;
+  font-size: var(--type-meta);
   font-weight: var(--weight-label);
 }
 
@@ -266,18 +264,17 @@ button.sidebar-host-head:focus-visible {
 .workspace-project-items {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--space-4);
 }
 
 .workspace-row {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-8);
   text-align: left;
   width: 100%;
   min-width: 0;
-  min-height: var(--workspace-row);
-  padding: var(--space-2) var(--space-8);
+  padding: var(--space-8) var(--space-12);
   color: var(--ink);
   background: transparent;
   border-radius: var(--radius-6);
@@ -306,70 +303,30 @@ button.sidebar-host-head:focus-visible {
   background: var(--fill-selected-soft);
 }
 
-.workspace-row-copy {
-  display: block;
-  min-width: 0;
-  flex: 1;
-}
-
-.workspace-row-line {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-8);
-  min-width: 0;
-}
-
 .workspace-row-title {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
-  color: var(--ink-soft);
-  font-size: var(--type-small);
+  color: var(--ink);
+  font-size: var(--type-interface);
   font-weight: var(--weight-label);
   line-height: var(--leading-dense);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.workspace-row-selected .workspace-row-title {
-  color: var(--ink);
-}
-
-.workspace-row-age {
+/* The row's one trailing fact, muted 12px against the name: what the
+   workspace is doing, else when it last spoke, else what is uncommitted.
+   It never wraps — the name is what gives way. */
+.workspace-row-fact {
+  display: flex;
   flex: none;
+  align-items: center;
+  gap: var(--space-4);
   color: var(--muted);
   font-size: var(--type-meta);
   font-variant-numeric: tabular-nums;
-}
-
-/* A row that carries a facts line is the two-line row; the floor alone leaves
-   the 13px and 12px lines to grow past it unevenly. */
-.workspace-row:has(.workspace-row-facts) {
-  min-height: var(--workspace-row-meta);
-}
-
-/* The facts line clips rather than wraps, and what gives way inside it is
-   the branch. */
-.workspace-row-facts {
-  display: flex;
-  align-items: center;
-  gap: var(--space-6);
-  min-width: 0;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: var(--type-meta);
-  line-height: var(--leading-dense);
   white-space: nowrap;
-}
-
-/* The branch is the row's only code, so it is the only mono on it. */
-.workspace-row-branch {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  font-family: var(--font-mono);
-  font-size: var(--type-mono-sm);
-  text-overflow: ellipsis;
 }
 
 /* The row wraps its button so the context menu and the title editor are
@@ -406,7 +363,7 @@ button.sidebar-host-head:focus-visible {
 
 .workspace-row-delete-refusal {
   display: block;
-  padding: var(--space-2) var(--space-8);
+  padding: var(--space-2) var(--space-12);
   color: var(--danger);
   font-size: var(--type-meta);
 }
@@ -442,35 +399,13 @@ button.sidebar-host-head:focus-visible {
   background: var(--fill-hover);
 }
 
-.sidebar-row-stats {
-  flex: none;
-  margin-left: auto;
-  white-space: nowrap;
-}
-
-.sidebar-stat-add {
-  color: var(--tone-add);
-}
-
-.sidebar-stat-del {
-  color: var(--tone-del);
-}
-
-.sidebar-row-agents {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: var(--space-4);
-  white-space: nowrap;
-}
-
 /* An agent stopped on the user's approval is the one part of the row that
    asks something of them. */
 .sidebar-row-waiting {
   color: var(--tone-attention-text);
 }
 
-/* The agent dot in the facts line, in the tab chips' vocabulary. Idle rows
+/* The agent dot beside the fact, in the tab chips' vocabulary. Idle rows
    show none; a running row breathes. */
 .sidebar-row-dot {
   display: inline-block;
@@ -504,7 +439,7 @@ button.sidebar-host-head:focus-visible {
   gap: var(--space-2);
   height: var(--control-default);
   margin-top: var(--space-2);
-  padding: 0 var(--space-8);
+  padding: 0 var(--space-12);
   color: var(--muted);
   background: transparent;
   border: 0;
@@ -525,16 +460,22 @@ button.sidebar-host-head:focus-visible {
 }
 
 .workspace-empty {
-  padding: var(--space-6) var(--space-8);
+  padding: var(--space-6) var(--space-12);
   color: var(--muted);
   font-size: var(--type-meta);
+}
+
+/* The rail's own error block sits on the rows' column; the dialog shares the
+   class and keeps its own. */
+.sidebar-body .workspace-project-error {
+  padding: 0 var(--space-12);
 }
 
 .workspace-secondary-action {
   color: var(--ink-soft);
 }
 
-/* The foot: the quiet History row above the daemon strip. */
+/* The foot: the quiet History row above the daemon's status dot. */
 .workspace-sidebar-footer {
   flex: none;
   padding: var(--space-2) var(--space-8) var(--space-8);
@@ -571,9 +512,6 @@ button.sidebar-host-head:focus-visible {
 .sidebar-foot {
   display: flex;
   align-items: center;
-  /* The spec's foot gap (mockup skeleton: 8px) — the dot must not touch
-     its label. */
-  gap: var(--space-8);
   height: var(--control-default);
   padding: 0 var(--space-8);
   overflow: hidden;
@@ -581,16 +519,6 @@ button.sidebar-host-head:focus-visible {
   font-size: var(--type-meta);
   white-space: nowrap;
   cursor: help;
-}
-
-/* The label clips inside its own box; min-width: 0 lets it shrink beside the
-   dot (the old Workspace.css clip rule described this element before the
-   sidebar moved out). */
-.workspace-daemon-status-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .sidebar-foot .workspace-status-dot {

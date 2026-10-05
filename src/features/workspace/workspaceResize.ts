@@ -4,14 +4,14 @@ import type { KeyboardEvent, MouseEvent } from "react";
 export type ResizeSide = "left" | "right";
 
 /**
- * The shell frame's widths: sidebar 248 (resizable 200–360, collapsible),
+ * The shell frame's widths: sidebar 320 (resizable 200–600, collapsible),
  * right panel 300 (its own bounds — the spec pins only the default). A width
- * persisted by an older build, inside the old 180–460 bounds, is clamped into
+ * persisted by an older build, outside the current bounds, is clamped into
  * its side's bounds on read.
  */
 export const MIN_LEFT_WIDTH = 200;
-export const MAX_LEFT_WIDTH = 360;
-export const INITIAL_LEFT_WIDTH = 248;
+export const MAX_LEFT_WIDTH = 600;
+export const INITIAL_LEFT_WIDTH = 320;
 export const MIN_RIGHT_WIDTH = 240;
 export const MAX_RIGHT_WIDTH = 420;
 export const INITIAL_RIGHT_WIDTH = 300;

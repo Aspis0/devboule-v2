@@ -27,15 +27,15 @@ export interface WorkspaceTreeProps {
   /** The provider choice UI itself (popover or consent card). */
   providerMenu: ReactNode;
   stats: ReadonlyMap<WorkspaceKey, WorkspaceStat>;
-  /** Each workspace's branch, from the same status read as `stats`. */
-  branches: ReadonlyMap<WorkspaceKey, string>;
 }
 
 /**
- * The project tree under the host header: project headers with avatars and a
- * hover-revealed "+", the workspace rows (each its own component: label,
- * facts, context menu, in-place title editor and delete ask), and the quiet
- * "New workspace" row.
+ * The project tree: project headers with avatars and a hover-revealed "+",
+ * the workspace rows (each its own component: label, one trailing fact,
+ * context menu, in-place title editor and delete ask), and the quiet
+ * "New workspace" row. A project whose one workspace carries its own name
+ * prints that name once — the header would only repeat it — and keeps its
+ * header while the workspaces it holds need it to tell them apart.
  */
 export function WorkspaceTree({
   projects,
@@ -51,7 +51,6 @@ export function WorkspaceTree({
   providerMenuAnchorProjectId,
   providerMenu,
   stats,
-  branches,
 }: WorkspaceTreeProps) {
   return (
     <>
@@ -81,74 +80,84 @@ export function WorkspaceTree({
           />
         </div>
       ) : null}
-      {projects.map((project) => (
-        <div className="workspace-project" key={project.id} role="group" aria-label={project.name}>
-          <div className="workspace-project-heading sidebar-project-head">
-            <span
-              className="sidebar-avatar sidebar-avatar-project"
-              style={avatarStyle(project.id)}
-              aria-hidden="true"
-            >
-              {firstGrapheme(project.name)}
-            </span>
-            <span className="workspace-project-name">{project.name}</span>
-            <button
-              type="button"
-              className="workspace-project-add"
-              onClick={(event) => onNewWorkspace(event.currentTarget, project.id)}
-              title="New workspace in this project"
-              aria-label={`New workspace in ${project.name}`}
-            >
-              +
-            </button>
-          </div>
-          {project.workspaceError !== undefined ? (
-            <div className="workspace-project-error" role="alert">
-              <ErrorText
-                sentence={`Could not load this project's workspaces: ${project.workspaceError.sentence}`}
-                detail={project.workspaceError.detail}
-                id={`workspace-project-workspaces-error-${project.id}`}
-              />
-              <button
-                type="button"
-                className="workspace-secondary-action"
-                onClick={onRetryProjects}
-              >
-                Retry
-              </button>
-            </div>
-          ) : null}
-          <div className="workspace-project-items">
-            {project.workspaces.map((workspace) => {
-              const key = keyOfWorkspace(workspace);
-              return (
-                <WorkspaceRow
-                  key={workspace.id}
-                  workspace={workspace}
-                  workspaceKey={key}
-                  projectName={project.name}
-                  selected={key !== null && selectedWorkspace === key}
-                  stat={key === null ? undefined : stats.get(key)}
-                  branch={key === null ? undefined : branches.get(key)}
-                  onSelect={onSelectWorkspace}
-                  onRename={onRenameWorkspace}
-                  onDelete={onDeleteWorkspace}
+      {projects.map((project) => {
+        const lone =
+          project.workspaces.length === 1 && project.workspaces[0]?.displayTitle === project.name;
+        return (
+          <div
+            className="workspace-project"
+            key={project.id}
+            role="group"
+            aria-label={project.name}
+          >
+            {lone ? null : (
+              <div className="workspace-project-heading sidebar-project-head">
+                <span
+                  className="sidebar-avatar sidebar-avatar-project"
+                  style={avatarStyle(project.id)}
+                  aria-hidden="true"
+                >
+                  {firstGrapheme(project.name)}
+                </span>
+                <span className="workspace-project-name">{project.name}</span>
+                <button
+                  type="button"
+                  className="workspace-project-add"
+                  onClick={(event) => onNewWorkspace(event.currentTarget, project.id)}
+                  title="New workspace in this project"
+                  aria-label={`New workspace in ${project.name}`}
+                >
+                  +
+                </button>
+              </div>
+            )}
+            {project.workspaceError !== undefined ? (
+              <div className="workspace-project-error" role="alert">
+                <ErrorText
+                  sentence={`Could not load this project's workspaces: ${project.workspaceError.sentence}`}
+                  detail={project.workspaceError.detail}
+                  id={`workspace-project-workspaces-error-${project.id}`}
                 />
-              );
-            })}
-            <div className="workspace-new-row-wrap">
-              <button
-                type="button"
-                className="workspace-new-row"
-                onClick={(event) => onNewWorkspace(event.currentTarget, project.id)}
-              >
-                <span aria-hidden="true">+</span>New workspace
-              </button>
-              {providerMenuAnchorProjectId === project.id ? providerMenu : null}
+                <button
+                  type="button"
+                  className="workspace-secondary-action"
+                  onClick={onRetryProjects}
+                >
+                  Retry
+                </button>
+              </div>
+            ) : null}
+            <div className="workspace-project-items">
+              {project.workspaces.map((workspace) => {
+                const key = keyOfWorkspace(workspace);
+                return (
+                  <WorkspaceRow
+                    key={workspace.id}
+                    workspace={workspace}
+                    workspaceKey={key}
+                    projectName={project.name}
+                    selected={key !== null && selectedWorkspace === key}
+                    stat={key === null ? undefined : stats.get(key)}
+                    onSelect={onSelectWorkspace}
+                    onRename={onRenameWorkspace}
+                    onDelete={onDeleteWorkspace}
+                  />
+                );
+              })}
+              <div className="workspace-new-row-wrap">
+                <button
+                  type="button"
+                  className="workspace-new-row"
+                  onClick={(event) => onNewWorkspace(event.currentTarget, project.id)}
+                >
+                  <span aria-hidden="true">+</span>New workspace
+                </button>
+                {providerMenuAnchorProjectId === project.id ? providerMenu : null}
+              </div>
             </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
       {error === null && !loading && projects.length === 0 ? (
         <div className="workspace-empty">No matching workspaces</div>
       ) : null}

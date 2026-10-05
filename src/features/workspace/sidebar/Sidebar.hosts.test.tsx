@@ -105,20 +105,11 @@ function sidebarProps(overrides: Partial<SidebarProps> = {}): SidebarProps {
       providerMenuAnchorProjectId: null,
       providerMenu: null,
       stats: new Map(),
-      branches: new Map(),
     },
     daemon: CONNECTED,
     daemonNote: null,
     ...overrides,
   };
-}
-
-/** What a node is, by name and class, so a header's exact shape can be pinned. */
-function shape(node: ChildNode): string {
-  if (node.nodeType === Node.TEXT_NODE) return `text:${node.textContent}`;
-  if (node.nodeType !== Node.ELEMENT_NODE) return `node:${node.nodeType}`;
-  const element = node as Element;
-  return `${element.tagName.toLowerCase()}.${element.className}`;
 }
 
 describe("the sidebar's host sections", () => {
@@ -153,12 +144,6 @@ describe("the sidebar's host sections", () => {
     );
   }
 
-  function hostHead(): HTMLElement {
-    const head = container.querySelector<HTMLElement>(".sidebar-host-head");
-    if (head === null) throw new Error("the host header did not render");
-    return head;
-  }
-
   beforeEach(() => {
     vi.useFakeTimers();
     vi.mocked(daemonStatus).mockResolvedValue(CONNECTED);
@@ -173,29 +158,24 @@ describe("the sidebar's host sections", () => {
     vi.useRealTimers();
   });
 
-  it("with this PC alone, draws no section and nothing that folds", async () => {
+  it("with this PC alone, draws no host header at all", async () => {
     await render();
 
     // The markup itself is pinned node for node in Sidebar.loneHost.test.tsx;
     // what is left here is the behaviour that a markup dump cannot carry.
     expect(sections()).toHaveLength(0);
-    const head = hostHead();
-    expect(head.tagName).toBe("DIV");
-    expect(head.getAttribute("aria-expanded")).toBeNull();
-    expect(head.textContent).toBe("This PC");
+    expect(container.querySelector(".sidebar-host-head")).toBeNull();
   });
 
-  it("with this PC alone, an offline daemon still greys the dot and drops no word", async () => {
-    // The local host's status is the `daemon` prop the workspace surface reads
-    // from the same poll, not a second source.
+  it("with this PC alone, an offline daemon still greys the foot's dot", async () => {
+    // A lone host has no header of its own, so the rail's health read is the
+    // foot — fed by the same `daemon` poll the host headers read from.
     await render({ daemon: { ...CONNECTED, state: "disconnected" } });
 
-    expect([...hostHead().childNodes].map(shape)).toEqual([
-      "svg.sidebar-host-icon",
-      "text:This PC",
-      "span.sidebar-top-spacer",
-      "span.workspace-status-dot workspace-dot-border",
-    ]);
+    expect(container.querySelector(".sidebar-host-head")).toBeNull();
+    const dot = container.querySelector<HTMLElement>(".sidebar-foot .workspace-status-dot");
+    if (dot === null) throw new Error("the foot's daemon dot did not render");
+    expect(dot.className).toContain("workspace-dot-terracotta");
   });
 
   it("gives a daemon peer a section and a client peer nothing", async () => {

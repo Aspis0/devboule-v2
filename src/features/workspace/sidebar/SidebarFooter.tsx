@@ -33,8 +33,9 @@ export interface SidebarFooterProps {
 }
 
 /**
- * The sidebar's foot: the quiet History row above the daemon strip — a live
- * dot and the word "Daemon", the pid/message detail in the tooltip.
+ * The sidebar's foot: the quiet History row above the daemon's own dot. The
+ * sentence — pid included — rides in the tooltip and in the screen-reader
+ * text, not in a label of its own: the rail is for picking a workspace.
  */
 export function SidebarFooter({ historyOpen, onToggleHistory, daemon, note }: SidebarFooterProps) {
   const tooltip = [daemonLabel(daemon), note].filter((part) => part !== null).join(" · ");
@@ -52,9 +53,6 @@ export function SidebarFooter({ historyOpen, onToggleHistory, daemon, note }: Si
       </button>
       <div className="workspace-daemon-status sidebar-foot" title={tooltip} tabIndex={0}>
         <span className={`workspace-status-dot workspace-dot-${daemonDotTone(daemon.state)}`} />
-        <span className="workspace-daemon-status-label">Daemon</span>
-        {/* The detail is keyboard- and screen-reader-reachable, not only a
-            mouse tooltip. */}
         <span className="sr-only">{tooltip}</span>
       </div>
     </div>

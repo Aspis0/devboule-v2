@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
 
-// What the workspace row prints: the name and its last activity on the first
-// line, the facts the sidebar already loaded on the second. The row's menu,
-// its title editor and its delete ask are pinned in WorkspaceTree.rename.
+// What the workspace row prints: its name, and at most one trailing fact —
+// what the workspace is doing, else when it last spoke, else what is
+// uncommitted. The row's menu, its title editor and its delete ask are pinned
+// in WorkspaceTree.rename.
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -41,7 +42,7 @@ const workspace = (over: Partial<WorkspaceView> = {}): WorkspaceView => ({
   ...over,
 });
 
-describe("the workspace row's two lines", () => {
+describe("the workspace row's one line", () => {
   let container: HTMLDivElement;
   let root: Root;
 
@@ -57,7 +58,7 @@ describe("the workspace row's two lines", () => {
 
   async function render(
     view: WorkspaceView,
-    facts: { branch?: string; stat?: WorkspaceStat } = {},
+    facts: { stat?: WorkspaceStat } = {},
   ): Promise<HTMLElement> {
     root = createRoot(container);
     await act(async () => {
@@ -67,7 +68,6 @@ describe("the workspace row's two lines", () => {
           workspaceKey={localWorkspaceKey(view.id)}
           projectName="devboule"
           selected={false}
-          branch={facts.branch}
           stat={facts.stat}
           onSelect={vi.fn()}
           onRename={vi.fn(async () => null)}
@@ -80,37 +80,16 @@ describe("the workspace row's two lines", () => {
     return row;
   }
 
-  it("prints the branch, the diff stats and the agent summary on the second line", async () => {
-    const row = await render(workspace({ stateDot: "pulse", agents: { working: 2, waiting: 0 } }), {
-      branch: "feat/sidebar-rows",
-      stat: { additions: 12, deletions: 3 },
-    });
+  it("prints the name and its fact as siblings: one line, no second row of text", async () => {
+    const row = await render(workspace({ stateDot: "pulse", agents: { working: 2, waiting: 0 } }));
 
-    const facts = row.querySelector<HTMLElement>(".workspace-row-facts");
-    if (facts === null) throw new Error("the row printed no facts line");
-    expect(facts.querySelector(".workspace-row-branch")?.textContent).toBe("feat/sidebar-rows");
-    expect(facts.querySelector(".sidebar-stat-add")?.textContent).toBe("+12");
-    expect(facts.querySelector(".sidebar-stat-del")?.textContent).toBe("−3");
-    expect(facts.textContent).toContain("2 working");
-  });
-
-  it("leaves out every part the sidebar has nothing for", async () => {
-    // No branch (the read failed or the folder is not a repository), no diff,
-    // no agent: one line, and no empty second line under it.
-    const row = await render(workspace());
-
-    expect(row.querySelector(".workspace-row-facts")).toBeNull();
-    expect(row.querySelector(".workspace-row-title")?.textContent).toBe("devboule-v2");
-  });
-
-  it("prints the branch alone when it is the only fact", async () => {
-    const row = await render(workspace(), { branch: "main" });
-
-    const facts = row.querySelector<HTMLElement>(".workspace-row-facts");
-    if (facts === null) throw new Error("the row printed no facts line");
-    expect(facts.querySelector(".workspace-row-branch")?.textContent).toBe("main");
-    expect(facts.querySelector(".sidebar-row-stats")).toBeNull();
-    expect(facts.querySelector(".sidebar-row-agents")).toBeNull();
+    expect([...row.children].map((child) => child.className)).toEqual([
+      "sidebar-avatar sidebar-avatar-workspace",
+      "workspace-row-title",
+      "workspace-row-fact",
+    ]);
+    expect(row.querySelector(".workspace-row-fact")?.textContent).toBe("2 working");
+    expect(row.querySelector(".sidebar-row-dot-pulse")).not.toBeNull();
   });
 
   it("says an agent waits in the attention tone, beside its live dot", async () => {
@@ -118,44 +97,51 @@ describe("the workspace row's two lines", () => {
       workspace({ stateDot: "attention", agents: { working: 2, waiting: 1 } }),
     );
 
-    const facts = row.querySelector<HTMLElement>(".sidebar-row-agents");
-    if (facts === null) throw new Error("the row printed no agent summary");
-    expect(facts.querySelector(".sidebar-row-dot-attention")).not.toBeNull();
-    expect(facts.querySelector(".sidebar-row-working")?.textContent).toBe("2 working");
-    expect(facts.querySelector(".sidebar-row-waiting")?.textContent).toBe("1 waiting");
+    const fact = row.querySelector<HTMLElement>(".workspace-row-fact");
+    if (fact === null) throw new Error("the row printed no fact");
+    expect(fact.className).toContain("sidebar-row-waiting");
+    expect(fact.querySelector(".sidebar-row-dot-attention")).not.toBeNull();
+    expect(fact.textContent).toBe("1 waiting");
   });
 
-  it("puts the last activity right of the name", async () => {
-    const row = await render(
-      workspaceView(workspace(), [rosterSession({ elapsedMs: 4 * 60_000 })]),
-    );
+  it("prints the name alone when the sidebar has no fact for it", async () => {
+    const row = await render(workspace());
 
-    expect(row.querySelector(".workspace-row-line")?.textContent).toBe("devboule-v24m");
+    expect(row.querySelector(".workspace-row-fact")).toBeNull();
+    expect(row.querySelector(".workspace-row-title")?.textContent).toBe("devboule-v2");
+  });
+
+  it("falls back to the uncommitted totals when no agent and no clock fact exist", async () => {
+    const row = await render(workspace(), { stat: { additions: 12, deletions: 3 } });
+
+    const fact = row.querySelector<HTMLElement>(".workspace-row-fact");
+    if (fact === null) throw new Error("the row printed no fact");
+    expect(fact.textContent).toBe("+12 −3");
+    expect(fact.querySelector(".sidebar-row-dot")).toBeNull();
+  });
+
+  it("leaves out a clean tree's zero totals", async () => {
+    const row = await render(workspace(), { stat: { additions: 0, deletions: 0 } });
+
+    expect(row.querySelector(".workspace-row-fact")).toBeNull();
+  });
+
+  it("prefers the last activity over the totals, right of the name", async () => {
+    const row = await render(workspace({ elapsedMs: 4 * 60_000 }), {
+      stat: { additions: 12, deletions: 3 },
+    });
+
+    expect(row.querySelector(".workspace-row-fact")?.textContent).toBe("4m");
   });
 
   it("reads a session that just spoke as now, not as a year", async () => {
     // The row's age is the roster's silence measured as a duration. Anything
     // that subtracts it from a clock dates the agent to the epoch.
-    const row = await render(workspaceView(workspace(), [rosterSession({ elapsedMs: 30_000 })]));
-
-    expect(row.querySelector(".workspace-row-age")?.textContent).toBe("now");
-  });
-
-  it("reads a recovered-only workspace as no time at all", async () => {
     const row = await render(
-      workspaceView(workspace(), [
-        rosterSession({
-          state: {
-            type: "recovered",
-            generation: 1,
-            integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
-          },
-          elapsedMs: null,
-        }),
-      ]),
+      workspaceView(workspace(), [rosterSession({ state: { type: "silent", generation: 1 } })]),
     );
 
-    expect(row.querySelector(".workspace-row-age")).toBeNull();
+    expect(row.querySelector(".workspace-row-fact")?.textContent).toBe("now");
   });
 
   it("shows when a workspace's only session stopped", async () => {
@@ -170,12 +156,18 @@ describe("the workspace row's two lines", () => {
       ]),
     );
 
-    expect(row.querySelector(".workspace-row-age")?.textContent).toBe("4m");
+    expect(row.querySelector(".workspace-row-fact")?.textContent).toBe("4m");
   });
 
   it("prints no time for a workspace whose roster carries no activity fact", async () => {
     const row = await render(workspace({ elapsedMs: null }));
 
-    expect(row.querySelector(".workspace-row-age")).toBeNull();
+    expect(row.querySelector(".workspace-row-fact")).toBeNull();
+  });
+
+  it("carries the fact in the row's accessible name", async () => {
+    const row = await render(workspace({ stateDot: "pulse", agents: { working: 2, waiting: 0 } }));
+
+    expect(row.getAttribute("aria-label")).toBe("devboule-v2, devboule, 2 working");
   });
 });
