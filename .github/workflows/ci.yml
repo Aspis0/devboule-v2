@@ -537,9 +537,10 @@ jobs:
   # Unsigned Mac .app for the owner to download: proves the bundle wires the
   # daemon beside the executable and produces a runnable artifact. No signing
   # or notarization (declared); Gatekeeper handling is in scout/RUN-ON-MAC.md.
-  # Runs on main pushes and by hand only — not on every branch — except the
-  # proving run this job was added for (that commit has no `if` line).
+  # Main pushes and hand runs only — proven once on the branch, then scoped
+  # here so everyday branch pushes do not pay a 60-minute release build.
   macos-app:
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: macos-14
     timeout-minutes: 60
 
