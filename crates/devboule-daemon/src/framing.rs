@@ -81,7 +81,11 @@ struct PipeInner {
 
 #[cfg(not(windows))]
 struct PipeInner {
-    file: Arc<Mutex<File>>,
+    file: Arc<File>,
+    /// Serialises reads and writes over the one socket handle. The Windows
+    /// pipe has the same lock named for its write side; a socket needs it
+    /// around both, so a blocking read is never interleaved with a write.
+    io_lock: Arc<Mutex<()>>,
 }
 
 impl Clone for FramedInner {
@@ -109,6 +113,7 @@ impl Clone for PipeInner {
     fn clone(&self) -> Self {
         Self {
             file: Arc::clone(&self.file),
+            io_lock: Arc::clone(&self.io_lock),
         }
     }
 }
@@ -159,7 +164,8 @@ impl Framed {
             }),
             #[cfg(not(windows))]
             inner: FramedInner::Pipe(PipeInner {
-                file: Arc::new(Mutex::new(file)),
+                file: Arc::new(file),
+                io_lock: Arc::new(Mutex::new(())),
             }),
             buf: Arc::new(Mutex::new(Vec::new())),
             max_frame_bytes,
@@ -221,12 +227,11 @@ impl Framed {
                 Ok(())
             }
             #[cfg(not(windows))]
-            FramedInner::Pipe(pipe) => pipe
-                .file
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .flush()
-                .map_err(DaemonError::from),
+            FramedInner::Pipe(pipe) => {
+                let _io_lock = pipe.io_lock.lock().unwrap_or_else(|err| err.into_inner());
+                let mut file = &*pipe.file;
+                file.flush().map_err(DaemonError::from)
+            }
         }
     }
 
@@ -247,8 +252,8 @@ impl Framed {
             }
             #[cfg(not(windows))]
             FramedInner::Pipe(pipe) => {
-                let mut file = pipe.file.lock().unwrap_or_else(|err| err.into_inner());
-                write_frame(&mut file, value, self.max_frame_bytes, flush)
+                let _io_lock = pipe.io_lock.lock().unwrap_or_else(|err| err.into_inner());
+                write_frame(&pipe.file, value, self.max_frame_bytes, flush)
             }
             #[cfg(feature = "server")]
             FramedInner::Stream(pair) => {
@@ -373,7 +378,8 @@ impl Framed {
             },
             #[cfg(not(windows))]
             FramedInner::Pipe(pipe) => {
-                let mut file = pipe.file.lock().unwrap_or_else(|err| err.into_inner());
+                let _io_lock = pipe.io_lock.lock().unwrap_or_else(|err| err.into_inner());
+                let mut file = &*pipe.file;
                 Ok(file.read(chunk)?)
             }
             #[cfg(feature = "server")]
@@ -448,16 +454,17 @@ fn write_frame<T: Serialize>(
 
 #[cfg(not(windows))]
 fn write_frame<T: Serialize>(
-    file: &mut File,
+    file: &File,
     value: &T,
     max_frame_bytes: usize,
     flush: bool,
 ) -> Result<(), DaemonError> {
     let bytes = frame_bytes(value, max_frame_bytes)?;
-    file.write_all(&bytes)?;
-    file.write_all(b"\n")?;
+    let mut writer = file;
+    writer.write_all(&bytes)?;
+    writer.write_all(b"\n")?;
     if flush {
-        file.flush()?;
+        writer.flush()?;
     }
     Ok(())
 }

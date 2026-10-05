@@ -20,7 +20,9 @@ use super::ServerState;
 /// instance restores the default disposition) and joins the reader.
 pub(super) struct SignalShutdown {
     handle: signal_hook::iterator::Handle,
-    reader: JoinHandle<()>,
+    /// `None` only after `Drop` has taken the handle to join it: `join`
+    /// consumes its receiver, and a `Drop` only has `&mut self`.
+    reader: Option<JoinHandle<()>>,
 }
 
 impl SignalShutdown {
@@ -48,7 +50,10 @@ impl SignalShutdown {
                 return None;
             }
         };
-        Some(Self { handle, reader })
+        Some(Self {
+            handle,
+            reader: Some(reader),
+        })
     }
 }
 
@@ -58,6 +63,8 @@ impl Drop for SignalShutdown {
         // succeeds, and the `Signals` dropped inside that thread unregisters
         // the hook and restores the default disposition.
         self.handle.close();
-        let _ = self.reader.join();
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
     }
 }
