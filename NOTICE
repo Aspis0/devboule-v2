@@ -229,7 +229,30 @@ The captured extension payloads in `crates/devboule-daemon/fixtures/pi-tasks/`
 directories; each file's own `provenance` block records the extension package,
 version and source commit.
 
-Apart from the explicitly attributed herdr and Paseo portions above, the
+The macOS app-variant LocalAPI discovery in
+`crates/devboule-daemon/src/tailscale_app_localapi.rs` — the `sameuserproof`
+filename and `lsof` parsing, the `/Library/Tailscale/ipnport` symlink read
+with its stale-port dial, and the empty-username HTTP basic auth header — is
+translated from Tailscale, licensed under the BSD 3-Clause License, Copyright
+Tailscale Inc. & Contributors, `safesocket/safesocket_darwin.go` at commit
+`d69bf2685a3b31219b5f203b9f7d2f87a187ac3f`:
+
+- `safesocket/safesocket_darwin.go` `localTCPPortAndTokenDarwin`
+- `safesocket/safesocket_darwin.go` `localTCPPortAndTokenMacsys` /
+  `readMacsysSameUserProof` (the ipnport link and the token file)
+- `safesocket/safesocket_darwin.go` `readMacosSameUserProof` (the `lsof`
+  scan with `-u<uid>` and `-c IPNExtension`)
+- `ipn/localapi/localapi.go` `RequiredPassword` (HTTP basic auth; only the
+  password is checked)
+
+Divergences: this client prefers the file evidence and consults `lsof`
+second, where the Go source scans `lsof` first and falls back to the files;
+and the discovery runs against our own `/Library/Tailscale`, never the
+`TS_MACOS_CLI_SHARED_DIR` sandbox directory that only a CLI launched inside
+the Tailscale.app sandbox has. No Go code ships.
+
+Apart from the explicitly attributed herdr, Paseo and Tailscale portions
+above, the
 only third-party library source copied into this repository is the vendored
 `portable-pty` tree (`vendor/portable-pty`; upstream MIT, see its
 `LICENSE.md`, plus herdr's Apache-2.0 patch and the local Devboule

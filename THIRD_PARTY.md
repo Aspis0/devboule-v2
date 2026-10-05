@@ -26,6 +26,18 @@ The daemon directly depends on `agent-client-protocol` 2.0.0 for the ACP
 schema/protocol definitions. It is Apache-2.0 licensed; no source from that
 crate is copied into this repository.
 
+`crates/devboule-daemon/src/tailscale_app_localapi.rs` and its test file are
+a Rust translation of `safesocket/safesocket_darwin.go` from
+[tailscale/tailscale](https://github.com/tailscale/tailscale), together with
+the `RequiredPassword` basic-auth check in `ipn/localapi/localapi.go`:
+BSD-3-Clause, Copyright Tailscale Inc. & Contributors, taken at commit
+`d69bf2685a3b31219b5f203b9f7d2f87a187ac3f` on 2026-10-05. The translated
+logic is the `sameuserproof` filename and `lsof -F` parsing, the
+`/Library/Tailscale/ipnport` symlink read with its stale-port dial to
+127.0.0.1, and the empty-username HTTP basic auth header; no Go code ships.
+The upstream BSD-3-Clause licence applies to that translation (upstream
+`LICENSE` in the tailscale/tailscale repository).
+
 Third-party **sprite art** is a separate matter and is inventoried under Non-code assets below. It is carried by the Polis plugin rather than by the application, so an installation without Polis distributes none of it.
 
 The esaxx-rs one-line CRT patch mentioned in the separate architecture document is present here. `crates/oracle-core` is a workspace member with an optional `fastembed` dependency, and the workspace root's `[patch.crates-io]` remaps `esaxx-rs` to the vendored `crates/oracle-core/vendor/esaxx-rs-0.1.10/` tree, which contains 1,047 Rust source lines. The crate's `Cargo.toml` declares Apache-2.0 and its `LICENSE` ships beside it. The patch makes esaxx-rs use dynamic CRT (`/MD`) on Windows, matching `ort-sys` prebuilt binaries; without it, the linker fails with `LNK2038` (`MT_StaticRelease` versus `MD_DynamicRelease`). Remove the patch when upstream esaxx-rs builds with the dynamic CRT on Windows, or when `tokenizers` stops depending on esaxx-rs.

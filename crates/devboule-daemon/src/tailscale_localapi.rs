@@ -16,6 +16,10 @@
 //! Nothing here logs the response. `LoginName` and `DisplayName` are PII and
 //! any line that needs them goes through [`crate::device_identity::redact`].
 
+#[cfg(target_os = "macos")]
+#[path = "tailscale_app_localapi.rs"]
+mod app_localapi;
+
 #[cfg(not(windows))]
 use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr};
@@ -148,6 +152,12 @@ pub struct LocalApiClient {
     /// How long an `Absent` answer is trusted. A field rather than the constant
     /// so a test can drive expiry without sleeping for the production window.
     absent_ttl: Duration,
+    /// Whether `new()` may keep trying the default socket and — on macOS — the
+    /// app-variant LocalAPI after the configured endpoint fails. A client
+    /// built with `with_endpoint` was pointed at one address on purpose (the
+    /// in-process test server) and never appends production candidates.
+    #[cfg(not(windows))]
+    fallbacks: bool,
 }
 
 impl Default for LocalApiClient {
@@ -158,6 +168,13 @@ impl Default for LocalApiClient {
 
 impl LocalApiClient {
     pub fn new() -> Self {
+        #[cfg(not(windows))]
+        {
+            let mut client = Self::with_endpoint(default_endpoint(), DEFAULT_TIMEOUT);
+            client.fallbacks = true;
+            client
+        }
+        #[cfg(windows)]
         Self::with_endpoint(default_endpoint(), DEFAULT_TIMEOUT)
     }
 
@@ -169,6 +186,8 @@ impl LocalApiClient {
             endpoint,
             timeout,
             absent_ttl: ABSENT_CACHE_TTL,
+            #[cfg(not(windows))]
+            fallbacks: false,
         }
     }
 
@@ -278,13 +297,55 @@ impl LocalApiClient {
                 read_overlapped(&file, deadline)?
             }
             #[cfg(not(windows))]
-            Endpoint::UnixSocket(path) => read_unix_socket(path, request.as_bytes(), deadline)?,
+            Endpoint::UnixSocket(path) => {
+                self.exchange_on_unix(path, request.as_bytes(), deadline)?
+            }
         };
         let (status, body) = parse_http_response(&raw)?;
         if status != 200 {
             return Err(LocalApiError::Status(status));
         }
         Ok(body)
+    }
+
+    /// The attempt order where there is no pipe: the configured endpoint
+    /// first — the override when one is set — then the default socket when an
+    /// override displaced it, and on macOS the app-variant LocalAPI. A refusal
+    /// after all of them names each place that was looked at, so
+    /// `Status.remote` says where to fix it instead of only that it failed.
+    #[cfg(not(windows))]
+    fn exchange_on_unix(
+        &self,
+        path: &std::path::Path,
+        request: &[u8],
+        deadline: Instant,
+    ) -> Result<Vec<u8>, LocalApiError> {
+        let first = match read_unix_socket(path, request, deadline) {
+            Ok(raw) => return Ok(raw),
+            Err(error) => error,
+        };
+        let mut extra: Vec<LocalApiError> = Vec::new();
+        if self.fallbacks && path.as_os_str() != DEFAULT_UNIX_SOCKET {
+            match read_unix_socket(std::path::Path::new(DEFAULT_UNIX_SOCKET), request, deadline) {
+                Ok(raw) => return Ok(raw),
+                Err(error) => extra.push(error),
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            if self.fallbacks {
+                match app_localapi::exchange(request, deadline) {
+                    Ok(raw) => return Ok(raw),
+                    Err(error) => extra.push(error),
+                }
+            }
+        }
+        if extra.is_empty() {
+            return Err(first);
+        }
+        let mut reasons = vec![reason_text(first)];
+        reasons.extend(extra.into_iter().map(reason_text));
+        Err(LocalApiError::Absent(reasons.join("; ")))
     }
 }
 
@@ -422,7 +483,27 @@ fn read_unix_socket(
     }
     let _ = stream.set_read_timeout(Some(remaining));
     let _ = stream.set_write_timeout(Some(remaining));
-    let mut stream = stream;
+    exchange_stream(stream, request)
+}
+
+/// One attempt's contribution to a chain refusal: the message an `Absent`
+/// already carries, or the error's own text for anything else.
+#[cfg(not(windows))]
+fn reason_text(error: LocalApiError) -> String {
+    match error {
+        LocalApiError::Absent(message) => message,
+        other => other.to_string(),
+    }
+}
+
+/// Write one request and read one framed response over an already-connected
+/// stream: the caller owns connecting and whatever deadlines its transport
+/// needs. Shared by the unix socket and the macOS app-variant TCP leg.
+#[cfg(not(windows))]
+fn exchange_stream<S: Read + Write>(
+    mut stream: S,
+    request: &[u8],
+) -> Result<Vec<u8>, LocalApiError> {
     stream
         .write_all(request)
         .map_err(|error| map_io(error, "writing the request"))?;
