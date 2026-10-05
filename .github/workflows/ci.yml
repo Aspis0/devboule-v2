@@ -596,20 +596,20 @@ jobs:
         run: pnpm build:mac-app
 
       - name: List the bundle tree
-        run: find src-tauri/target/release/bundle/macos -maxdepth 4 | sort
+        run: find target/release/bundle/macos -maxdepth 4 | sort
 
       # Informational: an unsigned build is either ad hoc or not signed at
       # all. The hard asserts are the daemon checks below it.
       - name: Show the code signature
         run: |
-          APP=$(echo src-tauri/target/release/bundle/macos/*.app)
+          APP=$(echo target/release/bundle/macos/*.app)
           echo "APP=$APP"
           codesign --display --verbose "$APP" 2>&1 || true
 
       - name: Check the daemon shipped beside the executable
         run: |
           set -euo pipefail
-          APP=$(echo src-tauri/target/release/bundle/macos/*.app)
+          APP=$(echo target/release/bundle/macos/*.app)
           DAEMON="$APP/Contents/MacOS/devboule-daemon"
           test -f "$DAEMON"
           test -x "$DAEMON"
@@ -618,7 +618,7 @@ jobs:
       - name: Zip the app
         run: |
           set -euo pipefail
-          APP=$(echo src-tauri/target/release/bundle/macos/*.app)
+          APP=$(echo target/release/bundle/macos/*.app)
           ditto -c -k --keepParent "$APP" Devboule-mac-arm64.zip
           ls -la Devboule-mac-arm64.zip
 
