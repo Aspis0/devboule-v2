@@ -53,6 +53,12 @@ mod lifecycle;
 pub use lifecycle::run;
 use lifecycle::*;
 
+#[cfg(unix)]
+#[path = "server/signal_shutdown.rs"]
+mod signal_shutdown;
+#[cfg(unix)]
+use signal_shutdown::SignalShutdown;
+
 #[path = "server/diagnostics.rs"]
 mod diagnostics;
 use diagnostics::*;

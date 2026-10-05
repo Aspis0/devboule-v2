@@ -58,7 +58,6 @@ pub(super) fn drain_writes_and_close_journal(state: &Arc<ServerState>) -> bool {
     drained
 }
 
-#[cfg(windows)]
 /// This daemon process's instance id: 128 fresh bits, hex-encoded.
 ///
 /// It is the value every queue snapshot carries as its epoch, so a client can
@@ -82,7 +81,6 @@ pub(super) fn instance_id() -> String {
     hex
 }
 
-#[cfg(windows)]
 /// The epoch with no entropy to draw on: the pid, the wall clock in nanoseconds
 /// and a monotonic reading, mixed into the same 32-hex shape. Best effort — it
 /// makes a collision between two starts unlikely, and cannot rule one out.
@@ -158,6 +156,11 @@ pub(crate) fn run_with_paths(paths: RuntimePaths) -> Result<(), DaemonError> {
     lock.write_body(&record.body())?;
 
     let state = ServerState::with_paths(instance_id, paths.clone())?;
+    // SIGTERM/SIGINT must reach the same shutdown the Shutdown RPC sends:
+    // this guard lives for the run and, on drop, unregisters the handlers
+    // and joins the reader while the state is still alive.
+    #[cfg(unix)]
+    let _signal_shutdown = SignalShutdown::install(Arc::clone(&state));
     // Attachments survive a session close that never ran, because the daemon was
     // killed first. Sweep the ones past the retention window on every start:
     // this is the fallback existence's only reason to be here.

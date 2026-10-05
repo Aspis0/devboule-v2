@@ -2,6 +2,7 @@
 //! bind, hello, one RPC, a refused second daemon, graceful shutdown, and
 //! the artifacts it must leave behind. Unix only; Windows never runs this.
 
+use std::io::Read;
 use std::time::{Duration, Instant};
 
 use crate::paths::RuntimePaths;
@@ -78,6 +79,11 @@ fn unix_server_starts_serves_and_cleans_up() {
         mode_of(&wal).is_none() || mode_of(&wal) == Some(0o600),
         "journal WAL"
     );
+    let shm = journal.with_extension("db-shm");
+    assert!(
+        mode_of(&shm).is_none() || mode_of(&shm) == Some(0o600),
+        "journal SHM"
+    );
 
     // Phase 5: a second daemon on the same dir is refused, fast and
     // without side effects (the lock fails before any bind).
@@ -151,5 +157,98 @@ fn unix_server_starts_serves_and_cleans_up() {
     assert!(
         !paths.socket_path.exists(),
         "stale-cleaned socket removed on shutdown"
+    );
+}
+
+/// The child half of [`unix_sigterm_reaches_the_graceful_shutdown_path`]:
+/// the real server, in its own process, until a signal arrives. Ignored in
+/// a normal run — the parent test spawns exactly this test as its host —
+/// and a manual `--ignored` run without the directory panics instead of
+/// serving nothing.
+#[test]
+#[ignore = "spawned as a child process by the SIGTERM test"]
+fn unix_signal_child_host() {
+    let directory = std::env::var("DEVBOULE_TEST_SIGNAL_DIR")
+        .expect("the SIGTERM test sets DEVBOULE_TEST_SIGNAL_DIR before spawning this host");
+    let paths = RuntimePaths::from_dir(std::path::PathBuf::from(directory));
+    super::lifecycle::run_with_paths(paths.clone()).expect("SIGTERM ends the run cleanly");
+    assert!(
+        !paths.socket_path.exists(),
+        "the signalled run must remove its socket before exiting"
+    );
+    assert!(
+        matches!(
+            DaemonState::read(&paths.lock_file),
+            DaemonState::Stopped(_, crate::ExitReason::Requested)
+        ),
+        "the signalled run must record a requested goodbye"
+    );
+}
+
+/// SIGTERM reaches the same graceful shutdown the Shutdown RPC sends: the
+/// handler is installed by `run_with_paths` itself, so a real signal to a
+/// real server process drains the journal, writes the goodbye and unlinks
+/// the socket instead of dying on the kernel's default route. The signal
+/// always goes to the child spawned here, never to the test runner.
+#[test]
+fn unix_sigterm_reaches_the_graceful_shutdown_path() {
+    let temp = TempDir::fresh();
+    let paths = temp.paths();
+    let exe = std::env::current_exe().expect("test executable");
+    let mut child = std::process::Command::new(exe)
+        .args([
+            "server::unix_startup_tests::unix_signal_child_host",
+            "--exact",
+            "--ignored",
+        ])
+        .env("DEVBOULE_TEST_SIGNAL_DIR", &temp.0)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn the signal child host");
+
+    // Readiness through the record, as above: the record is what a
+    // launcher reads, and connecting would only prove the socket.
+    wait_for_ready(&paths);
+
+    let pid = child.id() as libc::pid_t;
+    assert_eq!(
+        unsafe { libc::kill(pid, libc::SIGTERM) },
+        0,
+        "SIGTERM delivered to the child host"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        match child.try_wait().expect("poll the signal child host") {
+            Some(status) => break status,
+            None => {
+                assert!(
+                    Instant::now() < deadline,
+                    "the child host ignored SIGTERM and kept serving"
+                );
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    };
+    let mut stderr = String::new();
+    let _ = child
+        .stderr
+        .take()
+        .expect("piped stderr")
+        .read_to_string(&mut stderr);
+    assert!(status.success(), "child host failed: {status:?}\n{stderr}");
+
+    assert!(
+        !paths.socket_path.exists(),
+        "the signalled run unlinked its socket"
+    );
+    assert!(
+        matches!(
+            DaemonState::read(&paths.lock_file),
+            DaemonState::Stopped(_, crate::ExitReason::Requested)
+        ),
+        "the signalled run recorded the goodbye"
     );
 }

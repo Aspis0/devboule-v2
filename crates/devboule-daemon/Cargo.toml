@@ -144,6 +144,10 @@ curve25519-dalek = { version = "=4.1.3", default-features = false, optional = tr
 # the socket accept path (`getpeereid` on macOS, `SO_PEERCRED` on Linux).
 # 0.2.189 is already in the lockfile, so this introduces no new package.
 libc = "=0.2.189"
+# SIGTERM/SIGINT become the same shutdown request the RPC sends, on a
+# dedicated reader thread. 0.4.4 is already in the lockfile transitively,
+# so this direct dependency introduces no new package either.
+signal-hook = "0.4"
 
 [target.'cfg(windows)'.dependencies]
 # Named pipe, DACL, and LockFileEx. Version 0.61.2 is already in the lockfile
