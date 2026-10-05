@@ -29,6 +29,10 @@ use uuid::Uuid;
 pub(crate) struct McpCallCancellation {
     cancelled: AtomicBool,
     requested: AtomicBool,
+    /// The caller asked to cancel, whether or not that found a card to take
+    /// down. It acts on nothing by itself: only a call that checks it between
+    /// the person's answer and its act reads it.
+    asked: AtomicBool,
     waiting: AtomicBool,
 }
 
@@ -37,6 +41,7 @@ impl McpCallCancellation {
         Self {
             cancelled: AtomicBool::new(false),
             requested: AtomicBool::new(false),
+            asked: AtomicBool::new(false),
             waiting: AtomicBool::new(false),
         }
     }
@@ -52,6 +57,14 @@ impl McpCallCancellation {
             self.requested.store(true, Ordering::Release);
             true
         }
+    }
+
+    pub(crate) fn is_asked(&self) -> bool {
+        self.asked.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn note_asked(&self) {
+        self.asked.store(true, Ordering::Release);
     }
 
     pub(crate) fn is_requested(&self) -> bool {
@@ -178,11 +191,12 @@ pub(crate) fn current_mcp_call_cancelled(session_id: &str) -> bool {
 use crate::server::ServerState;
 
 /// Whether the caller of the current call has asked to withdraw it, whether or
-/// not the request has found a card to take down. A cancel that arrives while
-/// the call is between the person's answer and the act is recorded as asked.
+/// not the request found a card to take down. A cancel that arrives after the
+/// person's answer has no card left to withdraw and is only recorded here.
 pub(crate) fn current_mcp_call_withdrawn(session_id: &str) -> bool {
     current_mcp_call().is_some_and(|(active_session_id, _, call)| {
-        active_session_id == session_id && (call.is_cancelled() || call.is_requested())
+        active_session_id == session_id
+            && (call.is_cancelled() || call.is_requested() || call.is_asked())
     })
 }
 

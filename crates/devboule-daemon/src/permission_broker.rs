@@ -920,6 +920,7 @@ impl PermissionBroker {
         request_id: &serde_json::Value,
         cancelled: &Arc<crate::mcp_broker::McpCallCancellation>,
     ) -> bool {
+        cancelled.note_asked();
         let pending = {
             let Ok(table) = self.pending.lock() else {
                 return false;

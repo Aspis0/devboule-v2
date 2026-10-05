@@ -130,6 +130,15 @@ impl McpBroker {
             .copied()
     }
 
+    /// The gate's mark table, held: whoever must read or write a mark waits
+    /// until it is dropped, which is how a test stops a call at a known point.
+    #[cfg(test)]
+    pub(in crate::mcp_broker) fn hold_gate_marks_for_test(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<(String, String), GateMark>> {
+        self.write_gates.marks.lock().expect("first-use gate lock")
+    }
+
     #[cfg(test)]
     pub(in crate::mcp_broker) fn open_first_use_gate_for_test(
         &self,

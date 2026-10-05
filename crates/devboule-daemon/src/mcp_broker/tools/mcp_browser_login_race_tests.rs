@@ -43,6 +43,17 @@ fn cancel(panel: &Panel, id: u64) {
     http_request(&url, Some(&bearer), &body);
 }
 
+/// Whatever reaches the host in `window`, and nothing if nothing does.
+fn arrivals_within(host: &FakeHost, window: Duration) -> Vec<BrowserExecuteRequest> {
+    let deadline = Instant::now() + window;
+    let mut seen = Vec::new();
+    while Instant::now() < deadline && seen.is_empty() {
+        seen.extend(host.pending());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    seen
+}
+
 /// Every command pushed to the host until `count` have arrived.
 fn arrivals(host: &FakeHost, count: usize) -> Vec<BrowserExecuteRequest> {
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -186,4 +197,54 @@ fn eight_threads_claiming_one_group_leave_one_to_raise_the_card() {
     });
 
     assert_eq!(raised, 1);
+}
+
+/// The agent cancels the very call whose card the person has just answered,
+/// before the host is asked to type. The answer took the card out of the table,
+/// so the cancel finds nothing to withdraw, and still stops the fill.
+#[test]
+fn a_call_cancelled_after_its_own_card_was_answered_types_nothing() {
+    let tag = "fill-login-cancel-answered";
+    let panel = panel(tag);
+    let host = FakeHost::register(&panel.state, 23);
+    let reply = panel.in_background(
+        MCP_BROWSER_FILL_LOGIN_TOOL,
+        asking(json!({ "passwordRef": "e14" })),
+    );
+    host.answer_ok(&panel.state, &host.next(), preview(SITE, one_entry()));
+    let (card_id, _) = wait_for_card(&panel, tag);
+    let runtime = panel
+        .state
+        .sessions
+        .live_runtime("session", &super::tests::owner(tag))
+        .expect("the live session");
+    panel.state.mcp.bind_runtime("session", &runtime);
+
+    // The call stops at its first write to the gate once the card is answered,
+    // so the cancel lands after the answer and before the host is asked.
+    let held = panel.state.mcp.hold_gate_marks_for_test();
+    answer(
+        &panel,
+        tag,
+        &card_id,
+        PermissionOutcome::AllowOnce,
+        &format!("once:{ENTRY}"),
+    );
+    cancel(&panel, 1);
+    drop(held);
+
+    let leaked = arrivals_within(&host, Duration::from_secs(1));
+    if let Some(request) = leaked.first() {
+        host.answer_ok(&panel.state, request, json!({ "filled": ["passwordRef"] }));
+    }
+    let body = reply.join().expect("the cancelled call");
+    assert!(
+        leaked.is_empty(),
+        "the fill reached the host after the cancel"
+    );
+    assert_eq!(body.pointer("/error/code"), Some(&json!(-32800)), "{body}");
+    assert_eq!(
+        audit_rows(&panel.state).last(),
+        Some(&("browser_fill_login".to_owned(), "cancelled".to_owned()))
+    );
 }
