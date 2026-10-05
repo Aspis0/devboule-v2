@@ -8,9 +8,9 @@ use std::net::TcpStream;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use devboule_daemon::{
-    current_user_sid, dacl_is_current_user_only, dacl_sddl_for_path, oracle_app_lock_path,
-};
+use devboule_daemon::oracle_app_lock_path;
+#[cfg(windows)]
+use devboule_daemon::{current_user_sid, dacl_is_current_user_only, dacl_sddl_for_path};
 
 use super::host::{published, send, unique_paths, TestHost, QUERY_PATH as QUERY};
 use super::support::TestEnvironment;
@@ -136,6 +136,7 @@ fn the_token_read_from_the_record_reaches_the_query_route() {
 /// The record carries the bearer: its DACL is what keeps that secret on this
 /// user. The temp dir has to start out wider, or the mutation that drops the
 /// narrowing would pass for the wrong reason.
+#[cfg(windows)]
 #[test]
 fn the_record_file_is_readable_by_the_current_user_only() {
     let (paths, _guard) = unique_paths();
@@ -154,6 +155,30 @@ fn the_record_file_is_readable_by_the_current_user_only() {
     assert!(
         dacl_is_current_user_only(&sddl, &sid),
         "start must narrow the record file down to this user: {sddl}"
+    );
+
+    endpoint.stop();
+}
+
+/// Unix half of the DACL test above: start narrows the bearer record down
+/// to owner-only mode.
+#[cfg(not(windows))]
+#[test]
+fn the_record_file_is_owner_only_on_unix() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (paths, _guard) = unique_paths();
+    let endpoint = OracleEndpoint::default();
+    endpoint.start_at(&paths, TestHost::bare()).expect("start");
+
+    let mode = std::fs::metadata(oracle_app_lock_path(&paths))
+        .expect("record metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "start must narrow the record file to owner-only"
     );
 
     endpoint.stop();

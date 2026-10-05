@@ -2,16 +2,22 @@
 //!
 //! It reads the `DEVBOULE_*` environment the daemon injected, reopens the
 //! named pipe, and sends `session_report_agent`. It does not touch any
-//! user CLI configuration.
+//! user CLI configuration. The pipe is Windows-only, so off Windows this
+//! stays a stub that says so; the one test driving it is Windows-only too.
 
+#[cfg(windows)]
 use std::io::{self, Write};
+#[cfg(windows)]
 use std::time::Duration;
 
+#[cfg(windows)]
 use devboule_daemon::{
     connect_pipe, handshake, DEVBOULE_ENV, DEVBOULE_SESSION_ID, DEVBOULE_SOCKET_PATH,
 };
+#[cfg(windows)]
 use devboule_protocol::{AgentActivityState, ClientHello, OwnerId};
 
+#[cfg(windows)]
 fn main() -> io::Result<()> {
     let marker = std::env::var(DEVBOULE_ENV).unwrap_or_default();
     let session_id = std::env::var(DEVBOULE_SESSION_ID).unwrap_or_default();
@@ -69,4 +75,10 @@ fn main() -> io::Result<()> {
     // Stay alive so the test can attach to a live session. Close/kill ends this.
     std::thread::sleep(Duration::from_secs(30));
     Ok(())
+}
+
+#[cfg(not(windows))]
+fn main() {
+    eprintln!("devboule-agent-stub targets Windows only");
+    std::process::exit(2);
 }

@@ -10,15 +10,16 @@
 
 use std::io;
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+#[cfg(windows)]
+use devboule_daemon::apply_current_user_dacl;
 use devboule_daemon::{
-    apply_current_user_dacl, oracle_app_lock_path, Heartbeat, OracleAppRecord, RuntimePaths,
-    SingleInstanceLock,
+    oracle_app_lock_path, Heartbeat, OracleAppRecord, RuntimePaths, SingleInstanceLock,
 };
 
 use super::endpoint_http::{read_http_request, send_http};
@@ -73,7 +74,7 @@ impl OracleEndpoint {
         let record_path = oracle_app_lock_path(paths);
         let mut lock = SingleInstanceLock::acquire_at(&record_path)
             .map_err(|error| io::Error::other(error.to_string()))?;
-        if let Err(error) = apply_current_user_dacl(&record_path) {
+        if let Err(error) = restrict_record_to_current_user(&record_path) {
             let _ = std::fs::remove_file(&record_path);
             return Err(error);
         }
@@ -161,6 +162,20 @@ impl Drop for OracleEndpoint {
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// The record carries the query bearer, so it stays readable by this user
+/// alone: a user-only DACL on Windows, owner-only mode where the repo keeps
+/// every other secret file (0o600).
+#[cfg(windows)]
+fn restrict_record_to_current_user(path: &Path) -> io::Result<()> {
+    apply_current_user_dacl(path)
+}
+
+#[cfg(not(windows))]
+fn restrict_record_to_current_user(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
 }
 
 /// The port this record names cannot accept anymore: removing the record is

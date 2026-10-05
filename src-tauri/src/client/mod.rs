@@ -10,10 +10,11 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
+use devboule_daemon::current_user_sid;
 use devboule_daemon::{
-    connect, connect_or_spawn, connect_within, current_user_sid, daemon_file_name, DaemonClient,
-    DaemonError, DaemonState, EventHandler, ExitReason, RuntimePaths, SessionResetHandler,
-    SessionStateHandler,
+    connect, connect_or_spawn, connect_within, daemon_file_name, DaemonClient, DaemonError,
+    DaemonState, EventHandler, ExitReason, RuntimePaths, SessionResetHandler, SessionStateHandler,
 };
 use devboule_protocol::{
     ClientHello, Cursor, DaemonStatusBody, ErrorCode, SessionEvent, SessionEventEnvelope,
@@ -1979,7 +1980,11 @@ fn supervisor(inner: Arc<BridgeInner>, stop: Arc<AtomicBool>) {
 /// The hello every connection from this process presents: the owner names
 /// this app process, so the daemon can count two windows apart.
 fn client_hello() -> Result<ClientHello, String> {
+    // No SID off Windows; the daemon's own test owner uses the same word.
+    #[cfg(windows)]
     let user = current_user_sid().map_err(|error| error.to_string())?;
+    #[cfg(not(windows))]
+    let user = "unix".to_string();
     let owner = devboule_protocol::OwnerId::new(user, format!("app-{}", std::process::id()))?;
     Ok(ClientHello::m3a(owner, "devboule-app"))
 }

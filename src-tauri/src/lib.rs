@@ -256,7 +256,9 @@ pub fn run() {
             // user-requested exit (no code). The same confirmation decides;
             // a prevented exit leaves the app and its daemon up.
             #[cfg(target_os = "macos")]
-            tauri::RunEvent::ExitRequested { code: None, api } => {
+            tauri::RunEvent::ExitRequested {
+                code: None, api, ..
+            } => {
                 api.prevent_exit();
                 close_flow::confirm_quit(app_handle.clone());
             }

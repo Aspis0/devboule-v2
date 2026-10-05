@@ -324,7 +324,7 @@ mod imp {
 
 #[cfg(not(windows))]
 mod imp {
-    use super::{Act, BrowserChord};
+    use super::{Act, BrowserChord, PageFacts};
     use tauri::{AppHandle, Webview, Wry};
 
     /// Nothing to restrict: this target has no page to restrict.
