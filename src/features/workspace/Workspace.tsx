@@ -46,6 +46,9 @@ import {
 import { browserTabLabel, normalizeBrowserUrl, BROWSER_START_URL } from "./browserUrl";
 import { closeBrowserPage } from "./browserPages";
 import { SplitPane } from "./split/SplitPane";
+import { SplitDropPreview } from "./split/SplitDropPreview";
+import { useTabDrag } from "./split/useTabDrag";
+import { resolveDropOutcome, type DropZone } from "./split/tabDropZones";
 import {
   forgetSplitPanesFor,
   mergeSplitPane,
@@ -876,16 +879,6 @@ export function Workspace({
     },
     [selectedKey],
   );
-  const mergeSplit = useCallback(() => {
-    if (selectedKey === null) return;
-    const merged = splitPaneFor(selectedKey)?.lowerTabId ?? null;
-    mergeSplitPane(selectedKey);
-    // Merged into the strip means merged into the pane: the tab comes back as
-    // the one the workspace is showing, so its page is presented again.
-    if (merged === null) return;
-    writeToolTab(merged);
-    setFocusAfterMerge(merged);
-  }, [selectedKey, writeToolTab]);
   /** The control that merged the panes is inside the subtree that merge
    * removes, so focus has to land somewhere on purpose: on the tab that was
    * below, whose chip is where the eye already is. Applied after the commit
@@ -896,6 +889,16 @@ export function Workspace({
     document.getElementById(sessionTabElementId(focusAfterMerge))?.focus({ preventScroll: true });
     setFocusAfterMerge(null);
   }, [focusAfterMerge]);
+  const mergeSplit = useCallback(() => {
+    if (selectedKey === null) return;
+    const merged = splitPaneFor(selectedKey)?.lowerTabId ?? null;
+    mergeSplitPane(selectedKey);
+    // Merged into the strip means merged into the pane: the tab comes back as
+    // the one the workspace is showing, so its page is presented again.
+    if (merged === null) return;
+    writeToolTab(merged);
+    setFocusAfterMerge(merged);
+  }, [selectedKey, writeToolTab]);
   /** Move the tab in front into the pane below, and put a session on top of
    * it: the pane above is the workspace's own pane, and an empty one is not a
    * split. This is the keyboard's road into the split (the drag is slice 2). */
@@ -907,6 +910,71 @@ export function Workspace({
     },
     [selectSession, selectedKey, selectedSessionId, visibleSessions],
   );
+  /** The menu's version of the same act, on a tab id: the strip's menu names a
+   * tab, and only the tab model knows what kind it is. */
+  const splitDownFromMenu = useCallback(
+    (tabId: string) => {
+      const tool = visibleToolTabs.find((tab) => tab.id === tabId);
+      if (tool === undefined) return;
+      splitTabDown(tool);
+    },
+    [splitTabDown, visibleToolTabs],
+  );
+
+  /** A dropped tab, and what its landing does. The panes are read here, at the
+   * drop, so the outcome is never decided against a layout the drag has since
+   * changed. */
+  const dropTab = useCallback(
+    (tabId: string, zone: DropZone | "strip") => {
+      if (selectedKey === null) return;
+      const outcome = resolveDropOutcome({
+        zone,
+        draggedTabId: tabId,
+        lowerTabId: split?.lowerTabId ?? null,
+        upperTabId: activeTabId,
+        upperCanMoveBelow: panes.upperTool?.kind === "browser",
+      });
+      if (outcome.kind === "split-down") {
+        splitPaneDown(selectedKey, tabId);
+        selectSession(selectedSessionId ?? visibleSessions[0]?.id ?? null);
+        return;
+      }
+      if (outcome.kind === "split-up") {
+        // The tab that was above moves below and the dragged one takes its place,
+        // so what the person pointed at is what they get.
+        const moved = panes.upperTool?.id;
+        if (moved === undefined) return;
+        splitPaneDown(selectedKey, moved);
+        writeToolTab(tabId);
+        return;
+      }
+      if (outcome.kind === "merge") {
+        mergeSplitPane(selectedKey);
+        writeToolTab(tabId);
+        setFocusAfterMerge(tabId);
+        return;
+      }
+      selectTab(tabId);
+    },
+    [
+      activeTabId,
+      panes.upperTool,
+      selectSession,
+      selectTab,
+      selectedKey,
+      selectedSessionId,
+      split,
+      visibleSessions,
+      writeToolTab,
+    ],
+  );
+  const { drag, startDrag: startTabDrag } = useTabDrag({
+    boxes: () => ({
+      area: centerRef.current,
+      strip: document.querySelector<HTMLElement>(".workspace-session-tabs"),
+    }),
+    onDrop: dropTab,
+  });
   // The roads that set the selected workspace WITHOUT choosing a tab for it:
   // the workspace this mount restores, a project list that no longer holds the
   // selection, a project row whose workspace the "+" reuses. Each lands on the
@@ -1009,6 +1077,11 @@ export function Workspace({
     addButtonRef,
     resolveBrowserAddress: browserTabAddress,
     renameMenu: { entriesFor: rename.renameEntriesFor, open: rename.openRename },
+    lowerTabId: split?.lowerTabId ?? null,
+    onSplitDown: splitDownFromMenu,
+    // The menu's way out of the pane below is the merge control's act: the tab
+    // comes back up and the workspace is one pane again.
+    onMoveUpPane: mergeSplit,
   });
   // The roster is the authority on what a close is still hiding: a row it
   // shows as gone, ended, or resumed is confirmed (or moot), and the mark
@@ -1104,6 +1177,9 @@ export function Workspace({
   // excuse the hidden session. Reselecting a session reports it again.
   // The subscription below is app-lifetime: it is set up once and reads the
   // active tool through a ref, so a tool switch never churns the subscription.
+  /** The centre a drop is read against, read live: the window resizes it. */
+  const centerRef = useRef<HTMLElement>(null);
+
   const upperToolIdRef = useRef(panes.upperToolId);
   useEffect(() => {
     upperToolIdRef.current = panes.upperToolId;
@@ -1832,7 +1908,7 @@ export function Workspace({
         }}
       />
 
-      <main className="workspace-center-panel">
+      <main className="workspace-center-panel" ref={centerRef}>
         <SessionStrip
           tabs={composedTabs}
           activeTabId={activeTabId}
@@ -1860,7 +1936,9 @@ export function Workspace({
           workspaceName={workspaceName}
           onOpenSession={handleOpenOverviewSession}
           selectedSessionId={selectedSessionId}
+          onStripPointerDown={startTabDrag}
         />
+        <SplitDropPreview zone={drag?.zone ?? null} />
         <DaemonRestartNotice
           instanceId={daemon.instanceId}
           hasRecovered={sessions.some(isRecoveredSession)}

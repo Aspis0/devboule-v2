@@ -7,7 +7,14 @@ import type { TabCloseAction } from "./bulkCloseSessions";
 import type { TabCopyAction } from "./tabCopyActions";
 
 export interface TabMenuEntry {
-  key: TabCloseAction | "close-selection" | "delete" | "rename" | TabCopyAction;
+  key:
+    | TabCloseAction
+    | "close-selection"
+    | "delete"
+    | "rename"
+    | "split-down"
+    | "move-up-pane"
+    | TabCopyAction;
   label: string;
   disabled: boolean;
   /** Rendered after a separator, in the destructive tone: it destroys. */

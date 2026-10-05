@@ -187,3 +187,45 @@
     margin-top: var(--space-4);
   }
 }
+
+/* The drag's destination, over the pane the drop is read against. The pointer
+   never reaches it (it is aria-hidden and takes no events); the page that would
+   sit on top of it is parked for as long as it is up, by the registration in
+   SplitDropPreview.tsx. */
+.workspace-drop-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  pointer-events: none;
+}
+
+.workspace-drop-preview {
+  position: absolute;
+  background: var(--accent);
+  opacity: 0.6;
+}
+
+.workspace-drop-preview[data-zone="top"] {
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 50%;
+}
+
+.workspace-drop-preview[data-zone="bottom"] {
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 50%;
+}
+
+.workspace-drop-preview[data-zone="center"] {
+  inset: var(--space-8);
+}
+
+/* A drag is the pointer's, not the chip's: nothing along the way selects. */
+.workspace-is-dragging-tab,
+.workspace-is-dragging-tab * {
+  user-select: none !important;
+  cursor: grabbing !important;
+}

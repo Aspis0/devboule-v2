@@ -32,6 +32,9 @@
 }
 
 .workspace-center-panel {
+  /* The drop preview is a child of this box and positions against it, not
+     against the window frame. */
+  position: relative;
   display: flex;
   flex: 1;
   flex-direction: column;

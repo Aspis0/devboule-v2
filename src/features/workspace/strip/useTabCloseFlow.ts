@@ -57,6 +57,13 @@ interface TabCloseFlowArgs {
    * Required: a caller that forgets it must not compile into a menu that
    * silently lost its rename row. */
   renameMenu: RenameMenu;
+  /** The tab in the pane below, so the menu can name the act that brings it
+   * back up. */
+  lowerTabId?: string | null;
+  /** The two pane acts the menu offers, wired to the layout that answers them.
+   * Optional: a caller with no split wires neither and the menu offers neither. */
+  onSplitDown?: (tabId: string) => void;
+  onMoveUpPane?: (tabId: string) => void;
 }
 
 /** The rename half of the tab menu as the caller wires it from the rename
@@ -170,6 +177,9 @@ export function useTabCloseFlow({
   addButtonRef,
   resolveBrowserAddress,
   renameMenu,
+  lowerTabId = null,
+  onSplitDown,
+  onMoveUpPane,
 }: TabCloseFlowArgs): {
   menu: { anchorId: string; entries: TabMenuEntry[] } | null;
   anchorRef: RefObject<HTMLElement | null>;
@@ -217,7 +227,9 @@ export function useTabCloseFlow({
           anchorId: openMenuState.anchorId,
           entries: openMenuState.viaSelection
             ? [buildSelectionCloseEntry(openMenuState.targets.length)]
-            : (toolTabMenuEntries(tabs, openMenuState.anchorId, resolveBrowserAddress) ?? [
+            : (toolTabMenuEntries(tabs, openMenuState.anchorId, resolveBrowserAddress, {
+                isBelow: openMenuState.anchorId === lowerTabId,
+              }) ?? [
                 ...buildTabCopyEntries(anchorTab, branch, resolveBrowserAddress),
                 ...renameEntriesFor(openMenuState.anchorId),
                 ...buildTabCloseEntries(
@@ -368,6 +380,16 @@ export function useTabCloseFlow({
         );
         return;
       }
+      if (key === "split-down") {
+        // The keyboard's road into the split: the same act the drag's bottom
+        // edge makes, on the tab the menu was opened from.
+        onSplitDown?.(anchorId);
+        return;
+      }
+      if (key === "move-up-pane") {
+        onMoveUpPane?.(anchorId);
+        return;
+      }
       if (key === "delete") {
         // Delete destroys the session, so it always asks, whatever is
         // running. Never offered on a selection menu — and never on a tool
@@ -383,7 +405,7 @@ export function useTabCloseFlow({
         return;
       }
     },
-    [openConfirm, tabs, sessions, removeTabs],
+    [onMoveUpPane, onSplitDown, openConfirm, tabs, sessions, removeTabs],
   );
 
   const activateEntry = useCallback(

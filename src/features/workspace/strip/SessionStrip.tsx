@@ -7,6 +7,7 @@ import {
   useState,
   useSyncExternalStore,
   type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -77,6 +78,10 @@ export interface SessionStripProps {
   /** The selected session id for the overview's initial row; the tab id
    * stays the strip's and may name a tool tab. */
   selectedSessionId: string | null;
+  /** The strip's own pointerdown, with the chip under the pointer: a press that
+   * travels becomes a drag of that tab, and a press that does not stays the
+   * click that selects it. */
+  onStripPointerDown?: (tabId: string, event: ReactPointerEvent<HTMLDivElement>) => void;
 }
 
 /** The tab strip region: the scrolling tablist, the fade on the sides that
@@ -99,6 +104,7 @@ export function SessionStrip({
   workspaceName,
   onOpenSession,
   selectedSessionId,
+  onStripPointerDown,
 }: SessionStripProps) {
   const scrollportRef = useRef<HTMLDivElement>(null);
   const sessions = useMemo(
@@ -371,8 +377,19 @@ export function SessionStrip({
     ],
   );
 
+  const chipUnder = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>): void => {
+      if (onStripPointerDown === undefined || event.button !== 0) return;
+      const chip = (event.target as Element | null)?.closest?.(".workspace-session-tab");
+      const tabId = chip?.id.replace(/^workspace-session-tab-/, "");
+      if (tabId === undefined || tabId === "") return;
+      onStripPointerDown(tabId, event);
+    },
+    [onStripPointerDown],
+  );
+
   return (
-    <div className="workspace-session-tabs">
+    <div className="workspace-session-tabs" onPointerDown={chipUnder}>
       {/* The row of tabs scrolls; the add button below it stays outside
           the scrollport, so a full strip cannot carry it off screen. */}
       <div
