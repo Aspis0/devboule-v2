@@ -138,8 +138,11 @@ fn reply_id(reply: &DaemonMessage) -> Option<u64> {
     }
 }
 
-/// Wait until exactly `expected` of the gates have been taken, polling
-/// instead of sleeping a fixed spell; the gates stay held while sampling, so
+/// Wait until exactly `expected` of the gates have been taken, one bounded
+/// window per start: each command starts on its own root's thread and behind
+/// its own first git process, so one slow start must not have to fit a window
+/// shared with every other start. The bound only catches a command that never
+/// started, not one that started late; the gates stay held while sampling, so
 /// an over-cap start would show up in `held`.
 pub(super) fn wait_until_taken(
     gates: &[(
@@ -148,24 +151,29 @@ pub(super) fn wait_until_taken(
     )],
     expected: usize,
 ) -> Vec<bool> {
-    let deadline = Instant::now() + Duration::from_secs(5);
     let mut held = vec![false; gates.len()];
-    loop {
-        for (index, (entered, _)) in gates.iter().enumerate() {
-            if !held[index] && entered.try_recv().is_ok() {
-                held[index] = true;
+    let mut started = 0;
+    while started < expected {
+        let before = started;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while started == before {
+            for (index, (entered, _)) in gates.iter().enumerate() {
+                if !held[index] && entered.try_recv().is_ok() {
+                    held[index] = true;
+                    started += 1;
+                }
             }
+            if started >= expected {
+                return held;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "only {started} of {expected} expected commands started: {held:?}"
+            );
+            std::thread::sleep(Duration::from_millis(25));
         }
-        if held.iter().filter(|taken| **taken).count() == expected {
-            return held;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "only {} of {expected} expected commands started: {held:?}",
-            held.iter().filter(|taken| **taken).count()
-        );
-        std::thread::sleep(Duration::from_millis(25));
     }
+    held
 }
 
 /// Record every reply this connection produces, in arrival order, until the

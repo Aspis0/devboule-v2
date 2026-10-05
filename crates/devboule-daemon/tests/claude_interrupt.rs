@@ -39,13 +39,17 @@ fn is_finish(events: &[SessionEvent]) -> bool {
 }
 
 struct InterruptEnv {
-    _test_lock: std::sync::MutexGuard<'static, ()>,
     _env: common::EnvGuard,
     _harness: common::Harness,
     events: std::sync::Arc<std::sync::Mutex<Vec<SessionEvent>>>,
     client: std::sync::Arc<devboule_daemon::DaemonClient>,
     session_id: String,
     console_file: std::path::PathBuf,
+    // Declared last on purpose: fields drop in declaration order, and the lock
+    // must outlive the env restore. Dropped first, it would release the next
+    // test into `use_stub_cli` before this one's guard removed the command it
+    // had just set, and that test's daemon would start without the stub CLI.
+    _test_lock: std::sync::MutexGuard<'static, ()>,
 }
 
 fn setup(name: &str) -> InterruptEnv {

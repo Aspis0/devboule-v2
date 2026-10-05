@@ -78,7 +78,7 @@ fn a_write_runs_while_the_read_lane_is_saturated() {
     for (_, release) in &gates {
         release.send(()).expect("release a held status");
     }
-    store.wait_len(5);
+    store.wait_each_reply(5);
     stop.store(true, Ordering::SeqCst);
     let _ = collector.join();
     for id in 1..=4 {
@@ -190,7 +190,7 @@ fn a_write_runs_while_its_own_root_read_waits_for_a_permit() {
     for (_, release) in &foreign_gates {
         release.send(()).expect("release a foreign status");
     }
-    store.wait_len(6);
+    store.wait_each_reply(6);
     stop.store(true, Ordering::SeqCst);
     let _ = collector.join();
     let mut ids = store.ids();
