@@ -82,7 +82,7 @@ fn launch_opens_a_page_navigates_and_closes_gracefully() {
         );
         assert_eq!(wait_for_title(&page).await, "CfT");
 
-        let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
+        let event = tokio::time::timeout(Duration::from_secs(10), events.state.recv())
             .await
             .expect("a page that navigated says something within 10s")
             .expect("the reader still reads while the target is open");

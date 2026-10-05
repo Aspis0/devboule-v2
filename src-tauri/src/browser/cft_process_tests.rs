@@ -58,12 +58,10 @@ fn the_backoff_doubles_and_caps() {
 /// A loopback debugger that answers the ownership probe with `pid` as its
 /// `browser` process.
 async fn endpoint_naming(pid: u64) -> FakeServer {
-    FakeServer::start(vec![Step::Answer {
-        result: json!({ "processInfo": [
-            { "type": "renderer", "id": 7 },
-            { "type": "browser", "id": pid },
-        ]}),
-    }])
+    FakeServer::start(vec![Step::Answer(json!({ "processInfo": [
+        { "type": "renderer", "id": 7 },
+        { "type": "browser", "id": pid },
+    ]}))])
     .await
 }
 

@@ -26,10 +26,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use tokio::sync::mpsc;
 
 use super::cdp::Page;
-use super::cdp_ws::{WsEvent, WsPage};
+use super::cdp_ws::{WsEvents, WsPage};
 use super::cft_endpoint::{browser_ws_url, page_ws_url, read_devtools_port};
 use super::cft_lock::ResourceLock;
 
@@ -158,10 +157,7 @@ impl CftBrowser {
 
     /// Open a page target at `url` and connect the slice-1 transport to it.
     /// This is the one handoff slice 4 needs.
-    pub(crate) async fn open_page(
-        &self,
-        url: &str,
-    ) -> Result<(WsPage, mpsc::Receiver<WsEvent>), CftError> {
+    pub(crate) async fn open_page(&self, url: &str) -> Result<(WsPage, WsEvents), CftError> {
         let (browser, _) = self.connect_owned().await?;
         let created = match browser
             .call("Target.createTarget", json!({ "url": url }))
@@ -201,7 +197,7 @@ impl CftBrowser {
 
     /// Connect to the browser's debugger, refusing it unless it names this
     /// child as its `browser` process. A refusal sends no other command.
-    async fn connect_owned(&self) -> Result<(WsPage, mpsc::Receiver<WsEvent>), CftError> {
+    async fn connect_owned(&self) -> Result<(WsPage, WsEvents), CftError> {
         let (browser, events) = WsPage::connect(&self.browser_ws)
             .await
             .map_err(|error| CftError::Protocol(error.to_string()))?;

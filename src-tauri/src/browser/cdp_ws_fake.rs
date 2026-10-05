@@ -29,9 +29,6 @@ pub enum Step {
     Answer(Value),
     /// Answer with the protocol's own error object.
     Error { code: i64, message: String },
-    /// Answer with a fixed result object, for a command whose answer a test
-    /// has to shape and the echo cannot.
-    Answer { result: Value },
     /// Say an event, then answer the command with its own id and method.
     Event { method: String, params: Value },
     /// Answer a call that names a node the way a page's own document does: a
@@ -110,7 +107,6 @@ impl FakeServer {
                     Step::Error { code, message } => {
                         vec![json!({ "id": id, "error": { "code": code, "message": message } })]
                     }
-                    Step::Answer { result } => vec![json!({ "id": id, "result": result })],
                     Step::Event { method, params } => {
                         if method == "Page.frameNavigated" {
                             committed = true;
