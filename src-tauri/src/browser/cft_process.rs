@@ -7,8 +7,8 @@
 //! fallback for a child that [`CftBrowser::shutdown`] never reached.
 //!
 //! UNVERIFIED on macOS beyond compiling: headless launch, port read and the
-//! websocket handshake are exercised on Windows here; Gatekeeper, the headed
-//! window and Retina mapping are not.
+//! websocket handshake are exercised on Windows here; the headed window and
+//! Retina mapping are not.
 //!
 //! Ownership is the exact [`std::process::Child`] handle plus the pid, exe
 //! path and launch nonce recorded at spawn, and the exclusive profile lock

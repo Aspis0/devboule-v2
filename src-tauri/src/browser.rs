@@ -17,7 +17,6 @@ mod cft_endpoint;
 mod cft_fetch;
 mod cft_install;
 mod cft_lock;
-mod cft_macos;
 mod cft_manifest;
 mod cft_process;
 mod cft_unpack;

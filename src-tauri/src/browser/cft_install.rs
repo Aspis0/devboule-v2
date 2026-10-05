@@ -6,6 +6,11 @@
 //! app will execute from. The unpack lands in a staging directory beside its
 //! destination and is renamed into place in one step, so an install that dies
 //! half way leaves the working version that was already there.
+//!
+//! The pinned SHA-256 is the whole trust anchor on every platform. The macOS
+//! build is only ad hoc signed and ships no sealed resources, so there is no
+//! publisher signature to verify; the digest over an HTTPS download from
+//! Google's CDN is what ties the bytes to the reviewed build.
 
 #![cfg_attr(not(test), allow(dead_code))]
 
@@ -18,7 +23,6 @@ use sha2::{Digest, Sha256};
 
 use super::cft_fetch::ArchiveSource;
 use super::cft_lock::ResourceLock;
-use super::cft_macos;
 use super::cft_manifest::{Executable, Pin, Platform};
 use super::cft_unpack::unpack;
 
@@ -31,8 +35,6 @@ pub enum InstallError {
     Transfer(String),
     /// The archive carried an entry that would land outside the install.
     UnsafeEntry(String),
-    /// The macOS signature or quarantine step refused the bundle.
-    Untrusted(String),
 }
 
 impl std::fmt::Display for InstallError {
@@ -49,9 +51,6 @@ impl std::fmt::Display for InstallError {
                 "the archive carries an entry that would land outside the \
                  install: {name}"
             ),
-            InstallError::Untrusted(text) => {
-                write!(f, "the macOS signature check refused the browser: {text}")
-            }
         }
     }
 }
@@ -79,9 +78,7 @@ impl Installed {
 /// the source by value because the worker is `'static`: a reference would
 /// not live long enough to cross into it.
 ///
-/// The trust step is always the real one here; tests that need a fake use
-/// [`install_with_trust`]. Unwired until slice 4 wires the installer, so
-/// no test calls it yet.
+/// Unwired until slice 4 wires the installer.
 #[allow(dead_code)]
 pub async fn install<S>(
     pin: Pin,
@@ -92,27 +89,10 @@ pub async fn install<S>(
 where
     S: ArchiveSource + Send + Sync + 'static,
 {
-    install_with_trust(pin, platform, app_data, source, cft_macos::trust).await
-}
-
-/// [`install`] with the trust step injected. Production passes the real
-/// signature check; tests pass a fake. A test below proves this wiring by
-/// calling the production constructor on macOS and watching the real
-/// check refuse a fixture with no bundle.
-pub async fn install_with_trust<S>(
-    pin: Pin,
-    platform: Platform,
-    app_data: &Path,
-    source: S,
-    trust: fn(&Path) -> Result<(), String>,
-) -> Result<Installed, InstallError>
-where
-    S: ArchiveSource + Send + Sync + 'static,
-{
     // Pin is Copy, PathBuf is owned: move both into the worker.
     let app_data = app_data.to_owned();
     tauri::async_runtime::spawn_blocking(move || {
-        install_blocking_with_trust(pin, platform, &app_data, &source, &trust)
+        install_blocking(pin, platform, &app_data, &source)
     })
     .await
     .map_err(|error| InstallError::Transfer(format!("the install worker ended: {error}")))?
@@ -130,19 +110,6 @@ pub fn install_blocking(
     platform: Platform,
     app_data: &Path,
     source: &dyn ArchiveSource,
-) -> Result<Installed, InstallError> {
-    install_blocking_with_trust(pin, platform, app_data, source, &cft_macos::trust)
-}
-
-/// [`install_blocking`] with the trust step injected: the signature check
-/// is a parameter so tests run the install logic with a fake, while this
-/// constructor always wires the real one.
-pub fn install_blocking_with_trust(
-    pin: Pin,
-    platform: Platform,
-    app_data: &Path,
-    source: &dyn ArchiveSource,
-    trust: &dyn Fn(&Path) -> Result<(), String>,
 ) -> Result<Installed, InstallError> {
     let archive_meta = pin.archive(platform);
     let home = app_data.join("chrome-for-testing");
@@ -187,11 +154,6 @@ pub fn install_blocking_with_trust(
     std::fs::create_dir_all(&staging)
         .map_err(|error| InstallError::Transfer(format!("{}: {error}", staging.display())))?;
     unpack(&temp, platform.archive_root(), &staging)?;
-
-    // Apple's gate runs on the staged copy: a bundle this app does not trust
-    // never reaches the directory the process manager launches out of. Off
-    // macOS this is a no-op (SHA-256 alone is the trust).
-    trust(&staging).map_err(InstallError::Untrusted)?;
 
     std::fs::write(
         staging.join(pin.marker(platform)),

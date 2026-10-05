@@ -68,17 +68,6 @@ fn win_platform() -> Platform {
     Platform::Win64
 }
 
-/// A trust step that accepts every staged tree, so install-logic tests run
-/// on macOS without a signed bundle. Production never uses this.
-fn accept(_staged: &Path) -> Result<(), String> {
-    Ok(())
-}
-
-/// A trust step that refuses, proving a failed check installs nothing.
-fn refuse(_staged: &Path) -> Result<(), String> {
-    Err("no trust for this bundle".to_owned())
-}
-
 #[test]
 fn a_verified_archive_unpacks_and_marks() {
     let app_data = tempfile::tempdir().expect("an app-data dir");
@@ -88,12 +77,11 @@ fn a_verified_archive_unpacks_and_marks() {
         &digest_of(&body),
     );
     // Through the async wrapper, so the blocking worker path is proved too.
-    let done = tauri::async_runtime::block_on(install_with_trust(
+    let done = tauri::async_runtime::block_on(install(
         pin,
         win_platform(),
         app_data.path(),
         Bytes { body },
-        accept,
     ))
     .expect("the reviewed archive installs");
     assert_eq!(done.version, TEST_VERSION);
@@ -107,13 +95,7 @@ fn a_digest_mismatch_deletes_the_download_and_installs_nothing() {
     let app_data = tempfile::tempdir().expect("an app-data dir");
     let body = test_zip(&[("chrome-win64/chrome.exe", b"browser")]);
     let pin = test_pin("https://example.invalid/chrome-win64.zip", &"0".repeat(64));
-    let refused = install_blocking_with_trust(
-        pin,
-        win_platform(),
-        app_data.path(),
-        &Bytes { body },
-        &accept,
-    );
+    let refused = install_blocking(pin, win_platform(), app_data.path(), &Bytes { body });
     let Err(InstallError::DigestMismatch { .. }) = refused else {
         panic!("a wrong digest must refuse: {refused:?}");
     };
@@ -145,14 +127,8 @@ fn a_marker_from_another_digest_is_not_an_install() {
         "https://example.invalid/chrome-win64.zip",
         &digest_of(&body),
     );
-    install_blocking_with_trust(
-        pin,
-        win_platform(),
-        app_data.path(),
-        &Bytes { body },
-        &accept,
-    )
-    .expect("the reviewed archive installs");
+    install_blocking(pin, win_platform(), app_data.path(), &Bytes { body })
+        .expect("the reviewed archive installs");
     std::fs::write(
         pin.install_dir(app_data.path())
             .join(pin.marker(win_platform())),
@@ -170,14 +146,8 @@ fn a_failed_replacement_keeps_the_working_version() {
         "https://example.invalid/chrome-win64.zip",
         &digest_of(&good),
     );
-    install_blocking_with_trust(
-        pin,
-        win_platform(),
-        app_data.path(),
-        &Bytes { body: good },
-        &accept,
-    )
-    .expect("the first version installs");
+    install_blocking(pin, win_platform(), app_data.path(), &Bytes { body: good })
+        .expect("the first version installs");
     let exe = pin.install_dir(app_data.path()).join("chrome.exe");
     assert_eq!(std::fs::read(&exe).expect("the old exe"), b"old-browser");
 
@@ -219,7 +189,7 @@ fn the_https_client_downloads_from_loopback() {
     let url = format!("http://127.0.0.1:{port}/chrome-win64.zip");
     let pin = test_pin(&url, &digest);
     let app_data = tempfile::tempdir().expect("an app-data dir");
-    install_blocking_with_trust(pin, win_platform(), app_data.path(), &Https, &accept)
+    install_blocking(pin, win_platform(), app_data.path(), &Https)
         .expect("loopback downloads install");
     assert!(pin
         .install_dir(app_data.path())
@@ -250,14 +220,8 @@ fn a_crashed_swap_is_repaired_before_a_failed_install() {
         "https://example.invalid/chrome-win64.zip",
         &digest_of(&good),
     );
-    install_blocking_with_trust(
-        pin,
-        win_platform(),
-        app_data.path(),
-        &Bytes { body: good },
-        &accept,
-    )
-    .expect("the first version installs");
+    install_blocking(pin, win_platform(), app_data.path(), &Bytes { body: good })
+        .expect("the first version installs");
     // The crash window: destination gone, old tree under `.previous`.
     let home = app_data.path().join("chrome-for-testing");
     let destination = pin.install_dir(app_data.path());
@@ -305,14 +269,8 @@ fn a_missing_executable_invalidates_the_marker_hint() {
         "https://example.invalid/chrome-win64.zip",
         &digest_of(&body),
     );
-    install_blocking_with_trust(
-        pin,
-        win_platform(),
-        app_data.path(),
-        &Bytes { body },
-        &accept,
-    )
-    .expect("the reviewed archive installs");
+    install_blocking(pin, win_platform(), app_data.path(), &Bytes { body })
+        .expect("the reviewed archive installs");
     assert!(installed(pin, win_platform(), app_data.path()).is_some());
     std::fs::remove_file(pin.install_dir(app_data.path()).join("chrome.exe"))
         .expect("the binary is tampered away");
@@ -323,8 +281,8 @@ fn a_missing_executable_invalidates_the_marker_hint() {
 }
 
 /// The pinned mac archive through the whole install: top-directory strip,
-/// framework symlinks, exec bits, codesign/team/Gatekeeper. CI hands it the
-/// archive it already downloaded and a destination under the runner's temp.
+/// framework symlinks and exec bits. CI hands it the archive it already
+/// downloaded and a destination under the runner's temp.
 #[test]
 #[ignore = "needs the pinned archive: DEVBOULE_CFT_ARCHIVE and DEVBOULE_CFT_APP_DATA"]
 fn the_pinned_mac_archive_installs_with_its_framework_links() {
@@ -354,72 +312,6 @@ fn the_pinned_mac_archive_installs_with_its_framework_links() {
     assert!(installed(pin, Platform::MacArm64, &app_data).is_some());
 }
 
-/// A trust refusal installs nothing and leaves no staging behind: the swap
-/// never runs, so a working version in place stays exactly as it was.
-#[test]
-fn a_refused_trust_rolls_back_to_the_working_version() {
-    let app_data = tempfile::tempdir().expect("an app-data dir");
-    let good = test_zip(&[("chrome-win64/chrome.exe", b"old-browser")]);
-    let pin = test_pin(
-        "https://example.invalid/chrome-win64.zip",
-        &digest_of(&good),
-    );
-    install_blocking_with_trust(
-        pin,
-        win_platform(),
-        app_data.path(),
-        &Bytes { body: good },
-        &accept,
-    )
-    .expect("the first version installs");
-    let exe = pin.install_dir(app_data.path()).join("chrome.exe");
-
-    let bad = test_zip(&[("chrome-win64/chrome.exe", b"new-browser")]);
-    let bad_pin = test_pin("https://example.invalid/chrome-win64.zip", &digest_of(&bad));
-    let refused = install_blocking_with_trust(
-        bad_pin,
-        win_platform(),
-        app_data.path(),
-        &Bytes { body: bad },
-        &refuse,
-    );
-    assert!(
-        matches!(refused, Err(InstallError::Untrusted(_))),
-        "a refused trust is Untrusted: {refused:?}"
-    );
-    assert_eq!(
-        std::fs::read(&exe).expect("the old exe survives"),
-        b"old-browser"
-    );
-    assert!(
-        !app_data
-            .path()
-            .join("chrome-for-testing")
-            .join(format!("{TEST_VERSION}.staging"))
-            .exists(),
-        "no staging left behind"
-    );
-    assert!(installed(pin, win_platform(), app_data.path()).is_some());
-}
-
-/// The production constructor wires the real signature check, not a fake:
-/// on macOS a fixture archive with no bundle is refused by the real one.
-#[cfg(target_os = "macos")]
-#[test]
-fn the_production_install_runs_the_real_signature_check() {
-    let app_data = tempfile::tempdir().expect("an app-data dir");
-    let body = test_zip(&[("chrome-win64/chrome.exe", b"browser")]);
-    let pin = test_pin(
-        "https://example.invalid/chrome-win64.zip",
-        &digest_of(&body),
-    );
-    let refused = install_blocking(pin, win_platform(), app_data.path(), &Bytes { body });
-    assert!(
-        matches!(refused, Err(InstallError::Untrusted(ref text)) if text.contains("signature check refused")),
-        "the real check must run: {refused:?}"
-    );
-}
-
 /// A crash between the swap's two renames is repaired by `installed()`
 /// itself: no new install runs, the old tree is back and counts.
 #[test]
@@ -430,14 +322,8 @@ fn installed_repairs_a_crashed_swap_without_a_new_install() {
         "https://example.invalid/chrome-win64.zip",
         &digest_of(&good),
     );
-    install_blocking_with_trust(
-        pin,
-        win_platform(),
-        app_data.path(),
-        &Bytes { body: good },
-        &accept,
-    )
-    .expect("the first version installs");
+    install_blocking(pin, win_platform(), app_data.path(), &Bytes { body: good })
+        .expect("the first version installs");
     let home = app_data.path().join("chrome-for-testing");
     let destination = pin.install_dir(app_data.path());
     std::fs::rename(&destination, home.join(format!("{TEST_VERSION}.previous")))

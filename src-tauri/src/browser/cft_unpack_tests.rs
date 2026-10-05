@@ -164,15 +164,3 @@ fn an_executable_entry_comes_back_executable() {
         .mode();
     assert_ne!(mode & 0o111, 0, "an executable entry must stay executable");
 }
-
-// TEMPORARY DIAGNOSTIC (remove with the macos-cft "ours vs ditto" step): the
-// real archive through our extractor into a directory the CI step can diff.
-#[test]
-#[ignore = "diagnostic: needs DEVBOULE_CFT_ARCHIVE and DEVBOULE_CFT_DIAG_OUT"]
-fn cft_unpack_diag_writes_the_tree_for_the_ci_diff() {
-    let archive = std::env::var_os("DEVBOULE_CFT_ARCHIVE").expect("DEVBOULE_CFT_ARCHIVE");
-    let out =
-        PathBuf::from(std::env::var_os("DEVBOULE_CFT_DIAG_OUT").expect("DEVBOULE_CFT_DIAG_OUT"));
-    std::fs::create_dir_all(&out).expect("the diagnostic dir");
-    super::unpack(archive.as_ref(), "chrome-mac-arm64", &out).expect("the archive unpacks");
-}
