@@ -22,6 +22,9 @@
   // Replaces the base build command wholesale (config merge overrides
   // strings): same daemon release build and frontend build, plus the
   // triple-suffixed daemon copy externalBin resolves. The triple comes
-  // from rustc so arm64 and x86_64 Macs both work.
-  "beforeBuildCommand": "cargo build --release -p devboule-daemon && cp target/release/devboule-daemon \"target/release/devboule-daemon-$(rustc -vV | sed -n 's/^host: //p')\" && pnpm build"
+  // from rustc so arm64 and x86_64 Macs both work. Lives under `build`:
+  // a top-level key is rejected by the config schema.
+  "build": {
+    "beforeBuildCommand": "cargo build --release -p devboule-daemon && cp target/release/devboule-daemon \"target/release/devboule-daemon-$(rustc -vV | sed -n 's/^host: //p')\" && pnpm build"
+  }
 }
