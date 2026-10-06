@@ -79,8 +79,21 @@
   background: var(--fill-chip-hover);
 }
 
+/* Agents are the work and read in ink; every other tab is a tool: muted until
+   it is the one in front, and smaller and regular in weight. */
+.workspace-session-tab-agent {
+  color: var(--ink);
+}
+
+.workspace-session-tab-quiet .workspace-tab-label {
+  font-size: var(--type-meta);
+  font-weight: 400;
+}
+
+/* The thin marker on the tab in front, whichever kind: the fill stays neutral. */
 .workspace-session-tab-selected {
   background: var(--selection);
+  box-shadow: inset 0 2px 0 var(--accent);
 }
 
 /* A hovered multi-selected chip keeps the hover look: the multi fill

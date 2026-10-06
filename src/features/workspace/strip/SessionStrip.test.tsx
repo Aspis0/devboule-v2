@@ -175,7 +175,7 @@ describe("SessionStrip", () => {
       "workspace-sr-only",
     ]);
     const state = tab.querySelector(".workspace-sr-only");
-    expect(state?.textContent).toBe("Running");
+    expect(state?.textContent).toBe("Agent, Running");
     // And the ask itself describes the chip, from beside the button.
     const describedBy = tab.getAttribute("aria-describedby");
     expect(describedBy).not.toBeNull();
@@ -201,7 +201,7 @@ describe("SessionStrip", () => {
     expect(tab.getAttribute("aria-describedby")).toBeNull();
     // The state line stays: only the provenance span is gone.
     expect(container!.querySelector("#workspace-session-tab-a-provenance")).toBeNull();
-    expect(tab.querySelector(".workspace-sr-only")?.textContent).toBe("Running");
+    expect(tab.querySelector(".workspace-sr-only")?.textContent).toBe("Agent, Running");
   });
 
   it("moves origin and creator into the tooltip", () => {

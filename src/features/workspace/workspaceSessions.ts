@@ -170,6 +170,22 @@ export function sessionKindWord(kind: SessionKind): "Agent" | "Terminal" {
   return isAgentKind(kind) ? "Agent" : "Terminal";
 }
 
+/** The name a screen reader hears for a session's kind: the provider for an agent. */
+export function sessionKindLabel(kind: SessionKind): string {
+  switch (kind) {
+    case "claude":
+      return "Claude";
+    case "codex":
+      return "Codex";
+    case "pi":
+      return "Pi";
+    case "acp":
+      return "Agent";
+    case "terminal":
+      return "Terminal";
+  }
+}
+
 /** Whether the session carries a name a human gave it — a display name set
  * by whoever created it, or the shell's own title — as opposed to the
  * kind-and-id fallback `sessionTitle` uses when neither is set.

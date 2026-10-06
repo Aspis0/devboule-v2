@@ -1,7 +1,7 @@
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
-import type { Session } from "../../../types/ipc";
+import { isAgentKind, type Session } from "../../../types/ipc";
 import { sessionTabElementId } from "./useTabCloseFlow";
-import { sessionTitle } from "../workspaceSessions";
+import { sessionKindLabel, sessionTitle } from "../workspaceSessions";
 import type { ChipDisplay } from "./stripDisplay";
 import { StripKindMark } from "./StripKindMark";
 import { toolTabKindLabel, toolTabLabel, toolTabSubject, type ToolTab } from "./toolTabs";
@@ -74,6 +74,7 @@ export function StripChip({
   const title = sessionTitle(session);
   const provenanceId = `${sessionTabElementId(session.id)}-provenance`;
   const described = provenanceLines.length > 0 ? provenanceId : undefined;
+  const tone = isAgentKind(session.kind) ? "agent" : "quiet";
   return (
     <div className="workspace-session-row" onContextMenu={onRowContextMenu}>
       <button
@@ -88,7 +89,7 @@ export function StripChip({
         title={tooltip}
         aria-keyshortcuts="Delete"
         aria-describedby={described}
-        className={`workspace-session-tab${selected ? " workspace-session-tab-selected" : ""}${multiselected ? " workspace-session-tab-multiselected" : ""}`}
+        className={`workspace-session-tab workspace-session-tab-${tone}${selected ? " workspace-session-tab-selected" : ""}${multiselected ? " workspace-session-tab-multiselected" : ""}`}
         onClick={onTabClick}
         onAuxClick={onTabAuxClick}
         onKeyDown={onChipKeyDown}
@@ -99,7 +100,7 @@ export function StripChip({
         <StripKindMark kind={session.kind} />
         <span className="workspace-tab-label">{title}</span>
         {/* Heard, never seen: a chip paints a dot tone, never a sentence. */}
-        <span className="workspace-sr-only">{display.stateLine}</span>
+        <span className="workspace-sr-only">{`${sessionKindLabel(session.kind)}, ${display.stateLine}`}</span>
       </button>
       {/* The description lives beside the button, never inside it: a
           described-by span inside the button would join the accessible
@@ -216,7 +217,7 @@ export function ToolStripChip({
         tabIndex={tabIndex}
         title={tooltip}
         aria-keyshortcuts="Delete"
-        className={`workspace-session-tab${selected ? " workspace-session-tab-selected" : ""}${multiselected ? " workspace-session-tab-multiselected" : ""}`}
+        className={`workspace-session-tab workspace-session-tab-quiet${selected ? " workspace-session-tab-selected" : ""}${multiselected ? " workspace-session-tab-multiselected" : ""}`}
         onClick={onTabClick}
         onAuxClick={onTabAuxClick}
         onKeyDown={onChipKeyDown}

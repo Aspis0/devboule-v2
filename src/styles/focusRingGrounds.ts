@@ -142,6 +142,11 @@ export const DIRECT_RING_GROUNDS: readonly DirectRingGround[] = [
   },
   {
     file: "src/features/workspace/strip/strip.css",
+    match: ".workspace-session-tab-selected",
+    ground: "--selection",
+  },
+  {
+    file: "src/features/workspace/strip/strip.css",
     match: ".workspace-session-tab-multiselected",
     ground: "--fill-selected-soft",
   },

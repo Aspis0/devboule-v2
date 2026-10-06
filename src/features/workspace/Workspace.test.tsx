@@ -3267,7 +3267,7 @@ describe("Workspace sessions", () => {
       // reason itself describes the chip from beside the button.
       expect(tab.getAttribute("aria-label")).toBeNull();
       expect(tab.textContent).toContain("agent blocked");
-      expect(tab.querySelector(".workspace-sr-only")?.textContent).toBe("Running");
+      expect(tab.querySelector(".workspace-sr-only")?.textContent).toBe("Agent, Running");
       const describedBy = tab.getAttribute("aria-describedby");
       expect(describedBy).not.toBeNull();
       const provenance = container.querySelector(`#${CSS.escape(describedBy!)}`);
