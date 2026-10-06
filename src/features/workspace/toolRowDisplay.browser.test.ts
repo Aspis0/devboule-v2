@@ -27,28 +27,25 @@ const ROWS: [string, string][] = [
 
 describe("browser tool rows", () => {
   for (const [name, title] of ROWS) {
-    it(`labels ${name} as Browser with a globe and the row's own summary`, () => {
+    it(`labels ${name} as Browser with the row's own summary`, () => {
       expect(toolRowDisplay(tool({ kind: "browser", title }))).toEqual({
         displayName: "Browser",
         summary: title,
-        icon: "globe",
       });
     });
   }
 
   it("gives no row an image: the transcript shows no picture from a tool result", () => {
     const model = toolRowDisplay(tool({ kind: "browser", title: "screenshot" }));
-    expect(Object.keys(model).sort()).toEqual(["displayName", "icon", "summary"]);
+    expect(Object.keys(model).sort()).toEqual(["displayName", "summary"]);
   });
 
   it("recognises the family from the tool name when the provider sent no kind", () => {
     expect(toolRowDisplay(tool({ title: "browser_click" }))).toEqual({
       displayName: "Browser",
-      icon: "globe",
     });
     expect(toolRowDisplay(tool({ title: "browser_read_text" }))).toEqual({
       displayName: "Browser",
-      icon: "globe",
     });
   });
 
@@ -63,7 +60,6 @@ describe("browser tool rows", () => {
     ] as const) {
       expect(toolRowDisplay(tool({ kind, title }))).toEqual({
         displayName: "Browser",
-        icon: "globe",
       });
     }
   });
@@ -78,18 +74,15 @@ describe("browser tool rows", () => {
     // A search row whose query reads like a tool name is a search row: the
     // provider's own kind is the classification.
     expect(toolRowDisplay(tool({ kind: "search", title: "browser_click" }))).toEqual({
-      displayName: "Search",
+      displayName: "Searched",
       summary: "browser_click",
-      icon: "search",
     });
     // Another MCP server's own tool, whatever it is called.
     expect(toolRowDisplay(tool({ kind: "other", title: "mcp__probe__browser_click" }))).toEqual({
       displayName: "mcp__probe__browser_click",
-      icon: "wrench",
     });
     expect(toolRowDisplay(tool({ kind: "other", title: "mcp__probe__ping" }))).toEqual({
       displayName: "mcp__probe__ping",
-      icon: "wrench",
     });
   });
 
@@ -118,7 +111,6 @@ describe("browser tool rows", () => {
     if (declared === null) throw new Error("MCP_SERVER_NAME is not declared");
     expect(toolRowDisplay(tool({ title: `mcp__${declared[1]}__browser_click` }))).toEqual({
       displayName: "Browser",
-      icon: "globe",
     });
   });
 });

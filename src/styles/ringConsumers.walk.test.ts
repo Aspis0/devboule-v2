@@ -72,17 +72,6 @@ const RINGLESS: ReadonlyArray<{ file: string; selector: string; why: string }> =
     selector: ".workspace-terminal-host .xterm .xterm-viewport::-webkit-scrollbar-track",
     why: "a scrollbar track, not a control",
   },
-  {
-    file: "src/features/workspace/Workspace.css",
-    selector:
-      ".workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-interrupted",
-    why: "a text marker inside the open row, which sets the ring",
-  },
-  {
-    file: "src/features/workspace/Workspace.css",
-    selector: ".workspace-command-chip",
-    why: "a non-focusable text chip",
-  },
 ];
 
 /** A rule that sets `--ring` over a ground it does not paint itself. */

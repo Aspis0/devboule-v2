@@ -100,8 +100,8 @@ describe("command tool row", () => {
     await act(async () => undefined);
   }
 
-  function onlyRow(): HTMLDetailsElement {
-    const row = container.querySelector<HTMLDetailsElement>("details.workspace-chat-tool");
+  function onlyRow(): HTMLElement {
+    const row = container.querySelector<HTMLElement>(".workspace-chat-tool");
     if (row === null) throw new Error("tool row did not render");
     return row;
   }
@@ -141,14 +141,13 @@ describe("command tool row", () => {
     });
 
     const row = onlyRow();
-    expect(row.tagName).toBe("DETAILS");
-    expect(row.open).toBe(false);
     expect(row.classList.contains("is-failed")).toBe(true);
-    // A command row follows the spec's composition: chip, no label, no icon.
-    expect(row.querySelector(".workspace-chat-tool-label")).toBeNull();
-    expect(row.querySelector("summary > svg")).toBeNull();
+    // A failure's words stand under the line, so there is nothing to open.
+    expect(row.querySelector("details")).toBeNull();
+    // A command row reads as its verb and the command.
+    expect(row.querySelector(".workspace-chat-tool-label")?.textContent).toBe("Ran");
     // The text block comes from the real row output, not a test fixture.
-    const textBlock = row.querySelector("summary > .workspace-chat-tool-text");
+    const textBlock = row.querySelector(".workspace-chat-tool-summary > .workspace-chat-tool-text");
     if (textBlock === null) throw new Error("the row's text block did not render");
     const chip = textBlock.querySelector(".workspace-command-chip");
     if (chip === null) throw new Error("command chip did not render");
@@ -164,12 +163,12 @@ describe("command tool row", () => {
     expect(dot.getAttribute("aria-label")).toBeNull();
     expect(dot.classList.contains("is-failed")).toBe(true);
     expect(row.querySelector(".workspace-command-exit")?.textContent).toBe("exit 1");
-    const summary = row.querySelector("summary");
+    const summary = row.querySelector(".workspace-chat-tool-summary");
     if (summary === null) throw new Error("summary did not render");
-    expect(accessibleName(summary)).toBe("Command git status exit 1");
-    // One failure mark: the non-zero code supersedes the ×.
-    expect(row.querySelector(".workspace-chat-tool-failed")).toBeNull();
-    expect(row.querySelector(".workspace-chat-tool-body")?.textContent).toContain(
+    expect(accessibleName(summary)).toBe("Ran git status exit 1 failed");
+    // The failure label is always said; the code's own mark stands in for the cross.
+    expect(row.querySelector(".workspace-chat-tool-failed")?.textContent).toBe("failed");
+    expect(row.querySelector(".workspace-chat-tool-output")?.textContent).toContain(
       "fatal: not a git repository",
     );
   });
@@ -231,7 +230,7 @@ describe("command tool row", () => {
 
     const row = onlyRow();
     expect(row.classList.contains("is-failed")).toBe(true);
-    expect(row.querySelector('.workspace-chat-tool-failed[aria-label="Failed"]')).not.toBeNull();
+    expect(row.querySelector(".workspace-chat-tool-failed")?.textContent).toContain("failed");
     expect(row.querySelector(".workspace-command-dot")).toBeNull();
     expect(row.querySelector(".workspace-command-exit")).toBeNull();
     expect(row.querySelector(".workspace-command-chip")?.textContent).toBe("git status");
@@ -253,16 +252,16 @@ describe("command tool row", () => {
     });
 
     const row = onlyRow();
-    // The status says failure and the zero code does not carry it: the × stays.
+    // The status says failure and the zero code does not carry it: the label stays.
     expect(row.classList.contains("is-failed")).toBe(true);
-    expect(row.querySelector('.workspace-chat-tool-failed[aria-label="Failed"]')).not.toBeNull();
+    expect(row.querySelector(".workspace-chat-tool-failed")?.textContent).toContain("failed");
     const dot = row.querySelector(".workspace-command-dot");
     if (dot === null) throw new Error("exit dot did not render");
     expect(dot.classList.contains("is-failed")).toBe(false);
     expect(row.querySelector(".workspace-command-exit")?.textContent).toBe("exit 0");
   });
 
-  it("renders a Claude shell row that carries a command as a chip with no icon, Shell label or exit marker", async () => {
+  it("renders a Claude shell row that carries a command as its verb and the command, with no exit marker", async () => {
     // The command is longer than the mapper's 80-char title, so the title
     // and the command differ: the chip must show the title, and the part of
     // the raw line the title dropped must stay out of the DOM.
@@ -292,15 +291,13 @@ describe("command tool row", () => {
     // Claude reports no exit code by design: neither the dot nor "exit N".
     expect(row.querySelector(".workspace-command-dot")).toBeNull();
     expect(row.querySelector(".workspace-command-exit")).toBeNull();
-    // Command-row chrome: the chip replaces icon and kind label.
-    expect(row.querySelector("summary > svg")).toBeNull();
-    const textBlock = row.querySelector("summary > .workspace-chat-tool-text");
+    const textBlock = row.querySelector(".workspace-chat-tool-summary > .workspace-chat-tool-text");
     if (textBlock === null) throw new Error("the row's text block did not render");
     const chip = textBlock.querySelector(".workspace-command-chip");
     if (chip === null) throw new Error("command chip did not render");
     expect(chip.textContent).toBe(truncatedTitle);
     expect(container.innerHTML).not.toContain("long-command-tail-9z8y7x");
-    expect(textBlock.querySelector(".workspace-chat-tool-label")).toBeNull();
+    expect(textBlock.querySelector(".workspace-chat-tool-label")?.textContent).toBe("Ran");
     expect(textBlock.querySelector(".workspace-chat-tool-summary-text")).toBeNull();
     expect(row.querySelector(".workspace-chat-tool-body")?.textContent).toContain("total 0");
   });
@@ -326,13 +323,13 @@ describe("command tool row", () => {
 
     const row = onlyRow();
     expect(row.classList.contains("is-failed")).toBe(true);
-    expect(row.querySelector('.workspace-chat-tool-failed[aria-label="Failed"]')).not.toBeNull();
+    expect(row.querySelector(".workspace-chat-tool-failed")?.textContent).toContain("failed");
     expect(row.querySelector(".workspace-command-dot")).toBeNull();
     expect(row.querySelector(".workspace-command-exit")).toBeNull();
     expect(row.querySelector(".workspace-command-chip")?.textContent).toBe("ls -la && echo done");
   });
 
-  it("keeps the icon, the Shell label and the plain summary on a commandless execute row", async () => {
+  it("keeps the verb and the plain summary on a commandless execute row", async () => {
     // ACP tool calls and updates hardcode command and exit code to None
     // (acp_view.rs:189-190, :217-218): a commandless execute row is a real
     // wire state.
@@ -358,13 +355,12 @@ describe("command tool row", () => {
     expect(row.querySelector(".workspace-command-chip")).toBeNull();
     expect(row.querySelector(".workspace-command-dot")).toBeNull();
     expect(row.querySelector(".workspace-command-exit")).toBeNull();
-    // Generic rows keep the icon and the label, inside the real text block.
-    expect(row.querySelector("summary > svg")).not.toBeNull();
-    const textBlock = row.querySelector("summary > .workspace-chat-tool-text");
+    // Generic rows keep the label, inside the real text block.
+    const textBlock = row.querySelector(".workspace-chat-tool-summary > .workspace-chat-tool-text");
     if (textBlock === null) throw new Error("the row's text block did not render");
     // The summary claims the strip: the floor's class comes from real output.
     expect(textBlock.classList.contains("has-summary")).toBe(true);
-    expect(textBlock.querySelector(".workspace-chat-tool-label")?.textContent).toBe("Shell");
+    expect(textBlock.querySelector(".workspace-chat-tool-label")?.textContent).toBe("Ran");
     expect(textBlock.querySelector(".workspace-chat-tool-summary-text")?.textContent).toBe(
       "ls -la && echo done",
     );
@@ -398,7 +394,7 @@ describe("command tool row", () => {
     expect(row.querySelector(".workspace-command-dot")).toBeNull();
     expect(row.querySelector(".workspace-command-exit")).toBeNull();
     // The row keeps its own chrome: the Read label and the path summary.
-    const textBlock = row.querySelector("summary > .workspace-chat-tool-text");
+    const textBlock = row.querySelector(".workspace-chat-tool-summary > .workspace-chat-tool-text");
     if (textBlock === null) throw new Error("the row's text block did not render");
     expect(textBlock.querySelector(".workspace-chat-tool-label")?.textContent).toBe("Read");
     expect(textBlock.querySelector(".workspace-chat-tool-summary-text")?.textContent).toBe(
@@ -419,7 +415,7 @@ describe("command tool row", () => {
     });
 
     const row = onlyRow();
-    const textBlock = row.querySelector("summary > .workspace-chat-tool-text");
+    const textBlock = row.querySelector(".workspace-chat-tool-summary > .workspace-chat-tool-text");
     if (textBlock === null) throw new Error("the row's text block did not render");
     expect(textBlock.classList.contains("has-summary")).toBe(false);
     expect(textBlock.querySelector(".workspace-chat-tool-label")?.textContent).toBe("Web search");

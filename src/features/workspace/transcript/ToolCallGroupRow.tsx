@@ -1,6 +1,5 @@
 import { useCallback, useState, type SyntheticEvent } from "react";
 import type { ToolCallGroup } from "../../../lib/toolCallGroups";
-import { ToolIcon } from "../ToolIcon";
 import {
   INTERRUPTED_TOOL_CLASS,
   INTERRUPTED_TOOL_COPY,
@@ -32,15 +31,15 @@ export function ToolCallGroupRow({
   return (
     <details className={className} open={open} style={frame.style} onToggle={onToggle}>
       <summary className="workspace-chat-tool-group-summary" aria-expanded={open}>
-        <ToolIcon name="wrench" />
         <span className="workspace-chat-tool-group-count">{callCount}</span>
         <span className="workspace-chat-tool-group-summary-text">{group.summary}</span>
         {interrupted ? (
           <span className="workspace-chat-tool-interrupted">{INTERRUPTED_TOOL_COPY}</span>
         ) : null}
         {failed ? (
-          <span className="workspace-chat-tool-failed" role="img" aria-label="Failed">
-            ×
+          <span className="workspace-chat-tool-failed">
+            <span aria-hidden="true">✗ </span>
+            failed
           </span>
         ) : null}
         {running ? (

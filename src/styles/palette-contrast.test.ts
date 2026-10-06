@@ -295,7 +295,7 @@ const RING_ON_GROUNDS: ReadonlyArray<{ ring: string; ground: string; why: string
   { ring: "--ring", ground: "--fill-selected", why: "the selected row" },
   { ring: "--ring", ground: "--fill-selected-soft", why: "multi-selected chips" },
   { ring: "--ring", ground: "--fill-tool", why: "tool rows and the copyable block" },
-  { ring: "--accent-on-code", ground: "--code-bg", why: "code blocks and open tool rows" },
+  { ring: "--accent-on-code", ground: "--code-bg", why: "code blocks" },
   { ring: "--accent-on-code", ground: "--terminal-ground", why: "the terminal" },
 ];
 

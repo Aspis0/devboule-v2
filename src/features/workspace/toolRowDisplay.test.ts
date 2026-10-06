@@ -14,26 +14,23 @@ function tool(overrides: Partial<ToolItem> = {}): ToolItem {
 }
 
 describe("toolRowDisplay", () => {
-  it("labels a shell call with its command and a terminal icon", () => {
+  it("labels a shell call with its command", () => {
     expect(toolRowDisplay(tool({ kind: "execute", title: "cargo test" }))).toEqual({
-      displayName: "Shell",
+      displayName: "Ran",
       summary: "cargo test",
-      icon: "terminal",
     });
   });
 
-  it("labels a read call with an eye icon", () => {
+  it("labels a read call with its path", () => {
     expect(toolRowDisplay(tool({ kind: "read", title: "src/lib.rs" }))).toEqual({
       displayName: "Read",
       summary: "src/lib.rs",
-      icon: "eye",
     });
   });
 
-  it("labels a plan row with an eye icon", () => {
+  it("labels a plan row", () => {
     expect(toolRowDisplay(tool({ kind: "plan", title: "Plan steps" }))).toEqual({
       displayName: "Plan",
-      icon: "eye",
     });
   });
 
@@ -41,24 +38,21 @@ describe("toolRowDisplay", () => {
     expect(toolRowDisplay(tool({ kind: "plan", title: "Plan steps" })).summary).toBeUndefined();
   });
 
-  it("labels edit and delete calls with a pencil icon", () => {
+  it("labels edit and delete calls with their path", () => {
     expect(toolRowDisplay(tool({ kind: "edit", title: "src/main.rs" }))).toEqual({
-      displayName: "Edit",
+      displayName: "Edited",
       summary: "src/main.rs",
-      icon: "pencil",
     });
     expect(toolRowDisplay(tool({ kind: "delete", title: "src/old.rs" }))).toEqual({
-      displayName: "Edit",
+      displayName: "Deleted",
       summary: "src/old.rs",
-      icon: "pencil",
     });
   });
 
   it("labels a search call with its query", () => {
     expect(toolRowDisplay(tool({ kind: "search", title: "how to test" }))).toEqual({
-      displayName: "Search",
+      displayName: "Searched",
       summary: "how to test",
-      icon: "search",
     });
   });
 
@@ -66,26 +60,23 @@ describe("toolRowDisplay", () => {
     expect(
       toolRowDisplay(tool({ kind: "fetch", title: "https://docs.example.com/guide?q=1" })),
     ).toEqual({
-      displayName: "Fetch",
+      displayName: "Fetched",
       summary: "docs.example.com",
-      icon: "search",
       linkUrl: "https://docs.example.com/guide?q=1",
     });
   });
 
   it("shows a fetch's page title as sent when the title is not a URL", () => {
     expect(toolRowDisplay(tool({ kind: "fetch", title: "Rust testing guide" }))).toEqual({
-      displayName: "Fetch",
+      displayName: "Fetched",
       summary: "Rust testing guide",
-      icon: "search",
     });
   });
 
   it("keeps the port in a fetch's summary", () => {
     expect(toolRowDisplay(tool({ kind: "fetch", title: "https://example.com:8443/a" }))).toEqual({
-      displayName: "Fetch",
+      displayName: "Fetched",
       summary: "example.com:8443",
-      icon: "search",
       linkUrl: "https://example.com:8443/a",
     });
   });
@@ -94,9 +85,8 @@ describe("toolRowDisplay", () => {
     // The ASCII form is the lookalike-resistant one: two hosts that a reader
     // would see as the same domain stay distinguishable here.
     expect(toolRowDisplay(tool({ kind: "fetch", title: "https://münich.example/a" }))).toEqual({
-      displayName: "Fetch",
+      displayName: "Fetched",
       summary: "xn--mnich-kva.example",
-      icon: "search",
       linkUrl: "https://xn--mnich-kva.example/a",
     });
   });
@@ -108,9 +98,8 @@ describe("toolRowDisplay", () => {
       "   https://example.com/path",
     ]) {
       expect(toolRowDisplay(tool({ kind: "fetch", title }))).toEqual({
-        displayName: "Fetch",
+        displayName: "Fetched",
         summary: title,
-        icon: "search",
       });
     }
   });
@@ -122,9 +111,8 @@ describe("toolRowDisplay", () => {
       "https://[::1",
     ]) {
       expect(toolRowDisplay(tool({ kind: "fetch", title }))).toEqual({
-        displayName: "Fetch",
+        displayName: "Fetched",
         summary: title,
-        icon: "search",
       });
     }
   });
@@ -135,9 +123,8 @@ describe("toolRowDisplay", () => {
     expect(
       toolRowDisplay(tool({ kind: "fetch", title: `https://example.com:443/${path}` })),
     ).toEqual({
-      displayName: "Fetch",
+      displayName: "Fetched",
       summary: "example.com",
-      icon: "search",
       linkUrl: `https://example.com/${path}`,
     });
   });
@@ -147,9 +134,8 @@ describe("toolRowDisplay", () => {
     // destination would be a link the command refuses.
     const title = `https://example.com/${"é".repeat(2000)}`;
     expect(toolRowDisplay(tool({ kind: "fetch", title }))).toEqual({
-      displayName: "Fetch",
+      displayName: "Fetched",
       summary: title,
-      icon: "search",
     });
   });
 
@@ -162,43 +148,39 @@ describe("toolRowDisplay", () => {
       "https://:@example.com/path",
     ]) {
       expect(toolRowDisplay(tool({ kind: "fetch", title }))).toEqual({
-        displayName: "Fetch",
+        displayName: "Fetched",
         summary: "example.com",
-        icon: "search",
       });
     }
   });
 
   it("shows a fetch's unparsable URL-like title as sent with no link", () => {
     expect(toolRowDisplay(tool({ kind: "fetch", title: "https://" }))).toEqual({
-      displayName: "Fetch",
+      displayName: "Fetched",
       summary: "https://",
-      icon: "search",
     });
   });
 
   it("omits a fetch summary and link when the title is empty", () => {
     expect(toolRowDisplay(tool({ kind: "fetch", title: "" }))).toEqual({
-      displayName: "Fetch",
-      icon: "search",
+      displayName: "Fetched",
     });
   });
 
-  it("labels a subagent call with a bot icon", () => {
+  it("labels a subagent call", () => {
     expect(toolRowDisplay(tool({ kind: "think", title: "Find the relevant files" }))).toEqual({
       displayName: "Task",
       summary: "Find the relevant files",
-      icon: "bot",
     });
   });
 
   it("names a think row after its subagent type when present", () => {
     expect(
       toolRowDisplay(tool({ kind: "think", title: "Find files", subagentType: "explorer" })),
-    ).toEqual({ displayName: "Explorer", summary: "Find files", icon: "bot" });
+    ).toEqual({ displayName: "Explorer", summary: "Find files" });
     expect(
       toolRowDisplay(tool({ kind: "think", title: "Find files", subagentType: "  " })),
-    ).toEqual({ displayName: "Task", summary: "Find files", icon: "bot" });
+    ).toEqual({ displayName: "Task", summary: "Find files" });
   });
 
   it("prefers the first location path over the title for file calls", () => {
@@ -210,31 +192,27 @@ describe("toolRowDisplay", () => {
           locations: [{ path: "src/other.rs", line: 3 }],
         }),
       ),
-    ).toEqual({ displayName: "Read", summary: "src/other.rs", icon: "eye" });
+    ).toEqual({ displayName: "Read", summary: "src/other.rs" });
   });
 
   it("humanizes a bare tool name with no summary", () => {
     expect(toolRowDisplay(tool({ kind: "other", title: "write" }))).toEqual({
       displayName: "Write",
-      icon: "wrench",
     });
     expect(toolRowDisplay(tool({ kind: "other", title: "custom_tool" }))).toEqual({
       displayName: "Custom tool",
-      icon: "wrench",
     });
   });
 
   it("shows a PascalCase provider tool name in sentence case", () => {
     expect(toolRowDisplay(tool({ kind: "other", title: "AskUserQuestion" }))).toEqual({
       displayName: "Ask user question",
-      icon: "wrench",
     });
   });
 
   it("shows a namespaced tool name as-is with no summary", () => {
     expect(toolRowDisplay(tool({ kind: "other", title: "mcp__probe__ping" }))).toEqual({
       displayName: "mcp__probe__ping",
-      icon: "wrench",
     });
   });
 
@@ -247,7 +225,6 @@ describe("toolRowDisplay", () => {
     for (const kind of ["__proto__", "constructor", "toString"]) {
       expect(toolRowDisplay(tool({ kind, title: "probe_tool" }))).toEqual({
         displayName: "Probe tool",
-        icon: "wrench",
       });
     }
   });
@@ -256,14 +233,12 @@ describe("toolRowDisplay", () => {
     expect(toolRowDisplay(tool({ kind: "other", title: "custom thing happened" }))).toEqual({
       displayName: "Tool",
       summary: "custom thing happened",
-      icon: "wrench",
     });
   });
 
   it("omits an empty summary", () => {
     expect(toolRowDisplay(tool({ kind: "execute", title: "" }))).toEqual({
-      displayName: "Shell",
-      icon: "terminal",
+      displayName: "Ran",
     });
   });
 });

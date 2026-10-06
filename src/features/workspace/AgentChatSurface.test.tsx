@@ -3832,11 +3832,11 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    const row = container.querySelector("details.workspace-chat-tool");
+    const row = container.querySelector(".workspace-chat-tool");
     if (row === null) throw new Error("tool row did not render");
     expect(row.querySelector('.workspace-chat-tool-running[aria-label="Running"]')).not.toBeNull();
-    const summary = row.querySelector("summary")?.textContent ?? "";
-    expect(summary).toContain("Shell");
+    const summary = row.querySelector(".workspace-chat-tool-summary")?.textContent ?? "";
+    expect(summary).toContain("Ran");
     expect(summary).toContain("cargo test");
   });
 
@@ -3878,16 +3878,16 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    const single = container.querySelector(
-      "details.workspace-chat-tool:not(.workspace-chat-tool-group)",
-    );
+    const single = container.querySelector(".workspace-chat-tool:not(.workspace-chat-tool-group)");
     const group = container.querySelector("details.workspace-chat-tool-group");
     if (single === null || group === null) throw new Error("tool rows did not render");
     const singleDot = single.querySelector(".workspace-chat-tool-running");
     const groupDot = group.querySelector(".workspace-chat-tool-running");
     if (singleDot === null || groupDot === null) throw new Error("running dots did not render");
-    expect(single.querySelector("summary")?.lastElementChild).toBe(singleDot);
-    expect(group.querySelector("summary")?.lastElementChild).toBe(groupDot);
+    expect(single.querySelector(".workspace-chat-tool-summary")?.lastElementChild).toBe(singleDot);
+    expect(group.querySelector(".workspace-chat-tool-group-summary")?.lastElementChild).toBe(
+      groupDot,
+    );
   });
 
   it("rotates only an open row's own chevron inside an open group", async () => {
@@ -3924,25 +3924,27 @@ describe("AgentChatSurface", () => {
     });
     expect(group.open).toBe(true);
     const innerRows = group.querySelectorAll<HTMLDetailsElement>(
-      ".workspace-chat-tool-group-body > details.workspace-chat-tool",
+      ".workspace-chat-tool-group-body > .workspace-chat-tool",
     );
     expect(innerRows.length).toBe(2);
-    for (const row of innerRows) {
-      expect(row.open).toBe(false);
-    }
+    // Rows with no output are plain lines: nothing inside the group opens.
+    expect(group.querySelectorAll(".workspace-chat-tool-details")).toHaveLength(0);
 
     // A group's [open] rule must not reach its descendants' summaries, or a
     // closed inner row's chevron renders rotated (matrix(-1,0,0,-1,0,0)).
     // Happy DOM resolves no computed transform on a
     // generated pseudo-element (probed: ""), so the rule source is asserted:
     // the rotate must hang off the open element's own summary only.
-    expect(workspaceCss.rulesFor(".workspace-chat-tool[open] > summary::after")).toContain(
+    expect(workspaceCss.rulesFor(".workspace-chat-tool-details[open] > summary::after")).toContain(
       "transform: rotate(180deg)",
     );
     expect(workspaceCss.rulesFor(".workspace-chat-tool-group[open] > summary::after")).toContain(
       "transform: rotate(180deg)",
     );
-    expect(workspaceCss.rulesFor(".workspace-chat-tool[open] summary::after")).not.toContain(
+    expect(
+      workspaceCss.rulesFor(".workspace-chat-tool-details[open] summary::after"),
+    ).not.toContain("transform: rotate(180deg)");
+    expect(workspaceCss.rulesFor(".workspace-chat-tool-group[open] summary::after")).not.toContain(
       "transform: rotate(180deg)",
     );
     expect(workspaceCss.rulesFor(".workspace-chat-tool-group[open] summary::after")).not.toContain(
@@ -3975,10 +3977,10 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    const row = container.querySelector("details.workspace-chat-tool");
+    const row = container.querySelector(".workspace-chat-tool");
     if (row === null) throw new Error("tool row did not render");
-    const summary = row.querySelector("summary")?.textContent ?? "";
-    expect(summary).toContain("Search");
+    const summary = row.querySelector(".workspace-chat-tool-summary")?.textContent ?? "";
+    expect(summary).toContain("Searched");
     expect(summary).toContain("how to test");
     expect(summary).not.toContain("result body");
     expect(row.querySelector(".workspace-chat-tool-body")?.textContent).toContain("result body");
@@ -4017,14 +4019,12 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    const rows = container.querySelectorAll(
-      "details.workspace-chat-tool:not(.workspace-chat-tool-group)",
-    );
+    const rows = container.querySelectorAll(".workspace-chat-tool:not(.workspace-chat-tool-group)");
     expect(rows).toHaveLength(2);
     const singleFailure = rows[0].querySelector(".workspace-chat-tool-failed");
-    expect(singleFailure?.textContent).toBe("×");
-    expect(singleFailure?.getAttribute("role")).toBe("img");
-    expect(singleFailure?.getAttribute("aria-label")).toBe("Failed");
+    // The failure says so in words; the cross is decoration beside it.
+    expect(singleFailure?.textContent).toBe("✗ failed");
+    expect(singleFailure?.querySelector("[aria-hidden]")?.textContent).toBe("✗ ");
     expect(
       rows[1].querySelector('.workspace-chat-tool-running[aria-label="Running"]'),
     ).not.toBeNull();
@@ -4059,9 +4059,7 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    const rows = container.querySelectorAll(
-      "details.workspace-chat-tool:not(.workspace-chat-tool-group)",
-    );
+    const rows = container.querySelectorAll(".workspace-chat-tool:not(.workspace-chat-tool-group)");
     expect(rows).toHaveLength(2);
     for (const row of rows) {
       expect(row.classList.contains("is-cancelled")).toBe(true);
@@ -4114,13 +4112,10 @@ describe("AgentChatSurface", () => {
     expect(group.querySelector(".workspace-chat-tool-group-count")?.textContent).toBe(
       "3 tool calls",
     );
-    expect(
-      group.querySelector(".workspace-chat-tool-group-summary > svg")?.getAttribute("width"),
-    ).toBe("14");
     expect(group.querySelector(".workspace-chat-tool-group-summary-text")?.textContent).toBe(
       "Edited 1 file, ran 1 command, and read 1 file",
     );
-    expect(group.querySelectorAll("details.workspace-chat-tool")).toHaveLength(3);
+    expect(group.querySelectorAll(".workspace-chat-tool")).toHaveLength(3);
   });
 
   it("opens and closes grouped tools with click", async () => {
@@ -4205,9 +4200,9 @@ describe("AgentChatSurface", () => {
     expect(group.classList.contains("workspace-chat-entry")).toBe(true);
     expect(group.classList.contains("workspace-chat-subagent")).toBe(true);
     expect((group as HTMLElement).style.marginInlineStart).toBe("16px");
-    expect(group.querySelectorAll("details.workspace-chat-tool")).toHaveLength(2);
+    expect(group.querySelectorAll(".workspace-chat-tool")).toHaveLength(2);
     const plain = container.querySelectorAll(
-      ".workspace-conversation-content > details.workspace-chat-tool:not(.workspace-chat-tool-group)",
+      ".workspace-conversation-content > .workspace-chat-tool:not(.workspace-chat-tool-group)",
     );
     expect(plain).toHaveLength(1);
   });
@@ -4257,11 +4252,7 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    expect(running?.querySelector(".workspace-chat-tool-failed")?.textContent).toBe("×");
-    expect(running?.querySelector(".workspace-chat-tool-failed")?.getAttribute("role")).toBe("img");
-    expect(running?.querySelector(".workspace-chat-tool-failed")?.getAttribute("aria-label")).toBe(
-      "Failed",
-    );
+    expect(running?.querySelector(".workspace-chat-tool-failed")?.textContent).toBe("✗ failed");
   });
 
   it("keeps an expanded group open and updates its count as tools stream in", async () => {

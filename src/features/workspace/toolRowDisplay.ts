@@ -5,12 +5,9 @@ import { carriesCredentials } from "../../lib/urlCredentials";
 
 export type ToolItem = Extract<AgentChatItem, { role: "tool" }>;
 
-export type ToolIconName = "terminal" | "eye" | "pencil" | "search" | "bot" | "globe" | "wrench";
-
 export interface ToolRowModel {
   displayName: string;
   summary?: string;
-  icon: ToolIconName;
   /** Set only for a fetch whose title is an http(s) URL: where the row links. */
   linkUrl?: string;
 }
@@ -19,29 +16,16 @@ export interface ToolRowModel {
 // able to read prototype members (`__proto__`, `constructor`, `toString`).
 const DISPLAY_NAMES = new Map<string, string>([
   ["plan", "Plan"],
-  ["execute", "Shell"],
+  ["execute", "Ran"],
   ["read", "Read"],
-  ["edit", "Edit"],
-  ["delete", "Edit"],
-  ["search", "Search"],
-  ["fetch", "Fetch"],
+  ["edit", "Edited"],
+  ["delete", "Deleted"],
+  ["search", "Searched"],
+  ["fetch", "Fetched"],
   ["think", "Task"],
   // An answered model question: the label names it, the summary (the
   // question itself, as the title) stays visible without a click.
   ["question", "Question"],
-]);
-
-const ICONS = new Map<string, ToolIconName>([
-  ["plan", "eye"],
-  ["execute", "terminal"],
-  ["read", "eye"],
-  ["edit", "pencil"],
-  ["delete", "pencil"],
-  ["search", "search"],
-  ["fetch", "search"],
-  ["think", "bot"],
-  ["question", "bot"],
-  ["browser", "globe"],
 ]);
 
 // Not a cost bound — the split pass is linear: this is the INPUT length past
@@ -166,7 +150,6 @@ export function toolRowDisplay(item: ToolItem): ToolRowModel {
     return {
       displayName: "Browser",
       ...(summary === undefined ? {} : { summary }),
-      icon: "globe",
     };
   }
   const label = kind !== undefined ? DISPLAY_NAMES.get(kind) : undefined;
@@ -204,6 +187,5 @@ export function toolRowDisplay(item: ToolItem): ToolRowModel {
     displayName,
     ...(summary === undefined ? {} : { summary }),
     ...(linkUrl === undefined ? {} : { linkUrl }),
-    icon: (kind !== undefined ? ICONS.get(kind) : undefined) ?? "wrench",
   };
 }

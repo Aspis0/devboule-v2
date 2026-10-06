@@ -662,85 +662,20 @@
   line-height: var(--leading-dense);
 }
 
+/* A tool call is one flat line: a verb, its target, a quiet status at the end.
+   No fill, no border; the output waits under the line, indented and muted. */
 .workspace-chat-tool,
 .workspace-chat-tool-group {
-  display: flex;
-  min-height: var(--control-dense);
-  align-items: center;
-  gap: var(--space-6);
-  padding: 0 var(--space-6);
-  border-radius: var(--radius-6);
-  background: var(--fill-tool);
-  color: var(--ink-soft);
-  font-family: var(--font-ui);
-  font-size: var(--type-meta);
-}
-
-.workspace-chat-tool:not(.workspace-chat-tool-group)[open] {
-  --ring: var(--accent-on-code);
-  --button-fill: var(--code-control);
-  --button-fill-hover: var(--code-control-hover);
-  --button-text: var(--code-text);
-  flex-direction: column;
-  align-items: stretch;
-  padding: 0;
-  background: var(--code-bg);
-  color: var(--code-text);
-}
-
-.workspace-chat-tool:not(.workspace-chat-tool-group)[open] > summary {
-  padding-inline: var(--space-6);
-  color: var(--code-text);
-}
-
-.workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-summary-text {
-  color: var(--code-text);
+  margin-top: 0;
+  color: var(--muted);
   font-family: var(--font-mono);
+  font-size: var(--type-mono-sm);
   line-height: var(--leading-body);
-}
-
-.workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-label,
-.workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-failed,
-.workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-location,
-.workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-interrupted,
-.workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-command-exit,
-.workspace-chat-tool:not(.workspace-chat-tool-group)[open] summary::after,
-.workspace-chat-tool:not(.workspace-chat-tool-group)[open] summary > svg {
-  color: var(--code-text);
-}
-
-.workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-interrupted {
-  border-color: var(--code-text);
-  background: var(--code-bg);
-}
-
-.workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-location {
-  border-color: var(--code-text);
-}
-
-.workspace-chat-tool-group[open] {
-  flex-direction: column;
-  align-items: stretch;
-  gap: var(--space-4);
-  padding: 0;
-  background: transparent;
-}
-
-.workspace-chat-tool-group[open] > summary {
-  padding: 0 var(--space-6);
-  border-radius: var(--radius-6);
-  background: var(--fill-tool);
-  color: var(--ink-soft);
+  white-space: normal;
 }
 
 .workspace-chat-tool summary,
 .workspace-chat-tool-group summary {
-  display: flex;
-  flex: 1;
-  align-items: center;
-  gap: var(--space-6);
-  min-height: var(--control-dense);
-  min-width: 0;
   cursor: pointer;
   list-style: none;
 }
@@ -750,22 +685,38 @@
   display: none;
 }
 
+.workspace-chat-tool-summary,
+.workspace-chat-tool-group-summary {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-8);
+  min-width: 0;
+  padding: var(--space-2) var(--space-16) var(--space-2) 0;
+}
+
+/* The disclosure's mark has a strip of its own at the line's end and shows when
+   the line is reached or open, so a resting line stays a line. */
 .workspace-chat-tool summary::after,
 .workspace-chat-tool-group summary::after {
-  flex: none;
+  position: absolute;
+  inset-block-start: var(--space-2);
+  inset-inline-end: 0;
   color: var(--muted);
-  font-size: var(--type-meta);
   content: "▾";
+  opacity: 0;
 }
 
-/* A running status owns the trailing space and the chevron follows it. */
-.workspace-chat-tool:not(.is-running) summary::after,
-.workspace-chat-tool-group:not(.is-running) summary::after {
-  margin-left: auto;
+.workspace-chat-tool summary:hover::after,
+.workspace-chat-tool summary:focus-visible::after,
+.workspace-chat-tool-group summary:hover::after,
+.workspace-chat-tool-group summary:focus-visible::after {
+  opacity: 1;
 }
 
-.workspace-chat-tool[open] > summary::after,
-.workspace-chat-tool-group[open] > summary::after {
+.workspace-chat-tool-group[open] > summary::after,
+.workspace-chat-tool-details[open] > summary::after {
+  opacity: 1;
   transform: rotate(180deg);
 }
 
@@ -775,35 +726,40 @@
   outline-offset: 3px;
 }
 
-/* The row's text block; its overflow lands here first. Basis 100% pins the
-   width the label's cap resolves against: the row, never content. */
+/* The verb and its target; the target yields first when the row is tight. */
 .workspace-chat-tool-text {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: var(--space-6);
-  flex: 0 10 100%;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
 }
 
 .workspace-chat-tool-label {
-  /* Never yields: capped at the block. The strip in the rule below binds
-     only while a yielding summary shares the block. */
   flex: 0 0 auto;
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  color: var(--ink-soft);
   white-space: nowrap;
-  color: var(--muted);
-  font-size: var(--type-meta);
-  font-weight: var(--weight-label);
 }
 
-/* A fixed 48 px seat for any claimant: the label never measures the summary,
-   so even a short one holds its place beside it. */
-.workspace-chat-tool-text.has-summary .workspace-chat-tool-label {
-  max-width: calc(100% - var(--space-48));
+.workspace-chat-tool-text.has-summary .workspace-chat-tool-label::after {
+  margin-inline-start: var(--space-6);
+  color: var(--muted);
+  content: "·";
+}
+
+.workspace-chat-tool-summary-text,
+.workspace-chat-tool-group-summary-text,
+.workspace-chat-tool-stat {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-chat-tool-stat {
+  flex: none;
 }
 
 .workspace-chat-tool-group-count {
@@ -811,13 +767,67 @@
   color: var(--ink-soft);
 }
 
-.workspace-chat-tool-running {
+.workspace-chat-tool-group-summary-text::before {
+  content: "·";
+  margin-inline: 0 var(--space-8);
+}
+
+/* The status at the end of the line, in the order it reads: mark, state,
+   then the muted fact at the far edge. */
+.workspace-command-dot {
+  order: 1;
   flex: none;
-  margin-left: auto;
+  color: var(--tone-live);
+}
+
+.workspace-command-dot::before {
+  content: "✓";
+}
+
+.workspace-command-dot.is-failed {
+  color: var(--danger);
+}
+
+.workspace-command-dot.is-failed::before {
+  content: "✗";
+}
+
+.workspace-chat-tool-failed {
+  order: 2;
+  flex: none;
+  color: var(--danger);
+  font-weight: var(--weight-heading);
+}
+
+.workspace-chat-tool-running {
+  order: 3;
+  flex: none;
   width: 6px;
   height: 6px;
+  align-self: center;
   border-radius: var(--radius-full);
   background: var(--tone-live);
+}
+
+.workspace-chat-tool-done {
+  order: 4;
+  flex: none;
+  color: var(--tone-live);
+}
+
+.workspace-command-exit {
+  order: 5;
+  flex: none;
+  margin-inline-start: auto;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.workspace-chat-tool-interrupted {
+  order: 2;
+  flex: none;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
 .workspace-chat-tool.is-cancelled {
@@ -830,105 +840,84 @@
   color: var(--silence);
 }
 
-.workspace-chat-tool-interrupted {
-  flex: none;
-  padding: 0 var(--space-6);
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--radius-full);
-  color: var(--silence);
-  background: var(--surface-muted);
-  font-size: var(--type-meta);
-  white-space: nowrap;
-}
-
-.workspace-chat-tool-summary-text,
-.workspace-chat-tool-group-summary-text {
-  /* The yielding span: it gives up space first when the row is tight. */
-  flex-shrink: 10;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--ink-soft);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-chat-tool-group-summary-text::before {
-  content: "·";
-  margin-inline: var(--space-2) var(--space-8);
-}
-
-/* The command row's chip (SPEC-regions "Command"): the payload on --code-bg,
-   one line with an ellipsis, yielding like the summary text. */
+/* The command's payload is text on the line like any other target. */
 .workspace-command-chip {
-  flex: 0 10 auto;
   min-width: 0;
-  /* Border counted: 22 − 2 keeps the 20 px line box, 6 + 1 the 7 px inset. */
-  height: 22px;
-  padding: 0 var(--space-6);
   overflow: hidden;
+  color: var(--muted);
   text-overflow: ellipsis;
   white-space: nowrap;
-  /* Decorative boundary in the copyable block's form (SPEC-regions:79): the
-     mono text is what identifies the chip. */
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-4);
-  background: var(--code-bg);
-  color: var(--code-text);
-  font-family: var(--font-mono);
-  font-size: var(--type-mono-sm);
-  line-height: 20px;
 }
 
-/* The exit dot and the sentence that reads its number: the colour is never
-   the only carrier of the code. */
-.workspace-command-dot {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: var(--radius-full);
-  background: var(--tone-live);
-}
-
-.workspace-command-dot.is-failed {
-  background: var(--danger);
-}
-
-/* The open row's ground is --code-bg, where the collapsed ground's red
-   measures 2.43:1 in light; the code-ground red is what stays visible. */
-.workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-command-dot.is-failed {
-  background: var(--diff-del);
-}
-
-.workspace-command-exit {
-  flex: none;
-  color: var(--muted);
-  font-size: var(--type-meta);
-  white-space: nowrap;
-}
-
-/* The expanded row's body. The open row itself paints the code ground, so
-   this box adds no fill, no border and no radius of its own: the output and
-   its header read as one surface. The cap keeps one long tool call from
-   pushing the turn after it off the screen. */
+/* What an open line shows under it: indented, muted, never a panel. */
 .workspace-chat-tool-body {
-  margin: 0 var(--space-6) var(--space-6) var(--space-24);
-  padding: var(--space-8);
-  max-height: var(--transcript-detail-max);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-4) var(--space-16);
+}
+
+.workspace-chat-tool-output-lines {
+  max-height: calc(var(--transcript-detail-max) * 2);
   overflow: auto;
-  color: var(--code-text);
-  font-family: var(--font-mono);
-  font-size: var(--type-mono-sm);
-  line-height: var(--leading-body);
+  color: var(--muted);
+  overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+/* An empty line still takes its row. */
+.workspace-chat-tool-output-line {
+  min-height: calc(var(--type-mono-sm) * var(--leading-body));
+}
+
+.workspace-chat-tool-output.is-diff .workspace-chat-tool-output-lines {
+  padding-inline-start: var(--space-10);
+  border-inline-start: 2px solid var(--line-strong);
+}
+
+.workspace-chat-tool-output-line.is-added {
+  color: var(--diff-text-add);
+}
+
+.workspace-chat-tool-output-line.is-removed {
+  color: var(--diff-text-del);
+}
+
+.workspace-chat-tool-output-line.is-hunk {
+  color: var(--diff-text-hunk);
+}
+
+/* A failure's words are the one tool output that is boxed, and they stand
+   under the line without a click. */
+.workspace-chat-tool-output.is-failure {
+  margin: var(--space-2) 0 var(--space-4);
+  padding: var(--space-6) var(--space-12);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-8);
+}
+
+.workspace-chat-tool-output.is-failure .workspace-chat-tool-output-lines {
+  color: var(--danger);
+}
+
+.workspace-chat-tool-more {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: var(--space-2);
+}
+
+.workspace-chat-tool-output.is-failure .workspace-chat-tool-more {
+  color: var(--danger);
 }
 
 .workspace-chat-tool.is-plan .workspace-chat-tool-body {
-  overflow-wrap: anywhere;
-  white-space: normal;
-}
-
-.workspace-chat-tool.is-plan .workspace-chat-tool-body pre {
-  white-space: pre-wrap;
+  color: var(--ink);
+  font-family: var(--font-ui);
   overflow-wrap: anywhere;
 }
 
@@ -949,56 +938,28 @@
   font-weight: var(--weight-heading);
 }
 
-.workspace-chat-tool-failed {
-  flex: none;
-  color: var(--danger-deep);
-  font-size: var(--type-meta);
-  font-weight: var(--weight-heading);
-}
-
 .workspace-chat-tool-locations {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-4);
-  margin: var(--space-6) 0 var(--space-2);
+  flex-direction: column;
 }
 
 .workspace-chat-tool-location {
-  padding: 0 var(--space-6);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-full);
-  color: var(--silence);
-  font-size: var(--type-meta);
-  white-space: normal;
   overflow-wrap: anywhere;
 }
 
-/* Anchors on the row's code ground: the code text, told apart by underline. */
 .workspace-chat-tool-link {
   overflow-wrap: anywhere;
 }
 
 .workspace-chat-tool-link a {
-  color: var(--code-text);
-  text-decoration: underline;
-}
-
-.workspace-chat-tool-body .workspace-chat-copy {
-  margin-top: var(--space-4);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.workspace-chat-tool summary > svg,
-.workspace-chat-tool-group summary > svg {
-  flex: none;
   color: var(--ink-soft);
+  text-decoration: underline;
 }
 
 .workspace-chat-tool-group-body {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  margin-inline-start: var(--space-12);
 }
 
 .workspace-chat-error {

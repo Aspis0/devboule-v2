@@ -124,7 +124,7 @@ function emitToolRow(toolCallId: string, title: string, status: string): void {
 }
 
 function planRowCount(container: HTMLElement): number {
-  return container.querySelectorAll("details.workspace-chat-tool.is-plan").length;
+  return container.querySelectorAll(".workspace-chat-tool.is-plan").length;
 }
 
 describe("pending plan row suppression", () => {
@@ -276,7 +276,7 @@ describe("pending plan row suppression", () => {
     await renderSurface();
 
     expect(container.querySelector("[data-testid='permission-plan-card']")).not.toBeNull();
-    expect(container.querySelectorAll("details.workspace-chat-tool:not(.is-plan)").length).toBe(1);
+    expect(container.querySelectorAll(".workspace-chat-tool:not(.is-plan)").length).toBe(1);
   });
 
   it("a plan whose card waits behind another card keeps its row", async () => {
@@ -296,7 +296,7 @@ describe("pending plan row suppression", () => {
 
     expect(container.querySelector("[data-testid='permission-card']")).not.toBeNull();
     expect(container.querySelector("[data-testid='permission-plan-card']")).toBeNull();
-    expect(container.querySelectorAll("details.workspace-chat-tool:not(.is-plan)").length).toBe(1);
+    expect(container.querySelectorAll(".workspace-chat-tool:not(.is-plan)").length).toBe(1);
     expect(planRowCount(container)).toBe(1);
   });
 });

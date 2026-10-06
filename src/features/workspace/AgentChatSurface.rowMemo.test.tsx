@@ -14,9 +14,9 @@ vi.mock("./ThoughtRow", async (importOriginal) => {
   const original = await importOriginal<typeof import("./ThoughtRow")>();
   return { ThoughtRow: vi.fn(original.ThoughtRow) };
 });
-vi.mock("./ToolIcon", async (importOriginal) => {
-  const original = await importOriginal<typeof import("./ToolIcon")>();
-  return { ToolIcon: vi.fn(original.ToolIcon) };
+vi.mock("./transcript/ToolCallGroupRow", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./transcript/ToolCallGroupRow")>();
+  return { ToolCallGroupRow: vi.fn(original.ToolCallGroupRow) };
 });
 vi.mock("./A2aMessageCard", async (importOriginal) => {
   const original = await importOriginal<typeof import("./A2aMessageCard")>();
@@ -30,7 +30,7 @@ vi.mock("./DaemonNoticeCard", async (importOriginal) => {
 import { AgentChatSurface } from "./AgentChatSurface";
 import { MessageCopyButton } from "./timeline/MessageCopyButton";
 import { ThoughtRow } from "./ThoughtRow";
-import { ToolIcon } from "./ToolIcon";
+import { ToolCallGroupRow } from "./transcript/ToolCallGroupRow";
 import { A2aMessageCard } from "./A2aMessageCard";
 import { DaemonNoticeCard } from "./DaemonNoticeCard";
 
@@ -128,9 +128,7 @@ it("renders stable historical rows once while the last assistant streams", async
         .mock.calls.filter(([props]) => props.text === `Historical assistant ${index}`).length,
   );
   const thoughtCount = vi.mocked(ThoughtRow).mock.calls.length;
-  const groupCount = vi
-    .mocked(ToolIcon)
-    .mock.calls.filter(([props]) => props.name === "wrench").length;
+  const groupCount = vi.mocked(ToolCallGroupRow).mock.calls.length;
   const liveCount = vi
     .mocked(MessageCopyButton)
     .mock.calls.filter(([props]) => props.text.startsWith("Streaming")).length;

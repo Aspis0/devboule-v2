@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
-// The command row's chrome through the real stylesheet: the mono chip on
-// --code-bg (SPEC-regions "Command") and the exit dot + sentence, in both
+// The command row's chrome through the real stylesheet: the command as plain
+// mono text, the exit mark and sentence, on the transcript ground in both
 // themes — computed styles only, never the rule text.
 
 import { readFileSync } from "node:fs";
@@ -48,30 +48,28 @@ afterEach(() => {
 
 describe("command row computed styles", () => {
   it.each(["light", "dark"] as const)(
-    "builds the chip and the exit marker in the %s theme",
+    "draws the command and the exit marker as plain text in the %s theme",
     (theme: CssTheme) => {
       const css = assembleCssProof(sheets, theme);
       css.inject([
         "*",
+        ".workspace-chat-tool",
         ".workspace-chat-tool-text",
-        ".workspace-chat-tool-label",
         ".workspace-command-chip",
         ".workspace-command-dot",
         ".workspace-command-dot.is-failed",
         ".workspace-command-exit",
-        ".workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-command-exit",
       ]);
 
-      const summary = document.createElement("summary");
+      const row = document.createElement("div");
+      row.className = "workspace-chat-entry workspace-chat-tool";
+      const summary = document.createElement("div");
       const block = document.createElement("span");
       block.className = "workspace-chat-tool-text";
-      const label = document.createElement("span");
-      label.className = "workspace-chat-tool-label";
-      label.textContent = "Shell";
       const chip = document.createElement("span");
       chip.className = "workspace-command-chip";
       chip.textContent = "pnpm vitest checkout";
-      block.append(label, chip);
+      block.append(chip);
       const dotOk = document.createElement("span");
       dotOk.className = "workspace-command-dot";
       const dotFail = document.createElement("span");
@@ -80,102 +78,40 @@ describe("command row computed styles", () => {
       exitText.className = "workspace-command-exit";
       exitText.textContent = "exit 1";
       summary.append(block, dotOk, dotFail, exitText);
-      document.body.append(summary);
+      row.append(summary);
+      document.body.append(row);
 
+      const ground = css.token("--ground-center");
+      expect(ground).toBeDefined();
+
+      // The command is text on the line: no fill, no border, no box of its own.
       const chipStyle = getComputedStyle(chip);
-      expect(chipStyle.backgroundColor).toBe(css.token("--code-bg"));
-      expect(chipStyle.color).toBe(css.token("--code-text"));
-      expect(chipStyle.borderRadius).toBe("4px");
-      // A decorative boundary in the copyable block's form (SPEC-regions:79);
-      // the mono text is what identifies the chip, so the contrast lives there.
-      expect(chipStyle.borderTopWidth).toBe("1px");
-      expect(chipStyle.borderTopColor).toBe(css.token("--line-strong"));
-      const fillTool = css.token("--fill-tool");
-      const codeBg = css.token("--code-bg");
-      expect(fillTool).toBeDefined();
-      expect(codeBg).toBeDefined();
-      expect(contrastRatio(chipStyle.color, codeBg!)).toBeGreaterThanOrEqual(4.5);
-      expect(chipStyle.fontFamily).toContain("JetBrains Mono");
-      expect(chipStyle.fontSize).toBe("12px");
-      // Border-box accounting: 22 − 2 (border) keeps the 20 px line box whole,
-      // and 6 + 1 keeps the horizontal inset at the mockup's 7.
-      expect(chipStyle.boxSizing).toBe("border-box");
-      expect(chipStyle.height).toBe("22px");
-      expect(chipStyle.paddingLeft).toBe("6px");
+      expect(["", "transparent", "rgba(0, 0, 0, 0)"]).toContain(chipStyle.backgroundColor);
+      expect(["", "0px"]).toContain(chipStyle.borderTopWidth);
+      expect(chipStyle.color).toBe(css.token("--muted"));
+      expect(contrastRatio(chipStyle.color, ground!)).toBeGreaterThanOrEqual(4.5);
+      expect(getComputedStyle(row).fontFamily).toContain("JetBrains Mono");
       expect(chipStyle.textOverflow).toBe("ellipsis");
       expect(chipStyle.whiteSpace).toBe("nowrap");
       expect(chipStyle.overflow).toBe("hidden");
       expect(chipStyle.minWidth).toBe("0");
-      // The chip is the yielding text of a command row, like the summary it replaces.
-      expect(Number.parseFloat(chipStyle.flexShrink)).toBeGreaterThan(1);
 
+      // The mark is a glyph in the status colour; the sentence is what carries the code.
       const dotOkStyle = getComputedStyle(dotOk);
-      expect(dotOkStyle.backgroundColor).toBe(css.token("--tone-live"));
-      expect(dotOkStyle.width).toBe("6px");
-      expect(dotOkStyle.height).toBe("6px");
-      expect(dotOkStyle.borderRadius).toBe("999px");
-      expect(contrastRatio(dotOkStyle.backgroundColor, fillTool!)).toBeGreaterThanOrEqual(3);
+      expect(dotOkStyle.color).toBe(css.token("--tone-live"));
+      expect(["", "transparent", "rgba(0, 0, 0, 0)"]).toContain(dotOkStyle.backgroundColor);
+      expect(contrastRatio(dotOkStyle.color, ground!)).toBeGreaterThanOrEqual(3);
       const dotFailStyle = getComputedStyle(dotFail);
-      expect(dotFailStyle.backgroundColor).toBe(css.token("--danger"));
-      expect(contrastRatio(dotFailStyle.backgroundColor, fillTool!)).toBeGreaterThanOrEqual(3);
+      expect(dotFailStyle.color).toBe(css.token("--danger"));
+      expect(contrastRatio(dotFailStyle.color, ground!)).toBeGreaterThanOrEqual(3);
 
       const exitStyle = getComputedStyle(exitText);
       expect(exitStyle.color).toBe(css.token("--muted"));
-      expect(exitStyle.fontSize).toBe("12px");
       expect(exitStyle.whiteSpace).toBe("nowrap");
       expect(exitStyle.flexShrink).toBe("0");
-      expect(contrastRatio(exitStyle.color, fillTool!)).toBeGreaterThanOrEqual(4.5);
+      expect(contrastRatio(exitStyle.color, ground!)).toBeGreaterThanOrEqual(4.5);
 
-      summary.remove();
-    },
-  );
-
-  it.each(["light", "dark"] as const)(
-    "keeps the exit marker readable on the open row's ground in the %s theme",
-    (theme: CssTheme) => {
-      const css = assembleCssProof(sheets, theme);
-      // Every rule the sheet writes for these classes, in any selector form:
-      // a future [open] rule must reach the computed style or this pin is dead.
-      const targets = css.rules
-        .flatMap((rule) => rule.selector.split(","))
-        .map((selector) => selector.trim())
-        .filter(
-          (selector) =>
-            selector.includes(".workspace-command-dot") ||
-            selector.includes(".workspace-command-exit"),
-        );
-      css.inject(targets);
-
-      const openRow = document.createElement("details");
-      openRow.className = "workspace-chat-entry workspace-chat-tool";
-      openRow.open = true;
-      const openSummary = document.createElement("summary");
-      const openDotOk = document.createElement("span");
-      openDotOk.className = "workspace-command-dot";
-      const openDotFail = document.createElement("span");
-      openDotFail.className = "workspace-command-dot is-failed";
-      const openExit = document.createElement("span");
-      openExit.className = "workspace-command-exit";
-      openExit.textContent = "exit 1";
-      openSummary.append(openDotOk, openDotFail, openExit);
-      openRow.append(openSummary);
-      document.body.append(openRow);
-
-      const codeBg = css.token("--code-bg");
-      expect(codeBg).toBeDefined();
-      const dotFail = getComputedStyle(openDotFail);
-      expect(dotFail.backgroundColor).toBe(css.token("--diff-del"));
-      expect(contrastRatio(dotFail.backgroundColor, codeBg!)).toBeGreaterThanOrEqual(3);
-      const dotOk = getComputedStyle(openDotOk);
-      expect(dotOk.backgroundColor).toBe(css.token("--tone-live"));
-      expect(contrastRatio(dotOk.backgroundColor, codeBg!)).toBeGreaterThanOrEqual(3);
-      // Equality, not just a ratio: --muted clears 4.5:1 on this ground in the
-      // dark theme, so a ratio alone would let a broken recolour pass there.
-      const exitStyle = getComputedStyle(openExit);
-      expect(exitStyle.color).toBe(css.token("--code-text"));
-      expect(contrastRatio(exitStyle.color, codeBg!)).toBeGreaterThanOrEqual(4.5);
-
-      openRow.remove();
+      row.remove();
     },
   );
 });

@@ -29,14 +29,7 @@ function luminance(color: string): number {
   return linear[0]! * 0.2126 + linear[1]! * 0.7152 + linear[2]! * 0.0722;
 }
 
-function opacityOf(color: string): number {
-  const parts = color.match(/[\d.]+/g);
-  return parts !== null && parts.length === 4 ? Number(parts[3]) : 1;
-}
-
 function contrastRatio(foreground: string, background: string): number {
-  // A fully transparent foreground shows whatever is beneath it: no contrast.
-  if (opacityOf(foreground) === 0 || opacityOf(background) === 0) return 1;
   const [lighter, darker] =
     luminance(foreground) > luminance(background)
       ? [foreground, background]
@@ -49,456 +42,226 @@ afterEach(() => {
   document.documentElement.removeAttribute("data-theme");
 });
 
+/** happy-dom answers an unset paint property with the empty string. */
+function unpainted(value: string): boolean {
+  return value === "" || value === "transparent" || value === "rgba(0, 0, 0, 0)";
+}
+
+function noWidth(value: string): boolean {
+  return value === "" || value === "0px";
+}
+
+function el(tag: string, className: string, text?: string): HTMLElement {
+  const node = document.createElement(tag);
+  node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+/** Every selector the sheet writes about a tool row, so a later rule that
+ * reaches these elements reaches the computed style these tests read. */
+function injectToolRules(css: ReturnType<typeof assembleCssProof>): void {
+  css.inject([
+    "*",
+    ...css.rules
+      .flatMap((rule) => rule.selector.split(","))
+      .map((selector) => selector.trim())
+      .filter(
+        (selector) =>
+          selector.includes(".workspace-chat-tool") || selector.includes(".workspace-command"),
+      ),
+  ]);
+}
+
 describe("tool row computed styles", () => {
   it.each(["light", "dark"] as const)(
-    "keeps open tool text and icons readable in the %s theme",
+    "draws a tool call as one flat line of text on the transcript ground in the %s theme",
     (theme: CssTheme) => {
       const css = assembleCssProof(sheets, theme);
-      const lightCss = assembleCssProof(sheets, "light");
-      // The dark proof must actually resolve the dark token block; this fails
-      // if the resolver is bypassed because --code-bg differs by theme.
-      if (theme === "dark") {
-        expect(css.token("--code-bg")).not.toBe(lightCss.token("--code-bg"));
+      injectToolRules(css);
+
+      const row = el("div", "workspace-chat-entry workspace-chat-tool");
+      const summary = el("div", "workspace-chat-tool-summary");
+      const text = el("span", "workspace-chat-tool-text has-summary");
+      const label = el("span", "workspace-chat-tool-label", "Edited");
+      const target = el("span", "workspace-chat-tool-summary-text", "src/summary.ts");
+      const stat = el("span", "workspace-chat-tool-stat", "(+12 −3)");
+      text.append(label, target, stat);
+      const done = el("span", "workspace-chat-tool-done", "✓");
+      summary.append(text, done);
+      row.append(summary);
+      document.body.append(row);
+
+      const ground = css.token("--ground-center");
+      expect(ground).toBeDefined();
+      // No fill, no border: a line is text, not a container.
+      const rowStyle = getComputedStyle(row);
+      expect(unpainted(rowStyle.backgroundColor)).toBe(true);
+      expect(noWidth(rowStyle.borderTopWidth)).toBe(true);
+      expect(unpainted(getComputedStyle(summary).backgroundColor)).toBe(true);
+      // One font, two greys: the verb in the soft ink, everything else muted.
+      expect(rowStyle.fontFamily).toContain("JetBrains Mono");
+      expect(getComputedStyle(label).color).toBe(css.token("--ink-soft"));
+      for (const muted of [target, stat]) {
+        expect(getComputedStyle(muted).color).toBe(css.token("--muted"));
       }
-      css.inject([
-        ".workspace-chat-tool:not(.workspace-chat-tool-group)[open]",
-        ".workspace-chat-tool:not(.workspace-chat-tool-group)[open] > summary",
-        ".workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-summary-text",
-        ".workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-label",
-        ".workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-failed",
-        ".workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-location",
-        ".workspace-chat-tool:not(.workspace-chat-tool-group)[open] .workspace-chat-tool-interrupted",
-        ".workspace-chat-tool:not(.workspace-chat-tool-group)[open] summary::after",
-        ".workspace-chat-tool:not(.workspace-chat-tool-group)[open] summary > svg",
-        ".workspace-chat-tool-label",
-        ".workspace-chat-tool-failed",
-        ".workspace-chat-tool-location",
-        ".workspace-chat-tool-interrupted",
-        ".workspace-chat-tool.is-running .workspace-chat-tool-running",
-        ".workspace-chat-tool-running",
-        ".workspace-chat-tool summary > svg",
-        ".workspace-chat-tool summary::after",
-        ".workspace-chat-tool-body",
-        ".workspace-chat-tool-group",
-        ".workspace-chat-tool[open]",
-        ".workspace-chat-tool[open] > summary",
-        ".workspace-chat-tool[open] .workspace-chat-tool-failed",
-        ".workspace-chat-tool[open] .workspace-chat-tool-interrupted",
-        ".workspace-chat-tool[open] summary::after",
-        ".workspace-chat-tool-group[open]",
-        ".workspace-chat-tool-group[open] > summary",
-        ".workspace-chat-tool-group-body",
-        ".workspace-chat-tool-group summary::after",
-        ".workspace-chat-tool-group-summary-text",
-        ".workspace-chat-tool-group-count",
-        ".workspace-chat-tool-group.is-interrupted .workspace-chat-tool-group-summary-text",
-        ".workspace-chat-tool-group .workspace-chat-tool-interrupted",
-        ".workspace-chat-tool-group .workspace-chat-tool-failed",
-        ".workspace-chat-tool-interrupted",
-        ".workspace-chat-tool-failed",
-        ".workspace-chat-tool-group summary > svg",
-        ".workspace-chat-tool-group.is-running .workspace-chat-tool-running",
-        ".workspace-chat-tool-interrupted",
-        ".workspace-chat-tool-location",
-      ]);
-
-      const tool = document.createElement("details");
-      tool.className = "workspace-chat-entry workspace-chat-tool is-failed";
-      tool.open = true;
-      const summary = document.createElement("summary");
-      const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-      const label = document.createElement("span");
-      label.className = "workspace-chat-tool-label";
-      label.textContent = "Shell";
-      const command = document.createElement("span");
-      command.className = "workspace-chat-tool-summary-text";
-      command.textContent = "pnpm test";
-      const failed = document.createElement("span");
-      failed.className = "workspace-chat-tool-failed";
-      failed.textContent = "×";
-      summary.append(icon, label, command, failed);
-      tool.append(summary);
-
-      const body = document.createElement("div");
-      body.className = "workspace-chat-tool-body";
-      const location = document.createElement("span");
-      location.className = "workspace-chat-tool-location";
-      location.textContent = "src/main.ts";
-      body.append(location);
-      tool.append(body);
-      document.body.append(tool);
-
-      const interruptedTool = document.createElement("details");
-      interruptedTool.className = "workspace-chat-entry workspace-chat-tool is-interrupted";
-      interruptedTool.open = true;
-      const interruptedSummary = document.createElement("summary");
-      const interruptedLabel = document.createElement("span");
-      interruptedLabel.className = "workspace-chat-tool-label";
-      interruptedLabel.textContent = "Shell";
-      const interrupted = document.createElement("span");
-      interrupted.className = "workspace-chat-tool-interrupted";
-      interrupted.textContent = "Interrupted";
-      interruptedSummary.append(interruptedLabel, interrupted);
-      interruptedTool.append(interruptedSummary);
-      document.body.append(interruptedTool);
-
-      const codeBg = css.token("--code-bg");
-      expect(codeBg).toBeDefined();
-      for (const text of [label, command, failed, location, interruptedLabel, interrupted]) {
-        const color = getComputedStyle(text).color;
-        expect(contrastRatio(color, codeBg!)).toBeGreaterThanOrEqual(4.5);
-      }
-      expect(getComputedStyle(interrupted).backgroundColor).toBe(codeBg);
-      expect(contrastRatio(getComputedStyle(icon).color, codeBg!)).toBeGreaterThanOrEqual(4.5);
-      expect(
-        contrastRatio(getComputedStyle(summary, "::after").color, codeBg!),
-      ).toBeGreaterThanOrEqual(4.5);
-      expect(css.rulesFor(".workspace-chat-tool summary::after")).toContain('content: "▾"');
-      expect(getComputedStyle(label).fontFamily).not.toContain("JetBrains Mono");
-      expect(getComputedStyle(interruptedLabel).fontFamily).not.toContain("JetBrains Mono");
-      expect(getComputedStyle(command).fontFamily).toContain("JetBrains Mono");
-      expect(getComputedStyle(body).fontFamily).toContain("JetBrains Mono");
-      expect(
-        contrastRatio(getComputedStyle(location).borderTopColor, codeBg!),
-      ).toBeGreaterThanOrEqual(3);
-      tool.remove();
-      interruptedTool.remove();
-    },
-  );
-
-  it.each(["light", "dark"] as const)(
-    "keeps every expanded group summary span readable on the tool fill in the %s theme",
-    (theme: CssTheme) => {
-      const css = assembleCssProof(sheets, theme);
-      css.inject([
-        ".workspace-chat-tool",
-        ".workspace-chat-tool[open]",
-        ".workspace-chat-tool[open] > summary",
-        ".workspace-chat-tool[open] .workspace-chat-tool-failed",
-        ".workspace-chat-tool[open] .workspace-chat-tool-interrupted",
-        ".workspace-chat-tool[open] summary::after",
-        ".workspace-chat-tool-group",
-        ".workspace-chat-tool-group[open]",
-        ".workspace-chat-tool-group[open] > summary",
-        ".workspace-chat-tool-group-body",
-        ".workspace-chat-tool-group summary::after",
-        ".workspace-chat-tool-group-count",
-        ".workspace-chat-tool-group-summary-text",
-        ".workspace-chat-tool-group.is-interrupted .workspace-chat-tool-group-summary-text",
-        ".workspace-chat-tool-group .workspace-chat-tool-failed",
-        ".workspace-chat-tool-group .workspace-chat-tool-interrupted",
-        ".workspace-chat-tool-failed",
-        ".workspace-chat-tool-interrupted",
-        ".workspace-chat-tool.is-failed .workspace-chat-tool-failed",
-        ".workspace-chat-tool-group summary > svg",
-        ".workspace-chat-tool-running",
-        ".workspace-chat-tool-group.is-running .workspace-chat-tool-running",
-      ]);
-      const group = document.createElement("details");
-      group.className =
-        "workspace-chat-entry workspace-chat-tool workspace-chat-tool-group is-interrupted is-failed";
-      group.open = true;
-      const summary = document.createElement("summary");
-      summary.className = "workspace-chat-tool-group-summary";
-      const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-      const count = document.createElement("span");
-      count.className = "workspace-chat-tool-group-count";
-      count.textContent = "3 tool calls";
-      const text = document.createElement("span");
-      text.className = "workspace-chat-tool-group-summary-text";
-      text.textContent = "Edited 1 file";
-      const failed = document.createElement("span");
-      failed.className = "workspace-chat-tool-failed";
-      failed.textContent = "×";
-      const interrupted = document.createElement("span");
-      interrupted.className = "workspace-chat-tool-interrupted";
-      interrupted.textContent = "Interrupted";
-      summary.append(icon, count, text, failed, interrupted);
-      const body = document.createElement("div");
-      body.className = "workspace-chat-tool-group-body";
-      const row = document.createElement("details");
-      row.className = "workspace-chat-entry workspace-chat-tool";
-      group.append(summary, body);
-      body.append(row);
-      document.body.append(group);
-
-      const fillTool = css.token("--fill-tool");
-      expect(getComputedStyle(group).backgroundColor).toBe("transparent");
-      expect(getComputedStyle(summary).backgroundColor).toBe(fillTool);
-      expect(getComputedStyle(summary).borderRadius).toBe("6px");
-      for (const span of [count, text, failed, interrupted]) {
-        const visibleBackground =
-          span === interrupted ? getComputedStyle(span).backgroundColor : fillTool!;
+      for (const readable of [label, target, stat]) {
         expect(
-          contrastRatio(getComputedStyle(span).color, visibleBackground),
+          contrastRatio(getComputedStyle(readable).color, ground!),
+          readable.className,
         ).toBeGreaterThanOrEqual(4.5);
       }
-      expect(contrastRatio(getComputedStyle(icon).color, fillTool!)).toBeGreaterThanOrEqual(4.5);
-      expect(
-        contrastRatio(getComputedStyle(summary, "::after").color, fillTool!),
-      ).toBeGreaterThanOrEqual(4.5);
-      expect(getComputedStyle(body).gap).toBe("4px");
-      expect(getComputedStyle(row).backgroundColor).toBe(fillTool);
-      expect(getComputedStyle(row).borderRadius).toBe("6px");
-      group.remove();
+      // The target yields when the line is tight; the verb never does.
+      expect(getComputedStyle(label).flexShrink).toBe("0");
+      expect(getComputedStyle(target).textOverflow).toBe("ellipsis");
+      expect(getComputedStyle(target).minWidth).toBe("0");
+      expect(getComputedStyle(text).overflow).toBe("hidden");
+
+      row.remove();
     },
   );
 
-  it.each([
-    {
-      theme: "light" as CssTheme,
-      state: "running",
-      classes: "workspace-chat-entry workspace-chat-tool is-running",
+  it.each(["light", "dark"] as const)(
+    "boxes only a failure's excerpt, in the danger tone, in the %s theme",
+    (theme: CssTheme) => {
+      const css = assembleCssProof(sheets, theme);
+      injectToolRules(css);
+
+      const row = el("div", "workspace-chat-entry workspace-chat-tool is-failed");
+      const plain = el("div", "workspace-chat-tool-output is-plain");
+      const excerpt = el("div", "workspace-chat-tool-output is-failure");
+      const lines = el("div", "workspace-chat-tool-output-lines");
+      const more = el("button", "workspace-chat-tool-more", "+3 lines");
+      excerpt.append(lines, more);
+      const failed = el("span", "workspace-chat-tool-failed", "failed");
+      row.append(plain, excerpt, failed);
+      document.body.append(row);
+
+      const ground = css.token("--ground-center");
+      expect(noWidth(getComputedStyle(plain).borderTopWidth)).toBe(true);
+      const box = getComputedStyle(excerpt);
+      expect(box.borderTopWidth).toBe("1px");
+      expect(box.borderTopColor).toBe(css.token("--danger"));
+      expect(box.borderRadius).toBe("8px");
+      expect(unpainted(box.backgroundColor)).toBe(true);
+      for (const danger of [lines, more, failed]) {
+        expect(getComputedStyle(danger).color).toBe(css.token("--danger"));
+        expect(
+          contrastRatio(getComputedStyle(danger).color, ground!),
+          danger.className,
+        ).toBeGreaterThanOrEqual(4.5);
+      }
+
+      row.remove();
     },
-    {
-      theme: "dark" as CssTheme,
-      state: "running",
-      classes: "workspace-chat-entry workspace-chat-tool is-running",
+  );
+
+  it("colours a diff's lines with the diff tokens and rules it on the left, nothing more", () => {
+    const css = assembleCssProof(sheets, "light");
+    injectToolRules(css);
+
+    const diff = el("div", "workspace-chat-tool-output is-diff");
+    const lines = el("div", "workspace-chat-tool-output-lines");
+    const added = el("div", "workspace-chat-tool-output-line is-added", "+ a");
+    const removed = el("div", "workspace-chat-tool-output-line is-removed", "- b");
+    const hunk = el("div", "workspace-chat-tool-output-line is-hunk", "@@ c");
+    lines.append(added, removed, hunk);
+    diff.append(lines);
+    document.body.append(diff);
+
+    // The diff text tokens are colour mixes of the tone with the ink, which the
+    // proof cannot compute, so each rule is read for the tone it mixes.
+    const mixOf = (selector: string, tone: string) =>
+      expect(css.rulesFor(selector)).toContain(`color-mix(in srgb, ${css.token(tone)}`);
+    mixOf(".workspace-chat-tool-output-line.is-added", "--tone-add");
+    mixOf(".workspace-chat-tool-output-line.is-removed", "--tone-del");
+    mixOf(".workspace-chat-tool-output-line.is-hunk", "--tone-warn");
+    // The only edge a diff draws is a rule on its inline start.
+    expect(
+      css.rulesFor(".workspace-chat-tool-output.is-diff .workspace-chat-tool-output-lines"),
+    ).toContain("border-inline-start: 2px solid");
+    expect(noWidth(getComputedStyle(diff).borderTopWidth)).toBe(true);
+
+    diff.remove();
+  });
+
+  it.each(["light", "dark"] as const)(
+    "reads the end of a line in order, with the fact at the far edge, in the %s theme",
+    (theme: CssTheme) => {
+      const css = assembleCssProof(sheets, theme);
+      injectToolRules(css);
+
+      const row = el("div", "workspace-chat-entry workspace-chat-tool is-running");
+      const summary = el("div", "workspace-chat-tool-summary");
+      const mark = el("span", "workspace-command-dot");
+      const failed = el("span", "workspace-chat-tool-failed", "failed");
+      const running = el("span", "workspace-chat-tool-running");
+      const done = el("span", "workspace-chat-tool-done", "✓");
+      const exit = el("span", "workspace-command-exit", "exit 0");
+      summary.append(exit, done, running, failed, mark);
+      row.append(summary);
+      document.body.append(row);
+
+      const order = [mark, failed, running, done, exit].map((node) => getComputedStyle(node).order);
+      expect(order).toEqual(["1", "2", "3", "4", "5"]);
+      expect(getComputedStyle(exit).marginInlineStart).toBe("auto");
+      const dot = getComputedStyle(running);
+      expect(dot.width).toBe("6px");
+      expect(dot.height).toBe("6px");
+      expect(dot.borderRadius).toBe("999px");
+      expect(dot.backgroundColor).toBe(css.token("--tone-live"));
+
+      row.remove();
     },
-    {
-      theme: "light" as CssTheme,
-      state: "failed",
-      classes: "workspace-chat-entry workspace-chat-tool is-failed",
-    },
-    {
-      theme: "dark" as CssTheme,
-      state: "failed",
-      classes: "workspace-chat-entry workspace-chat-tool is-failed",
-    },
-  ])("styles a single $state tool row in the $theme theme", ({ theme, state, classes }) => {
-    const css = assembleCssProof(sheets, theme);
-    css.inject([
-      ".workspace-chat-tool",
-      ".workspace-chat-tool-running",
-      ".workspace-chat-tool.is-running .workspace-chat-tool-running",
-      ".workspace-chat-tool-failed",
-    ]);
-    const row = document.createElement("details");
-    row.className = classes;
+  );
+
+  it("keeps the disclosure mark in a strip of the line's own, hidden until the line is reached", () => {
+    const css = assembleCssProof(sheets, "light");
+    injectToolRules(css);
+
+    const row = el("div", "workspace-chat-entry workspace-chat-tool");
+    const details = document.createElement("details");
     const summary = document.createElement("summary");
-    const marker = document.createElement("span");
-    if (state === "running") {
-      marker.className = "workspace-chat-tool-running";
-      marker.setAttribute("role", "img");
-      marker.setAttribute("aria-label", "Running");
-    } else {
-      marker.className = "workspace-chat-tool-failed";
-      marker.textContent = "×";
-      marker.setAttribute("role", "img");
-      marker.setAttribute("aria-label", "Failed");
-    }
-    summary.append(marker);
-    row.append(summary);
+    summary.className = "workspace-chat-tool-summary";
+    details.append(summary);
+    row.append(details);
     document.body.append(row);
 
-    if (state === "running") {
-      // The mockup's `.tool-status { margin-left: auto }`: the dot owns the
-      // trailing space and the chevron follows it.
-      expect(getComputedStyle(marker).marginLeft).toBe("auto");
-      expect(getComputedStyle(marker).width).toBe("6px");
-      expect(
-        contrastRatio(getComputedStyle(marker).backgroundColor, css.token("--fill-tool")!),
-      ).toBeGreaterThanOrEqual(3);
-    } else {
-      expect(getComputedStyle(marker).color).toBe(css.token("--danger"));
-      expect(
-        contrastRatio(getComputedStyle(marker).color, css.token("--fill-tool")!),
-      ).toBeGreaterThanOrEqual(4.5);
-    }
+    expect(css.rulesFor(".workspace-chat-tool summary::after")).toContain('content: "▾"');
+    // Pseudo-element styles are not computed here, so the rules are read.
+    const mark = css.rulesFor(".workspace-chat-tool summary::after");
+    expect(mark).toContain("position: absolute");
+    expect(mark).toContain("opacity: 0");
+    expect(css.rulesFor(".workspace-chat-tool summary:hover::after")).toContain("opacity: 1");
+    // The strip is the line's own padding, so no row ends sooner than another.
+    expect(getComputedStyle(summary).paddingRight).toBe("16px");
+
     row.remove();
   });
 
-  it("keeps a non-running row's chevron on the trailing edge", () => {
-    const css = assembleCssProof(sheets);
-    css.inject([
-      ".workspace-chat-tool summary::after",
-      ".workspace-chat-tool:not(.is-running) summary::after",
-    ]);
-    const row = document.createElement("details");
-    row.className = "workspace-chat-entry workspace-chat-tool";
-    const summary = document.createElement("summary");
-    row.append(summary);
-    document.body.append(row);
+  it("flattens a group: a line with its rows indented under it, no fill and no gap", () => {
+    const css = assembleCssProof(sheets, "light");
+    injectToolRules(css);
 
-    // Happy DOM resolves no computed margin on a generated pseudo-element
-    // (probed: `getComputedStyle(summary, "::after").marginLeft` is `""`),
-    // so the declaration is asserted through the rule source.
-    expect(css.rulesFor(".workspace-chat-tool:not(.is-running) summary::after")).toContain(
-      "margin-left: auto",
+    const group = el(
+      "details",
+      "workspace-chat-entry workspace-chat-tool workspace-chat-tool-group",
     );
-    row.remove();
+    const summary = el("summary", "workspace-chat-tool-group-summary");
+    const count = el("span", "workspace-chat-tool-group-count", "3 tool calls");
+    const body = el("div", "workspace-chat-tool-group-body");
+    summary.append(count);
+    group.append(summary, body);
+    document.body.append(group);
+
+    expect(unpainted(getComputedStyle(group).backgroundColor)).toBe(true);
+    expect(unpainted(getComputedStyle(summary).backgroundColor)).toBe(true);
+    expect(getComputedStyle(count).color).toBe(css.token("--ink-soft"));
+    const bodyStyle = getComputedStyle(body);
+    expect(bodyStyle.marginInlineStart).toBe("12px");
+    expect(bodyStyle.flexDirection).toBe("column");
+    expect(bodyStyle.gap).not.toBe("4px");
+
+    group.remove();
   });
-
-  it("lets a row's summary span the full row so the chevron owns the trailing edge", () => {
-    const css = assembleCssProof(sheets);
-    css.inject([".workspace-chat-tool", ".workspace-chat-tool summary"]);
-    const row = document.createElement("details");
-    row.className = "workspace-chat-entry workspace-chat-tool";
-    const summary = document.createElement("summary");
-    row.append(summary);
-    document.body.append(row);
-
-    // A content-width summary leaves the chevron's auto margin no free space,
-    // so the chevron sits after the label instead of the trailing edge (live
-    // finding: closed inner rows of an open group).
-    expect(getComputedStyle(summary).flexGrow).toBe("1");
-    row.remove();
-  });
-
-  it("keeps the label whole by routing the row's overflow through its text block", () => {
-    assembleCssProof(sheets).inject([
-      ".workspace-chat-tool-text",
-      ".workspace-chat-tool-text.has-summary .workspace-chat-tool-label",
-      ".workspace-chat-tool-label",
-      ".workspace-chat-tool-summary-text",
-    ]);
-    const block = document.createElement("span");
-    block.className = "workspace-chat-tool-text has-summary";
-    const label = document.createElement("span");
-    label.className = "workspace-chat-tool-label";
-    const summaryText = document.createElement("span");
-    summaryText.className = "workspace-chat-tool-summary-text";
-    block.append(label, summaryText);
-    document.body.append(block);
-
-    // The block shrinks at row level, so the row never outgrows the
-    // transcript; inside it only the summary yields, never the label.
-    expect(getComputedStyle(label).flexShrink).toBe("0");
-    // The floor, when a summary shares the block: the cap leaves the gap plus
-    // a 40 px strip, so the yielding text keeps ~6 characters.
-    expect(getComputedStyle(label).maxWidth).toBe("calc(100% - 48px)");
-    expect(getComputedStyle(label).textOverflow).toBe("ellipsis");
-    expect(getComputedStyle(label).whiteSpace).toBe("nowrap");
-    expect(getComputedStyle(block).flexShrink).toBe("10");
-    expect(getComputedStyle(block).flexBasis).toBe("100%");
-    expect(getComputedStyle(block).gap).toBe("6px");
-    expect(getComputedStyle(block).minWidth).toBe("0");
-    expect(getComputedStyle(block).overflow).toBe("hidden");
-    expect(getComputedStyle(summaryText).textOverflow).toBe("ellipsis");
-    expect(getComputedStyle(summaryText).minWidth).toBe("0");
-    expect(Number.parseFloat(getComputedStyle(summaryText).flexShrink)).toBeGreaterThan(0);
-    block.remove();
-
-    // Without a claimant the label keeps the block's full width: the strip
-    // would otherwise ellipsize a long bare name ~8 characters early.
-    const loneBlock = document.createElement("span");
-    loneBlock.className = "workspace-chat-tool-text";
-    const loneLabel = document.createElement("span");
-    loneLabel.className = "workspace-chat-tool-label";
-    loneBlock.append(loneLabel);
-    document.body.append(loneBlock);
-    expect(getComputedStyle(loneLabel).maxWidth).toBe("100%");
-    loneBlock.remove();
-  });
-
-  it("draws one surface under an expanded tool body and bounds it", () => {
-    const css = assembleCssProof(sheets);
-    css.inject([
-      ".workspace-chat-tool",
-      ".workspace-chat-tool summary",
-      ".workspace-chat-tool:not(.workspace-chat-tool-group)[open]",
-      ".workspace-chat-tool-body",
-    ]);
-    const row = document.createElement("details");
-    row.className = "workspace-chat-entry workspace-chat-tool";
-    row.open = true;
-    const summary = document.createElement("summary");
-    const body = document.createElement("div");
-    body.className = "workspace-chat-tool-body";
-    row.append(summary, body);
-    document.body.append(row);
-
-    // The open row paints the code ground, so the body draws none of its own:
-    // the header and the output it holds are one surface, not a box in a box.
-    // happy-dom reports no background at all for an unset one, so the
-    // surface question is answered on the rule source.
-    expect(getComputedStyle(row).backgroundColor).toBe(css.token("--code-bg"));
-    expect(css.rulesFor(".workspace-chat-tool-body")).not.toContain("background");
-    expect(css.rulesFor(".workspace-chat-tool-body")).not.toContain("border-radius");
-    expect(getComputedStyle(body).color).toBe(css.token("--code-text"));
-
-    expect(getComputedStyle(body).marginLeft).toBe("24px");
-    expect(getComputedStyle(body).marginRight).toBe("6px");
-    expect(getComputedStyle(body).padding).toBe("8px");
-    // One long tool call scrolls inside its own turn instead of pushing the
-    // turns after it off the screen.
-    expect(getComputedStyle(body).maxHeight).toBe("200px");
-    expect(getComputedStyle(body).overflow).toBe("auto");
-    // The collapsed row stays a 24 px control on a 6 px inset; the open one
-    // drops its own padding so the body insets itself instead.
-    expect(getComputedStyle(summary).minHeight).toBe("24px");
-    expect(getComputedStyle(summary).gap).toBe("6px");
-    expect(getComputedStyle(row).paddingLeft).toBe("0px");
-    row.remove();
-
-    const closed = document.createElement("details");
-    closed.className = "workspace-chat-entry workspace-chat-tool";
-    closed.appendChild(document.createElement("summary"));
-    document.body.appendChild(closed);
-    expect(getComputedStyle(closed).gap).toBe("6px");
-    expect(getComputedStyle(closed).paddingLeft).toBe("6px");
-    expect(getComputedStyle(closed).paddingRight).toBe("6px");
-    closed.remove();
-  });
-
-  it.each(["light", "dark"] as const)(
-    "keeps a running group's dot at the trailing edge in the %s theme",
-    (theme: CssTheme) => {
-      const css = assembleCssProof(sheets, theme);
-      css.inject([".workspace-chat-tool-running", ".workspace-chat-tool-group"]);
-      const group = document.createElement("details");
-      group.className =
-        "workspace-chat-entry workspace-chat-tool workspace-chat-tool-group is-running";
-      const summary = document.createElement("summary");
-      const dot = document.createElement("span");
-      dot.className = "workspace-chat-tool-running";
-      summary.append(dot);
-      group.append(summary);
-      document.body.append(group);
-
-      expect(getComputedStyle(dot).marginLeft).toBe("auto");
-      expect(
-        contrastRatio(getComputedStyle(dot).backgroundColor, css.token("--fill-tool")!),
-      ).toBeGreaterThanOrEqual(3);
-      group.remove();
-    },
-  );
-
-  it.each(["light", "dark"] as const)(
-    "keeps expanded groups transparent with separate tool rows and 4 px gaps in the %s theme",
-    (theme: CssTheme) => {
-      const css = assembleCssProof(sheets, theme);
-      css.inject([
-        ".workspace-chat-tool-group",
-        ".workspace-chat-tool-group[open]",
-        ".workspace-chat-tool-group[open] > summary",
-        ".workspace-chat-tool-group-summary",
-        ".workspace-chat-tool-group-body",
-        ".workspace-chat-tool",
-        ".workspace-chat-tool[open]",
-        ".workspace-chat-tool[open] > summary",
-        ".workspace-chat-tool[open] summary::after",
-      ]);
-      const group = document.createElement("details");
-      group.className = "workspace-chat-entry workspace-chat-tool workspace-chat-tool-group";
-      group.open = true;
-      const summary = document.createElement("summary");
-      summary.className = "workspace-chat-tool-group-summary";
-      const body = document.createElement("div");
-      body.className = "workspace-chat-tool-group-body";
-      const row = document.createElement("details");
-      row.className = "workspace-chat-tool";
-      group.append(summary, body);
-      body.append(row);
-      document.body.append(group);
-
-      expect(getComputedStyle(group).backgroundColor).toBe("transparent");
-      expect(getComputedStyle(group).gap).toBe("4px");
-      expect(getComputedStyle(summary).backgroundColor).toBe(css.token("--fill-tool"));
-      expect(getComputedStyle(body).gap).toBe("4px");
-      expect(getComputedStyle(row).backgroundColor).toBe(css.token("--fill-tool"));
-      expect(getComputedStyle(row).borderRadius).toBe("6px");
-      group.remove();
-    },
-  );
 });

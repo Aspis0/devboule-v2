@@ -1,15 +1,12 @@
-// The command row's chrome inside a tool-row summary: the kind word, the chip
-// that carries the command's payload, and the marker that carries its exit code.
+// The command row's chrome inside a tool-row summary: the payload text and the
+// marker that carries its exit code.
 
-/** The payload shown in the command chip, taken from the row summary. */
+/** The payload shown after the verb, taken from the row summary. */
 export function CommandChip({ command }: { command: string }) {
   return (
-    <>
-      <span className="sr-only">Command</span>
-      <span className="workspace-command-chip" title={command}>
-        {command}
-      </span>
-    </>
+    <span className="workspace-command-chip" title={command}>
+      {command}
+    </span>
   );
 }
 

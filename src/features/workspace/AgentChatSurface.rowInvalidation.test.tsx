@@ -14,9 +14,9 @@ vi.mock("./ThoughtRow", async (importOriginal) => {
   const original = await importOriginal<typeof import("./ThoughtRow")>();
   return { ThoughtRow: vi.fn(original.ThoughtRow) };
 });
-vi.mock("./ToolIcon", async (importOriginal) => {
-  const original = await importOriginal<typeof import("./ToolIcon")>();
-  return { ToolIcon: vi.fn(original.ToolIcon) };
+vi.mock("./transcript/ToolCallGroupRow", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./transcript/ToolCallGroupRow")>();
+  return { ToolCallGroupRow: vi.fn(original.ToolCallGroupRow) };
 });
 vi.mock("./toolRowDisplay", async (importOriginal) => {
   const original = await importOriginal<typeof import("./toolRowDisplay")>();
@@ -30,7 +30,7 @@ vi.mock("./A2aMessageCard", async (importOriginal) => {
 import { AgentChatSurface } from "./AgentChatSurface";
 import { MessageCopyButton } from "./timeline/MessageCopyButton";
 import { ThoughtRow } from "./ThoughtRow";
-import { ToolIcon } from "./ToolIcon";
+import { ToolCallGroupRow } from "./transcript/ToolCallGroupRow";
 import { toolRowDisplay } from "./toolRowDisplay";
 import { A2aMessageCard } from "./A2aMessageCard";
 
@@ -67,7 +67,7 @@ function counts() {
     newThought: thoughts.filter(([props]) => props.text === "New thought").length,
     read: tools.filter(([item]) => item.toolCallId === "read").length,
     execute: tools.filter(([item]) => item.toolCallId === "execute").length,
-    group: vi.mocked(ToolIcon).mock.calls.filter(([props]) => props.name === "wrench").length,
+    group: vi.mocked(ToolCallGroupRow).mock.calls.length,
     relay: vi.mocked(A2aMessageCard).mock.calls.length,
   };
 }

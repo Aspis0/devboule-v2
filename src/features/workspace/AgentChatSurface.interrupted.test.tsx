@@ -105,7 +105,7 @@ describe("interrupted tool row", () => {
       });
     });
 
-    const row = container.querySelector("details.workspace-chat-tool");
+    const row = container.querySelector(".workspace-chat-tool");
     if (row === null) throw new Error("tool row did not render");
     expect(row.classList.contains("is-running")).toBe(false);
     expect(row.classList.contains("is-interrupted")).toBe(true);
@@ -140,7 +140,7 @@ describe("interrupted tool row", () => {
       });
     });
 
-    const row = container.querySelector("details.workspace-chat-tool");
+    const row = container.querySelector(".workspace-chat-tool");
     if (row === null) throw new Error("tool row did not render");
     expect(row.classList.contains("is-running")).toBe(true);
     expect(row.classList.contains("is-interrupted")).toBe(false);

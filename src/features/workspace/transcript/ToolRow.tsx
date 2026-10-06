@@ -1,9 +1,8 @@
-import { memo, useEffect, useRef } from "react";
+import { memo, useEffect, useRef, type ReactNode } from "react";
 import type { ToolChatItem } from "../../../lib/toolCallGroups";
 import { ExternalLink } from "../../../components/ExternalLink";
 import { MarkdownText } from "../../../components/MarkdownText";
 import { toolRowDisplay } from "../toolRowDisplay";
-import { ToolIcon } from "../ToolIcon";
 import { CommandChip, ExitMarker } from "../CommandRow";
 import {
   INTERRUPTED_TOOL_CLASS,
@@ -13,6 +12,14 @@ import {
 } from "../interruptedTool";
 import { entryFrame } from "./entryFrame";
 import { ChatImageThumbnails } from "./ChatImageThumbnails";
+import { ToolOutput } from "./ToolOutput";
+import {
+  DIFF_PREVIEW_LINES,
+  FAILURE_EXCERPT_LINES,
+  OUTPUT_PREVIEW_LINES,
+  diffStats,
+  outputLines,
+} from "./toolOutputView";
 
 export const ToolRow = memo(function ToolRow({
   item,
@@ -29,22 +36,34 @@ export const ToolRow = memo(function ToolRow({
   const failed = item.kind !== "plan" && item.status.toLowerCase() === "failed";
   const status = item.status.toLowerCase();
   const cancelled = status === "cancelled" || status === "canceled";
+  const completed = status === "completed" && !interrupted;
+  const isPlan = item.kind === "plan";
   const planDecision =
-    item.kind === "plan"
-      ? ["Approved", "Rejected", "Withdrawn"].includes(item.title)
-        ? item.title
-        : undefined
-      : undefined;
+    isPlan && ["Approved", "Rejected", "Withdrawn"].includes(item.title) ? item.title : undefined;
   // The wire line only decides WHICH rows are command rows; the chip shows
   // the row's display title, which for some providers is the line itself.
   const commandRow = item.command !== undefined;
-  // The strip on the label is paid by the yielding text beside it: only a
-  // block that actually carries one claims it.
   const hasSummary = model.summary !== undefined || planDecision !== undefined;
+  const lines = outputLines(item.output);
+  const isEdit = item.kind === "edit" || item.kind === "delete";
+  const stats = isEdit ? diffStats(lines) : null;
+  // A failure's words stand under its line without a click; every other
+  // output waits in the body.
+  const excerpt = failed && lines.length > 0;
+  const bodyLines = failed || isPlan ? [] : lines;
   // An image inside a collapsed body is an image nobody sees: the row opens
   // itself the first time it carries one, and then stays where the person put
   // it — the element owns its state, so no re-render drags it back open.
   const hasImages = item.images !== undefined && item.images.length > 0;
+  const locations = (item.locations ?? []).filter(
+    (location) => location.path !== model.summary || location.line !== undefined,
+  );
+  const hasBody =
+    linkUrl !== undefined ||
+    locations.length > 0 ||
+    bodyLines.length > 0 ||
+    (isPlan && item.output.length > 0) ||
+    hasImages;
   const details = useRef<HTMLDetailsElement | null>(null);
   const collapsedByUser = useRef(false);
   useEffect(() => {
@@ -52,73 +71,93 @@ export const ToolRow = memo(function ToolRow({
       details.current.open = true;
     }
   }, [hasImages]);
-  const toolClassName = `${className}${item.kind === "plan" ? " is-plan" : ""}${running ? " is-running" : ""}${failed ? " is-failed" : ""}${cancelled ? " is-cancelled" : ""}${interrupted ? ` ${INTERRUPTED_TOOL_CLASS}` : ""}`;
-  return (
-    <details
-      ref={details}
-      className={toolClassName}
-      key={item.id}
-      style={style}
-      onToggle={() => {
-        collapsedByUser.current = hasImages && details.current?.open === false;
-      }}
-    >
-      <summary className="workspace-chat-tool-summary">
-        {commandRow ? null : <ToolIcon name={model.icon} />}
-        <span className={`workspace-chat-tool-text${hasSummary ? " has-summary" : ""}`}>
-          {commandRow ? null : (
-            <span className="workspace-chat-tool-label" title={model.displayName}>
-              {model.displayName}
-            </span>
-          )}
-          {commandRow && model.summary !== undefined ? (
-            <CommandChip command={model.summary} />
-          ) : null}
-          {!commandRow && model.summary !== undefined ? (
-            <span className="workspace-chat-tool-summary-text">{model.summary}</span>
-          ) : null}
-          {planDecision !== undefined ? (
-            <span className="workspace-chat-tool-summary-text">{planDecision}</span>
-          ) : null}
+  const toolClassName = `${className}${isPlan ? " is-plan" : ""}${running ? " is-running" : ""}${failed ? " is-failed" : ""}${cancelled ? " is-cancelled" : ""}${interrupted ? ` ${INTERRUPTED_TOOL_CLASS}` : ""}`;
+  const line: ReactNode = (
+    <>
+      <span className={`workspace-chat-tool-text${hasSummary ? " has-summary" : ""}`}>
+        <span className="workspace-chat-tool-label" title={model.displayName}>
+          {model.displayName}
         </span>
-        {item.exitCode !== undefined ? <ExitMarker exitCode={item.exitCode} /> : null}
-        {interrupted ? (
-          <span className="workspace-chat-tool-interrupted">{INTERRUPTED_TOOL_COPY}</span>
+        {commandRow && model.summary !== undefined ? <CommandChip command={model.summary} /> : null}
+        {!commandRow && model.summary !== undefined ? (
+          <span className="workspace-chat-tool-summary-text">{model.summary}</span>
         ) : null}
-        {/* A zero code carries no failure of its own: the status mark stays. */}
-        {failed && (item.exitCode === undefined || item.exitCode === 0) ? (
-          <span className="workspace-chat-tool-failed" role="img" aria-label="Failed">
-            ×
-          </span>
+        {planDecision !== undefined ? (
+          <span className="workspace-chat-tool-summary-text">{planDecision}</span>
         ) : null}
-        {running ? (
-          <span className="workspace-chat-tool-running" role="img" aria-label="Running" />
-        ) : null}
-      </summary>
-      <div className="workspace-chat-tool-body">
-        {linkUrl !== undefined ? (
-          <div className="workspace-chat-tool-link">
-            <ExternalLink href={linkUrl}>{linkUrl}</ExternalLink>
+        {stats === null ? null : (
+          <span className="workspace-chat-tool-stat">{`(+${stats.added} −${stats.removed})`}</span>
+        )}
+      </span>
+      {item.exitCode !== undefined ? <ExitMarker exitCode={item.exitCode} /> : null}
+      {interrupted ? (
+        <span className="workspace-chat-tool-interrupted">{INTERRUPTED_TOOL_COPY}</span>
+      ) : null}
+      {failed ? (
+        <span className="workspace-chat-tool-failed">
+          {item.exitCode === undefined ? <span aria-hidden="true">✗ </span> : null}
+          failed
+        </span>
+      ) : null}
+      {running ? (
+        <span className="workspace-chat-tool-running" role="img" aria-label="Running" />
+      ) : null}
+      {completed && item.exitCode === undefined ? (
+        <span className="workspace-chat-tool-done" aria-hidden="true">
+          ✓
+        </span>
+      ) : null}
+    </>
+  );
+  return (
+    <div className={toolClassName} style={style}>
+      {hasBody ? (
+        <details
+          ref={details}
+          className="workspace-chat-tool-details"
+          onToggle={() => {
+            collapsedByUser.current = hasImages && details.current?.open === false;
+          }}
+        >
+          <summary className="workspace-chat-tool-summary">{line}</summary>
+          <div className="workspace-chat-tool-body">
+            {linkUrl !== undefined ? (
+              <div className="workspace-chat-tool-link">
+                <ExternalLink href={linkUrl}>{linkUrl}</ExternalLink>
+              </div>
+            ) : null}
+            {locations.length > 0 ? (
+              <div className="workspace-chat-tool-locations">
+                {locations.map((location, index) => (
+                  <span className="workspace-chat-tool-location" key={index}>
+                    {location.line !== undefined
+                      ? `${location.path}:${location.line}`
+                      : location.path}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {bodyLines.length > 0 ? (
+              <ToolOutput
+                lines={bodyLines}
+                preview={stats === null ? OUTPUT_PREVIEW_LINES : DIFF_PREVIEW_LINES}
+                tone={stats === null ? "plain" : "diff"}
+              />
+            ) : null}
+            {isPlan && item.output.length > 0 ? (
+              <div className="workspace-chat-copy">
+                <MarkdownText text={item.output} />
+              </div>
+            ) : null}
+            {hasImages && item.images !== undefined ? (
+              <ChatImageThumbnails images={item.images} />
+            ) : null}
           </div>
-        ) : null}
-        {item.locations !== undefined && item.locations.length > 0 ? (
-          <div className="workspace-chat-tool-locations">
-            {item.locations.map((location, index) => (
-              <span className="workspace-chat-tool-location" key={index}>
-                {location.line !== undefined ? `${location.path}:${location.line}` : location.path}
-              </span>
-            ))}
-          </div>
-        ) : null}
-        {item.output ? (
-          <div className="workspace-chat-copy">
-            {item.kind === "plan" ? <MarkdownText text={item.output} /> : item.output}
-          </div>
-        ) : null}
-        {hasImages && item.images !== undefined ? (
-          <ChatImageThumbnails images={item.images} />
-        ) : null}
-      </div>
-    </details>
+        </details>
+      ) : (
+        <div className="workspace-chat-tool-summary">{line}</div>
+      )}
+      {excerpt ? <ToolOutput lines={lines} preview={FAILURE_EXCERPT_LINES} tone="failure" /> : null}
+    </div>
   );
 });

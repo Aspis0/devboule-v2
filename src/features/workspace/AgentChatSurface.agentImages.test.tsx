@@ -117,7 +117,7 @@ describe("agent-produced images", () => {
     });
     expect(container.querySelector<HTMLDetailsElement>("details")?.open).toBe(false);
     // An image-only assistant message renders no empty copy block.
-    expect(container.querySelectorAll(".workspace-chat-copy")).toHaveLength(1);
+    expect(container.querySelectorAll(".workspace-chat-copy")).toHaveLength(0);
     expect(harness.sessionAttachmentRead).toHaveBeenCalledWith(REF);
   });
 });
