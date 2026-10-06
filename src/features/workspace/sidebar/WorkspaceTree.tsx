@@ -16,6 +16,8 @@ export interface WorkspaceTreeProps {
   providerError: ErrorSentence | null;
   selectedWorkspace: WorkspaceKey | null;
   onRetryProjects: () => void;
+  /** Re-reads the provider catalog behind the provider-error block. */
+  onRetryProviders: () => void;
   onSelectWorkspace: (workspaceKey: WorkspaceKey) => void;
   onNewWorkspace: (trigger: HTMLButtonElement, projectId: string) => void;
   /** Persists a row's new title; answers with the refusal, if one came. */
@@ -54,6 +56,7 @@ export function WorkspaceTree({
   providerError,
   selectedWorkspace,
   onRetryProjects,
+  onRetryProviders,
   onSelectWorkspace,
   onNewWorkspace,
   onRenameWorkspace,
@@ -99,7 +102,7 @@ export function WorkspaceTree({
             detail={providerError.detail}
             id="workspace-provider-error"
           />
-          <button type="button" className="workspace-secondary-action" onClick={onRetryProjects}>
+          <button type="button" className="workspace-secondary-action" onClick={onRetryProviders}>
             Retry
           </button>
         </div>

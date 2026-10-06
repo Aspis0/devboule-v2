@@ -110,6 +110,7 @@ function sidebarProps(): SidebarProps {
       providerError: null,
       selectedWorkspace: null,
       onRetryProjects: vi.fn(),
+      onRetryProviders: vi.fn(),
       onSelectWorkspace: vi.fn(),
       onNewWorkspace: vi.fn(),
       onRenameWorkspace: vi.fn(async () => null),
@@ -198,23 +199,25 @@ describe("the lone host's sidebar markup", () => {
 </div>
 <div class="workspace-project-items">
 <div class="workspace-row-wrap">
-<button type="button" class="workspace-row" aria-pressed="false" aria-label="shell one, Alpha" title="C:/code/alpha">
+<button type="button" class="workspace-row" aria-pressed="false" aria-label="shell one, Alpha" aria-describedby="~" title="C:/code/alpha">
 <span class="sidebar-avatar sidebar-avatar-workspace" aria-hidden="true">s</span>
 <span class="workspace-row-title">shell one</span>
 </button>
+<span id="~" class="sr-only">C:/code/alpha</span>
 </div>
 <div class="workspace-row-wrap">
-<button type="button" class="workspace-row" aria-pressed="false" aria-label="shell two, Alpha" title="C:/code/alpha">
+<button type="button" class="workspace-row" aria-pressed="false" aria-label="shell two, Alpha" aria-describedby="~" title="C:/code/alpha">
 <span class="sidebar-avatar sidebar-avatar-workspace" aria-hidden="true">s</span>
 <span class="workspace-row-title">shell two</span>
 </button>
+<span id="~" class="sr-only">C:/code/alpha</span>
 </div>
 </div>
 </div>
 </div>
 <div class="workspace-sidebar-footer">
 <button type="button" class="workspace-history-button sidebar-quiet-row" aria-pressed="false" aria-controls="~" title="Show history">History</button>
-<div class="workspace-daemon-status sidebar-foot" role="status" title="daemon · pid 42" tabindex="0">
+<div class="workspace-daemon-status sidebar-foot" role="status" title="daemon · pid 42">
 <span class="workspace-status-dot workspace-dot-green">
 </span>
 <span class="sr-only">daemon · pid 42</span>

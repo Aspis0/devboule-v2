@@ -36,14 +36,14 @@ afterEach(() => {
 });
 
 describe("the shell frame's widths", () => {
-  it("defaults to the spec: sidebar 320, right panel 300", () => {
-    expect(INITIAL_LEFT_WIDTH).toBe(320);
+  it("defaults to the spec: sidebar 248, right panel 300", () => {
+    expect(INITIAL_LEFT_WIDTH).toBe(248);
     expect(INITIAL_RIGHT_WIDTH).toBe(300);
   });
 
-  it("bounds each side separately: sidebar 200–600, right panel its own bounds", () => {
+  it("bounds each side separately: sidebar 200–360, right panel its own bounds", () => {
     expect(MIN_LEFT_WIDTH).toBe(200);
-    expect(MAX_LEFT_WIDTH).toBe(600);
+    expect(MAX_LEFT_WIDTH).toBe(360);
     expect(MIN_RIGHT_WIDTH).toBeLessThanOrEqual(INITIAL_RIGHT_WIDTH);
     expect(MAX_RIGHT_WIDTH).toBeGreaterThanOrEqual(INITIAL_RIGHT_WIDTH);
   });
@@ -97,7 +97,7 @@ describe("the shell frame's widths", () => {
 describe("clampPanelWidth", () => {
   it("clamps out-of-bounds widths into their side's bounds, whichever side", () => {
     expect(clampPanelWidth(180, "left")).toBe(200);
-    expect(clampPanelWidth(700, "left")).toBe(600);
+    expect(clampPanelWidth(700, "left")).toBe(360);
     expect(clampPanelWidth(460, "right")).toBe(MAX_RIGHT_WIDTH);
     expect(clampPanelWidth(180, "right")).toBe(MIN_RIGHT_WIDTH);
   });
@@ -105,7 +105,7 @@ describe("clampPanelWidth", () => {
   it("keeps in-bounds widths and clamps both directions per side", () => {
     expect(clampPanelWidth(248, "left")).toBe(248);
     expect(clampPanelWidth(150, "left")).toBe(200);
-    expect(clampPanelWidth(500, "left")).toBe(500);
+    expect(clampPanelWidth(340, "left")).toBe(340);
     expect(clampPanelWidth(300, "right")).toBe(300);
     expect(clampPanelWidth(100, "right")).toBe(MIN_RIGHT_WIDTH);
     expect(clampPanelWidth(900, "right")).toBe(MAX_RIGHT_WIDTH);
@@ -302,10 +302,10 @@ describe("the persisted collapsed flags", () => {
 
   it("keeps the panel collapsed across a remount, and reopens it on demand", async () => {
     await mount();
-    expect(frame()).toBe("320/300/false/false");
+    expect(frame()).toBe("248/300/false/false");
 
     await click("collapse-right");
-    expect(frame()).toBe("320/300/false/true");
+    expect(frame()).toBe("248/300/false/true");
     expect(JSON.parse(localStorage.getItem(RECORD) ?? "null")).toEqual({
       left: INITIAL_LEFT_WIDTH,
       right: INITIAL_RIGHT_WIDTH,
@@ -313,32 +313,23 @@ describe("the persisted collapsed flags", () => {
       rightCollapsed: true,
     });
     await remount();
-    expect(frame()).toBe("320/300/false/true");
+    expect(frame()).toBe("248/300/false/true");
 
     await click("expand-right");
-    expect(frame()).toBe("320/300/false/false");
+    expect(frame()).toBe("248/300/false/false");
     await remount();
-    expect(frame()).toBe("320/300/false/false");
+    expect(frame()).toBe("248/300/false/false");
   });
 
   it("remembers the sidebar's collapse in the same record: one hook, one key", async () => {
     await mount();
     await click("collapse-left");
-    expect(frame()).toBe("320/300/true/false");
+    expect(frame()).toBe("248/300/true/false");
     await remount();
-    expect(frame()).toBe("320/300/true/false");
+    expect(frame()).toBe("248/300/true/false");
     const stored = JSON.parse(localStorage.getItem(RECORD) ?? "null");
     expect(stored.leftCollapsed).toBe(true);
     expect(stored.rightCollapsed).toBe(false);
-  });
-
-  it("reads the width the default once stored as the default it now is", () => {
-    // 248 was never a drag's answer, so it takes today's default; a width the
-    // user did choose stays exactly as they left it.
-    const storedDefault = fakeStorage({ [RECORD]: JSON.stringify({ left: 248, right: 300 }) });
-    expect(readStoredPanelFrame(storedDefault).left).toBe(INITIAL_LEFT_WIDTH);
-    const chosen = fakeStorage({ [RECORD]: JSON.stringify({ left: 340, right: 300 }) });
-    expect(readStoredPanelFrame(chosen).left).toBe(340);
   });
 
   it("reads a legacy record without the flags as open, with its widths intact", () => {
@@ -410,10 +401,10 @@ describe("the window's rule on the drawn widths", () => {
     return holder.querySelector("[data-testid=room]")?.textContent ?? undefined;
   }
 
-  it("draws a 600px rail as 352 at 1024px, and the whole rail once the window grows", async () => {
+  it("draws a chosen 360px rail as 352 at 1024px, and whole again at 1440", async () => {
     localStorage.setItem(
       RECORD,
-      JSON.stringify({ left: 600, right: 300, leftCollapsed: false, rightCollapsed: false }),
+      JSON.stringify({ left: 360, right: 300, leftCollapsed: false, rightCollapsed: false }),
     );
     await mount();
 
@@ -421,13 +412,13 @@ describe("the window's rule on the drawn widths", () => {
     // The handle may not promise more than the window can show.
     expect(handleMax()).toBe("352");
 
-    // The record still holds 600 — only what is drawn was clipped — so the
-    // rail comes back whole when the window does.
+    // The record still holds 360 — only what is drawn was clipped by the
+    // window — so the rail comes back whole when the window does.
     setWindowWidth(1440);
     await act(async () => {
       window.dispatchEvent(new Event("resize"));
     });
-    expect(shown()).toBe("600/300/false/false");
-    expect(handleMax()).toBe("600");
+    expect(shown()).toBe("360/300/false/false");
+    expect(handleMax()).toBe("360");
   });
 });

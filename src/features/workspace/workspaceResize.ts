@@ -1,18 +1,25 @@
-import { useCallback, useEffect, useRef, useState, type SetStateAction } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type SetStateAction,
+} from "react";
 import type { KeyboardEvent, MouseEvent } from "react";
 
 export type ResizeSide = "left" | "right";
 
 /**
- * The shell frame's widths: sidebar 320 (resizable 200–600, collapsible),
+ * The shell frame's widths: sidebar 248 (resizable 200–360, collapsible),
  * right panel 300 (its own bounds — the spec pins only the default). A width
  * persisted by an older build, outside the current bounds, is clamped into
  * its side's bounds on read, and the two panels share what the window leaves
  * after the centre's floor.
  */
 export const MIN_LEFT_WIDTH = 200;
-export const MAX_LEFT_WIDTH = 600;
-export const INITIAL_LEFT_WIDTH = 320;
+export const MAX_LEFT_WIDTH = 360;
+export const INITIAL_LEFT_WIDTH = 248;
 export const MIN_RIGHT_WIDTH = 240;
 export const MAX_RIGHT_WIDTH = 420;
 export const INITIAL_RIGHT_WIDTH = 300;
@@ -25,10 +32,6 @@ export const MIN_CENTER_WIDTH = 360;
 const TRACK_TOTAL = 12;
 
 const WIDTHS_STORAGE_KEY = "devboule.workspacePanelWidths";
-
-/** A stored 248 was the default writing itself, never a drag: it takes the
- *  current default on read, and the write that follows replaces it for good. */
-const DEFAULT_BEFORE_WIDENING = 248;
 
 /** The shell frame as the one guarded record holds it: both widths and
  *  both collapsed flags. The flags are optional on disk — a record from
@@ -86,14 +89,8 @@ export function readStoredPanelFrame(storage: StorageLike | null): StoredPanelFr
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return defaults;
     const row = parsed as Record<string, unknown>;
-    const left =
-      row.left === DEFAULT_BEFORE_WIDENING
-        ? INITIAL_LEFT_WIDTH
-        : isSideWidth(row.left)
-          ? clampPanelWidth(row.left, "left")
-          : defaults.left;
     return {
-      left,
+      left: isSideWidth(row.left) ? clampPanelWidth(row.left, "left") : defaults.left,
       right: isSideWidth(row.right) ? clampPanelWidth(row.right, "right") : defaults.right,
       leftCollapsed: typeof row.leftCollapsed === "boolean" ? row.leftCollapsed : false,
       rightCollapsed: typeof row.rightCollapsed === "boolean" ? row.rightCollapsed : false,
@@ -131,14 +128,15 @@ export function useWorkspacePanelResize() {
   const resizeRef = useRef<{ side: ResizeSide; startX: number; startWidth: number } | null>(null);
   // The drag listeners stay mounted for the whole gesture — their cleanup also
   // drops the cursor class — so they read the frame and the window from here.
+  // A layout effect, so the ref holds the committed frame before any pointer
+  // event can read it.
   const roomRef = useRef<{ frame: StoredPanelFrame; viewport: number }>({
     frame,
     viewport,
   });
-
-  useEffect(() => {
+  useLayoutEffect(() => {
     roomRef.current = { frame, viewport };
-  });
+  }, [frame, viewport]);
 
   useEffect(() => {
     const onResize = () => setViewport(window.innerWidth);

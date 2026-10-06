@@ -1433,6 +1433,17 @@ export function Workspace({
     [],
   );
   const handleRetryProjects = useCallback(() => void retryProjects(), [retryProjects]);
+  // The provider block retries the read that failed: re-reading projects would
+  // leave the same sentence standing, and the sentence clears only when the
+  // catalog answers.
+  const handleRetryProviders = useCallback(async () => {
+    try {
+      await loadChatProviders();
+      setProviderError(null);
+    } catch (cause: unknown) {
+      setProviderError(errorSentence(cause));
+    }
+  }, [loadChatProviders]);
   const selectWorkspace = useCallback(
     (key: WorkspaceKey) => {
       // The row already in force is not navigation: no workspace changes, so
@@ -1912,6 +1923,7 @@ export function Workspace({
           providerError,
           selectedWorkspace: selectedKey,
           onRetryProjects: handleRetryProjects,
+          onRetryProviders: handleRetryProviders,
           onSelectWorkspace: selectWorkspace,
           onNewWorkspace: handleNewWorkspace,
           onRenameWorkspace: renameWorkspace,

@@ -80,6 +80,7 @@ function treeProps(over: Partial<WorkspaceTreeProps> = {}): WorkspaceTreeProps {
     providerError: null,
     selectedWorkspace: null,
     onRetryProjects: vi.fn(),
+    onRetryProviders: vi.fn(),
     onSelectWorkspace: onSelect,
     onNewWorkspace,
     onRenameWorkspace: onRename,

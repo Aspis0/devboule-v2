@@ -66,6 +66,7 @@ function sidebarProps(overrides: Partial<SidebarProps> = {}): SidebarProps {
       providerError: null,
       selectedWorkspace: null,
       onRetryProjects: vi.fn(),
+      onRetryProviders: vi.fn(),
       onSelectWorkspace: vi.fn(),
       onNewWorkspace: vi.fn(),
       onRenameWorkspace: vi.fn(async () => null),

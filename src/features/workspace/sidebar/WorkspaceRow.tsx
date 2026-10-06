@@ -2,6 +2,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -122,6 +123,10 @@ export const WorkspaceRow = memo(function WorkspaceRow({
   const [saving, setSaving] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [deleteRefusal, setDeleteRefusal] = useState<ErrorSentence | null>(null);
+  // `title` is the pointer's channel alone: the sentence rides the button as a
+  // description a screen reader announces. An id of its own, since two hosts
+  // may hold the same workspace id.
+  const detailId = useId();
   const rowRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -337,50 +342,58 @@ export const WorkspaceRow = memo(function WorkspaceRow({
           ) : null}
         </div>
       ) : (
-        <button
-          type="button"
-          ref={rowRef}
-          className={`workspace-row${selected ? " workspace-row-selected" : ""}`}
-          onClick={() => {
-            if (workspaceKey !== null) onSelect(workspaceKey);
-          }}
-          aria-pressed={selected}
-          aria-label={ariaLabel}
-          title={detail}
-          onKeyDown={onRowKeyDown}
-        >
-          <span
-            className="sidebar-avatar sidebar-avatar-workspace"
-            style={avatarStyle(workspace.id)}
-            aria-hidden="true"
+        <>
+          <button
+            type="button"
+            ref={rowRef}
+            className={`workspace-row${selected ? " workspace-row-selected" : ""}`}
+            onClick={() => {
+              if (workspaceKey !== null) onSelect(workspaceKey);
+            }}
+            aria-pressed={selected}
+            aria-label={ariaLabel}
+            aria-describedby={detail === undefined ? undefined : detailId}
+            title={detail}
+            onKeyDown={onRowKeyDown}
           >
-            {firstGrapheme(workspace.displayTitle)}
-          </span>
-          <span className="workspace-row-title">{label}</span>
-          {fact === null ? null : (
-            <span className="workspace-row-fact">
-              {fact.dot === null ? null : (
-                <span
-                  aria-hidden="true"
-                  className={`sidebar-row-dot sidebar-row-dot-${fact.dot}${
-                    fact.dot === "pulse" ? " dot-pulse" : ""
-                  }`}
-                />
-              )}
-              {fact.parts.map((part, index) => (
-                <span
-                  key={part.text}
-                  className={part.attention ? "sidebar-row-waiting" : undefined}
-                >
-                  {/* A flex item trims its own leading space, so the space
+            <span
+              className="sidebar-avatar sidebar-avatar-workspace"
+              style={avatarStyle(workspace.id)}
+              aria-hidden="true"
+            >
+              {firstGrapheme(workspace.displayTitle)}
+            </span>
+            <span className="workspace-row-title">{label}</span>
+            {fact === null ? null : (
+              <span className="workspace-row-fact">
+                {fact.dot === null ? null : (
+                  <span
+                    aria-hidden="true"
+                    className={`sidebar-row-dot sidebar-row-dot-${fact.dot}${
+                      fact.dot === "pulse" ? " dot-pulse" : ""
+                    }`}
+                  />
+                )}
+                {fact.parts.map((part, index) => (
+                  <span
+                    key={part.text}
+                    className={part.attention ? "sidebar-row-waiting" : undefined}
+                  >
+                    {/* A flex item trims its own leading space, so the space
                       before the dot cannot be an ordinary one. */}
-                  {index > 0 ? "\u00A0· " : ""}
-                  {part.text}
-                </span>
-              ))}
+                    {index > 0 ? "\u00A0· " : ""}
+                    {part.text}
+                  </span>
+                ))}
+              </span>
+            )}
+          </button>
+          {detail === undefined ? null : (
+            <span id={detailId} className="sr-only">
+              {detail}
             </span>
           )}
-        </button>
+        </>
       )}
       {menuOpen ? (
         <div

@@ -209,15 +209,24 @@ describe("the workspace row's one line", () => {
     expect(row.getAttribute("aria-label")).toBe("devboule-v2, devboule, 2 working");
   });
 
-  it("offers the branch and the totals to a pointer and to focus alike", async () => {
+  it("hands the branch and the totals to a pointer's tooltip and to a screen reader", async () => {
     // The row prints one fact; the rest of what the sidebar knows about it is
     // on the row itself, so nothing waits for a selection to become readable.
+    // `title` reaches a pointer only — the description is what a screen reader
+    // announces, and what it points at must be text a sighted row never draws.
     const row = await render(workspace(), {
       branch: "feat/ux-sidebar-clean",
       stat: { additions: 128, deletions: 4 },
     });
 
-    expect(row.getAttribute("title")).toBe("C:\\devboule-v2 · feat/ux-sidebar-clean · +128 −4");
+    const detail = "C:\\devboule-v2 · feat/ux-sidebar-clean · +128 −4";
+    expect(row.getAttribute("title")).toBe(detail);
+
+    const described = row.getAttribute("aria-describedby");
+    if (described === null) throw new Error("the row describes nothing");
+    const description = document.getElementById(described);
+    expect(description?.textContent).toBe(detail);
+    expect(description?.className).toBe("sr-only");
   });
 
   it("names only the path when branch and totals have nothing to say", async () => {

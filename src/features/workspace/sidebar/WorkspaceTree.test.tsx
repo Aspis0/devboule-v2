@@ -64,6 +64,7 @@ function treeProps(over: Partial<WorkspaceTreeProps> = {}): WorkspaceTreeProps {
     providerError: null,
     selectedWorkspace: null,
     onRetryProjects: vi.fn(),
+    onRetryProviders: vi.fn(),
     onSelectWorkspace: vi.fn(),
     onNewWorkspace: vi.fn(),
     onRenameWorkspace: vi.fn(async () => null),

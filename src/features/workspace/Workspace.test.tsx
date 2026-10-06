@@ -1642,6 +1642,33 @@ describe("Workspace sessions", () => {
     expect(sessionCreate).not.toHaveBeenCalled();
   });
 
+  it("retries the provider catalog, not the projects, from the provider refusal", async () => {
+    vi.mocked(providersList).mockRejectedValueOnce(new Error("provider catalog unavailable"));
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
+    if (newWorkspace === null) throw new Error("new workspace control did not render");
+    await act(async () => newWorkspace.click());
+    await act(async () => undefined);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("provider catalog");
+
+    vi.mocked(providersList).mockClear();
+    vi.mocked(providersList).mockResolvedValue({ providers: [grokProvider], unreadableDirs: 0 });
+    vi.mocked(projectsList).mockClear();
+    const retry = container.querySelector<HTMLButtonElement>(".workspace-secondary-action");
+    if (retry === null) throw new Error("the refusal drew no retry");
+    await act(async () => retry.click());
+    await act(async () => undefined);
+
+    expect(providersList).toHaveBeenCalledTimes(1);
+    expect(projectsList).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
   it("shows the create error only over the workspace it failed for", async () => {
     // Two workspaces in one project; the create is refused under the
     // selected one and the line must follow that workspace, not stay over

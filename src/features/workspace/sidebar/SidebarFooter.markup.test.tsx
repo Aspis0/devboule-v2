@@ -1,9 +1,8 @@
 // @vitest-environment happy-dom
 
-// The foot's contract with the three ways of reading it: only the dot is drawn,
-// what it stands for rides in the tooltip (pointer and focus alike) and in the
-// status text a screen reader reads, and the line takes the focus a tooltip
-// needs.
+// The foot's contract with the two ways of reading it: only the dot is drawn,
+// what it stands for rides in the tooltip a pointer reads and in the status
+// text a screen reader reads, and nothing here is a tab stop.
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -64,14 +63,14 @@ describe("the sidebar foot's status dot", () => {
     expect(foot.querySelector(".sr-only")?.textContent).toBe("daemon · pid 40220 · restart failed");
   });
 
-  it("takes focus for the tooltip and announces the state it holds", async () => {
+  it("announces the state it holds and takes no tab stop of its own", async () => {
     const foot = await render({
       ...CONNECTED,
       state: "disconnected",
       message: "daemon unreachable",
     });
 
-    expect(foot.getAttribute("tabindex")).toBe("0");
+    expect(foot.getAttribute("tabindex")).toBeNull();
     expect(foot.getAttribute("role")).toBe("status");
     expect(foot.querySelector(".workspace-dot-terracotta")).not.toBeNull();
     expect(foot.textContent).toContain("daemon · ");

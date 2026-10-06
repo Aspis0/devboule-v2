@@ -78,6 +78,7 @@ describe("the sidebar's workspace rows", () => {
           providerError={null}
           selectedWorkspace={keyFor("workspace-1")}
           onRetryProjects={vi.fn()}
+          onRetryProviders={vi.fn()}
           onSelectWorkspace={vi.fn()}
           onNewWorkspace={vi.fn()}
           providerMenuAnchorProjectId={null}
