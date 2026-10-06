@@ -22,6 +22,7 @@ import { parseAgentDaemonNotice, type AgentDaemonNotice } from "./agentDaemonNot
 import { parseAgentPeerMessage, type AgentPeerOrigin } from "./agentPeerMessage";
 import { recordPlanUsage } from "./planUsageStore";
 import { isToolRunningStatus } from "../features/workspace/interruptedTool";
+import { hideUntrustedFrame } from "./untrustedFrame";
 
 export type AgentChannel = SessionChannel;
 export type AgentStatus = "initializing" | "idle" | "running" | "error" | "closed";
@@ -1020,6 +1021,7 @@ export class AgentSession {
   }
 
   private appendSystemMessage(text: string): void {
+    text = hideUntrustedFrame(text);
     this.closeActiveBlocks();
     this.update({
       items: [

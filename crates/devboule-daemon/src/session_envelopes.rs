@@ -10,6 +10,7 @@
 //! columns (`agent_message_envelope`).
 
 use super::*;
+use crate::origin_chain::Chain;
 use crate::untrusted_frame::Source;
 use crate::visible_text::escape_for_model;
 
@@ -49,7 +50,7 @@ pub(super) fn agent_finished_envelope(
     body.push_str(&format!("\nartifacts: {}", clean(&artifacts)));
     let provenance = Source::ChildReport {
         child: child_session_id,
-        chain: &[],
+        chain: &Chain::default(),
     }
     .header_lines();
     format!(
@@ -173,7 +174,7 @@ pub(super) fn agent_permission_request_envelope(
 ) -> String {
     let provenance = Source::ChildReport {
         child: child_session_id,
-        chain: &[],
+        chain: &Chain::default(),
     }
     .header_lines();
     format!(
@@ -367,14 +368,14 @@ pub(super) fn bound_finish_envelope(envelope: String) -> String {
 /// sender is rendered as `peer:<authenticated-device>/<validated-far-id>` so
 /// it cannot collide with the local form.
 ///
-/// `chain` is every hop that carried the message here, sender last
-/// (`untrusted_frame::extend_chain`); it and the untrusted-content lines sit in
-/// the header block, which the app's parser reads by key and so ignores them.
+/// `chain` is every hop that carried the message here, sender last; it and the
+/// untrusted-content lines sit in the header block, which the app's parser reads
+/// by key and so ignores them.
 pub(super) fn agent_message_envelope(
     origin: &str,
     role: &str,
     from_agent: &str,
-    chain: &[String],
+    chain: &Chain,
     text: &str,
 ) -> String {
     format!(

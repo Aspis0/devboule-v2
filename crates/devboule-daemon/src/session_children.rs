@@ -8,8 +8,9 @@
 
 use super::*;
 
+use crate::origin_chain::hop;
 use crate::process_index::SessionProof;
-use crate::untrusted_frame::{extend_chain, hop, Source};
+use crate::untrusted_frame::Source;
 use crate::visible_text::escape_for_model;
 
 impl super::SessionRegistry {
@@ -519,15 +520,18 @@ impl super::SessionRegistry {
         // content into the creator), and hidden characters in it are spelled
         // out. The task is the last part of the message, so nothing can close
         // the header from inside it.
-        let creator_chain = extend_chain(
-            &creator_runtime
-                .as_ref()
-                .map(|runtime| runtime.ingress_chain())
-                .unwrap_or_default(),
-            hop("local", &creation.creator_session_id),
-        );
-        if let Some(child_runtime) = self.live_runtime(&child.id, &creation.creator.owner) {
-            child_runtime.set_ingress_chain(creator_chain.clone());
+        let creator_chain = creator_runtime
+            .as_ref()
+            .map(|runtime| runtime.ingress_chain())
+            .unwrap_or_default()
+            .extend(hop("local", &creation.creator_session_id));
+        let child_runtime = self
+            .inner
+            .lock()
+            .ok()
+            .and_then(|map| map.get(&child.id).map(RegistryEntry::runtime));
+        if let Some(child_runtime) = child_runtime {
+            child_runtime.update_ingress_chain(|_| creator_chain.clone());
         }
         let preamble = format!(
             "{}\n\n{}",

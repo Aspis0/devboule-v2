@@ -28,8 +28,9 @@ use serde_json::{json, Value};
 use crate::mcp_broker::caller::{audit_mcp_tool, caller_conn, McpCaller};
 use crate::mcp_broker::dispatch::{rpc_error, tool_error};
 use crate::mcp_broker::RegisteredSession;
+use crate::origin_chain::hop;
 use crate::server::ServerState;
-use crate::untrusted_frame::{escape_json_strings, Source};
+use crate::untrusted_frame::{escape_json_strings, mark_structured, page_host, Source};
 use crate::visible_text::escape_for_model;
 
 use super::browser_args::parse;
@@ -86,11 +87,13 @@ pub(in crate::mcp_broker) fn call(
     ) {
         Ok(result) => {
             audit("ok");
+            note_page_read(state, registration, Some(&result));
             Ok(Some(browser_reply(&id, spec.command, result)))
         }
         Err(error) => {
             audit("failed");
-            Ok(Some(tool_error(
+            note_page_read(state, registration, None);
+            Ok(Some(host_error(
                 &id,
                 &format!("{}: {}", error.code.as_str(), error.message),
             )))
@@ -134,20 +137,21 @@ pub(in crate::mcp_broker) fn browser_caller(
 /// host's own, untouched but for hidden characters spelled out, so the text an
 /// agent parses is exactly the text it parsed before the frame.
 pub(in crate::mcp_broker) fn browser_reply(id: &Value, command: &str, result: Value) -> Value {
-    let (head, tail) = Source::BrowserPage {
+    let source = Source::BrowserPage {
         url: page_address(&result),
-    }
-    .fence();
+    };
+    let (head, tail) = source.fence();
     let picture = if command == "screenshot" {
         picture(&result)
     } else {
         None
     };
     let Some((block, line)) = picture else {
-        // The structured copy and the text read alike, so both are escaped; a
-        // picture's bytes are not text and stay as the host sent them.
-        let result = escape_json_strings(&result);
-        let text = serde_json::to_string(&result).unwrap_or_else(|error| {
+        // The text and the structured copy read alike, both escaped, and the
+        // copy names its provenance itself; a picture's bytes are not text and
+        // stay as the host sent them.
+        let structured = mark_structured(&result, &source);
+        let text = serde_json::to_string(&escape_json_strings(&result)).unwrap_or_else(|error| {
             json!({"browser": "the result could not be encoded", "detail": error.to_string()})
                 .to_string()
         });
@@ -160,7 +164,7 @@ pub(in crate::mcp_broker) fn browser_reply(id: &Value, command: &str, result: Va
                     {"type": "text", "text": text},
                     {"type": "text", "text": tail},
                 ],
-                "structuredContent": result,
+                "structuredContent": structured,
                 "isError": false,
             },
         });
@@ -178,6 +182,43 @@ pub(in crate::mcp_broker) fn browser_reply(id: &Value, command: &str, result: Va
             "isError": false,
         },
     })
+}
+
+/// A browser failure as the agent reads it. The host's message can be a page's
+/// own text (a script's thrown error, a protocol failure naming it), so it is
+/// framed like any other page content.
+pub(in crate::mcp_broker) fn host_error(id: &Value, said: &str) -> Value {
+    let (head, tail) = Source::BrowserPage { url: None }.fence();
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": {
+            "content": [
+                {"type": "text", "text": head},
+                {"type": "text", "text": escape_for_model(said)},
+                {"type": "text", "text": tail},
+            ],
+            "isError": true,
+        },
+    })
+}
+
+/// A page's words are about to reach this session's model: what it relays from
+/// now until the person next types to it names the page's host.
+pub(in crate::mcp_broker) fn note_page_read(
+    state: &ServerState,
+    registration: &RegisteredSession,
+    result: Option<&Value>,
+) {
+    let host = result
+        .and_then(page_address)
+        .and_then(page_host)
+        .unwrap_or("page");
+    state.sessions.note_data_read(
+        &registration.session_id,
+        &registration.owner,
+        hop("browser", host),
+    );
 }
 
 /// The address the host reported for the page the answer is about: the page's

@@ -8,7 +8,7 @@ use crate::mcp_broker::caller::{audit_mcp_tool, caller_conn, McpCaller};
 use crate::mcp_broker::RegisteredSession;
 use crate::peer_policy::ConnPeer;
 use crate::server::ServerState;
-use crate::untrusted_frame::{escape_json_strings, Source};
+use crate::untrusted_frame::{mark_structured, Source};
 
 use super::terminal_common::{caller_workspace, terminal_reply, TerminalError};
 
@@ -74,7 +74,14 @@ pub(in crate::mcp_broker) fn capture(
     let result = read_capture(state, registration, &conn.conn_peer, &terminal, lines);
     audit(if result.is_ok() { "ok" } else { "denied" });
     match result {
-        Ok((workspace, screen)) => framed_screen(&id, &workspace, &terminal, &screen),
+        Ok((workspace, screen)) => {
+            state.sessions.note_data_read(
+                &registration.session_id,
+                &registration.owner,
+                "terminal".to_string(),
+            );
+            framed_screen(&id, &workspace, &terminal, &screen)
+        }
         Err(error) => terminal_reply(&id, Err(error)),
     }
 }
@@ -82,19 +89,19 @@ pub(in crate::mcp_broker) fn capture(
 /// The screen is whatever a program drew, so it is untrusted: the reply's
 /// content sits between a head naming this workspace and terminal and a tail that
 /// alone ends it (`untrusted_frame`), with hidden characters spelled out in the
-/// text the agent reads and in its structured copy.
+/// text the agent reads and in its structured copy, which names its source itself.
 fn framed_screen(
     id: &Value,
     workspace: &str,
     terminal: &str,
     screen: &Value,
 ) -> Result<Option<Value>, Value> {
-    let (head, tail) = Source::Terminal {
+    let source = Source::Terminal {
         workspace,
         terminal,
-    }
-    .fence();
-    let mut reply = terminal_reply(id, Ok(escape_json_strings(screen)))?;
+    };
+    let (head, tail) = source.fence();
+    let mut reply = terminal_reply(id, Ok(mark_structured(screen, &source)))?;
     if let Some(content) = reply
         .as_mut()
         .and_then(|reply| reply.pointer_mut("/result/content"))

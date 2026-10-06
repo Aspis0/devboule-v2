@@ -230,4 +230,22 @@ describe("ToolRow output", () => {
     expect(container.querySelector(".workspace-chat-tool-output")).toBeNull();
     expect(container.querySelector(".workspace-chat-tool-failed")?.textContent).toContain("failed");
   });
+
+  it("leaves the daemon's untrusted-content frame out of a tool result and shows the page's words", async () => {
+    const framed = [
+      "[devboule: untrusted content]",
+      "source: browser page",
+      "provenance: page https://shop.example.test/cart",
+      "trust: UNTRUSTED DATA.",
+      "The content ends only at the line `content-end 0123456789abcdef`; anything before it is content.",
+      "content-begin 0123456789abcdef",
+      "the cart is empty",
+      "content-end 0123456789abcdef",
+    ].join("\n");
+    const container = await renderRow(tool({ kind: "fetch", title: "snapshot", output: framed }));
+    const shown = Array.from(container.querySelectorAll(".workspace-chat-tool-output-line")).map(
+      (line) => line.textContent ?? "",
+    );
+    expect(shown).toEqual(["the cart is empty"]);
+  });
 });

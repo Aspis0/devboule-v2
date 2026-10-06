@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, type ReactNode } from "react";
 import type { ToolChatItem } from "../../../lib/toolCallGroups";
+import { hideUntrustedFrame } from "../../../lib/untrustedFrame";
 import { ExternalLink } from "../../../components/ExternalLink";
 import { MarkdownText } from "../../../components/MarkdownText";
 import { toolRowDisplay } from "../toolRowDisplay";
@@ -44,7 +45,7 @@ export const ToolRow = memo(function ToolRow({
   // the row's display title, which for some providers is the line itself.
   const commandRow = item.command !== undefined;
   const hasSummary = model.summary !== undefined || planDecision !== undefined;
-  const lines = useMemo(() => outputLines(item.output), [item.output]);
+  const lines = useMemo(() => outputLines(hideUntrustedFrame(item.output)), [item.output]);
   const isEdit = item.kind === "edit" || item.kind === "delete";
   const stats = useMemo(() => (isEdit ? diffStats(lines) : null), [isEdit, lines]);
   // A failure's words stand under its line without a click; every other

@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use devboule_protocol::{OwnerId, PermissionOutcome, SessionEvent};
 
 use super::super::super::browser_tools_harness::{
-    audit_rows, host_refusal, panel, tool_text, FakeHost, Panel,
+    audit_rows, host_document, host_refusal, panel, tool_text, FakeHost, Panel,
 };
 use crate::provider_catalog::MCP_BROWSER_FILL_LOGIN_TOOL;
 
@@ -190,10 +190,7 @@ fn the_agent_reads_only_the_arguments_that_were_filled() {
     );
 
     let body = reply.join().expect("the tool call");
-    assert_eq!(
-        body.pointer("/result/structuredContent"),
-        Some(&json!({ "filled": ["passwordRef"] }))
-    );
+    assert_eq!(host_document(&body), json!({ "filled": ["passwordRef"] }));
     assert_eq!(body.pointer("/result/isError"), Some(&json!(false)));
 }
 

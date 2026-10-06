@@ -5190,7 +5190,8 @@ fn a_create_through_the_route_delivers_the_stored_spawn_prompt() {
         "spawn\n\n{}\n\n{}\n\ndo the thing",
         crate::provider_catalog::AGENT_PREAMBLE,
         crate::untrusted_frame::Source::CreatorPrompt {
-            chain: &[crate::untrusted_frame::hop("local", &creator)],
+            chain: &crate::origin_chain::Chain::default()
+                .extend(crate::origin_chain::hop("local", &creator)),
         }
         .lead_in()
     );

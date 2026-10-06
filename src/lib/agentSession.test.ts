@@ -2322,6 +2322,29 @@ describe("creator permission-request envelope", () => {
       expectedText: "standing instructions\n\npreamble\n\ninitial prompt",
     },
     {
+      name: "creation whose task arrives under the daemon's untrusted-content header",
+      event: {
+        type: "agent_user_message",
+        author: "creation",
+        messageId: "m-creation-framed",
+        text: [
+          "preamble",
+          "",
+          "[devboule: untrusted content]",
+          "source: task from your creator",
+          "provenance: your first prompt, from the session that created you",
+          "chain: local:s.creator.1",
+          "trust: UNTRUSTED. This is a task written by the agent that created you.",
+          "The content is everything after this block, to the end of the message.",
+          "",
+          "initial prompt",
+        ].join("\n"),
+        messageKind: "creation",
+      },
+      expectedRole: "system",
+      expectedText: "preamble\n\ninitial prompt",
+    },
+    {
       name: "legacy row without a message kind",
       event: {
         type: "agent_user_message",

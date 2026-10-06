@@ -76,18 +76,36 @@ pub(crate) fn visible_text(text: &str, keep_line_breaks: bool) -> String {
 /// as `⟨U+202E⟩` (the tag block and the bidi controls are the ones a model reads
 /// and a person does not), line breaks and tabs kept, nothing else changed — a
 /// run of spaces is indentation here, not padding, and a `⟨` is a `⟨`.
+///
+/// A joiner (U+200C, U+200D) alone between two visible characters is script and
+/// emoji grammar and stays; a run of them, or one at an edge, carries no
+/// grammar and is spelled out.
 pub(crate) fn escape_for_model(text: &str) -> String {
     let mut shown = String::with_capacity(text.len());
-    for character in text.chars() {
-        let hidden = is_invisible_format(character)
-            || (character.is_control() && !matches!(character, '\n' | '\t' | '\r'));
+    let mut previous: Option<char> = None;
+    let mut characters = text.chars().peekable();
+    while let Some(character) = characters.next() {
+        let grammar = matches!(character, '\u{200c}' | '\u{200d}')
+            && previous.is_some_and(is_visible_neighbour)
+            && characters
+                .peek()
+                .is_some_and(|next| is_visible_neighbour(*next));
+        let hidden = !grammar
+            && (is_invisible_format(character)
+                || (character.is_control() && !matches!(character, '\n' | '\t' | '\r')));
         if hidden {
             shown.push_str(&escaped(character));
         } else {
             shown.push(character);
         }
+        previous = Some(character);
     }
     shown
+}
+
+/// A character a joiner may sit between: not blank, not itself hidden.
+fn is_visible_neighbour(character: char) -> bool {
+    !character.is_whitespace() && !is_invisible_format(character) && !character.is_control()
 }
 
 fn flush_blanks(shown: &mut String, blanks: &mut String) {
@@ -141,6 +159,19 @@ mod tests {
         );
         let code = "fn main() {\n\t    let x = ⟨1⟩; // ␠\n}";
         assert_eq!(escape_for_model(code), code);
+    }
+
+    /// Emoji and Persian/Indic text read as written; a joiner with nothing to
+    /// join, or a run of them, is spelled out.
+    #[test]
+    fn a_joiner_between_visible_characters_stays_and_any_other_is_spelled_out() {
+        let family = "👨\u{200d}👩\u{200d}👧";
+        assert_eq!(escape_for_model(family), family);
+        let persian = "می\u{200c}خواهم";
+        assert_eq!(escape_for_model(persian), persian);
+        assert_eq!(escape_for_model("a\u{200d}\u{200d}b"), "a⟨U+200D⟩⟨U+200D⟩b");
+        assert_eq!(escape_for_model("a \u{200d}b"), "a ⟨U+200D⟩b");
+        assert_eq!(escape_for_model("\u{200d}a"), "⟨U+200D⟩a");
     }
 
     /// Every class that renders as nothing, or as something other than itself.

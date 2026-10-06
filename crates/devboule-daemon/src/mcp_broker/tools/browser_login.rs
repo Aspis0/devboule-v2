@@ -65,6 +65,8 @@ struct Refusal {
     /// A short word. Goes to the audit row, which never carries a sentence:
     /// a host message can be text the page wrote.
     outcome: String,
+    /// The sentence carries a host's message, which can be text the page wrote.
+    from_host: bool,
 }
 
 impl Refusal {
@@ -72,6 +74,17 @@ impl Refusal {
         Refusal {
             said: sentence.into(),
             outcome: outcome.to_owned(),
+            from_host: false,
+        }
+    }
+
+    /// What the agent reads: a host's message framed as page content, this
+    /// tool's own sentence as it is.
+    fn reply(&self, id: &Value) -> Value {
+        if self.from_host {
+            browser_tools::host_error(id, &self.said)
+        } else {
+            tool_error(id, &self.said)
         }
     }
 }
@@ -81,6 +94,7 @@ impl From<BrowserError> for Refusal {
         Refusal {
             said: format!("{}: {}", error.code.as_str(), error.message),
             outcome: error.code.as_str().to_owned(),
+            from_host: true,
         }
     }
 }
@@ -134,18 +148,26 @@ pub(in crate::mcp_broker) fn call(
             return Ok(Some(tool_error(&id, &sentence)));
         }
     };
+    // A host's message can be a page's own text: it is noted as a page read
+    // and framed, this tool's own refusals are not.
+    let refused = |refusal: &Refusal| {
+        if refusal.from_host {
+            browser_tools::note_page_read(state, registration, None);
+        }
+        refusal.reply(&id)
+    };
     let (site, entries) = match preview(state, &context, &requested) {
         Ok(answer) => answer,
         Err(refusal) => {
             audit(&refusal.outcome);
-            return Ok(Some(tool_error(&id, &refusal.said)));
+            return Ok(Some(refused(&refusal)));
         }
     };
     let chosen = match choose(state, broker, registration, &site, &entries) {
         Ok(chosen) => chosen,
         Err(refusal) => {
             audit(&refusal.outcome);
-            return Ok(Some(tool_error(&id, &refusal.said)));
+            return Ok(Some(refused(&refusal)));
         }
     };
     // The person may have answered and the agent withdrawn the call since: a
@@ -157,6 +179,7 @@ pub(in crate::mcp_broker) fn call(
     match typed(state, &context, &requested, &chosen) {
         Ok(result) => {
             audit(&format!("filled {} on {site}", chosen.id));
+            browser_tools::note_page_read(state, registration, Some(&result));
             Ok(Some(browser_tools::browser_reply(&id, FILL, result)))
         }
         Err(refusal) => {
@@ -164,7 +187,7 @@ pub(in crate::mcp_broker) fn call(
                 "failed {} on {} {}",
                 chosen.id, site, refusal.outcome
             ));
-            Ok(Some(tool_error(&id, &refusal.said)))
+            Ok(Some(refused(&refusal)))
         }
     }
 }

@@ -23,6 +23,7 @@ use super::{
     PENDING_OUTPUT_BUDGET_BYTES, PENDING_OUTPUT_BUDGET_FRAMES, SESSION_SILENCE_THRESHOLD,
 };
 use crate::journal::{output_record, Journal, Replay};
+use crate::origin_chain::Chain;
 use crate::outbound::ConnOut;
 use crate::process_tree::ProcessHandle;
 use crate::screen::{Screen, ScreenSnapshot};
@@ -281,11 +282,11 @@ pub(crate) struct SessionRuntime {
     /// a blocking journal read on the send path for a fact that is only ever
     /// needed once.
     recovered_context: Mutex<Option<String>>,
-    /// The hops that carried the last agent-written content delivered into this
-    /// session (`untrusted_frame::extend_chain`), so a message this session
-    /// sends on names where its own input came from. Set by the daemon from
-    /// validated ids at delivery, never from a body; the newest delivery wins.
-    ingress_chain: Mutex<Vec<String>>,
+    /// Where the untrusted content this session has read came from
+    /// (`origin_chain`), so a message it sends on names it. Written by the daemon
+    /// from ids it holds, never from a body; data hops stay until the person
+    /// next types to the session.
+    ingress_chain: Mutex<Chain>,
     /// Bounded recent event kinds for the activity answer. Metadata only;
     /// every publish appends, the oldest drops past the cap, and no payload
     /// text is ever kept here.
@@ -589,7 +590,7 @@ impl SessionRuntime {
             // the first one carries the standing instructions.
             first_prompt_owed: AtomicBool::new(true),
             recovered_context: Mutex::new(None),
-            ingress_chain: Mutex::new(Vec::new()),
+            ingress_chain: Mutex::new(Chain::default()),
             activity_feed: Mutex::new(VecDeque::new()),
             deliveries_in_flight: AtomicU32::new(0),
         }
@@ -604,20 +605,23 @@ impl SessionRuntime {
         self.first_prompt_owed.swap(false, Ordering::AcqRel)
     }
 
-    /// The hops behind the last agent-written content delivered here.
-    pub(crate) fn ingress_chain(&self) -> Vec<String> {
+    /// Where the content this session has read came from.
+    pub(crate) fn ingress_chain(&self) -> Chain {
         self.ingress_chain
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
-    /// Record the hops behind content just delivered here.
-    pub(crate) fn set_ingress_chain(&self, chain: Vec<String>) {
-        *self
+    /// Change the chain under one lock, so a delivery and a data read racing
+    /// each other cannot lose one another's hop; answers the chain it replaced.
+    pub(crate) fn update_ingress_chain(&self, change: impl FnOnce(&Chain) -> Chain) -> Chain {
+        let mut chain = self
             .ingress_chain
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = chain;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let next = change(&chain);
+        std::mem::replace(&mut *chain, next)
     }
 
     /// A session being **resumed** owes no first prompt: the generation it

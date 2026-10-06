@@ -7,8 +7,8 @@
 //! caller in the parent module, its sibling modules or its tests reaches in for.
 
 use super::*;
+use crate::origin_chain::{hop, Chain};
 use crate::release_guard::ReleaseGuard;
-use crate::untrusted_frame::{extend_chain, hop};
 
 /// The one sentence a send that promised to start from idle answers with when
 /// a turn began between its look and the writer. The queue's drain recognises
@@ -576,6 +576,16 @@ impl super::SessionRegistry {
         .map(|outcome| outcome.turn_active)
     }
 
+    /// Data a model is about to read came to `session_id` (a page, a screen, a CI
+    /// verdict): what the session relays from now until the person next types to
+    /// it names that source. Called before the data is handed over, so the session
+    /// cannot relay it untainted.
+    pub(crate) fn note_data_read(&self, session_id: &str, owner: &OwnerId, data_hop: String) {
+        if let Some(runtime) = self.live_runtime(session_id, owner) {
+            runtime.update_ingress_chain(|chain| chain.tainted_by(data_hop));
+        }
+    }
+
     pub(crate) fn agent_message_send(
         &self,
         from_session: &str,
@@ -783,22 +793,21 @@ impl super::SessionRegistry {
         // whatever carried content into it for a local one. The wire frame
         // carries no chain, so a far sender's own upstream is not claimed.
         let chain = match &from_runtime {
-            Some(from_runtime) => {
-                extend_chain(&from_runtime.ingress_chain(), hop("local", from_session))
-            }
-            None => vec![hop(
+            Some(from_runtime) => from_runtime
+                .ingress_chain()
+                .extend(hop("local", from_session)),
+            None => Chain::default().extend(hop(
                 "peer",
                 &format!(
                     "{}/{from_session}",
                     caller_origin.device_id.as_deref().unwrap_or_default()
                 ),
-            )],
+            )),
         };
         let envelope = agent_message_envelope(&origin, role, &from_agent, &chain, text);
-        // The receiver's next message on carries this chain: set before the
-        // delivery, because it may act on the text the moment it lands.
-        let previous_chain = target_runtime.ingress_chain();
-        target_runtime.set_ingress_chain(chain);
+        // Set before the delivery: the receiver may act on the text the moment it
+        // lands, and what it relays next must already name this chain.
+        let previous_chain = target_runtime.update_ingress_chain(|own| own.receive(&chain));
         let internal_conn = ConnHandle::with_peer(0, None);
         // The slot this delivery holds, so the plain-prompt fallback can
         // re-key its boundary if the turn it was admitted into ends first.
@@ -875,7 +884,7 @@ impl super::SessionRegistry {
             // if this admission found one — the turn end it was admitted for.
             release.release(true);
         } else {
-            target_runtime.set_ingress_chain(previous_chain);
+            target_runtime.update_ingress_chain(|_| previous_chain);
             // The message is in flight nowhere: give the slot back now instead
             // of holding the sender's budget until a boundary that will never see
             // this message arrives.
@@ -1594,6 +1603,11 @@ impl super::SessionRegistry {
             if let Some(runtime) = agent_runtime.as_ref() {
                 if let Some(broker) = runtime.permission_broker() {
                     broker.cancel_pending_for_new_prompt();
+                }
+                // What the person types is their own word: whatever the session
+                // read before no longer taints what it relays next.
+                if message_kind.is_user_turn() {
+                    runtime.update_ingress_chain(|_| Chain::default());
                 }
                 // A person's composer message journals what they typed, with
                 // the deposited references beside it for the display; every

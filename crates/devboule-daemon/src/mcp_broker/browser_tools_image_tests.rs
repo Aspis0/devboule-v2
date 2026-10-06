@@ -7,7 +7,7 @@
 
 use serde_json::{json, Value};
 
-use super::browser_tools_harness::{panel, FakeHost};
+use super::browser_tools_harness::{host_document, panel, FakeHost};
 use super::tools::browser_args::parse;
 use super::tools::browser_commands::spec_for;
 
@@ -123,7 +123,7 @@ fn a_result_that_carries_no_image_is_still_read_as_text() {
             .all(|block| block["type"] == "text"),
         "{body}"
     );
-    assert_eq!(body["result"]["structuredContent"], result, "{body}");
+    assert_eq!(host_document(&body), result, "{body}");
 }
 
 /// The bounds the contract puts on the two ways to ask for a smaller picture.

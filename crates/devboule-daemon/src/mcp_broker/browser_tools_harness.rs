@@ -282,6 +282,16 @@ pub(super) fn tool_text(body: &Value) -> &str {
         .unwrap_or("<no text>")
 }
 
+/// The host's own document out of a reply's structured copy: the daemon adds
+/// its `_untrusted` provenance beside it.
+pub(super) fn host_document(body: &Value) -> Value {
+    let mut document = body["result"]["structuredContent"].clone();
+    if let Some(map) = document.as_object_mut() {
+        map.remove("_untrusted");
+    }
+    document
+}
+
 /// The audit table's rows, as (tool, outcome): what the owner reads about what
 /// the lane did.
 pub(super) fn audit_rows(state: &ServerState) -> Vec<(String, String)> {

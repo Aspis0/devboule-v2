@@ -61,3 +61,60 @@ fn quoted_text_cannot_break_the_wake_into_two_messages() {
         "the idempotency key survives"
     );
 }
+
+/// The app tells a daemon notice from an agent's message by lines that start at
+/// column 0 inside the header block, so the header is pinned line by line.
+#[test]
+fn the_wake_header_is_exactly_the_lines_the_app_reads() {
+    let wake = record("build failed".to_string());
+    let text = wake_text(&wake);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines[..5],
+        [
+            "<devboule-system>",
+            "origin: local",
+            "role: daemon",
+            "from_agent: devboule-ci-watch",
+            "kind: ci_verdict",
+        ]
+    );
+    let timestamp = lines
+        .iter()
+        .position(|line| line.starts_with("timestamp: "))
+        .expect("a timestamp line ends the header");
+    let provenance = &lines[5..timestamp];
+    assert!(
+        ["source: CI run", "provenance: github.com/acme/widgets at "]
+            .iter()
+            .all(|expected| provenance.iter().any(|line| line.starts_with(expected))),
+        "{provenance:?}"
+    );
+    assert!(
+        provenance
+            .iter()
+            .all(|line| ["source: ", "provenance: ", "trust: "]
+                .iter()
+                .any(|key| line.starts_with(key))),
+        "nothing but the frame's own lines sits in the header: {provenance:?}"
+    );
+    assert_eq!(
+        lines[timestamp + 1..timestamp + 7],
+        [
+            "eventId: w1:failed",
+            "watchId: w1",
+            "state: failed",
+            "repo: acme/widgets",
+            "sha: 0123456789abcdef0123456789abcdef01234567",
+            "summary:",
+        ]
+    );
+    assert_eq!(lines[timestamp + 7], "build failed");
+    assert_eq!(lines.last(), Some(&"</devboule-system>"));
+    assert!(
+        lines[..timestamp + 7]
+            .iter()
+            .all(|line| !line.starts_with(' ')),
+        "no header line is indented: {text}"
+    );
+}

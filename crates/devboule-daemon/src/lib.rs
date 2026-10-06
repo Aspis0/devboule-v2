@@ -119,6 +119,8 @@ mod oracle_app_record;
 #[cfg(feature = "server")]
 mod oracle_forward;
 #[cfg(feature = "server")]
+mod origin_chain;
+#[cfg(feature = "server")]
 mod outbound;
 #[cfg(feature = "server")]
 mod pairing;

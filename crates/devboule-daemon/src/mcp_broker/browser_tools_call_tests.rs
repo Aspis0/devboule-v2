@@ -267,7 +267,8 @@ fn a_call_reaches_the_host_as_the_callers_own_command_and_answers_unchanged() {
     assert_eq!(body["result"]["isError"], json!(false), "{body}");
     assert_eq!(body["error"], Value::Null, "{body}");
     assert_eq!(
-        body["result"]["structuredContent"], result,
+        host_document(&body),
+        result,
         "the host's result passes through unchanged"
     );
     assert_eq!(

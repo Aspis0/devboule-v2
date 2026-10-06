@@ -6,7 +6,7 @@
 
 use serde_json::{json, Value};
 
-use super::browser_tools_harness::{panel, FakeHost};
+use super::browser_tools_harness::{host_document, panel, FakeHost};
 use super::tools::browser_args::parse;
 use super::tools::browser_commands::spec_for;
 
@@ -65,7 +65,8 @@ fn a_batch_reaches_the_host_as_written_and_answers_unchanged() {
         "the daemon checks a step and sends the step as written"
     );
     assert_eq!(
-        body["result"]["structuredContent"], result,
+        host_document(&body),
+        result,
         "the host's answer passes through unchanged"
     );
 }
