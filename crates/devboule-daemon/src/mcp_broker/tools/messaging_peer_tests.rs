@@ -18,9 +18,9 @@ use crate::mcp_broker::RegisteredSession;
 use crate::provider_catalog::ToolOverlay;
 use crate::server::ServerState;
 
-pub(super) const USER: &str = "S-1-5-21-peer-send";
+pub(in crate::mcp_broker) const USER: &str = "S-1-5-21-peer-send";
 
-pub(super) fn owner() -> OwnerId {
+pub(in crate::mcp_broker) fn owner() -> OwnerId {
     OwnerId::new(USER, "claude").expect("owner")
 }
 
@@ -56,7 +56,7 @@ pub(super) fn row(device_id: &str, address: &str, paired_by: Option<&str>) -> Pe
     }
 }
 
-pub(super) fn remote_send_capability() -> Vec<devboule_protocol::Capability> {
+pub(in crate::mcp_broker) fn remote_send_capability() -> Vec<devboule_protocol::Capability> {
     vec![devboule_protocol::Capability::new(
         devboule_protocol::caps::AGENT_MESSAGES,
     )]
@@ -65,7 +65,7 @@ pub(super) fn remote_send_capability() -> Vec<devboule_protocol::Capability> {
 /// Pin one loopback dial target into `device_id`'s row: a Noise responder
 /// advertising `capabilities`, answering `reply` to every request, and
 /// reporting each dial's request — or `None` for a dial that sent none.
-pub(super) fn pinned_responder(
+pub(in crate::mcp_broker) fn pinned_responder(
     state: &Arc<ServerState>,
     device_id: &str,
     paired_by: Option<&str>,

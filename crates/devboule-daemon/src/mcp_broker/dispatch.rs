@@ -10,6 +10,7 @@ use crate::server::ServerState;
 
 use super::caller::{audit_mcp_tool, mcp_peer_door, resolve_mcp_caller, McpCaller};
 use super::tools;
+use super::tools::always_card::{always_card, ask_peer_command, AlwaysCard};
 use super::{McpBroker, RegisteredSession, MCP_SERVER_NAME};
 
 pub(super) fn handle_rpc(
@@ -146,6 +147,38 @@ pub(super) fn handle_rpc(
                 }
                 // The overlay is folded into the same refusal, above: one
                 // sentence for both rules (`S5` §2).
+                let arguments = message.pointer("/params/arguments").unwrap_or(&Value::Null);
+                match always_card(tool_name, arguments) {
+                    // A command bound for another machine asks the person in
+                    // every mode, before anything is dialled.
+                    Some(AlwaysCard::PairedDevice(command)) => {
+                        if let Err(reply) = ask_peer_command(state, registration, &id, &command) {
+                            audit_mcp_tool(
+                                state,
+                                &caller,
+                                tool_name,
+                                &registration.session_id,
+                                "denied",
+                            );
+                            return Ok(Some(reply));
+                        }
+                        // The person may have answered and the agent withdrawn
+                        // the call since: a call that was cancelled sends nothing.
+                        if super::current_mcp_call_withdrawn(&registration.session_id) {
+                            audit_mcp_tool(
+                                state,
+                                &caller,
+                                tool_name,
+                                &registration.session_id,
+                                "cancelled",
+                            );
+                            return Ok(Some(rpc_error(id, -32800, "Request cancelled")));
+                        }
+                    }
+                    // The saved-login card names the site and the login the
+                    // host's preview finds, so the tool body raises it.
+                    Some(AlwaysCard::SavedLogin) | None => {}
+                }
             }
             if tool_name == Some(crate::provider_catalog::MCP_SEND_MESSAGE_TOOL) {
                 tools::messaging::send(state, registration, caller, id, message)

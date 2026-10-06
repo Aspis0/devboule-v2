@@ -71,8 +71,6 @@ pub(in crate::mcp_broker) struct FirstUseGates {
 
 /// What claiming a set of groups found.
 pub(in crate::mcp_broker) enum Claim {
-    /// The group at this index is already granted for the rest of the session.
-    Granted(usize),
     /// A card for these groups is out and unanswered.
     Pending,
     /// Nothing was granted or pending: every group is now pending, and the
@@ -81,10 +79,10 @@ pub(in crate::mcp_broker) enum Claim {
 }
 
 impl McpBroker {
-    /// Look at a set of groups for one session and, when none of them is
-    /// granted or has a card out, mark all of them pending: one look and one
-    /// write under one lock, so two calls racing the same question cannot both
-    /// be the one that raises the card.
+    /// Look at a set of groups for one session and, when none of them has a
+    /// card out, mark all of them pending: one look and one write under one
+    /// lock, so two calls racing the same question cannot both be the one that
+    /// raises the card.
     pub(in crate::mcp_broker) fn claim_gate_marks(
         &self,
         session_id: &str,
@@ -93,11 +91,9 @@ impl McpBroker {
         let Ok(mut marks) = self.write_gates.marks.lock() else {
             return Claim::Pending;
         };
-        for (index, group) in groups.iter().enumerate() {
-            match marks.get(&(session_id.to_string(), group.clone())) {
-                Some(GateMark::Open) => return Claim::Granted(index),
-                Some(GateMark::Pending) => return Claim::Pending,
-                Some(GateMark::None) | None => {}
+        for group in groups {
+            if marks.get(&(session_id.to_string(), group.clone())) == Some(&GateMark::Pending) {
+                return Claim::Pending;
             }
         }
         for group in groups {
@@ -332,14 +328,11 @@ enum Answered {
 }
 
 /// Ask the person to allow this call, offering the card's own choices, and
-/// hand back the option they chose.
+/// hand back the option they chose, however the session's mode would answer.
 ///
-/// The one place a card is raised without consulting the session's mode for
-/// whether to raise it at all. An automatic mode proceeds without a card for
-/// every write group, because there is nothing in a write the person has to
-/// see; a saved-login fill has, so this card goes up however the session runs.
 /// A plan or read-only mode is refused before the card, exactly as the write
-/// gate refuses it: those modes do not act.
+/// gate refuses it: those modes do not act. Every other mode — automatic ones
+/// included — gets the card (`ask_card_in_any_mode`).
 pub(in crate::mcp_broker) fn ask_choice(
     state: &ServerState,
     session_id: &str,
@@ -353,6 +346,21 @@ pub(in crate::mcp_broker) fn ask_choice(
     {
         return Err(sentence);
     }
+    ask_card_in_any_mode(state, session_id, owner, card)
+}
+
+/// Raise `card` and hand back the option the person chose, without asking the
+/// session's mode anything: the one road for the acts that always ask
+/// (`always_card`). An automatic mode proceeds without a card for every write
+/// group, because there is nothing in a write the person has to see; a command
+/// to another machine and a saved-login fill have, so their cards go up
+/// whatever the session runs.
+pub(in crate::mcp_broker) fn ask_card_in_any_mode(
+    state: &ServerState,
+    session_id: &str,
+    owner: &OwnerId,
+    card: SessionEvent,
+) -> Result<String, String> {
     let card_id = gate_card_id(&card).to_string();
     match request_card(state, session_id, owner, &card_id, card) {
         Answered::Chose(option) => Ok(option),
@@ -448,7 +456,7 @@ fn group_label(group: &str) -> String {
 
 /// One line of card text with no surprises in it: every line break a
 /// renderer may honour becomes a space, so a fact stays one fact.
-fn oneline(value: &str) -> String {
+pub(super) fn oneline(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut chars = value.chars().peekable();
     while let Some(char) = chars.next() {
@@ -469,7 +477,7 @@ fn oneline(value: &str) -> String {
 /// prefixed, so a forged terminator inside a fact is just another marked
 /// line and the card's own sentences stay recognisable. The same break set
 /// the creation card marks its prompt with.
-fn mark_fact_lines(listed: &str) -> Vec<String> {
+pub(super) fn mark_fact_lines(listed: &str) -> Vec<String> {
     let mut lines = Vec::new();
     let mut current = String::new();
     let mut chars = listed.chars().peekable();

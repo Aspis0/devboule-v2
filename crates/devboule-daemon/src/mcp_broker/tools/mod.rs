@@ -1,4 +1,5 @@
 pub(super) mod agents;
+pub(super) mod always_card;
 pub(super) mod archive;
 mod archive_sessions;
 pub(super) mod browser_args;
@@ -13,7 +14,7 @@ pub(super) mod creation;
 pub(super) mod first_use;
 pub(super) mod graph;
 pub(super) mod messaging;
-mod messaging_peer;
+pub(super) mod messaging_peer;
 pub(super) mod peers;
 pub(super) mod permissions;
 pub(super) mod process_cleanup;

@@ -773,7 +773,7 @@ export default function (pi) {
   pi.registerTool({
     name: "devboule_send_message",
     label: "Send Devboule message",
-    description: `Sends a message to one live Devboule agent session. Name a session on this machine with to_agent; to send to an agent on a paired device, pass that device's id from devboule_list_devices as deviceId and the session id devboule_list_peer_agents answered for it as to_agent. A paired-device send dials the device once and answers with that daemon's own delivery receipt - accepted, rejected_absent, rejected_denied and so on - never a delivery the far machine did not confirm.`,
+    description: `Sends a message to one live Devboule agent session. Name a session on this machine with to_agent; to send to an agent on a paired device, pass that device's id from devboule_list_devices as deviceId and the session id devboule_list_peer_agents answered for it as to_agent. A paired-device send dials the device once and answers with that daemon's own delivery receipt - accepted, rejected_absent, rejected_denied and so on - never a delivery the far machine did not confirm. A send to a paired device always asks the person first, in every mode, naming the device, the session and the message, and waits for the answer; each call asks again.`,
     parameters: Type.Object(
       {
         to_agent: Type.String(),

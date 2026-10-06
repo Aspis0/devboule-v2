@@ -149,7 +149,7 @@ fn receipt_result(
 
 #[cfg(test)]
 #[path = "messaging_peer_tests.rs"]
-mod tests;
+pub(in crate::mcp_broker) mod tests;
 
 #[cfg(test)]
 #[path = "messaging_peer_refusal_tests.rs"]

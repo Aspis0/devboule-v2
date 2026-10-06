@@ -237,7 +237,7 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
     (
         MCP_SEND_MESSAGE_TOOL,
-        "Sends a message to one live Devboule agent session. Name a session on this machine with to_agent; to send to an agent on a paired device, pass that device's id from devboule_list_devices as deviceId and the session id devboule_list_peer_agents answered for it as to_agent. A paired-device send dials the device once and answers with that daemon's own delivery receipt - accepted, rejected_absent, rejected_denied and so on - never a delivery the far machine did not confirm.",
+        "Sends a message to one live Devboule agent session. Name a session on this machine with to_agent; to send to an agent on a paired device, pass that device's id from devboule_list_devices as deviceId and the session id devboule_list_peer_agents answered for it as to_agent. A paired-device send dials the device once and answers with that daemon's own delivery receipt - accepted, rejected_absent, rejected_denied and so on - never a delivery the far machine did not confirm. A send to a paired device always asks the person first, in every mode, naming the device, the session and the message, and waits for the answer; each call asks again.",
     ),
     (
         MCP_CREATE_AGENT_TOOL,
@@ -425,7 +425,7 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
     (
         MCP_BROWSER_FILL_LOGIN_TOOL,
-        "Fills a login form from a login this person saved on this machine, and never sees it: give usernameRef, passwordRef, or both, each a ref from a snapshot of the field to fill. The password is read from this machine's own credential store at the last moment and typed into the page by the app; it reaches neither you, nor this tool's result, nor any log or transcript, and afterwards the app removes that exact value from every text answer about the tab. A page that shows it changed (encoded, split up) or shows the username is not covered, so do not ask for a page's text to find out what was typed. The person at the keyboard is asked first - an unattended session still asks - and the card names the saved login and the site, so watch for it; they may allow one call, or that login on that site for the rest of the session. Only a field whose own frame is at a site that saved login allows, one exact site per call; a site with no saved login answers no_saved_login, a field that moves or a page that navigates answers that the field changed, and you should snapshot and look again. Answers filled: the arguments that were filled, and nothing else - no view, no delta, nothing to read back. Two-step login pages take one ref per call. A password field the page has switched to plain text (a show-password toggle) is refused, so do not toggle visibility before filling. The insert is not atomic: if the page's own script moves the focus in the instant after the final check, the value can land in another field, which this tool cannot prevent.",
+        "Fills a login form from a login this person saved on this machine, and never sees it: give usernameRef, passwordRef, or both, each a ref from a snapshot of the field to fill. The password is read from this machine's own credential store at the last moment and typed into the page by the app; it reaches neither you, nor this tool's result, nor any log or transcript, and afterwards the app removes that exact value from every text answer about the tab. A page that shows it changed (encoded, split up) or shows the username is not covered, so do not ask for a page's text to find out what was typed. The person at the keyboard is asked on every use - an unattended session still asks - and the card names the saved login and the site, so watch for it; each answer allows that one call, and the next call asks again. Only a field whose own frame is at a site that saved login allows, one exact site per call; a site with no saved login answers no_saved_login, a field that moves or a page that navigates answers that the field changed, and you should snapshot and look again. Answers filled: the arguments that were filled, and nothing else - no view, no delta, nothing to read back. Two-step login pages take one ref per call. A password field the page has switched to plain text (a show-password toggle) is refused, so do not toggle visibility before filling. The insert is not atomic: if the page's own script moves the focus in the instant after the final check, the value can land in another field, which this tool cannot prevent.",
     ),
 ];
 
@@ -442,6 +442,8 @@ pub(crate) const MCP_CARD_WAIT_TOOLS: &[&str] = &[
     // The saved-login card is raised on every call and a person answers it in
     // their own time, so the call is one no client may time out.
     MCP_BROWSER_FILL_LOGIN_TOOL,
+    // A send to a paired device is carded on every call, in every mode.
+    MCP_SEND_MESSAGE_TOOL,
 ];
 
 #[cfg_attr(not(feature = "server"), allow(dead_code))]

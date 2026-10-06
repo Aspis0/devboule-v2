@@ -924,6 +924,12 @@ pub(crate) fn ready_timeout() -> Duration {
         .unwrap_or(MCP_READY_TIMEOUT)
 }
 
+/// The always-asking cards on the real road, in an automatic mode.
+#[cfg(test)]
+mod always_card_road_tests;
+/// The two always-asking acts, found by tracing where a call can land.
+#[cfg(test)]
+mod always_card_walk_tests;
 /// What one `act` batch accepts: a step checked against the command it names,
 /// the length a batch may have, and the frame the host receives.
 #[cfg(test)]

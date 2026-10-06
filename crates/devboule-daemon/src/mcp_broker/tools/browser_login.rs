@@ -11,13 +11,13 @@
 //! in two on the way out: the sentence goes to the agent alone and the row
 //! keeps the code.
 //!
-//! The consent is its own group per entry and per site, held in the write
-//! gate's own mark table, so a session allowed one saved login on one site is
-//! still asked about another login or another site. It is raised through
-//! `first_use::ask_choice` rather than through the write gate itself, and that
-//! is the one deliberate difference between the two: an automatic mode lets a
-//! write pass with no card, and a saved-login fill raises its card whatever the
-//! session's mode is.
+//! The consent is one card per use, and nothing remembers an answer: there is no
+//! grant for a session, an entry or a site, so every call asks again. It is
+//! raised through `first_use::ask_choice` rather than through the write gate,
+//! and that is the one deliberate difference between the two: an automatic mode
+//! lets a write pass with no card, and a saved-login fill (`always_card`)
+//! raises its card whatever the session's mode is. The marks the write gate's
+//! table holds here only keep two racing calls from raising the card twice.
 
 use std::sync::Arc;
 
@@ -48,11 +48,6 @@ const FILL: &str = "fill_login";
 
 /// The choice that approves only the call it was raised for.
 const ONCE: &str = "once";
-/// The choice that approves the rest of the session, for this entry on this
-/// site and nothing else. Its kind is the journal's own session word, so the
-/// ledger tells it from a one-shot.
-const SESSION: &str = "session";
-const SESSION_KIND: &str = "allow_session";
 const DENY: &str = "deny";
 
 /// One login a site allows, as the preview answers it.
@@ -257,15 +252,13 @@ fn typed(
         .map_err(Refusal::from)
 }
 
-/// The group one grant of this card belongs to: that entry, on that site, for
-/// that session. Nothing else opens it, which is the whole of "a session grant
-/// is scoped to entry and origin".
+/// The group one racing call's mark belongs to: that entry, on that site.
 fn group(entry: &str, site: &str) -> String {
     format!("saved_login:{entry}@{site}")
 }
 
-/// Ask the person, unless this session already holds the grant for one of the
-/// entries on this site.
+/// Ask the person, every time. A second call racing the first waits for that
+/// answer rather than raising a second card.
 fn choose(
     state: &Arc<ServerState>,
     broker: &McpBroker,
@@ -279,7 +272,6 @@ fn choose(
     // spending the person's attention a second time on the same question.
     let groups: Vec<String> = entries.iter().map(|entry| group(&entry.id, site)).collect();
     match broker.claim_gate_marks(session_id, &groups) {
-        Claim::Granted(index) => return Ok(entries[index].clone()),
         Claim::Pending => return Err(Refusal::of("permission pending; retry", "denied")),
         Claim::Raised => {}
     }
@@ -289,65 +281,27 @@ fn choose(
         &registration.owner,
         saved_login_card(registration, site, entries),
     );
-    let granted = match answered {
-        Ok(option) => match Granted::parse(&option) {
-            Ok(granted) => granted,
-            Err(()) => {
-                clear_marks(broker, session_id, site, entries);
-                return Err(Refusal::of("permission refused", "denied"));
-            }
-        },
-        Err(said) => {
-            clear_marks(broker, session_id, site, entries);
-            return Err(Refusal::of(said, "denied"));
-        }
-    };
-    let Some(chosen) = entries.iter().find(|entry| entry.id == granted.entry) else {
-        clear_marks(broker, session_id, site, entries);
-        return Err(Refusal::of("permission refused", "denied"));
-    };
-    // The grant belongs to what was chosen, not to the card: an answer of
-    // `once` opens nothing, and `session` opens this entry on this site for
-    // the rest of this session and nothing else.
+    // Whatever the answer was, nothing is left behind: the next call asks.
     clear_marks(broker, session_id, site, entries);
-    if granted.for_session {
-        broker.remember_gate_mark(session_id, &group(&chosen.id, site), GateMark::Open);
-    }
-    Ok(chosen.clone())
+    let option = answered.map_err(|said| Refusal::of(said, "denied"))?;
+    entries
+        .iter()
+        .find(|entry| allowed_entry(&option) == Some(entry.id.as_str()))
+        .cloned()
+        .ok_or_else(|| Refusal::of("permission refused", "denied"))
 }
 
-/// Every entry of this card back to no mark: a card that was refused, that no
-/// one answered, or whose answer named nothing is not a grant, and the next
-/// call asks again.
+/// Every entry of this card back to no mark.
 fn clear_marks(broker: &McpBroker, session_id: &str, site: &str, entries: &[Entry]) {
     for entry in entries {
         broker.remember_gate_mark(session_id, &group(&entry.id, site), GateMark::None);
     }
 }
 
-/// One card answer: which entry it named, and whether it was the session kind.
-struct Granted {
-    entry: String,
-    for_session: bool,
-}
-
-impl Granted {
-    /// An option id is `kind:entryId`. Anything else is a card this door did
-    /// not build, and is refused rather than acted on: a grant nobody asked
-    /// for is not a grant.
-    fn parse(option: &str) -> Result<Self, ()> {
-        match option.split_once(':') {
-            Some((ONCE, entry)) => Ok(Self {
-                entry: entry.to_owned(),
-                for_session: false,
-            }),
-            Some((SESSION, entry)) => Ok(Self {
-                entry: entry.to_owned(),
-                for_session: true,
-            }),
-            _ => Err(()),
-        }
-    }
+/// The entry an answer allowed: an option id is `once:entryId`. Anything else
+/// is a card this door did not build, and is refused rather than acted on.
+fn allowed_entry(option: &str) -> Option<&str> {
+    option.strip_prefix("once:")
 }
 
 /// The card: which saved login, on which site, asked by an agent. No password
@@ -383,16 +337,16 @@ fn saved_login_card(
         description: Some(format!(
             "An agent asked to sign in to {site} with a login saved on this machine.\n{listed}\n\n\
              {what} The password is typed into the page by this app and is never shown to the \
-             agent. \"For this session\" means this login on this site only."
+             agent. This always asks, whatever the session's mode, and each answer is for this \
+             one call."
         )),
         command: None,
         args: None,
         cwd: None,
         env: None,
-        options: card_options(entries, site),
-        // Forced: the two allow options differ in kind, which the journal
-        // tells apart, so without it the app would show its own generic pair
-        // and the session choice would be unclickable.
+        options: card_options(entries),
+        // Forced: a card with one allow option per login is answered by option
+        // id, which only a chooser reports back.
         is_chooser: Some(true),
         kind: None,
         plan: None,
@@ -402,26 +356,14 @@ fn saved_login_card(
     }
 }
 
-/// Every entry's two ways to be allowed, and the one refusal they all share.
-fn card_options(entries: &[Entry], site: &str) -> Vec<PermissionOption> {
+/// Every entry's one way to be allowed, and the one refusal they all share.
+fn card_options(entries: &[Entry]) -> Vec<PermissionOption> {
     let mut options: Vec<PermissionOption> = entries
         .iter()
-        .flat_map(|entry| {
-            [
-                PermissionOption {
-                    option_id: format!("{ONCE}:{}", entry.id),
-                    name: format!("Use '{}' for this call", entry.label),
-                    kind: "allow_once".to_owned(),
-                },
-                PermissionOption {
-                    option_id: format!("{SESSION}:{}", entry.id),
-                    name: format!(
-                        "Use '{}' on {site} for the rest of this session",
-                        entry.label
-                    ),
-                    kind: SESSION_KIND.to_owned(),
-                },
-            ]
+        .map(|entry| PermissionOption {
+            option_id: format!("{ONCE}:{}", entry.id),
+            name: format!("Use '{}' for this call", entry.label),
+            kind: "allow_once".to_owned(),
         })
         .collect();
     options.push(PermissionOption {

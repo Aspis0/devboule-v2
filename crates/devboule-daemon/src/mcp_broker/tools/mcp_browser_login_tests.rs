@@ -125,12 +125,8 @@ fn the_card_names_the_login_and_the_site_and_the_fill_carries_only_the_entry_id(
     );
     assert_eq!(
         options_of(&card),
-        vec![
-            format!("once:{ENTRY}"),
-            format!("session:{ENTRY}"),
-            "deny".to_owned(),
-        ],
-        "once, for this session, and the refusal"
+        vec![format!("once:{ENTRY}"), "deny".to_owned()],
+        "this one call, and the refusal: no grant for a session exists"
     );
     let said = format!("{card:?}");
     assert!(!said.contains(SECRET), "the card holds no password: {said}");
@@ -257,27 +253,35 @@ fn a_refused_card_fills_nothing_and_asks_again_next_time() {
     );
 }
 
-/// "For this session" is that entry on that site and nothing else: a second
-/// call on the same site goes through with no card, and a call on another site
-/// asks again.
+/// The person is asked on every use, in an automatic mode too: the second call
+/// on the same site, for the same login, in the same session raises its own
+/// card — nothing a first answer said carries over.
 #[test]
-fn a_session_grant_is_that_entry_on_that_site() {
-    let tag = "fill-login-session";
+fn saved_login_cards_every_use_in_auto_mode() {
+    let tag = "fill-login-auto";
     let panel = panel(tag);
+    set_automatic_mode(&panel, tag);
     let host = FakeHost::register(&panel.state, 13);
-    let run = |panel: &Panel, site: &str| {
+    let run = |panel: &Panel| {
         let reply = panel.in_background(
             MCP_BROWSER_FILL_LOGIN_TOOL,
             asking(json!({ "passwordRef": "e14" })),
         );
-        host.answer_ok(&panel.state, &host.next(), preview(site, one_entry()));
-        let (card_id, _) = wait_for_card(panel, tag);
+        host.answer_ok(&panel.state, &host.next(), preview(SITE, one_entry()));
+        let (card_id, card) = wait_for_card(panel, tag);
+        let SessionEvent::PermissionRequest { options, .. } = &card else {
+            panic!("a saved-login card is a permission request");
+        };
+        assert!(
+            options.iter().all(|option| option.kind != "allow_session"),
+            "no answer to this card is remembered: {options:?}"
+        );
         answer(
             panel,
             tag,
             &card_id,
             PermissionOutcome::AllowOnce,
-            &format!("session:{ENTRY}"),
+            &format!("once:{ENTRY}"),
         );
         host.answer_ok(
             &panel.state,
@@ -287,34 +291,33 @@ fn a_session_grant_is_that_entry_on_that_site() {
         reply.join().expect("the call")
     };
 
-    assert_eq!(
-        run(&panel, SITE).pointer("/result/isError"),
-        Some(&json!(false)),
-        "the first call is carded and typed"
-    );
-    // The same site, the same entry: the grant answers it, with no card.
-    let granted = panel.in_background(
-        MCP_BROWSER_FILL_LOGIN_TOOL,
-        asking(json!({ "passwordRef": "e14" })),
-    );
-    host.answer_ok(&panel.state, &host.next(), preview(SITE, one_entry()));
-    host.answer_ok(
-        &panel.state,
-        &host.next(),
-        json!({ "filled": ["passwordRef"] }),
-    );
-    assert_eq!(
-        granted
-            .join()
-            .expect("the granted call")
-            .pointer("/result/isError"),
-        Some(&json!(false))
-    );
-    assert_eq!(
-        run(&panel, "https://other.example.test").pointer("/result/isError"),
-        Some(&json!(false)),
-        "another site is carded again and then typed"
-    );
+    for use_number in 1..=3 {
+        assert_eq!(
+            run(&panel).pointer("/result/isError"),
+            Some(&json!(false)),
+            "use {use_number} raised its own card and was typed after the answer"
+        );
+    }
+}
+
+/// An automatic mode: what a provider calls bypass, here as a recorded
+/// handshake mode on the live session, which is what the gate reads.
+fn set_automatic_mode(panel: &Panel, tag: &str) {
+    let runtime = panel
+        .state
+        .sessions
+        .live_runtime("session", &owner(tag))
+        .expect("the live session");
+    runtime.set_agent_kind(devboule_protocol::SessionKind::Claude);
+    runtime.store_session_manifest(devboule_protocol::SessionEvent::SessionManifest {
+        provider_id: Some("claude".to_string()),
+        current_model_id: None,
+        models: Vec::new(),
+        modes: Some(devboule_protocol::SessionModeStateView {
+            current_mode_id: "bypassPermissions".to_string(),
+            available_modes: Vec::new(),
+        }),
+    });
 }
 
 /// Two logins for one site: the card offers both, and the answer decides which
@@ -345,9 +348,7 @@ fn two_logins_for_one_site_are_chosen_on_the_card() {
         options_of(&card),
         vec![
             format!("once:{ENTRY}"),
-            format!("session:{ENTRY}"),
             format!("once:{OTHER}"),
-            format!("session:{OTHER}"),
             "deny".to_owned(),
         ],
         "both logins, then the refusal"

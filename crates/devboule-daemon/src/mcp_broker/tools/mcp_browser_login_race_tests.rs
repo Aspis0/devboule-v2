@@ -122,56 +122,6 @@ fn calls_racing_one_question_raise_one_card() {
     assert_eq!((typed, waiting), (1, 5), "{bodies:?}");
 }
 
-/// A grant that lets a call straight through is still a call the agent can
-/// withdraw while the host is looking at the page: once it has, nothing is
-/// typed, and the row says so.
-#[test]
-fn a_call_withdrawn_after_the_answer_and_before_the_fill_types_nothing() {
-    let tag = "fill-login-withdrawn";
-    let panel = panel(tag);
-    let host = FakeHost::register(&panel.state, 22);
-    let first = panel.in_background(
-        MCP_BROWSER_FILL_LOGIN_TOOL,
-        asking(json!({ "passwordRef": "e14" })),
-    );
-    host.answer_ok(&panel.state, &host.next(), preview(SITE, one_entry()));
-    let (card_id, _) = wait_for_card(&panel, tag);
-    answer(
-        &panel,
-        tag,
-        &card_id,
-        PermissionOutcome::AllowOnce,
-        &format!("session:{ENTRY}"),
-    );
-    host.answer_ok(
-        &panel.state,
-        &host.next(),
-        json!({ "filled": ["passwordRef"] }),
-    );
-    first.join().expect("the granting call");
-
-    // The broker finds the session's permission broker through this binding,
-    // which the harness's registration does not make.
-    let runtime = panel
-        .state
-        .sessions
-        .live_runtime("session", &super::tests::owner(tag))
-        .expect("the live session");
-    panel.state.mcp.bind_runtime("session", &runtime);
-    let second = call_as(&panel, 2, asking(json!({ "passwordRef": "e14" })));
-    let looked = host.next();
-    cancel(&panel, 2);
-    host.answer_ok(&panel.state, &looked, preview(SITE, one_entry()));
-
-    let body = second.join().expect("the withdrawn call");
-    assert_eq!(body.pointer("/error/code"), Some(&json!(-32800)), "{body}");
-    assert!(host.pending().is_empty(), "the fill was sent to the host");
-    assert_eq!(
-        audit_rows(&panel.state).last(),
-        Some(&("browser_fill_login".to_owned(), "cancelled".to_owned()))
-    );
-}
-
 /// The claim itself, with every thread released at once: whichever way the
 /// threads interleave, one is told to raise the card and the rest to wait.
 #[test]
