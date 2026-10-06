@@ -171,7 +171,9 @@ fn fetch_tcp_table(family: u32) -> Option<Vec<u8>> {
     }
     let mut buffer = vec![0u8; size as usize];
     for attempt in 0..2 {
-        let ok = unsafe {
+        // The call returns its own error code (`NO_ERROR` is 0); last-error
+        // is not set by it and would only read some earlier failure.
+        let status = unsafe {
             GetExtendedTcpTable(
                 buffer.as_mut_ptr().cast(),
                 &mut size,
@@ -181,20 +183,16 @@ fn fetch_tcp_table(family: u32) -> Option<Vec<u8>> {
                 0,
             )
         };
-        if ok == 0 {
-            let error = unsafe { windows_sys::Win32::Foundation::GetLastError() };
-            if error == ERROR_NO_DATA {
-                return Some(Vec::new());
+        match status {
+            0 => {
+                buffer.truncate(size as usize);
+                return Some(buffer);
             }
-            if error != ERROR_INSUFFICIENT_BUFFER || attempt == 1 {
-                return None;
-            }
+            ERROR_NO_DATA => return Some(Vec::new()),
             // The size the first call asked for can grow between calls; retry once.
-            buffer.resize(size as usize, 0);
-            continue;
+            ERROR_INSUFFICIENT_BUFFER if attempt == 0 => buffer.resize(size as usize, 0),
+            _ => return None,
         }
-        buffer.truncate(size as usize);
-        return Some(buffer);
     }
     None
 }

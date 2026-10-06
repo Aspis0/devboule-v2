@@ -116,6 +116,27 @@ fn cleanup_terminates_its_own_process_on_windows() {
     let _ = child.wait();
 }
 
+/// A graceful ask the OS refuses has nothing to wait for: with a grace far
+/// longer than the bound below, the forced phase must start at once.
+#[cfg(windows)]
+#[test]
+fn a_refused_graceful_ask_does_not_burn_the_grace() {
+    let mut child = spawn_immune_child();
+    let plan = real_plan(child.id());
+
+    let started = Instant::now();
+    let termination = terminate_all(&[plan], Duration::from_secs(20), &os_target_check)
+        .expect("termination is bounded");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "forced without waiting out the grace: {elapsed:?}"
+    );
+    assert_eq!(termination.terminated, vec![child.id()]);
+    let _ = child.wait();
+}
+
 /// A plan whose identity no longer matches is not signalled at the graceful
 /// phase at all: the process this test spawned stays alive, and the skip is
 /// reported with its reason.

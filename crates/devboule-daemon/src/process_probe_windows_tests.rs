@@ -97,3 +97,19 @@ fn a_claimed_row_count_beyond_the_bytes_returns_clamps_instead_of_reading() {
     // Anything shorter than the header is an empty table, not a panic.
     assert!(parse_owner_pid_table(&[1, 2], u32::from(AF_INET)).is_empty());
 }
+
+/// The real kernel call, not a hand-built buffer: a listener this test binds
+/// is in the table under this process's pid. The call returns its own error
+/// code, so reading last-error instead made a healthy read look like failure.
+#[test]
+fn the_real_listener_table_names_a_port_this_process_bound() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("address").port();
+
+    let ports = listener_ports().expect("the listener table is readable");
+
+    assert!(
+        ports.contains(&(port, std::process::id())),
+        "port {port} is listed under our pid"
+    );
+}

@@ -369,6 +369,27 @@ const PI_TOOL_POLICIES: &[PiToolPolicy] = &[
         name: crate::provider_catalog::MCP_KILL_TERMINAL_TOOL,
         requires_confirmation: false,
     },
+    // Process owner: the answer comes from this machine's own proof — the
+    // session's job or group, pid plus creation time — and the body only
+    // ever reads it; the origin door refuses every peer before the body runs.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_PROCESS_OWNER_TOOL,
+        requires_confirmation: false,
+    },
+    // Session processes: the caller's own session's members, scoped by the
+    // bearer like every other session read; metadata only, audited on answer.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_SESSION_PROCESSES_TOOL,
+        requires_confirmation: false,
+    },
+    // Cleanup: consented by the broker's own mode-following card, which names
+    // the session and the exact process list; a generic confirm here would be
+    // a second card with none of those facts, and the origin door refuses
+    // every peer before the body runs.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_CLEANUP_PROCESSES_TOOL,
+        requires_confirmation: false,
+    },
     // The browser lane, one row per tool and one reason. What bounds a call is the
     // tab's own workspace and, for a peer, the `browser` grant; what is left to
     // decide is the page's own answer, which a generic confirm here would only
@@ -510,8 +531,9 @@ fn permission_extension() -> String {
 static BRIDGE_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// The pi MCP bridge (S5): our own extension, ~130 lines TypeScript, sibling of
-/// `PERMISSION_EXTENSION_TEMPLATE`. First-class tools, not a proxy: one
-/// twenty-six `pi.registerTool` entries written out, one per broker tool, closed schemas matching the
+/// `PERMISSION_EXTENSION_TEMPLATE`. First-class tools, not a proxy:
+/// twenty-nine `pi.registerTool` entries written out, one per non-browser
+/// broker tool, closed schemas matching the
 /// broker's `tools/list` documents, descriptions verbatim from
 /// `provider_catalog::MCP_BROKER_TOOLS` (pinned by the S5 walking test, so a
 /// catalog edit without a bridge edit fails). The browser lane's tools are
@@ -1133,6 +1155,58 @@ export default function (pi) {
     async execute(_toolCallId, params, signal) {
       await brokerSession(signal);
       const result = await mcpRequest("tools/call", { name: "devboule_file_collisions", arguments: params }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_process_owner",
+    label: "Find the process that owns a port or pid",
+    description: `Finds which of this machine's own Devboule-managed processes owns a local TCP port or a pid: pass exactly one of port or pid. The answer lists only processes a live session proves it owns (its Job Object or process group, matched by pid and creation time), each with its start time, session, name, executable, redacted command line, listening ports and proof; if nothing proven matches, the list is empty - this tool never names a process outside a session's proof and never guesses from an image name.`,
+    parameters: Type.Object(
+      {
+        port: Type.Optional(Type.Integer({ minimum: 0, maximum: 65535, description: "A local TCP port to look up. Exactly one of port and pid." })),
+        pid: Type.Optional(Type.Integer({ minimum: 0, description: "A process id to look up. Exactly one of port and pid." })),
+      },
+      { additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_process_owner", arguments: params }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_session_processes",
+    label: "List this session's processes",
+    description: `Lists the processes the calling session provably owns - pid, start time and age, executable, redacted command line, listening ports and proof. sessionId is optional and may only be the caller's own session; any other id answers not_owned, because this surface has no owner or admin context. A process the OS would not vouch for is omitted rather than guessed at.`,
+    parameters: Type.Object(
+      {
+        sessionId: Type.Optional(Type.String({ description: "Only your own session id is accepted; omit it for the calling session." })),
+      },
+      { additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_session_processes", arguments: params }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_cleanup_processes",
+    label: "Stop this session's processes",
+    description: `Stops the calling session's own proven processes - graceful first, then forced after graceMs (default 2000, at most 30000) - and answers terminated, stillRunning, unproven and skipped (each with its reason) pid lists. The session's agent process and its chain are never in the plan, no pid argument exists, and session-end cleanup still happens on its own. The card follows the session's mode like every Devboule write: in an automatic mode it approves itself and is only logged; in an asking mode it is shown every time and lists the exact processes and executables. The plan approved is the plan executed - members appearing after approval are left alone and reported as skipped.`,
+    parameters: Type.Object(
+      {
+        graceMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 30000, description: "Grace period for the graceful phase, in milliseconds. Default 2000." })),
+      },
+      { additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_cleanup_processes", arguments: params }, signal);
       return { content: result?.content ?? [], details: result ?? {} };
     },
   });

@@ -27,7 +27,7 @@ pub(crate) fn terminate_all(
     grace: Duration,
     check: &dyn Fn(u32, u64) -> TargetVerdict,
 ) -> io::Result<Termination> {
-    let mut attempted: Vec<(PlanTarget, ForcedHandle)> = Vec::new();
+    let mut attempted: Vec<(PlanTarget, ForcedHandle, bool)> = Vec::new();
     let mut terminated: Vec<u32> = Vec::new();
     let mut skipped: Vec<(u32, &'static str)> = Vec::new();
     for target in targets {
@@ -37,26 +37,42 @@ pub(crate) fn terminate_all(
             TargetVerdict::Unverified => skipped.push((target.pid, "identity_unverifiable")),
             TargetVerdict::Confirmed => match arm(target.pid, target.started_at_ms) {
                 ArmOutcome::Armed(handle) => {
-                    graceful(target.pid);
-                    attempted.push((target.clone(), handle));
+                    let landed = graceful(target.pid);
+                    attempted.push((target.clone(), handle, landed));
                 }
                 ArmOutcome::AlreadyGone => {
                     terminated.push(target.pid);
                 }
                 ArmOutcome::Mismatch => skipped.push((target.pid, "creation_time_changed")),
                 ArmOutcome::NoAccess => {
-                    graceful(target.pid);
-                    attempted.push((target.clone(), no_handle()));
+                    let landed = graceful(target.pid);
+                    attempted.push((target.clone(), no_handle(), landed));
                 }
             },
         }
     }
 
-    let attempted_pids: Vec<u32> = attempted.iter().map(|(target, _)| target.pid).collect();
-    let survivors = wait_for_gone(&attempted_pids, grace);
+    // A graceful ask the OS refused (Windows: taskkill's "can only be
+    // terminated forcefully" on a headless process) has nothing to wait out —
+    // waiting the grace would only burn it, so those targets are checked
+    // once and handed to the forced pass straight away.
+    let landed_pids: Vec<u32> = attempted
+        .iter()
+        .filter(|(_, _, landed)| *landed)
+        .map(|(target, _, _)| target.pid)
+        .collect();
+    let refused_pids: Vec<u32> = attempted
+        .iter()
+        .filter(|(_, _, landed)| !*landed)
+        .map(|(target, _, _)| target.pid)
+        .collect();
+    let mut survivors = wait_for_gone(&landed_pids, grace);
+    survivors.extend(refused_pids.into_iter().filter(|pid| is_alive(*pid)));
+    survivors.sort_unstable();
+    survivors.dedup();
 
     let mut forced_pids: Vec<u32> = Vec::new();
-    for (target, handle) in &attempted {
+    for (target, handle, _) in &attempted {
         if !survivors.contains(&target.pid) {
             close_handle(handle);
             continue;
@@ -73,7 +89,7 @@ pub(crate) fn terminate_all(
         close_handle(handle);
     }
     let still_running = wait_for_gone(&forced_pids, FORCED_WAIT);
-    for (target, _) in &attempted {
+    for (target, _, _) in &attempted {
         if !still_running.contains(&target.pid)
             && !skipped.iter().any(|(pid, _)| *pid == target.pid)
         {
@@ -179,13 +195,14 @@ fn close_handle(_handle: &ForcedHandle) {}
 
 /// The graceful signal: the OS's own soft ask, before anything is forced.
 #[cfg(windows)]
-fn graceful(pid: u32) {
-    taskkill(pid, false);
+fn graceful(pid: u32) -> bool {
+    taskkill(pid, false)
 }
 
 #[cfg(target_os = "macos")]
-fn graceful(pid: u32) {
+fn graceful(pid: u32) -> bool {
     signal(pid, libc::SIGTERM);
+    true
 }
 
 /// The forced signal. A handle takes the identity the check confirmed —
@@ -209,20 +226,21 @@ fn forced(pid: u32, _handle: ForcedHandle) {
 }
 
 /// `taskkill` without `/F` is the OS's graceful attempt for a foreign
-/// process; there is no documented native equivalent for a process this
-/// daemon did not create a console group for. The executable comes from
-/// `%SystemRoot%`, never from `PATH`, and a taskkill that cannot be
-/// spawned leaves the pid to the forced phase (and possibly to
-/// `still_running`), which is the honest answer rather than a claim.
+/// process — there is no documented native equivalent for one this daemon
+/// did not create a console group for — and its exit status is the OS's
+/// verdict on that ask: success means something may still land within the
+/// grace, a refusal ("can only be terminated forcefully" on a headless
+/// process) means the forced phase should not wait for it. The executable
+/// comes from `%SystemRoot%`, never from `PATH`.
 #[cfg(windows)]
-fn taskkill(pid: u32, force: bool) {
+fn taskkill(pid: u32, force: bool) -> bool {
     use std::os::windows::process::CommandExt;
     use std::path::PathBuf;
     use std::process::{Command, Stdio};
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let Some(system_root) = std::env::var_os("SystemRoot") else {
-        return;
+        return false;
     };
     let program = PathBuf::from(system_root)
         .join("System32")
@@ -240,19 +258,19 @@ fn taskkill(pid: u32, force: bool) {
         .spawn()
     {
         Ok(child) => child,
-        Err(_) => return,
+        Err(_) => return false,
     };
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => return,
+            Ok(Some(status)) => return status.success(),
             Ok(None) if Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(10));
             }
             Ok(None) | Err(_) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return;
+                return false;
             }
         }
     }

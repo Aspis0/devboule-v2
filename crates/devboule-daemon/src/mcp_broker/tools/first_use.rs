@@ -26,8 +26,8 @@ pub(in crate::mcp_broker) const TERMINAL_CREATE_GROUP: &str = "terminal_creation
 pub(in crate::mcp_broker) const TERMINAL_KEYS_GROUP: &str = "terminal_keys";
 /// See [`TERMINAL_CREATE_GROUP`].
 pub(in crate::mcp_broker) const TERMINAL_KILL_GROUP: &str = "terminal_kill";
-/// Cleanup asks even from an automatic mode: it names the processes a
-/// session is about to lose, and "auto" may not answer that itself.
+/// Stopping a session's processes: its own mark, spent after each call
+/// (the cleanup tool resets it), so an asking mode cards every time.
 pub(in crate::mcp_broker) const PROCESS_CLEANUP_GROUP: &str = "process_cleanup";
 
 /// Every first-use group's label, one table for all of them: the approval
@@ -194,6 +194,29 @@ pub(in crate::mcp_broker) fn ensure_write_allowed(
     subject: &str,
     facts: &[(&str, &str)],
 ) -> Result<(), String> {
+    ensure_write_approved(state, broker, session_id, owner, group, subject, facts).map(|_| ())
+}
+
+/// Who approved a write that passed the gate.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(in crate::mcp_broker) enum Approval {
+    /// The session's automatic mode: no card was raised.
+    Mode,
+    /// A person: a card answered now, or a session grant a card gave earlier.
+    Person,
+}
+
+/// [`ensure_write_allowed`] naming who approved, for a caller whose audit
+/// row must say that an automatic mode did.
+pub(in crate::mcp_broker) fn ensure_write_approved(
+    state: &ServerState,
+    broker: &McpBroker,
+    session_id: &str,
+    owner: &OwnerId,
+    group: &str,
+    subject: &str,
+    facts: &[(&str, &str)],
+) -> Result<Approval, String> {
     // The calling session's mode, read now: it can change
     // mid-session, so it is never cached and never stored as a mark. An
     // automatic mode proceeds with no card; a plan or read-only mode of the
@@ -204,7 +227,7 @@ pub(in crate::mcp_broker) fn ensure_write_allowed(
         .live_runtime(session_id, owner)
         .map(|runtime| runtime.mode_gate());
     match gate {
-        Some(crate::provider_catalog::ModeGate::Auto) => return Ok(()),
+        Some(crate::provider_catalog::ModeGate::Auto) => return Ok(Approval::Mode),
         Some(crate::provider_catalog::ModeGate::Refuse(sentence)) => return Err(sentence),
         _ => {}
     }
@@ -215,7 +238,7 @@ pub(in crate::mcp_broker) fn ensure_write_allowed(
             .lock()
             .map_err(|_| "MCP state is unavailable.".to_string())?;
         match marks.get(&(session_id.to_string(), group.to_string())) {
-            Some(GateMark::Open) => return Ok(()),
+            Some(GateMark::Open) => return Ok(Approval::Person),
             Some(GateMark::Pending) => {
                 return Err("permission pending; retry".to_string());
             }
@@ -243,11 +266,11 @@ pub(in crate::mcp_broker) fn ensure_write_allowed(
     match outcome {
         Answered::Chose(choice) if pending && choice == CHOICE_SESSION => {
             marks.insert(key, GateMark::Open);
-            Ok(())
+            Ok(Approval::Person)
         }
         Answered::Chose(choice) if pending && choice == CHOICE_ONCE => {
             marks.remove(&key);
-            Ok(())
+            Ok(Approval::Person)
         }
         Answered::Chose(choice) if choice == "deny" => {
             if pending {

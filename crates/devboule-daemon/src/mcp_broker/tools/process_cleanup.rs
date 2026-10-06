@@ -10,7 +10,9 @@ use serde_json::{json, Value};
 use super::processes::{refreshed, reply, strict_arguments};
 use crate::mcp_broker::caller::{audit_mcp_tool, McpCaller};
 use crate::mcp_broker::dispatch::{rpc_error, tool_error};
-use crate::mcp_broker::tools::first_use::{ensure_write_allowed, GateMark, PROCESS_CLEANUP_GROUP};
+use crate::mcp_broker::tools::first_use::{
+    ensure_write_approved, Approval, GateMark, PROCESS_CLEANUP_GROUP,
+};
 use crate::mcp_broker::{McpBroker, RegisteredSession};
 use crate::process_plan::{CleanupPlan, PlanTarget};
 use crate::server::ServerState;
@@ -79,8 +81,8 @@ fn executables_line(targets: &[PlanTarget]) -> String {
 
 /// `devboule_cleanup_processes`: the caller's own session's proven members,
 /// graceful then forced, behind the same mode-following card every
-/// Devboule write uses — in an automatic mode the card approves itself and
-/// is only logged; in an asking mode it is shown, each time, listing the
+/// Devboule write uses — an automatic mode approves with no card and the
+/// audit row says so; an asking mode shows it, each time, listing the
 /// exact processes. The plan approved is the plan executed: members that
 /// appear later are left alone and reported, and no pid argument exists.
 pub(in crate::mcp_broker) fn cleanup(
@@ -144,7 +146,7 @@ pub(in crate::mcp_broker) fn cleanup(
         ("executables", executables.as_str()),
     ];
     let subject = format!("stop {count} processes of {label}");
-    if let Err(sentence) = ensure_write_allowed(
+    let approval = match ensure_write_approved(
         state,
         broker,
         &registration.session_id,
@@ -153,15 +155,18 @@ pub(in crate::mcp_broker) fn cleanup(
         &subject,
         &facts,
     ) {
-        audit_mcp_tool(
-            state,
-            &caller,
-            crate::provider_catalog::MCP_CLEANUP_PROCESSES_TOOL,
-            &registration.session_id,
-            "denied",
-        );
-        return Err(tool_error(&id, &sentence));
-    }
+        Ok(approval) => approval,
+        Err(sentence) => {
+            audit_mcp_tool(
+                state,
+                &caller,
+                crate::provider_catalog::MCP_CLEANUP_PROCESSES_TOOL,
+                &registration.session_id,
+                "denied",
+            );
+            return Err(tool_error(&id, &sentence));
+        }
+    };
     // The card can grant for the whole session; cleanup must ask again next
     // time, so the grant is spent the moment this call holds it.
     broker.remember_gate_mark(
@@ -192,20 +197,40 @@ pub(in crate::mcp_broker) fn cleanup(
         .cleanup_plan(&registration.session_id)
         .map(|fresh| fresh.unproven)
         .unwrap_or_default();
-    let termination = crate::process_terminate::terminate_all(
+    let termination = match crate::process_terminate::terminate_all(
         &plan.targets,
         Duration::from_millis(u64::from(grace)),
         &crate::process_terminate::os_target_check,
-    )
-    .map_err(|error| tool_error(&id, &format!("platform_unavailable: {error}")))?;
+    ) {
+        Ok(termination) => termination,
+        Err(error) => {
+            audit_mcp_tool(
+                state,
+                &caller,
+                crate::provider_catalog::MCP_CLEANUP_PROCESSES_TOOL,
+                &registration.session_id,
+                "failed: platform_unavailable",
+            );
+            return Err(tool_error(&id, &format!("platform_unavailable: {error}")));
+        }
+    };
     skipped.extend(termination.skipped);
     skipped.sort_by_key(|(pid, _)| *pid);
+    // An automatic mode raises no card, so the row is the only place the
+    // approval is recorded: what was stopped, in which session's name.
+    let outcome = match approval {
+        Approval::Mode => format!(
+            "ok; approved by automatic mode: {count} planned ({executables}), terminated {:?}",
+            termination.terminated
+        ),
+        Approval::Person => "ok".to_string(),
+    };
     audit_mcp_tool(
         state,
         &caller,
         crate::provider_catalog::MCP_CLEANUP_PROCESSES_TOOL,
         &registration.session_id,
-        "ok",
+        &outcome,
     );
     cleanup_reply(
         id,

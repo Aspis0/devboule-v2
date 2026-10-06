@@ -948,6 +948,10 @@ mod browser_tools_served_tests;
 /// a person opened does not outrank a later mode switch.
 #[cfg(test)]
 mod creation_mode_road_tests;
+/// The cleanup card follows the session's mode: automatic approves and still
+/// records itself; asking shows the card first.
+#[cfg(test)]
+mod process_cleanup_mode_tests;
 /// The process tools' peer door: a paired device is refused whatever it holds.
 #[cfg(test)]
 mod process_tools_peer_tests;
