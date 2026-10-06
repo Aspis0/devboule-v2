@@ -18,6 +18,7 @@ use super::live::Live;
 use super::page_host;
 use super::registry::{profile_dir, AgentDrive, BrowserRegistry, OwnedTab, PARK_RECT};
 use super::tab_reports;
+use super::tab_watch::TabWatch;
 use super::url;
 
 /// The empty document a child is created on, before it is allowed to load
@@ -91,34 +92,6 @@ struct TabHooks {
     app: AppHandle,
     /// This tab's own id, which the strip's record is keyed by.
     id: String,
-}
-
-/// What the page's own hooks ask about every navigation: the destination
-/// policy, and the two facts that say who is driving this tab.
-#[derive(Clone)]
-struct TabWatch {
-    policy: Arc<destination::DestinationPolicy>,
-    drive: Arc<AgentDrive>,
-    live: Arc<Live>,
-}
-
-impl TabWatch {
-    /// The policy's verdict for one navigation of this tab, for the audience
-    /// the tab's driver earns: an agent acting on it, or a tab parked behind a
-    /// pane with nobody in front of it, is agent browsing. A refusal is left
-    /// where the next tool result picks it up.
-    fn blocked(&self, candidate: &Url) -> Option<String> {
-        match self
-            .policy
-            .admit_hook(candidate, self.drive.in_flight(), self.live.parked())
-        {
-            Ok(()) => None,
-            Err(blocked) => {
-                self.drive.note_refusal(blocked.message().to_string());
-                Some(blocked.to_string())
-            }
-        }
-    }
 }
 
 impl TabHooks {
@@ -272,6 +245,10 @@ fn builder(
 /// under a label the first one holds; a failed build releases the claim, and a
 /// claim a close cancelled while the child was being built closes that child
 /// instead of handing back a page nobody asked for.
+///
+/// The caller hands in the tab's drive: whose tab this is must be decided
+/// before its first byte loads, and cannot be said once it exists.
+#[allow(clippy::too_many_arguments)]
 pub async fn open(
     app: &AppHandle,
     registry: &BrowserRegistry,
@@ -280,6 +257,7 @@ pub async fn open(
     workspace: &str,
     updates: Channel<BrowserUpdate>,
     deadline: Deadline,
+    drive: Arc<AgentDrive>,
 ) -> Result<BrowserViewState, String> {
     let target = url::accept(raw_url)?;
     let window = app
@@ -314,7 +292,7 @@ pub async fn open(
             state: Arc::clone(&state),
             sink,
             guard: Arc::default(),
-            drive: Arc::default(),
+            drive: Arc::clone(&drive),
         },
     )?;
 
@@ -322,13 +300,7 @@ pub async fn open(
         .try_state::<Arc<destination::DestinationPolicy>>()
         .map(|state| Arc::clone(state.inner()))
         .unwrap_or_else(|| Arc::new(destination::DestinationPolicy::load(None)));
-    let watch = TabWatch {
-        policy,
-        drive: registry
-            .drive_of(id)
-            .expect("a claimed tab has a driving state"),
-        live: Arc::clone(&live),
-    };
+    let watch = TabWatch::new(policy, drive);
     let bootstrap = Url::parse(BOOTSTRAP_URL).expect("the bootstrap URL is a constant");
     let (position, size) = PARK_RECT.into_tauri();
     let webview = match window.add_child(
@@ -350,6 +322,8 @@ pub async fn open(
         registry.release(id);
         return Err("This browser tab was closed before it opened.".to_owned());
     }
+    #[cfg(windows)]
+    super::frame_watch::install(&webview, watch.clone());
     // Every handler this app answers with goes on before the first navigation.
     // A page that asks for the camera in the time between being created and
     // being restricted asked a question this app had not installed a "no" for

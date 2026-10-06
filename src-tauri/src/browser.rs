@@ -29,6 +29,8 @@ mod delta_input;
 pub(crate) mod destination;
 mod find;
 mod find_query;
+#[cfg(windows)]
+mod frame_watch;
 mod frames;
 pub mod host;
 mod live;
@@ -39,6 +41,7 @@ mod scrub;
 mod tab;
 mod tab_guard;
 mod tab_reports;
+mod tab_watch;
 #[cfg(test)]
 mod test_pages;
 #[cfg(test)]
@@ -102,6 +105,7 @@ pub async fn browser_open(
         &workspace_id,
         updates,
         Deadline::from_now(),
+        Arc::default(),
     )
     .await
 }
@@ -177,9 +181,13 @@ pub async fn browser_navigate(
 ) -> Result<(), String> {
     let _held = tab_guard::hold_for_pane(&registry, &id, tab_guard::PANE_WAIT).await;
     let webview = owned(&app, &registry, &id)?;
-    webview
-        .navigate(url::accept(&url)?)
-        .map_err(|e| e.to_string())
+    let target = url::accept(&url)?;
+    // The person typed this address: the tab is theirs from here, so the
+    // navigation is not checked and an agent taint on it is spent.
+    if let Some(drive) = registry.drive_of(&id) {
+        drive.clear_taint();
+    }
+    webview.navigate(target).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

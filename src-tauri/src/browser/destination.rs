@@ -7,7 +7,7 @@
 //! `url::gate` still owns `file:`, `javascript:` and the rest.
 
 use std::collections::HashMap;
-use std::net::{IpAddr, ToSocketAddrs};
+use std::net::IpAddr;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -17,19 +17,11 @@ use tauri::Url;
 
 #[path = "destination_ranges.rs"]
 mod ranges;
+#[path = "destination_resolver.rs"]
+mod resolver;
 
 use ranges::{address_blocked, is_localhost, literal_address, looks_numeric, normalise_host};
-
-/// How long one host's verdict is reused before it is resolved again: long
-/// enough to keep a busy page from resolving on every frame, short enough that
-/// a host moved onto a private address is seen.
-const VERDICT_TTL: Duration = Duration::from_secs(30);
-
-/// How long a hook's lookup may hold the thread it runs on. The navigation
-/// waits for the answer, so a lookup that cannot answer inside this is refused
-/// rather than allowed: a wrong block is visible and named, a wrong allow is
-/// the hole this module closes.
-const LOOKUP_BUDGET: Duration = Duration::from_millis(100);
+use resolver::{LookupPool, Resolver, SystemResolver};
 
 /// Who is driving the navigation. The person's own browsing is out of scope by
 /// the owner's decision, so only `Agent` is checked.
@@ -120,35 +112,28 @@ fn parse_entry(raw: &str) -> Option<Entry> {
     })
 }
 
-/// What the policy asks the network for. The real one is the OS resolver; a
-/// test hands in its own answers.
-pub trait Resolver: Send + Sync {
-    fn resolve(&self, host: &str, port: u16) -> Result<Vec<IpAddr>, String>;
-}
-
-/// The OS resolver, as `ToSocketAddrs` reaches it.
-pub struct SystemResolver;
-
-impl Resolver for SystemResolver {
-    fn resolve(&self, host: &str, port: u16) -> Result<Vec<IpAddr>, String> {
-        (host, port)
-            .to_socket_addrs()
-            .map(|addresses| addresses.map(|address| address.ip()).collect())
-            .map_err(|error| error.to_string())
-    }
-}
-
 /// The settings file the allowlist is read from, beside the app's other
 /// config. No writer exists in this slice: only a person edits the file.
 pub const SETTINGS_FILE: &str = "browser-destinations.json";
 
-/// One host:port's cached verdict, with when it was reached.
-type VerdictCache = Mutex<HashMap<(String, u16), (Instant, Result<(), Blocked>)>>;
+/// One host:port's blocked verdict, with the instant it stops deciding.
+type VerdictCache = Mutex<HashMap<(String, u16), (Instant, Blocked)>>;
 
-/// The policy: the allowlist, the resolver, and the verdicts already reached.
+/// How long a blocked verdict decides. An allow verdict is never reused: a
+/// host that flips to a private address is resolved again on the next look.
+const BLOCK_TTL: Duration = Duration::from_secs(30);
+
+/// How long a failed or timed-out lookup decides. Long enough to stop a page
+/// looping against a blackholed resolver, short enough to recover from a blip.
+const FAILURE_TTL: Duration = Duration::from_secs(5);
+
+/// The most blocked verdicts remembered at once.
+const MAX_VERDICTS: usize = 256;
+
+/// The policy: the allowlist, the one resolver, and the blocked verdicts.
 pub struct DestinationPolicy {
     allowlist: Allowlist,
-    resolver: Arc<dyn Resolver>,
+    resolver: LookupPool,
     verdicts: VerdictCache,
 }
 
@@ -156,7 +141,7 @@ impl DestinationPolicy {
     fn new(allowlist: Allowlist, resolver: Arc<dyn Resolver>) -> Self {
         Self {
             allowlist,
-            resolver,
+            resolver: LookupPool::start(resolver),
             verdicts: Mutex::new(HashMap::new()),
         }
     }
@@ -190,7 +175,10 @@ impl DestinationPolicy {
         // The host itself, before any lookup: every spelling a resolver would
         // accept as an address is decided here.
         if let Some(address) = literal_address(host) {
-            return blocked_address(address, host, port);
+            if let Some(blocked) = blocked_for(address, host, port) {
+                return Err(blocked);
+            }
+            return Ok(());
         }
         if looks_numeric(host) {
             return Err(Blocked::new(format!(
@@ -206,87 +194,79 @@ impl DestinationPolicy {
             )));
         }
         let key = (normalise_host(host), port);
-        if let Some((at, verdict)) = self
+        if let Some((expires, blocked)) = self
             .verdicts
             .lock()
-            .expect("destination verdicts poisoned")
+            .unwrap_or_else(|error| error.into_inner())
             .get(&key)
         {
-            if at.elapsed() < VERDICT_TTL {
-                return verdict.clone();
+            if *expires > Instant::now() {
+                return Err(blocked.clone());
             }
         }
-        let addresses = match self.resolve_bounded(host, port) {
+        let addresses = match self.resolver.lookup(host, port) {
             Ok(addresses) => addresses,
             Err(reason) => {
                 let blocked = Blocked::new(format!(
                     "{host}:{port} could not be checked for agent browsing: {reason}."
                 ));
+                self.remember(key, blocked.clone(), FAILURE_TTL);
                 return Err(blocked);
             }
         };
-        let verdict = addresses
+        if addresses.is_empty() {
+            // No address is not a public address: an answer the policy cannot
+            // read is refused.
+            let blocked = Blocked::new(format!(
+                "{host}:{port} resolved to no address, so agent browsing refuses it."
+            ));
+            self.remember(key, blocked.clone(), FAILURE_TTL);
+            return Err(blocked);
+        }
+        if let Some(blocked) = addresses
             .iter()
-            .find(|address| address_blocked(**address).is_some())
-            .map(|address| blocked_address(*address, host, port))
-            .unwrap_or(Ok(()));
-        self.verdicts
+            .find_map(|address| blocked_for(*address, host, port))
+        {
+            self.remember(key, blocked.clone(), BLOCK_TTL);
+            return Err(blocked);
+        }
+        Ok(())
+    }
+
+    /// Remember one blocked verdict, dropping expired entries and the oldest
+    /// when the table is full, so the table has a bound.
+    fn remember(&self, key: (String, u16), blocked: Blocked, ttl: Duration) {
+        let now = Instant::now();
+        let mut verdicts = self
+            .verdicts
             .lock()
-            .expect("destination verdicts poisoned")
-            .insert(key, (Instant::now(), verdict.clone()));
-        verdict
-    }
-
-    /// The hook's verdict for a tab whose driver is known: a navigation is
-    /// agent-driven while an agent command is in flight on the tab, or while
-    /// the tab sits behind the pane with no person in front of it.
-    pub fn admit_hook(
-        &self,
-        url: &Url,
-        agent_in_flight: bool,
-        parked: bool,
-    ) -> Result<(), Blocked> {
-        let audience = if agent_in_flight || parked {
-            Audience::Agent
-        } else {
-            Audience::Person
-        };
-        self.admit(url, audience)
-    }
-
-    /// Resolve without holding the caller's thread past `LOOKUP_BUDGET`. The
-    /// worker owns its resolver handle, so a lookup left behind by a timeout
-    /// borrows nothing from the caller and cannot outlive it.
-    fn resolve_bounded(&self, host: &str, port: u16) -> Result<Vec<IpAddr>, String> {
-        let resolver = Arc::clone(&self.resolver);
-        let host_owned = host.to_string();
-        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-        let worker = std::thread::Builder::new()
-            .name("devboule-browser-destination".to_string())
-            .spawn(move || {
-                let _ = sender.send(resolver.resolve(&host_owned, port));
-            })
-            .map_err(|error| error.to_string())?;
-        drop(worker);
-        receiver
-            .recv_timeout(LOOKUP_BUDGET)
-            .unwrap_or_else(|_| Err(format!("no answer within {} ms", LOOKUP_BUDGET.as_millis())))
+            .unwrap_or_else(|error| error.into_inner());
+        verdicts.retain(|_, (expires, _)| *expires > now);
+        if verdicts.len() >= MAX_VERDICTS {
+            if let Some(oldest) = verdicts
+                .iter()
+                .min_by_key(|(_, (expires, _))| *expires)
+                .map(|(key, _)| key.clone())
+            {
+                verdicts.remove(&oldest);
+            }
+        }
+        verdicts.insert(key, (now + ttl, blocked));
     }
 }
 
-fn blocked_address(address: IpAddr, host: &str, port: u16) -> Result<(), Blocked> {
-    let Some(category) = address_blocked(address) else {
-        return Ok(());
-    };
-    // The subject is the address the verdict was about. When the host was a
-    // name, the name follows it so the person can find the entry to allow.
+/// The refusal one address earns, or `None` when it is public. The subject is
+/// the address the verdict was about; when the host was a name, the name
+/// follows it so the person can find the entry to allow.
+fn blocked_for(address: IpAddr, host: &str, port: u16) -> Option<Blocked> {
+    let category = address_blocked(address)?;
     let as_address = display_address(address, port);
     let subject = if host.trim_matches(['[', ']']) == address.to_string() {
         as_address
     } else {
         format!("{as_address} ({host}:{port})")
     };
-    Err(Blocked::new(format!(
+    Some(Blocked::new(format!(
         "{category} {subject} is blocked for agent browsing; the person can allow {host}:{port} in Settings."
     )))
 }

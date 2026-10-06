@@ -7,6 +7,8 @@
 //! open and close from then on, which is why each of these reports the change
 //! as an event and why `close_tab` by an agent takes the chip with it.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::ipc::Channel;
@@ -16,7 +18,7 @@ use devboule_protocol::{BrowserCaller, BrowserError, BrowserErrorCode};
 
 use super::super::cdp::Page;
 use super::super::deadline::Deadline;
-use super::super::registry::{BrowserRegistry, TabInfo};
+use super::super::registry::{AgentDrive, BrowserRegistry, TabInfo};
 use super::super::scrub;
 use super::super::tab;
 use super::{act, host_error, refused, tab_not_found};
@@ -133,6 +135,7 @@ async fn new_tab(
         &workspace,
         Channel::new(|_| Ok(())),
         deadline,
+        Arc::new(AgentDrive::opened_by_agent()),
     )
     .await
     .map_err(|error| host_error(format!("This address could not be opened: {error}")))?;

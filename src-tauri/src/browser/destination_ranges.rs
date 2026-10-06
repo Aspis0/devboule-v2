@@ -142,6 +142,22 @@ fn ipv6_blocked(address: Ipv6Addr) -> Option<&'static str> {
     if segments[0] == 0x64 && segments[1] == 0xff9b {
         return Some("NAT64 address");
     }
+    // 6to4 carries an IPv4 address: decide by what it carries, like the
+    // mapped and compatible forms below.
+    if segments[0] == 0x2002 {
+        let carried = Ipv4Addr::new(
+            (segments[1] >> 8) as u8,
+            segments[1] as u8,
+            (segments[2] >> 8) as u8,
+            segments[2] as u8,
+        );
+        return ipv4_blocked(carried).map(|_| "6to4 address");
+    }
+    // Teredo tunnels through a server and an obfuscated client address; no
+    // spelling of it is a public destination this policy vouches for.
+    if segments[0] == 0x2001 && segments[1] == 0 {
+        return Some("Teredo address");
+    }
     if segments[0] == 0x100 && segments[1] == 0 && segments[2] == 0 && segments[3] == 0 {
         return Some("discard-only address");
     }
@@ -150,10 +166,10 @@ fn ipv6_blocked(address: Ipv6Addr) -> Option<&'static str> {
     }
     // An IPv4 address wearing an IPv6 spelling: decide by what it carries.
     if let Some(mapped) = address.to_ipv4_mapped() {
-        return ipv4_blocked(mapped).map(|_| "IPv4-mapped address");
+        return ipv4_blocked(mapped);
     }
     if let Some(compatible) = compatible_ipv4(address) {
-        return ipv4_blocked(compatible).map(|_| "IPv4-compatible address");
+        return ipv4_blocked(compatible);
     }
     None
 }

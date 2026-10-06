@@ -5,13 +5,14 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 use tauri::{LogicalPosition, LogicalSize};
 
+use super::destination::Audience;
 use super::live::Live;
 use super::tab::{BrowserUpdate, BrowserViewState};
 
@@ -93,33 +94,72 @@ pub struct OwnedTab {
 /// One tab's lock, owned so a command can hold it across its own awaits.
 pub type TabGuard = Arc<tauri::async_runtime::Mutex<()>>;
 
-/// One page's driving state: how many agent commands are on it, and the last
-/// navigation the policy refused. The webview's own hook runs on the thread
+/// One page's driving state: how many agent commands are on it, whether an
+/// agent has taken the tab, and the last navigation the policy refused. The webview's own hook runs on the thread
 /// that is showing the page, so it reads both without waiting for anything.
 #[derive(Default)]
 pub struct AgentDrive {
     in_flight: AtomicUsize,
+    /// Whether an agent has ever opened or driven this tab. It is the tab's
+    /// origin, not a momentary count: the page an agent opened stays the
+    /// agent's to police after the command that opened it is gone, until the
+    /// person navigates that tab themselves.
+    tainted: AtomicBool,
     refusal: Mutex<Option<String>>,
 }
 
 impl AgentDrive {
-    /// Count an agent command for as long as the guard lives.
+    /// The drive of a tab an agent creates: tainted from the first byte it
+    /// loads, so the page's own redirects are already the agent's to police.
+    pub fn opened_by_agent() -> Self {
+        Self {
+            tainted: AtomicBool::new(true),
+            ..Self::default()
+        }
+    }
+
+    /// Count an agent command for as long as the guard lives, and mark the tab
+    /// agent-tainted for the rest of its life.
     pub fn begin(self: &Arc<Self>) -> DriveGuard {
+        self.tainted.store(true, Ordering::SeqCst);
         self.in_flight.fetch_add(1, Ordering::SeqCst);
         DriveGuard(Arc::clone(self))
+    }
+
+    /// The person navigated this tab themselves: the taint is spent, and the
+    /// tab is theirs until an agent touches it again.
+    pub fn clear_taint(&self) {
+        self.tainted.store(false, Ordering::SeqCst);
     }
 
     pub fn in_flight(&self) -> bool {
         self.in_flight.load(Ordering::SeqCst) > 0
     }
 
+    /// The audience a navigation of this tab is checked for: a tab an agent
+    /// opened or acted on is the agent's even while a person is looking at it;
+    /// a tab no agent has touched is the person's.
+    pub fn audience(&self) -> Audience {
+        if self.tainted.load(Ordering::SeqCst) || self.in_flight() {
+            Audience::Agent
+        } else {
+            Audience::Person
+        }
+    }
+
     pub fn note_refusal(&self, reason: String) {
-        *self.refusal.lock().expect("browser drive poisoned") = Some(reason);
+        *self
+            .refusal
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(reason);
     }
 
     /// The refusal waiting for the next tool result, if one is waiting.
     pub fn take_refusal(&self) -> Option<String> {
-        self.refusal.lock().expect("browser drive poisoned").take()
+        self.refusal
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
     }
 }
 

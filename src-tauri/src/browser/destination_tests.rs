@@ -1,36 +1,67 @@
 //! The destination policy's own cases: every blocked range and spelling, the
-//! rebinding answer, the exact host:port exception, and who a navigation is
-//! checked for.
+//! rebinding answer, the exact host:port exception, and what is never checked.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::sync::Mutex;
 
 use super::*;
 
-/// A resolver that answers from a table and refuses to guess.
+/// A resolver that answers from a table and refuses to guess. Mutable and
+/// counted, so a test can flip an answer under a policy and see whether the
+/// policy looked again.
 struct FakeResolver {
-    answers: HashMap<&'static str, Vec<IpAddr>>,
+    answers: Mutex<HashMap<String, Vec<IpAddr>>>,
+    calls: Mutex<HashMap<String, usize>>,
 }
 
 impl FakeResolver {
-    fn new(answers: &[(&'static str, &[&str])]) -> Arc<Self> {
+    fn new(answers: &[(&str, &[&str])]) -> Arc<Self> {
         let answers = answers
             .iter()
-            .map(|(host, addresses)| {
-                let addresses = addresses
-                    .iter()
-                    .map(|raw| raw.parse::<IpAddr>().expect("a fixture address"))
-                    .collect();
-                (*host, addresses)
-            })
+            .map(|(host, addresses)| (host.to_string(), parse_all(addresses)))
             .collect();
-        Arc::new(Self { answers })
+        Arc::new(Self {
+            answers: Mutex::new(answers),
+            calls: Mutex::new(HashMap::new()),
+        })
     }
+
+    fn set(&self, host: &str, addresses: &[&str]) {
+        self.answers
+            .lock()
+            .expect("the fake resolver")
+            .insert(host.to_string(), parse_all(addresses));
+    }
+
+    fn calls(&self, host: &str) -> usize {
+        self.calls
+            .lock()
+            .expect("the fake resolver")
+            .get(host)
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+fn parse_all(addresses: &[&str]) -> Vec<IpAddr> {
+    addresses
+        .iter()
+        .map(|raw| raw.parse::<IpAddr>().expect("a fixture address"))
+        .collect()
 }
 
 impl Resolver for FakeResolver {
     fn resolve(&self, host: &str, _port: u16) -> Result<Vec<IpAddr>, String> {
+        *self
+            .calls
+            .lock()
+            .expect("the fake resolver")
+            .entry(host.to_string())
+            .or_insert(0) += 1;
         self.answers
+            .lock()
+            .expect("the fake resolver")
             .get(host)
             .cloned()
             .ok_or_else(|| format!("{host} is not in this resolver's table"))
@@ -62,6 +93,10 @@ fn browser_blocks_ipv4_ipv6_special_ranges() {
         "http://localhost./",
         "http://[::1]/",
         "http://[::ffff:127.0.0.1]/",
+        "http://[::ffff:10.0.0.1]/",
+        "http://[2002:7f00:1::]/",
+        "http://[2002:a00:1::]/",
+        "http://[2001::1]/",
         // Unspecified and "this network".
         "http://0.0.0.0/",
         "http://0/",
@@ -130,7 +165,7 @@ fn dns_rebind_second_address_refused() {
     ]));
     let refused = admit(&policy, "http://rebind.test/").expect_err("one private answer is enough");
     assert!(refused.message().contains("10.0.0.5"), "{refused}");
-    // The host's answer is cached: the second look is the same verdict.
+    // The block is remembered: the second look is the same verdict.
     assert!(admit(&policy, "http://rebind.test/again").is_err());
     assert!(admit(&policy, "http://rebind-ok.test/").is_ok());
 }
@@ -157,19 +192,6 @@ fn localhost_opt_in_is_host_scoped() {
 }
 
 #[test]
-fn page_script_navigation_rechecked() {
-    let policy = policy(FakeResolver::new(&[("public.test", &[PUBLIC])]));
-    let private = Url::parse("http://10.0.0.1/away").expect("a fixture URL");
-    // A parked tab is the agent's background page: its own scripts are not a
-    // person's clicks.
-    assert!(policy.admit_hook(&private, false, true).is_err());
-    // An agent command in flight on a presented tab is still the agent.
-    assert!(policy.admit_hook(&private, true, false).is_err());
-    // The person in front of it, with no agent acting, is the person.
-    assert!(policy.admit_hook(&private, false, false).is_ok());
-}
-
-#[test]
 fn person_driven_tab_unchanged() {
     let policy = policy(FakeResolver::new(&[("public.test", &[PUBLIC])]));
     for raw in [
@@ -184,4 +206,65 @@ fn person_driven_tab_unchanged() {
             "{raw} is the person's to open"
         );
     }
+}
+
+#[test]
+fn a_mapped_address_keeps_its_category_in_the_reason() {
+    let policy = policy(FakeResolver::new(&[]));
+    let refused =
+        admit(&policy, "http://[::ffff:127.0.0.1]/").expect_err("a mapped loopback is loopback");
+    assert!(refused.message().contains("loopback address"), "{refused}");
+}
+
+#[test]
+fn an_empty_answer_fails_closed() {
+    let policy = policy(FakeResolver::new(&[("empty.test", &[])]));
+    let refused = admit(&policy, "http://empty.test/").expect_err("no address is not public");
+    assert!(refused.message().contains("no address"), "{refused}");
+}
+
+#[test]
+fn a_public_verdict_is_never_reused() {
+    let resolver = FakeResolver::new(&[("flip.test", &[PUBLIC])]);
+    let policy = policy(Arc::clone(&resolver) as Arc<dyn Resolver>);
+    assert!(admit(&policy, "http://flip.test/").is_ok());
+    // The same host:port now answers with a private address inside the block
+    // TTL window: the second look must resolve again and refuse.
+    resolver.set("flip.test", &["10.0.0.5"]);
+    let refused = admit(&policy, "http://flip.test/again").expect_err("a flip is seen");
+    assert!(refused.message().contains("10.0.0.5"), "{refused}");
+}
+
+#[test]
+fn a_blocked_verdict_is_reused_without_a_lookup() {
+    let resolver = FakeResolver::new(&[("blocked.test", &["10.0.0.5"])]);
+    let policy = policy(Arc::clone(&resolver) as Arc<dyn Resolver>);
+    assert!(admit(&policy, "http://blocked.test/").is_err());
+    let calls = resolver.calls("blocked.test");
+    assert!(admit(&policy, "http://blocked.test/again").is_err());
+    assert_eq!(resolver.calls("blocked.test"), calls, "the block is cached");
+}
+
+#[test]
+fn a_failed_lookup_is_blocked_and_remembered_briefly() {
+    let resolver = FakeResolver::new(&[]);
+    let policy = policy(Arc::clone(&resolver) as Arc<dyn Resolver>);
+    let refused = admit(&policy, "http://unknown.test/").expect_err("no answer is not public");
+    assert!(
+        refused.message().contains("could not be checked"),
+        "{refused}"
+    );
+    assert_eq!(resolver.calls("unknown.test"), 1);
+    assert!(admit(&policy, "http://unknown.test/").is_err());
+    assert_eq!(resolver.calls("unknown.test"), 1, "the failure is cached");
+}
+
+#[test]
+fn the_verdict_table_stays_bounded() {
+    let policy = policy(FakeResolver::new(&[]));
+    for number in 0..(MAX_VERDICTS + 40) {
+        assert!(admit(&policy, &format!("http://host-{number}.test/")).is_err());
+    }
+    let remembered = policy.verdicts.lock().expect("the verdict table").len();
+    assert!(remembered <= MAX_VERDICTS, "{remembered} verdicts kept");
 }

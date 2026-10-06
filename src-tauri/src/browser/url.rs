@@ -61,7 +61,9 @@ mod tests {
     #[test]
     fn accepts_http_and_https() {
         assert!(accept("https://example.com/page?q=1").is_ok());
-        assert!(accept("http://127.0.0.1:1420/").is_ok());
+        // This gate is the scheme only: whether the destination is one agent
+        // browsing may reach is `destination::DestinationPolicy`'s answer.
+        assert!(accept("http://example.com:8080/").is_ok());
     }
 
     #[test]
