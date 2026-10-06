@@ -1,30 +1,34 @@
-//! The process tools: who owns a port or pid, what one session provably
-//! runs, and the carded cleanup of the caller's own session's members.
+//! The read tools: who owns a port or pid, and what one session provably
+//! runs — plus the reply and argument shapes the cleanup handler shares.
 //!
 //! Every answer is rooted in the process index's proof (job or group, pid
 //! plus creation time). There is no arbitrary-pid path anywhere: the owner
-//! and list tools read only proven members, and cleanup takes no pid at all.
+//! and list tools read only proven members.
 
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
 use crate::mcp_broker::caller::{audit_mcp_tool, McpCaller};
 use crate::mcp_broker::dispatch::{rpc_error, tool_error};
-use crate::mcp_broker::tools::first_use::{ensure_carded, PROCESS_CLEANUP_GROUP};
-use crate::mcp_broker::{McpBroker, RegisteredSession};
-use crate::process_index::{CleanupPlan, ProcessEntry};
+use crate::mcp_broker::RegisteredSession;
+use crate::process_index::ProcessEntry;
 use crate::server::ServerState;
 
-/// The default and the ceiling for `graceMs`: the graceful phase is a wait
-/// the caller names, and neither it nor the forced phase may be unbounded.
-const DEFAULT_GRACE_MS: u32 = 2_000;
-const MAX_GRACE_MS: u32 = 30_000;
+/// One refresh, or the platform's own failure as the tool's answer: a helper
+/// that timed out surfaces as `platform_unavailable`, never as an empty list
+/// that would read as "no processes".
+pub(super) fn refreshed(state: &Arc<ServerState>, id: &Value) -> Result<(), Value> {
+    state
+        .process_index
+        .refresh(state.sessions.live_process_roots())
+        .map_err(|error| tool_error(id, &format!("platform_unavailable: {error}")))
+}
 
 /// The MCP reply for one result: the encoded document as text, the same
 /// document as structured content, and the error flag.
-fn reply(id: Value, document: Value, is_error: bool) -> Result<Option<Value>, Value> {
+pub(super) fn reply(id: Value, document: Value, is_error: bool) -> Result<Option<Value>, Value> {
     let text = serde_json::to_string(&document).map_err(|error| {
         json!({"jsonrpc":"2.0", "id": id, "error": {"code": -32603, "message": format!("Could not encode the answer: {error}")}})
     })?;
@@ -41,7 +45,7 @@ fn reply(id: Value, document: Value, is_error: bool) -> Result<Option<Value>, Va
 
 /// The arguments object with no key beyond `allowed`: an unknown key is a
 /// refusal, not a silently ignored claim.
-fn strict_arguments<'a>(
+pub(super) fn strict_arguments<'a>(
     id: &Value,
     message: &'a Value,
     allowed: &[&str],
@@ -153,9 +157,7 @@ pub(in crate::mcp_broker) fn owner(
             "exactly one of port or pid is required",
         ));
     }
-    state
-        .process_index
-        .refresh(state.sessions.live_process_roots());
+    refreshed(state, &id)?;
     let matches = state
         .process_index
         .owner_matches(port, pid)
@@ -200,9 +202,7 @@ pub(in crate::mcp_broker) fn list(
             ));
         }
     }
-    state
-        .process_index
-        .refresh(state.sessions.live_process_roots());
+    refreshed(state, &id)?;
     let processes = state
         .process_index
         .session_entries(&registration.session_id)
@@ -217,105 +217,6 @@ pub(in crate::mcp_broker) fn list(
         "ok",
     );
     reply(id, json!({"processes": processes}), false)
-}
-
-/// `devboule_cleanup_processes`: the caller's own session's proven members,
-/// graceful then forced, behind the human card that names the session and
-/// the count. The session's own root (the agent) is never in the plan, and
-/// there is no pid argument to smuggle one in through.
-pub(in crate::mcp_broker) fn cleanup(
-    state: &Arc<ServerState>,
-    broker: &McpBroker,
-    registration: &RegisteredSession,
-    caller: McpCaller,
-    id: Value,
-    message: &Value,
-) -> Result<Option<Value>, Value> {
-    let arguments = strict_arguments(&id, message, &["graceMs"])?;
-    let grace = match arguments.get("graceMs") {
-        None | Some(Value::Null) => DEFAULT_GRACE_MS,
-        Some(value) => value
-            .as_u64()
-            .filter(|millis| *millis <= MAX_GRACE_MS as u64)
-            .map(|millis| millis as u32)
-            .ok_or_else(|| {
-                rpc_error(
-                    id.clone(),
-                    -32602,
-                    "graceMs must be an integer of at most 30000",
-                )
-            })?,
-    };
-    state
-        .process_index
-        .refresh(state.sessions.live_process_roots());
-    let plan = state
-        .process_index
-        .cleanup_plan(&registration.session_id)
-        .unwrap_or(CleanupPlan {
-            targets: Vec::new(),
-            unproven: Vec::new(),
-        });
-    let label = state
-        .process_index
-        .session_label(&registration.session_id)
-        .unwrap_or_else(|| registration.session_id.clone());
-    let count = plan.targets.len().to_string();
-    let facts: [(&str, &str); 2] = [("session", label.as_str()), ("processes", count.as_str())];
-    if let Err(sentence) = ensure_carded(
-        state,
-        broker,
-        &registration.session_id,
-        &registration.owner,
-        PROCESS_CLEANUP_GROUP,
-        &label,
-        &facts,
-    ) {
-        audit_mcp_tool(
-            state,
-            &caller,
-            crate::provider_catalog::MCP_CLEANUP_PROCESSES_TOOL,
-            &registration.session_id,
-            "denied",
-        );
-        return Err(tool_error(&id, &sentence));
-    }
-    // Re-read after the card: the set may have moved while a person read it.
-    state
-        .process_index
-        .refresh(state.sessions.live_process_roots());
-    let plan = state
-        .process_index
-        .cleanup_plan(&registration.session_id)
-        .unwrap_or(CleanupPlan {
-            targets: Vec::new(),
-            unproven: Vec::new(),
-        });
-    let mut termination = crate::process_terminate::terminate_all(
-        &plan.targets,
-        Duration::from_millis(u64::from(grace)),
-    )
-    .map_err(|error| tool_error(&id, &format!("platform_unavailable: {error}")))?;
-    termination.terminated.sort_unstable();
-    termination.still_running.sort_unstable();
-    let mut unproven = plan.unproven;
-    unproven.sort_unstable();
-    audit_mcp_tool(
-        state,
-        &caller,
-        crate::provider_catalog::MCP_CLEANUP_PROCESSES_TOOL,
-        &registration.session_id,
-        "ok",
-    );
-    reply(
-        id,
-        json!({
-            "terminated": termination.terminated,
-            "stillRunning": termination.still_running,
-            "unproven": unproven,
-        }),
-        false,
-    )
 }
 
 #[cfg(test)]

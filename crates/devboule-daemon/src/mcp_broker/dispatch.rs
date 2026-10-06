@@ -221,7 +221,7 @@ pub(super) fn handle_rpc(
             } else if tool_name == Some(crate::provider_catalog::MCP_SESSION_PROCESSES_TOOL) {
                 tools::processes::list(state, registration, caller, id, message)
             } else if tool_name == Some(crate::provider_catalog::MCP_CLEANUP_PROCESSES_TOOL) {
-                tools::processes::cleanup(state, broker, registration, caller, id, message)
+                tools::process_cleanup::cleanup(state, broker, registration, caller, id, message)
             } else if tool_name == Some(crate::provider_catalog::MCP_BROWSER_FILL_LOGIN_TOOL) {
                 tools::browser_login::call(state, broker, registration, caller, id, message)
             } else if tool_name.is_some_and(tools::browser_commands::serves) {

@@ -15,6 +15,7 @@ pub(super) mod messaging;
 mod messaging_peer;
 pub(super) mod peers;
 pub(super) mod permissions;
+pub(super) mod process_cleanup;
 pub(super) mod processes;
 pub(super) mod terminal_args;
 pub(super) mod terminal_cards;

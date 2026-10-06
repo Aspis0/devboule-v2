@@ -7,23 +7,37 @@ const MAX_ARGS: usize = 32;
 /// The per-argument cap, in characters; longer values are truncated with a
 /// marker rather than dropped.
 const MAX_ARG_CHARS: usize = 512;
-/// Flags whose next value (or whose inline `=` value) is a credential by
-/// name — masked regardless of what it looks like.
+/// Flag words, stored without dashes and matched case-insensitively against
+/// whatever dash prefix the argument carries (`--token`, `-token`, `--TOKEN`).
 const SECRET_FLAGS: &[&str] = &[
-    "--token",
-    "--password",
-    "--passwd",
-    "--secret",
-    "--api-key",
-    "--apikey",
-    "--auth-token",
-    "--access-key",
+    "token",
+    "password",
+    "passwd",
+    "secret",
+    "api-key",
+    "apikey",
+    "auth-token",
+    "access-key",
+];
+/// Name words that mark `KEY=value` as a credential: the name is split on
+/// `-` and `_`, so `API_KEY`, `AWS_SECRET_ACCESS_KEY` and a bare `password`
+/// match while `keyboard` and `MONKEY` do not.
+const SECRET_NAME_WORDS: &[&str] = &[
+    "key",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "credential",
+    "auth",
 ];
 
-/// Mask secret-looking argv: the value after a secret flag, the value half
-/// of a secret-looking `name=value`, and any bare token-shaped value — long,
-/// high-charset and not a path. Everything is capped; nothing secret is ever
-/// stored or echoed.
+/// Mask secret-looking argv: the value after a secret flag (any dash count,
+/// any case), the value half of a credential-shaped `name=value`, credentials
+/// embedded in a `scheme://user:pass@` URL, and any bare token-shaped value.
+/// Everything is capped; nothing secret is ever stored or echoed. The
+/// heuristics are deliberately one-sided: a false mask costs a bit of
+/// evidence, a missed one costs a credential.
 pub(crate) fn redact_argv(argv: &[String]) -> Vec<String> {
     let mut redacted: Vec<String> = Vec::new();
     let mut mask_next = false;
@@ -33,56 +47,79 @@ pub(crate) fn redact_argv(argv: &[String]) -> Vec<String> {
             mask_next = false;
             continue;
         }
-        let name = arg.split('=').next().unwrap_or(arg);
-        let secret_flag = SECRET_FLAGS
-            .iter()
-            .any(|flag| *flag == name || *flag == arg);
+        let arg = mask_url_credentials(arg);
+        let name = arg.split('=').next().unwrap_or(&arg).to_string();
+        let secret_flag = name.starts_with('-')
+            && SECRET_FLAGS
+                .iter()
+                .any(|&flag| name.trim_start_matches('-').eq_ignore_ascii_case(flag));
         if secret_flag && arg.contains('=') {
             redacted.push(format!("{name}=[redacted]"));
             continue;
         }
         if secret_flag {
             mask_next = true;
-            redacted.push(arg.clone());
+            redacted.push(arg);
             continue;
         }
-        if let Some((key, _value)) = arg.split_once('=') {
-            if is_secret_name(key) {
-                redacted.push(format!("{key}=[redacted]"));
-                continue;
-            }
-            redacted.push(capped(arg, MAX_ARG_CHARS));
+        if arg.contains('=') && is_secret_name(&name) {
+            redacted.push(format!("{name}=[redacted]"));
             continue;
         }
-        if is_token_shaped(arg) {
+        if is_token_shaped(&arg) {
             redacted.push("[redacted]".to_string());
             continue;
         }
-        redacted.push(capped(arg, MAX_ARG_CHARS));
+        redacted.push(capped(&arg, MAX_ARG_CHARS));
     }
     redacted
 }
 
-fn is_secret_name(key: &str) -> bool {
-    let lowered = key.to_ascii_lowercase();
-    SECRET_FLAGS
-        .iter()
-        .any(|flag| flag.trim_start_matches('-').eq_ignore_ascii_case(&lowered))
+/// `name=value` is a credential when the name splits into secret words —
+/// one-sided on purpose (`file-key` masks, `keyboard` does not).
+fn is_secret_name(name: &str) -> bool {
+    name.split(&['-', '_'][..]).any(|word| {
+        SECRET_NAME_WORDS
+            .iter()
+            .any(|&secret| word.eq_ignore_ascii_case(secret))
+    })
+}
+
+/// `scheme://user:pass@host/...` keeps its scheme and host, loses its
+/// userinfo: the part between `://` and the first `@` of the authority
+/// becomes one marker.
+fn mask_url_credentials(value: &str) -> String {
+    let Some(scheme_end) = value.find("://") else {
+        return value.to_string();
+    };
+    let authority_start = scheme_end + 3;
+    let authority = &value[authority_start..];
+    let authority_len = authority.find('/').unwrap_or(authority.len());
+    let authority = &authority[..authority_len];
+    let Some(colon) = authority.find(':') else {
+        return value.to_string();
+    };
+    let Some(at) = authority[colon + 1..].find('@') else {
+        return value.to_string();
+    };
+    let at = colon + 1 + at;
+    format!(
+        "{}[redacted]@{}",
+        &value[..authority_start],
+        &value[authority_start + at + 1..]
+    )
 }
 
 /// A token-shaped bare value: long, high-charset, not a path — the kind of
-/// argument that sits beside a CLI with no flag to key off. The heuristic is
-/// deliberately one-sided: it may mask a random-looking id, and it never
-/// lets a credential through.
+/// argument that sits beside a CLI with no flag to key off. One-sided: it may
+/// mask a random-looking id, and it never lets a credential through.
 fn is_token_shaped(value: &str) -> bool {
-    if value.len() < 24 || value.starts_with('/') || value.starts_with('.') || value.contains(':') {
-        return false;
-    }
-    value
-        .chars()
-        .all(|cell| cell.is_ascii_alphanumeric() || "+/=_-".contains(cell))
-        && value.chars().any(|cell| cell.is_ascii_digit())
-        && value.chars().any(|cell| cell.is_ascii_alphabetic())
+    value.len() >= 24
+        && !value.starts_with('/')
+        && !value.starts_with('.')
+        && value
+            .chars()
+            .all(|cell| cell.is_ascii_alphanumeric() || "+/=_-".contains(cell))
 }
 
 fn capped(value: &str, max: usize) -> String {
@@ -126,6 +163,60 @@ mod tests {
             "a path is not a token"
         );
         assert_eq!(redacted[7], "session-abc123", "a short id is not a token");
+    }
+
+    #[test]
+    fn argv_masks_case_variant_and_single_dash_flags() {
+        let redacted = redact_argv(&[
+            "--PASSWORD=hunter2".to_string(),
+            "-token".to_string(),
+            "abc".to_string(),
+            "--Api-Key=xyz".to_string(),
+            "--url=https://example.test/ok".to_string(),
+        ]);
+        assert_eq!(
+            redacted[0], "--PASSWORD=[redacted]",
+            "the flag's case never matters"
+        );
+        assert_eq!(redacted[1], "-token", "a single dash is still the flag");
+        assert_eq!(redacted[2], "[redacted]", "and it masks its next value");
+        assert_eq!(redacted[3], "--Api-Key=[redacted]", "mixed case inline");
+        assert_eq!(
+            redacted[4], "--url=https://example.test/ok",
+            "a non-secret flag stays"
+        );
+    }
+
+    #[test]
+    fn argv_masks_credential_shaped_names_and_embedded_urls() {
+        let redacted = redact_argv(&[
+            "API_KEY=abc123".to_string(),
+            "AWS_SECRET_ACCESS_KEY=AKIAwhatever".to_string(),
+            "KEY_NAME=prod".to_string(),
+            "--db=postgres://user:hunter2@db.example/x".to_string(),
+            "keyboard=left".to_string(),
+            "MONKEY=banana".to_string(),
+            "abcdefghijklmnopqrstuvwx".to_string(),
+        ]);
+        assert_eq!(redacted[0], "API_KEY=[redacted]", "env-style name");
+        assert_eq!(
+            redacted[1], "AWS_SECRET_ACCESS_KEY=[redacted]",
+            "a name of secret words"
+        );
+        assert_eq!(redacted[2], "KEY_NAME=[redacted]", "the KEY_NAME spelling");
+        assert_eq!(
+            redacted[3], "--db=postgres://[redacted]@db.example/x",
+            "userinfo in a URL"
+        );
+        assert_eq!(
+            redacted[4], "keyboard=left",
+            "one-sided: not every -key word"
+        );
+        assert_eq!(redacted[5], "MONKEY=banana", "not a key at all");
+        assert_eq!(
+            redacted[6], "[redacted]",
+            "an all-letter token of length is still a token"
+        );
     }
 
     #[test]

@@ -122,6 +122,8 @@ mod process_argv_redact;
 #[cfg(feature = "server")]
 mod process_index;
 #[cfg(feature = "server")]
+mod process_plan;
+#[cfg(feature = "server")]
 mod process_terminate;
 mod process_tree;
 #[cfg(feature = "server")]

@@ -337,7 +337,7 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
     (
         MCP_CLEANUP_PROCESSES_TOOL,
-        "Stops the calling session's own proven processes - graceful first, then forced after graceMs (default 2000, at most 30000) - and answers terminated, stillRunning and unproven pid lists. The session's own agent process is never in the plan, no pid argument exists, and session-end cleanup still happens on its own. A person approves a card naming the session and the process count first, in every permission mode.",
+        "Stops the calling session's own proven processes - graceful first, then forced after graceMs (default 2000, at most 30000) - and answers terminated, stillRunning, unproven and skipped (each with its reason) pid lists. The session's agent process and its chain are never in the plan, no pid argument exists, and session-end cleanup still happens on its own. The card follows the session's mode like every Devboule write: in an automatic mode it approves itself and is only logged; in an asking mode it is shown every time and lists the exact processes and executables. The plan approved is the plan executed - members appearing after approval are left alone and reported as skipped.",
     ),
     (
         MCP_BROWSER_NEW_TAB_TOOL,

@@ -948,6 +948,9 @@ mod browser_tools_served_tests;
 /// a person opened does not outrank a later mode switch.
 #[cfg(test)]
 mod creation_mode_road_tests;
+/// The process tools' peer door: a paired device is refused whatever it holds.
+#[cfg(test)]
+mod process_tools_peer_tests;
 /// The terminal read tools' own end-to-end tests, split by topic: `tests`
 /// below is already every other tool's, and these two add a scope rule of
 /// their own.

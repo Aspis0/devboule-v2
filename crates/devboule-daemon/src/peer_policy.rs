@@ -535,7 +535,9 @@ pub fn mode_refusal(kind: SessionKind, mode_id: &str) -> Option<&'static str> {
 /// and the capability set, so the decision cannot depend on them.
 ///
 /// `Unjudged(reason)` — the tool performs nothing the policy judges, and the
-/// reason says why. The only such tool is the ticked-profile list (below).
+/// reason says why. The ticked-profile list (below) is one such tool; the
+/// three process tools are the others, and the door refuses *those* at the
+/// locality check before this row is ever asked.
 ///
 /// `Requires(capability)` — the tool is answered exactly when the caller's
 /// capability set holds that name, and nothing on the wire is judged: the act
@@ -641,16 +643,24 @@ pub enum McpToolWire {
 ///   not connected to — so the door checks the capability itself. It rides its
 ///   own name, off until granted, because what it reaches is this machine's
 ///   pages in the person's own logins.
+/// - The process tools (`devboule_process_owner`, `devboule_session_processes`,
+///   `devboule_cleanup_processes`) are `Unjudged` rows whose reason is never
+///   read: the door refuses all three at the locality check above — a peer's
+///   capabilities are irrelevant to this machine's own process table, and
+///   nothing a peer holds may stop a process here. The rows exist so the
+///   served-name table stays closed, and the reason records why no wire act
+///   stands behind them.
 pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
     use crate::provider_catalog::{
         MCP_ACTIVITY_TOOL, MCP_ANSWER_PERMISSION_TOOL, MCP_ARCHIVE_WORKSPACE_TOOL,
-        MCP_CANCEL_AGENT_TOOL, MCP_CAPTURE_TERMINAL_TOOL, MCP_CLOSE_AGENT_TOOL,
-        MCP_CREATE_AGENT_TOOL, MCP_CREATE_TERMINAL_TOOL, MCP_CREATE_WORKSPACE_TOOL,
-        MCP_FILE_COLLISIONS_TOOL, MCP_GET_AGENT_STATUS_TOOL, MCP_IMPORTERS_TOOL, MCP_IMPORTS_TOOL,
-        MCP_KILL_TERMINAL_TOOL, MCP_LIST_DEVICES_TOOL, MCP_LIST_PEER_AGENTS_TOOL,
-        MCP_LIST_PENDING_PERMISSIONS_TOOL, MCP_LIST_PROFILES_TOOL, MCP_LIST_TERMINALS_TOOL,
-        MCP_LIST_WORKSPACES_TOOL, MCP_NEIGHBORHOOD_TOOL, MCP_ORACLE_SEARCH_TOOL, MCP_ROSTER_TOOL,
-        MCP_SEND_MESSAGE_TOOL, MCP_SEND_TERMINAL_KEYS_TOOL, MCP_SET_AGENT_PROFILE_TOOL,
+        MCP_CANCEL_AGENT_TOOL, MCP_CAPTURE_TERMINAL_TOOL, MCP_CLEANUP_PROCESSES_TOOL,
+        MCP_CLOSE_AGENT_TOOL, MCP_CREATE_AGENT_TOOL, MCP_CREATE_TERMINAL_TOOL,
+        MCP_CREATE_WORKSPACE_TOOL, MCP_FILE_COLLISIONS_TOOL, MCP_GET_AGENT_STATUS_TOOL,
+        MCP_IMPORTERS_TOOL, MCP_IMPORTS_TOOL, MCP_KILL_TERMINAL_TOOL, MCP_LIST_DEVICES_TOOL,
+        MCP_LIST_PEER_AGENTS_TOOL, MCP_LIST_PENDING_PERMISSIONS_TOOL, MCP_LIST_PROFILES_TOOL,
+        MCP_LIST_TERMINALS_TOOL, MCP_LIST_WORKSPACES_TOOL, MCP_NEIGHBORHOOD_TOOL,
+        MCP_ORACLE_SEARCH_TOOL, MCP_PROCESS_OWNER_TOOL, MCP_ROSTER_TOOL, MCP_SEND_MESSAGE_TOOL,
+        MCP_SEND_TERMINAL_KEYS_TOOL, MCP_SESSION_PROCESSES_TOOL, MCP_SET_AGENT_PROFILE_TOOL,
         MCP_STOP_AGENT_TOOL,
     };
     if tool == MCP_ROSTER_TOOL {
@@ -926,22 +936,43 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
         // directly — and it is the per-device `browser` grant, off until a
         // person gives it.
         Some(McpToolWire::Requires(CAP_BROWSER))
+    } else if tool == MCP_PROCESS_OWNER_TOOL {
+        Some(McpToolWire::Unjudged(
+            "the process table of this machine is refused at the peer door",
+        ))
+    } else if tool == MCP_SESSION_PROCESSES_TOOL {
+        Some(McpToolWire::Unjudged(
+            "the process list of this machine is refused at the peer door",
+        ))
+    } else if tool == MCP_CLEANUP_PROCESSES_TOOL {
+        Some(McpToolWire::Unjudged(
+            "the processes of this machine are never stopped from a paired device",
+        ))
     } else {
         None
     }
 }
 
-/// The sentence a paired device is refused with for the one tool of the lane
-/// it may never call, whatever its set holds.
+/// The sentence a paired device is refused with for the tools it may never
+/// call, whatever its set holds.
 ///
-/// It is asked for before the capability table rather than as a row in it:
-/// `browser_fill_login` types a password of the person at this keyboard into a
-/// page, and no capability named here could be handed out to make that true.
+/// It is asked for before the capability table rather than as rows in it:
+/// `browser_fill_login` types a password of the person at this keyboard into
+/// a page, and the three process tools read this machine's own process table
+/// and — for cleanup — signal this machine's own processes. No capability
+/// named here could be handed out to make either true of a remote device.
 /// The check therefore has nothing to be granted, and a refusal is the only
 /// answer it can ever give.
 pub fn mcp_tool_locality(tool: &str) -> Option<&'static str> {
-    (tool == crate::provider_catalog::MCP_BROWSER_FILL_LOGIN_TOOL)
-        .then_some("a saved login of this machine is never used from a paired device")
+    if tool == crate::provider_catalog::MCP_BROWSER_FILL_LOGIN_TOOL {
+        return Some("a saved login of this machine is never used from a paired device");
+    }
+    (tool == crate::provider_catalog::MCP_PROCESS_OWNER_TOOL
+        || tool == crate::provider_catalog::MCP_SESSION_PROCESSES_TOOL
+        || tool == crate::provider_catalog::MCP_CLEANUP_PROCESSES_TOOL)
+        .then_some(
+            "the processes of this machine are never inspected or stopped from a paired device",
+        )
 }
 
 /// Whether `tool` is one of the broker's `browser_*` tools: a **served** name

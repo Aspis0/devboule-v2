@@ -13,6 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::process_argv_redact::redact_argv;
+use crate::process_plan::{excluded_agent_chain, CleanupPlan, PlanTarget};
 use crate::process_tree::JobObject;
 
 /// One live session's proof root: the job or group every membership claim
@@ -38,6 +39,9 @@ pub(crate) struct ProcessEntry {
     pub(crate) ports: Vec<u16>,
     /// `job_member` or `process_group` — how this entry is proven.
     pub(crate) proof: &'static str,
+    /// The parent the OS reported at the last refresh: how the agent's own
+    /// chain is walked when a cleanup plan decides what to exclude.
+    pub(crate) ppid: u32,
     /// The session's own root: the daemon's direct child. Cleanup skips it.
     pub(crate) is_agent: bool,
 }
@@ -55,7 +59,15 @@ pub(crate) struct ProcessIdentity {
 /// The OS queries the index answers from. The real one is the platform's
 /// (`SystemProbe`); tests substitute scripted answers so identity changes —
 /// which no test can make the kernel perform on demand — are observable.
+///
+/// `begin_refresh` takes the platform's one snapshot for the whole refresh
+/// (its helper spawns, its socket-table reads), so members, identities and
+/// ports all read the same picture and a refresh costs a handful of calls
+/// instead of one per member.
 pub(crate) trait ProcessProbe {
+    fn begin_refresh(&mut self) -> Result<(), String> {
+        Ok(())
+    }
     fn members(&self, job: &JobObject) -> Vec<u32>;
     fn identity(&self, pid: u32) -> Option<ProcessIdentity>;
     fn listening_ports(&self) -> Vec<(u16, u32)>;
@@ -63,19 +75,33 @@ pub(crate) trait ProcessProbe {
 }
 
 /// The real, platform-backed probe.
-pub(crate) struct SystemProbe;
+pub(crate) struct SystemProbe {
+    platform: platform::Probe,
+}
+
+impl SystemProbe {
+    pub(crate) fn new() -> Self {
+        Self {
+            platform: platform::Probe::new(),
+        }
+    }
+}
 
 impl ProcessProbe for SystemProbe {
+    fn begin_refresh(&mut self) -> Result<(), String> {
+        self.platform.begin_refresh()
+    }
+
     fn members(&self, job: &JobObject) -> Vec<u32> {
-        platform::members(job)
+        self.platform.members(job)
     }
 
     fn identity(&self, pid: u32) -> Option<ProcessIdentity> {
-        platform::identity(pid)
+        self.platform.identity(pid)
     }
 
     fn listening_ports(&self) -> Vec<(u16, u32)> {
-        platform::listening_ports()
+        self.platform.listening_ports()
     }
 
     fn proof_kind(&self) -> &'static str {
@@ -93,21 +119,37 @@ mod platform;
 
 #[cfg(not(any(windows, target_os = "macos")))]
 mod platform {
-    use super::ProcessIdentity;
+    use super::{CreationStatus, ProcessIdentity};
     use crate::process_tree::JobObject;
 
     pub(crate) const PROOF_KIND: &str = "process_group";
 
-    pub(crate) fn members(_job: &JobObject) -> Vec<u32> {
-        Vec::new()
+    pub(crate) struct Probe;
+
+    impl Probe {
+        pub(crate) fn new() -> Self {
+            Self
+        }
+
+        pub(crate) fn begin_refresh(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+
+        pub(crate) fn members(&self, _job: &JobObject) -> Vec<u32> {
+            Vec::new()
+        }
+
+        pub(crate) fn identity(&self, _pid: u32) -> Option<ProcessIdentity> {
+            None
+        }
+
+        pub(crate) fn listening_ports(&self) -> Vec<(u16, u32)> {
+            Vec::new()
+        }
     }
 
-    pub(crate) fn identity(_pid: u32) -> Option<ProcessIdentity> {
-        None
-    }
-
-    pub(crate) fn listening_ports() -> Vec<(u16, u32)> {
-        Vec::new()
+    pub(crate) fn creation_status(_pid: u32) -> CreationStatus {
+        CreationStatus::Unverified
     }
 }
 
@@ -118,6 +160,10 @@ struct SessionProcesses {
     agent: String,
     entries: HashMap<u32, ProcessEntry>,
     unproven: HashSet<u32>,
+    /// The root the first sight recorded: (pid, creation time) of the
+    /// daemon's direct child. The exclusion matches this pair, so a stray
+    /// merely re-parented to the daemon never inherits the agent's safety.
+    agent_root: Option<(u32, u64)>,
 }
 
 /// The live, per-session process index. One mutex: refresh and every answer
@@ -138,16 +184,23 @@ impl ProcessIndex {
     }
 
     /// Re-read every rooted session from its proof: members come from the
-    /// job or group, identities from the OS, ports from the socket table. A
-    /// member whose creation time differs from its cached entry is the reused
-    /// pid of some other process and is replaced by what the OS says it is
-    /// now; a member with no identity at all is dropped and remembered as
-    /// unproven. Sessions no longer rooted here are forgotten.
-    pub(crate) fn refresh(&self, roots: Vec<SessionProof>) {
-        self.refresh_with(roots, &SystemProbe);
+    /// job or group, identities and ports from the platform's one snapshot.
+    /// Every entry is rebuilt from that current read — ports and the exe line
+    /// are never frozen at first sight — and a creation time that differs
+    /// from the cached entry simply becomes the fresh identity of whatever
+    /// holds the pid now. A member with no identity at all is dropped and
+    /// remembered as unproven. Sessions no longer rooted here are forgotten.
+    pub(crate) fn refresh(&self, roots: Vec<SessionProof>) -> Result<(), String> {
+        let mut probe = SystemProbe::new();
+        self.refresh_with(roots, &mut probe)
     }
 
-    pub(crate) fn refresh_with(&self, roots: Vec<SessionProof>, probe: &dyn ProcessProbe) {
+    pub(crate) fn refresh_with(
+        &self,
+        roots: Vec<SessionProof>,
+        probe: &mut dyn ProcessProbe,
+    ) -> Result<(), String> {
+        probe.begin_refresh()?;
         let mut per_pid_ports: HashMap<u32, Vec<u16>> = HashMap::new();
         for (port, pid) in probe.listening_ports() {
             per_pid_ports.entry(pid).or_default().push(port);
@@ -165,6 +218,7 @@ impl ProcessIndex {
                     agent: String::new(),
                     entries: HashMap::new(),
                     unproven: HashSet::new(),
+                    agent_root: None,
                 });
             state.workspace_id = root.workspace_id.clone();
             state.agent = root.label.clone();
@@ -177,25 +231,37 @@ impl ProcessIndex {
                     state.unproven.insert(pid);
                     continue;
                 };
-                let reused = state
-                    .entries
-                    .get(&pid)
-                    .is_some_and(|entry| entry.started_at_ms != identity.started_at_ms);
-                if reused {
-                    state.entries.remove(&pid);
-                    state.unproven.remove(&pid);
-                }
-                state.entries.entry(pid).or_insert_with(|| ProcessEntry {
+                state.unproven.remove(&pid);
+                state.entries.insert(
                     pid,
-                    started_at_ms: identity.started_at_ms,
-                    exe: identity.exe.clone(),
-                    argv: redact_argv(&identity.argv),
-                    ports,
-                    proof,
-                    is_agent: identity.ppid == daemon_pid,
-                });
+                    ProcessEntry {
+                        pid,
+                        started_at_ms: identity.started_at_ms,
+                        exe: identity.exe.clone(),
+                        argv: redact_argv(&identity.argv),
+                        ports,
+                        proof,
+                        ppid: identity.ppid,
+                        is_agent: identity.ppid == daemon_pid,
+                    },
+                );
             }
+            // Record the root once — the lowest-pid daemon child, which is
+            // the session's own spawn before any stray re-parents here — and
+            // keep that pair for the session's life.
+            let recorded = state
+                .agent_root
+                .filter(|(pid, _)| state.entries.contains_key(pid));
+            state.agent_root = recorded.or_else(|| {
+                state
+                    .entries
+                    .values()
+                    .filter(|entry| entry.is_agent)
+                    .min_by_key(|entry| entry.pid)
+                    .map(|entry| (entry.pid, entry.started_at_ms))
+            });
         }
+        Ok(())
     }
 
     /// Every proven entry of one session, sorted by pid.
@@ -239,20 +305,32 @@ impl ProcessIndex {
         matches
     }
 
-    /// The cleanup plan for one session: the proven members that are not the
-    /// session's own root, plus the members the OS refused to vouch for.
+    /// The cleanup plan for one session: the proven members that are not in
+    /// the agent chain — the recorded root by pid and creation time, plus
+    /// any member above it, each exclusion named — plus the members the OS
+    /// refused to vouch for. The plan carries every target's creation time
+    /// so the signal can prove identity again at the moment it acts.
     pub(crate) fn cleanup_plan(&self, session_id: &str) -> Option<CleanupPlan> {
         let sessions = self.sessions();
         let state = sessions.get(session_id)?;
+        let excluded = excluded_agent_chain(&state.entries, state.agent_root);
+        let excluded_pids: HashSet<u32> = excluded.iter().map(|skip| skip.pid).collect();
         let targets = state
             .entries
             .values()
-            .filter(|entry| !entry.is_agent)
-            .map(|entry| entry.pid)
+            .filter(|entry| !excluded_pids.contains(&entry.pid))
+            .map(|entry| PlanTarget {
+                pid: entry.pid,
+                started_at_ms: entry.started_at_ms,
+                exe: entry.exe.clone(),
+            })
             .collect();
+        let mut unproven: Vec<u32> = state.unproven.iter().copied().collect();
+        unproven.sort_unstable();
         Some(CleanupPlan {
             targets,
-            unproven: state.unproven.iter().copied().collect(),
+            excluded,
+            unproven,
         })
     }
 
@@ -264,10 +342,27 @@ impl ProcessIndex {
     }
 }
 
-/// What a cleanup is allowed to do.
-pub(crate) struct CleanupPlan {
-    pub(crate) targets: Vec<u32>,
-    pub(crate) unproven: Vec<u32>,
+/// What the platform says about one pid's creation time at the moment of a
+/// signal — the identity check immediately before anything is signalled.
+/// FILETIME counts 100 ns ticks since 1601; the shift to unix milliseconds
+/// every Windows-side read applies (the two reads — index and terminate —
+/// share it so their identities compare equal).
+#[cfg(windows)]
+pub(crate) const FILETIME_EPOCH_MS: u64 = 11_644_473_600_000;
+
+#[derive(Debug)]
+pub(crate) enum CreationStatus {
+    /// The pid does not, any longer, name a process.
+    Gone,
+    /// A process created at this time exists.
+    At(u64),
+    /// The creation time could not be read: never signal blind.
+    Unverified,
+}
+
+/// The platform's creation-time read, for the terminate-time identity check.
+pub(crate) fn creation_status(pid: u32) -> CreationStatus {
+    platform::creation_status(pid)
 }
 
 #[cfg(test)]
