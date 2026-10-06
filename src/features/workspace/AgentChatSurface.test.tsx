@@ -108,6 +108,7 @@ import {
   setPreferredMode,
   setPreferredModel,
 } from "../../lib/agentPrefs";
+import { AgentSession } from "../../lib/agentSession";
 import { recordCreatedSession, resetCreatedSessionsForTests } from "./createdSessions";
 import { AgentChatSurface, composerDisabledReason } from "./AgentChatSurface";
 import { excerptRenderFor } from "./transcript/PermissionRequestRow";
@@ -195,6 +196,19 @@ describe("AgentChatSurface", () => {
     );
     if (option === null) throw new Error(`${prefix} option ${optionId} did not render`);
     await act(async () => option.click());
+  }
+
+  async function sendFromComposer(text: string) {
+    const textarea = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Message the agent"]',
+    );
+    const send = container.querySelector<HTMLButtonElement>(".workspace-send-action");
+    if (textarea === null || send === null) throw new Error("the composer did not render");
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    if (setValue === undefined) throw new Error("textarea value setter did not exist");
+    setValue.call(textarea, text);
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await act(async () => send.click());
   }
 
   function chipLabel(prefix: string): string | undefined {
@@ -1475,6 +1489,99 @@ describe("AgentChatSurface", () => {
     await act(async () => {
       channelHarness.emit?.({ type: "agent_finished", stopReason: "end_turn", modelId: "grok" });
     });
+
+    expect(sessionSetMode).not.toHaveBeenCalled();
+  });
+
+  it("gives up on a session whose roster row arrives only after its first turn", async () => {
+    setPreferredMode("claude", "plan");
+    recordCreatedSession("late-row", 1);
+
+    // The manifest comes before any roster row: nothing is switched yet.
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface daemonState="connected" sessionId="late-row" title="Agent" />);
+    });
+    await act(async () => undefined);
+    await act(async () => {
+      channelHarness.emit?.({ ...MODES_MANIFEST });
+    });
+    expect(sessionSetMode).not.toHaveBeenCalled();
+
+    // A turn runs and settles while the row is still missing.
+    await sendFromComposer("Say hello");
+    await act(async () => {
+      channelHarness.emit?.({ type: "agent_finished", stopReason: "end_turn", modelId: "grok" });
+    });
+    expect(sessionSend).toHaveBeenCalledWith("late-row", 41, "Say hello");
+
+    // The row lands with the generation it started on; the session answers already.
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="late-row"
+          title="Agent"
+          observedState={LIVE_OBSERVED}
+        />,
+      );
+    });
+    await act(async () => {
+      channelHarness.emit?.({ ...MODES_MANIFEST });
+    });
+
+    expect(sessionSetMode).not.toHaveBeenCalled();
+  });
+
+  it("gives up on a session the controller is running while the surface still renders idle", async () => {
+    setPreferredMode("claude", "plan");
+    recordCreatedSession("render-behind", 1);
+
+    // The surface hears nothing from the controller while this holds: a render
+    // behind it, as far as this surface can tell.
+    let surfaceHearsController = true;
+    const subscribe = AgentSession.prototype.subscribe;
+    const spy = vi.spyOn(AgentSession.prototype, "subscribe").mockImplementation(function (
+      this: AgentSession,
+      listener,
+    ) {
+      return subscribe.call(this, () => {
+        if (surfaceHearsController) listener();
+      });
+    });
+    try {
+      root = createRoot(container);
+      await act(async () => {
+        root.render(
+          <AgentChatSurface daemonState="connected" sessionId="render-behind" title="Agent" />,
+        );
+      });
+      await act(async () => undefined);
+      await act(async () => {
+        channelHarness.emit?.({ ...MODES_MANIFEST });
+      });
+
+      surfaceHearsController = false;
+      await sendFromComposer("Say hello");
+      expect(sessionSend).toHaveBeenCalledWith("render-behind", 41, "Say hello");
+      surfaceHearsController = true;
+
+      await act(async () => {
+        root.render(
+          <AgentChatSurface
+            daemonState="connected"
+            sessionId="render-behind"
+            title="Agent"
+            observedState={LIVE_OBSERVED}
+          />,
+        );
+      });
+      await act(async () => {
+        channelHarness.emit?.({ ...MODES_MANIFEST });
+      });
+    } finally {
+      spy.mockRestore();
+    }
 
     expect(sessionSetMode).not.toHaveBeenCalled();
   });

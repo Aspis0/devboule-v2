@@ -241,6 +241,13 @@ export interface AgentSessionDeps {
    * which is the half-a-wiring shape this signature exists to prevent.
    */
   onPermissionResolved?: (resolution: PermissionResolved) => void;
+  /**
+   * A turn begins: a send of this view's, or the first frame of one the agent
+   * or another device started. It runs before the status reads `running`, so a
+   * caller that must not act on a session once it has worked hears it ahead of
+   * any render.
+   */
+  onTurnStarted?: () => void;
   /** The session channel reported `agent_finished`; exits and disconnects use other paths. */
   onTurnFinished?: () => void;
   /**
@@ -1440,6 +1447,7 @@ export class AgentSession {
   }
 
   private beginTurn(): void {
+    this.deps.onTurnStarted?.();
     this.turn += 1;
     this.turnOpen = true;
     this.closeActiveBlocks();

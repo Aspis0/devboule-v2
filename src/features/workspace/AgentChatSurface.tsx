@@ -552,6 +552,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         goalFrameRef.current !== undefined ? goalFrameRef.current : latestInitialGoalRef.current,
       invoke: invokeAgentCommand,
       createChannel: createSessionChannel,
+      onTurnStarted: () => forgetCreatedSession(sessionId),
       onTurnFinished: composerQueue.onTurnFinished,
       onQueueSnapshot: composerQueue.onSnapshot,
       onGoalChanged: (goal) => {
@@ -651,9 +652,10 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   // doomed switch is never worth sending.
   //
   // The picks belong to an agent the person just started here, on the generation
-  // it started on, before anything has been sent to it. Whether this is still
-  // that agent, and whether it has already been asked, is the record's answer:
-  // a re-render or a remount cannot ask a second time.
+  // it started on, before its first turn. Whether this is still that agent, and
+  // whether it has been asked or has begun a turn, is the record's answer: the
+  // controller ends it when a turn begins, ahead of any render, so neither a
+  // late roster row nor a re-render can put a pick into a session that worked.
   //
   // The picks are a localStorage/product concern, so they live on the surface
   // next to the manual handlers, not inside the headless session controller.
@@ -666,18 +668,14 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     // answers. Until it can, the record is there and this asks again.
     const session = sessionRef.current;
     if (session === null || !session.canSwitch()) return;
-    // Already working when its first manifest arrived: this is not the moment
-    // the picks are for, and waiting for the turn to settle would be a hot
-    // switch on a session that is already answering.
     forgetCreatedSession(sessionId);
-    if (state.status === "running" || state.streaming) return;
     const asked = rememberedSwitch(manifest);
     if (asked.mode !== undefined) void session.setMode(asked.mode);
     const modelId = asked.model ?? manifest.currentModelId;
     if (modelId !== undefined && (asked.model !== undefined || asked.effort !== undefined)) {
       void session.setModel(modelId, asked.effort);
     }
-  }, [observedState?.generation, sessionId, state.manifest, state.status, state.streaming]);
+  }, [observedState?.generation, sessionId, state.manifest]);
 
   // The toast is worded from what the app already holds, and this surface is
   // the only place a transcript exists: publish the last assistant message
