@@ -13,9 +13,10 @@ use tauri::{AppHandle, Emitter, Manager, WebviewBuilder, WebviewUrl, Wry};
 
 use super::commands::tabs::{TabEvent, TAB_EVENT};
 use super::deadline::Deadline;
+use super::destination;
 use super::live::Live;
 use super::page_host;
-use super::registry::{profile_dir, BrowserRegistry, OwnedTab, PARK_RECT};
+use super::registry::{profile_dir, AgentDrive, BrowserRegistry, OwnedTab, PARK_RECT};
 use super::tab_reports;
 use super::url;
 
@@ -92,6 +93,34 @@ struct TabHooks {
     id: String,
 }
 
+/// What the page's own hooks ask about every navigation: the destination
+/// policy, and the two facts that say who is driving this tab.
+#[derive(Clone)]
+struct TabWatch {
+    policy: Arc<destination::DestinationPolicy>,
+    drive: Arc<AgentDrive>,
+    live: Arc<Live>,
+}
+
+impl TabWatch {
+    /// The policy's verdict for one navigation of this tab, for the audience
+    /// the tab's driver earns: an agent acting on it, or a tab parked behind a
+    /// pane with nobody in front of it, is agent browsing. A refusal is left
+    /// where the next tool result picks it up.
+    fn blocked(&self, candidate: &Url) -> Option<String> {
+        match self
+            .policy
+            .admit_hook(candidate, self.drive.in_flight(), self.live.parked())
+        {
+            Ok(()) => None,
+            Err(blocked) => {
+                self.drive.note_refusal(blocked.message().to_string());
+                Some(blocked.to_string())
+            }
+        }
+    }
+}
+
 impl TabHooks {
     fn send(&self, update: BrowserUpdate) {
         let _ = self
@@ -149,11 +178,14 @@ fn builder(
     bootstrap: tauri::Url,
     profile: PathBuf,
     hooks: &TabHooks,
+    watch: &TabWatch,
 ) -> WebviewBuilder<Wry> {
     let on_navigation = hooks.clone();
     let on_title = hooks.clone();
     let on_load = hooks.clone();
     let on_window = hooks.clone();
+    let navigation_watch = watch.clone();
+    let window_watch = watch.clone();
     let load_label = label.to_owned();
 
     WebviewBuilder::new(label, WebviewUrl::External(bootstrap))
@@ -168,10 +200,16 @@ fn builder(
             if candidate.as_str() == BOOTSTRAP_URL {
                 return true;
             }
-            // The gate page-initiated navigation and every redirect pass through.
-            // A refusal becomes the inline error line and the page stays put.
-            match url::gate(candidate) {
-                Ok(()) => {
+            // The gate page-initiated navigation and every redirect pass
+            // through, and so does the destination policy whenever the tab is
+            // agent-driven. A refusal becomes the inline error line and the
+            // page stays put.
+            let refusal = match url::gate(candidate) {
+                Ok(()) => navigation_watch.blocked(candidate),
+                Err(refusal) => Some(refusal.to_string()),
+            };
+            match refusal {
+                None => {
                     on_navigation.edit(|state| {
                         state.url = candidate.to_string();
                         state.loading = true;
@@ -179,9 +217,9 @@ fn builder(
                     });
                     true
                 }
-                Err(refusal) => {
+                Some(refusal) => {
                     on_navigation.edit(|state| {
-                        state.error = Some(refusal.to_string());
+                        state.error = Some(refusal);
                         state.loading = false;
                     });
                     false
@@ -214,11 +252,15 @@ fn builder(
         })
         .on_new_window(move |candidate, _| {
             // Never a native popup: a window this app does not own is a page the
-            // user cannot see, cannot close and cannot read a url for.
+            // user cannot see, cannot close and cannot read a url for. The
+            // destination is checked exactly as a navigation's would be.
             match url::gate(&candidate) {
-                Ok(()) => on_window.send(BrowserUpdate::NewWindow {
-                    url: candidate.to_string(),
-                }),
+                Ok(()) => match window_watch.blocked(&candidate) {
+                    None => on_window.send(BrowserUpdate::NewWindow {
+                        url: candidate.to_string(),
+                    }),
+                    Some(refusal) => on_window.edit(|state| state.error = Some(refusal)),
+                },
                 Err(refusal) => on_window.edit(|state| state.error = Some(refusal.to_string())),
             }
             tauri::webview::NewWindowResponse::Deny
@@ -272,19 +314,34 @@ pub async fn open(
             state: Arc::clone(&state),
             sink,
             guard: Arc::default(),
+            drive: Arc::default(),
         },
     )?;
 
+    let policy = app
+        .try_state::<Arc<destination::DestinationPolicy>>()
+        .map(|state| Arc::clone(state.inner()))
+        .unwrap_or_else(|| Arc::new(destination::DestinationPolicy::load(None)));
+    let watch = TabWatch {
+        policy,
+        drive: registry
+            .drive_of(id)
+            .expect("a claimed tab has a driving state"),
+        live: Arc::clone(&live),
+    };
     let bootstrap = Url::parse(BOOTSTRAP_URL).expect("the bootstrap URL is a constant");
     let (position, size) = PARK_RECT.into_tauri();
-    let webview =
-        match window.add_child(builder(&label, bootstrap, profile, &hooks), position, size) {
-            Ok(webview) => webview,
-            Err(error) => {
-                registry.release(id);
-                return Err(error.to_string());
-            }
-        };
+    let webview = match window.add_child(
+        builder(&label, bootstrap, profile, &hooks, &watch),
+        position,
+        size,
+    ) {
+        Ok(webview) => webview,
+        Err(error) => {
+            registry.release(id);
+            return Err(error.to_string());
+        }
+    };
     // A close that arrived while this child was being built is the one thing
     // that can leave the id claimed with no page behind it: nobody else is
     // holding the webview this create just got.

@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -84,10 +85,52 @@ pub struct OwnedTab {
     /// acting command, and the pane's present, park and close. Two of those at
     /// once is a click measured against a layout the pane has just replaced.
     pub guard: TabGuard,
+    /// Who is driving this page, and the last navigation the destination
+    /// policy refused on it.
+    pub drive: Arc<AgentDrive>,
 }
 
 /// One tab's lock, owned so a command can hold it across its own awaits.
 pub type TabGuard = Arc<tauri::async_runtime::Mutex<()>>;
+
+/// One page's driving state: how many agent commands are on it, and the last
+/// navigation the policy refused. The webview's own hook runs on the thread
+/// that is showing the page, so it reads both without waiting for anything.
+#[derive(Default)]
+pub struct AgentDrive {
+    in_flight: AtomicUsize,
+    refusal: Mutex<Option<String>>,
+}
+
+impl AgentDrive {
+    /// Count an agent command for as long as the guard lives.
+    pub fn begin(self: &Arc<Self>) -> DriveGuard {
+        self.in_flight.fetch_add(1, Ordering::SeqCst);
+        DriveGuard(Arc::clone(self))
+    }
+
+    pub fn in_flight(&self) -> bool {
+        self.in_flight.load(Ordering::SeqCst) > 0
+    }
+
+    pub fn note_refusal(&self, reason: String) {
+        *self.refusal.lock().expect("browser drive poisoned") = Some(reason);
+    }
+
+    /// The refusal waiting for the next tool result, if one is waiting.
+    pub fn take_refusal(&self) -> Option<String> {
+        self.refusal.lock().expect("browser drive poisoned").take()
+    }
+}
+
+/// One agent command's hold on a tab's driving state.
+pub struct DriveGuard(Arc<AgentDrive>);
+
+impl Drop for DriveGuard {
+    fn drop(&mut self) {
+        self.0.in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 /// A width and a height, in the pane's logical pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -228,6 +271,17 @@ impl BrowserRegistry {
             .map(|tab| Arc::clone(&tab.guard))
     }
 
+    /// One tab's driving state, read by the agent path and by the page's own
+    /// navigation hook.
+    pub fn drive_of(&self, id: &str) -> Option<Arc<AgentDrive>> {
+        self.tabs
+            .lock()
+            .expect("browser registry poisoned")
+            .get(id)
+            .filter(|tab| !tab.cancelled)
+            .map(|tab| Arc::clone(&tab.drive))
+    }
+
     /// Hand a page's reports to a new watcher and answer with the state the
     /// page has already reported. None when there is no page to adopt, which
     /// is the caller's cue to open one.
@@ -323,6 +377,7 @@ mod tests {
             state: Arc::new(Mutex::new(BrowserViewState::default())),
             sink: Arc::new(Mutex::new(Channel::new(|_| Ok(())))),
             guard: TabGuard::default(),
+            drive: Arc::default(),
         }
     }
 

@@ -80,6 +80,12 @@ pub fn run() {
                 }
                 Err(error) => eprintln!("devboule: Oracle preferences unavailable: {error}"),
             }
+            // The agent browser's destination policy, with whatever exact
+            // host:port exceptions the person's settings file carries.
+            let config_dir = app.path().app_config_dir().ok();
+            app.manage(std::sync::Arc::new(
+                browser::destination::DestinationPolicy::load(config_dir.as_deref()),
+            ));
             // Start the installer as soon as Oracle has a configured root. The
             // command status exposes its progress when the panel is opened.
             if let Err(error) = runtime.start_model_download_for_startup() {

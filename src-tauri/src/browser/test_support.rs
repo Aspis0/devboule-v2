@@ -163,6 +163,7 @@ pub fn registry_with(id: &str) -> BrowserRegistry {
                     ..BrowserViewState::default()
                 })),
                 sink: Arc::new(Mutex::new(tauri::ipc::Channel::new(|_| Ok(())))),
+                drive: Arc::default(),
                 guard: Arc::default(),
             },
         )

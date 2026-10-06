@@ -27,10 +27,13 @@ use serde_json::Value;
 
 use devboule_protocol::{BrowserCaller, BrowserError, BrowserErrorCode, BrowserExecuteRequest};
 
+use std::sync::Arc;
+
 use super::ax::AxTree;
 use super::cdp::{Bounded, CdpError, Page, WebviewPage};
 use super::credentials::fill_login;
 use super::deadline::Deadline;
+use super::destination::{Audience, DestinationPolicy};
 use super::registry::{BrowserRegistry, TabInfo};
 use super::scrub;
 use super::tab_guard;
@@ -227,6 +230,24 @@ fn routed(command: &str) -> Routed {
     }
 }
 
+/// The URL an agent command is about to open, when it names one. `navigate`
+/// may instead carry a history action, which opens nothing new.
+fn agent_named_url<'a>(command: &str, args: &'a Value) -> Option<&'a str> {
+    match command {
+        "navigate" | "new_tab" => args.get("url").and_then(Value::as_str),
+        _ => None,
+    }
+}
+
+/// The destination policy this app runs with. A process that never managed
+/// one — a test app, not the product — gets the default: no exceptions.
+fn policy_of(app: &tauri::AppHandle) -> Arc<DestinationPolicy> {
+    use tauri::Manager;
+    app.try_state::<Arc<DestinationPolicy>>()
+        .map(|state| Arc::clone(state.inner()))
+        .unwrap_or_else(|| Arc::new(DestinationPolicy::load(None)))
+}
+
 /// Run one command the daemon pushed to this host.
 pub async fn dispatch(
     app: &tauri::AppHandle,
@@ -235,6 +256,15 @@ pub async fn dispatch(
     deadline: Deadline,
 ) -> Result<Value, BrowserError> {
     let command = request.command.as_str();
+    // The agent's own entry: a URL it names is checked before anything is
+    // asked of a page or a child, and the refusal names the address.
+    if let Some(raw) = agent_named_url(command, &request.args) {
+        let target =
+            super::url::accept(raw).map_err(|error| refused(BrowserErrorCode::HostError, error))?;
+        if let Err(blocked) = policy_of(app).admit(&target, Audience::Agent) {
+            return Err(host_error(blocked.message().to_string()));
+        }
+    }
     if matches!(command, "new_tab" | "list_tabs") {
         return scrubbed(
             tabs::run(
@@ -265,6 +295,10 @@ pub async fn dispatch(
     if command == "close_tab" {
         return scrubbed(tabs::close_tab(app, registry, &tab));
     }
+    // Every navigation this command causes is agent-driven until it answers,
+    // whatever the pane is showing; the page's own hook reads this hold.
+    let drive = registry.drive_of(&browser_id);
+    let _driving = drive.as_ref().map(|drive| drive.begin());
     let page = WebviewPage::new(app, &tab.label);
     let outcome = match routed(command) {
         // The one command beside `on_tab`, so the bound `on_tab` puts on a page
@@ -276,7 +310,20 @@ pub async fn dispatch(
         }
         Routed::Tab => on_tab(&tab, &page, command, &request.args, deadline).await,
     };
-    scrubbed(outcome)
+    let answer = scrubbed(outcome)?;
+    // A navigation the hook refused while this command ran is reported to the
+    // agent here, on the next answer it gets.
+    let refused_navigation = drive.as_ref().and_then(|drive| drive.take_refusal());
+    Ok(match refused_navigation {
+        None => answer,
+        Some(reason) => {
+            let mut answer = answer;
+            if let Some(object) = answer.as_object_mut() {
+                object.insert("refusedNavigation".to_string(), Value::String(reason));
+            }
+            answer
+        }
+    })
 }
 
 /// The answer of one command, or the refusal of one, with whatever this process
