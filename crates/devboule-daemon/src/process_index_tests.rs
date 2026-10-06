@@ -261,3 +261,34 @@ fn cleanup_plan_excludes_the_agent_root_and_unvouched_members() {
         "an unvouched member is reported, not acted on"
     );
 }
+
+/// An executable the process spelled as a credential never reaches an entry,
+/// so neither the tool answers nor the cleanup plan (and its audit row) carry
+/// it.
+#[test]
+fn a_credential_shaped_executable_is_masked_in_entries_and_the_plan() {
+    let index = ProcessIndex::new();
+    let mut probe = FakeProbe {
+        members: vec![100, 200],
+        identities: HashMap::from([
+            (100, identity_with(1_000, 7, "/usr/local/bin/agent")),
+            (200, identity_with(2_000, 100, "API_KEY=secret")),
+        ]),
+        ports: Vec::new(),
+    };
+    refresh(&index, vec![proof("session-a", None)], &mut probe);
+
+    let entries = index.session_entries("session-a");
+    let spelled = entries
+        .iter()
+        .find(|entry| entry.pid == 200)
+        .expect("entry");
+    assert_eq!(spelled.exe.as_deref(), Some("API_KEY=[redacted]"));
+    let plan = index.cleanup_plan("session-a").expect("plan");
+    assert!(
+        plan.targets
+            .iter()
+            .all(|target| target.exe.as_deref() != Some("API_KEY=secret")),
+        "the plan carries the redacted string"
+    );
+}

@@ -12,7 +12,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::process_argv_redact::redact_argv;
+use crate::process_argv_redact::{redact_argv, redact_exe};
 use crate::process_plan::{excluded_agent_chain, CleanupPlan, PlanTarget};
 use crate::process_tree::JobObject;
 
@@ -241,7 +241,7 @@ impl ProcessIndex {
                     ProcessEntry {
                         pid,
                         started_at_ms: identity.started_at_ms,
-                        exe: identity.exe.clone(),
+                        exe: identity.exe.as_deref().map(redact_exe),
                         argv: redact_argv(&identity.argv),
                         ports,
                         proof,

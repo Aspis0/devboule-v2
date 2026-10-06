@@ -20,7 +20,17 @@ const SECRET_FLAGS: &[&str] = &[
     "access-key",
     "authorization",
     "cookie",
+    "p",
+    "pass",
+    "pwd",
+    "passphrase",
+    "proxy-password",
+    "client-secret",
 ];
+/// Flags whose value is `user:password` when it has a colon (`curl -u`,
+/// `--user`, `--proxy-user`). A colonless value is only a user name, and
+/// `-u` is also an everyday non-credential flag (`python -u`, `docker -u`).
+const USER_PAIR_FLAGS: &[&str] = &["u", "user", "proxy-user"];
 /// Name words that mark `KEY=value` as a credential: the name is split on
 /// `-` and `_`, so `API_KEY`, `AWS_SECRET_ACCESS_KEY` and a bare `password`
 /// match while `keyboard` and `MONKEY` do not.
@@ -30,28 +40,62 @@ const SECRET_NAME_WORDS: &[&str] = &[
     "secret",
     "password",
     "passwd",
+    "pwd",
     "credential",
     "auth",
     "authorization",
     "cookie",
 ];
+/// Endings that make one glued word a credential name on its own
+/// (`PGPASSWORD`, `apiKey`): long enough that `MONKEY` and `keyboard` never
+/// match.
+const SECRET_NAME_SUFFIXES: &[&str] = &[
+    "password",
+    "passwd",
+    "passphrase",
+    "secret",
+    "token",
+    "apikey",
+    "credentials",
+];
 
 /// Mask secret-looking argv: the value after a secret flag (any dash count,
-/// any case), the value half of a credential-shaped `name=value`, the value of
+/// any case), a glued `-pVALUE`, a `user:password` pair after `-u`/`--user`,
+/// the value half of a credential-shaped `name=value`, the value of
 /// a credential header (`Authorization: Bearer …`, a cookie, an API-key
 /// header), a bare `Bearer`/`Basic` credential, credentials embedded in a
-/// `scheme://user:pass@` URL, and any bare token-shaped value.
+/// `scheme://user:pass@` URL anywhere in an argument, and any bare
+/// token-shaped value.
 /// Everything is capped; nothing secret is ever stored or echoed. The
 /// heuristics are deliberately one-sided: a false mask costs a bit of
 /// evidence, a missed one costs a credential.
 pub(crate) fn redact_argv(argv: &[String]) -> Vec<String> {
     let mut redacted: Vec<String> = Vec::new();
     let mut mask_next = false;
+    let mut mask_next_pair = false;
     for arg in argv.iter().take(MAX_ARGS) {
         if mask_next {
             redacted.push("[redacted]".to_string());
             mask_next = false;
             continue;
+        }
+        if std::mem::take(&mut mask_next_pair) && arg.contains(':') {
+            redacted.push("[redacted]".to_string());
+            continue;
+        }
+        if let Some((prefix, inline)) = user_pair_flag(arg) {
+            match inline {
+                Some(value) if value.contains(':') => {
+                    redacted.push(format!("{prefix}[redacted]"));
+                    continue;
+                }
+                Some(_) => {}
+                None => {
+                    mask_next_pair = true;
+                    redacted.push(arg.clone());
+                    continue;
+                }
+            }
         }
         if let Some((masked, value_follows)) = mask_header(arg) {
             redacted.push(masked);
@@ -77,6 +121,10 @@ pub(crate) fn redact_argv(argv: &[String]) -> Vec<String> {
             redacted.push(arg);
             continue;
         }
+        if arg.starts_with("-p") && !arg.starts_with("--") && arg.len() > 2 {
+            redacted.push("-p[redacted]".to_string());
+            continue;
+        }
         if arg.contains('=') && is_secret_name(&name) {
             redacted.push(format!("{name}=[redacted]"));
             continue;
@@ -90,14 +138,48 @@ pub(crate) fn redact_argv(argv: &[String]) -> Vec<String> {
     redacted
 }
 
-/// `name=value` is a credential when the name splits into secret words —
-/// one-sided on purpose (`file-key` masks, `keyboard` does not).
+/// The executable string of a process, redacted like one argument: on macOS
+/// it is the first token of `ps`'s rendered command line, which the process
+/// chose itself, so `API_KEY=secret` can be spelled there.
+pub(crate) fn redact_exe(exe: &str) -> String {
+    redact_argv(&[exe.to_string()])
+        .pop()
+        .unwrap_or_else(|| "[redacted]".to_string())
+}
+
+/// `name=value` is a credential when the name splits into secret words or a
+/// word ends in one — one-sided on purpose (`file-key` and `PGPASSWORD`
+/// mask, `keyboard` and `MONKEY` do not).
 fn is_secret_name(name: &str) -> bool {
     name.split(&['-', '_'][..]).any(|word| {
-        SECRET_NAME_WORDS
-            .iter()
-            .any(|&secret| word.eq_ignore_ascii_case(secret))
+        let word = word.to_ascii_lowercase();
+        SECRET_NAME_WORDS.contains(&word.as_str())
+            || SECRET_NAME_SUFFIXES
+                .iter()
+                .any(|suffix| word.ends_with(suffix))
     })
+}
+
+/// A `-u`, `--user` or `--proxy-user` argument: what precedes its value
+/// (`--user=`, `-u`) and the value when it is glued on. `None` when the
+/// argument is not such a flag.
+fn user_pair_flag(arg: &str) -> Option<(String, Option<&str>)> {
+    if let Some(long) = arg.strip_prefix("--") {
+        let (name, value) = match long.split_once('=') {
+            Some((name, value)) => (name, Some(value)),
+            None => (long, None),
+        };
+        let listed = USER_PAIR_FLAGS.contains(&name.to_ascii_lowercase().as_str());
+        return (listed && name.len() > 1).then(|| (format!("--{name}="), value));
+    }
+    let short = arg.strip_prefix('-')?;
+    let mut letters = short.chars();
+    let letter = letters.next()?;
+    if !letter.eq_ignore_ascii_case(&'u') {
+        return None;
+    }
+    let value = letters.as_str();
+    Some((format!("-{letter}"), (!value.is_empty()).then_some(value)))
 }
 
 /// A `Name: value` header argument (a bare one, or the value of
@@ -137,29 +219,33 @@ fn is_auth_scheme_credential(arg: &str) -> bool {
             .any(|&word| scheme.eq_ignore_ascii_case(word))
 }
 
-/// `scheme://user:pass@host/...` keeps its scheme and host, loses its
-/// userinfo: the part between `://` and the first `@` of the authority
-/// becomes one marker.
+/// Every `scheme://userinfo@host/...` in a value keeps its scheme and host
+/// and loses its userinfo — `user:pass` or a bare token — whatever else the
+/// argument holds (`--db=…`, a comma list, a whole shell command).
 fn mask_url_credentials(value: &str) -> String {
-    let Some(scheme_end) = value.find("://") else {
-        return value.to_string();
-    };
-    let authority_start = scheme_end + 3;
-    let authority = &value[authority_start..];
-    let authority_len = authority.find('/').unwrap_or(authority.len());
-    let authority = &authority[..authority_len];
-    let Some(colon) = authority.find(':') else {
-        return value.to_string();
-    };
-    let Some(at) = authority[colon + 1..].find('@') else {
-        return value.to_string();
-    };
-    let at = colon + 1 + at;
-    format!(
-        "{}[redacted]@{}",
-        &value[..authority_start],
-        &value[authority_start + at + 1..]
-    )
+    let mut masked = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(scheme_end) = rest.find("://") {
+        let authority_start = scheme_end + 3;
+        masked.push_str(&rest[..authority_start]);
+        let tail = &rest[authority_start..];
+        let authority_len = tail
+            .find(|cell: char| {
+                matches!(cell, '/' | '?' | '#' | ',' | '\'' | '"') || cell.is_whitespace()
+            })
+            .unwrap_or(tail.len());
+        let authority = &tail[..authority_len];
+        match authority.rfind('@') {
+            Some(at) => {
+                masked.push_str("[redacted]@");
+                masked.push_str(&authority[at + 1..]);
+            }
+            None => masked.push_str(authority),
+        }
+        rest = &tail[authority_len..];
+    }
+    masked.push_str(rest);
+    masked
 }
 
 /// A token-shaped bare value: long, high-charset, not a path — the kind of
@@ -184,143 +270,5 @@ fn capped(value: &str, max: usize) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn argv_masks_secret_flags_and_token_shaped_values() {
-        let redacted = redact_argv(&[
-            "/usr/local/bin/tool".to_string(),
-            "--token".to_string(),
-            "s3cr3t-value-here".to_string(),
-            "--password=hunter2".to_string(),
-            "--url=https://example.test/x".to_string(),
-            "0123456789abcdef01234567".to_string(),
-            "/var/run/devboule.sock".to_string(),
-            "session-abc123".to_string(),
-        ]);
-        assert_eq!(redacted[1], "--token", "the flag itself is not secret");
-        assert_eq!(redacted[2], "[redacted]", "the value after a secret flag");
-        assert_eq!(
-            redacted[3], "--password=[redacted]",
-            "an inline secret value"
-        );
-        assert_eq!(
-            redacted[4], "--url=https://example.test/x",
-            "a non-secret inline value stays"
-        );
-        assert_eq!(redacted[5], "[redacted]", "a bare token-shaped value");
-        assert_eq!(
-            redacted[6], "/var/run/devboule.sock",
-            "a path is not a token"
-        );
-        assert_eq!(redacted[7], "session-abc123", "a short id is not a token");
-    }
-
-    #[test]
-    fn argv_masks_case_variant_and_single_dash_flags() {
-        let redacted = redact_argv(&[
-            "--PASSWORD=hunter2".to_string(),
-            "-token".to_string(),
-            "abc".to_string(),
-            "--Api-Key=xyz".to_string(),
-            "--url=https://example.test/ok".to_string(),
-        ]);
-        assert_eq!(
-            redacted[0], "--PASSWORD=[redacted]",
-            "the flag's case never matters"
-        );
-        assert_eq!(redacted[1], "-token", "a single dash is still the flag");
-        assert_eq!(redacted[2], "[redacted]", "and it masks its next value");
-        assert_eq!(redacted[3], "--Api-Key=[redacted]", "mixed case inline");
-        assert_eq!(
-            redacted[4], "--url=https://example.test/ok",
-            "a non-secret flag stays"
-        );
-    }
-
-    #[test]
-    fn argv_masks_credential_shaped_names_and_embedded_urls() {
-        let redacted = redact_argv(&[
-            "API_KEY=abc123".to_string(),
-            "AWS_SECRET_ACCESS_KEY=AKIAwhatever".to_string(),
-            "KEY_NAME=prod".to_string(),
-            "--db=postgres://user:hunter2@db.example/x".to_string(),
-            "keyboard=left".to_string(),
-            "MONKEY=banana".to_string(),
-            "abcdefghijklmnopqrstuvwx".to_string(),
-        ]);
-        assert_eq!(redacted[0], "API_KEY=[redacted]", "env-style name");
-        assert_eq!(
-            redacted[1], "AWS_SECRET_ACCESS_KEY=[redacted]",
-            "a name of secret words"
-        );
-        assert_eq!(redacted[2], "KEY_NAME=[redacted]", "the KEY_NAME spelling");
-        assert_eq!(
-            redacted[3], "--db=postgres://[redacted]@db.example/x",
-            "userinfo in a URL"
-        );
-        assert_eq!(
-            redacted[4], "keyboard=left",
-            "one-sided: not every -key word"
-        );
-        assert_eq!(redacted[5], "MONKEY=banana", "not a key at all");
-        assert_eq!(
-            redacted[6], "[redacted]",
-            "an all-letter token of length is still a token"
-        );
-    }
-
-    /// The curl shapes: a separate `-H` argument holding a whole header, a
-    /// header glued to its flag, and a header split at the colon.
-    #[test]
-    fn argv_masks_credential_headers_whatever_their_shape() {
-        let redacted = redact_argv(&[
-            "curl".to_string(),
-            "-H".to_string(),
-            "Authorization: Bearer short".to_string(),
-            "--header=authorization: Basic dTpw".to_string(),
-            "Cookie: sid=abc".to_string(),
-            "X-Api-Key: k".to_string(),
-            "Proxy-Authorization:".to_string(),
-            "Basic dTpwYXNz".to_string(),
-            "Bearer abc".to_string(),
-            "Accept: application/json".to_string(),
-            "https://example.test/path".to_string(),
-        ]);
-        assert_eq!(redacted[1], "-H", "the flag is not secret");
-        assert_eq!(redacted[2], "Authorization: [redacted]");
-        assert_eq!(redacted[3], "--header=authorization: [redacted]");
-        assert_eq!(redacted[4], "Cookie: [redacted]");
-        assert_eq!(redacted[5], "X-Api-Key: [redacted]");
-        assert_eq!(redacted[6], "Proxy-Authorization: [redacted]");
-        assert_eq!(redacted[7], "[redacted]", "the value split from its header");
-        assert_eq!(redacted[8], "[redacted]", "a bare Bearer credential");
-        assert_eq!(
-            redacted[9], "Accept: application/json",
-            "a harmless header stays"
-        );
-        assert_eq!(
-            redacted[10], "https://example.test/path",
-            "a URL is not a header"
-        );
-    }
-
-    #[test]
-    fn argv_caps_count_and_length() {
-        let mut argv = vec!["tool".to_string()];
-        argv.push(format!("/opt/{}", "x".repeat(600)));
-        for index in 0..40 {
-            argv.push(format!("arg{index}"));
-        }
-        let redacted = redact_argv(&argv);
-        assert_eq!(redacted.len(), MAX_ARGS, "the count is capped");
-        assert!(
-            redacted[1].chars().count() <= MAX_ARG_CHARS + 1,
-            "a long value is truncated with a marker: {}",
-            redacted[1].chars().count()
-        );
-        assert!(redacted[1].ends_with('…'), "truncation is visible");
-        assert_eq!(redacted[2], "arg0", "the tail keeps the early arguments");
-    }
-}
+#[path = "process_argv_redact_tests.rs"]
+mod tests;
