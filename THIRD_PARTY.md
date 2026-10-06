@@ -1427,7 +1427,7 @@ No unresolved asset provenance remains: the icon is original project artwork car
 | rolldown | 1.2.6 | npm transitive | MIT |
 | scheduler | 0.27.0 | npm transitive | MIT |
 | siginfo | 2.0.0 | npm transitive | ISC |
-| source-map-js | 1.2.1 | npm transitive | BSD-3-Clause |
+| source-map-js | 1.2.2 | npm transitive | BSD-3-Clause |
 | stackback | 0.0.2 | npm transitive | MIT |
 | std-env | 4.2.0 | npm transitive | MIT |
 | tinybench | 6.1.4 | npm transitive | MIT |
