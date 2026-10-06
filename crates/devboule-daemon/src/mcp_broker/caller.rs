@@ -68,11 +68,10 @@ pub(super) fn resolve_mcp_caller(state: &ServerState, caller_session_id: &str) -
 ///
 /// Returns the reply to send when the call is refused before touching anything.
 /// `None` means allowed (local callers always; peers whose device holds every
-/// capability the tool's equivalents name; the explicitly unjudged list tool;
-/// unknown tool names, which fall through to the broker's own `Unknown tool`
-/// arm that touches nothing). Every `Some` is a refusal, never the benign
-/// reading: the unknown-origin case hard, the absent-row case with the
-/// retryable absence sentence.
+/// capability the tool's equivalents name; the explicitly unjudged list tool).
+/// Every `Some` is a refusal, never the benign reading: a tool name with no
+/// peer row for a paired device, the unknown-origin case hard, the absent-row
+/// case with the retryable absence sentence.
 pub(super) fn mcp_peer_door(
     caller: &McpCaller,
     tool_name: Option<&str>,
@@ -88,7 +87,7 @@ pub(super) fn mcp_peer_door(
                     rpc_error(
                         id.clone(),
                         -32601,
-                        &crate::peer_policy::capability_refusal_message(reason),
+                        &crate::peer_policy::mcp_refusal_message(reason),
                     )
                 })
             }),

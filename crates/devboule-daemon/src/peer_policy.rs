@@ -546,10 +546,11 @@ pub fn mode_refusal(kind: SessionKind, mode_id: &str) -> Option<&'static str> {
 /// sentence. The tools that answer this way are the Oracle search and the
 /// terminal screen read (below).
 ///
-/// `None` (from [`mcp_tool_wire`]) is an unknown tool name — not served by the
-/// broker. The door lets it through to the broker's own `Unknown tool` arm,
-/// which touches nothing; the closed-table test fails for any *served* name
-/// without an arm here, so adding a tool without deciding its row is a red test.
+/// `None` (from [`mcp_tool_wire`]) is a name with no row. The door refuses it
+/// ([`UNLISTED_TOOL`]) before any routing, so a tool the broker starts serving
+/// without a row here is closed to every paired device until someone decides
+/// its row; the served-name test fails for any served name without one, so
+/// adding a tool without deciding its row is a red test as well.
 #[derive(Debug)]
 #[allow(dead_code)] // `Unjudged.0` is read by the closed-table test, not by prod code.
 pub enum McpToolWire {
@@ -992,15 +993,22 @@ fn is_browser_tool(tool: &str) -> bool {
             .any(|(name, _)| *name == tool)
 }
 
+/// The reason a paired device is refused a tool name that has no row in
+/// [`mcp_tool_wire`]. Stable: callers and tests match it by value.
+pub const UNLISTED_TOOL: &str = "unlisted_tool";
+
 /// Judge one tool call for a peer with the same function the dispatcher uses:
 /// the policy's first `Deny` payload, or the capability a `Requires` row names
-/// when the caller does not hold it, or `None` when the tool is allowed.
+/// when the caller does not hold it, or [`UNLISTED_TOOL`] for a name with no
+/// row, or `None` when the tool is allowed.
 ///
-/// `Unjudged` tools and unknown tool names both allow here: the former perform
-/// nothing judged, the latter fall through to the broker's own `Unknown tool`
-/// refusal, which touches nothing.
+/// `Unjudged` tools allow here: they perform nothing judged. A name with no row
+/// never does — absence is a refusal, not a pass to whatever routes the name.
 pub fn mcp_tool_denial(role: PeerRole, caps: &[String], tool: &str) -> Option<&'static str> {
-    let judged = match mcp_tool_wire(tool)? {
+    let Some(wire) = mcp_tool_wire(tool) else {
+        return Some(UNLISTED_TOOL);
+    };
+    let judged = match wire {
         McpToolWire::Judged(requests) => requests,
         McpToolWire::Unjudged(_) => return None,
         McpToolWire::Requires(capability) => {
@@ -1020,6 +1028,17 @@ pub fn mcp_tool_denial(role: PeerRole, caps: &[String], tool: &str) -> Option<&'
 /// own sentence, not a paraphrase of it.
 pub fn capability_refusal_message(reason: &str) -> String {
     format!("capability '{reason}' was not negotiated")
+}
+
+/// The sentence the tool door answers a [`mcp_tool_denial`] reason with: the
+/// unlisted refusal says so, every other reason is a capability's name. The
+/// tool name is never echoed — it is whatever the caller chose to send.
+pub fn mcp_refusal_message(reason: &str) -> String {
+    if reason == UNLISTED_TOOL {
+        "this tool has no rule for a paired device; the call is refused".to_string()
+    } else {
+        capability_refusal_message(reason)
+    }
 }
 
 /// What the transport resolved about a peer at connection time. Kept beside
@@ -2497,9 +2516,13 @@ pub(crate) mod tests {
                 Some(CAP_ADMIN),
                 "{role:?} holding every act-named capability is still refused the model half"
             );
-            // An unserved name is not the door's refusal: the broker's own
-            // `Unknown tool` arm answers it without touching anything.
-            assert_eq!(mcp_tool_denial(role, &none, "devboule_no_such_tool"), None);
+            // A name with no row is refused, whatever the device holds.
+            for held in [&none, &all_caps()] {
+                assert_eq!(
+                    mcp_tool_denial(role, held, "devboule_no_such_tool"),
+                    Some(UNLISTED_TOOL)
+                );
+            }
         }
     }
 

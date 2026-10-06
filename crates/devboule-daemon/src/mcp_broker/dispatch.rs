@@ -91,7 +91,14 @@ pub(super) fn handle_rpc(
             let caller = resolve_mcp_caller(state, &registration.session_id);
             if let Some(refusal) = mcp_peer_door(&caller, tool_name, &id) {
                 if let Some(tool) = tool_name {
-                    audit_mcp_tool(state, &caller, tool, &registration.session_id, "denied");
+                    // A name with no row is whatever the caller sent: the row
+                    // records that it was refused, never the text.
+                    let action = if crate::peer_policy::mcp_tool_wire(tool).is_some() {
+                        tool
+                    } else {
+                        crate::peer_policy::UNLISTED_TOOL
+                    };
+                    audit_mcp_tool(state, &caller, action, &registration.session_id, "denied");
                 }
                 return Ok(Some(refusal));
             }
