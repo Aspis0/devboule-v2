@@ -76,6 +76,9 @@ function treeProps(over: Partial<WorkspaceTreeProps> = {}): WorkspaceTreeProps {
       [KEY_W_A, "main"],
       [KEY_W_C, "feat/sidebar"],
     ]),
+    agentRows: new Map(),
+    activeSessionId: null,
+    onOpenAgent: vi.fn(),
     ...over,
   };
 }

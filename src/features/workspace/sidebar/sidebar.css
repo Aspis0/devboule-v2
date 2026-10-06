@@ -244,11 +244,17 @@
   font-weight: var(--weight-label);
 }
 
+/* How many workspaces the project holds, at the header's far edge. */
+.workspace-project-count {
+  margin-left: auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
 /* The per-project "+" is revealed by the header's hover, per the spec. */
 .workspace-project-heading .workspace-project-add {
   width: var(--control-dense);
   height: var(--control-dense);
-  margin-left: auto;
   display: grid;
   place-items: center;
   color: var(--muted);
@@ -305,6 +311,121 @@
 .workspace-row-selected:hover,
 .workspace-row-selected:focus-visible {
   background: var(--fill-selected-soft);
+}
+
+/* The selection is a neutral fill; ochre is only the thin marker on its edge. */
+.workspace-row-selected,
+.workspace-agent-row-active {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* The name over its branch and what is uncommitted: two lines, no taller than
+   the pair needs. */
+.workspace-row-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.workspace-row-two {
+  padding-block: var(--space-4);
+}
+
+.workspace-row-line {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.workspace-row-sub {
+  color: var(--muted);
+  font-size: var(--type-meta);
+  line-height: 16px;
+}
+
+.workspace-row-branch {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-row-totals {
+  margin-left: auto;
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.workspace-row-selected .workspace-row-sub {
+  color: var(--ink);
+}
+
+/* The agents of the selected workspace, nested under its row. */
+.workspace-agent-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-left: var(--space-24);
+}
+
+.workspace-agent-row {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  column-gap: var(--space-6);
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-4) var(--space-8);
+  color: var(--ink);
+  text-align: left;
+  background: transparent;
+  border-radius: var(--radius-6);
+  cursor: pointer;
+}
+
+.workspace-agent-row:hover,
+.workspace-agent-row:focus-visible {
+  background: var(--fill-hover);
+}
+
+.workspace-agent-row-active,
+.workspace-agent-row-active:hover,
+.workspace-agent-row-active:focus-visible {
+  background: var(--fill-selected-soft);
+}
+
+.workspace-agent-name {
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--type-small);
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-agent-sub {
+  grid-column: 2;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--type-meta);
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-agent-row-active .workspace-agent-sub {
+  color: var(--ink);
+}
+
+.workspace-agent-row .strip-kind {
+  grid-row: 1;
+  color: var(--ink-soft);
 }
 
 .workspace-row-title {

@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from "react";
+import { Fragment, useMemo, type ReactNode } from "react";
 import { ErrorText } from "../../../components/ErrorText";
 import { firstGrapheme } from "../../../lib/graphemeBound";
 import type { ErrorSentence } from "../../../lib/errorSentence";
@@ -6,6 +6,8 @@ import type { WorkspaceProject } from "../workspaceProjects";
 import { keyOfWorkspace } from "../workspaceProjects";
 import type { WorkspaceKey } from "../hosts/hostIdentity";
 import { avatarStyle } from "./avatars";
+import { AgentRows } from "./AgentRows";
+import type { AgentRowView } from "./agentRowViews";
 import { WorkspaceRow } from "./WorkspaceRow";
 import type { WorkspaceStat } from "./useWorkspaceStats";
 
@@ -31,7 +33,15 @@ export interface WorkspaceTreeProps {
   stats: ReadonlyMap<WorkspaceKey, WorkspaceStat>;
   /** Each workspace's branch, from the same status read as `stats`. */
   branches: ReadonlyMap<WorkspaceKey, string>;
+  /** Each workspace's top-level agents; the selected workspace lists its own. */
+  agentRows: ReadonlyMap<WorkspaceKey, readonly AgentRowView[]>;
+  /** The agent whose tab is in front, if one is. */
+  activeSessionId: string | null;
+  /** Opens an agent's tab, or brings it to the front. */
+  onOpenAgent: (sessionId: string) => void;
 }
+
+const NO_AGENTS: readonly AgentRowView[] = [];
 
 /**
  * The folder a project lives in: the one thing two projects sharing a name do
@@ -43,8 +53,8 @@ function parentFolder(path: string): string | null {
 }
 
 /**
- * The project tree: every project keeps its header — name, avatar and the "+"
- * that creates its next workspace — above its rows, and a header whose name a
+ * The project tree: every project keeps its header — name, avatar, its
+ * workspace count and the "+" that creates its next workspace — above its rows, and a header whose name a
  * row would only repeat carries the folder the project sits in instead of
  * leaving two identical headers. What a row prints beside its name is decided
  * by the row itself (WorkspaceRow).
@@ -65,6 +75,9 @@ export function WorkspaceTree({
   providerMenu,
   stats,
   branches,
+  agentRows,
+  activeSessionId,
+  onOpenAgent,
 }: WorkspaceTreeProps) {
   // Derived once per project list, not once per render: two headers may hold
   // the same name, and only the folder separates them.
@@ -126,6 +139,14 @@ export function WorkspaceTree({
               </span>
               <span className="workspace-project-name">{project.name}</span>
               {folder === null ? null : <span className="workspace-project-folder">{folder}</span>}
+              <span className="workspace-project-count">
+                <span aria-hidden="true">{project.workspaces.length}</span>
+                <span className="sr-only">
+                  {project.workspaces.length === 1
+                    ? "1 workspace"
+                    : `${project.workspaces.length} workspaces`}
+                </span>
+              </span>
               <button
                 type="button"
                 className="workspace-project-add"
@@ -155,19 +176,31 @@ export function WorkspaceTree({
             <div className="workspace-project-items">
               {project.workspaces.map((workspace) => {
                 const key = keyOfWorkspace(workspace);
+                const selected = key !== null && selectedWorkspace === key;
+                const agents = key === null ? NO_AGENTS : (agentRows.get(key) ?? NO_AGENTS);
+                const agentsListed = selected && agents.length > 0;
                 return (
-                  <WorkspaceRow
-                    key={workspace.id}
-                    workspace={workspace}
-                    workspaceKey={key}
-                    projectName={project.name}
-                    selected={key !== null && selectedWorkspace === key}
-                    stat={key === null ? undefined : stats.get(key)}
-                    branch={key === null ? undefined : branches.get(key)}
-                    onSelect={onSelectWorkspace}
-                    onRename={onRenameWorkspace}
-                    onDelete={onDeleteWorkspace}
-                  />
+                  <Fragment key={workspace.id}>
+                    <WorkspaceRow
+                      workspace={workspace}
+                      workspaceKey={key}
+                      projectName={project.name}
+                      selected={selected}
+                      agentsListed={agentsListed}
+                      stat={key === null ? undefined : stats.get(key)}
+                      branch={key === null ? undefined : branches.get(key)}
+                      onSelect={onSelectWorkspace}
+                      onRename={onRenameWorkspace}
+                      onDelete={onDeleteWorkspace}
+                    />
+                    {agentsListed ? (
+                      <AgentRows
+                        agents={agents}
+                        activeSessionId={activeSessionId}
+                        onOpen={onOpenAgent}
+                      />
+                    ) : null}
+                  </Fragment>
                 );
               })}
             </div>

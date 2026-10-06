@@ -119,6 +119,9 @@ function sidebarProps(): SidebarProps {
       providerMenu: null,
       stats: new Map(),
       branches: new Map(),
+      agentRows: new Map(),
+      activeSessionId: null,
+      onOpenAgent: vi.fn(),
     },
     daemon: CONNECTED,
     daemonNote: null,
@@ -195,20 +198,32 @@ describe("the lone host's sidebar markup", () => {
 <div class="workspace-project-heading sidebar-project-head">
 <span class="sidebar-avatar sidebar-avatar-project" aria-hidden="true">A</span>
 <span class="workspace-project-name">Alpha</span>
+<span class="workspace-project-count">
+<span aria-hidden="true">2</span>
+<span class="sr-only">2 workspaces</span>
+</span>
 <button type="button" class="workspace-project-add" title="New workspace in this project" aria-label="New workspace in Alpha">+</button>
 </div>
 <div class="workspace-project-items">
 <div class="workspace-row-wrap">
 <button type="button" class="workspace-row" aria-pressed="false" aria-label="shell one, Alpha" aria-describedby="~" title="C:/code/alpha">
 <span class="sidebar-avatar sidebar-avatar-workspace" aria-hidden="true">s</span>
+<span class="workspace-row-body">
+<span class="workspace-row-line">
 <span class="workspace-row-title">shell one</span>
+</span>
+</span>
 </button>
 <span id="~" class="sr-only">C:/code/alpha</span>
 </div>
 <div class="workspace-row-wrap">
 <button type="button" class="workspace-row" aria-pressed="false" aria-label="shell two, Alpha" aria-describedby="~" title="C:/code/alpha">
 <span class="sidebar-avatar sidebar-avatar-workspace" aria-hidden="true">s</span>
+<span class="workspace-row-body">
+<span class="workspace-row-line">
 <span class="workspace-row-title">shell two</span>
+</span>
+</span>
 </button>
 <span id="~" class="sr-only">C:/code/alpha</span>
 </div>

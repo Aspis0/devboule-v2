@@ -136,6 +136,11 @@ export const DIRECT_RING_GROUNDS: readonly DirectRingGround[] = [
     ground: side,
   },
   {
+    file: "src/features/workspace/sidebar/sidebar.css",
+    match: ".workspace-row-selected",
+    ground: "--fill-selected-soft",
+  },
+  {
     file: "src/features/workspace/strip/strip.css",
     match: ".workspace-session-tab-multiselected",
     ground: "--fill-selected-soft",

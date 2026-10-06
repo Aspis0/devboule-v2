@@ -81,6 +81,7 @@ import { MIN_LEFT_WIDTH, MIN_RIGHT_WIDTH, useWorkspacePanelResize } from "./work
 import { keyOfWorkspace, useWorkspaceProjects } from "./workspaceProjects";
 import { getLastSelectedWorkspaceKey, setLastSelectedWorkspaceKey } from "./lastSelectedWorkspace";
 import { Sidebar } from "./sidebar/Sidebar";
+import { buildAgentRows } from "./sidebar/agentRowViews";
 import { StatusBar, type FocusedAgent } from "./statusBar/StatusBar";
 import { useWorkspaceStats } from "./sidebar/useWorkspaceStats";
 import { useProviderConsent } from "./useProviderConsent";
@@ -1910,6 +1911,7 @@ export function Workspace({
       </AnchoredPopover>
     );
 
+  const agentRows = useMemo(() => buildAgentRows(sessions), [sessions]);
   return (
     <section className="workspace-screen" data-screen-label="Workspace">
       <div className="workspace-panels">
@@ -1956,6 +1958,9 @@ export function Workspace({
             providerMenu: providerAnchor?.kind === "project" ? providerMenu : null,
             stats: workspaceStats,
             branches: workspaceBranches,
+            agentRows,
+            activeSessionId: panes.upperToolId === null ? selectedSessionId : null,
+            onOpenAgent: handleOpenSubagent,
           }}
         />
 

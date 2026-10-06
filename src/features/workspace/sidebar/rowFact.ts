@@ -1,6 +1,5 @@
 import type { WorkspaceView } from "../workspaceProjects";
 import { compactAge } from "./compactAge";
-import type { WorkspaceStat } from "./useWorkspaceStats";
 
 /** The row's state dot, in the tab chips' vocabulary. */
 type WorkspaceStateDot = NonNullable<WorkspaceView["stateDot"]>;
@@ -22,10 +21,10 @@ export interface RowFact {
 
 /**
  * The one fact the row prints right of the name: what the workspace is doing,
- * else when it last spoke, else what is uncommitted — and nothing when it has
- * none of the three, so a quiet row prints its name alone.
+ * else when it last spoke — and nothing when it has neither, so a quiet row
+ * prints its name alone. What is uncommitted rides the row's second line.
  */
-export function rowFact(workspace: WorkspaceView, stat: WorkspaceStat | undefined): RowFact | null {
+export function rowFact(workspace: WorkspaceView): RowFact | null {
   const { working, waiting } = workspace.agents;
   const parts: { text: string; attention: boolean }[] = [];
   if (waiting > 0) parts.push({ text: `${waiting} waiting`, attention: true });
@@ -36,9 +35,6 @@ export function rowFact(workspace: WorkspaceView, stat: WorkspaceStat | undefine
     } else {
       const age = compactAge(workspace.elapsedMs);
       if (age !== null) parts.push({ text: age, attention: false });
-      else if (stat !== undefined && stat.additions + stat.deletions > 0) {
-        parts.push({ text: `+${stat.additions} −${stat.deletions}`, attention: false });
-      }
     }
   }
   if (parts.length === 0) return null;

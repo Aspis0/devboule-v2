@@ -68,6 +68,7 @@ describe("the workspace row's one line", () => {
           workspaceKey={localWorkspaceKey(view.id)}
           projectName={facts.projectName ?? "devboule"}
           selected={false}
+          agentsListed={false}
           stat={facts.stat}
           branch={facts.branch}
           onSelect={vi.fn()}
@@ -81,14 +82,20 @@ describe("the workspace row's one line", () => {
     return row;
   }
 
-  it("prints the name and its fact as siblings: one line, no second row of text", async () => {
+  it("prints the name and its fact as siblings on the first line, and no second line without a branch or totals", async () => {
     const row = await render(workspace({ stateDot: "pulse", agents: { working: 2, waiting: 0 } }));
 
     expect([...row.children].map((child) => child.className)).toEqual([
       "sidebar-avatar sidebar-avatar-workspace",
-      "workspace-row-title",
-      "workspace-row-fact",
+      "workspace-row-body",
     ]);
+    expect(
+      [...(row.querySelector(".workspace-row-line")?.children ?? [])].map(
+        (child) => child.className,
+      ),
+    ).toEqual(["workspace-row-title", "workspace-row-fact"]);
+    expect(row.querySelector(".workspace-row-sub")).toBeNull();
+    expect(row.classList.contains("workspace-row-two")).toBe(false);
     expect(row.querySelector(".workspace-row-fact")?.textContent).toBe("2 working");
     expect(row.querySelector(".sidebar-row-dot-pulse")).not.toBeNull();
   });
@@ -126,24 +133,42 @@ describe("the workspace row's one line", () => {
     expect(row.querySelector(".workspace-row-title")?.textContent).toBe("devboule-v2");
   });
 
-  it("falls back to the uncommitted totals when no agent and no clock fact exist", async () => {
-    const row = await render(workspace(), { stat: { additions: 12, deletions: 3 } });
+  it("puts the branch in mono on a second line, with the uncommitted totals at its far end", async () => {
+    const row = await render(workspace(), {
+      branch: "feat/handoff",
+      stat: { additions: 12, deletions: 3 },
+    });
 
-    expect(row.querySelector(".workspace-row-fact")?.textContent).toBe("+12 −3");
+    const sub = row.querySelector(".workspace-row-sub");
+    expect(sub?.querySelector(".workspace-row-branch")?.textContent).toBe("feat/handoff");
+    expect(sub?.querySelector(".workspace-row-totals")?.textContent).toBe("+12 −3");
+    // The totals are the second line's, not a fact of the first.
+    expect(row.querySelector(".workspace-row-fact")).toBeNull();
+    expect(row.classList.contains("workspace-row-two")).toBe(true);
   });
 
-  it("leaves out a clean tree's zero totals", async () => {
+  it("leaves out a clean tree's zero totals, and keeps one line when the branch is unknown too", async () => {
     const row = await render(workspace(), { stat: { additions: 0, deletions: 0 } });
 
     expect(row.querySelector(".workspace-row-fact")).toBeNull();
+    expect(row.querySelector(".workspace-row-sub")).toBeNull();
   });
 
-  it("prefers the last activity over the totals, right of the name", async () => {
+  it("does not print a branch twice when it already stands in for the name", async () => {
+    const row = await render(workspace({ displayTitle: "devboule" }), { branch: "main" });
+
+    expect(row.querySelector(".workspace-row-title")?.textContent).toBe("main");
+    expect(row.querySelector(".workspace-row-sub")).toBeNull();
+  });
+
+  it("keeps the last activity right of the name, and the totals on the second line", async () => {
     const row = await render(workspace({ elapsedMs: 4 * 60_000 }), {
+      branch: "main",
       stat: { additions: 12, deletions: 3 },
     });
 
     expect(row.querySelector(".workspace-row-fact")?.textContent).toBe("4m");
+    expect(row.querySelector(".workspace-row-totals")?.textContent).toBe("+12 −3");
   });
 
   it("reads a session that just spoke as now, not as a year", async () => {

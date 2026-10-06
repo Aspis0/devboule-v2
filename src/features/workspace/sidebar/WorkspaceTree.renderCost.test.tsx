@@ -89,6 +89,9 @@ function treeProps(over: Partial<WorkspaceTreeProps> = {}): WorkspaceTreeProps {
     providerMenu: null,
     stats: STATS,
     branches: BRANCHES,
+    agentRows: new Map(),
+    activeSessionId: null,
+    onOpenAgent: vi.fn(),
     ...over,
   };
 }
@@ -144,6 +147,6 @@ describe("what the rail re-renders", () => {
     await repaint({ stats: changed });
 
     expect(counters.rowRenders).toBe(mounted + 1);
-    expect(container.querySelectorAll(".workspace-row-fact")[0]?.textContent).toBe("+90 −1");
+    expect(container.querySelectorAll(".workspace-row-totals")[0]?.textContent).toBe("+90 −1");
   });
 });

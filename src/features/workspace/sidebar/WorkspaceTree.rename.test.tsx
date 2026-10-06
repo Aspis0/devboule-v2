@@ -85,6 +85,9 @@ describe("the sidebar's workspace rows", () => {
           providerMenu={null}
           stats={new Map()}
           branches={new Map()}
+          agentRows={new Map()}
+          activeSessionId={null}
+          onOpenAgent={vi.fn()}
           onRenameWorkspace={onRename}
           onDeleteWorkspace={onDeleteWorkspace}
         />,

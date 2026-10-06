@@ -89,6 +89,9 @@ export interface WorkspaceRowProps {
   workspaceKey: WorkspaceKey | null;
   projectName: string;
   selected: boolean;
+  /** The row's agents are listed right under it, so their states are said there
+   *  and the counts beside the name are left to a screen reader. */
+  agentsListed: boolean;
   stat: WorkspaceStat | undefined;
   /** The branch the workspace's last status read reported; it also speaks the
    *  row when the project's name above already said this workspace's name. */
@@ -110,6 +113,7 @@ export const WorkspaceRow = memo(function WorkspaceRow({
   workspaceKey,
   projectName,
   selected,
+  agentsListed,
   stat,
   branch,
   onSelect,
@@ -306,8 +310,16 @@ export const WorkspaceRow = memo(function WorkspaceRow({
     void saveRename();
   };
 
-  const fact = rowFact(workspace, stat);
+  const fact = rowFact(workspace);
   const label = rowLabel(workspace, projectName, branch);
+  // The second line: the branch in mono, unless it already is the name above,
+  // and what is uncommitted. A row with neither stays one line.
+  const subBranch = branch !== undefined && branch !== label ? branch : null;
+  const totals =
+    stat !== undefined && stat.additions + stat.deletions > 0
+      ? `+${stat.additions} −${stat.deletions}`
+      : null;
+  const twoLines = subBranch !== null || totals !== null;
   // The visible label leads the name; a branch standing in for the title is
   // followed by the title, so the row stays findable by what it is called —
   // and the name says each thing once, never the project's name twice.
@@ -317,6 +329,14 @@ export const WorkspaceRow = memo(function WorkspaceRow({
   if (fact !== null) nameParts.push(...fact.parts.map((part) => part.text));
   const ariaLabel = nameParts.join(", ");
   const detail = rowDetail(workspace, branch, stat);
+  const factParts = fact?.parts.map((part, index) => (
+    <span key={part.text} className={part.attention ? "sidebar-row-waiting" : undefined}>
+      {/* A flex item trims its own leading space, so the space
+          before the dot cannot be an ordinary one. */}
+      {index > 0 ? " · " : ""}
+      {part.text}
+    </span>
+  ));
   return (
     <div className="workspace-row-wrap" onContextMenu={openMenu}>
       {editing ? (
@@ -346,7 +366,9 @@ export const WorkspaceRow = memo(function WorkspaceRow({
           <button
             type="button"
             ref={rowRef}
-            className={`workspace-row${selected ? " workspace-row-selected" : ""}`}
+            className={`workspace-row${selected ? " workspace-row-selected" : ""}${
+              twoLines ? " workspace-row-two" : ""
+            }`}
             onClick={() => {
               if (workspaceKey !== null) onSelect(workspaceKey);
             }}
@@ -363,30 +385,30 @@ export const WorkspaceRow = memo(function WorkspaceRow({
             >
               {firstGrapheme(workspace.displayTitle)}
             </span>
-            <span className="workspace-row-title">{label}</span>
-            {fact === null ? null : (
-              <span className="workspace-row-fact">
-                {fact.dot === null ? null : (
-                  <span
-                    aria-hidden="true"
-                    className={`sidebar-row-dot sidebar-row-dot-${fact.dot}${
-                      fact.dot === "pulse" ? " dot-pulse" : ""
-                    }`}
-                  />
-                )}
-                {fact.parts.map((part, index) => (
-                  <span
-                    key={part.text}
-                    className={part.attention ? "sidebar-row-waiting" : undefined}
-                  >
-                    {/* A flex item trims its own leading space, so the space
-                      before the dot cannot be an ordinary one. */}
-                    {index > 0 ? "\u00A0· " : ""}
-                    {part.text}
+            <span className="workspace-row-body">
+              <span className="workspace-row-line">
+                <span className="workspace-row-title">{label}</span>
+                {fact === null ? null : (
+                  <span className="workspace-row-fact">
+                    {fact.dot === null ? null : (
+                      <span
+                        aria-hidden="true"
+                        className={`sidebar-row-dot sidebar-row-dot-${fact.dot}${
+                          fact.dot === "pulse" ? " dot-pulse" : ""
+                        }`}
+                      />
+                    )}
+                    {agentsListed ? <span className="sr-only">{factParts}</span> : factParts}
                   </span>
-                ))}
+                )}
               </span>
-            )}
+              {twoLines ? (
+                <span className="workspace-row-line workspace-row-sub">
+                  <span className="workspace-row-branch">{subBranch}</span>
+                  {totals === null ? null : <span className="workspace-row-totals">{totals}</span>}
+                </span>
+              ) : null}
+            </span>
           </button>
           {detail === undefined ? null : (
             <span id={detailId} className="sr-only">
