@@ -733,6 +733,18 @@ export class AgentSession {
   }
 
   /**
+   * Whether this session is working or has worked: a turn is running, or the
+   * transcript holds anything beyond a notice. A turn a peer or another window
+   * started leaves rows here without opening a turn or moving the status, so the
+   * rows are the evidence; a session's creation notice is a `system` row and does
+   * not count.
+   */
+  hasWorked(): boolean {
+    const { status, streaming, items } = this.state;
+    return status === "running" || streaming || items.some((item) => item.role !== "system");
+  }
+
+  /**
    * Hot-switch the permission mode. Like setModel, the invoke response is not
    * a confirmation: the chip shows the chosen mode optimistically until a
    * later session_manifest reports it, and a rejected invoke is reported

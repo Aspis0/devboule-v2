@@ -1,5 +1,6 @@
 // What a caller can ask the controller before it acts on a fresh session: whether
-// a hot switch can go out, and when the first turn begins.
+// a hot switch can go out, whether the session has worked, and when the first
+// turn begins.
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
 import type { SessionEvent } from "../types/ipc";
@@ -55,6 +56,62 @@ describe("the first turn of a session", () => {
     emit({ type: "session_manifest", providerId: "claude", currentModelId: "sonnet", models: [] });
 
     expect(onTurnStarted).not.toHaveBeenCalled();
+  });
+});
+
+describe("whether a session has worked", () => {
+  const incomingA2a: SessionEvent = {
+    type: "agent_user_message",
+    author: "agent",
+    messageId: "m-incoming",
+    text: [
+      "<devboule-system>",
+      "origin: local",
+      "role: client",
+      "from_agent: s.msg.source",
+      "timestamp: 1789671600000",
+      "words received from another agent",
+      "</devboule-system>",
+    ].join("\n"),
+    messageKind: "incoming_a2a",
+  };
+
+  it("is no for a session that holds only its creation notice", async () => {
+    const { session, emit } = harness();
+    await session.start();
+    expect(session.hasWorked()).toBe(false);
+
+    emit({
+      type: "agent_user_message",
+      author: "creation",
+      messageId: "m-creation",
+      text: "standing instructions",
+      messageKind: "creation",
+    });
+
+    expect(session.hasWorked()).toBe(false);
+  });
+
+  it("is yes once a peer's message is on the transcript, though no turn opened here", async () => {
+    const onTurnStarted = vi.fn();
+    const { session, emit } = harness(onTurnStarted);
+    await session.start();
+
+    emit(incomingA2a);
+
+    expect(onTurnStarted).not.toHaveBeenCalled();
+    expect(session.getState().status).toBe("idle");
+    expect(session.hasWorked()).toBe(true);
+  });
+
+  it("is yes while a turn this view sent is running", async () => {
+    const { session } = harness();
+    await session.start();
+
+    const sent = session.send("Say hello");
+
+    expect(session.hasWorked()).toBe(true);
+    await sent;
   });
 });
 

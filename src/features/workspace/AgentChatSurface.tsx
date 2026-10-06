@@ -656,6 +656,8 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   // whether it has been asked or has begun a turn, is the record's answer: the
   // controller ends it when a turn begins, ahead of any render, so neither a
   // late roster row nor a re-render can put a pick into a session that worked.
+  // A turn a peer or another window started opens no turn here, so the apply
+  // asks the controller's own transcript once more and ends the attempt on it.
   //
   // The picks are a localStorage/product concern, so they live on the surface
   // next to the manual handlers, not inside the headless session controller.
@@ -669,6 +671,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     const session = sessionRef.current;
     if (session === null || !session.canSwitch()) return;
     forgetCreatedSession(sessionId);
+    if (session.hasWorked()) return;
     const asked = rememberedSwitch(manifest);
     if (asked.mode !== undefined) void session.setMode(asked.mode);
     const modelId = asked.model ?? manifest.currentModelId;

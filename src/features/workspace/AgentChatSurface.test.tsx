@@ -1586,6 +1586,46 @@ describe("AgentChatSurface", () => {
     expect(sessionSetMode).not.toHaveBeenCalled();
   });
 
+  it("leaves a session alone whose turn a peer started, though its status still reads idle", async () => {
+    setPreferredMode("claude", "plan");
+    recordCreatedSession("peer-turn", 1);
+
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="peer-turn"
+          title="Agent"
+          observedState={LIVE_OBSERVED}
+        />,
+      );
+    });
+    await act(async () => undefined);
+    await act(async () => {
+      channelHarness.emit?.({
+        type: "agent_user_message",
+        author: "agent",
+        messageId: "m-peer",
+        text: [
+          "<devboule-system>",
+          "origin: local",
+          "role: client",
+          "from_agent: s.msg.source",
+          "timestamp: 1789671600000",
+          "words received from another agent",
+          "</devboule-system>",
+        ].join("\n"),
+        messageKind: "incoming_a2a",
+      });
+    });
+    await act(async () => {
+      channelHarness.emit?.({ ...MODES_MANIFEST });
+    });
+
+    expect(sessionSetMode).not.toHaveBeenCalled();
+  });
+
   it("switches once, and no re-render or remount puts it back", async () => {
     setPreferredMode("claude", "plan");
     setPreferredModel("claude", "opus");
