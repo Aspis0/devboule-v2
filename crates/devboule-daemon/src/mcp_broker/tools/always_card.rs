@@ -15,7 +15,7 @@ use std::sync::Arc;
 use devboule_protocol::{PermissionOption, SessionEvent, SessionOrigin};
 use serde_json::Value;
 
-use super::card_text::visible_text;
+use super::card_text::{long_message_tail, visible_text};
 use super::first_use::{ask_card_in_any_mode, card_id, mark_fact_lines, mode_refusal};
 use crate::mcp_broker::dispatch::{rpc_error, tool_error};
 use crate::mcp_broker::RegisteredSession;
@@ -185,8 +185,9 @@ fn remote_session_name(
 }
 
 /// The card: which machine, which session on it, and the whole message, with
-/// its length. Nothing is cut and nothing invisible is left invisible; only this
-/// call is offered — no grant for the session exists.
+/// its length and, when it is long, its end first. Nothing is cut and nothing
+/// invisible is left invisible; only this call is offered — no grant for the
+/// session exists.
 fn peer_command_card(
     registration: &RegisteredSession,
     device: &str,
@@ -202,12 +203,22 @@ fn peer_command_card(
         ),
         None => visible_text(&command.target, false),
     };
-    let facts = format!(
-        "device: {device}\nsession: {session}\n{} ({} characters):\n{}",
-        command.content_label,
-        command.content.chars().count(),
-        visible_text(&command.content, true),
-    );
+    let rendered = visible_text(&command.content, true);
+    let length = command.content.chars().count();
+    // A long message says so and repeats its end first, so the last words are
+    // in view without scrolling the box.
+    let message = match long_message_tail(&rendered) {
+        Some(tail) => format!(
+            "{label}: {length} characters, longer than the box shows. It ends with:\n{tail}\n\
+             The whole {label}:\n{rendered}",
+            label = command.content_label
+        ),
+        None => format!(
+            "{} ({length} characters):\n{rendered}",
+            command.content_label
+        ),
+    };
+    let facts = format!("device: {device}\nsession: {session}\n{message}");
     let marked = mark_fact_lines(&facts).join("\n");
     SessionEvent::PermissionRequest {
         tool_call_id: card_id(&registration.session_id, "peer_command"),
@@ -215,7 +226,7 @@ fn peer_command_card(
         description: Some(format!(
             "An agent asked to {} {device}, another machine paired with this one. \
              This always asks, whatever the session's mode. What follows is everything \
-             that would be sent; invisible characters and long runs of spaces are \
+             that would be sent; invisible characters and long runs of blanks are \
              spelled out.\n{marked}\n\n\"Allow this call\" approves only this call.",
             command.phrase
         )),
