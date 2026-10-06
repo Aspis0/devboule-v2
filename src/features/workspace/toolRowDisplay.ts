@@ -28,6 +28,16 @@ const DISPLAY_NAMES = new Map<string, string>([
   ["question", "Question"],
 ]);
 
+// A call still running reads in the present; the past tense is for a finished one.
+const RUNNING_NAMES = new Map<string, string>([
+  ["execute", "Running"],
+  ["read", "Reading"],
+  ["edit", "Editing"],
+  ["delete", "Deleting"],
+  ["search", "Searching"],
+  ["fetch", "Fetching"],
+]);
+
 // Not a cost bound — the split pass is linear: this is the INPUT length past
 // which a name is shown as sent instead of split. The function never
 // truncates; the row's CSS ellipsis bounds the label.
@@ -143,7 +153,7 @@ function browserSummary(title: string): string | undefined {
   return browserToolName(trimmed) === null && trimmed.length > 0 ? trimmed : undefined;
 }
 
-export function toolRowDisplay(item: ToolItem): ToolRowModel {
+export function toolRowDisplay(item: ToolItem, running = false): ToolRowModel {
   const kind = item.kind?.trim().toLowerCase();
   if (isBrowserToolRow(kind, item.title)) {
     const summary = browserSummary(item.title);
@@ -152,7 +162,10 @@ export function toolRowDisplay(item: ToolItem): ToolRowModel {
       ...(summary === undefined ? {} : { summary }),
     };
   }
-  const label = kind !== undefined ? DISPLAY_NAMES.get(kind) : undefined;
+  const label =
+    kind === undefined
+      ? undefined
+      : ((running ? RUNNING_NAMES.get(kind) : undefined) ?? DISPLAY_NAMES.get(kind));
   const fromBareName = label === undefined && isBareName(item.title);
   const displayName =
     label !== undefined

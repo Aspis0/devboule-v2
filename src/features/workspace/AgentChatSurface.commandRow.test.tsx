@@ -165,7 +165,7 @@ describe("command tool row", () => {
     expect(row.querySelector(".workspace-command-exit")?.textContent).toBe("exit 1");
     const summary = row.querySelector(".workspace-chat-tool-summary");
     if (summary === null) throw new Error("summary did not render");
-    expect(accessibleName(summary)).toBe("Ran git status exit 1 failed");
+    expect(accessibleName(summary)).toBe("Ran Command git status exit 1 failed");
     // The failure label is always said; the code's own mark stands in for the cross.
     expect(row.querySelector(".workspace-chat-tool-failed")?.textContent).toBe("failed");
     expect(row.querySelector(".workspace-chat-tool-output")?.textContent).toContain(

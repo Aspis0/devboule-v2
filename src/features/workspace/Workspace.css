@@ -538,6 +538,7 @@
    assistant text that follows one, stay on the 4 px rhythm. */
 .workspace-chat-tool + .workspace-chat-assistant,
 .workspace-chat-tool-group + .workspace-chat-assistant,
+.workspace-chat-tool-group-failures + .workspace-chat-assistant,
 .workspace-chat-thought + .workspace-chat-assistant {
   margin-top: var(--space-4);
 }
@@ -736,19 +737,23 @@
   overflow: hidden;
 }
 
+/* The verb keeps its seat, and a long tool name ends in an ellipsis before it
+   can crowd the target out of its own. */
 .workspace-chat-tool-label {
-  flex: 0 0 auto;
-  color: var(--ink-soft);
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 28ch;
+  overflow: hidden;
+  color: var(--ink);
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.workspace-chat-tool-text.has-summary .workspace-chat-tool-label::after {
-  margin-inline-start: var(--space-6);
+.workspace-chat-tool-sep {
+  flex: none;
   color: var(--muted);
-  content: "·";
 }
 
-.workspace-chat-tool-summary-text,
 .workspace-chat-tool-group-summary-text,
 .workspace-chat-tool-stat {
   min-width: 0;
@@ -840,9 +845,10 @@
   color: var(--silence);
 }
 
-/* The command's payload is text on the line like any other target. */
+/* The target keeps a share of the line whatever the verb does. */
+.workspace-chat-tool-summary-text,
 .workspace-command-chip {
-  min-width: 0;
+  min-width: 12ch;
   overflow: hidden;
   color: var(--muted);
   text-overflow: ellipsis;
@@ -857,12 +863,22 @@
   margin: 0 0 var(--space-4) var(--space-16);
 }
 
+/* Tall enough for a whole diff preview, so the preview itself does not scroll. */
 .workspace-chat-tool-output-lines {
-  max-height: calc(var(--transcript-detail-max) * 2);
+  max-height: calc(var(--type-mono-sm) * var(--leading-body) * 26);
   overflow: auto;
   color: var(--muted);
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+.workspace-chat-tool-output-lines:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.workspace-chat-tool-output-cap {
+  color: var(--muted);
 }
 
 /* An empty line still takes its row. */
@@ -956,7 +972,8 @@
   text-decoration: underline;
 }
 
-.workspace-chat-tool-group-body {
+.workspace-chat-tool-group-body,
+.workspace-chat-tool-group-failures {
   display: flex;
   flex-direction: column;
   margin-inline-start: var(--space-12);

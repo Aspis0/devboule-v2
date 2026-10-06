@@ -99,25 +99,82 @@ describe("tool row computed styles", () => {
       expect(unpainted(rowStyle.backgroundColor)).toBe(true);
       expect(noWidth(rowStyle.borderTopWidth)).toBe(true);
       expect(unpainted(getComputedStyle(summary).backgroundColor)).toBe(true);
-      // One font, two greys: the verb in the soft ink, everything else muted.
+      // One font, two greys: the verb in the ink, everything else muted.
       expect(rowStyle.fontFamily).toContain("JetBrains Mono");
-      expect(getComputedStyle(label).color).toBe(css.token("--ink-soft"));
+      expect(getComputedStyle(label).color).toBe(css.token("--ink"));
       for (const muted of [target, stat]) {
         expect(getComputedStyle(muted).color).toBe(css.token("--muted"));
       }
-      for (const readable of [label, target, stat]) {
-        expect(
-          contrastRatio(getComputedStyle(readable).color, ground!),
-          readable.className,
-        ).toBeGreaterThanOrEqual(4.5);
+      // The floors the palette sets: ink 7 on the transcript ground, muted 6.97.
+      expect(contrastRatio(getComputedStyle(label).color, ground!)).toBeGreaterThanOrEqual(7);
+      for (const muted of [target, stat]) {
+        expect(contrastRatio(getComputedStyle(muted).color, ground!)).toBeGreaterThanOrEqual(6.97);
       }
-      // The target yields when the line is tight; the verb never does.
-      expect(getComputedStyle(label).flexShrink).toBe("0");
+      // A long tool name ends in an ellipsis at a width of its own, and the target
+      // keeps a share of the line whatever the name does.
+      const labelStyle = getComputedStyle(label);
+      expect(labelStyle.maxWidth).toBe("28ch");
+      expect(labelStyle.textOverflow).toBe("ellipsis");
+      expect(labelStyle.overflow).toBe("hidden");
+      expect(labelStyle.minWidth).toBe("0");
       expect(getComputedStyle(target).textOverflow).toBe("ellipsis");
-      expect(getComputedStyle(target).minWidth).toBe("0");
+      expect(getComputedStyle(target).minWidth).toBe("12ch");
       expect(getComputedStyle(text).overflow).toBe("hidden");
 
       row.remove();
+    },
+  );
+
+  it.each(["light", "dark"] as const)(
+    "keeps the line's other text and marks readable on the transcript ground in the %s theme",
+    (theme: CssTheme) => {
+      const css = assembleCssProof(sheets, theme);
+      injectToolRules(css);
+
+      const row = el("div", "workspace-chat-entry workspace-chat-tool is-interrupted");
+      const summary = el("div", "workspace-chat-tool-summary");
+      const interrupted = el("span", "workspace-chat-tool-interrupted", "Interrupted");
+      const location = el("span", "workspace-chat-tool-location", "src/main.ts");
+      const exit = el("span", "workspace-command-exit", "exit 1");
+      const done = el("span", "workspace-chat-tool-done", "✓");
+      const running = el("span", "workspace-chat-tool-running");
+      const failed = el("span", "workspace-chat-tool-failed", "failed");
+      summary.append(interrupted, location, exit, done, running, failed);
+      const group = el(
+        "details",
+        "workspace-chat-entry workspace-chat-tool workspace-chat-tool-group",
+      );
+      const count = el("span", "workspace-chat-tool-group-count", "3 tool calls");
+      const groupText = el("span", "workspace-chat-tool-group-summary-text", "Ran 1 command");
+      group.append(el("summary", "workspace-chat-tool-group-summary"), count, groupText);
+      row.append(summary);
+      document.body.append(row, group);
+
+      const ground = css.token("--ground-center")!;
+      // Text carries the palette's floors; a glyph or a dot only needs to be seen.
+      for (const text of [interrupted, location, exit, groupText]) {
+        expect(
+          contrastRatio(getComputedStyle(text).color, ground),
+          text.className,
+        ).toBeGreaterThanOrEqual(6.97);
+      }
+      for (const text of [count, failed]) {
+        expect(
+          contrastRatio(getComputedStyle(text).color, ground),
+          text.className,
+        ).toBeGreaterThanOrEqual(4.5);
+      }
+      expect(contrastRatio(getComputedStyle(done).color, ground)).toBeGreaterThanOrEqual(3);
+      expect(
+        contrastRatio(getComputedStyle(running).backgroundColor, ground),
+      ).toBeGreaterThanOrEqual(3);
+      // An interrupted line keeps its verb at full strength: only the state is said in words.
+      expect(
+        css.rulesFor(".workspace-chat-tool.is-interrupted .workspace-chat-tool-label"),
+      ).toContain("opacity: 1");
+
+      row.remove();
+      group.remove();
     },
   );
 

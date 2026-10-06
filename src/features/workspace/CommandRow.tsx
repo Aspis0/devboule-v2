@@ -4,9 +4,12 @@
 /** The payload shown after the verb, taken from the row summary. */
 export function CommandChip({ command }: { command: string }) {
   return (
-    <span className="workspace-command-chip" title={command}>
-      {command}
-    </span>
+    <>
+      <span className="sr-only">Command</span>
+      <span className="workspace-command-chip" title={command}>
+        {command}
+      </span>
+    </>
   );
 }
 

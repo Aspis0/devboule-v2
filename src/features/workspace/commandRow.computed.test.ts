@@ -94,7 +94,7 @@ describe("command row computed styles", () => {
       expect(chipStyle.textOverflow).toBe("ellipsis");
       expect(chipStyle.whiteSpace).toBe("nowrap");
       expect(chipStyle.overflow).toBe("hidden");
-      expect(chipStyle.minWidth).toBe("0");
+      expect(chipStyle.minWidth).toBe("12ch");
 
       // The mark is a glyph in the status colour; the sentence is what carries the code.
       const dotOkStyle = getComputedStyle(dotOk);

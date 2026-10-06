@@ -241,6 +241,25 @@ describe("toolRowDisplay", () => {
       displayName: "Ran",
     });
   });
+
+  it("reads in the present while a call runs and in the past once it is done", () => {
+    const names = (kind: string, running: boolean) =>
+      toolRowDisplay(tool({ kind, title: "x" }), running).displayName;
+    expect([
+      names("execute", true),
+      names("read", true),
+      names("edit", true),
+      names("search", true),
+      names("fetch", true),
+    ]).toEqual(["Running", "Reading", "Editing", "Searching", "Fetching"]);
+    expect([names("execute", false), names("read", false), names("edit", false)]).toEqual([
+      "Ran",
+      "Read",
+      "Edited",
+    ]);
+    // A name that is not a verb has no tense to move.
+    expect(names("plan", true)).toBe("Plan");
+  });
 });
 
 describe("humanizeToolName", () => {

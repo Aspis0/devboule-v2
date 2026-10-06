@@ -61,7 +61,9 @@ describe("ToolRow output", () => {
     const more = container.querySelector<HTMLButtonElement>(".workspace-chat-tool-more");
     if (more === null) throw new Error("the output offered no way to open the rest");
     expect(more.tagName).toBe("BUTTON");
-    expect(more.textContent).toBe("+4 lines");
+    // The sentence's tail is for a screen reader: "+4 lines" of what.
+    expect(more.textContent).toBe("+4 lines of output");
+    expect(more.querySelector(".sr-only")?.textContent).toBe(" of output");
     expect(more.getAttribute("aria-expanded")).toBe("false");
 
     await act(async () => more.click());
@@ -122,7 +124,82 @@ describe("ToolRow output", () => {
     const excerpt = container.querySelector(".workspace-chat-tool-output.is-failure");
     if (excerpt === null) throw new Error("the failure drew no excerpt");
     expect(excerpt.querySelectorAll(".workspace-chat-tool-output-line")).toHaveLength(3);
-    expect(excerpt.querySelector(".workspace-chat-tool-more")?.textContent).toBe("+2 lines");
+    expect(excerpt.querySelector(".workspace-chat-tool-more")?.textContent).toContain("+2 lines");
+  });
+
+  it("starts every row that has something to show closed", async () => {
+    const container = await renderRow(tool({ kind: "search", title: "q", output: lines(10) }));
+    const details = container.querySelector("details");
+    if (details === null) throw new Error("the row had nothing to open");
+    expect(details.open).toBe(false);
+  });
+
+  it("says a single hidden line in the singular", async () => {
+    const container = await renderRow(tool({ kind: "search", title: "q", output: lines(7) }));
+    expect(container.querySelector(".workspace-chat-tool-more")?.textContent).toContain("+1 line");
+    expect(container.querySelector(".workspace-chat-tool-more")?.textContent).not.toContain(
+      "lines",
+    );
+  });
+
+  it("shows the error of a log that opens with a banner, not the banner", async () => {
+    const log = [
+      "> pnpm test",
+      "> vitest run",
+      "",
+      " RUN  v5.0.0 /work/acme",
+      "",
+      " FAIL  src/summary.test.ts > builds the summary",
+      "AssertionError: expected '/checks' to be './checks'",
+      "  at src/summary.ts:58:12",
+      " Test Files  1 failed (1)",
+    ].join("\n");
+    const container = await renderRow(
+      tool({ kind: "execute", title: "t", command: "t", status: "failed", output: log }),
+    );
+    const shown = Array.from(
+      container.querySelectorAll(
+        ".workspace-chat-tool-output.is-failure .workspace-chat-tool-output-line",
+      ),
+    ).map((line) => line.textContent);
+    expect(shown).toEqual([
+      " FAIL  src/summary.test.ts > builds the summary",
+      "AssertionError: expected '/checks' to be './checks'",
+      "  at src/summary.ts:58:12",
+    ]);
+  });
+
+  it("mounts a bounded number of lines when a huge output is opened, and offers to copy it all", async () => {
+    const container = await renderRow(
+      tool({ kind: "execute", title: "t", command: "t", output: lines(5000) }),
+    );
+    const more = container.querySelector<HTMLButtonElement>(".workspace-chat-tool-more");
+    if (more === null) throw new Error("the output offered no way to open the rest");
+    await act(async () => more.click());
+
+    expect(container.querySelectorAll(".workspace-chat-tool-output-line")).toHaveLength(2000);
+    const cap = container.querySelector(".workspace-chat-tool-output-cap");
+    expect(cap?.textContent).toContain("3000 more lines not shown");
+    expect(cap?.querySelector("button")?.textContent).toBe("Copy all output");
+  });
+
+  it("puts a box that can scroll on the keyboard", async () => {
+    const diff = await renderRow(tool({ kind: "edit", title: "src/a.ts", output: "- old\n+ new" }));
+    expect(diff.querySelector(".workspace-chat-tool-output-lines")?.getAttribute("tabindex")).toBe(
+      "0",
+    );
+    await act(async () => root?.unmount());
+    root = null;
+    host.remove();
+
+    const plain = await renderRow(tool({ kind: "search", title: "q", output: lines(10) }));
+    const box = plain.querySelector(".workspace-chat-tool-output-lines");
+    expect(box?.hasAttribute("tabindex")).toBe(false);
+    await act(async () =>
+      plain.querySelector<HTMLButtonElement>(".workspace-chat-tool-more")?.click(),
+    );
+    expect(box?.getAttribute("tabindex")).toBe("0");
+    expect(box?.getAttribute("aria-label")).toBe("Tool output");
   });
 
   it("says nothing extra for a failure that printed nothing", async () => {

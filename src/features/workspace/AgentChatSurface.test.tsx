@@ -3836,7 +3836,8 @@ describe("AgentChatSurface", () => {
     if (row === null) throw new Error("tool row did not render");
     expect(row.querySelector('.workspace-chat-tool-running[aria-label="Running"]')).not.toBeNull();
     const summary = row.querySelector(".workspace-chat-tool-summary")?.textContent ?? "";
-    expect(summary).toContain("Ran");
+    // A call still running reads in the present.
+    expect(summary).toContain("Running");
     expect(summary).toContain("cargo test");
   });
 
@@ -4019,18 +4020,16 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    const rows = container.querySelectorAll(".workspace-chat-tool:not(.workspace-chat-tool-group)");
-    expect(rows).toHaveLength(2);
-    const singleFailure = rows[0].querySelector(".workspace-chat-tool-failed");
+    // Both calls form one group; its failure stands outside it, the running call inside.
+    const failure = container.querySelector(".workspace-chat-tool-group-failures");
+    const body = container.querySelector(".workspace-chat-tool-group-body");
+    if (failure === null || body === null) throw new Error("the group did not render");
+    const singleFailure = failure.querySelector(".workspace-chat-tool-failed");
     // The failure says so in words; the cross is decoration beside it.
     expect(singleFailure?.textContent).toBe("✗ failed");
     expect(singleFailure?.querySelector("[aria-hidden]")?.textContent).toBe("✗ ");
-    expect(
-      rows[1].querySelector('.workspace-chat-tool-running[aria-label="Running"]'),
-    ).not.toBeNull();
-    expect(rows[1].querySelector(".workspace-chat-tool-location")?.textContent).toBe(
-      "src/lib.rs:12",
-    );
+    expect(body.querySelector('.workspace-chat-tool-running[aria-label="Running"]')).not.toBeNull();
+    expect(body.querySelector(".workspace-chat-tool-location")?.textContent).toBe("src/lib.rs:12");
   });
 
   it("marks cancelled tool rows as cancelled without the failed mark", async () => {

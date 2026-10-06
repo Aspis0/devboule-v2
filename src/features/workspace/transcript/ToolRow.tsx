@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, type ReactNode } from "react";
 import type { ToolChatItem } from "../../../lib/toolCallGroups";
 import { ExternalLink } from "../../../components/ExternalLink";
 import { MarkdownText } from "../../../components/MarkdownText";
@@ -15,9 +15,9 @@ import { ChatImageThumbnails } from "./ChatImageThumbnails";
 import { ToolOutput } from "./ToolOutput";
 import {
   DIFF_PREVIEW_LINES,
-  FAILURE_EXCERPT_LINES,
   OUTPUT_PREVIEW_LINES,
   diffStats,
+  failureExcerpt,
   outputLines,
 } from "./toolOutputView";
 
@@ -29,10 +29,10 @@ export const ToolRow = memo(function ToolRow({
   transcriptEnded: boolean;
 }) {
   const { className, style } = entryFrame(item);
-  const model = toolRowDisplay(item);
-  const linkUrl = model.linkUrl;
   const interrupted = isInterruptedToolStatus(item.status, transcriptEnded);
   const running = isToolRunningStatus(item.status) && !interrupted;
+  const model = toolRowDisplay(item, running);
+  const linkUrl = model.linkUrl;
   const failed = item.kind !== "plan" && item.status.toLowerCase() === "failed";
   const status = item.status.toLowerCase();
   const cancelled = status === "cancelled" || status === "canceled";
@@ -44,12 +44,12 @@ export const ToolRow = memo(function ToolRow({
   // the row's display title, which for some providers is the line itself.
   const commandRow = item.command !== undefined;
   const hasSummary = model.summary !== undefined || planDecision !== undefined;
-  const lines = outputLines(item.output);
+  const lines = useMemo(() => outputLines(item.output), [item.output]);
   const isEdit = item.kind === "edit" || item.kind === "delete";
-  const stats = isEdit ? diffStats(lines) : null;
+  const stats = useMemo(() => (isEdit ? diffStats(lines) : null), [isEdit, lines]);
   // A failure's words stand under its line without a click; every other
   // output waits in the body.
-  const excerpt = failed && lines.length > 0;
+  const excerpt = useMemo(() => (failed ? failureExcerpt(lines) : []), [failed, lines]);
   const bodyLines = failed || isPlan ? [] : lines;
   // An image inside a collapsed body is an image nobody sees: the row opens
   // itself the first time it carries one, and then stays where the person put
@@ -78,6 +78,11 @@ export const ToolRow = memo(function ToolRow({
         <span className="workspace-chat-tool-label" title={model.displayName}>
           {model.displayName}
         </span>
+        {hasSummary ? (
+          <span className="workspace-chat-tool-sep" aria-hidden="true">
+            ·
+          </span>
+        ) : null}
         {commandRow && model.summary !== undefined ? <CommandChip command={model.summary} /> : null}
         {!commandRow && model.summary !== undefined ? (
           <span className="workspace-chat-tool-summary-text">{model.summary}</span>
@@ -140,7 +145,10 @@ export const ToolRow = memo(function ToolRow({
             {bodyLines.length > 0 ? (
               <ToolOutput
                 lines={bodyLines}
-                preview={stats === null ? OUTPUT_PREVIEW_LINES : DIFF_PREVIEW_LINES}
+                collapsed={bodyLines.slice(
+                  0,
+                  stats === null ? OUTPUT_PREVIEW_LINES : DIFF_PREVIEW_LINES,
+                )}
                 tone={stats === null ? "plain" : "diff"}
               />
             ) : null}
@@ -157,7 +165,7 @@ export const ToolRow = memo(function ToolRow({
       ) : (
         <div className="workspace-chat-tool-summary">{line}</div>
       )}
-      {excerpt ? <ToolOutput lines={lines} preview={FAILURE_EXCERPT_LINES} tone="failure" /> : null}
+      {excerpt.length > 0 ? <ToolOutput lines={lines} collapsed={excerpt} tone="failure" /> : null}
     </div>
   );
 });
