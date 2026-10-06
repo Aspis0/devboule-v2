@@ -43,6 +43,10 @@ export function ContextMeter({ usage, manifest, lastFinished }: ContextMeterProp
   const label = hasRatio
     ? `${formatContextTokens(used)}/${formatContextTokens(max)}`
     : formatContextTokens(used);
+  // The name carries the number it shows, so a screen reader hears the reading.
+  const spokenLabel = hasRatio
+    ? `${formatContextTokens(used)} of ${formatContextTokens(max)}`
+    : formatContextTokens(used);
 
   return (
     <span className="workspace-context-meter">
@@ -50,7 +54,7 @@ export function ContextMeter({ usage, manifest, lastFinished }: ContextMeterProp
         ref={buttonRef}
         type="button"
         className="workspace-context-meter-button"
-        aria-label="Context usage"
+        aria-label={`Context usage ${spokenLabel}`}
         aria-expanded={open}
         title={hasRatio ? `${percent}% of the context window` : undefined}
         onClick={() => setOpen((previous) => !previous)}

@@ -65,6 +65,7 @@ import type { ChatFileLinks } from "../../lib/chatFilePaths";
 import { TurnRail } from "./timeline/TurnRail";
 import { TurnFooter } from "./timeline/TurnFooter";
 import { WorkingLine } from "./transcript/WorkingLine";
+import { useInterruptOnEscape } from "./interruptOnEscape";
 import "./timeline/timeline.css";
 import type { A2aNameSource } from "./A2aMessageCard";
 import { AgentTaskPill } from "./AgentTaskPill";
@@ -746,6 +747,11 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   const composerDisabled = disabledReason !== null;
   // Memoised so an `agent_tasks` frame re-renders the pill alone: the
   // element's identity moves only when the checklist does.
+  const interruptOnEscape = useInterruptOnEscape({
+    running: state.streaming && !osGone,
+    cardWaiting: hasPendingPermission,
+    interrupt: () => void sessionRef.current?.interrupt(),
+  });
   // The step the agent is on, for the status bar.
   const currentTask = useMemo(() => {
     const step = state.agentTasks?.find((item) => item.status === "in_progress");
@@ -787,7 +793,13 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     ],
   );
   return (
-    <div id={id} className="workspace-agent-shell" role="tabpanel" aria-label="Agent chat">
+    <div
+      id={id}
+      className="workspace-agent-shell"
+      role="tabpanel"
+      aria-label="Agent chat"
+      onKeyDown={interruptOnEscape}
+    >
       <AgentReadingPublisher
         sessionId={sessionId}
         session={sessionRef.current}
@@ -838,7 +850,9 @@ export const AgentChatSurface = memo(function AgentChatSurface({
             transcriptEnded={osGone}
             streamingThoughtId={streamingThoughtId}
           />
-          {state.streaming && !osGone ? <WorkingLine /> : null}
+          {state.streaming && !osGone ? (
+            <WorkingLine startedAtMs={state.turnStartedAtMs ?? null} />
+          ) : null}
           {state.lastFinished !== null ? <TurnFooter finished={state.lastFinished} /> : null}
         </div>
         {auxiliary}

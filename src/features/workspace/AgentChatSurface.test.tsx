@@ -528,7 +528,9 @@ describe("AgentChatSurface", () => {
     await act(async () => root.render(renderSurface()));
     await act(async () => undefined);
 
-    expect(container.querySelector('[role="status"]')?.childNodes[0]?.textContent).toBe("Running");
+    expect(container.querySelector(".workspace-agent-status")?.childNodes[0]?.textContent).toBe(
+      "Running",
+    );
     expect(
       container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
         ?.disabled,
@@ -539,7 +541,9 @@ describe("AgentChatSurface", () => {
     await act(async () => root.render(renderSurface()));
     await act(async () => undefined);
 
-    expect(container.querySelector('[role="status"]')?.childNodes[0]?.textContent).toBe("Running");
+    expect(container.querySelector(".workspace-agent-status")?.childNodes[0]?.textContent).toBe(
+      "Running",
+    );
     const textarea = container.querySelector<HTMLTextAreaElement>(
       'textarea[aria-label="Message the agent"]',
     );
@@ -2286,7 +2290,9 @@ describe("AgentChatSurface", () => {
     });
     await act(async () => undefined);
 
-    expect(container.querySelector('[role="status"]')?.childNodes[0]?.textContent).toBe("Stopped");
+    expect(container.querySelector(".workspace-agent-status")?.childNodes[0]?.textContent).toBe(
+      "Stopped",
+    );
     expect(container.querySelector('[role="status"]')?.textContent).not.toBe("Ready");
     expect(container.querySelector('[role="status"]')?.textContent).not.toBe("Finished");
     expect(
@@ -2336,7 +2342,7 @@ describe("AgentChatSurface", () => {
 
     expect(container.textContent).toContain("what did we decide");
     expect(container.textContent).toContain("we decided to ship it");
-    expect(container.querySelector('[role="status"]')?.childNodes[0]?.textContent).toBe(
+    expect(container.querySelector(".workspace-agent-status")?.childNodes[0]?.textContent).toBe(
       "Recovered",
     );
     expect(
@@ -2474,7 +2480,9 @@ describe("AgentChatSurface", () => {
       container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
         ?.disabled,
     ).toBe(false);
-    expect(container.querySelector('[role="status"]')?.childNodes[0]?.textContent).toBe("Running");
+    expect(container.querySelector(".workspace-agent-status")?.childNodes[0]?.textContent).toBe(
+      "Running",
+    );
     expect(container.querySelector(".workspace-composer-hint")).toBeNull();
     expect(container.querySelector('[data-testid="provider-model-chip"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="effort-chip"]')).not.toBeNull();

@@ -441,12 +441,6 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
         setMenuDismissed(true);
         return;
       }
-      // The working line promises this: Escape in the composer stops the turn.
-      if (event.key === "Escape" && streaming && onStop) {
-        event.preventDefault();
-        onStop();
-        return;
-      }
       // The menu's own keys, and only unmodified ones: Shift keeps editing, and
       // Ctrl/Alt keep their jumps and the Q2b chord, which falls through here.
       if (
@@ -481,11 +475,9 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
       commandMatches,
       commandMenuVisible,
       matchCount,
-      onStop,
       runAlternateAction,
       runDefaultAction,
       selectCommand,
-      streaming,
     ],
   );
 

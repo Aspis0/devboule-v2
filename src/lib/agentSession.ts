@@ -198,6 +198,12 @@ export interface AgentSessionState {
    */
   agentTasks?: AgentTaskItem[];
   /**
+   * When this view sent the turn that is running (Unix ms). Null or absent for
+   * a turn it did not start — resumed, or begun on another device — whose start
+   * this session cannot know.
+   */
+  turnStartedAtMs?: number | null;
+  /**
    * The session's current goal: every `goal_changed` frame replaces it whole,
    * and `INITIAL_STATE` seeds no goal. Optional only so fixture states written
    * before the field still construct a state.
@@ -258,6 +264,14 @@ export interface AgentSessionDeps {
   onQueueSnapshot?: (event: Extract<SessionEvent, { type: "queue_snapshot" }>) => void;
   /** A `goal_changed` frame arrived, carrying the live goal (null on a clear). */
   onGoalChanged?: (goal: string | null) => void;
+}
+
+/** The plan with no step in progress: a step the turn left running is waiting again. */
+function pausedTasks(tasks: AgentTaskItem[] | undefined): AgentTaskItem[] | undefined {
+  if (tasks === undefined || !tasks.some((task) => task.status === "in_progress")) return tasks;
+  return tasks.map((task) =>
+    task.status === "in_progress" ? { ...task, status: "pending" as const } : task,
+  );
 }
 
 const INITIAL_STATE: AgentSessionState = {
@@ -529,7 +543,10 @@ export class AgentSession {
     // can put it back.
     const previousFinished = this.state.lastFinished;
     if (!joinsRunningTurn) this.beginTurn();
-    this.setStatus("running", { streaming: true });
+    this.setStatus("running", {
+      streaming: true,
+      ...(joinsRunningTurn ? {} : { turnStartedAtMs: Date.now() }),
+    });
     this.sendDepth += 1;
     try {
       const turnActive = await this.deps.invoke<boolean>("session_send", {
@@ -1074,6 +1091,9 @@ export class AgentSession {
         this.closeActiveBlocks();
         this.setStatus("idle", {
           streaming: false,
+          // The turn is over whoever started it: no step is still running.
+          turnStartedAtMs: null,
+          agentTasks: pausedTasks(this.state.agentTasks),
           lastFinished: {
             stopReason: event.stopReason,
             ...(event.modelId === undefined ? {} : { modelId: event.modelId }),
@@ -1854,8 +1874,14 @@ export class AgentSession {
     const from = this.state.status;
     const latched = from === "error" || (from === "closed" && next !== "error");
     const { status: _discarded, ...safeRest } = rest ?? {};
+    // A turn this view was running has ended, however it ended: nothing is in
+    // progress any more, and its clock stops.
+    const endsTurn = next !== "running" && this.state.streaming;
     this.state = {
       ...this.state,
+      ...(endsTurn
+        ? { turnStartedAtMs: null, agentTasks: pausedTasks(this.state.agentTasks) }
+        : {}),
       ...safeRest,
       ...(latched ? {} : { status: next }),
     };

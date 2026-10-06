@@ -39,7 +39,7 @@ export function PaneHeader({
         className={`${agent ? "workspace-agent-status" : "workspace-terminal-status"}${
           wordSaidElsewhere ? " sr-only" : ""
         }`}
-        role="status"
+        role={wordSaidElsewhere ? undefined : "status"}
         title={display.tooltip}
       >
         {text}

@@ -163,11 +163,8 @@ function readingBody(numbers: ContextMeterNumbers, live: boolean): ReactNode {
       </div>
     );
   }
-  return (
-    <div className="workspace-context-reading">
-      <div className="workspace-context-note">No context reading yet.</div>
-    </div>
-  );
+  // The meter that opens this renders nothing without a reading.
+  return null;
 }
 
 function planBody(plan: PlanUsage, nowMs: number): ReactNode {

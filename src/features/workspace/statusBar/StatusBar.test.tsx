@@ -66,11 +66,50 @@ describe("the status bar", () => {
     );
   });
 
+  it("reads idle, not a stale step, when the agent is not working", async () => {
+    await act(async () =>
+      publishAgentReading("bar-agent", {
+        usage: null,
+        manifest: null,
+        lastFinished: null,
+        task: "running tests",
+      }),
+    );
+    const bar = await render(<StatusBar agent={{ ...AGENT, working: false }} daemon={DAEMON} />);
+    expect(bar.querySelector(".status-bar-who")?.textContent).toBe(
+      "Tighten handoff summary — idle",
+    );
+  });
+
   it("puts an approval the agent waits on ahead of its task", async () => {
     const bar = await render(
       <StatusBar agent={{ ...AGENT, attentionWord: "Needs your approval" }} daemon={DAEMON} />,
     );
     expect(bar.querySelector(".status-bar-who")?.textContent).toContain("Needs your approval");
+  });
+
+  it("shows no percent for a window that has reset, and no meter once all have", async () => {
+    const past = Math.floor(Date.now() / 1000) - 3600;
+    recordPlanUsage({
+      type: "plan_usage",
+      providerId: "claude",
+      windows: [
+        { durationMins: 300, usedPercent: 97, resetsAt: past },
+        { durationMins: 10_080, usedPercent: 41, resetsAt: Math.floor(Date.now() / 1000) + 86_400 },
+      ],
+    });
+    recordPlanUsage({
+      type: "plan_usage",
+      providerId: "codex",
+      windows: [{ durationMins: 300, usedPercent: 80, resetsAt: past }],
+    });
+    const bar = await render(<StatusBar agent={null} daemon={DAEMON} />);
+
+    const meters = Array.from(bar.querySelectorAll(".status-bar-provider")).map(
+      (meter) => meter.textContent,
+    );
+    expect(meters).toEqual(["Claude 41% wk"]);
+    expect(bar.textContent).not.toContain("97");
   });
 
   it("shows each provider's usage as text and a bar, and nothing for a provider with no number", async () => {
@@ -121,7 +160,8 @@ describe("the status bar", () => {
     const bar = await render(<StatusBar agent={null} daemon={DAEMON} />);
     expect(bar.querySelector(".status-bar-who")).toBeNull();
     const dot = bar.querySelector(".status-bar-daemon");
-    expect(dot?.getAttribute("role")).toBe("status");
+    // One live region for the daemon: the rail's. The bar's dot is a report, not a second announcement.
+    expect(dot?.hasAttribute("role")).toBe(false);
     expect(dot?.getAttribute("title")).toBe("daemon · pid 40220");
     expect(dot?.querySelector(".sr-only")?.textContent).toBe("daemon · pid 40220");
     expect(bar.querySelector(".workspace-status-bar")?.lastElementChild).toBe(dot);

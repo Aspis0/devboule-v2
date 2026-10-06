@@ -16,6 +16,7 @@
 }
 
 .status-bar-who {
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   color: var(--ink-soft);
@@ -51,7 +52,7 @@
 .status-meter-fill {
   display: block;
   height: 100%;
-  background: var(--accent);
+  background: var(--control-on);
 }
 
 .status-bar-daemon .workspace-status-dot {

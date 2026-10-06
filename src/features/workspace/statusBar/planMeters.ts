@@ -1,4 +1,4 @@
-import type { PlanUsage } from "../../../types/ipc";
+import type { PlanUsage, PlanWindow } from "../../../types/ipc";
 import {
   planWindowBarPercent,
   planWindowLabel,
@@ -16,7 +16,7 @@ const PROVIDER_NAMES = new Map([
 export interface WindowPart {
   /** `5h`, `wk`, or the minutes when the provider names a window of another length. */
   label: string;
-  /** The provider's own number, overage included. */
+  /** The provider's number, rounded to a whole percent; an overage keeps its size. */
   percent: number;
 }
 
@@ -36,9 +36,22 @@ function partLabel(durationMins: number): string {
 }
 
 /**
+ * Whether a window's number still describes the window the provider is in. A
+ * reset time that has passed ends it; with no reset time, a reading older than
+ * the window is no longer about it. A reading whose age is unknown is taken as
+ * current: nothing says otherwise.
+ */
+function isCurrent(window: PlanWindow, recordedAtMs: number | null, nowMs: number): boolean {
+  if (window.resetsAt !== undefined) return window.resetsAt * 1000 > nowMs;
+  if (recordedAtMs === null) return true;
+  return nowMs - recordedAtMs <= window.durationMins * 60_000;
+}
+
+/**
  * One provider's usage as the status bar spells it, or null when there is
- * nothing to say: an unnamed provider, or a frame none of whose windows carries
- * a percent. A window without a percent is left out, never read as zero.
+ * nothing to say: an unnamed provider, or no window that both carries a percent
+ * and still describes the current window. A window without a percent, or one
+ * that has reset, is left out, never read as zero and never drawn as current.
  */
 export function providerMeter(
   plan: PlanUsage,
@@ -47,11 +60,13 @@ export function providerMeter(
 ): ProviderMeter | null {
   const name = PROVIDER_NAMES.get(plan.providerId);
   if (name === undefined) return null;
-  const measured = plan.windows.filter((window) => window.usedPercent !== undefined);
+  const measured = plan.windows.filter(
+    (window) => window.usedPercent !== undefined && isCurrent(window, recordedAtMs, nowMs),
+  );
   if (measured.length === 0) return null;
   const parts = measured.map((window) => ({
     label: partLabel(window.durationMins),
-    percent: window.usedPercent!,
+    percent: Math.round(window.usedPercent!),
   }));
   const barWindow = measured.find((window) => window.durationMins === 300) ?? measured[0]!;
   const lines = measured.map(

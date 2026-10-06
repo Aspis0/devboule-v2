@@ -69,10 +69,11 @@ export function StatusBar({ agent, daemon }: StatusBarProps) {
   const frames = useAllPlanUsage();
   const nowMs = useMinuteClock();
   const reading = useAgentReading(agent?.sessionId ?? null);
+  // A plan step counts only while the agent is on one: idle reads idle.
   const state =
     agent === null
       ? null
-      : (agent.attentionWord ?? reading?.task ?? (agent.working ? "working" : "idle"));
+      : (agent.attentionWord ?? (agent.working ? (reading?.task ?? "working") : "idle"));
   const tooltip = daemonLabel(daemon);
   return (
     <div className="workspace-status-bar" role="group" aria-label="Status">
@@ -90,7 +91,7 @@ export function StatusBar({ agent, daemon }: StatusBarProps) {
       ))}
       <span className="status-bar-spacer" />
       {agent === null ? null : <FocusedAgentContext sessionId={agent.sessionId} />}
-      <span className="status-bar-daemon" role="status" title={tooltip}>
+      <span className="status-bar-daemon" title={tooltip}>
         <span className={`workspace-status-dot workspace-dot-${daemonDotTone(daemon.state)}`} />
         <span className="sr-only">{tooltip}</span>
       </span>

@@ -37,6 +37,20 @@ describe("the status bar's look", () => {
     },
   );
 
+  it("fills its meters with the neutral control colour, never the accent", () => {
+    const css = assembleCssProof(sheets, "light");
+    css.inject([".status-meter-fill"]);
+    const fill = document.createElement("span");
+    fill.className = "status-meter-fill";
+    document.body.append(fill);
+
+    // --control-on is the ink; the accent is the one thing the fill must not be.
+    expect(getComputedStyle(fill).backgroundColor).toBe(css.token("--ink"));
+    expect(getComputedStyle(fill).backgroundColor).not.toBe(css.token("--accent"));
+    expect(css.rulesFor(".status-meter-fill")).not.toContain("--accent");
+    fill.remove();
+  });
+
   it("is a single line that clips rather than wraps", () => {
     const css = assembleCssProof(sheets, "light");
     css.inject([".workspace-status-bar"]);

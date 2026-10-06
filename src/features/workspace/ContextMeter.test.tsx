@@ -92,6 +92,10 @@ describe("the status bar's context meter", () => {
   it("shows both token counts and a filled bar when both sides are known", async () => {
     const host = await render(meter({ usage: usage({ usedTokens: 76_000, maxTokens: 200_000 }) }));
     expect(host.querySelector(".workspace-context-meter-text")?.textContent).toBe("ctx 76k/200k");
+    // The name carries the number the button shows.
+    expect(host.querySelector(".workspace-context-meter-button")?.getAttribute("aria-label")).toBe(
+      "Context usage 76k of 200k",
+    );
     expect(host.querySelector<HTMLElement>(".status-meter-fill")?.style.width).toBe("38%");
     // The percent rides the tooltip, not the line.
     expect(host.querySelector(".workspace-context-meter-button")?.getAttribute("title")).toBe(
