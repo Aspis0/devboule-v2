@@ -15,12 +15,12 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use tauri::Url;
 
-#[path = "destination_ranges.rs"]
-mod ranges;
 #[path = "destination_resolver.rs"]
 mod resolver;
 
-use ranges::{address_blocked, is_localhost, literal_address, looks_numeric, normalise_host};
+use devboule_protocol::{
+    address_blocked, is_localhost, literal_address, looks_numeric, normalise_host,
+};
 use resolver::{LookupPool, Resolver, SystemResolver};
 
 /// Who is driving the navigation. The person's own browsing is out of scope by

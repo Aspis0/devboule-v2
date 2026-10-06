@@ -1,18 +1,20 @@
-//! The addresses agent browsing may not reach: the special-purpose ranges,
-//! the IPv6 forms that carry an IPv4 address, and the numeric IPv4 spellings a
-//! resolver would otherwise normalise. One question, asked once per address.
+//! The addresses an agent-reachable request may not go to: the special-purpose
+//! ranges, the IPv6 forms that carry an IPv4 address, and the numeric IPv4
+//! spellings a resolver would otherwise normalise. One question, asked once per
+//! address, and one table: the desktop app's browser and the daemon's outbound
+//! client both read it from here, so they cannot disagree about what is private.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// The one spelling of a host this module and the policy compare with.
-pub(super) fn normalise_host(host: &str) -> String {
+pub fn normalise_host(host: &str) -> String {
     host.trim_end_matches('.').to_ascii_lowercase()
 }
 
 /// The address behind a host that is nothing but an address: IPv6 literals,
 /// and the decimal/octal/hex IPv4 forms a resolver would otherwise normalise
 /// for us.
-pub(super) fn literal_address(host: &str) -> Option<IpAddr> {
+pub fn literal_address(host: &str) -> Option<IpAddr> {
     let bare = host.trim_matches(['[', ']']);
     if let Ok(address) = bare.parse::<IpAddr>() {
         return Some(address);
@@ -22,7 +24,7 @@ pub(super) fn literal_address(host: &str) -> Option<IpAddr> {
 
 /// Whether a host is a number wearing address clothes that this parser cannot
 /// read. Unreadable is not public: it is refused.
-pub(super) fn looks_numeric(host: &str) -> bool {
+pub fn looks_numeric(host: &str) -> bool {
     let mut characters = host.chars();
     let starts_with_digit = characters
         .next()
@@ -70,14 +72,14 @@ fn parse_number(part: &str) -> Option<u64> {
     part.parse::<u64>().ok()
 }
 
-pub(super) fn is_localhost(host: &str) -> bool {
+pub fn is_localhost(host: &str) -> bool {
     let host = normalise_host(host);
     host == "localhost" || host.ends_with(".localhost")
 }
 
 /// Why an address is not reachable for agent browsing, in the words the
 /// refusal sentence uses, or `None` when it is a public address.
-pub(super) fn address_blocked(address: IpAddr) -> Option<&'static str> {
+pub fn address_blocked(address: IpAddr) -> Option<&'static str> {
     match address {
         IpAddr::V4(address) => ipv4_blocked(address),
         IpAddr::V6(address) => ipv6_blocked(address),
@@ -188,3 +190,7 @@ fn compatible_ipv4(address: Ipv6Addr) -> Option<Ipv4Addr> {
         segments[7] as u8,
     ))
 }
+
+#[cfg(test)]
+#[path = "address_ranges_tests.rs"]
+mod tests;

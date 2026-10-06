@@ -74,6 +74,7 @@
 //! result; a retry with the same key and a different payload returns
 //! [`ErrorCode::IdempotencyConflict`].
 
+mod address_ranges;
 mod attachments;
 mod browser;
 mod capability;
@@ -99,6 +100,9 @@ mod remote_host_tests;
 #[cfg(test)]
 mod resume_tests;
 
+pub use address_ranges::{
+    address_blocked, is_localhost, literal_address, looks_numeric, normalise_host,
+};
 pub use attachments::{
     attachment_name_too_long_message, attachment_reference_session_mismatch_message,
     empty_attachment_message, invalid_attachment_digest_message, invalid_base64_message,
