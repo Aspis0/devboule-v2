@@ -314,9 +314,28 @@
 }
 
 /* The selection is a neutral fill; ochre is only the thin marker on its edge. */
-.workspace-row-selected,
+.workspace-row-selected:not(.workspace-row-agent-focused),
 .workspace-agent-row-active {
   box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* One marker at a time: the agent in front has it, else the selected workspace. */
+
+.workspace-agent-more {
+  margin-left: var(--space-8);
+  padding: var(--space-2) var(--space-8);
+  color: var(--muted);
+  font-size: var(--type-meta);
+  text-align: left;
+  background: transparent;
+  border-radius: var(--radius-6);
+  cursor: pointer;
+}
+
+.workspace-agent-more:hover,
+.workspace-agent-more:focus-visible {
+  color: var(--ink);
+  background: var(--fill-hover);
 }
 
 /* The name over its branch and what is uncommitted: two lines, no taller than

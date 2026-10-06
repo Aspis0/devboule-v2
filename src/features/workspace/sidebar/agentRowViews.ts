@@ -16,6 +16,8 @@ export interface AgentRowView {
   attention: boolean;
   /** Whether a turn is running: the row may then say the step it is on. */
   working: boolean;
+  /** The roster has heard nothing from it for a while, though it may be working. */
+  quiet: boolean;
   /** How long it has been quiet; null when the roster reports no silence. */
   age: string | null;
 }
@@ -51,6 +53,7 @@ export function buildAgentRows(
       word: wordFor(session),
       attention: sessionNeedsApproval(session),
       working: session.activity === "working",
+      quiet: session.state.type === "silent",
       age: compactAge(session.elapsedMs ?? null),
     };
     const list = byWorkspace.get(key);

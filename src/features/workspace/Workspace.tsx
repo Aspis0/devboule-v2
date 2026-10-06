@@ -1273,6 +1273,21 @@ export function Workspace({
     },
     [sessions, openSession, standDownToolTab],
   );
+  // The rail's agent rows open a session by id. It reads the roster at click
+  // time, so the callback the rows hold stays the same across roster pushes.
+  const handleOpenAgentRow = useCallback(
+    (sessionId: string) => {
+      const session = sharedSessionController()
+        .getState()
+        .sessions.find((row) => row.id === sessionId);
+      if (session !== undefined) {
+        handleReopenSession(session);
+      } else {
+        void refreshSessions();
+      }
+    },
+    [handleReopenSession, refreshSessions],
+  );
   const handleOpenSubagent = useCallback(
     (sessionId: string) => {
       const session = sessions.find((row) => row.id === sessionId);
@@ -1960,7 +1975,7 @@ export function Workspace({
             branches: workspaceBranches,
             agentRows,
             activeSessionId: panes.upperToolId === null ? selectedSessionId : null,
-            onOpenAgent: handleOpenSubagent,
+            onOpenAgent: handleOpenAgentRow,
           }}
         />
 

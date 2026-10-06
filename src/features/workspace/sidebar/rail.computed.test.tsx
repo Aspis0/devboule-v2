@@ -54,6 +54,18 @@ describe("the rail's hierarchy", () => {
     },
   );
 
+  it("carries one marker: the selected workspace gives it to the agent in front", () => {
+    const css = assembleCssProof(sheets, "light");
+    css.inject([".workspace-row", ".workspace-row-selected", ".workspace-row-agent-focused"]);
+    const row = el("button", "workspace-row workspace-row-selected workspace-row-agent-focused");
+    document.body.append(row);
+
+    expect(getComputedStyle(row).boxShadow).not.toContain(css.token("--accent"));
+    // Its neutral fill stays: only the ochre edge moves to the agent row.
+    expect(getComputedStyle(row).backgroundColor).toBe(css.token("--fill-selected-soft"));
+    row.remove();
+  });
+
   it("sets the branch in mono and quiet, with the totals at the far edge", () => {
     const css = assembleCssProof(sheets, "light");
     css.inject([

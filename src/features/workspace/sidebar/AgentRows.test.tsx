@@ -16,6 +16,7 @@ const agent = (over: Partial<AgentRowView> = {}): AgentRowView => ({
   word: "idle",
   attention: false,
   working: false,
+  quiet: false,
   age: "1h",
   ...over,
 });
@@ -77,6 +78,50 @@ describe("the agents under a workspace", () => {
       }),
     );
     expect(container.querySelector(".workspace-agent-sub")?.textContent).toBe("running tests");
+  });
+
+  it("says how long a working agent has been quiet when the roster says quiet, and shows no step", async () => {
+    await act(async () =>
+      publishAgentReading("a-1", {
+        usage: null,
+        manifest: null,
+        lastFinished: null,
+        task: "running tests",
+      }),
+    );
+    await render([agent({ word: "quiet", working: true, quiet: true, age: "5m" })]);
+
+    expect(container.querySelector(".workspace-agent-sub")?.textContent).toBe("quiet · 5m");
+  });
+
+  it("follows the step its surface publishes, and falls back to its word once there is none", async () => {
+    await render([agent({ word: "working", working: true, age: "now" })]);
+    await act(async () =>
+      publishAgentReading("a-1", {
+        usage: null,
+        manifest: null,
+        lastFinished: null,
+        task: "old step",
+      }),
+    );
+    expect(container.querySelector(".workspace-agent-sub")?.textContent).toBe("old step");
+
+    // The turn ends: the surface publishes no task, and the row falls back to its word.
+    await act(async () =>
+      publishAgentReading("a-1", { usage: null, manifest: null, lastFinished: null, task: null }),
+    );
+    expect(container.querySelector(".workspace-agent-sub")?.textContent).toBe("working");
+  });
+
+  it("does not re-render a row whose own facts did not change when the list is rebuilt", async () => {
+    const onOpen = vi.fn();
+    const first = agent();
+    await render([first], null, onOpen);
+    const row = container.querySelector(".workspace-agent-row");
+    await act(async () =>
+      root.render(<AgentRows agents={[{ ...first }]} activeSessionId={null} onOpen={onOpen} />),
+    );
+    expect(container.querySelector(".workspace-agent-row")).toBe(row);
   });
 
   it("gives an ask for approval the attention tone", async () => {

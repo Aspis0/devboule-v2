@@ -140,12 +140,18 @@ export function WorkspaceTree({
               <span className="workspace-project-name">{project.name}</span>
               {folder === null ? null : <span className="workspace-project-folder">{folder}</span>}
               <span className="workspace-project-count">
-                <span aria-hidden="true">{project.workspaces.length}</span>
-                <span className="sr-only">
-                  {project.workspaces.length === 1
-                    ? "1 workspace"
-                    : `${project.workspaces.length} workspaces`}
-                </span>
+                {project.workspaceError === undefined ? (
+                  <>
+                    <span aria-hidden="true">{project.workspaces.length}</span>
+                    <span className="sr-only">
+                      {project.workspaces.length === 1
+                        ? "1 workspace"
+                        : `${project.workspaces.length} workspaces`}
+                    </span>
+                  </>
+                ) : (
+                  <span className="sr-only">workspaces could not be loaded</span>
+                )}
               </span>
               <button
                 type="button"
@@ -179,6 +185,8 @@ export function WorkspaceTree({
                 const selected = key !== null && selectedWorkspace === key;
                 const agents = key === null ? NO_AGENTS : (agentRows.get(key) ?? NO_AGENTS);
                 const agentsListed = selected && agents.length > 0;
+                const agentFocused =
+                  agentsListed && agents.some((agent) => agent.id === activeSessionId);
                 return (
                   <Fragment key={workspace.id}>
                     <WorkspaceRow
@@ -186,7 +194,7 @@ export function WorkspaceTree({
                       workspaceKey={key}
                       projectName={project.name}
                       selected={selected}
-                      agentsListed={agentsListed}
+                      agentFocused={agentFocused}
                       stat={key === null ? undefined : stats.get(key)}
                       branch={key === null ? undefined : branches.get(key)}
                       onSelect={onSelectWorkspace}

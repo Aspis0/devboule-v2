@@ -44,6 +44,7 @@ const agent = (id: string, title: string): AgentRowView => ({
   word: "idle",
   attention: false,
   working: false,
+  quiet: false,
   age: "1h",
 });
 
@@ -149,30 +150,79 @@ describe("the project, its workspaces and their agents", () => {
     ).toBe("Tighten handoff");
   });
 
-  it("leaves the counts beside a selected workspace's name to a screen reader, since its agents say it below", async () => {
+  it("keeps a selected workspace's counts drawn: a waiting subagent shows nowhere else", async () => {
     const busy: WorkspaceProject = {
       ...PROJECT,
       workspaces: [
         {
           ...workspace("w-1", "Improve handoff"),
-          agents: { working: 2, waiting: 1 },
+          agents: { working: 0, waiting: 1 },
           stateDot: "attention",
         },
-        {
-          ...workspace("w-2", "Cart recovery"),
-          agents: { working: 1, waiting: 0 },
-          stateDot: "pulse",
-        },
+        workspace("w-2", "Cart recovery"),
       ],
     };
     await render({ projects: [busy] });
 
-    const [selected, other] = [...container.querySelectorAll(".workspace-row-fact")];
-    // The selected row keeps its dot, and says its counts only to assistive tech.
-    expect(selected?.querySelector(".sidebar-row-dot-attention")).not.toBeNull();
-    expect(selected?.querySelector(".sr-only")?.textContent).toContain("1 waiting");
-    // An unselected row has no agents listed under it, so its counts stay on the line.
-    expect(other?.querySelector(".sr-only")).toBeNull();
-    expect(other?.textContent).toContain("1 working");
+    const fact = container.querySelector(".workspace-row-selected .workspace-row-fact");
+    // The listed agent is idle; the waiting one is a subagent the list leaves out.
+    expect(names()).toContain("Tighten handoff");
+    expect(fact?.textContent).toContain("1 waiting");
+    expect(fact?.querySelector(".sr-only")).toBeNull();
+  });
+
+  it("puts the marker on one row: the agent in front, else the selected workspace", async () => {
+    const markers = (): number => container.querySelectorAll(".workspace-agent-row-active").length;
+    const workspaceRow = (): HTMLElement | null =>
+      container.querySelector(".workspace-row-selected");
+
+    await render({ activeSessionId: "a-1" });
+    expect(markers()).toBe(1);
+    expect(workspaceRow()?.classList.contains("workspace-row-agent-focused")).toBe(true);
+
+    // A tool tab or another workspace's tab is in front: the workspace row has it.
+    await render({ activeSessionId: null });
+    expect(markers()).toBe(0);
+    expect(workspaceRow()?.classList.contains("workspace-row-agent-focused")).toBe(false);
+  });
+
+  it("shows no count, and says so, for a project whose workspaces did not load", async () => {
+    await render({
+      projects: [
+        { ...PROJECT, workspaces: [], workspaceError: { sentence: "Pipe busy" } as never },
+      ],
+    });
+
+    const count = container.querySelector(".workspace-project-count");
+    expect(count?.querySelector("[aria-hidden]")).toBeNull();
+    expect(count?.textContent).not.toContain("0");
+    expect(count?.querySelector(".sr-only")?.textContent).toBe("workspaces could not be loaded");
+  });
+
+  it("lists the first eight agents and opens the rest in place from +N more", async () => {
+    const many = Array.from({ length: 11 }, (_, n) => agent(`m-${n}`, `Agent ${n}`));
+    await render({ agentRows: new Map([[KEY_1, many]]), activeSessionId: null });
+    expect(names()).toHaveLength(8);
+
+    const more = container.querySelector<HTMLButtonElement>(".workspace-agent-more");
+    expect(more?.textContent).toBe("+3 more");
+    expect(more?.getAttribute("aria-expanded")).toBe("false");
+    await act(async () => more?.click());
+    expect(names()).toHaveLength(11);
+    expect(container.querySelector(".workspace-agent-more")?.textContent).toBe("Show fewer");
+  });
+
+  it("keeps the agent in front and any that asks for the person listed past the cap", async () => {
+    const many = Array.from({ length: 12 }, (_, n) => agent(`m-${n}`, `Agent ${n}`));
+    many[10] = { ...many[10]!, attention: true, word: "Needs your approval" };
+    await render({ agentRows: new Map([[KEY_1, many]]), activeSessionId: "m-11" });
+
+    expect(names()).toEqual([...many.slice(0, 8).map((a) => a.title), "Agent 10", "Agent 11"]);
+    expect(container.querySelector(".workspace-agent-more")?.textContent).toBe("+2 more");
+  });
+
+  it("draws no +N more for a workspace within the cap", async () => {
+    await render();
+    expect(container.querySelector(".workspace-agent-more")).toBeNull();
   });
 });

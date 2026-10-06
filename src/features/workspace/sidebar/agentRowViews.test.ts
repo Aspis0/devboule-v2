@@ -50,6 +50,7 @@ describe("the agents the rail lists under a workspace", () => {
     ]);
 
     expect(rows.map((row) => row.word)).toEqual(["quiet", "recovered", "idle"]);
+    expect(rows.map((row) => row.quiet)).toEqual([true, false, false]);
     expect(rows[2]?.age).toBeNull();
   });
 

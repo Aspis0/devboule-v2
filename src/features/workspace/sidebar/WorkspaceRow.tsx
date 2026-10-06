@@ -89,9 +89,8 @@ export interface WorkspaceRowProps {
   workspaceKey: WorkspaceKey | null;
   projectName: string;
   selected: boolean;
-  /** The row's agents are listed right under it, so their states are said there
-   *  and the counts beside the name are left to a screen reader. */
-  agentsListed: boolean;
+  /** An agent listed under this row is the tab in front: it carries the marker. */
+  agentFocused: boolean;
   stat: WorkspaceStat | undefined;
   /** The branch the workspace's last status read reported; it also speaks the
    *  row when the project's name above already said this workspace's name. */
@@ -113,7 +112,7 @@ export const WorkspaceRow = memo(function WorkspaceRow({
   workspaceKey,
   projectName,
   selected,
-  agentsListed,
+  agentFocused,
   stat,
   branch,
   onSelect,
@@ -329,14 +328,6 @@ export const WorkspaceRow = memo(function WorkspaceRow({
   if (fact !== null) nameParts.push(...fact.parts.map((part) => part.text));
   const ariaLabel = nameParts.join(", ");
   const detail = rowDetail(workspace, branch, stat);
-  const factParts = fact?.parts.map((part, index) => (
-    <span key={part.text} className={part.attention ? "sidebar-row-waiting" : undefined}>
-      {/* A flex item trims its own leading space, so the space
-          before the dot cannot be an ordinary one. */}
-      {index > 0 ? " · " : ""}
-      {part.text}
-    </span>
-  ));
   return (
     <div className="workspace-row-wrap" onContextMenu={openMenu}>
       {editing ? (
@@ -367,8 +358,8 @@ export const WorkspaceRow = memo(function WorkspaceRow({
             type="button"
             ref={rowRef}
             className={`workspace-row${selected ? " workspace-row-selected" : ""}${
-              twoLines ? " workspace-row-two" : ""
-            }`}
+              agentFocused ? " workspace-row-agent-focused" : ""
+            }${twoLines ? " workspace-row-two" : ""}`}
             onClick={() => {
               if (workspaceKey !== null) onSelect(workspaceKey);
             }}
@@ -398,7 +389,17 @@ export const WorkspaceRow = memo(function WorkspaceRow({
                         }`}
                       />
                     )}
-                    {agentsListed ? <span className="sr-only">{factParts}</span> : factParts}
+                    {fact.parts.map((part, index) => (
+                      <span
+                        key={part.text}
+                        className={part.attention ? "sidebar-row-waiting" : undefined}
+                      >
+                        {/* A flex item trims its own leading space, so the space
+                          before the dot cannot be an ordinary one. */}
+                        {index > 0 ? " · " : ""}
+                        {part.text}
+                      </span>
+                    ))}
                   </span>
                 )}
               </span>
