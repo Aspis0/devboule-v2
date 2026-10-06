@@ -12,6 +12,9 @@ export interface PaneHeaderProps {
   menu: PaneHeaderMenuConfig | null;
   subagentSlot?: ReactNode;
   trailingSlot?: ReactNode;
+  /** The status word is said elsewhere (the working line, the status bar): keep
+      it for assistive tech and the tooltip, draw it nowhere. */
+  wordSaidElsewhere?: boolean;
 }
 
 export function PaneHeader({
@@ -21,6 +24,7 @@ export function PaneHeader({
   menu,
   subagentSlot,
   trailingSlot,
+  wordSaidElsewhere = false,
 }: PaneHeaderProps) {
   const agent = kind === "agent";
   const text = display.detail === null ? display.word : `${display.word} · ${display.detail}`;
@@ -32,7 +36,9 @@ export function PaneHeader({
       <span className={agent ? "workspace-agent-title" : "workspace-terminal-title"}>{title}</span>
       {agent ? subagentSlot : null}
       <span
-        className={agent ? "workspace-agent-status" : "workspace-terminal-status"}
+        className={`${agent ? "workspace-agent-status" : "workspace-terminal-status"}${
+          wordSaidElsewhere ? " sr-only" : ""
+        }`}
         role="status"
         title={display.tooltip}
       >

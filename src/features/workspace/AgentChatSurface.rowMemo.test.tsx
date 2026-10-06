@@ -116,7 +116,7 @@ it("renders stable historical rows once while the last assistant streams", async
     });
     channelHarness.active?.({ type: "agent_message", messageId: "live", text: "Streaming" });
   });
-  expect(container.querySelector(".workspace-chat-typing")).not.toBeNull();
+  expect(container.querySelector(".workspace-working-line")).not.toBeNull();
   await act(async () => {
     channelHarness.active?.({ type: "agent_message", messageId: "live", text: " token" });
   });

@@ -70,7 +70,6 @@ async function popoverRows(props: {
         ...(props.providerId === undefined ? {} : { providerId: props.providerId }),
         models: [],
       })}
-      running={false}
       lastFinished={props.lastFinished ?? null}
     />,
   );

@@ -617,6 +617,26 @@ describe("Workspace sessions", () => {
     expect(row?.title).toBe("C:\\devboule · main");
   });
 
+  it("draws one status bar under the three panels, and none inside them", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const screen = container.querySelector(".workspace-screen");
+    const panels = container.querySelector(".workspace-panels");
+    expect(container.querySelectorAll(".workspace-status-bar")).toHaveLength(1);
+    const bar = container.querySelector(".workspace-status-bar");
+    expect(bar?.parentElement).toBe(screen);
+    expect(bar?.previousElementSibling).toBe(panels);
+    // The bar sits under the sidebar, the centre and the right panel alike.
+    expect(panels?.querySelector(".workspace-left-panel")).not.toBeNull();
+    expect(panels?.querySelector(".workspace-center-panel")).not.toBeNull();
+    expect(panels?.querySelector(".workspace-status-bar")).toBeNull();
+  });
+
   it("publishes the selected workspace for surfaces it never mounts alongside", async () => {
     setLastSelectedWorkspaceKey(null);
     root = createRoot(container);

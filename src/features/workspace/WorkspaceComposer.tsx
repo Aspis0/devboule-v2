@@ -85,9 +85,6 @@ interface WorkspaceComposerProps {
   captureTextarea?: (element: HTMLTextAreaElement | null) => void;
   /** Pickers rendered on the left of the control bar, below the textarea. */
   controls?: ReactNode;
-  /** Context ring for the control bar, between the pickers and the
-      actions. */
-  contextMeter?: ReactNode;
 }
 
 function commandQuery(input: string): string | null {
@@ -136,7 +133,6 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   restoreDraft = null,
   captureTextarea,
   controls = null,
-  contextMeter = null,
 }: WorkspaceComposerProps) {
   const [input, setInput] = useState("");
   const [attachedImages, setAttachedImages] = useState<readonly PromptAttachment[]>([]);
@@ -445,6 +441,12 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
         setMenuDismissed(true);
         return;
       }
+      // The working line promises this: Escape in the composer stops the turn.
+      if (event.key === "Escape" && streaming && onStop) {
+        event.preventDefault();
+        onStop();
+        return;
+      }
       // The menu's own keys, and only unmodified ones: Shift keeps editing, and
       // Ctrl/Alt keep their jumps and the Q2b chord, which falls through here.
       if (
@@ -479,9 +481,11 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
       commandMatches,
       commandMenuVisible,
       matchCount,
+      onStop,
       runAlternateAction,
       runDefaultAction,
       selectCommand,
+      streaming,
     ],
   );
 
@@ -575,7 +579,6 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
               <span className="workspace-composer-hint">{disabledReason}</span>
             ) : null}
           </div>
-          {contextMeter}
           {queueAvailable || queueUnsupportedReason != null ? (
             <button
               type="button"

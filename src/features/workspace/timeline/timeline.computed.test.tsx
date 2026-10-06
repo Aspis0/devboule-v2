@@ -230,11 +230,11 @@ describe("timeline computed styles", () => {
     assistant.remove();
   });
 
-  it("keeps system notices quiet, finish metadata at 13 px, and typing unchanged", () => {
+  it("keeps system notices quiet, finish metadata at 13 px, and the working line unchanged", () => {
     workspaceCss.inject([
       ".workspace-chat-system",
       ".workspace-chat-finish",
-      ".workspace-chat-typing",
+      ".workspace-working-line",
     ]);
     const system = document.createElement("div");
     system.className = "workspace-chat-system";
@@ -243,7 +243,7 @@ describe("timeline computed styles", () => {
     const finish = document.createElement("div");
     finish.className = "workspace-chat-finish";
     const typing = document.createElement("div");
-    typing.className = "workspace-chat-typing";
+    typing.className = "workspace-working-line";
     rail.append(typing);
     document.body.append(system, rail);
 

@@ -1,0 +1,60 @@
+/* The one place that draws a stronger top edge, so it reads as separate from
+   the chat above it. */
+.workspace-status-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-14);
+  height: 26px;
+  padding: 0 var(--space-12);
+  overflow: hidden;
+  border-top: 2px solid var(--line-strong);
+  background: var(--panel-side);
+  color: var(--muted);
+  font-size: var(--type-meta);
+  white-space: nowrap;
+}
+
+.status-bar-who {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-soft);
+  text-overflow: ellipsis;
+}
+
+.status-bar-sep {
+  color: var(--muted);
+}
+
+.status-bar-spacer {
+  flex: 1;
+}
+
+.status-bar-provider,
+.status-bar-daemon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-6);
+}
+
+.status-meter-bar {
+  display: inline-block;
+  flex: none;
+  width: 52px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--ink) 14%, transparent);
+}
+
+.status-meter-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.status-bar-daemon .workspace-status-dot {
+  width: 6px;
+  height: 6px;
+}

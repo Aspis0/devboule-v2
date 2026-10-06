@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PlanUsage } from "../types/ipc";
-import { planRecordedAtFor, planUsageFor, recordPlanUsage } from "./planUsageStore";
+import { allPlanUsage, planRecordedAtFor, planUsageFor, recordPlanUsage } from "./planUsageStore";
 
 function plan(partial: Partial<PlanUsage> & { providerId: string }): PlanUsage {
   return { type: "plan_usage", windows: [], ...partial };
@@ -85,5 +85,32 @@ describe("the plan-usage store", () => {
       recordPlanUsage(plan({ providerId: "codex-same", windows: windowAt(40) }));
       expect(planUsageFor("codex-same")).toBe(first);
     });
+  });
+});
+
+describe("every provider's frame", () => {
+  it("lists each provider once with its latest frame, and keeps the list stable until a frame changes", () => {
+    recordPlanUsage(
+      plan({ providerId: "all-a", windows: [{ durationMins: 300, usedPercent: 10 }] }),
+    );
+    recordPlanUsage(
+      plan({ providerId: "all-b", windows: [{ durationMins: 300, usedPercent: 20 }] }),
+    );
+    recordPlanUsage(
+      plan({ providerId: "all-a", windows: [{ durationMins: 300, usedPercent: 11 }] }),
+    );
+
+    const listed = allPlanUsage().filter((frame) => frame.providerId.startsWith("all-"));
+    expect(listed.map((frame) => [frame.providerId, frame.windows[0]?.usedPercent])).toEqual([
+      ["all-a", 11],
+      ["all-b", 20],
+    ]);
+
+    // The same frame again is no change: a subscriber is handed the same list.
+    const before = allPlanUsage();
+    recordPlanUsage(
+      plan({ providerId: "all-b", windows: [{ durationMins: 300, usedPercent: 20 }] }),
+    );
+    expect(allPlanUsage()).toBe(before);
   });
 });

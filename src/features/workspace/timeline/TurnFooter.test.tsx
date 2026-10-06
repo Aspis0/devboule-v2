@@ -1,4 +1,4 @@
-// The finished turn's metadata line: model, stop reason and cost at a glance,
+// The finished turn's metadata line: stop reason and cost at a glance,
 // the token accounting behind one disclosure. The line itself stays a line —
 // nothing here may reflow the transcript when a value appears or disappears.
 // @vitest-environment happy-dom
@@ -58,11 +58,11 @@ describe("the turn footer's short line", () => {
     expect(container.textContent).toBe("");
   });
 
-  it("names the model, the stop reason and the cost, and nothing else", async () => {
+  it("names the stop reason and the cost, and not the model the composer already shows", async () => {
     await render(FINISHED);
 
     expect(container.querySelector(".turn-footer-line")?.textContent).toBe(
-      "model grok-4.6 · stopped: error · $0.0055",
+      "stopped: error · $0.0055",
     );
     // The accounting sits in the disclosure, not in the line at a glance.
     expect(container.querySelector(".turn-footer-line")?.textContent).not.toContain("20,753");

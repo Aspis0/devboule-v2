@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ContextUsage, PlanUsage, SessionManifest } from "../../types/ipc";
 import { recordPlanUsage } from "../../lib/planUsageStore";
-import { ContextMeter, SessionContextMeter, type UsageSource } from "./ContextMeter";
+import { ContextMeter } from "./ContextMeter";
 import { placeContextPopover } from "./ContextPopover";
 
 let container: HTMLDivElement | null = null;
@@ -43,7 +43,6 @@ function meter(props: Partial<Parameters<typeof ContextMeter>[0]>): ReactElement
     <ContextMeter
       usage={props.usage ?? null}
       manifest={props.manifest ?? null}
-      running={props.running ?? false}
       lastFinished={props.lastFinished ?? null}
     />
   );
@@ -83,45 +82,38 @@ function setViewportWidth(width: number): () => void {
   };
 }
 
-describe("the composer's context meter", () => {
-  it("renders nothing when there is no reading and nothing is running", async () => {
+describe("the status bar's context meter", () => {
+  it("renders nothing when there is no reading", async () => {
     const host = await render(meter({}));
     expect(host.querySelector(".workspace-context-meter-button")).toBeNull();
     expect(host.textContent).toBe("");
   });
 
-  it("shows a track-only ring and no number while a turn runs without a reading", async () => {
-    const host = await render(meter({ running: true }));
-    const button = host.querySelector(".workspace-context-meter-button");
-    if (button === null) throw new Error("pending meter did not render");
-    expect(button.textContent).toBe("");
-    // Track circle only — no accent arc claiming a value.
-    expect(button.querySelectorAll("svg circle")).toHaveLength(1);
-  });
-
-  it("shows the percent and both token counts when both sides are known", async () => {
+  it("shows both token counts and a filled bar when both sides are known", async () => {
     const host = await render(meter({ usage: usage({ usedTokens: 76_000, maxTokens: 200_000 }) }));
-    expect(host.querySelector(".workspace-context-meter-text")?.textContent).toBe(
-      "38% · 76k / 200k",
+    expect(host.querySelector(".workspace-context-meter-text")?.textContent).toBe("ctx 76k/200k");
+    expect(host.querySelector<HTMLElement>(".status-meter-fill")?.style.width).toBe("38%");
+    // The percent rides the tooltip, not the line.
+    expect(host.querySelector(".workspace-context-meter-button")?.getAttribute("title")).toBe(
+      "38% of the context window",
     );
-    // Track + arc.
-    expect(host.querySelectorAll("svg circle")).toHaveLength(2);
   });
 
   it("shows one known number without a percent when the window is missing", async () => {
     // `used` is the only number a reading carries without its window: the
     // meter says that number and claims no percent.
     const host = await render(meter({ usage: usage({ usedTokens: 76_000 }) }));
-    expect(host.textContent).toBe("76k");
+    expect(host.textContent).toBe("ctx 76k");
     expect(host.textContent).not.toContain("%");
-    expect(host.querySelectorAll("svg circle")).toHaveLength(1);
+    // No ratio, so the bar claims no fill.
+    expect(host.querySelector(".status-meter-fill")).toBeNull();
   });
 
   it("shows the count alone when the reading exceeds its window", async () => {
-    // The used-only verdict has to reach the ring, not just the numbers.
+    // The used-only verdict has to reach the bar, not just the numbers.
     const host = await render(meter({ usage: usage({ usedTokens: 300_000, maxTokens: 100_000 }) }));
-    expect(host.textContent).toBe("300k");
-    expect(host.querySelectorAll("svg circle")).toHaveLength(1);
+    expect(host.textContent).toBe("ctx 300k");
+    expect(host.querySelector(".status-meter-fill")).toBeNull();
   });
 
   it("never pairs a reading with another model's window", async () => {
@@ -184,12 +176,6 @@ describe("the context popover", () => {
       document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
     });
     expect(document.querySelector(".workspace-context-popover")).toBeNull();
-  });
-
-  it("says so plainly when no reading exists yet", async () => {
-    const host = await render(meter({ running: true }));
-    const popover = await openPopover(host);
-    expect(popover.textContent).toContain("No context reading yet.");
   });
 
   it("shows the provider's plan windows and credits, spelled by the frame", async () => {
@@ -446,35 +432,5 @@ describe("placeContextPopover", () => {
     expect(placement.width).toBe(344); // 360 − 2 × 8 margin
     expect(placement.left).toBe(8);
     expect(placement.left + placement.width).toBeLessThanOrEqual(360 - 8);
-  });
-});
-
-describe("binding the meter to its session", () => {
-  it("re-renders from the session's usage lane alone", async () => {
-    // The surface re-renders on `subscribe`; this component must move on
-    // `subscribeUsage` — the two lanes are the whole point.
-    let notifyUsage: (() => void) | null = null;
-    let stored: ContextUsage | null = null;
-    const source: UsageSource = {
-      subscribeUsage(listener) {
-        notifyUsage = listener;
-        return () => {
-          notifyUsage = null;
-        };
-      },
-      getContextUsage: () => stored,
-    };
-    const host = await render(
-      <SessionContextMeter session={source} manifest={null} running={false} lastFinished={null} />,
-    );
-    // No reading, nothing running: nothing at all.
-    expect(host.querySelector(".workspace-context-meter-button")).toBeNull();
-    await act(async () => {
-      stored = { type: "context_usage", usedTokens: 76_000, maxTokens: 200_000, live: true };
-      notifyUsage?.();
-    });
-    expect(host.querySelector(".workspace-context-meter-text")?.textContent).toBe(
-      "38% · 76k / 200k",
-    );
   });
 });

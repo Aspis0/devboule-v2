@@ -2,10 +2,9 @@ import type { AgentFinished } from "../../../lib/agentSession";
 import { usdCopy } from "../../../lib/format";
 import "./TurnFooter.css";
 
-/** The three facts a glance needs: which model, why the turn stopped, what it cost. */
+/** The two facts a glance needs: why the turn stopped and what it cost. The model is on the composer. */
 function shortCopy(finished: AgentFinished): string | null {
   const details = [
-    finished.modelId ? `model ${finished.modelId}` : null,
     finished.stopReason ? `stopped: ${finished.stopReason}` : null,
     finished.usage?.costUsd === undefined ? null : usdCopy(finished.usage.costUsd),
   ].filter((part): part is string => part !== null);
@@ -36,7 +35,7 @@ function detailCopy(finished: AgentFinished): string | null {
  * that turn spend", and it is a <details> so the keyboard drives it without a
  * key handler and a screen reader gets the native disclosure for free.
  * A normally finished turn takes no row at all: the reply speaks for
- * itself and the composer's meter keeps the spend.
+ * itself and the context popover keeps the spend.
  */
 export function TurnFooter({ finished }: { finished: AgentFinished | null }) {
   if (

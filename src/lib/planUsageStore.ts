@@ -20,6 +20,8 @@ import type { PlanUsage } from "../types/ipc";
  */
 const byProvider = new Map<string, { plan: PlanUsage; changedAtMs: number | null }>();
 const listeners = new Set<() => void>();
+// Rebuilt only when a frame changes, so a subscriber's snapshot stays stable.
+let allFrames: readonly PlanUsage[] = [];
 
 /** Record the frame a session's stream delivered for its provider. */
 export function recordPlanUsage(event: PlanUsage): void {
@@ -29,6 +31,7 @@ export function recordPlanUsage(event: PlanUsage): void {
     plan: event,
     changedAtMs: prior === undefined ? null : Date.now(),
   });
+  allFrames = [...byProvider.values()].map((entry) => entry.plan);
   for (const listener of listeners) listener();
 }
 
@@ -36,6 +39,11 @@ export function recordPlanUsage(event: PlanUsage): void {
 export function planUsageFor(providerId: string | null | undefined): PlanUsage | null {
   if (providerId === null || providerId === undefined) return null;
   return byProvider.get(providerId)?.plan ?? null;
+}
+
+/** Every provider's latest frame, in the order each first sent one. */
+export function allPlanUsage(): readonly PlanUsage[] {
+  return allFrames;
 }
 
 /** When this app saw the provider's frame change — the popover's age label;
@@ -51,6 +59,11 @@ function subscribe(listener: () => void): () => void {
   return () => {
     listeners.delete(listener);
   };
+}
+
+/** Every provider's latest frame, re-rendering when any session records one. */
+export function useAllPlanUsage(): readonly PlanUsage[] {
+  return useSyncExternalStore(subscribe, allPlanUsage);
 }
 
 /** The provider's latest frame, re-rendering when any session records one. */

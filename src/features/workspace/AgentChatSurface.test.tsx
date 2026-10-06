@@ -439,9 +439,7 @@ describe("AgentChatSurface", () => {
     });
 
     expect(container.textContent).toContain("Hello");
-    expect(container.querySelector(".turn-footer-line")?.textContent).toBe(
-      "model grok · stopped: error",
-    );
+    expect(container.querySelector(".turn-footer-line")?.textContent).toBe("stopped: error");
     // The ledger behind the line's disclosure: rendered, closed.
     expect(container.querySelector(".turn-footer-detail")?.hasAttribute("open")).toBe(false);
     expect(container.textContent).toContain("total 3 tokens");
@@ -749,7 +747,12 @@ describe("AgentChatSurface", () => {
     expect(container.querySelector(".workspace-agent-status")?.childNodes[0]?.textContent).toBe(
       "Running",
     );
-    expect(container.querySelector(".workspace-chat-typing")).toBeNull();
+    expect(container.querySelector(".workspace-working-line")).toBeNull();
+    // A finished turn leaves no status row, and the composer holds no meter.
+    expect(container.querySelector(".workspace-agent-status")?.classList.contains("sr-only")).toBe(
+      true,
+    );
+    expect(container.querySelector(".workspace-composer .workspace-context-meter")).toBeNull();
 
     const conversation = container.querySelector(".workspace-conversation");
     expect(conversation?.querySelector('[aria-label="Available commands"]')).toBeNull();
@@ -3230,7 +3233,11 @@ describe("AgentChatSurface", () => {
     // mid-turn, the working row up and no finish line written.
     expect(conversation.querySelectorAll(".workspace-chat-user")).toHaveLength(1);
     expect(conversation.querySelectorAll(".workspace-chat-assistant")).toHaveLength(1);
-    expect(container.querySelector(".workspace-chat-typing")).not.toBeNull();
+    expect(container.querySelector(".workspace-working-line")).not.toBeNull();
+    // The plain "Running" is the dot's and the bar's to say: the header keeps the word for assistive tech only.
+    expect(container.querySelector(".workspace-agent-status")?.classList.contains("sr-only")).toBe(
+      true,
+    );
     expect(container.querySelector(".workspace-chat-finish")).toBeNull();
     expect(textarea.disabled).toBe(false);
   });

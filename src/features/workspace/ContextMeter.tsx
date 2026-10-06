@@ -1,69 +1,27 @@
-import { useCallback, useSyncExternalStore, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { ContextUsage, SessionManifest } from "../../types/ipc";
 import type { AgentFinished } from "../../lib/agentSession";
 import { usePlanRecordedAt, usePlanUsage } from "../../lib/planUsageStore";
 import { contextMeterNumbers, formatContextTokens } from "./contextUsageView";
 import { ContextPopover } from "./ContextPopover";
-
-const RING_RADIUS = 6;
-const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
+import { MeterBar } from "./statusBar/MeterBar";
 
 export interface ContextMeterProps {
   usage: ContextUsage | null;
   manifest: SessionManifest | null;
-  /** A turn is running: with no reading yet, the track-only ring reserves
-      the spot instead of leaving the row to jump later. */
-  running: boolean;
   /** The session's last finished turn, or null before the first one — the
       popover's cost row reads the figure it carried. */
   lastFinished: AgentFinished | null;
 }
 
-/** What the meter needs of the session: its own slice of the store, with its
-    own subscribers — the transcript surface never re-renders for a reading. */
-export interface UsageSource {
-  subscribeUsage(listener: () => void): () => void;
-  getContextUsage(): ContextUsage | null;
-}
-
-export interface SessionContextMeterProps {
-  session: UsageSource | null;
-  manifest: SessionManifest | null;
-  running: boolean;
-  lastFinished: AgentFinished | null;
-}
-
 /**
- * The meter bound to its session's store. It re-renders when a reading
- * arrives (or is retired); the surface that mounts it does not — its own
- * `state` lane never sees the frame.
+ * The status bar's context reading: `ctx 24k/1m` and a thin bar. It shows a
+ * ratio only when both sides are known for the session's current model and
+ * agree (the reading not above its own window); with one usable side it shows
+ * that number alone; with nothing to say it renders nothing at all. Click
+ * opens {@link ContextPopover} above it.
  */
-export function SessionContextMeter({
-  session,
-  manifest,
-  running,
-  lastFinished,
-}: SessionContextMeterProps) {
-  const subscribe = useCallback(
-    (listener: () => void) => session?.subscribeUsage(listener) ?? (() => {}),
-    [session],
-  );
-  const read = useCallback(() => session?.getContextUsage() ?? null, [session]);
-  const usage = useSyncExternalStore(subscribe, read);
-  return (
-    <ContextMeter usage={usage} manifest={manifest} running={running} lastFinished={lastFinished} />
-  );
-}
-
-/**
- * The composer's context ring. It shows a percentage only when both sides of
- * the ratio are known for the session's current model and agree (the reading
- * not above its own window); with one usable side it shows that number
- * without a percent; while a turn runs without any reading it shows the
- * track alone; and with nothing to say and nothing running it renders
- * nothing at all. Click opens {@link ContextPopover} above it.
- */
-export function ContextMeter({ usage, manifest, running, lastFinished }: ContextMeterProps) {
+export function ContextMeter({ usage, manifest, lastFinished }: ContextMeterProps) {
   const [open, setOpen] = useState(false);
   // The popover anchors to the button, not to the span: it is centred above
   // this rect, and it renders on the body (see ContextPopover), so the
@@ -76,17 +34,15 @@ export function ContextMeter({ usage, manifest, running, lastFinished }: Context
   const close = useCallback(() => setOpen(false), []);
 
   const { used, max, percent } = numbers;
-  if (used === null && max === null && !running) return null;
+  // A reading always names its used side, so no used count is no reading.
+  if (used === null) return null;
 
-  const hasRatio = used !== null && max !== null && percent !== null;
+  const hasRatio = max !== null && percent !== null;
   // With only one side of the ratio known there is no percent to show — the
   // provider sent one number, so one number is what the row says.
   const label = hasRatio
-    ? `${percent}% · ${formatContextTokens(used)} / ${formatContextTokens(max)}`
-    : used !== null
-      ? formatContextTokens(used)
-      : null;
-  const arcPercent = hasRatio ? Math.max(0, Math.min(100, percent)) : null;
+    ? `${formatContextTokens(used)}/${formatContextTokens(max)}`
+    : formatContextTokens(used);
 
   return (
     <span className="workspace-context-meter">
@@ -96,39 +52,11 @@ export function ContextMeter({ usage, manifest, running, lastFinished }: Context
         className="workspace-context-meter-button"
         aria-label="Context usage"
         aria-expanded={open}
+        title={hasRatio ? `${percent}% of the context window` : undefined}
         onClick={() => setOpen((previous) => !previous)}
       >
-        <svg
-          width={14}
-          height={14}
-          viewBox="0 0 14 14"
-          className="workspace-context-meter-ring"
-          aria-hidden="true"
-        >
-          <circle
-            cx={7}
-            cy={7}
-            r={RING_RADIUS}
-            fill="none"
-            stroke="var(--line-strong)"
-            strokeWidth={1.75}
-          />
-          {arcPercent !== null ? (
-            <circle
-              cx={7}
-              cy={7}
-              r={RING_RADIUS}
-              fill="none"
-              stroke="var(--accent)"
-              strokeWidth={1.75}
-              strokeLinecap="round"
-              strokeDasharray={RING_CIRCUMFERENCE}
-              strokeDashoffset={RING_CIRCUMFERENCE * (1 - arcPercent / 100)}
-              transform="rotate(-90 7 7)"
-            />
-          ) : null}
-        </svg>
-        {label !== null ? <span className="workspace-context-meter-text">{label}</span> : null}
+        <span className="workspace-context-meter-text">{`ctx ${label}`}</span>
+        <MeterBar percent={hasRatio ? percent : null} />
       </button>
       <ContextPopover
         open={open}

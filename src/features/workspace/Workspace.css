@@ -5,10 +5,19 @@
   position: relative;
   display: flex;
   flex: 1;
+  flex-direction: column;
   min-height: 0;
   overflow: hidden;
   background: var(--ground-app);
   animation: pgin 0.3s ease both;
+}
+
+/* The three regions side by side, with the status bar under all of them. */
+.workspace-panels {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
 }
 
 .workspace-panel {
@@ -1094,11 +1103,32 @@
   line-height: var(--leading-body);
 }
 
-.workspace-chat-typing {
+/* The live turn's one line: a quiet dot, the word, the clock and the way out. */
+.workspace-working-line {
+  display: flex;
   flex: none;
+  align-items: center;
+  gap: var(--space-8);
   margin-top: var(--space-4);
-  color: var(--silence);
+  color: var(--muted);
   font-size: var(--type-meta);
+}
+
+.workspace-working-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--tone-live);
+}
+
+.workspace-working-clock {
+  font-variant-numeric: tabular-nums;
+}
+
+.workspace-working-hint::before {
+  margin-inline-end: var(--space-8);
+  content: "·";
 }
 
 .workspace-chat-empty {
@@ -1116,16 +1146,6 @@
   font-size: var(--type-meta);
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.workspace-stream-caret {
-  display: inline-block;
-  width: 6px;
-  height: 12px;
-  margin-left: var(--space-2);
-  vertical-align: -1px;
-  background: var(--ink);
-  animation: caret 1s steps(1) infinite;
 }
 
 .workspace-secondary-action,

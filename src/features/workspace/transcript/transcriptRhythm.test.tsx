@@ -33,7 +33,7 @@ const RHYTHM_SELECTORS = [
   ".workspace-chat-user + .workspace-chat-entry",
   ".workspace-chat-user + .workspace-chat-user",
   ".workspace-chat-assistant + .workspace-chat-assistant",
-  ".workspace-chat-typing",
+  ".workspace-working-line",
 ];
 
 function row(tag: string, className: string): HTMLElement {
@@ -142,13 +142,13 @@ describe("transcript rhythm", () => {
     withRail.remove();
   });
 
-  it("glues the typing indicator to its turn", () => {
-    workspaceCss.inject([...RHYTHM_SELECTORS, ".workspace-chat-typing"]);
+  it("glues the working line to its turn", () => {
+    workspaceCss.inject([...RHYTHM_SELECTORS, ".workspace-working-line"]);
     const content = document.createElement("div");
     content.className = "workspace-conversation-content";
     const typing = document.createElement("div");
-    typing.className = "workspace-chat-typing";
-    typing.textContent = "Agent is working";
+    typing.className = "workspace-working-line";
+    typing.textContent = "Working…";
     content.append(row("div", "workspace-chat-entry workspace-chat-assistant"), typing);
     document.body.appendChild(content);
 

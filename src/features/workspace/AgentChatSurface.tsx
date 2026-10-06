@@ -58,12 +58,13 @@ import { useFileAttachments } from "./useFileAttachments";
 import type { FileUploader } from "./fileUpload";
 import { SubagentMenu, type SubagentArchiveTarget } from "./SubagentMenu";
 import { childRow, deriveSubagentRows, isArchivable } from "./subagentRows";
-import { SessionContextMeter } from "./ContextMeter";
+import { AgentReadingPublisher } from "./statusBar/AgentReadingPublisher";
 import { journalLossCopy } from "./journalLoss";
 import { PickerChip, modeDotClass } from "../../components/PickerChip";
 import type { ChatFileLinks } from "../../lib/chatFilePaths";
 import { TurnRail } from "./timeline/TurnRail";
 import { TurnFooter } from "./timeline/TurnFooter";
+import { WorkingLine } from "./transcript/WorkingLine";
 import "./timeline/timeline.css";
 import type { A2aNameSource } from "./A2aMessageCard";
 import { AgentTaskPill } from "./AgentTaskPill";
@@ -745,6 +746,11 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   const composerDisabled = disabledReason !== null;
   // Memoised so an `agent_tasks` frame re-renders the pill alone: the
   // element's identity moves only when the checklist does.
+  // The step the agent is on, for the status bar.
+  const currentTask = useMemo(() => {
+    const step = state.agentTasks?.find((item) => item.status === "in_progress");
+    return step === undefined ? null : (step.activeForm ?? step.text);
+  }, [state.agentTasks]);
   const taskPill = useMemo(
     () => <AgentTaskPill items={state.agentTasks ?? []} />,
     [state.agentTasks],
@@ -782,12 +788,20 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   );
   return (
     <div id={id} className="workspace-agent-shell" role="tabpanel" aria-label="Agent chat">
+      <AgentReadingPublisher
+        sessionId={sessionId}
+        session={sessionRef.current}
+        manifest={manifest}
+        lastFinished={state.lastFinished}
+        task={currentTask}
+      />
       <PaneHeader
         kind="agent"
         title={title || "Agent"}
         display={header}
         menu={headerMenu(cwd, headerMenuSeam, sessionId)}
         trailingSlot={headerTrailing}
+        wordSaidElsewhere={!osGone && header.word === "Running"}
         subagentSlot={
           subagentRows.length > 0 ? (
             <SubagentMenu
@@ -824,12 +838,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
             transcriptEnded={osGone}
             streamingThoughtId={streamingThoughtId}
           />
-          {state.streaming && !osGone ? (
-            <div className="workspace-chat-typing" role="status">
-              Agent is working
-              <span className="workspace-stream-caret" aria-hidden="true" />
-            </div>
-          ) : null}
+          {state.streaming && !osGone ? <WorkingLine /> : null}
           {state.lastFinished !== null ? <TurnFooter finished={state.lastFinished} /> : null}
         </div>
         {auxiliary}
@@ -914,14 +923,6 @@ export const AgentChatSurface = memo(function AgentChatSurface({
           );
         }}
         onStop={() => void sessionRef.current?.interrupt()}
-        contextMeter={
-          <SessionContextMeter
-            session={sessionRef.current}
-            manifest={manifest}
-            running={state.streaming && !osGone}
-            lastFinished={state.lastFinished}
-          />
-        }
         controls={
           <>
             {manifest !== null && manifest.models.length > 1 ? (
