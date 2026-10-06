@@ -50,6 +50,7 @@ import { PaneHeader } from "./paneHeader/PaneHeader";
 import { headerDisplay } from "./paneHeader/paneHeaderStatus";
 import { headerMenu, type HeaderMenuSeam } from "./paneHeader/paneHeaderMenu";
 import { setPreferredEffort, setPreferredMode, setPreferredModel } from "../../lib/agentPrefs";
+import { wasCreatedHere } from "./createdSessions";
 import { rememberedSwitch } from "./rememberedPicks";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 import { sendChatImagesByReference } from "./chatImageTransport";
@@ -658,6 +659,12 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   useEffect(() => {
     const manifest = state.manifest;
     if (manifest === null || appliedPicksRef.current) return;
+    // The picks belong to an agent the person just started here and has not
+    // sent anything to yet. A session this window did not create — a child of an
+    // agent, a row opened from the roster — is none of the owner's business, a
+    // resume replaced it under this id, and a running turn must not be moved.
+    if (!wasCreatedHere(sessionId, observedState?.generation ?? null)) return;
+    if (state.status === "running" || state.streaming) return;
     appliedPicksRef.current = true;
     const asked = rememberedSwitch(manifest);
     if (asked.mode !== undefined) void sessionRef.current?.setMode(asked.mode);
@@ -665,7 +672,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     if (modelId !== undefined && (asked.model !== undefined || asked.effort !== undefined)) {
       void sessionRef.current?.setModel(modelId, asked.effort);
     }
-  }, [state.manifest]);
+  }, [observedState?.generation, sessionId, state.manifest, state.status, state.streaming]);
 
   // The toast is worded from what the app already holds, and this surface is
   // the only place a transcript exists: publish the last assistant message

@@ -6,6 +6,7 @@ import {
   sessionsUnwatch,
   sessionsWatch,
 } from "../../lib/tauri";
+import { recordCreatedSession } from "./createdSessions";
 import type {
   Attention,
   DelegationState,
@@ -775,6 +776,10 @@ export function createWorkspaceSessionController(
     publish({ ...state, creating: true, error: null });
     try {
       const session = await source.create(workspaceId, kind, provider);
+      // The person started this one here, which is what lets the surface put
+      // their remembered picks into it. Nothing else records an id: a session
+      // the daemon creates for a child, or one opened from the roster, is not.
+      recordCreatedSession(session.id, session.state.generation);
       tabs.open(session);
       const roster = [...state.sessions.filter((current) => current.id !== session.id), session];
       const listed = tabs.sessions(roster);

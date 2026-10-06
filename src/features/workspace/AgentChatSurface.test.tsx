@@ -102,7 +102,8 @@ import {
   sessionSetModel,
   sessionSetFeature,
 } from "../../lib/tauri";
-import { setPreferredEffort, setPreferredMode } from "../../lib/agentPrefs";
+import { getPreferredMode, setPreferredEffort, setPreferredMode } from "../../lib/agentPrefs";
+import { recordCreatedSession } from "./createdSessions";
 import { AgentChatSurface, composerDisabledReason } from "./AgentChatSurface";
 import { excerptRenderFor } from "./transcript/PermissionRequestRow";
 
@@ -1202,6 +1203,7 @@ describe("AgentChatSurface", () => {
 
   it("starts the next new agent in the mode the person picked, and leaves another provider alone", async () => {
     // The person moves this session's mode.
+    recordCreatedSession("mode-first", 1);
     root = createRoot(container);
     await act(async () => {
       root.render(
@@ -1223,6 +1225,7 @@ describe("AgentChatSurface", () => {
     // The next new agent of that provider is asked for it on its first manifest.
     await act(async () => root?.unmount());
     (sessionSetMode as unknown as Mock).mockClear();
+    recordCreatedSession("mode-second", 1);
     root = createRoot(container);
     await act(async () => {
       root.render(
@@ -1272,6 +1275,135 @@ describe("AgentChatSurface", () => {
     expect(
       container.querySelector<HTMLButtonElement>('[data-testid="mode-chip"]')?.textContent,
     ).toContain("Ask before edits");
+  });
+
+  it("leaves a session this window did not start alone", async () => {
+    // The person had settled on a mode for this provider.
+    setPreferredMode("claude", "plan");
+
+    // A row opened from the roster: never recorded as started here.
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="roster-session"
+          title="Agent"
+          observedState={LIVE_OBSERVED}
+        />,
+      );
+    });
+    await act(async () => undefined);
+    await act(async () => {
+      channelHarness.emit?.({ ...MODES_MANIFEST });
+    });
+
+    expect(sessionSetMode).not.toHaveBeenCalled();
+  });
+
+  it("leaves a session that came back under the same id alone", async () => {
+    setPreferredMode("claude", "plan");
+    recordCreatedSession("resumed-session", 1);
+
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="resumed-session"
+          title="Agent"
+          observedState={LIVE_OBSERVED}
+        />,
+      );
+    });
+    await act(async () => undefined);
+    // The resume kept the id and moved the generation under this mount.
+    (sessionSetMode as unknown as Mock).mockClear();
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="resumed-session"
+          title="Agent"
+          observedState={{ type: "live", generation: 2 }}
+        />,
+      );
+    });
+    await act(async () => {
+      channelHarness.emit?.({ ...MODES_MANIFEST });
+    });
+
+    expect(sessionSetMode).not.toHaveBeenCalled();
+  });
+
+  it("leaves a session with a turn already running alone", async () => {
+    setPreferredMode("claude", "plan");
+    recordCreatedSession("busy-session", 1);
+
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="busy-session"
+          title="Agent"
+          observedState={LIVE_OBSERVED}
+        />,
+      );
+    });
+    // A turn the person sent is running, so the manifest that lands after it
+    // belongs to a session that is already working.
+    const textarea = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Message the agent"]',
+    );
+    const send = container.querySelector<HTMLButtonElement>(".workspace-send-action");
+    if (textarea === null || send === null) throw new Error("the composer did not render");
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    if (setValue === undefined) throw new Error("textarea value setter did not exist");
+    setValue.call(textarea, "Say hello");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await act(async () => send.click());
+
+    await act(async () => {
+      channelHarness.emit?.({ ...MODES_MANIFEST });
+    });
+
+    expect(sessionSend).toHaveBeenCalledWith("busy-session", 41, "Say hello");
+    expect(sessionSetMode).not.toHaveBeenCalled();
+  });
+
+  it("leaves the stored preference alone when the agent or a plan moves the mode", async () => {
+    setPreferredMode("claude", "default");
+    recordCreatedSession("agent-moves-mode", 1);
+
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="agent-moves-mode"
+          title="Agent"
+          observedState={LIVE_OBSERVED}
+        />,
+      );
+    });
+    await act(async () => undefined);
+
+    // The provider reports a mode the person did not pick: a plan exit, or the
+    // agent switching itself.
+    await act(async () => {
+      channelHarness.emit?.({
+        ...MODES_MANIFEST,
+        modes: {
+          currentModeId: "plan",
+          availableModes: MODES_MANIFEST.modes?.availableModes ?? [],
+        },
+      });
+    });
+    expect(getPreferredMode("claude")).toBe("default");
+    expect(JSON.parse(localStorage.getItem("devboule.agentPrefs") ?? "{}").claude.mode).toBe(
+      "default",
+    );
   });
 
   it("reverts the chip to the manifest mode when sessionSetMode rejects", async () => {
@@ -1473,6 +1605,8 @@ describe("AgentChatSurface", () => {
   });
 
   it("stores the effort preference and auto-applies it once on a new session's first manifest", async () => {
+    recordCreatedSession("pref-agent-1", 1);
+    recordCreatedSession("pref-agent-2", 1);
     root = createRoot(container);
     await act(async () => {
       root.render(
@@ -1564,6 +1698,7 @@ describe("AgentChatSurface", () => {
   });
 
   it("attributes a combined session-start switch to the effort trigger, not the model trigger", async () => {
+    recordCreatedSession("pref-combined", 1);
     setPreferredEffort("grok", "grok-4.6", "xhigh");
     root = createRoot(container);
     await act(async () => {
@@ -1608,6 +1743,9 @@ describe("AgentChatSurface", () => {
   });
 
   it("skips the stored effort when the manifest's model does not declare it", async () => {
+    // Recorded, so the skip this case asserts is the stale-effort skip and not
+    // the gate refusing a session this window did not start.
+    recordCreatedSession("pref-skip-agent", 1);
     setPreferredEffort("grok", "grok-4.6", "xhigh");
     root = createRoot(container);
     await act(async () => {
