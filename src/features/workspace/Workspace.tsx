@@ -1435,14 +1435,24 @@ export function Workspace({
   const handleRetryProjects = useCallback(() => void retryProjects(), [retryProjects]);
   // The provider block retries the read that failed: re-reading projects would
   // leave the same sentence standing, and the sentence clears only when the
-  // catalog answers.
+  // catalog answers. Only the latest retry may write it: a slower earlier one
+  // must not undo a later answer, nor speak once this surface is gone.
+  const providerRetryRef = useRef(0);
+  useEffect(
+    () => () => {
+      providerRetryRef.current += 1;
+    },
+    [],
+  );
   const handleRetryProviders = useCallback(async () => {
+    const attempt = ++providerRetryRef.current;
+    let failure: ErrorSentence | null = null;
     try {
       await loadChatProviders();
-      setProviderError(null);
     } catch (cause: unknown) {
-      setProviderError(errorSentence(cause));
+      failure = errorSentence(cause);
     }
+    if (attempt === providerRetryRef.current) setProviderError(failure);
   }, [loadChatProviders]);
   const selectWorkspace = useCallback(
     (key: WorkspaceKey) => {

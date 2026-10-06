@@ -217,10 +217,11 @@ describe("the lone host's sidebar markup", () => {
 </div>
 <div class="workspace-sidebar-footer">
 <button type="button" class="workspace-history-button sidebar-quiet-row" aria-pressed="false" aria-controls="~" title="Show history">History</button>
-<div class="workspace-daemon-status sidebar-foot" role="status" title="daemon · pid 42">
+<div class="workspace-daemon-status sidebar-foot" role="status" title="daemon · pid 42" tabindex="0">
 <span class="workspace-status-dot workspace-dot-green">
 </span>
 <span class="sr-only">daemon · pid 42</span>
+<span class="sidebar-foot-tip" aria-hidden="true">daemon · pid 42</span>
 </div>
 </div>`);
   });

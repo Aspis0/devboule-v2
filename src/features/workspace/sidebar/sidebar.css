@@ -494,11 +494,11 @@
 }
 
 .sidebar-foot {
+  position: relative;
   display: flex;
   align-items: center;
   height: var(--control-default);
   padding: 0 var(--space-8);
-  overflow: hidden;
   color: var(--muted);
   font-size: var(--type-meta);
   white-space: nowrap;
@@ -510,9 +510,30 @@
   height: 6px;
 }
 
-/* The line carries a tooltip, so keyboard focus has to reach it — and has to
-   look like it did. */
+/* The line is a tab stop: focus draws the ring and shows the sentence a
+   pointer gets as a tooltip, which no browser shows for focus. */
 .sidebar-foot:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+.sidebar-foot-tip {
+  position: absolute;
+  z-index: 3;
+  bottom: calc(100% + var(--space-4));
+  left: 0;
+  display: none;
+  max-width: 100%;
+  padding: var(--space-4) var(--space-8);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-8);
+  color: var(--ink);
+  background: var(--panel-menu);
+  box-shadow: var(--shadow-pop);
+  font-size: var(--type-meta);
+  white-space: normal;
+}
+
+.sidebar-foot:focus-visible .sidebar-foot-tip {
+  display: block;
 }

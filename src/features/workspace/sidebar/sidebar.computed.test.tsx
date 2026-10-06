@@ -151,6 +151,21 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     expect(getComputedStyle(foot).paddingLeft).toBe("8px");
   });
 
+  it("the foot's tip is not drawn at rest, and is what keyboard focus reveals", async () => {
+    // Focus-visible cannot be driven here, so the rule that shows the tip is
+    // read from the sheet and the rest state is read from the computed style.
+    expect(rulesFor(".sidebar-foot:focus-visible .sidebar-foot-tip")).toContain("display: block");
+    expect(rulesFor(".sidebar-foot:focus-visible")).toContain(
+      `outline: 2px solid ${token("--accent")}`,
+    );
+
+    inject([".sidebar-foot", ".sidebar-foot-tip"]);
+    await renderWorkspace();
+    const tip = document.querySelector<HTMLElement>(".sidebar-foot-tip");
+    if (tip === null) throw new Error("the foot's tip did not render");
+    expect(getComputedStyle(tip).display).toBe("none");
+  });
+
   it("the wordmark row keeps the wordmark whole", async () => {
     inject([".sidebar-top", ".sidebar-wordmark"]);
     await renderWorkspace();

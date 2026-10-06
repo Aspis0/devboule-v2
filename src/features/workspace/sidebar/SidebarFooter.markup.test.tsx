@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
 
-// The foot's contract with the two ways of reading it: only the dot is drawn,
-// what it stands for rides in the tooltip a pointer reads and in the status
-// text a screen reader reads, and nothing here is a tab stop.
+// The foot's contract with the three ways of reading it: only the dot is drawn
+// at rest, what it stands for rides in the tooltip a pointer reads, in the
+// status text a screen reader reads and in the tip keyboard focus reveals, and
+// the line is exactly one tab stop.
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -63,14 +64,18 @@ describe("the sidebar foot's status dot", () => {
     expect(foot.querySelector(".sr-only")?.textContent).toBe("daemon · pid 40220 · restart failed");
   });
 
-  it("announces the state it holds and takes no tab stop of its own", async () => {
+  it("announces the state it holds and is one tab stop whose tip a screen reader skips", async () => {
     const foot = await render({
       ...CONNECTED,
       state: "disconnected",
       message: "daemon unreachable",
     });
 
-    expect(foot.getAttribute("tabindex")).toBeNull();
+    expect(foot.getAttribute("tabindex")).toBe("0");
+    expect(foot.querySelectorAll("[tabindex]")).toHaveLength(0);
+    const tip = foot.querySelector(".sidebar-foot-tip");
+    expect(tip?.getAttribute("aria-hidden")).toBe("true");
+    expect(tip?.textContent).toBe(foot.querySelector(".sr-only")?.textContent);
     expect(foot.getAttribute("role")).toBe("status");
     expect(foot.querySelector(".workspace-dot-terracotta")).not.toBeNull();
     expect(foot.textContent).toContain("daemon · ");

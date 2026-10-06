@@ -34,10 +34,9 @@ export interface SidebarFooterProps {
 
 /**
  * The sidebar's foot: the quiet History row above the dot. The dot is the only
- * thing drawn; what it stands for rides in the tooltip a pointer reads and in
- * the status text a screen reader reads. Nothing here is focusable: the dot is
- * a report, not an action, and no browser shows a `title` on keyboard focus,
- * so a tab stop here would stop the keyboard on a bare dot.
+ * thing drawn at rest; what it stands for rides in the tooltip a pointer reads,
+ * in the status text a screen reader reads, and in a tip a keyboard focus
+ * reveals — no browser shows `title` on focus, so the tab stop carries its own.
  */
 export function SidebarFooter({ historyOpen, onToggleHistory, daemon, note }: SidebarFooterProps) {
   const tooltip = [daemonLabel(daemon), note].filter((part) => part !== null).join(" · ");
@@ -53,9 +52,17 @@ export function SidebarFooter({ historyOpen, onToggleHistory, daemon, note }: Si
       >
         History
       </button>
-      <div className="workspace-daemon-status sidebar-foot" role="status" title={tooltip}>
+      <div
+        className="workspace-daemon-status sidebar-foot"
+        role="status"
+        title={tooltip}
+        tabIndex={0}
+      >
         <span className={`workspace-status-dot workspace-dot-${daemonDotTone(daemon.state)}`} />
         <span className="sr-only">{tooltip}</span>
+        <span className="sidebar-foot-tip" aria-hidden="true">
+          {tooltip}
+        </span>
       </div>
     </div>
   );

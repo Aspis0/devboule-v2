@@ -1669,6 +1669,42 @@ describe("Workspace sessions", () => {
     expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
+  it("lets the latest provider retry win over a slower earlier failure", async () => {
+    vi.mocked(providersList).mockRejectedValueOnce(new Error("provider catalog unavailable"));
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
+    if (newWorkspace === null) throw new Error("new workspace control did not render");
+    await act(async () => newWorkspace.click());
+    await act(async () => undefined);
+
+    // Two retries are in flight; the second answers first.
+    let failFirst: (cause: Error) => void = () => undefined;
+    let answerSecond: (catalog: { providers: never[]; unreadableDirs: number }) => void = () =>
+      undefined;
+    vi.mocked(providersList)
+      .mockImplementationOnce(
+        () => new Promise((_resolve, reject) => void (failFirst = reject)) as never,
+      )
+      .mockImplementationOnce(
+        () => new Promise((resolve) => void (answerSecond = resolve)) as never,
+      );
+    const retry = container.querySelector<HTMLButtonElement>(".workspace-secondary-action");
+    if (retry === null) throw new Error("the refusal drew no retry");
+    await act(async () => retry.click());
+    await act(async () => retry.click());
+    await act(async () => answerSecond({ providers: [], unreadableDirs: 0 }));
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+
+    await act(async () => failFirst(new Error("a slower, older failure")));
+
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
   it("shows the create error only over the workspace it failed for", async () => {
     // Two workspaces in one project; the create is refused under the
     // selected one and the line must follow that workspace, not stay over
