@@ -268,10 +268,17 @@ pub(super) fn tools_call(tool: &str, arguments: Value) -> String {
     .to_string()
 }
 
-/// The text an agent reads out of a tool reply.
+/// The text an agent reads out of a tool reply: the first text block that is not
+/// the head or the tail the daemon wraps untrusted page content in.
 pub(super) fn tool_text(body: &Value) -> &str {
-    body.pointer("/result/content/0/text")
-        .and_then(Value::as_str)
+    body.pointer("/result/content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .find(|text| {
+            !text.starts_with("[devboule: untrusted content]") && !text.starts_with("content-end ")
+        })
         .unwrap_or("<no text>")
 }
 

@@ -199,6 +199,8 @@ mod transport;
 #[cfg(unix)]
 mod unix_modes;
 #[cfg(feature = "server")]
+mod untrusted_frame;
+#[cfg(feature = "server")]
 mod usage_cost;
 #[cfg(feature = "server")]
 mod user_providers;
@@ -206,6 +208,8 @@ mod user_providers;
 // else (the client-only macOS/Linux build) the module would warn as dead.
 #[cfg_attr(not(any(windows, feature = "server")), allow(dead_code))]
 mod verbatim_path;
+#[cfg(feature = "server")]
+mod visible_text;
 #[cfg(windows)]
 mod windows_path_env;
 #[cfg(windows)]

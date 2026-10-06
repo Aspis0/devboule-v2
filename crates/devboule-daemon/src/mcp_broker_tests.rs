@@ -5187,8 +5187,12 @@ fn a_create_through_the_route_delivers_the_stored_spawn_prompt() {
     // test reads through its own (the child-profile fixture's pattern).
     let journal = crate::journal::Journal::open(&dir.join("journal.db")).expect("journal");
     let expected = format!(
-        "spawn\n\n{}\n\ndo the thing",
-        crate::provider_catalog::AGENT_PREAMBLE
+        "spawn\n\n{}\n\n{}\n\ndo the thing",
+        crate::provider_catalog::AGENT_PREAMBLE,
+        crate::untrusted_frame::Source::CreatorPrompt {
+            chain: &[crate::untrusted_frame::hop("local", &creator)],
+        }
+        .lead_in()
     );
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     let mut found: Option<String> = None;

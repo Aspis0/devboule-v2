@@ -85,7 +85,10 @@ fn a_claude_send_inlines_a_stored_png_reference() {
         .expect("content array");
     assert_eq!(content.len(), 2, "{content:?}");
     let text = content[0]["text"].as_str().expect("text block");
-    assert_eq!(text, "look at this");
+    assert_eq!(
+        text,
+        format!("look at this\n\n{}", crate::session::ATTACHMENT_OPENER)
+    );
     assert!(
         !text.contains("[Image available at: "),
         "no path line for an inlined reference: {text}"

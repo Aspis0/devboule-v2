@@ -9,6 +9,8 @@
 use super::*;
 
 use crate::process_index::SessionProof;
+use crate::untrusted_frame::{extend_chain, hop, Source};
+use crate::visible_text::escape_for_model;
 
 impl super::SessionRegistry {
     /// Hold one creation's idempotency key for as long as the call that claimed
@@ -511,7 +513,31 @@ impl super::SessionRegistry {
         // fixed place between the standing instructions and the preamble; an
         // empty one is the absent one, and it was read once when the creation
         // was resolved — a later profile edit cannot reach this child.
-        let prompt = creation.initial_prompt.clone();
+        //
+        // The creator's task is another agent's words: it follows a header that
+        // names the creator from the daemon's own record (and whatever carried
+        // content into the creator), and hidden characters in it are spelled
+        // out. The task is the last part of the message, so nothing can close
+        // the header from inside it.
+        let creator_chain = extend_chain(
+            &creator_runtime
+                .as_ref()
+                .map(|runtime| runtime.ingress_chain())
+                .unwrap_or_default(),
+            hop("local", &creation.creator_session_id),
+        );
+        if let Some(child_runtime) = self.live_runtime(&child.id, &creation.creator.owner) {
+            child_runtime.set_ingress_chain(creator_chain.clone());
+        }
+        let preamble = format!(
+            "{}\n\n{}",
+            crate::provider_catalog::AGENT_PREAMBLE,
+            Source::CreatorPrompt {
+                chain: &creator_chain
+            }
+            .lead_in()
+        );
+        let prompt = escape_for_model(&creation.initial_prompt);
         let spawn_prompt = creation.spawn_prompt.clone();
         let owner = creation.creator.owner.clone();
         let internal_conn = ConnHandle::with_peer(0, None);
@@ -532,7 +558,7 @@ impl super::SessionRegistry {
             require_attachment: false,
             interrupt_on_steer_refusal: true,
             message_slot: None,
-            preset_preamble: Some(crate::provider_catalog::AGENT_PREAMBLE),
+            preset_preamble: Some(&preamble),
             spawn_prompt: (!spawn_prompt.is_empty()).then_some(spawn_prompt.as_str()),
             author: UserMessageAuthor::Creation,
             message_kind: UserMessageKind::Creation,

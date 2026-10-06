@@ -10,6 +10,8 @@
 //! columns (`agent_message_envelope`).
 
 use super::*;
+use crate::untrusted_frame::Source;
+use crate::visible_text::escape_for_model;
 
 /// The finish report's envelope (`S5` decision 7).
 ///
@@ -19,6 +21,10 @@ use super::*;
 /// child's own words cannot close the envelope or open a second one, and CR/LF
 /// is normalised on the way in: a summary with a lone carriage return cannot
 /// forge a line the envelope did not write.
+///
+/// The summary and the note are the child's words, so the header says so
+/// (`untrusted_frame`); it names the child from the daemon's own id and carries
+/// no chain, because the child's own upstream is not known here.
 pub(super) fn agent_finished_envelope(
     child_session_id: &str,
     display_name: &str,
@@ -34,15 +40,20 @@ pub(super) fn agent_finished_envelope(
         clean(&single_line_header(child_session_id)),
         clean(&single_line_header(display_name)),
         state.as_str(),
-        clean(summary)
+        clean(&escape_for_model(summary))
     );
     if let Some(note) = note {
-        body.push_str(&format!("\nnote: {}", clean(note)));
+        body.push_str(&format!("\nnote: {}", clean(&escape_for_model(note))));
     }
     let artifacts = serde_json::to_string(artifacts).unwrap_or_else(|_| "[]".to_string());
     body.push_str(&format!("\nartifacts: {}", clean(&artifacts)));
+    let provenance = Source::ChildReport {
+        child: child_session_id,
+        chain: &[],
+    }
+    .header_lines();
     format!(
-        "<devboule-system>\norigin: {}\nrole: daemon\nfrom_agent: {}\nkind: agent_finished\ntimestamp: {}\n{}\n</devboule-system>",
+        "<devboule-system>\norigin: {}\nrole: daemon\nfrom_agent: {}\nkind: agent_finished\n{provenance}\ntimestamp: {}\n{}\n</devboule-system>",
         origin_line(child_origin),
         clean(&single_line_header(child_session_id)),
         unix_millis(),
@@ -160,8 +171,13 @@ pub(super) fn agent_permission_request_envelope(
     display_name: &str,
     excerpt: &str,
 ) -> String {
+    let provenance = Source::ChildReport {
+        child: child_session_id,
+        chain: &[],
+    }
+    .header_lines();
     format!(
-        "<devboule-system>\norigin: {}\nrole: daemon\nfrom_agent: {}\nkind: agent_permission_request\ntimestamp: {}\ncardId: {}\ntoolTitle: {}\ndisplayName: {}\nchild-said:\n{}\nend child-said\n</devboule-system>",
+        "<devboule-system>\norigin: {}\nrole: daemon\nfrom_agent: {}\nkind: agent_permission_request\n{provenance}\ntimestamp: {}\ncardId: {}\ntoolTitle: {}\ndisplayName: {}\nchild-said:\n{}\nend child-said\n</devboule-system>",
         origin_line(child_origin),
         neutralise_envelope_text(&single_line_header(child_session_id)),
         unix_millis(),
@@ -350,16 +366,22 @@ pub(super) fn bound_finish_envelope(envelope: String) -> String {
 /// the message text. A local sender is rendered with its local id; a remote
 /// sender is rendered as `peer:<authenticated-device>/<validated-far-id>` so
 /// it cannot collide with the local form.
+///
+/// `chain` is every hop that carried the message here, sender last
+/// (`untrusted_frame::extend_chain`); it and the untrusted-content lines sit in
+/// the header block, which the app's parser reads by key and so ignores them.
 pub(super) fn agent_message_envelope(
     origin: &str,
     role: &str,
     from_agent: &str,
+    chain: &[String],
     text: &str,
 ) -> String {
     format!(
-        "<devboule-system>\norigin: {origin}\nrole: {role}\nfrom_agent: {from_agent}\ntimestamp: {}\n{}\n</devboule-system>",
+        "<devboule-system>\norigin: {origin}\nrole: {role}\nfrom_agent: {from_agent}\n{}\ntimestamp: {}\n{}\n</devboule-system>",
+        Source::AgentMessage { chain }.header_lines(),
         unix_millis(),
-        neutralise_envelope_text(text)
+        neutralise_envelope_text(&escape_for_model(text))
     )
 }
 

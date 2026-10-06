@@ -254,7 +254,10 @@ fn a_fallback_session_writes_an_attachment_path_line() {
     let written = String::from_utf8(received.lock().expect("writer").clone()).expect("utf8");
     assert_eq!(
         written,
-        format!("describe this\n\n[Image available at: {}]", path.display())
+        format!(
+            "describe this\n\n{ATTACHMENT_OPENER}\n\n[Image available at: {}]",
+            path.display()
+        )
     );
 
     journal.shutdown();
@@ -293,14 +296,16 @@ fn a_fallback_session_separates_attachment_lines_by_a_blank_line() {
     let lines: Vec<&str> = written.split('\n').collect();
     assert_eq!(lines[0], "two files");
     assert_eq!(lines[1], "", "the block is separated from the prompt");
-    assert!(lines[2].starts_with("[Image available at: "), "{written}");
-    assert!(lines[2].ends_with(".png]"), "{written}");
-    assert!(lines[3].starts_with("[Image available at: "), "{written}");
-    assert!(lines[3].ends_with(".svg]"), "{written}");
+    assert_eq!(lines[2], ATTACHMENT_OPENER, "{written}");
+    assert_eq!(lines[3], "", "the lines are separated from the opener");
+    assert!(lines[4].starts_with("[Image available at: "), "{written}");
+    assert!(lines[4].ends_with(".png]"), "{written}");
+    assert!(lines[5].starts_with("[Image available at: "), "{written}");
+    assert!(lines[5].ends_with(".svg]"), "{written}");
     assert_eq!(
         lines.len(),
-        4,
-        "one line per attachment, no extras: {written}"
+        6,
+        "the opener and one line per attachment, no extras: {written}"
     );
 
     journal.shutdown();
@@ -774,7 +779,9 @@ fn a_refused_session_keeps_the_path_line_and_builds_no_block() {
         .expect("send");
     let written = String::from_utf8(received.lock().expect("writer").clone()).expect("utf8");
     assert!(
-        written.starts_with("describe this\n\n[Image available at: "),
+        written.starts_with(&format!(
+            "describe this\n\n{ATTACHMENT_OPENER}\n\n[Image available at: "
+        )),
         "{written}"
     );
     assert!(!written.contains("\"type\":\"image\""), "{written}");
@@ -814,7 +821,9 @@ fn an_unknown_session_keeps_the_path_line_and_builds_no_block() {
         .expect("send");
     let written = String::from_utf8(received.lock().expect("writer").clone()).expect("utf8");
     assert!(
-        written.starts_with("describe this\n\n[Image available at: "),
+        written.starts_with(&format!(
+            "describe this\n\n{ATTACHMENT_OPENER}\n\n[Image available at: "
+        )),
         "{written}"
     );
     assert!(!written.contains("\"type\":\"image\""), "{written}");

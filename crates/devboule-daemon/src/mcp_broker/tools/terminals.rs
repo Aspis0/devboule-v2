@@ -8,6 +8,7 @@ use crate::mcp_broker::caller::{audit_mcp_tool, caller_conn, McpCaller};
 use crate::mcp_broker::RegisteredSession;
 use crate::peer_policy::ConnPeer;
 use crate::server::ServerState;
+use crate::untrusted_frame::{escape_json_strings, Source};
 
 use super::terminal_common::{caller_workspace, terminal_reply, TerminalError};
 
@@ -72,7 +73,37 @@ pub(in crate::mcp_broker) fn capture(
     };
     let result = read_capture(state, registration, &conn.conn_peer, &terminal, lines);
     audit(if result.is_ok() { "ok" } else { "denied" });
-    terminal_reply(&id, result)
+    match result {
+        Ok((workspace, screen)) => framed_screen(&id, &workspace, &terminal, &screen),
+        Err(error) => terminal_reply(&id, Err(error)),
+    }
+}
+
+/// The screen is whatever a program drew, so it is untrusted: the reply's
+/// content sits between a head naming this workspace and terminal and a tail that
+/// alone ends it (`untrusted_frame`), with hidden characters spelled out in the
+/// text the agent reads and in its structured copy.
+fn framed_screen(
+    id: &Value,
+    workspace: &str,
+    terminal: &str,
+    screen: &Value,
+) -> Result<Option<Value>, Value> {
+    let (head, tail) = Source::Terminal {
+        workspace,
+        terminal,
+    }
+    .fence();
+    let mut reply = terminal_reply(id, Ok(escape_json_strings(screen)))?;
+    if let Some(content) = reply
+        .as_mut()
+        .and_then(|reply| reply.pointer_mut("/result/content"))
+        .and_then(Value::as_array_mut)
+    {
+        content.insert(0, json!({"type": "text", "text": head}));
+        content.push(json!({"type": "text", "text": tail}));
+    }
+    Ok(reply)
 }
 
 fn read_list(
@@ -105,18 +136,19 @@ fn read_capture(
     conn_peer: &Option<ConnPeer>,
     terminal: &str,
     lines: usize,
-) -> Result<Value, TerminalError> {
+) -> Result<(String, Value), TerminalError> {
     let workspace = caller_workspace(state, registration, conn_peer)?;
     let (rows, total) = state
         .sessions
         .terminal_screen(terminal, &registration.owner, conn_peer, &workspace, lines)
         .map_err(|error| TerminalError::Refused(error.message))?;
-    Ok(json!({
+    let screen = json!({
         "terminalId": terminal,
         "lines": rows,
         "totalLines": total,
         "truncated": total > rows.len(),
-    }))
+    });
+    Ok((workspace, screen))
 }
 
 /// The closed argument set: `terminalId` required, `lines` optional. An

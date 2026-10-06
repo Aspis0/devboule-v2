@@ -7,7 +7,6 @@ pub(super) mod browser_commands;
 pub(super) mod browser_login;
 pub(super) mod browser_steps;
 pub(super) mod browser_tools;
-mod card_text;
 pub(super) mod ci_watch;
 pub(super) mod collisions;
 pub(super) mod commands;

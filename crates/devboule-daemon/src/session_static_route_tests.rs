@@ -421,7 +421,7 @@ fn a_static_route_that_declines_keeps_the_legacy_write_byte_for_byte() {
     let legacy = with_attachment_paths(
         &registry.attachments,
         session_id,
-        "describe this",
+        &format!("describe this\n\n{ATTACHMENT_OPENER}"),
         &[attachment("photo.png", "image/png", &image)],
     )
     .expect("legacy text");

@@ -11,6 +11,8 @@ use devboule_protocol::OwnerId;
 use crate::ci_watch_store::CiWatchRecord;
 use crate::session::SendError;
 use crate::session::{neutralise_envelope_text, SessionRegistry};
+use crate::untrusted_frame::Source;
+use crate::visible_text::escape_for_model;
 
 /// What the watch service needs from the sessions: whether the owner is
 /// there, and a way to hand it a message. The delivery keeps the session
@@ -34,19 +36,41 @@ impl WakeSink for SessionRegistry {
 }
 
 /// The message a finished watch wakes its owner with.
+///
+/// The summary is text GitHub's checks and logs wrote, so it is framed as
+/// untrusted data with the host, repository, commit and watch the daemon holds;
+/// the daemon's own lines above it (`state`, `repo`, `sha`) are unchanged.
 pub(crate) fn wake_text(record: &CiWatchRecord) -> String {
     let summary = record.summary.as_deref().unwrap_or_default();
+    let provenance = Source::CiRun {
+        repo: &format!("{}/{}", record.host, record.slug()),
+        sha: &record.sha,
+        watch: &record.watch_id,
+    }
+    .header_lines();
     format!(
-        "<devboule-system>\norigin: local\nrole: daemon\nfrom_agent: devboule-ci-watch\n\
-         kind: ci_verdict\ntimestamp: {}\neventId: {}\nwatchId: {}\nstate: {}\nrepo: {}\nsha: {}\n\
-         summary:\n{}\n</devboule-system>",
+        "<devboule-system>
+origin: local
+role: daemon
+from_agent: devboule-ci-watch
+         kind: ci_verdict
+{provenance}
+timestamp: {}
+eventId: {}
+watchId: {}
+state: {}
+         repo: {}
+sha: {}
+summary:
+{}
+</devboule-system>",
         crate::ci_watch_store::now_ms(),
         record.wake_key.as_deref().unwrap_or_default(),
         record.watch_id,
         record.state.as_str(),
         record.slug(),
         record.sha,
-        neutralise_envelope_text(summary.trim_end()),
+        neutralise_envelope_text(&escape_for_model(summary.trim_end())),
     )
 }
 

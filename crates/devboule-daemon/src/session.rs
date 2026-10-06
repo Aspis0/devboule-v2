@@ -325,7 +325,7 @@ pub(crate) use session_prompt_planning::StaticImageSink;
 use session_prompt_planning::{
     plan_structured_prompt, prompt_text_with_fallback_paths, push_reference_entries,
     push_reference_path_lines, resolve_attachment_references, with_attachment_paths, AcpImageBlock,
-    AcpPromptSink, ImageDelivery, PlannedStaticPrompt, ResolvedReference,
+    AcpPromptSink, ImageDelivery, PlannedStaticPrompt, ResolvedReference, ATTACHMENT_OPENER,
 };
 use session_registry_state::{
     compose_first_prompt, AgentChild, AgentCreationTable, AgentCreatorCaps, ConnectionPresence,
@@ -458,6 +458,11 @@ mod session_child_commands;
 #[cfg(test)]
 #[path = "session_hook_seq_lifecycle_tests.rs"]
 mod session_hook_seq_lifecycle_tests;
+/// The untrusted-content frame on the agent-message road: the origin chain across
+/// local and far hops, and a person's typed message left unframed.
+#[cfg(test)]
+#[path = "session_untrusted_framing_tests.rs"]
+mod session_untrusted_framing_tests;
 pub(crate) use session_child_commands::CancelOutcome;
 /// The Unix announcement gate: the kernel uid the socket transport minted is
 /// the peer identity the agent report is checked against.

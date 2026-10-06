@@ -1019,3 +1019,8 @@ mod tests;
 /// What `tools/list` shows a person here and a paired device.
 #[cfg(test)]
 mod tools_list_peer_tests;
+/// What a page, a terminal screen and a CI run read as on the tool roads:
+/// framed as untrusted, with the daemon's own provenance and a fence no content
+/// can close.
+#[cfg(test)]
+mod untrusted_roads_tests;

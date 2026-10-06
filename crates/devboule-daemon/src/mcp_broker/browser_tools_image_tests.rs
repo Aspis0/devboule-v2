@@ -55,12 +55,16 @@ fn a_screenshot_answers_an_image_block_and_one_short_line() {
         .as_array()
         .expect("content blocks")
         .clone();
-    assert_eq!(content.len(), 2, "{body}");
-    assert_eq!(content[0]["type"], "image", "{body}");
-    assert_eq!(content[0]["mimeType"], "image/jpeg", "{body}");
-    assert_eq!(content[0]["data"], "QUJDRA", "{body}");
-    let line = content[1]["text"].as_str().expect("text line").to_string();
-    assert_eq!(content[1]["type"], "text", "{body}");
+    assert_eq!(
+        content.len(),
+        4,
+        "the daemon's head, the picture, its line, the daemon's tail: {body}"
+    );
+    assert_eq!(content[1]["type"], "image", "{body}");
+    assert_eq!(content[1]["mimeType"], "image/jpeg", "{body}");
+    assert_eq!(content[1]["data"], "QUJDRA", "{body}");
+    let line = content[2]["text"].as_str().expect("text line").to_string();
+    assert_eq!(content[2]["type"], "text", "{body}");
     assert_eq!(
         line, "image/jpeg 1280x720 px, viewport 1024x768 css px, 1.25 per point, clip 0,0,800,600",
         "every number the host sent is read, as the host sent it"
@@ -91,7 +95,7 @@ fn the_bytes_travel_once_and_no_document_rides_beside_the_block() {
         1,
         "the image is in the reply once: {serialized}"
     );
-    let line = body["result"]["content"][1]["text"]
+    let line = body["result"]["content"][2]["text"]
         .as_str()
         .expect("text line");
     assert_eq!(
@@ -111,7 +115,14 @@ fn a_result_that_carries_no_image_is_still_read_as_text() {
         json!({"browserId": "tab-1"}),
         result.clone(),
     );
-    assert_eq!(body["result"]["content"][0]["type"], "text", "{body}");
+    assert!(
+        body["result"]["content"]
+            .as_array()
+            .expect("content blocks")
+            .iter()
+            .all(|block| block["type"] == "text"),
+        "{body}"
+    );
     assert_eq!(body["result"]["structuredContent"], result, "{body}");
 }
 

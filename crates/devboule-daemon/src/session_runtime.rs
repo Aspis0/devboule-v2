@@ -281,6 +281,11 @@ pub(crate) struct SessionRuntime {
     /// a blocking journal read on the send path for a fact that is only ever
     /// needed once.
     recovered_context: Mutex<Option<String>>,
+    /// The hops that carried the last agent-written content delivered into this
+    /// session (`untrusted_frame::extend_chain`), so a message this session
+    /// sends on names where its own input came from. Set by the daemon from
+    /// validated ids at delivery, never from a body; the newest delivery wins.
+    ingress_chain: Mutex<Vec<String>>,
     /// Bounded recent event kinds for the activity answer. Metadata only;
     /// every publish appends, the oldest drops past the cap, and no payload
     /// text is ever kept here.
@@ -584,6 +589,7 @@ impl SessionRuntime {
             // the first one carries the standing instructions.
             first_prompt_owed: AtomicBool::new(true),
             recovered_context: Mutex::new(None),
+            ingress_chain: Mutex::new(Vec::new()),
             activity_feed: Mutex::new(VecDeque::new()),
             deliveries_in_flight: AtomicU32::new(0),
         }
@@ -596,6 +602,22 @@ impl SessionRuntime {
     /// that arrives after a failed write does not get a second copy.
     pub(crate) fn take_first_prompt(&self) -> bool {
         self.first_prompt_owed.swap(false, Ordering::AcqRel)
+    }
+
+    /// The hops behind the last agent-written content delivered here.
+    pub(crate) fn ingress_chain(&self) -> Vec<String> {
+        self.ingress_chain
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Record the hops behind content just delivered here.
+    pub(crate) fn set_ingress_chain(&self, chain: Vec<String>) {
+        *self
+            .ingress_chain
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = chain;
     }
 
     /// A session being **resumed** owes no first prompt: the generation it

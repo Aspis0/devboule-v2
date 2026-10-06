@@ -8,6 +8,7 @@
 
 use super::*;
 use crate::release_guard::ReleaseGuard;
+use crate::untrusted_frame::{extend_chain, hop};
 
 /// The one sentence a send that promised to start from idle answers with when
 /// a turn began between its look and the writer. The queue's drain recognises
@@ -684,7 +685,7 @@ impl super::SessionRegistry {
         // section `finish_turn` takes, and its answer is what decides steer versus
         // prompt. A turn that ends after that answer cannot make the decision
         // wrong, because the answer arrived with the boundary registration.
-        let (from_runtime, target_owner, admission) = {
+        let (from_runtime, target_runtime, target_owner, admission) = {
             let map = self
                 .inner
                 .lock()
@@ -729,7 +730,12 @@ impl super::SessionRegistry {
                 Some((&target.runtime, target.runtime.turn_counter())),
                 now,
             )?;
-            (from_runtime, target.owner.clone(), admission)
+            (
+                from_runtime,
+                Arc::clone(&target.runtime),
+                target.owner.clone(),
+                admission,
+            )
         };
         // The slot is taken, so its release is owed here whatever happens
         // between this line and the delivery's outcome: `finish_message_delivery`
@@ -772,7 +778,27 @@ impl super::SessionRegistry {
             Some(PeerRole::Daemon) => "daemon",
             Some(PeerRole::Client) | None => "client",
         };
-        let envelope = agent_message_envelope(&origin, role, &from_agent, text);
+        // Every hop is named from ids the daemon validated: the authenticated
+        // device and the far label for a wire sender, the local session id and
+        // whatever carried content into it for a local one. The wire frame
+        // carries no chain, so a far sender's own upstream is not claimed.
+        let chain = match &from_runtime {
+            Some(from_runtime) => {
+                extend_chain(&from_runtime.ingress_chain(), hop("local", from_session))
+            }
+            None => vec![hop(
+                "peer",
+                &format!(
+                    "{}/{from_session}",
+                    caller_origin.device_id.as_deref().unwrap_or_default()
+                ),
+            )],
+        };
+        let envelope = agent_message_envelope(&origin, role, &from_agent, &chain, text);
+        // The receiver's next message on carries this chain: set before the
+        // delivery, because it may act on the text the moment it lands.
+        let previous_chain = target_runtime.ingress_chain();
+        target_runtime.set_ingress_chain(chain);
         let internal_conn = ConnHandle::with_peer(0, None);
         // The slot this delivery holds, so the plain-prompt fallback can
         // re-key its boundary if the turn it was admitted into ends first.
@@ -849,6 +875,7 @@ impl super::SessionRegistry {
             // if this admission found one — the turn end it was admitted for.
             release.release(true);
         } else {
+            target_runtime.set_ingress_chain(previous_chain);
             // The message is in flight nowhere: give the slot back now instead
             // of holding the sender's budget until a boundary that will never see
             // this message arrives.
@@ -1335,6 +1362,20 @@ impl super::SessionRegistry {
             });
         let raw_text = text;
         let text = first_prompt.as_deref().unwrap_or(text);
+        // An agent's prompt that carries the person's attachments says so once,
+        // whichever route carries them. The journal keeps what the person typed
+        // (`raw_text`), so the sentence is the model's and not the transcript's;
+        // a terminal's writer is a shell, which gets no prose.
+        let with_opener = (is_agent
+            && (!attachments.is_empty() || !attachment_references.is_empty()))
+        .then(|| {
+            if text.is_empty() {
+                ATTACHMENT_OPENER.to_string()
+            } else {
+                format!("{text}\n\n{ATTACHMENT_OPENER}")
+            }
+        });
+        let text = with_opener.as_deref().unwrap_or(text);
         // The last thing before the write: the slot's boundary must
         // be the turn this text actually enters. The admission registered it
         // against the turn that was running then, and that turn can have ended —

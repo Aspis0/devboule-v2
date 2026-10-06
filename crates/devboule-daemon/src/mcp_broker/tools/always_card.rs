@@ -15,7 +15,6 @@ use std::sync::Arc;
 use devboule_protocol::{PermissionOption, SessionEvent, SessionOrigin};
 use serde_json::Value;
 
-use super::card_text::{long_message_tail, visible_text};
 use super::first_use::{ask_card_in_any_mode, card_id, mark_fact_lines, mode_refusal};
 use crate::mcp_broker::dispatch::{rpc_error, tool_error};
 use crate::mcp_broker::RegisteredSession;
@@ -23,6 +22,7 @@ use crate::provider_catalog::{
     MCP_BROWSER_FILL_LOGIN_TOOL, MCP_LIST_PEER_AGENTS_TOOL, MCP_SEND_MESSAGE_TOOL,
 };
 use crate::server::ServerState;
+use crate::visible_text::{long_message_tail, visible_text};
 
 /// How much of a target session an audit row keeps.
 const AUDITED_TARGET: usize = 64;

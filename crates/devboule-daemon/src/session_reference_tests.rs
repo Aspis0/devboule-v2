@@ -63,7 +63,7 @@ fn a_deposited_reference_reaches_the_provider_as_a_path_line() {
     assert_eq!(
         written_prompt(&received),
         format!(
-            "read the deck\n\n[Image available at: {}]",
+            "read the deck\n\n{ATTACHMENT_OPENER}\n\n[Image available at: {}]",
             stored[0].display()
         ),
         "the provider is handed the stored file's path, not its bytes"
@@ -313,7 +313,7 @@ fn inline_attachments_and_references_in_one_send_keep_the_order_the_client_gave(
     assert_eq!(
         written_prompt(&received),
         format!(
-            "two files\n\n[Image available at: {}]\n\n[Image available at: {}]\n[Image available at: {}]",
+            "two files\n\n{ATTACHMENT_OPENER}\n\n[Image available at: {}]\n\n[Image available at: {}]\n[Image available at: {}]",
             inline_path.display(),
             stored_path(&registry, session_id, &first.digest).display(),
             stored_path(&registry, session_id, &second.digest).display()

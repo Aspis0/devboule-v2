@@ -1,7 +1,9 @@
-//! Untrusted text as a card shows it: nothing a person cannot see.
+//! Untrusted text as a person or a model reads it: nothing it cannot see.
 //!
-//! One responsibility: render a string an agent chose so that what the person
-//! reads is what would be sent. Invisible formatting and control characters
+//! One responsibility: render a string a third party chose so that what is read
+//! is what is there. [`visible_text`] is the card's rendering for a person;
+//! [`escape_for_model`] is the lighter one for text a model reads, which leaves
+//! blank runs and the module's own markers alone. Invisible formatting and control characters
 //! become visible escapes, and a long run of blank characters — spaces and the
 //! glyphs that draw as spaces — becomes a count, so neither can push the real
 //! content out of sight. The marker characters themselves are escaped too, so
@@ -42,7 +44,7 @@ fn is_blank(character: char) -> bool {
 /// control characters as `⟨U+202E⟩`, and a run of more than three blank
 /// characters as `␠×N`. Line breaks stay as they are when `keep_line_breaks`
 /// (the caller marks each line), and are escaped otherwise.
-pub(super) fn visible_text(text: &str, keep_line_breaks: bool) -> String {
+pub(crate) fn visible_text(text: &str, keep_line_breaks: bool) -> String {
     let mut shown = String::with_capacity(text.len());
     let mut blanks = String::new();
     for character in text.chars() {
@@ -70,6 +72,24 @@ pub(super) fn visible_text(text: &str, keep_line_breaks: bool) -> String {
     shown
 }
 
+/// `text` as a model should read it: format and control characters spelled out
+/// as `⟨U+202E⟩` (the tag block and the bidi controls are the ones a model reads
+/// and a person does not), line breaks and tabs kept, nothing else changed — a
+/// run of spaces is indentation here, not padding, and a `⟨` is a `⟨`.
+pub(crate) fn escape_for_model(text: &str) -> String {
+    let mut shown = String::with_capacity(text.len());
+    for character in text.chars() {
+        let hidden = is_invisible_format(character)
+            || (character.is_control() && !matches!(character, '\n' | '\t' | '\r'));
+        if hidden {
+            shown.push_str(&escaped(character));
+        } else {
+            shown.push(character);
+        }
+    }
+    shown
+}
+
 fn flush_blanks(shown: &mut String, blanks: &mut String) {
     let count = blanks.chars().count();
     if count > BLANKS_SHOWN {
@@ -87,7 +107,7 @@ fn escaped(character: char) -> String {
 /// The end of an already-rendered message, when it is long enough that the end
 /// may be out of view: the last [`TAIL_SHOWN`] characters, never starting in
 /// the middle of an escape. `None` for a message that fits.
-pub(super) fn long_message_tail(rendered: &str) -> Option<String> {
+pub(crate) fn long_message_tail(rendered: &str) -> Option<String> {
     let characters: Vec<char> = rendered.chars().collect();
     let lines = rendered.lines().count();
     if characters.len() <= LONG_AFTER_CHARS && lines <= LONG_AFTER_LINES {
@@ -107,7 +127,21 @@ pub(super) fn long_message_tail(rendered: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{long_message_tail, visible_text};
+    use super::{escape_for_model, long_message_tail, visible_text};
+
+    /// A model reads tag characters, bidi controls and escape sequences that a
+    /// person does not see: they are spelled out, and indentation, tabs, line
+    /// breaks and the module's own marker characters are left exactly as they
+    /// are.
+    #[test]
+    fn model_text_spells_out_what_is_hidden_and_changes_nothing_else() {
+        assert_eq!(
+            escape_for_model("a\u{e0041}b\u{202e}c\u{1b}[0m"),
+            "a⟨U+E0041⟩b⟨U+202E⟩c⟨U+001B⟩[0m"
+        );
+        let code = "fn main() {\n\t    let x = ⟨1⟩; // ␠\n}";
+        assert_eq!(escape_for_model(code), code);
+    }
 
     /// Every class that renders as nothing, or as something other than itself.
     #[test]

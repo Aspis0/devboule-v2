@@ -29,6 +29,8 @@ use crate::mcp_broker::caller::{audit_mcp_tool, caller_conn, McpCaller};
 use crate::mcp_broker::dispatch::{rpc_error, tool_error};
 use crate::mcp_broker::RegisteredSession;
 use crate::server::ServerState;
+use crate::untrusted_frame::{escape_json_strings, Source};
+use crate::visible_text::escape_for_model;
 
 use super::browser_args::parse;
 use super::browser_commands::spec_for;
@@ -124,13 +126,27 @@ pub(in crate::mcp_broker) fn browser_caller(
 /// The host's result: text and a structured document, or — for a screenshot
 /// that really carries one — the picture and the one line that says how big it
 /// is.
+///
+/// Whatever the page put in it is untrusted, so the content blocks sit between a
+/// head and a tail the daemon writes (`untrusted_frame`): the head names the
+/// page's address when the host reported one, and the tail carries the nonce
+/// that is the only thing that ends the content. The blocks themselves are the
+/// host's own, untouched but for hidden characters spelled out, so the text an
+/// agent parses is exactly the text it parsed before the frame.
 pub(in crate::mcp_broker) fn browser_reply(id: &Value, command: &str, result: Value) -> Value {
+    let (head, tail) = Source::BrowserPage {
+        url: page_address(&result),
+    }
+    .fence();
     let picture = if command == "screenshot" {
         picture(&result)
     } else {
         None
     };
     let Some((block, line)) = picture else {
+        // The structured copy and the text read alike, so both are escaped; a
+        // picture's bytes are not text and stay as the host sent them.
+        let result = escape_json_strings(&result);
         let text = serde_json::to_string(&result).unwrap_or_else(|error| {
             json!({"browser": "the result could not be encoded", "detail": error.to_string()})
                 .to_string()
@@ -139,7 +155,11 @@ pub(in crate::mcp_broker) fn browser_reply(id: &Value, command: &str, result: Va
             "jsonrpc": "2.0",
             "id": id,
             "result": {
-                "content": [{"type": "text", "text": text}],
+                "content": [
+                    {"type": "text", "text": head},
+                    {"type": "text", "text": text},
+                    {"type": "text", "text": tail},
+                ],
                 "structuredContent": result,
                 "isError": false,
             },
@@ -149,10 +169,24 @@ pub(in crate::mcp_broker) fn browser_reply(id: &Value, command: &str, result: Va
         "jsonrpc": "2.0",
         "id": id,
         "result": {
-            "content": [block, {"type": "text", "text": line}],
+            "content": [
+                {"type": "text", "text": head},
+                block,
+                {"type": "text", "text": escape_for_model(&line)},
+                {"type": "text", "text": tail},
+            ],
             "isError": false,
         },
     })
+}
+
+/// The address the host reported for the page the answer is about: the page's
+/// own, or where a navigation landed. `None` when the answer names none.
+fn page_address(result: &Value) -> Option<&str> {
+    result
+        .pointer("/url")
+        .or_else(|| result.pointer("/delta/url"))
+        .and_then(Value::as_str)
 }
 
 /// The picture a screenshot answers and the one line beside it, or `None` for
