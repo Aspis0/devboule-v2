@@ -170,9 +170,9 @@ describe("timeline computed styles", () => {
     expect(getComputedStyle(codeBlock).paddingRight).toBe("80px");
     expect(getComputedStyle(copyable).backgroundColor).toBe("#e9e6dd");
     expect(getComputedStyle(copyable).borderLeftWidth).toBe("3px");
-    // The code ground is dark in both themes, so its accent edge takes the tone
-    // that reads there rather than the light-theme accent (2.33:1).
-    expect(getComputedStyle(copyable).borderLeftColor).toBe("#e0b45d");
+    // The copyable block sits on the tool fill (light in the light theme), so
+    // its edge is the accent that reads on that fill, not the on-code tone.
+    expect(getComputedStyle(copyable).borderLeftColor).toBe("#7a5000");
     expect(getComputedStyle(copyable).borderRadius).toBe("8px");
     expect(getComputedStyle(copyable).padding).toBe("10px 80px 10px 12px");
     expect(getComputedStyle(copyable).fontFamily).toContain("JetBrains Mono");
@@ -248,7 +248,7 @@ describe("timeline computed styles", () => {
     document.body.append(system, rail);
 
     expect(getComputedStyle(system).fontSize).toBe("12px");
-    expect(getComputedStyle(system).color).toBe("#4c4a43");
+    expect(getComputedStyle(system).color).toBe("#484640");
     expect(getComputedStyle(system).fontFamily).toContain("Inter");
     expect(getComputedStyle(typing).fontSize).toBe("12px");
     system.remove();
@@ -262,7 +262,7 @@ describe("timeline computed styles", () => {
     document.body.appendChild(footer);
 
     expect(getComputedStyle(footer).fontSize).toBe("12px");
-    expect(getComputedStyle(footer).color).toBe("#4c4a43");
+    expect(getComputedStyle(footer).color).toBe("#484640");
     expect(getComputedStyle(footer).fontFamily).toContain("Inter");
     // The trigger is a control, so it is a 24 px target. happy-dom computes
     // no width on a <summary>, so its box is read off the rule.

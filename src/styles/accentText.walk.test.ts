@@ -5,9 +5,8 @@
 // hand list. Each declaration's value is judged as written: !important
 // stripped, every var() reference checked at any case or spacing, including
 // inside fallback chains and color-mix() operands. Fills, borders, outlines
-// and shadows are not policed. The one allow-listed exception paints the
-// surface's initial letter; a contrast pair on its own ground in
-// palette-contrast.test.ts holds it to 4.5:1.
+// and shadows are not policed. An exception, if one is ever allowed, goes in
+// EXCEPTIONS with its reason and a contrast pair that guards it.
 // @vitest-environment node
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -45,13 +44,7 @@ interface Exception {
   why: string;
 }
 
-const EXCEPTIONS: readonly Exception[] = [
-  {
-    file: "src/styles/global.css",
-    selector: ".nav-point:hover .nav-point-circle, .nav-point:focus-visible .nav-point-circle",
-    why: "the circle paints the surface's initial letter — text; it stays on the fill accent because that clears 4.5:1 on its own card ground (4.747 light / 5.137 dark), guarded as a contrast pair in palette-contrast.test.ts",
-  },
-];
+const EXCEPTIONS: readonly Exception[] = [];
 
 const allowList = new Set(EXCEPTIONS.map((e) => `${e.file}\n${e.selector}`));
 
@@ -97,6 +90,7 @@ describe("accent text rides --accent-text", () => {
   it("derives the accent family from tokens.css, not a hand list", () => {
     expect([...FAMILY].sort()).toEqual([
       "--accent",
+      "--ring",
       "--terracotta",
       "--terracotta-deep",
       "--terracotta-pressed",

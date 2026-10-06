@@ -93,7 +93,7 @@
   flex: none;
   width: 7px;
   height: 7px;
-  background: var(--terracotta);
+  background: var(--control-on);
   border-radius: 2px;
 }
 
@@ -593,7 +593,7 @@
 }
 
 .design-node-mark-terracotta {
-  background: var(--terracotta);
+  background: var(--ink-soft);
 }
 
 .design-node-mark-purple {
@@ -1170,8 +1170,8 @@
 .design-user-message {
   max-width: 84%;
   padding: var(--space-8) 12px;
-  color: var(--white);
-  background: var(--terracotta-deep);
+  color: var(--ink);
+  background: var(--fill-selected);
   border-radius: 12px 12px 4px 12px;
   font-size: var(--type-interface);
   line-height: var(--leading-body);
@@ -1716,11 +1716,11 @@
 }
 
 .design-craft-title-mark-included {
-  background: var(--terracotta);
+  background: var(--control-on);
 }
 
 .design-craft-title-mark-dropped {
-  background: var(--terracotta-deep);
+  background: var(--ink-soft);
 }
 
 .design-craft-detail {
@@ -2491,9 +2491,9 @@
 .design-canvas-section-highlight {
   position: absolute;
   pointer-events: none;
-  border: 1.5px solid var(--terracotta);
+  border: 1.5px solid var(--ink);
   border-radius: var(--radius-4);
-  background: color-mix(in srgb, var(--terracotta) 12%, transparent);
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
 }
 
 /* Hover twin of the selection highlight: same box, dashed edge, no fill, so
@@ -2532,7 +2532,7 @@
   translate: -5px -5px;
   pointer-events: none;
   border-radius: 50%;
-  background: var(--terracotta);
+  background: var(--control-on);
   box-shadow: 0 0 0 2px var(--white);
 }
 
@@ -2541,7 +2541,7 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--terracotta);
+  background: var(--control-on);
 }
 
 .design-layer-orphans {

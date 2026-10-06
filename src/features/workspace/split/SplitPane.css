@@ -52,7 +52,7 @@
 
 .workspace-split-divider:hover,
 .workspace-split-divider:focus-visible {
-  background: var(--accent);
+  background: var(--ink-soft);
 }
 
 .workspace-split-is-dragging,
@@ -201,7 +201,7 @@
 
 .workspace-drop-preview {
   position: absolute;
-  background: var(--accent);
+  background: var(--control-on);
   opacity: 0.6;
 }
 

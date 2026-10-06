@@ -87,7 +87,7 @@ describe("PermissionCard computed styles", () => {
     command.remove();
   });
 
-  it("gives the option chips the mockup geometry and the chosen state its accent trio", () => {
+  it("gives the option chips the mockup geometry and the chosen state its accent border and text", () => {
     cardCss.inject([
       ".permission-card-question-text",
       ".permission-card-question-option",
@@ -112,12 +112,8 @@ describe("PermissionCard computed styles", () => {
     expect(chipStyle.padding).toBe("4px 8px");
     const chosenStyle = getComputedStyle(chosen);
     expect(chosenStyle.borderColor).toBe(cardCss.token("--accent"));
-    expect(chosenStyle.color).toBe(cardCss.token("--ink"));
-    // The accent-soft fill is a color-mix the DOM engine does not resolve;
-    // the rule source carries it, with the token resolved.
-    expect(cardCss.rulesFor(".permission-card-question-option-chosen")).toContain(
-      "background: color-mix(in srgb, #7a5000 10%, transparent)",
-    );
+    expect(chosenStyle.color).toBe(cardCss.token("--accent-text"));
+    expect(chosenStyle.backgroundColor).toBe("transparent");
     // The asked question is the card's body text, not its headline: 13 px,
     // one step below the action line it answers.
     expect(getComputedStyle(question).fontSize).toBe("13px");

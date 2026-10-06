@@ -102,7 +102,7 @@ describe("this-machine card language (real stylesheets, no app launch)", () => {
     expect(desc.fontSize).toBe("12px");
   });
 
-  it("sizes the notification switch at 34x20 with accent on", () => {
+  it("sizes the notification switch at 34x20 with the on fill", () => {
     proof.inject([".machine-switch", ".machine-switch-on"]);
     const toggle = box("machine-switch machine-switch-on");
     const style = getComputedStyle(toggle);
@@ -111,12 +111,12 @@ describe("this-machine card language (real stylesheets, no app launch)", () => {
   });
 
   it("draws every focus ring in a colour that reads against its own fill", () => {
-    // F3: an accent ring on the accent fill is invisible — exactly where
+    // F3: a ring on a fill of its own colour is invisible — exactly where
     // arrow-key focus starts. Each pair below resolves both sides through
     // the sheets' own tokens and demands WCAG 3:1, so `transparent` or a
     // same-fill colour fails instead of passing a text scan.
     const ringVsFill: Array<[ringRules: string, ringProp: string, fillToken: string]> = [
-      [proof.rulesFor(".machine-segment-option-checked:focus-within"), "outline-color", "--accent"],
+      [proof.rulesFor(".machine-segment-option-checked:focus-within"), "outline-color", "--ink"],
       [proof.rulesFor(".machine-segment-option:focus-within"), "outline", "--panel-card"],
       [proof.rulesFor(".machine-switch:focus-visible"), "outline", "--panel-card"],
     ];
@@ -160,7 +160,7 @@ describe("this-machine card language (real stylesheets, no app launch)", () => {
     expect(monoSelectors(read("src/features/settings/general.css"))).toEqual([]);
   });
 
-  it("holds the radio accent by specificity, not by sheet order", () => {
+  it("holds the radio colour by specificity, not by sheet order", () => {
     // F7: `.machine-choice input` ties `global.css input[type="radio"]` at
     // (0,1,1), so a later sheet with a different value would win. The
     // synthetic last sheet below stands in for any such future rule: the
@@ -183,7 +183,7 @@ describe("this-machine card language (real stylesheets, no app launch)", () => {
     document.body.appendChild(list);
     const style = getComputedStyle(input);
     expect((style as unknown as { accentColor: string }).accentColor).toBe(
-      adversarial.token("--accent"),
+      adversarial.token("--ink"),
     );
   });
 });

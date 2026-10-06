@@ -583,7 +583,7 @@ describe("devices card geometry (real stylesheets, no app launch)", () => {
     }
   });
 
-  it("paints checkboxes and radios in the app accent, house-wide", () => {
+  it("paints checkboxes and radios in the neutral on colour, house-wide", () => {
     // Live check: the pairing role radios rendered in the browser's
     // default blue. One inherited line in the global sheet fixes every
     // checkbox and radio in both themes.
@@ -592,7 +592,7 @@ describe("devices card geometry (real stylesheets, no app launch)", () => {
       const control = document.createElement("input");
       control.type = kind;
       document.body.appendChild(control);
-      expect(getComputedStyle(control).accentColor).toBe(proof.token("--accent"));
+      expect(getComputedStyle(control).accentColor).toBe(proof.token("--ink"));
     }
   });
 

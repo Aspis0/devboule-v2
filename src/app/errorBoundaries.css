@@ -58,6 +58,7 @@ body:has(.root-fallback) {
    the message and the Reload action keep their shape and the rest scrolls. */
 .root-fallback-details,
 .surface-fallback-details {
+  --ring: var(--accent-on-code);
   margin: 0;
   overflow: auto;
   background: var(--code-bg);

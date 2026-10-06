@@ -166,7 +166,7 @@
 }
 
 .prov-switch-on {
-  background: var(--accent);
+  background: var(--control-on);
 }
 
 .prov-switch-on > i {

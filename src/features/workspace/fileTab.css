@@ -170,7 +170,8 @@
 }
 
 .workspace-file-tab-preview a {
-  color: var(--accent-text);
+  color: var(--ink);
+  text-decoration: underline;
 }
 
 .workspace-file-tab-preview code:not(pre code) {

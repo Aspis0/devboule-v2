@@ -164,7 +164,7 @@
 }
 
 .workspace-dot-terracotta {
-  background: var(--terracotta);
+  background: var(--ink-soft);
 }
 
 .workspace-dot-green {
@@ -204,7 +204,7 @@
 
 .workspace-resize-handle:hover,
 .workspace-resize-handle:focus-visible {
-  background: var(--accent);
+  background: var(--ink-soft);
   background-clip: content-box;
 }
 
@@ -355,6 +355,7 @@
    which overfilled the grid and clipped the last row and column — margins put
    the inset where the fit cannot count it, on the ground wrapper's colour. */
 .workspace-terminal-ground {
+  --ring: var(--accent-on-code);
   display: flex;
   flex: 1;
   min-width: 0;
@@ -673,6 +674,7 @@
 }
 
 .workspace-chat-tool:not(.workspace-chat-tool-group)[open] {
+  --ring: var(--accent-on-code);
   flex-direction: column;
   align-items: stretch;
   padding: 0;
@@ -763,7 +765,7 @@
 
 .workspace-chat-tool summary:focus-visible,
 .workspace-chat-tool-group summary:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--ring);
   outline-offset: 3px;
 }
 
@@ -965,13 +967,14 @@
   overflow-wrap: anywhere;
 }
 
-/* The accent the file-tab preview's anchors use, on the row's code ground. */
+/* Anchors on the row's code ground: the code text, told apart by underline. */
 .workspace-chat-tool-link {
   overflow-wrap: anywhere;
 }
 
 .workspace-chat-tool-link a {
-  color: var(--accent-text);
+  color: var(--code-text);
+  text-decoration: underline;
 }
 
 .workspace-chat-tool-body .workspace-chat-copy {
@@ -1137,7 +1140,7 @@
   height: 12px;
   margin-left: var(--space-2);
   vertical-align: -1px;
-  background: var(--accent);
+  background: var(--ink);
   animation: caret 1s steps(1) infinite;
 }
 

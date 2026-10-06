@@ -20,7 +20,8 @@
   padding: 0;
   border: 0;
   background: none;
-  color: var(--accent-text);
+  color: var(--ink);
+  text-decoration: underline;
   font: inherit;
   line-height: inherit;
   text-align: inherit;

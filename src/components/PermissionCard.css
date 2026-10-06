@@ -239,6 +239,7 @@
 }
 
 .permission-card-command {
+  --ring: var(--accent-on-code);
   margin-top: var(--space-6);
   max-height: var(--transcript-detail-max);
   overflow: auto;
@@ -369,8 +370,8 @@
 
 .permission-card-primary-action:disabled {
   color: var(--muted);
-  background: var(--fill-tool);
-  border-color: var(--fill-tool);
+  background: transparent;
+  border-color: var(--line);
 }
 
 /* A model's question: one group per asked item, in the card's own measure.
@@ -430,7 +431,7 @@
 }
 
 /* Option chips: the mockup's .opt — r6, one strong hairline. A chosen chip
-   takes the accent border, the accent-soft fill and a check. The chip grows
+   takes the accent border and text and a check. The chip grows
    (min-height, no fixed height) so a long description wraps inside the
    border instead of rendering over it. */
 .permission-card-question-option {
@@ -449,8 +450,8 @@
 }
 
 .permission-card-question-option-chosen {
-  color: var(--ink);
-  background: var(--accent-soft);
+  color: var(--accent-text);
+  background: transparent;
   border-color: var(--accent);
 }
 

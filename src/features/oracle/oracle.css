@@ -72,13 +72,13 @@
 }
 
 .oracle-setup-step-current {
-  color: var(--accent-text);
+  color: var(--ink);
 }
 
 .oracle-setup-step-current .oracle-setup-step-number {
-  color: var(--surface);
-  background: var(--terracotta-deep);
-  border-color: var(--terracotta-deep);
+  color: var(--control-on-contrast);
+  background: var(--control-on);
+  border-color: var(--control-on);
 }
 
 .oracle-setup-step-done .oracle-setup-step-number {
@@ -435,7 +435,7 @@
 .oracle-progress-fill {
   height: 100%;
   border-radius: 999px;
-  background: var(--terracotta);
+  background: var(--control-on);
 }
 
 .oracle-ready-models {

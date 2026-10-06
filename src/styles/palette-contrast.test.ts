@@ -1,32 +1,11 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { contrastRatio, HEX_COLOR } from "./contrast";
 
 // Contrast claims for the redesigned palette. SPEC-tokens.md promises ≥4.5:1
 // for the text pairs this file walks, in both themes; this suite holds the
 // stylesheet to that promise by reading tokens.css — never a copy of it.
-
-// ── sRGB → linear → WCAG 2.1 relative luminance ──────────────────────
-
-function linearize(channel: number): number {
-  const c = channel / 255;
-  return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
-}
-
-function relativeLuminance(hex: string): number {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  return 0.2126 * linearize(r) + 0.7152 * linearize(g) + 0.0722 * linearize(b);
-}
-
-function contrastRatio(hexA: string, hexB: string): number {
-  const l1 = relativeLuminance(hexA);
-  const l2 = relativeLuminance(hexB);
-  const lighter = Math.max(l1, l2);
-  const darker = Math.min(l1, l2);
-  return (lighter + 0.05) / (darker + 0.05);
-}
 
 // ── Parse the light and dark blocks of tokens.css ────────────────────
 
@@ -57,16 +36,21 @@ const darkVars = parseRootVars([...rootBlocks, ...darkBlocks].join("\n"));
 /** Text-bearing pairs SPEC-tokens.md promises at ≥4.5:1, in both themes. */
 const CLAIMED_PAIRS: ReadonlyArray<{ text: string; ground: string; why: string }> = [
   { text: "--accent-contrast", ground: "--accent", why: "text on accent fills" },
-  {
-    text: "--accent",
-    ground: "--panel-card",
-    why: "the nav-point circle letter — the one text the accent walk allow-lists",
-  },
   { text: "--accent-text", ground: "--panel-card", why: "accent text on cards" },
   { text: "--accent-text", ground: "--ground-center", why: "accent text on the transcript" },
   { text: "--accent-text", ground: "--panel-side", why: "accent text on the sidebar" },
   { text: "--accent-text", ground: "--fill-selected", why: "accent text on the selected pill" },
   { text: "--danger-contrast", ground: "--danger", why: "text on filled danger" },
+  {
+    text: "--accent-on-code",
+    ground: "--code-bg",
+    why: "the terminal's magenta and cursor on code",
+  },
+  {
+    text: "--accent-on-code",
+    ground: "--terminal-ground",
+    why: "the terminal's magenta and cursor on its ground",
+  },
   { text: "--diff-add", ground: "--code-bg", why: "added diff lines on code" },
   { text: "--diff-del", ground: "--code-bg", why: "removed diff lines on code" },
   { text: "--code-text", ground: "--code-bg", why: "code and terminal text" },
@@ -100,10 +84,10 @@ const CLAIMED_PAIRS: ReadonlyArray<{ text: string; ground: string; why: string }
 
 /**
  * Secondary text at the reference 6.97 floor, per theme and ground: the
- * grounds dark muted clears it on (app, transcript, side) and the ones
- * light muted clears it on (app, transcript, side, cards, tool rows).
- * Dark cards, menus, tool rows and selected fills stay below the
- * reference floor — they hold the 4.5 SPEC pairs below, never less.
+ * grounds dark muted clears it on (app, transcript, side, selected row) and
+ * the ones light muted clears it on (app, transcript, side, cards, tool rows,
+ * selected row). Dark cards, menus, tool rows and the multi-select fill stay
+ * below the reference floor — they hold the 4.5 SPEC pairs below, never less.
  */
 const SECONDARY_FLOOR_697: ReadonlyArray<{
   theme: "light" | "dark";
@@ -118,6 +102,8 @@ const SECONDARY_FLOOR_697: ReadonlyArray<{
   { theme: "light", ground: "--panel-side", why: "secondary text on the sidebar" },
   { theme: "light", ground: "--panel-card", why: "secondary text on cards" },
   { theme: "light", ground: "--fill-tool", why: "secondary text on tool rows" },
+  { theme: "light", ground: "--fill-selected", why: "secondary text on the selected row" },
+  { theme: "dark", ground: "--fill-selected", why: "secondary text on the selected row" },
 ];
 /**
  * The dark primary ink sits on these grounds as body text; the slice
@@ -294,21 +280,23 @@ const SELECTED_ROW_FLOORS: ReadonlyArray<{ theme: "light" | "dark"; text: string
 ];
 
 /**
- * The focus ring is the accent (`global.css:81`), and it has to be findable on
- * every ground a focusable control can sit on — including the dark surfaces
- * that keep their own ground in the light theme, which is why they take the
- * accent that reads on them.
+ * The focus ring (`--ring`, the accent by default) and the ground it is drawn
+ * on. The surfaces that stay dark in both themes set `--ring` to
+ * `--accent-on-code`; ringConsumers.walk.test.ts proves the stylesheet does
+ * that wherever such a ground is painted, so this table only holds the colour
+ * pairs themselves.
  */
-const RING_GROUNDS: ReadonlyArray<{ ground: string; why: string }> = [
-  { ground: "--ground-app", why: "the app canvas" },
-  { ground: "--ground-center", why: "the transcript" },
-  { ground: "--panel-side", why: "the sidebar and right panel" },
-  { ground: "--panel-card", why: "cards, the composer and bubbles" },
-  { ground: "--panel-menu", why: "menus and popovers" },
-  { ground: "--fill-selected", why: "the selected row" },
-  { ground: "--fill-selected-soft", why: "multi-selected chips" },
-  { ground: "--fill-tool", why: "tool rows" },
-  { ground: "--code-bg", why: "code blocks and the terminal" },
+const RING_ON_GROUNDS: ReadonlyArray<{ ring: string; ground: string; why: string }> = [
+  { ring: "--ring", ground: "--ground-app", why: "the app canvas" },
+  { ring: "--ring", ground: "--ground-center", why: "the transcript" },
+  { ring: "--ring", ground: "--panel-side", why: "the sidebar and right panel" },
+  { ring: "--ring", ground: "--panel-card", why: "cards, the composer and bubbles" },
+  { ring: "--ring", ground: "--panel-menu", why: "menus and popovers" },
+  { ring: "--ring", ground: "--fill-selected", why: "the selected row" },
+  { ring: "--ring", ground: "--fill-selected-soft", why: "multi-selected chips" },
+  { ring: "--ring", ground: "--fill-tool", why: "tool rows and the copyable block" },
+  { ring: "--accent-on-code", ground: "--code-bg", why: "code blocks and open tool rows" },
+  { ring: "--accent-on-code", ground: "--terminal-ground", why: "the terminal" },
 ];
 
 describe("the selected row and the focus ring", () => {
@@ -330,30 +318,29 @@ describe("the selected row and the focus ring", () => {
     });
   }
 
-  for (const entry of RING_GROUNDS) {
+  for (const entry of RING_ON_GROUNDS) {
     for (const [theme, vars] of [
       ["light", lightVars],
       ["dark", darkVars],
     ] as const) {
-      it(`${theme}: the focus ring ≥ 3 on ${entry.ground} (${entry.why})`, () => {
-        // The light theme's dark surfaces carry their own ring tone; the dark
-        // theme's accent is already the light one and reads on both.
-        const ring =
-          theme === "light" && entry.ground === "--code-bg"
-            ? (vars.get("--accent-on-code") ?? vars.get("--accent")!)
-            : vars.get("--accent")!;
-        const ground = vars.get(entry.ground);
-        expect(ring, `the ring colour for ${theme} ${entry.ground} is missing`).toMatch(
-          /^#[0-9a-fA-F]{6}$/,
-        );
-        expect(ground, `${entry.ground} missing from the ${theme} block`).toMatch(
-          /^#[0-9a-fA-F]{6}$/,
-        );
-        const ratio = contrastRatio(ring, ground!);
-        expect(ratio, `the ring ${ring} on ${entry.ground} ${ground}`).toBeGreaterThanOrEqual(3);
+      it(`${theme}: ${entry.ring} ≥ 3 on ${entry.ground} (${entry.why})`, () => {
+        const ring = resolveToken(entry.ring, vars);
+        const ground = resolveToken(entry.ground, vars);
+        expect(ring, `${entry.ring} does not resolve to a hex colour`).toMatch(HEX_COLOR);
+        expect(ground, `${entry.ground} does not resolve to a hex colour`).toMatch(HEX_COLOR);
+        expect(
+          contrastRatio(ring, ground),
+          `${entry.ring} ${ring} on ${entry.ground} ${ground}`,
+        ).toBeGreaterThanOrEqual(3);
       });
     }
   }
+
+  it("the default ring is the accent", () => {
+    for (const vars of [lightVars, darkVars]) {
+      expect(resolveToken("--ring", vars)).toBe(resolveToken("--accent", vars));
+    }
+  });
 });
 
 describe("palette A neutrality (both themes, from tokens.css)", () => {

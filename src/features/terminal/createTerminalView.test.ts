@@ -331,8 +331,10 @@ describe("terminalTheme", () => {
     expect(theme.cursorAccent).toBe("terminal-ground");
     expect(theme.black).toBe("terminal-ground");
     expect(theme.foreground).toBe("code-text");
-    expect(theme.cursor).toBe("accent");
-    expect(theme.selectionBackground).toBe("fill-selected");
+    expect(theme.cursor).toBe("ring");
+    expect(theme.magenta).toBe("ring");
+    expect(theme.brightMagenta).toBe("ring");
+    expect(theme.selectionBackground).toBe("code-selection");
     expect(theme.brightWhite).toBe("lb-text");
   });
 });

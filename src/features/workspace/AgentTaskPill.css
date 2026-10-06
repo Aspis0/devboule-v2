@@ -64,7 +64,7 @@
 .agent-task-pill-bar-fill {
   display: block;
   height: 100%;
-  background: var(--accent);
+  background: var(--control-on);
   border-radius: var(--radius-2);
 }
 

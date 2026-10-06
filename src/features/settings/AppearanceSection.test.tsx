@@ -168,8 +168,8 @@ describe("the Appearance radios (static CSS contract)", () => {
   const css = readFileSync(resolve(import.meta.dirname, "general.css"), "utf8");
   const block = /\.machine-choice input\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
 
-  it("draw in the accent, not the OS default", () => {
+  it("draw in the neutral on colour, not the OS default", () => {
     expect(block, "a .machine-choice input rule is missing").not.toBe("");
-    expect(block).toContain("accent-color: var(--accent)");
+    expect(block).toContain("accent-color: var(--control-on)");
   });
 });

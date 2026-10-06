@@ -53,7 +53,7 @@
   line-height: var(--leading-body);
 }
 
-/* The switch: 34x20, on in the accent — the skeleton's toggle, not the
+/* The switch: 34x20, on in the neutral on fill — the skeleton's toggle, not the
    providers' wider row switch. The knob is a drawn span, so the button
    carries the role and the checkedness. */
 .machine-switch {
@@ -79,7 +79,7 @@
 }
 
 .machine-switch-on {
-  background: var(--accent);
+  background: var(--control-on);
 }
 
 .machine-switch-on .machine-switch-knob {
@@ -128,8 +128,8 @@
 }
 
 .machine-segment-option-checked {
-  background: var(--accent);
-  color: var(--accent-contrast);
+  background: var(--control-on);
+  color: var(--control-on-contrast);
 }
 
 .machine-segment-option input {
@@ -140,17 +140,17 @@
 }
 
 /* Focus belongs to the option box, never the label text: the ring must
-   read on the card fill for plain options and inside the accent fill for
-   the checked one. An accent ring on the accent fill is invisible —
-   exactly where arrow-key focus starts — so the checked option rings in
-   the contrast colour, offset inside its own fill. */
+   read on the card fill for plain options and inside the on fill for the
+   checked one. A ring the colour of the fill is invisible — exactly where
+   arrow-key focus starts — so the checked option rings in the on-fill's
+   contrast colour, offset inside its own fill. */
 .machine-segment-option:focus-within {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
 .machine-segment-option-checked:focus-within {
-  outline-color: var(--accent-contrast);
+  outline-color: var(--control-on-contrast);
   outline-offset: -4px;
 }
 
@@ -196,7 +196,7 @@
    (0,2,1) and order-proof. */
 .machine-choices .machine-choice input {
   margin-top: 2px;
-  accent-color: var(--accent);
+  accent-color: var(--control-on);
 }
 
 .machine-error {

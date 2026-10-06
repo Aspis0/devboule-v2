@@ -65,13 +65,13 @@ describe("providers row geometry (real stylesheets, no app launch)", () => {
     expect(getComputedStyle(box("prov-name")).fontSize).toBe("14px");
   });
 
-  it("sizes the Devboule-tools switch at 34x20 with accent on", () => {
+  it("sizes the Devboule-tools switch at 34x20 with the on fill", () => {
     proof.inject([".prov-switch", ".prov-switch-on"]);
     const toggle = box("prov-switch prov-switch-on");
     const style = getComputedStyle(toggle);
     expect(style.width).toBe("34px");
     expect(style.height).toBe("20px");
-    expect(proof.rulesFor(".prov-switch-on")).toContain(proof.token("--accent"));
+    expect(proof.rulesFor(".prov-switch-on")).toContain(proof.token("--ink"));
   });
 
   it("keeps the status line at 12 with the live dot on the live tone", () => {

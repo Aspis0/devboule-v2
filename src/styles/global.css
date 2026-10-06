@@ -71,7 +71,7 @@ select {
    inherited, so one line covers both themes. */
 input[type="checkbox"],
 input[type="radio"] {
-  accent-color: var(--accent);
+  accent-color: var(--control-on);
 }
 
 button {
@@ -79,7 +79,7 @@ button {
 }
 
 button:focus-visible {
-  outline: 2px solid var(--terracotta);
+  outline: 2px solid var(--ring);
   outline-offset: 3px;
 }
 
@@ -212,7 +212,7 @@ button:focus-visible {
 .surface-dot,
 .placeholder-mark {
   flex: none;
-  background: var(--terracotta);
+  background: var(--control-on);
 }
 
 .surface-dot {
@@ -261,7 +261,7 @@ button:focus-visible {
 }
 
 .placeholder-panel-terracotta {
-  border-color: color-mix(in srgb, var(--terracotta) 46%, transparent);
+  border-color: color-mix(in srgb, var(--ink) 46%, transparent);
 }
 
 .placeholder-panel-green {
@@ -499,15 +499,15 @@ button:focus-visible {
 
 .nav-point:hover .nav-point-circle,
 .nav-point:focus-visible .nav-point-circle {
-  color: var(--terracotta-deep);
-  border-color: var(--terracotta);
+  color: var(--ink);
+  border-color: var(--ink);
   transform: scale(1.16);
 }
 
 .nav-point-active .nav-point-circle {
-  color: var(--white);
-  background: var(--terracotta-deep);
-  border-color: var(--terracotta);
+  color: var(--control-on-contrast);
+  background: var(--control-on);
+  border-color: var(--control-on);
 }
 
 /* A surface that arrives as a plugin is drawn as an outline until it is there.
@@ -544,8 +544,8 @@ button:focus-visible {
 .nav-point-spinner {
   width: var(--control-dense);
   height: var(--control-dense);
-  border: 1.5px solid color-mix(in srgb, var(--terracotta-deep) 25%, transparent);
-  border-top-color: var(--accent);
+  border: 1.5px solid color-mix(in srgb, var(--ink) 25%, transparent);
+  border-top-color: var(--ink);
   border-radius: var(--radius-full);
   animation: nav-point-spin 0.8s linear infinite;
 }
@@ -561,7 +561,7 @@ button:focus-visible {
    the same thing without moving. */
 @media (prefers-reduced-motion: reduce) {
   .nav-point-spinner {
-    border-color: var(--accent);
+    border-color: var(--ink);
   }
 }
 
@@ -714,6 +714,6 @@ button:focus-visible {
 
 .plan-window-fill {
   height: 3px;
-  background: var(--accent);
+  background: var(--control-on);
   border-radius: var(--radius-2);
 }

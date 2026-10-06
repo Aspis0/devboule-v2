@@ -39,6 +39,9 @@
   --bubble-bg: #ffffff;
   --code-bg: #201f1e;
   --code-text: #e8e7e2;
+  /* A selection on the dark code surfaces: translucent code text, so the
+     selected text stays readable in both themes. */
+  --code-selection: rgba(232, 231, 226, 0.28);
   --fill-code-inline: color-mix(in srgb, var(--ink) 7%, transparent);
   --diff-add: #6dbb80;
   --diff-del: #e08a7c;
@@ -46,15 +49,18 @@
   /* text */
   --ink: #242321;
   --ink-soft: #45443f;
-  /* Secondary text holds 6.97:1 on the app ground. */
-  --muted: #4c4a43;
+  /* Secondary text holds 6.97:1 on the app ground and on the selected row. */
+  --muted: #484640;
 
   /* lines */
   --line: #d4d2cc;
   --line-strong: #bcbab3;
   --region-edge: var(--line);
 
-  /* the one accent: ochre, never a surface */
+  /* the one accent: ochre. Five uses and no others — the thin selection
+     marker, the active tab marker, the focus ring, the attention dot and the
+     primary button. Switches, bars, links and every other control are neutral
+     (--control-on, --ink). */
   --accent: #7a5000;
   /* the accent as text or icon colour: --accent misses 4.5:1 as small text
      on the light grounds; this clears it on card, page, sidebar and the
@@ -65,6 +71,17 @@
      accent would ring at 2.33:1 there: they take the tone that reads on a
      dark ground instead. */
   --accent-on-code: #e0b45d;
+  /* The focus ring where it is drawn: the accent, except inside a surface that
+     stays dark in both themes, which sets it to --accent-on-code. Every focus
+     outline and the terminal cursor read this, never --accent directly, where
+     the ground is one of those. */
+  --ring: var(--accent);
+  /* The neutral "on" state of a control: a switch track, the chosen segment,
+     a progress bar, a design/oracle fill. The glyph or knob on it takes
+     --control-on-contrast. */
+  --control-on: var(--ink);
+  --control-on-contrast: var(--panel-card);
+  --control-on-hover: color-mix(in srgb, var(--control-on) 84%, var(--panel-card));
   --accent-soft: color-mix(in srgb, var(--accent) 10%, transparent);
 
   /* status dot tones */
@@ -250,8 +267,8 @@
   --ink: #e8e7e2;
   --ink-soft: #d0cfc9;
   /* One dark secondary tone across slices, near-neutral.
-     6.97:1 on the app, transcript and side grounds. */
-  --muted: #b2b1aa;
+     6.97:1 on the app, transcript and side grounds and on the selected row. */
+  --muted: #b8b7b0;
 
   --line: #3a3a36;
   --line-strong: #50504a;
