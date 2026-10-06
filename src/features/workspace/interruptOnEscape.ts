@@ -15,7 +15,8 @@ interface EscapeInterrupt {
 /**
  * Escape anywhere in the agent pane stops the turn that is running — once per
  * turn, never on a held key, and never when something else is using the key: an
- * IME, a menu or dialog that is open, an input that already handled it.
+ * IME, a menu or dialog that is open, an input that already handled it, a
+ * composer that holds a draft.
  */
 export function useInterruptOnEscape({ running, cardWaiting, interrupt }: EscapeInterrupt) {
   const sent = useRef(false);
@@ -23,11 +24,16 @@ export function useInterruptOnEscape({ running, cardWaiting, interrupt }: Escape
     if (!running) sent.current = false;
   }, [running]);
   return useCallback(
-    (event: KeyboardEvent) => {
+    (event: KeyboardEvent<HTMLElement>) => {
       if (event.key !== "Escape" || event.repeat || event.defaultPrevented) return;
       if (isImeComposition(event.nativeEvent)) return;
       if (!running || cardWaiting || sent.current) return;
       if (document.querySelector(OPEN_OVERLAY) !== null) return;
+      // Someone is typing: the key is theirs.
+      const draft = event.currentTarget.querySelector<HTMLTextAreaElement>(
+        ".workspace-composer textarea",
+      );
+      if (draft !== null && draft.value.trim() !== "") return;
       sent.current = true;
       event.preventDefault();
       interrupt();

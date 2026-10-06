@@ -3,6 +3,8 @@ import type { PlanUsage } from "../../../types/ipc";
 import { providerMeter } from "./planMeters";
 
 const NOW = 1_790_000_000_000;
+// A frame the provider pushed says when each window resets; that is what makes its number current.
+const LATER = NOW / 1000 + 86_400;
 
 function plan(providerId: string, windows: PlanUsage["windows"]): PlanUsage {
   return { type: "plan_usage", providerId, windows };
@@ -13,7 +15,7 @@ describe("providerMeter", () => {
     const meter = providerMeter(
       plan("claude", [
         { durationMins: 300, usedPercent: 58, resetsAt: NOW / 1000 + 7200 },
-        { durationMins: 10_080, usedPercent: 41 },
+        { durationMins: 10_080, usedPercent: 41, resetsAt: LATER },
       ]),
       null,
       NOW,
@@ -29,7 +31,10 @@ describe("providerMeter", () => {
 
   it("leaves a window with no percent out instead of reading it as zero", () => {
     const meter = providerMeter(
-      plan("codex", [{ durationMins: 300 }, { durationMins: 10_080, usedPercent: 37 }]),
+      plan("codex", [
+        { durationMins: 300 },
+        { durationMins: 10_080, usedPercent: 37, resetsAt: LATER },
+      ]),
       null,
       NOW,
     );
@@ -50,7 +55,7 @@ describe("providerMeter", () => {
 
   it("keeps an overage in the text and clamps only the bar", () => {
     const meter = providerMeter(
-      plan("codex", [{ durationMins: 300, usedPercent: 130 }]),
+      plan("codex", [{ durationMins: 300, usedPercent: 130, resetsAt: LATER }]),
       null,
       NOW,
     );
@@ -70,7 +75,7 @@ describe("providerMeter", () => {
 
   it("rounds a fractional percent to a whole one", () => {
     const meter = providerMeter(
-      plan("claude", [{ durationMins: 300, usedPercent: 57.8 }]),
+      plan("claude", [{ durationMins: 300, usedPercent: 57.8, resetsAt: LATER }]),
       null,
       NOW,
     );
@@ -121,9 +126,33 @@ describe("a window that has reset", () => {
     expect(fresh?.parts[0]?.percent).toBe(90);
   });
 
-  it("takes a reading of unknown age as current, since nothing says otherwise", () => {
+  it("shows nothing for a replayed frame: no stamp and no reset time prove no age", () => {
+    // The daemon hands its cached latest frame to every viewer that attaches; it can be days old.
     expect(
-      providerMeter(plan("claude", [{ durationMins: 300, usedPercent: 90 }]), null, NOW)?.parts,
-    ).toEqual([{ label: "5h", percent: 90 }]);
+      providerMeter(plan("claude", [{ durationMins: 300, usedPercent: 90 }]), null, NOW),
+    ).toBeNull();
+    expect(
+      providerMeter(
+        plan("codex", [
+          { durationMins: 300, usedPercent: 90 },
+          { durationMins: 10_080, usedPercent: 60 },
+        ]),
+        null,
+        NOW,
+      ),
+    ).toBeNull();
+  });
+
+  it("shows a replayed frame once its reset time proves the window has not ended", () => {
+    const meter = providerMeter(
+      plan("claude", [
+        { durationMins: 300, usedPercent: 90 },
+        { durationMins: 10_080, usedPercent: 60, resetsAt: LATER },
+      ]),
+      null,
+      NOW,
+    );
+    // Only the window that proves itself: the other has nothing to stand on.
+    expect(meter?.parts).toEqual([{ label: "wk", percent: 60 }]);
   });
 });

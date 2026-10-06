@@ -34,7 +34,9 @@ afterEach(async () => {
   vi.clearAllMocks();
 });
 
-async function mount(props: { hasPendingPermission?: boolean } = {}): Promise<void> {
+async function mount(
+  props: { hasPendingPermission?: boolean; activity?: "working" | "idle" } = {},
+): Promise<void> {
   root = createRoot(container);
   await act(async () => {
     root.render(
@@ -48,6 +50,15 @@ async function mount(props: { hasPendingPermission?: boolean } = {}): Promise<vo
     );
   });
   await act(async () => undefined);
+}
+
+async function typeDraft(text: string): Promise<void> {
+  const textarea = composer() as HTMLTextAreaElement;
+  const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+  await act(async () => {
+    setValue?.call(textarea, text);
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  });
 }
 
 /** Sends a prompt through the composer, which is what starts a turn this view runs. */
@@ -160,6 +171,20 @@ describe("Escape in the agent pane", () => {
     }
   });
 
+  it("leaves the key to a person who is typing, and takes it again once the draft is empty or blank", async () => {
+    await mount();
+    await startTurn();
+
+    await typeDraft("a half-written follow-up");
+    await press(composer());
+    await press(transcript());
+    expect(vi.mocked(sessionInterrupt)).not.toHaveBeenCalled();
+
+    await typeDraft("   ");
+    await press(composer());
+    expect(vi.mocked(sessionInterrupt)).toHaveBeenCalledTimes(1);
+  });
+
   it("leaves the key to something that already handled it, and to an IME composition", async () => {
     await mount();
     await startTurn();
@@ -169,6 +194,36 @@ describe("Escape in the agent pane", () => {
     expect(vi.mocked(sessionInterrupt)).not.toHaveBeenCalled();
 
     await press(composer(), { isComposing: true });
+    expect(vi.mocked(sessionInterrupt)).not.toHaveBeenCalled();
+  });
+});
+
+describe("a session that was already running when this view attached", () => {
+  async function replayRunningTurn(): Promise<void> {
+    await act(async () => {
+      channelHarness.active?.({ type: "agent_message", messageId: "r-1", text: "Mid-turn output" });
+    });
+  }
+
+  it("shows the working line without a clock, and Escape stops it", async () => {
+    await mount({ activity: "working" });
+    await replayRunningTurn();
+
+    const line = container.querySelector(".workspace-working-line");
+    expect(line).not.toBeNull();
+    // No send was made here, so no start is known and none is claimed.
+    expect(line?.querySelector(".workspace-working-clock")).toBeNull();
+
+    await press(composer());
+    expect(vi.mocked(sessionInterrupt)).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows no line for a session the roster does not call working", async () => {
+    await mount({ activity: "idle" });
+    await replayRunningTurn();
+
+    expect(container.querySelector(".workspace-working-line")).toBeNull();
+    await press(composer());
     expect(vi.mocked(sessionInterrupt)).not.toHaveBeenCalled();
   });
 });

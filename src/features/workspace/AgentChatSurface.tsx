@@ -722,6 +722,9 @@ export const AgentChatSurface = memo(function AgentChatSurface({
           .join(" · ");
   const osGone =
     observedType(observedState) === "ended" || observedType(observedState) === "recovered";
+  // A turn runs when this view sent one or the daemon says the agent is working:
+  // a session attached mid-turn replays frames and never sends, but is running.
+  const turnRunning = (state.streaming || turnActive) && !osGone;
   // The daemon connection is a global fact with its own channel. The gate
   // covers the two states where the supervisor has cleared the client, so
   // every send is guaranteed to fail: `disconnected` (ConnectionLost or
@@ -748,7 +751,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   // Memoised so an `agent_tasks` frame re-renders the pill alone: the
   // element's identity moves only when the checklist does.
   const interruptOnEscape = useInterruptOnEscape({
-    running: state.streaming && !osGone,
+    running: turnRunning,
     cardWaiting: hasPendingPermission,
     interrupt: () => void sessionRef.current?.interrupt(),
   });
@@ -850,9 +853,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
             transcriptEnded={osGone}
             streamingThoughtId={streamingThoughtId}
           />
-          {state.streaming && !osGone ? (
-            <WorkingLine startedAtMs={state.turnStartedAtMs ?? null} />
-          ) : null}
+          {turnRunning ? <WorkingLine startedAtMs={state.turnStartedAtMs ?? null} /> : null}
           {state.lastFinished !== null ? <TurnFooter finished={state.lastFinished} /> : null}
         </div>
         {auxiliary}

@@ -36,22 +36,22 @@ function partLabel(durationMins: number): string {
 }
 
 /**
- * Whether a window's number still describes the window the provider is in. A
- * reset time that has passed ends it; with no reset time, a reading older than
- * the window is no longer about it. A reading whose age is unknown is taken as
- * current: nothing says otherwise.
+ * Whether a window's number may be shown as current. It may when the frame says
+ * the window has not reset yet, or — with no reset time — when the app's own
+ * stamp proves the reading younger than the window. A reading with neither
+ * proof is not shown: the daemon replays its cached frame on attach, with no
+ * stamp here, and that frame can be days old.
  */
 function isCurrent(window: PlanWindow, recordedAtMs: number | null, nowMs: number): boolean {
   if (window.resetsAt !== undefined) return window.resetsAt * 1000 > nowMs;
-  if (recordedAtMs === null) return true;
-  return nowMs - recordedAtMs <= window.durationMins * 60_000;
+  return recordedAtMs !== null && nowMs - recordedAtMs <= window.durationMins * 60_000;
 }
 
 /**
  * One provider's usage as the status bar spells it, or null when there is
  * nothing to say: an unnamed provider, or no window that both carries a percent
- * and still describes the current window. A window without a percent, or one
- * that has reset, is left out, never read as zero and never drawn as current.
+ * and is provably current. A window without a percent, one that has reset, or
+ * one of unknown age is left out, never read as zero and never drawn as current.
  */
 export function providerMeter(
   plan: PlanUsage,

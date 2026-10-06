@@ -20,6 +20,8 @@ const DAEMON: DaemonStatus = {
   message: null,
 };
 
+const later = Math.floor(Date.now() / 1000) + 86_400;
+
 const AGENT = {
   sessionId: "bar-agent",
   title: "Tighten handoff summary",
@@ -117,19 +119,19 @@ describe("the status bar", () => {
       type: "plan_usage",
       providerId: "claude",
       windows: [
-        { durationMins: 300, usedPercent: 58 },
-        { durationMins: 10_080, usedPercent: 41 },
+        { durationMins: 300, usedPercent: 58, resetsAt: later },
+        { durationMins: 10_080, usedPercent: 41, resetsAt: later },
       ],
     });
     recordPlanUsage({
       type: "plan_usage",
       providerId: "codex",
-      windows: [{ durationMins: 300 }, { durationMins: 10_080, usedPercent: 37 }],
+      windows: [{ durationMins: 300 }, { durationMins: 10_080, usedPercent: 37, resetsAt: later }],
     });
     recordPlanUsage({
       type: "plan_usage",
       providerId: "pi",
-      windows: [{ durationMins: 300, usedPercent: 9 }],
+      windows: [{ durationMins: 300, usedPercent: 9, resetsAt: later }],
     });
     const bar = await render(<StatusBar agent={null} daemon={DAEMON} />);
 
