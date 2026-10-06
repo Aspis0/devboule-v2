@@ -393,19 +393,6 @@ pub(crate) fn run_program_args(
     max_bytes: usize,
     timeout: Duration,
 ) -> Result<GitOutput, GitRunError> {
-    run_program_args_with_cap_deadline(program, env, args, max_bytes, GIT_COMMAND_TIMEOUT)
-}
-
-/// [`run_program_args_with_cap`] with the caller's own deadline: a broker-
-/// facing validation waits seconds, not the full command minute, so one hung
-/// helper cannot hold a request path that long.
-pub(crate) fn run_program_args_with_cap_deadline(
-    program: &str,
-    env: &[(&str, &str)],
-    args: &[String],
-    max_bytes: usize,
-    timeout: Duration,
-) -> Result<GitOutput, GitRunError> {
     let mut command = new_captured_command(program, args);
     command.envs(env.iter().copied());
 
@@ -597,9 +584,8 @@ mod tests {
 
     use super::{
         append_git_stdout, bounded_reap, classify_git_probe, detect_git_repository,
-        detect_git_repository_with_program, new_captured_command, parse_git_root,
-        run_program_args_with_cap_deadline, GitReapOutcome, GitReapPoll, GitRepositoryStatus,
-        GitRunError, GIT_STDOUT_MAX_BYTES,
+        detect_git_repository_with_program, new_captured_command, parse_git_root, run_program_args,
+        GitReapOutcome, GitReapPoll, GitRepositoryStatus, GitRunError, GIT_STDOUT_MAX_BYTES,
     };
     use std::time::Duration;
 
@@ -614,7 +600,7 @@ mod tests {
         );
         #[cfg(not(windows))]
         let (program, args) = ("sleep", vec!["30".to_string()]);
-        let error = run_program_args_with_cap_deadline(
+        let error = run_program_args(
             program,
             &[],
             &args,

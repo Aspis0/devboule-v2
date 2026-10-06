@@ -15,14 +15,21 @@ use serde_json::Value;
 use crate::ci_watch_store::now_ms;
 
 use crate::git::{
-    run_git_args_with_cap, run_program_args_with_cap, run_program_args_with_cap_deadline,
-    GitOutput, GitRunError, GIT_COMMAND_TIMEOUT, GIT_STDOUT_MAX_BYTES,
+    run_git_args_with_cap, run_program_args, GitOutput, GitRunError, GIT_COMMAND_TIMEOUT,
+    GIT_STDOUT_MAX_BYTES,
 };
 
 /// Job logs are the large read; anything past this is cut, and the summary
 /// only ever looks at the part it got.
 const GH_OUTPUT_MAX_BYTES: usize = 4 * 1024 * 1024;
 const ERROR_LINE_CHARS: usize = 300;
+/// The environment every `gh` spawn gets: no interactive prompt, and no
+/// colour in the output this reads as text.
+const GH_ENV: [(&str, &str); 2] = [("GH_PROMPT_DISABLED", "1"), ("NO_COLOR", "1")];
+/// The ceiling on a `gh` call that names no deadline of its own: the same
+/// minute the git runner allows, stated here so `gh` never rides on git's
+/// timeout by accident.
+const GH_COMMAND_TIMEOUT: Duration = GIT_COMMAND_TIMEOUT;
 /// The broker-facing validation waits seconds, not the full command minute:
 /// a hung helper must not hold a tool call, and the slow path already lives
 /// on the poll thread with the minute.
@@ -76,11 +83,12 @@ impl CommandRunner for ProcessRunner {
         if program == "git" {
             return run_git_args_with_cap(args, GIT_STDOUT_MAX_BYTES);
         }
-        run_program_args_with_cap(
+        run_program_args(
             program,
-            &[("GH_PROMPT_DISABLED", "1"), ("NO_COLOR", "1")],
+            &GH_ENV,
             args,
             GH_OUTPUT_MAX_BYTES,
+            GH_COMMAND_TIMEOUT,
         )
     }
 
@@ -93,13 +101,7 @@ impl CommandRunner for ProcessRunner {
         if program == "git" {
             return run_git_args_with_cap(args, GIT_STDOUT_MAX_BYTES);
         }
-        run_program_args_with_cap_deadline(
-            program,
-            &[("GH_PROMPT_DISABLED", "1"), ("NO_COLOR", "1")],
-            args,
-            GH_OUTPUT_MAX_BYTES,
-            timeout,
-        )
+        run_program_args(program, &GH_ENV, args, GH_OUTPUT_MAX_BYTES, timeout)
     }
 }
 
