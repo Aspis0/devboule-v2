@@ -42,8 +42,9 @@ pub(super) const MAX_IN_FLIGHT_WRITE_JOBS: usize = 2;
 /// such job runs several git commands under a single permit for as long as the
 /// sweep lasts — four of them would hold the whole read lane, the sidebar's
 /// status and diff polls included. Two keeps two sweeps answering without
-/// spending a permit the workspace reads need. The price is the write lane's
-/// own: a third sweep waits, and waits on its root's drain thread.
+/// spending a permit the workspace reads need. A sweep with no permit waits
+/// its turn in the queue like any other blocked job: it is never picked up
+/// only to block the drain, so a write behind it still runs.
 pub(super) const MAX_IN_FLIGHT_VALUE_JOBS: usize = 2;
 /// Queued read jobs allowed per root. Beyond it a new poll waits on the
 /// root's waitlist and is admitted when a read on that root frees its
@@ -83,7 +84,8 @@ pub(super) enum Job {
     /// A read that answers a value rather than a wire frame: an MCP tool
     /// runs git and has no [`DaemonMessage`] to deliver. Runs in this root's
     /// queue order on its own lane ([`MAX_IN_FLIGHT_VALUE_JOBS`]), coalescing
-    /// nothing.
+    /// nothing, and like a read it waits for a permit in the queue rather
+    /// than in the drain.
     ///
     /// Its compute MUST NOT enqueue another job on this root and wait for
     /// it: one root has one drain thread, so such a job would sit behind this
@@ -293,32 +295,44 @@ fn queued_reads(inner: &Inner) -> usize {
         .count()
 }
 
-fn read_permit_free(shared: &Shared) -> bool {
-    *shared
-        .read_permits
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        > 0
-}
-
 /// What the drain does with this root's queue next.
 enum Pick {
     Run(Job),
-    /// Only blocked reads remain: sleep until a read permit frees or the
-    /// pick poll elapses, then look again.
-    Wait,
+    /// The head is a job whose lane has no permit: sleep until that lane
+    /// frees one or the pick poll elapses, then look again.
+    Wait(Lane),
     Exit,
+}
+
+/// Whether `lane` has a permit to hand out, without taking one.
+fn permit_free(shared: &Shared, lane: Lane) -> bool {
+    let (permits, _) = shared.lane(lane);
+    *permits.lock().unwrap_or_else(|error| error.into_inner()) > 0
+}
+
+/// Take `lane`'s permit if it has one to spare, so that taking it and acting
+/// on it are one step: two drains can never both believe they hold the last
+/// one, which is what would let a job block its root's queue on a permit it
+/// believed it had.
+fn reserve_permit(shared: &Shared, lane: Lane) -> bool {
+    let (permits, _) = shared.lane(lane);
+    let mut permits = permits.lock().unwrap_or_else(|error| error.into_inner());
+    if *permits == 0 {
+        return false;
+    }
+    *permits -= 1;
+    true
 }
 
 /// The queue's next job, popped. Waitlisted reads first fill whatever
 /// queued slots [`QUEUED_READ_CAP`] has free — behind everything queued
 /// now, newest admitted first, because the read the user just asked for is
-/// the one whose latency they feel. The head runs, unless it is a read with
-/// no read permit to take and the queue holds a write: the write then runs
-/// ahead of the blocked read, unconditionally, and the read keeps its
-/// place. The reordering is only of a read after a write — the read then
-/// observes the write, which is fresher than the tree it was queued
-/// against, never staler.
+/// the one whose latency they feel. The head runs, unless its lane has no
+/// permit and the queue holds a write: the write then runs ahead of the
+/// blocked job, unconditionally, and the blocked job keeps its place. The
+/// reordering is only ever of a write ahead — every other job then observes
+/// the write, which is fresher than the tree it was queued against, never
+/// staler, and a value job never overtakes a read either.
 fn next_runnable(shared: &Shared, inner: &mut Inner) -> Pick {
     while queued_reads(inner) < QUEUED_READ_CAP {
         let Some(key) = inner.waiting_order.pop_back() else {
@@ -333,17 +347,31 @@ fn next_runnable(shared: &Shared, inner: &mut Inner) -> Pick {
     let Some(head) = inner.jobs.front() else {
         return Pick::Exit;
     };
-    if matches!(head, Job::Write(_) | Job::Value(_)) || read_permit_free(shared) {
+    // A write takes the write lane's permit in the drain, which is where that
+    // wait has always lived, and so does a read. A value job's permit is taken
+    // here, with the pick: the drain then runs it without taking one, so a
+    // sweep with no permit to spare waits in this queue rather than blocking
+    // the drain that also has to serve this root's writes.
+    let blocked = match head {
+        Job::Write(_) => false,
+        Job::Read { .. } => !permit_free(shared, Lane::Read),
+        Job::Value(_) => !reserve_permit(shared, Lane::Value),
+    };
+    if !blocked {
         return Pick::Run(inner.jobs.pop_front().expect("front checked"));
     }
     if let Some(index) = inner
         .jobs
         .iter()
-        .position(|job| matches!(job, Job::Write(_) | Job::Value(_)))
+        .position(|job| matches!(job, Job::Write(_)))
     {
         return Pick::Run(inner.jobs.remove(index).expect("position checked"));
     }
-    Pick::Wait
+    Pick::Wait(match head {
+        Job::Read { .. } => Lane::Read,
+        Job::Value(_) => Lane::Value,
+        Job::Write(_) => Lane::Write,
+    })
 }
 
 /// The reply's kind for the sink-panic log line: the read shapes the queue
@@ -651,17 +679,14 @@ fn drain(shared: Arc<Shared>, queue: Arc<RootQueue>) {
                     guard.armed = false;
                     return;
                 }
-                Pick::Wait => {
+                Pick::Wait(lane) => {
                     drop(inner);
-                    let permits = shared
-                        .read_permits
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner());
+                    let (permits, freed) = shared.lane(lane);
+                    let permits = permits.lock().unwrap_or_else(|error| error.into_inner());
                     if *permits > 0 {
                         continue;
                     }
-                    let (woken, _) = shared
-                        .read_freed
+                    let (woken, _) = freed
                         .wait_timeout(permits, PICK_POLL)
                         .unwrap_or_else(|error| error.into_inner());
                     drop(woken);
@@ -706,7 +731,8 @@ fn drain(shared: Arc<Shared>, queue: Arc<RootQueue>) {
                 }
             }
             Job::Value(run) => {
-                acquire(&shared, Lane::Value);
+                // The permit came with the pick, so this guard only hands it
+                // back once the sweep is done with it.
                 let _permit = PermitGuard {
                     shared: &shared,
                     lane: Lane::Value,

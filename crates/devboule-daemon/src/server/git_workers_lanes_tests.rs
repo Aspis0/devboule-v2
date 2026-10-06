@@ -8,7 +8,7 @@ use std::sync::atomic::Ordering;
 
 use devboule_protocol::DaemonMessage;
 
-use super::super::git_queue::{MAX_IN_FLIGHT_READ_JOBS, MAX_IN_FLIGHT_VALUE_JOBS};
+use super::super::git_queue::MAX_IN_FLIGHT_READ_JOBS;
 use super::test_support::*;
 use super::*;
 
@@ -213,100 +213,6 @@ fn a_write_runs_while_its_own_root_read_waits_for_a_permit() {
             DaemonMessage::WorkspaceGit { status, .. } => assert!(status.is_git),
             other => panic!("wrong reply shape: {other:?}"),
         }
-    }
-    drop(repos);
-    drop(state);
-    let _ = std::fs::remove_dir_all(path);
-}
-
-/// The value lane: a job that answers a value rather than a wire frame (a
-/// repository sweep) runs several git commands under one permit for as long
-/// as it lasts, so it must not spend a read permit. Four foreign reads hold
-/// the whole read lane here, and the sweep on a fifth root still runs — and
-/// two sweeps run together, which is the lane's whole ceiling.
-#[test]
-fn a_value_job_runs_while_the_read_lane_is_full() {
-    let mut repos = Vec::new();
-    let (path, state) = temp_state("git-off-loop-value-lane-state");
-    let mut foreign_ids = Vec::new();
-    for index in 0..MAX_IN_FLIGHT_READ_JOBS {
-        let repo = TestRepo::new(&format!("git-off-loop-value-foreign-{index}"));
-        foreign_ids.push(add_workspace(&state, &repo.root));
-        repos.push(repo);
-    }
-    let gates: Vec<_> = foreign_ids
-        .iter()
-        .map(|workspace_id| arm_git_gate(&state, workspace_id))
-        .collect();
-    let owner = test_owner();
-    let conn = ConnHandle::new(101);
-    let store = ReplyStore::new();
-    let (stop, collector) = spawn_collector(&conn, store.clone());
-    for (index, workspace_id) in foreign_ids.iter().enumerate() {
-        assert!(dispatch(
-            &state,
-            &owner,
-            ClientMessage::WorkspaceGitStatus {
-                id: index as u64 + 1,
-                workspace_id: workspace_id.clone(),
-            },
-            &conn,
-            true,
-            true,
-            true,
-            true,
-        )
-        .is_none());
-    }
-    wait_until_taken(&gates, MAX_IN_FLIGHT_READ_JOBS);
-
-    let mut sweep_roots = Vec::new();
-    for index in 0..MAX_IN_FLIGHT_VALUE_JOBS {
-        let repo = TestRepo::new(&format!("git-off-loop-value-sweep-{index}"));
-        sweep_roots.push(repo.root.clone());
-        repos.push(repo);
-    }
-    let (started_tx, started_rx) = std::sync::mpsc::channel();
-    let mut releases = Vec::new();
-    let mut running = Vec::new();
-    for root in sweep_roots {
-        let sweep_state = Arc::clone(&state);
-        let started_tx = started_tx.clone();
-        // One release channel per sweep: a receiver is not cloneable, and each
-        // sweep must be let go on its own.
-        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
-        releases.push(release_tx);
-        running.push(std::thread::spawn(move || {
-            sweep_state.read_git_value(&root, Duration::from_secs(30), move || {
-                let _ = started_tx.send(());
-                // Hold the lane until the test lets go, so a second sweep that
-                // could not take it would still be waiting here.
-                let _ = release_rx.recv_timeout(Duration::from_secs(30));
-                "answered"
-            })
-        }));
-    }
-    drop(started_tx);
-    for _ in 0..MAX_IN_FLIGHT_VALUE_JOBS {
-        started_rx
-            .recv_timeout(Duration::from_secs(30))
-            .expect("a value job must not wait on a read permit");
-    }
-    for (_, gate_release) in &gates {
-        gate_release.send(()).expect("release a held status");
-    }
-    store.wait_each_reply(MAX_IN_FLIGHT_READ_JOBS);
-    for release in &releases {
-        let _ = release.send(());
-    }
-    stop.store(true, Ordering::SeqCst);
-    let _ = collector.join();
-    for (index, sweep) in running.into_iter().enumerate() {
-        assert_eq!(
-            sweep.join().expect("sweep thread"),
-            Ok("answered"),
-            "sweep {index} never answered"
-        );
     }
     drop(repos);
     drop(state);

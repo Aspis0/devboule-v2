@@ -333,6 +333,12 @@ mod lifecycle_tests;
 #[path = "git_workers_lanes_tests.rs"]
 mod lanes_tests;
 
+/// The value lane and the sweeps that run on it, split by subject from the
+/// read/write crossings beside it.
+#[cfg(test)]
+#[path = "git_workers_value_lane_tests.rs"]
+mod value_lane_tests;
+
 #[cfg(test)]
 #[path = "git_workers_waitlist_tests.rs"]
 mod waitlist_tests;

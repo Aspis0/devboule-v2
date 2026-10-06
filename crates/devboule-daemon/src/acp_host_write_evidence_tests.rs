@@ -9,17 +9,35 @@ use devboule_protocol::PermissionOutcome;
 
 use super::super::permission_broker::PermissionBroker;
 use super::super::SessionRuntime;
-use crate::write_evidence::{repo_key, writers_for, WriteEvidence, MAX_ROWS};
+use crate::write_evidence::{log, repo_key, WriteEvidence, WriteLog, MAX_ROWS};
 
 use super::AcpHost;
 
 /// The window every assertion here reads over.
 const LOOKBACK: Duration = Duration::from_secs(3600);
 
-/// A file name per case: the log is process-wide, so two cases must never ask
-/// about the same path.
+/// A file name per case: the cases below drive the process-wide log through
+/// the host, so two of them must never ask about the same path.
 fn named(case: &str, leaf: &str) -> String {
     format!("collision-evidence-{case}-{leaf}")
+}
+
+/// A workspace folder with a repository in it, which is what a session's cwd
+/// is: the writer log is keyed by that repository, and a folder with no `.git`
+/// above it drops every row.
+fn workspace_checkout(label: &str) -> PathBuf {
+    let folder = crate::test_dirs::test_temp_dir(&format!("devboule-acp-evidence-{label}"));
+    let output = std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(&folder)
+        .output()
+        .expect("git could be spawned");
+    assert!(
+        output.status.success(),
+        "git init in the test workspace: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    folder
 }
 
 struct Host {
@@ -32,23 +50,9 @@ struct Host {
 
 impl Host {
     fn new(label: &str) -> Self {
-        let cwd = crate::test_dirs::test_temp_dir(&format!("devboule-acp-evidence-{label}-cwd"));
+        let cwd = workspace_checkout(&format!("{label}-cwd"));
         let runtime =
             crate::test_dirs::test_temp_dir(&format!("devboule-acp-evidence-{label}-runtime"));
-        // A session's cwd is a workspace checkout, and the writer log is keyed
-        // by that repository: a folder with no `.git` above it would drop
-        // every row, which is exactly the shape a write outside any
-        // repository has.
-        let output = std::process::Command::new("git")
-            .args(["init", "--quiet"])
-            .current_dir(&cwd)
-            .output()
-            .expect("git could be spawned");
-        assert!(
-            output.status.success(),
-            "git init in the test workspace: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
         let host = AcpHost::new(cwd.clone(), runtime.clone());
         host.set_session_id("evidence-session".to_string());
         let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
@@ -156,7 +160,7 @@ fn shell_text_is_not_write_evidence() {
     );
 
     let repo = repo_key(&host.cwd).expect("the host's workspace is a repository");
-    let from_host = writers_for(&repo, &written, LOOKBACK);
+    let from_host = log().writers_for(&repo, &written, LOOKBACK);
     assert_eq!(
         from_host.writers.len(),
         1,
@@ -172,7 +176,10 @@ fn shell_text_is_not_write_evidence() {
     );
 
     assert!(
-        writers_for(&repo, &from_shell, LOOKBACK).writers.is_empty(),
+        log()
+            .writers_for(&repo, &from_shell, LOOKBACK)
+            .writers
+            .is_empty(),
         "a command line is not a path the daemon wrote; the file above exists"
     );
 }
@@ -189,7 +196,7 @@ fn a_write_is_keyed_by_the_repository_root_not_the_session_cwd() {
     host.write(&format!("sub/{deep}"), "written below the cwd\n");
 
     let repo = repo_key(&host.cwd).expect("the host's workspace is a repository");
-    let writers = writers_for(&repo, &format!("sub/{deep}"), LOOKBACK);
+    let writers = log().writers_for(&repo, &format!("sub/{deep}"), LOOKBACK);
     assert_eq!(writers.writers.len(), 1, "{:?}", writers.writers);
     assert_eq!(
         writers.writers[0].path,
@@ -197,7 +204,7 @@ fn a_write_is_keyed_by_the_repository_root_not_the_session_cwd() {
         "the row is keyed by the repository root, not by the cwd"
     );
     assert!(
-        writers_for(&repo, &deep, LOOKBACK).writers.is_empty(),
+        log().writers_for(&repo, &deep, LOOKBACK).writers.is_empty(),
         "the same leaf one directory up is a different file"
     );
 }
@@ -210,14 +217,15 @@ fn one_session_writing_twice_is_one_writer() {
     host.write(&leaf, "second\n");
 
     let repo = repo_key(&host.cwd).expect("the host's workspace is a repository");
-    let writers = writers_for(&repo, &leaf, LOOKBACK);
+    let writers = log().writers_for(&repo, &leaf, LOOKBACK);
     assert_eq!(
         writers.writers.len(),
         1,
         "a caller asks who is in the file, not how often they touched it"
     );
     assert!(
-        writers_for(&repo, &named("twice", "never-written.rs"), LOOKBACK)
+        log()
+            .writers_for(&repo, &named("twice", "never-written.rs"), LOOKBACK)
             .writers
             .is_empty(),
         "a path nobody wrote has no writer"
@@ -228,7 +236,8 @@ fn one_session_writing_twice_is_one_writer() {
     // file.
     #[cfg(any(windows, target_os = "macos"))]
     assert_eq!(
-        writers_for(&repo, &leaf.to_uppercase(), LOOKBACK)
+        log()
+            .writers_for(&repo, &leaf.to_uppercase(), LOOKBACK)
             .writers
             .len(),
         1,
@@ -236,7 +245,8 @@ fn one_session_writing_twice_is_one_writer() {
     );
     #[cfg(not(any(windows, target_os = "macos")))]
     assert!(
-        writers_for(&repo, &leaf.to_uppercase(), LOOKBACK)
+        log()
+            .writers_for(&repo, &leaf.to_uppercase(), LOOKBACK)
             .writers
             .is_empty(),
         "a case-sensitive filesystem does not match a different name"
@@ -245,23 +255,26 @@ fn one_session_writing_twice_is_one_writer() {
 
 /// A full log drops its oldest rows, and an answer read afterwards says it may
 /// be short rather than passing an absent writer off as "nobody wrote this".
+/// The log is this case's own: filling the process-wide one would decide what
+/// every other case in this binary reads.
 #[test]
 fn a_full_log_says_the_writer_list_may_be_short() {
-    let host = Host::new("evict");
+    let root = workspace_checkout("evict-log");
+    let log = WriteLog::default();
+    let repo = repo_key(&root).expect("the workspace is a repository");
     let leaf = named("evict", "leaf.rs");
-    let repo = repo_key(&host.cwd).expect("the host's workspace is a repository");
-    host.write(&leaf, "the case's own row\n");
+    std::fs::write(root.join(&leaf), "the case's own row\n").expect("write");
+    log.record_path_write("s.leaf", &root, &root.join(&leaf));
     assert!(
-        !writers_for(&repo, &leaf, LOOKBACK).may_be_incomplete,
+        !log.writers_for(&repo, &leaf, LOOKBACK).may_be_incomplete,
         "a log that has never overflowed answers whole"
     );
     for index in 0..MAX_ROWS + 1 {
-        host.write(
-            &named("evict", &format!("filler-{index}.rs")),
-            "one more row than the log keeps\n",
-        );
+        let filler = named("evict", &format!("filler-{index}.rs"));
+        std::fs::write(root.join(&filler), "one more row than the log keeps\n").expect("write");
+        log.record_path_write("s.filler", &root, &root.join(&filler));
     }
-    let listed = writers_for(&repo, &leaf, LOOKBACK);
+    let listed = log.writers_for(&repo, &leaf, LOOKBACK);
     assert!(
         listed.may_be_incomplete,
         "rows were dropped inside this window, so the answer says so"
@@ -271,4 +284,20 @@ fn a_full_log_says_the_writer_list_may_be_short() {
         "the filler rows evicted the case's own row: {:?}",
         listed.writers
     );
+
+    // One repository's overflow is that repository's news only.
+    let other = workspace_checkout("evict-other");
+    let other_repo = repo_key(&other).expect("the second workspace is a repository");
+    let elsewhere = named("evict", "elsewhere.rs");
+    std::fs::write(other.join(&elsewhere), "another repository's row\n").expect("write");
+    log.record_path_write("s.elsewhere", &other, &other.join(&elsewhere));
+    let other_listed = log.writers_for(&other_repo, &elsewhere, LOOKBACK);
+    assert_eq!(other_listed.writers.len(), 1, "{:?}", other_listed.writers);
+    assert!(
+        !other_listed.may_be_incomplete,
+        "a busy repository elsewhere is not this one's incomplete list"
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+    let _ = std::fs::remove_dir_all(other);
 }

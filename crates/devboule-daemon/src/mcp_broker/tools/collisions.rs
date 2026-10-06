@@ -182,7 +182,7 @@ fn report(
     let listed = crate::write_evidence::repo_key(&root)
         .as_deref()
         .map(|repo| {
-            crate::write_evidence::writers_for(
+            crate::write_evidence::log().writers_for(
                 repo,
                 &subject,
                 Duration::from_secs(u64::from(request.lookback_minutes) * 60),

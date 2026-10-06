@@ -148,7 +148,7 @@ fn collision_answers_its_own_envelope_for_the_callers_repository() {
 #[test]
 fn collision_reports_a_write_it_can_vouch_for_and_names_its_own_host() {
     let (state, dir, _other, root) = project("writers", "writers-seed.txt");
-    crate::write_evidence::record_path_write(
+    crate::write_evidence::log().record_path_write(
         "a-session-that-ended",
         &root,
         &root.join("writers-seed.txt"),
@@ -183,7 +183,7 @@ fn collision_does_not_report_a_writer_from_another_repository() {
     let (state, dir, _other, _root) = project("cross-repo", "cross-repo-seed.txt");
     let (elsewhere, elsewhere_dir, _other, elsewhere_root) =
         project("cross-repo-other", "cross-repo-seed.txt");
-    crate::write_evidence::record_path_write(
+    crate::write_evidence::log().record_path_write(
         "s.far.project",
         &elsewhere_root,
         &elsewhere_root.join("cross-repo-seed.txt"),

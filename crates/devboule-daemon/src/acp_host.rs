@@ -409,7 +409,11 @@ impl AcpHost {
         // path it wrote, so this is where a collision report's writer list
         // comes from. Only after the bytes are on disk, and only for the file:
         // the parent folders this created are a side effect of the write.
-        crate::write_evidence::record_path_write(request.session_id.0.as_ref(), &self.cwd, &path);
+        crate::write_evidence::log().record_path_write(
+            request.session_id.0.as_ref(),
+            &self.cwd,
+            &path,
+        );
         serde_json::to_value(WriteTextFileResponse::new())
             .map_err(|error| RpcError::internal(error.to_string()))
     }

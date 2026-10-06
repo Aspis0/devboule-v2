@@ -26,6 +26,7 @@
 //! answers is "who touched this in the last hour", and after a restart the
 //! honest answer is empty rather than stale.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -93,15 +94,26 @@ pub(crate) const MAX_LOOKBACK: Duration = Duration::from_secs(24 * 60 * 60);
 #[derive(Default)]
 struct Log {
     rows: Vec<PathWrite>,
-    /// When the last row was dropped for room. Kept so [`writers_for`] can
-    /// say the window it read may be short.
-    evicted_at_ms: Option<u64>,
+    /// When each repository last lost a row for room, and nothing else: an
+    /// overflow in one repository says nothing about the next one's list, and
+    /// an eviction older than the horizon is not worth remembering.
+    evicted_at_ms: HashMap<String, u64>,
 }
 
-static LOG: OnceLock<Mutex<Log>> = OnceLock::new();
+/// One bounded log of path writes. Production drives the process-wide
+/// [`log`]; a test that needs rows of its own builds an instance rather than
+/// filling the shared one, so what one test writes cannot decide what another
+/// reads.
+#[derive(Default)]
+pub(crate) struct WriteLog {
+    inner: Mutex<Log>,
+}
 
-fn log() -> &'static Mutex<Log> {
-    LOG.get_or_init(|| Mutex::new(Log::default()))
+static LOG: OnceLock<WriteLog> = OnceLock::new();
+
+/// This daemon's one writer log, where every performed write is recorded.
+pub(crate) fn log() -> &'static WriteLog {
+    LOG.get_or_init(WriteLog::default)
 }
 
 /// The repository `root` belongs to, as the canonical path both ends of a
@@ -113,69 +125,76 @@ pub(crate) fn repo_key(root: &Path) -> Option<String> {
         .map(|canonical| canonical.to_string_lossy().into_owned())
 }
 
-/// Record that `session_id` wrote `written`, an absolute path a tool has just
-/// written, resolving the repository from the session's own `cwd`. A write
-/// outside every repository is dropped: no collision sweep can ever ask about
-/// it, and a row nobody can match only costs memory.
-pub(crate) fn record_path_write(session_id: &str, cwd: &Path, written: &Path) {
-    if session_id.is_empty() {
-        return;
+impl WriteLog {
+    /// Record that `session_id` wrote `written`, an absolute path a tool has just
+    /// written, resolving the repository from the session's own `cwd`. A write
+    /// outside every repository is dropped: no collision sweep can ever ask about
+    /// it, and a row nobody can match only costs memory.
+    pub(crate) fn record_path_write(&self, session_id: &str, cwd: &Path, written: &Path) {
+        if session_id.is_empty() {
+            return;
+        }
+        let Some(root) =
+            repository_root_above(cwd).and_then(|root| std::fs::canonicalize(root).ok())
+        else {
+            return;
+        };
+        let Ok(written) = std::fs::canonicalize(written) else {
+            return;
+        };
+        let Ok(relative) = written.strip_prefix(&root) else {
+            return;
+        };
+        let Some(path) = spelling(&relative.to_string_lossy()) else {
+            return;
+        };
+        let now = now_ms();
+        let mut log = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        let horizon = horizon_ms(now);
+        log.rows.retain(|row| row.at_ms >= horizon);
+        log.evicted_at_ms.retain(|_, at| *at >= horizon);
+        log.rows.push(PathWrite {
+            session_id: session_id.to_string(),
+            repo: root.to_string_lossy().into_owned(),
+            path,
+            at_ms: now,
+            evidence: WriteEvidence::AgentFileWrite,
+        });
+        if log.rows.len() > MAX_ROWS {
+            let excess = log.rows.len() - MAX_ROWS;
+            let dropped: Vec<String> = log.rows.drain(..excess).map(|row| row.repo).collect();
+            for repo in dropped {
+                log.evicted_at_ms.insert(repo, now);
+            }
+        }
     }
-    let Some(root) = repository_root_above(cwd).and_then(|root| std::fs::canonicalize(root).ok())
-    else {
-        return;
-    };
-    let Ok(written) = std::fs::canonicalize(written) else {
-        return;
-    };
-    let Ok(relative) = written.strip_prefix(&root) else {
-        return;
-    };
-    let Some(path) = spelling(&relative.to_string_lossy()) else {
-        return;
-    };
-    let now = now_ms();
-    let mut log = log().lock().unwrap_or_else(|error| error.into_inner());
-    let horizon = horizon_ms(now);
-    log.rows.retain(|row| row.at_ms >= horizon);
-    log.rows.push(PathWrite {
-        session_id: session_id.to_string(),
-        repo: root.to_string_lossy().into_owned(),
-        path,
-        at_ms: now,
-        evidence: WriteEvidence::AgentFileWrite,
-    });
-    if log.rows.len() > MAX_ROWS {
-        let excess = log.rows.len() - MAX_ROWS;
-        log.rows.drain(..excess);
-        log.evicted_at_ms = Some(now);
-    }
-}
 
-/// The newest row per session for `subject` inside `repo`, newest first, and
-/// whether the log dropped rows inside that window. One row per session, not
-/// per write: a caller wants to know who is in the file, and a session that
-/// wrote it forty times is one collision, not forty.
-pub(crate) fn writers_for(repo: &str, subject: &str, lookback: Duration) -> WriterList {
-    let Some(wanted) = spelling(subject) else {
-        return WriterList::default();
-    };
-    let since = now_ms().saturating_sub(lookback.as_millis() as u64);
-    let log = log().lock().unwrap_or_else(|error| error.into_inner());
-    let mut writers: Vec<PathWrite> = Vec::new();
-    for row in log.rows.iter().rev() {
-        if row.at_ms < since || row.repo != repo || row.path != wanted {
-            continue;
+    /// The newest row per session for `subject` inside `repo`, newest first, and
+    /// whether the log dropped rows inside that window. One row per session, not
+    /// per write: a caller wants to know who is in the file, and a session that
+    /// wrote it forty times is one collision, not forty.
+    pub(crate) fn writers_for(&self, repo: &str, subject: &str, lookback: Duration) -> WriterList {
+        let Some(wanted) = spelling(subject) else {
+            return WriterList::default();
+        };
+        let since = now_ms().saturating_sub(lookback.as_millis() as u64);
+        let log = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        let mut writers: Vec<PathWrite> = Vec::new();
+        for row in log.rows.iter().rev() {
+            if row.at_ms < since || row.repo != repo || row.path != wanted {
+                continue;
+            }
+            if !writers.iter().any(|kept| kept.session_id == row.session_id) {
+                writers.push(row.clone());
+            }
         }
-        if !writers.iter().any(|kept| kept.session_id == row.session_id) {
-            writers.push(row.clone());
+        WriterList {
+            writers,
+            // Conservative on purpose: this repository's own eviction inside the
+            // window may have dropped a row the caller would otherwise have been
+            // shown.
+            may_be_incomplete: log.evicted_at_ms.get(repo).is_some_and(|at| *at >= since),
         }
-    }
-    WriterList {
-        writers,
-        // Conservative on purpose: an eviction inside the window may have
-        // dropped a row the caller would otherwise have been shown.
-        may_be_incomplete: log.evicted_at_ms.is_some_and(|at| at >= since),
     }
 }
 

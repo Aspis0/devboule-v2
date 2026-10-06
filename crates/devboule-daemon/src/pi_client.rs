@@ -338,6 +338,14 @@ const PI_TOOL_POLICIES: &[PiToolPolicy] = &[
         name: crate::provider_catalog::MCP_ARCHIVE_WORKSPACE_TOOL,
         requires_confirmation: false,
     },
+    // File collisions: a read of the caller's own repository — the other
+    // worktrees and the sessions that wrote the path — scoped by the
+    // registry's workspace door and, for a peer, by the origin door. What is
+    // left to decide is the repository's own answer.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_FILE_COLLISIONS_TOOL,
+        requires_confirmation: false,
+    },
     // Terminal open: consented by the broker's own first-use card, which
     // names the workspace and the directory the shell opens in; a generic
     // confirm would be a second card with none of those facts, and the
@@ -1107,6 +1115,24 @@ export default function (pi) {
     async execute(_toolCallId, params, signal) {
       await brokerSession(signal);
       const result = await mcpRequest("tools/call", { name: "devboule_kill_terminal", arguments: params }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_file_collisions",
+    label: "Check Devboule file collisions",
+    description: `Answers who else is changing one path in your own workspace's repository, so you can find out before you edit instead of at rebase time. It names every other git worktree of that repository with the branch it has checked out, the merge base it shares with your own HEAD, whether the path is committed differently there, and whether it is dirty in that checkout - each row carries the workspace id when Devboule knows that checkout, and 'branch' when it does not. committedChange is null when there is no branch point to compare against (your own branch has no commit yet, or the two histories share none), which is not the same answer as false. path is relative to your workspace folder, or '.' for the whole repository; a path outside that folder, the repository's own .git folder, and a path reached through a symbolic link are refused by name. writers are the sessions of this same repository that wrote this exact path through Devboule itself in the last lookbackMinutes (default 60, max 1440), with the kind of write and its confidence - a shell command, an editor and a person's terminal are never evidence, so an empty writers list never means nobody touched the file. capped says the sweep stopped at its own bound and did not read every checkout; writersMayBeIncomplete says the write log dropped rows inside your window, so an absent writer may be one that was dropped. Read-only: nothing is warned, written, cancelled or approved, and the repository is your own workspace's, never one named by an argument.`,
+    parameters: Type.Object(
+      {
+        path: Type.String({ description: "A path relative to your workspace folder, or '.' for the whole repository." }),
+        lookbackMinutes: Type.Optional(Type.Integer({ minimum: 1, maximum: 1440, description: "How far back to look for sessions that wrote this path. Default 60." })),
+      },
+      { required: ["path"], additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_file_collisions", arguments: params }, signal);
       return { content: result?.content ?? [], details: result ?? {} };
     },
   });
