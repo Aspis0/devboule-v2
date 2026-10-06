@@ -28,7 +28,8 @@ const DISPLAY_NAMES = new Map<string, string>([
   ["question", "Question"],
 ]);
 
-// A call still running reads in the present; the past tense is for a finished one.
+// A call still running reads in the present, a cancelled one in its own word;
+// the past tense is for a finished one.
 const RUNNING_NAMES = new Map<string, string>([
   ["execute", "Running"],
   ["read", "Reading"],
@@ -153,7 +154,9 @@ function browserSummary(title: string): string | undefined {
   return browserToolName(trimmed) === null && trimmed.length > 0 ? trimmed : undefined;
 }
 
-export function toolRowDisplay(item: ToolItem, running = false): ToolRowModel {
+export type ToolPhase = "done" | "running" | "cancelled";
+
+export function toolRowDisplay(item: ToolItem, phase: ToolPhase = "done"): ToolRowModel {
   const kind = item.kind?.trim().toLowerCase();
   if (isBrowserToolRow(kind, item.title)) {
     const summary = browserSummary(item.title);
@@ -165,7 +168,9 @@ export function toolRowDisplay(item: ToolItem, running = false): ToolRowModel {
   const label =
     kind === undefined
       ? undefined
-      : ((running ? RUNNING_NAMES.get(kind) : undefined) ?? DISPLAY_NAMES.get(kind));
+      : phase === "cancelled" && RUNNING_NAMES.has(kind)
+        ? "Cancelled"
+        : ((phase === "running" ? RUNNING_NAMES.get(kind) : undefined) ?? DISPLAY_NAMES.get(kind));
   const fromBareName = label === undefined && isBareName(item.title);
   const displayName =
     label !== undefined

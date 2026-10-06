@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { diffStats, failureExcerpt, outputLineKind, outputLines } from "./toolOutputView";
+import {
+  COPY_CHAR_CAP,
+  copyText,
+  diffStats,
+  failureExcerpt,
+  outputLineKind,
+  outputLines,
+} from "./toolOutputView";
 
 describe("outputLines", () => {
   it("drops the blank tail a trailing newline leaves, and no other line", () => {
@@ -78,5 +85,83 @@ describe("failureExcerpt", () => {
   it("never starts with a blank line", () => {
     expect(failureExcerpt(["", "", "ERROR: it broke", "", "detail"])[0]).toBe("ERROR: it broke");
     expect(outputLines("\n\n\nfirst\nsecond\n")).toEqual(["first", "second"]);
+  });
+});
+
+describe("failureExcerpt past benign lines", () => {
+  it("skips a path and a count that merely contain the word", () => {
+    const log = outputLines(
+      [
+        "> tsc --noEmit",
+        "src/Error.ts compiled",
+        "Found 0 errors. Watching for file changes.",
+        "no errors found in lib/",
+        "  Errors: 0",
+        " FAIL  src/a.test.ts > case",
+        "TypeError: x is not a function",
+        "  at a.ts:3",
+      ].join("\n"),
+    );
+    expect(failureExcerpt(log)).toEqual([
+      " FAIL  src/a.test.ts > case",
+      "TypeError: x is not a function",
+      "  at a.ts:3",
+    ]);
+  });
+
+  it("does not take a line that names a failure only to say there is none", () => {
+    expect(failureExcerpt(["error: 0 errors", "ok one", "ok two", "ok three"])).toEqual([
+      "ok one",
+      "ok two",
+      "ok three",
+    ]);
+  });
+
+  it("finds a cargo test failure and a thrown exception by their tokens", () => {
+    expect(failureExcerpt(["test a ... ok", "test b ... FAILED", "tail"])[0]).toBe(
+      "test b ... FAILED",
+    );
+    expect(failureExcerpt(["starting", "java.lang.IllegalStateException: boom", "  at X"])[0]).toBe(
+      "java.lang.IllegalStateException: boom",
+    );
+  });
+});
+
+describe("terminal output", () => {
+  it("strips colour codes before it is matched and before it is shown", () => {
+    const red = "\u001b[31m";
+    const reset = "\u001b[0m";
+    const lines = outputLines(
+      `\u001b[1m> vitest run${reset}\n\n${red} FAIL ${reset} a.test.ts\n${red}AssertionError${reset}: x\n`,
+    );
+    expect(lines).toEqual(["> vitest run", "", " FAIL  a.test.ts", "AssertionError: x"]);
+    expect(failureExcerpt(lines)[0]).toBe(" FAIL  a.test.ts");
+  });
+
+  it("keeps what a bare carriage return leaves on top, as a terminal does", () => {
+    expect(outputLines("10%\r50%\r100%\ndone")).toEqual(["100%", "done"]);
+    expect(outputLines("a\r\nb")).toEqual(["a", "b"]);
+  });
+});
+
+describe("copyText", () => {
+  it("copies a small output whole, with no tail", () => {
+    expect(copyText(["a", "b"])).toEqual({ text: "a\nb", truncated: false });
+  });
+
+  it("stops at the character cap and says how many lines it left out", () => {
+    const line = "x".repeat(999);
+    const lines = Array.from({ length: 1500 }, () => line);
+    const { text, truncated } = copyText(lines);
+    expect(truncated).toBe(true);
+    expect(text.length).toBeLessThanOrEqual(COPY_CHAR_CAP + 40);
+    expect(text.endsWith("(truncated, 500 more lines)")).toBe(true);
+  });
+
+  it("cuts a single line longer than the cap instead of copying it whole", () => {
+    const { text, truncated } = copyText(["y".repeat(COPY_CHAR_CAP * 2)]);
+    expect(truncated).toBe(true);
+    expect(text.length).toBeLessThanOrEqual(COPY_CHAR_CAP + 40);
+    expect(text.endsWith("(truncated, 0 more lines)")).toBe(true);
   });
 });

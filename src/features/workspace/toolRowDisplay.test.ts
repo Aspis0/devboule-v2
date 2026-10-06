@@ -244,7 +244,7 @@ describe("toolRowDisplay", () => {
 
   it("reads in the present while a call runs and in the past once it is done", () => {
     const names = (kind: string, running: boolean) =>
-      toolRowDisplay(tool({ kind, title: "x" }), running).displayName;
+      toolRowDisplay(tool({ kind, title: "x" }), running ? "running" : "done").displayName;
     expect([
       names("execute", true),
       names("read", true),
@@ -259,6 +259,18 @@ describe("toolRowDisplay", () => {
     ]);
     // A name that is not a verb has no tense to move.
     expect(names("plan", true)).toBe("Plan");
+  });
+
+  it("says Cancelled for a cancelled call, and leaves a name that is not a verb alone", () => {
+    const cancelled = (kind: string) =>
+      toolRowDisplay(tool({ kind, title: "x" }), "cancelled").displayName;
+    expect([cancelled("execute"), cancelled("read"), cancelled("edit")]).toEqual([
+      "Cancelled",
+      "Cancelled",
+      "Cancelled",
+    ]);
+    expect(cancelled("plan")).toBe("Plan");
+    expect(cancelled("think")).toBe("Task");
   });
 });
 

@@ -6,7 +6,7 @@
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ToolChatItem } from "../../../lib/toolCallGroups";
 import { ToolRow } from "./ToolRow";
 
@@ -180,7 +180,28 @@ describe("ToolRow output", () => {
     expect(container.querySelectorAll(".workspace-chat-tool-output-line")).toHaveLength(2000);
     const cap = container.querySelector(".workspace-chat-tool-output-cap");
     expect(cap?.textContent).toContain("3000 more lines not shown");
-    expect(cap?.querySelector("button")?.textContent).toBe("Copy all output");
+    expect(cap?.querySelector("button")?.textContent).toBe("Copy output");
+  });
+
+  it("copies a huge output up to a cap, names what it left out, and says so on the button", async () => {
+    const writeText = vi.fn(async (_text: string) => undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const container = await renderRow(
+      tool({ kind: "execute", title: "t", command: "t", output: lines(3000, "x".repeat(990)) }),
+    );
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>(".workspace-chat-tool-more")?.click(),
+    );
+    const copyButton = container.querySelector<HTMLButtonElement>(
+      ".workspace-chat-tool-output-cap button",
+    );
+    if (copyButton === null) throw new Error("the cap offered no copy");
+    await act(async () => copyButton.click());
+
+    const copied = String(writeText.mock.calls[0]?.[0]);
+    expect(copied.length).toBeLessThan(1_000_100);
+    expect(copied).toMatch(/\(truncated, \d+ more lines\)$/);
+    expect(copyButton.textContent).toBe("Copied (truncated)");
   });
 
   it("puts a box that can scroll on the keyboard", async () => {

@@ -1,6 +1,6 @@
 import { useId, useState } from "react";
 import { useCopyFeedback } from "../../../lib/useCopyFeedback";
-import { OUTPUT_RENDER_CAP, outputLineKind } from "./toolOutputView";
+import { OUTPUT_RENDER_CAP, copyText, outputLineKind } from "./toolOutputView";
 
 interface ToolOutputProps {
   /** The whole output. */
@@ -16,6 +16,7 @@ export function ToolOutput({ lines, collapsed, tone }: ToolOutputProps) {
   const [all, setAll] = useState(false);
   const linesId = useId();
   const copy = useCopyFeedback({ resetAfterMs: 1500 });
+  const [copyTruncated, setCopyTruncated] = useState(false);
   const hidden = lines.length - collapsed.length;
   const shown = all ? lines.slice(0, OUTPUT_RENDER_CAP) : collapsed;
   const unmounted = all ? Math.max(0, lines.length - OUTPUT_RENDER_CAP) : 0;
@@ -47,13 +48,19 @@ export function ToolOutput({ lines, collapsed, tone }: ToolOutputProps) {
           <button
             type="button"
             className="workspace-chat-tool-more"
-            onClick={() => void copy.copy("output", lines.join("\n"))}
+            onClick={() => {
+              const { text, truncated } = copyText(lines);
+              setCopyTruncated(truncated);
+              void copy.copy("output", text);
+            }}
           >
             {copyState === "copied"
-              ? "Copied"
+              ? copyTruncated
+                ? "Copied (truncated)"
+                : "Copied"
               : copyState === "failed"
                 ? "Copy failed"
-                : "Copy all output"}
+                : "Copy output"}
           </button>
         </div>
       ) : null}

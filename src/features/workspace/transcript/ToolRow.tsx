@@ -31,11 +31,11 @@ export const ToolRow = memo(function ToolRow({
   const { className, style } = entryFrame(item);
   const interrupted = isInterruptedToolStatus(item.status, transcriptEnded);
   const running = isToolRunningStatus(item.status) && !interrupted;
-  const model = toolRowDisplay(item, running);
-  const linkUrl = model.linkUrl;
-  const failed = item.kind !== "plan" && item.status.toLowerCase() === "failed";
   const status = item.status.toLowerCase();
   const cancelled = status === "cancelled" || status === "canceled";
+  const model = toolRowDisplay(item, running ? "running" : cancelled ? "cancelled" : "done");
+  const linkUrl = model.linkUrl;
+  const failed = item.kind !== "plan" && status === "failed";
   const completed = status === "completed" && !interrupted;
   const isPlan = item.kind === "plan";
   const planDecision =
