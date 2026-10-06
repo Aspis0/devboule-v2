@@ -214,6 +214,13 @@ use self::transport::{mcp_accept_loop, MCP_PATH};
 pub(crate) use self::config_files::write_protected_str;
 pub(crate) use self::redact::redact_broker_text;
 
+/// Whether the browser lane's own command table serves `tool`: the one list the
+/// router and the peer door's browser rule both read, so a `browser_*` name the
+/// table does not hold gets no lane rule and needs a row of its own.
+pub(crate) fn browser_lane_serves(tool: &str) -> bool {
+    tools::browser_commands::serves(tool)
+}
+
 pub(crate) const MCP_SERVER_NAME: &str = "devboule";
 /// Whether a session hosts the daemon's MCP tools, for every surface a person reads.
 ///
@@ -997,3 +1004,6 @@ mod terminal_write_tools_tests;
 #[cfg(test)]
 #[path = "../mcp_broker_tests.rs"]
 mod tests;
+/// What `tools/list` shows a person here and a paired device.
+#[cfg(test)]
+mod tools_list_peer_tests;

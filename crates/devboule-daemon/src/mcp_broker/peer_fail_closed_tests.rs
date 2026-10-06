@@ -23,7 +23,7 @@ use crate::server::ServerState;
 use super::tests::{http_request, owner, peer_row, response_json};
 
 const ROLES: [PeerRole; 2] = [PeerRole::Client, PeerRole::Daemon];
-const CALLER: &str = "fail-closed-peer-caller";
+pub(super) const CALLER: &str = "fail-closed-peer-caller";
 const UNLISTED_NAME: &str = "devboule_a_tool_nobody_wrote";
 
 fn caps(held: &[&str]) -> Vec<String> {
@@ -88,7 +88,13 @@ fn call(state: &Arc<ServerState>, token: &str, tool: &str) -> Value {
     ))
 }
 
-fn serve(state: &Arc<ServerState>, peer: bool) -> (McpSessionGuard, McpServerHandle) {
+/// A live caller registered with the loopback broker: born on a paired device
+/// holding `held`, or the person at this machine for `None`. The two handles
+/// keep the registration and the listener alive for the test.
+pub(super) fn serve(
+    state: &Arc<ServerState>,
+    held: Option<&[&str]>,
+) -> (McpSessionGuard, McpServerHandle) {
     let owner = owner("S-1-5-21-fail-closed", "fail-closed-client");
     crate::session::insert_test_live_agent_in_workspace(
         &state.sessions,
@@ -96,13 +102,13 @@ fn serve(state: &Arc<ServerState>, peer: bool) -> (McpSessionGuard, McpServerHan
         owner.clone(),
         "ws-a",
     );
-    if peer {
+    if let Some(held) = held {
         state.sessions.set_test_origin(
             CALLER,
             SessionOrigin::peer("device-phone", PeerRole::Client),
         );
         state
-            .peer_upsert(peer_row("device-phone", &PEER_CAPS))
+            .peer_upsert(peer_row("device-phone", held))
             .expect("peer row");
     }
     let guard = state
@@ -140,7 +146,7 @@ fn audit_actions(state: &Arc<ServerState>) -> Vec<String> {
 #[test]
 fn peer_unknown_tool_denied_before_dispatch() {
     let state = ServerState::new("mcp-fail-closed-peer".to_string());
-    let (_guard, _server) = serve(&state, true);
+    let (_guard, _server) = serve(&state, Some(&PEER_CAPS));
     let token = state.mcp.test_token(CALLER).expect("token");
 
     let reply = call(&state, &token, UNLISTED_NAME);
@@ -170,7 +176,7 @@ fn peer_unknown_tool_denied_before_dispatch() {
 #[test]
 fn a_local_caller_still_reaches_the_routers_own_unknown_tool_answer() {
     let state = ServerState::new("mcp-fail-closed-local".to_string());
-    let (_guard, _server) = serve(&state, false);
+    let (_guard, _server) = serve(&state, None);
     let token = state.mcp.test_token(CALLER).expect("token");
 
     let reply = call(&state, &token, UNLISTED_NAME);

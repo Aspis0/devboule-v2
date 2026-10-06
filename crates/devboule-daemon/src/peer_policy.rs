@@ -936,7 +936,14 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
         // originate from a paired device. No wire frame stands behind it, so
         // the door checks the administrative capability directly.
         Some(McpToolWire::Requires(CAP_ADMIN))
-    } else if is_browser_tool(tool) {
+    } else if tool == crate::provider_catalog::MCP_BROWSER_FILL_LOGIN_TOOL {
+        // Its own row, not the lane's: it types a saved password of the person
+        // at this keyboard into a page. The locality check refuses it before
+        // this row is ever asked, and the closed-table test requires that.
+        Some(McpToolWire::Unjudged(
+            "a saved login of this machine is never used from a paired device",
+        ))
+    } else if crate::mcp_broker::browser_lane_serves(tool) {
         // The browser lane: read a page, click it, type into it, in the
         // desktop app this daemon is not itself. Nothing on the wire stands
         // between the door and the page, so the door checks the capability
@@ -980,17 +987,6 @@ pub fn mcp_tool_locality(tool: &str) -> Option<&'static str> {
         .then_some(
             "the processes of this machine are never inspected or stopped from a paired device",
         )
-}
-
-/// Whether `tool` is one of the broker's `browser_*` tools: a **served** name
-/// carrying the lane's prefix. Both halves matter — the prefix alone would
-/// judge a name the broker never serves, and the served list alone would judge
-/// every tool there is.
-fn is_browser_tool(tool: &str) -> bool {
-    tool.starts_with(crate::provider_catalog::BROWSER_TOOL_PREFIX)
-        && crate::provider_catalog::MCP_BROKER_TOOLS
-            .iter()
-            .any(|(name, _)| *name == tool)
 }
 
 /// The reason a paired device is refused a tool name that has no row in

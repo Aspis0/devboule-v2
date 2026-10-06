@@ -8,7 +8,7 @@ use devboule_protocol::ToolPolicyEntry;
 use crate::provider_catalog::ToolOverlay;
 use crate::server::ServerState;
 
-use super::caller::{audit_mcp_tool, mcp_peer_door, resolve_mcp_caller};
+use super::caller::{audit_mcp_tool, mcp_peer_door, resolve_mcp_caller, McpCaller};
 use super::tools;
 use super::{McpBroker, RegisteredSession, MCP_SERVER_NAME};
 
@@ -72,14 +72,27 @@ pub(super) fn handle_rpc(
             // provider has connected with this session's Bearer.
             broker.mark_broker_ready(registration);
             let policy = state.tool_policy.get(registration.provider_id.as_deref());
+            let mut tools = enabled_tool_list(
+                crate::provider_catalog::MCP_BROKER_TOOLS,
+                policy.as_ref(),
+                registration.overlay.clone(),
+            );
+            // A paired device is shown what it may call and nothing else: the
+            // same door that would refuse the call decides the listing.
+            let caller = resolve_mcp_caller(state, &registration.session_id);
+            if matches!(caller, McpCaller::Peer { .. }) {
+                tools.retain(|tool| {
+                    tool.get("name")
+                        .and_then(Value::as_str)
+                        .is_some_and(|name| {
+                            mcp_peer_door(&caller, Some(name), &Value::Null).is_none()
+                        })
+                });
+            }
             Ok(Some(json!({
                 "jsonrpc": "2.0",
                 "id": id,
-                "result": {"tools": enabled_tool_list(
-                    crate::provider_catalog::MCP_BROKER_TOOLS,
-                    policy.as_ref(),
-                    registration.overlay.clone(),
-                )},
+                "result": {"tools": tools},
             })))
         }
         "tools/call" => {
