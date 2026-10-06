@@ -7,14 +7,14 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use super::process_cleanup_audit as audit;
 use super::processes::{refreshed, reply, strict_arguments};
 use crate::mcp_broker::caller::{audit_mcp_tool, McpCaller};
 use crate::mcp_broker::dispatch::{rpc_error, tool_error};
-use crate::mcp_broker::tools::first_use::{
-    ensure_write_approved, Approval, GateMark, PROCESS_CLEANUP_GROUP,
-};
+use crate::mcp_broker::tools::first_use::{ensure_write_approved, GateMark, PROCESS_CLEANUP_GROUP};
 use crate::mcp_broker::{McpBroker, RegisteredSession};
 use crate::process_plan::{CleanupPlan, PlanTarget};
+use crate::process_terminate::{owned_target_check, terminate_all, Termination};
 use crate::server::ServerState;
 
 /// The default and the ceiling for `graceMs`: the graceful phase is a wait
@@ -126,15 +126,15 @@ pub(in crate::mcp_broker) fn cleanup(
         .iter()
         .map(|entry| (entry.pid, entry.reason))
         .collect();
+    skipped.sort_by_key(|(pid, _)| *pid);
     if plan.targets.is_empty() {
         audit_mcp_tool(
             state,
             &caller,
             crate::provider_catalog::MCP_CLEANUP_PROCESSES_TOOL,
             &registration.session_id,
-            "ok",
+            &audit::nothing_to_stop(&skipped, &plan.unproven),
         );
-        skipped.sort_by_key(|(pid, _)| *pid);
         return cleanup_reply(id, Vec::new(), Vec::new(), plan.unproven, skipped);
     }
     let count = plan.targets.len();
@@ -175,70 +175,105 @@ pub(in crate::mcp_broker) fn cleanup(
         GateMark::None,
     );
 
-    // The approved plan is what runs. One more membership read exists only
-    // to name what appeared after approval — those are left alone.
-    refreshed(state, &id)?;
-    let current = state
-        .process_index
-        .session_entries(&registration.session_id);
+    // From here the approval is spent: whatever happens, the row says so.
+    let executed = match execute_plan(state, registration, &id, &plan, grace) {
+        Ok(executed) => executed,
+        Err((reason, error)) => {
+            audit_mcp_tool(
+                state,
+                &caller,
+                crate::provider_catalog::MCP_CLEANUP_PROCESSES_TOOL,
+                &registration.session_id,
+                &audit::failed(approval, count, reason),
+            );
+            return Err(error);
+        }
+    };
+    let termination = executed.termination;
+    audit_mcp_tool(
+        state,
+        &caller,
+        crate::provider_catalog::MCP_CLEANUP_PROCESSES_TOOL,
+        &registration.session_id,
+        &audit::finished(
+            approval,
+            count,
+            &executables,
+            &termination,
+            &executed.unproven,
+        ),
+    );
+    skipped.extend(executed.late);
+    skipped.extend(termination.skipped);
+    skipped.sort_by_key(|(pid, _)| *pid);
+    cleanup_reply(
+        id,
+        termination.terminated,
+        termination.still_running,
+        executed.unproven,
+        skipped,
+    )
+}
+
+/// What an approved plan left, and the members that appeared after approval.
+struct Executed {
+    termination: Termination,
+    unproven: Vec<u32>,
+    late: Vec<(u32, &'static str)>,
+}
+
+/// Run the approved plan, and only it. One more membership read exists to
+/// name what appeared after approval — those are left alone — and every
+/// signal is preceded by a check against the session's job as it is then.
+/// A failure names the step that failed, for the audit row.
+fn execute_plan(
+    state: &Arc<ServerState>,
+    registration: &RegisteredSession,
+    id: &Value,
+    plan: &CleanupPlan,
+    grace: u32,
+) -> Result<Executed, (&'static str, Value)> {
+    refreshed(state, id).map_err(|error| ("refresh_unavailable", error))?;
     let approved: HashSet<u32> = plan
         .targets
         .iter()
         .map(|target| target.pid)
         .chain(plan.excluded.iter().map(|entry| entry.pid))
         .collect();
-    for entry in &current {
-        if !approved.contains(&entry.pid) {
-            skipped.push((entry.pid, "not_in_approved_plan"));
-        }
-    }
+    let late = state
+        .process_index
+        .session_entries(&registration.session_id)
+        .into_iter()
+        .filter(|entry| !approved.contains(&entry.pid))
+        .map(|entry| (entry.pid, "not_in_approved_plan"))
+        .collect();
     let unproven = state
         .process_index
         .cleanup_plan(&registration.session_id)
         .map(|fresh| fresh.unproven)
         .unwrap_or_default();
-    let termination = match crate::process_terminate::terminate_all(
+    let job = state
+        .sessions
+        .live_process_roots()
+        .into_iter()
+        .find(|proof| proof.id == registration.session_id)
+        .map(|proof| proof.job);
+    let termination = terminate_all(
         &plan.targets,
         Duration::from_millis(u64::from(grace)),
-        &crate::process_terminate::os_target_check,
-    ) {
-        Ok(termination) => termination,
-        Err(error) => {
-            audit_mcp_tool(
-                state,
-                &caller,
-                crate::provider_catalog::MCP_CLEANUP_PROCESSES_TOOL,
-                &registration.session_id,
-                "failed: platform_unavailable",
-            );
-            return Err(tool_error(&id, &format!("platform_unavailable: {error}")));
-        }
-    };
-    skipped.extend(termination.skipped);
-    skipped.sort_by_key(|(pid, _)| *pid);
-    // An automatic mode raises no card, so the row is the only place the
-    // approval is recorded: what was stopped, in which session's name.
-    let outcome = match approval {
-        Approval::Mode => format!(
-            "ok; approved by automatic mode: {count} planned ({executables}), terminated {:?}",
-            termination.terminated
-        ),
-        Approval::Person => "ok".to_string(),
-    };
-    audit_mcp_tool(
-        state,
-        &caller,
-        crate::provider_catalog::MCP_CLEANUP_PROCESSES_TOOL,
-        &registration.session_id,
-        &outcome,
-    );
-    cleanup_reply(
-        id,
-        termination.terminated,
-        termination.still_running,
-        unproven,
-        skipped,
+        &|pid, planned| owned_target_check(job.as_deref(), pid, planned),
     )
+    .map_err(|error| {
+        (
+            "platform_unavailable",
+            tool_error(id, &format!("platform_unavailable: {error}")),
+        )
+    })?;
+    Ok(Executed {
+        termination,
+        unproven,
+        late,
+    })
 }
 
 #[cfg(test)]

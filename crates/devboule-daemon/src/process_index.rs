@@ -119,7 +119,7 @@ mod platform;
 
 #[cfg(not(any(windows, target_os = "macos")))]
 mod platform {
-    use super::{CreationStatus, ProcessIdentity};
+    use super::{CreationStatus, Membership, ProcessIdentity};
     use crate::process_tree::JobObject;
 
     pub(crate) const PROOF_KIND: &str = "process_group";
@@ -150,6 +150,10 @@ mod platform {
 
     pub(crate) fn creation_status(_pid: u32) -> CreationStatus {
         CreationStatus::Unverified
+    }
+
+    pub(crate) fn membership(_job: &JobObject, _pid: u32) -> Membership {
+        Membership::Unreadable
     }
 }
 
@@ -363,6 +367,21 @@ pub(crate) enum CreationStatus {
 /// The platform's creation-time read, for the terminate-time identity check.
 pub(crate) fn creation_status(pid: u32) -> CreationStatus {
     platform::creation_status(pid)
+}
+
+/// Whether a pid is in the session's job or group at this moment.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Membership {
+    Member,
+    Outside,
+    /// The kernel could not be asked: never signal blind.
+    Unreadable,
+}
+
+/// A fresh read of the session's proof for one pid — not the cached index —
+/// for the terminate-time ownership check.
+pub(crate) fn membership(job: &JobObject, pid: u32) -> Membership {
+    platform::membership(job, pid)
 }
 
 #[cfg(test)]

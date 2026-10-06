@@ -25,7 +25,7 @@ use windows_sys::Win32::System::Threading::{
     GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
-use super::{CreationStatus, ProcessIdentity, FILETIME_EPOCH_MS};
+use super::{CreationStatus, Membership, ProcessIdentity, FILETIME_EPOCH_MS};
 use crate::process_tree::JobObject;
 
 pub(crate) const PROOF_KIND: &str = "job_member";
@@ -100,6 +100,15 @@ pub(crate) fn creation_status(pid: u32) -> CreationStatus {
     };
     unsafe { CloseHandle(handle) };
     status
+}
+
+/// The job's own member list, read now: the proof the plan was drawn from.
+pub(crate) fn membership(job: &JobObject, pid: u32) -> Membership {
+    match job.pids() {
+        Ok(members) if members.contains(&pid) => Membership::Member,
+        Ok(_) => Membership::Outside,
+        Err(_) => Membership::Unreadable,
+    }
 }
 
 fn read_creation_time(handle: HANDLE) -> Option<u64> {

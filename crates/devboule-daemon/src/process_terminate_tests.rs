@@ -245,3 +245,103 @@ fn an_already_gone_target_is_reported_terminated_without_a_signal() {
     let _ = child.kill();
     let _ = child.wait();
 }
+
+/// A target the session's job no longer holds is spared and reported, and
+/// nothing is sent to it.
+#[cfg(any(windows, target_os = "macos"))]
+#[test]
+fn a_target_that_left_the_session_is_spared_and_reported() {
+    let mut child = spawn_immune_child();
+    let plan = real_plan(child.id());
+
+    let termination = terminate_all(&[plan], Duration::from_millis(100), &|_pid, _planned| {
+        TargetVerdict::NotOwned
+    })
+    .expect("termination is bounded");
+
+    assert!(termination.terminated.is_empty(), "nothing was signalled");
+    assert_eq!(
+        termination.skipped,
+        vec![(child.id(), "no_longer_in_session")]
+    );
+    assert!(
+        matches!(
+            crate::process_index::creation_status(child.id()),
+            CreationStatus::At(_)
+        ),
+        "our own child is untouched"
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// The ownership half of the check, against a real job: a process outside it
+/// is not owned, once assigned it is, and a session with no live job owns
+/// nothing.
+#[cfg(windows)]
+#[test]
+fn ownership_is_read_from_the_job_at_the_moment_of_the_check() {
+    use std::os::windows::io::AsRawHandle;
+
+    let mut child = spawn_immune_child();
+    let started_at_ms = real_plan(child.id()).started_at_ms;
+    let job = crate::process_tree::JobObject::new().expect("job");
+
+    assert!(matches!(
+        owned_target_check(Some(&job), child.id(), started_at_ms),
+        TargetVerdict::NotOwned
+    ));
+    job.assign(child.as_raw_handle()).expect("child joins");
+    assert!(matches!(
+        owned_target_check(Some(&job), child.id(), started_at_ms),
+        TargetVerdict::Confirmed
+    ));
+    assert!(matches!(
+        owned_target_check(None, child.id(), started_at_ms),
+        TargetVerdict::NotOwned
+    ));
+    assert!(
+        matches!(
+            owned_target_check(Some(&job), child.id(), started_at_ms + 1),
+            TargetVerdict::Changed
+        ),
+        "a different creation time is the identity verdict, not an ownership one"
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// A graceful ask that comes back with a failure status is a refusal; one
+/// that never comes back, or never started, is unanswered — and only the
+/// refusal skips the grace.
+#[cfg(windows)]
+#[test]
+fn the_graceful_ask_tells_a_refusal_from_a_timeout() {
+    use super::platform::{ask_outcome, GracefulAsk};
+
+    let system_root =
+        std::path::PathBuf::from(std::env::var_os("SystemRoot").expect("%SystemRoot% is set"));
+    let cmd = |code: &str| {
+        let mut command = Command::new(system_root.join("System32").join("cmd.exe"));
+        command.args(["/C", "exit", code]);
+        Some(command)
+    };
+    let limit = Duration::from_secs(5);
+
+    assert_eq!(ask_outcome(cmd("0"), limit), GracefulAsk::Accepted);
+    assert_eq!(ask_outcome(cmd("1"), limit), GracefulAsk::Refused);
+
+    let mut slow = Command::new(system_root.join("System32").join("ping.exe"));
+    slow.args(["-n", "60", "127.0.0.1"]);
+    let started = Instant::now();
+    assert_eq!(
+        ask_outcome(Some(slow), Duration::from_millis(200)),
+        GracefulAsk::Unanswered,
+        "a helper that outlives its limit gave no verdict"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "and was cut off"
+    );
+    assert_eq!(ask_outcome(None, limit), GracefulAsk::Unanswered);
+}

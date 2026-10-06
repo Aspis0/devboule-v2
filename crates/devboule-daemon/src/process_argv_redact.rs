@@ -18,6 +18,8 @@ const SECRET_FLAGS: &[&str] = &[
     "apikey",
     "auth-token",
     "access-key",
+    "authorization",
+    "cookie",
 ];
 /// Name words that mark `KEY=value` as a credential: the name is split on
 /// `-` and `_`, so `API_KEY`, `AWS_SECRET_ACCESS_KEY` and a bare `password`
@@ -30,11 +32,15 @@ const SECRET_NAME_WORDS: &[&str] = &[
     "passwd",
     "credential",
     "auth",
+    "authorization",
+    "cookie",
 ];
 
 /// Mask secret-looking argv: the value after a secret flag (any dash count,
-/// any case), the value half of a credential-shaped `name=value`, credentials
-/// embedded in a `scheme://user:pass@` URL, and any bare token-shaped value.
+/// any case), the value half of a credential-shaped `name=value`, the value of
+/// a credential header (`Authorization: Bearer …`, a cookie, an API-key
+/// header), a bare `Bearer`/`Basic` credential, credentials embedded in a
+/// `scheme://user:pass@` URL, and any bare token-shaped value.
 /// Everything is capped; nothing secret is ever stored or echoed. The
 /// heuristics are deliberately one-sided: a false mask costs a bit of
 /// evidence, a missed one costs a credential.
@@ -45,6 +51,15 @@ pub(crate) fn redact_argv(argv: &[String]) -> Vec<String> {
         if mask_next {
             redacted.push("[redacted]".to_string());
             mask_next = false;
+            continue;
+        }
+        if let Some((masked, value_follows)) = mask_header(arg) {
+            redacted.push(masked);
+            mask_next = value_follows;
+            continue;
+        }
+        if is_auth_scheme_credential(arg) {
+            redacted.push("[redacted]".to_string());
             continue;
         }
         let arg = mask_url_credentials(arg);
@@ -83,6 +98,43 @@ fn is_secret_name(name: &str) -> bool {
             .iter()
             .any(|&secret| word.eq_ignore_ascii_case(secret))
     })
+}
+
+/// A `Name: value` header argument (a bare one, or the value of
+/// `--header=…`) whose name carries a secret word keeps its name and loses
+/// its value. The second half is true when the header ended at the colon,
+/// which leaves its value in the next argument.
+fn mask_header(arg: &str) -> Option<(String, bool)> {
+    let (prefix, header) = match arg.strip_prefix('-').and(arg.split_once('=')) {
+        Some((flag, rest)) => (format!("{flag}="), rest),
+        None => (String::new(), arg),
+    };
+    let (name, value) = header.split_once(':')?;
+    let name = name.trim();
+    let header_shaped = !name.is_empty()
+        && name
+            .chars()
+            .all(|cell| cell.is_ascii_alphanumeric() || cell == '-' || cell == '_');
+    // `://` is a URL, not a header.
+    if !header_shaped || value.starts_with("//") || !is_secret_name(name) {
+        return None;
+    }
+    Some((
+        format!("{prefix}{name}: [redacted]"),
+        value.trim().is_empty(),
+    ))
+}
+
+/// An argument that is itself an `Authorization` value: `Bearer …`,
+/// `Basic …` or `Token …`, split from its header name by the shell.
+fn is_auth_scheme_credential(arg: &str) -> bool {
+    let Some((scheme, credential)) = arg.split_once(' ') else {
+        return false;
+    };
+    !credential.trim().is_empty()
+        && ["bearer", "basic", "token"]
+            .iter()
+            .any(|&word| scheme.eq_ignore_ascii_case(word))
 }
 
 /// `scheme://user:pass@host/...` keeps its scheme and host, loses its
@@ -216,6 +268,41 @@ mod tests {
         assert_eq!(
             redacted[6], "[redacted]",
             "an all-letter token of length is still a token"
+        );
+    }
+
+    /// The curl shapes: a separate `-H` argument holding a whole header, a
+    /// header glued to its flag, and a header split at the colon.
+    #[test]
+    fn argv_masks_credential_headers_whatever_their_shape() {
+        let redacted = redact_argv(&[
+            "curl".to_string(),
+            "-H".to_string(),
+            "Authorization: Bearer short".to_string(),
+            "--header=authorization: Basic dTpw".to_string(),
+            "Cookie: sid=abc".to_string(),
+            "X-Api-Key: k".to_string(),
+            "Proxy-Authorization:".to_string(),
+            "Basic dTpwYXNz".to_string(),
+            "Bearer abc".to_string(),
+            "Accept: application/json".to_string(),
+            "https://example.test/path".to_string(),
+        ]);
+        assert_eq!(redacted[1], "-H", "the flag is not secret");
+        assert_eq!(redacted[2], "Authorization: [redacted]");
+        assert_eq!(redacted[3], "--header=authorization: [redacted]");
+        assert_eq!(redacted[4], "Cookie: [redacted]");
+        assert_eq!(redacted[5], "X-Api-Key: [redacted]");
+        assert_eq!(redacted[6], "Proxy-Authorization: [redacted]");
+        assert_eq!(redacted[7], "[redacted]", "the value split from its header");
+        assert_eq!(redacted[8], "[redacted]", "a bare Bearer credential");
+        assert_eq!(
+            redacted[9], "Accept: application/json",
+            "a harmless header stays"
+        );
+        assert_eq!(
+            redacted[10], "https://example.test/path",
+            "a URL is not a header"
         );
     }
 

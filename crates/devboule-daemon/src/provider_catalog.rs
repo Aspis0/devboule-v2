@@ -678,7 +678,7 @@ pub const MCP_SESSION_PROCESSES_TOOL: &str = "devboule_session_processes";
 /// The carded cleanup of the calling session's own proven members: graceful
 /// then forced, the session's own root (the agent) excluded, and no pid
 /// argument to widen it with. The card names the session and the count, and
-/// an automatic mode still asks.
+/// an automatic mode approves with no card and the audit row records it.
 pub const MCP_CLEANUP_PROCESSES_TOOL: &str = "devboule_cleanup_processes";
 
 // The browser tools: `browser_<command>` after the contract, and the bare

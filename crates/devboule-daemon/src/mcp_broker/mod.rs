@@ -949,8 +949,9 @@ mod browser_tools_served_tests;
 #[cfg(test)]
 mod creation_mode_road_tests;
 /// The cleanup card follows the session's mode: automatic approves and still
-/// records itself; asking shows the card first.
-#[cfg(test)]
+/// records itself; asking shows the card first. Cleanup signals exist on
+/// Windows and macOS only.
+#[cfg(all(test, any(windows, target_os = "macos")))]
 mod process_cleanup_mode_tests;
 /// The process tools' peer door: a paired device is refused whatever it holds.
 #[cfg(test)]

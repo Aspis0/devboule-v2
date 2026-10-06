@@ -283,7 +283,7 @@ fn an_automatic_cleanup_records_its_approval() {
 }
 
 /// In an asking mode the person answers first: the card exists before
-/// anything is signalled, and the row records no automatic approval.
+/// anything is signalled, and the row names the person as the approver.
 #[test]
 fn an_asking_cleanup_shows_the_card_first() {
     let state = ServerState::new("pm-cleanup-ask".to_string());
@@ -321,12 +321,25 @@ fn an_asking_cleanup_shows_the_card_first() {
         .expect("the person allows");
     let reply = handle.join().expect("the cleanup thread");
     assert_eq!(terminated_pids(&reply), vec![u64::from(member)]);
-    assert_eq!(
-        audit_outcome(&state),
-        "ok",
-        "a person's approval needs no automatic-mode record"
+    let outcome = audit_outcome(&state);
+    assert!(
+        outcome.contains("approved by person") && !outcome.contains("automatic"),
+        "the row names the person, not the mode: {outcome}"
     );
 
     let _ = root.kill();
     let _ = root.wait();
+}
+
+/// A cleanup whose plan holds nothing to stop still leaves its row.
+#[test]
+fn a_cleanup_with_nothing_to_stop_still_records_a_row() {
+    let state = ServerState::new("pm-cleanup-empty".to_string());
+    live_session(&state, "bypassPermissions");
+
+    let reply = run_cleanup(&state);
+
+    assert!(terminated_pids(&reply).is_empty());
+    let outcome = audit_outcome(&state);
+    assert!(outcome.starts_with("ok; nothing to stop"), "{outcome}");
 }

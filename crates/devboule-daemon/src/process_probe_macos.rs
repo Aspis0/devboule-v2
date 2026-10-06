@@ -16,7 +16,7 @@ use std::io::Read;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use super::{CreationStatus, ProcessIdentity};
+use super::{CreationStatus, Membership, ProcessIdentity};
 use crate::process_tree::JobObject;
 
 pub(crate) const PROOF_KIND: &str = "process_group";
@@ -55,7 +55,8 @@ impl Probe {
         let stamps = run_bounded("ps", &["-axo", "pid=,lstart="])?;
         self.rows = parse_ps_rows(&listings);
         for line in stamps.lines() {
-            let Some((pid, stamp)) = line.split_once(' ') else {
+            // `ps` right-aligns the pid column, so a line starts with spaces.
+            let Some((pid, stamp)) = line.trim_start().split_once(char::is_whitespace) else {
                 continue;
             };
             if let (Ok(pid), Some(started_at_ms)) =
@@ -117,6 +118,20 @@ pub(crate) fn creation_status(pid: u32) -> CreationStatus {
         .unwrap_or(CreationStatus::Unverified)
 }
 
+/// The pid's process group read now, against the group the session leads.
+pub(crate) fn membership(job: &JobObject, pid: u32) -> Membership {
+    let output = match run_bounded("ps", &["-o", "pgid=", "-p", &pid.to_string()]) {
+        Ok(output) => output,
+        Err(_) => return Membership::Unreadable,
+    };
+    match (output.trim().parse::<u32>(), job.group_id()) {
+        (Ok(group), Some(led)) if group == led => Membership::Member,
+        (Ok(_), _) => Membership::Outside,
+        (Err(_), _) if output.trim().is_empty() => Membership::Outside,
+        (Err(_), _) => Membership::Unreadable,
+    }
+}
+
 /// One `ps -axo` listing into the row table: pid, parent, group and the
 /// rendered command line. A line without three numeric fields cannot prove
 /// anything and is dropped; a row whose start time never arrives keeps
@@ -124,19 +139,21 @@ pub(crate) fn creation_status(pid: u32) -> CreationStatus {
 fn parse_ps_rows(listing: &str) -> HashMap<u32, MacRow> {
     let mut rows = HashMap::new();
     for line in listing.lines() {
-        let mut fields = line.splitn(4, ' ');
-        let (Some(pid), Some(ppid), Some(pgid)) = (fields.next(), fields.next(), fields.next())
+        let Some((pid, rest)) = next_column(line) else {
+            continue;
+        };
+        let Some((ppid, rest)) = next_column(rest) else {
+            continue;
+        };
+        let Some((pgid, rest)) = next_column(rest) else {
+            continue;
+        };
+        let (Ok(pid), Ok(ppid), Ok(pgid)) =
+            (pid.parse::<u32>(), ppid.parse::<u32>(), pgid.parse::<u32>())
         else {
             continue;
         };
-        let (Ok(pid), Ok(ppid), Ok(pgid)) = (
-            pid.trim().parse::<u32>(),
-            ppid.trim().parse::<u32>(),
-            pgid.trim().parse::<u32>(),
-        ) else {
-            continue;
-        };
-        let command = fields.next().unwrap_or_default().to_string();
+        let command = rest.trim().to_string();
         rows.insert(
             pid,
             MacRow {
@@ -148,6 +165,14 @@ fn parse_ps_rows(listing: &str) -> HashMap<u32, MacRow> {
         );
     }
     rows
+}
+
+/// The next whitespace-delimited column of a `ps` line and what follows it:
+/// the columns are right-aligned, so their separators are runs of spaces.
+fn next_column(line: &str) -> Option<(&str, &str)> {
+    let line = line.trim_start();
+    let end = line.find(char::is_whitespace).unwrap_or(line.len());
+    (end > 0).then(|| line.split_at(end))
 }
 
 /// `lsof -F` records into (port, pid) pairs: a pid line sets the owner of
@@ -218,7 +243,7 @@ fn days_from_civil(year: i64, month: u64, day: u64) -> i64 {
     let era = if year >= 0 { year } else { year - 399 } / 400;
     let year_of_era = (year - era * 400) as u64;
     let month_for_year_day = if month > 2 { month - 3 } else { month + 9 };
-    let day_of_year = (153 * month_for_year_day + 2 * day + 5) / 6;
+    let day_of_year = (153 * month_for_year_day + 2) / 5 + day - 1;
     let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
     era * 146_097 + day_of_era as i64 - 719_468
 }
@@ -292,11 +317,11 @@ fn run_bounded(program: &str, args: &[&str]) -> Result<String, String> {
             }
         }
     };
-    if wait_result.is_err() {
+    if let Err(error) = wait_result {
         let _ = child.kill();
         let _ = child.wait();
         let _ = reader.join();
-        return wait_result;
+        return Err(error);
     }
     let output = reader
         .join()
@@ -306,3 +331,7 @@ fn run_bounded(program: &str, args: &[&str]) -> Result<String, String> {
     }
     Ok(String::from_utf8_lossy(&output).into_owned())
 }
+
+#[cfg(test)]
+#[path = "process_probe_macos_tests.rs"]
+mod tests;

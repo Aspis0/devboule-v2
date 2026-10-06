@@ -1,6 +1,8 @@
 //! The per-platform signals behind the cleanup plan: one identity
 //! confirmation per signal, a graceful ask, then a forced one — and the
 //! handles that pin a Windows target to the process the check confirmed.
+//! A target that cannot be pinned (no rights to open it) is spared, never
+//! signalled by its bare pid.
 
 use super::*;
 
@@ -12,14 +14,40 @@ type ForcedHandle = windows_sys::Win32::Foundation::HANDLE;
 #[cfg(target_os = "macos")]
 type ForcedHandle = ();
 
+/// macOS only ever arms: a signal carries the pid, so the other outcomes are
+/// Windows handle results.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 enum ArmOutcome {
     Armed(ForcedHandle),
     AlreadyGone,
     Mismatch,
-    /// Opened without the rights to force through a handle (Windows
-    /// only): the target still gets its phases, forced by pid.
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    /// No rights to open the process: nothing could pin it, so nothing is
+    /// sent to it.
     NoAccess,
+}
+
+/// How the OS answered the graceful ask.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+pub(super) enum GracefulAsk {
+    /// The ask was delivered; the process may still take a while to leave.
+    Accepted,
+    /// The OS said this process cannot be asked to close.
+    Refused,
+    /// No answer arrived (the helper could not start or ran out of time):
+    /// nothing is known, so the grace is waited out like an accepted ask.
+    Unanswered,
+}
+
+/// The reason a verdict spares its target; `None` when the target may be
+/// signalled or is already gone.
+fn spare_reason(verdict: &TargetVerdict) -> Option<&'static str> {
+    match verdict {
+        TargetVerdict::Changed => Some("creation_time_changed"),
+        TargetVerdict::Unverified => Some("identity_unverifiable"),
+        TargetVerdict::NotOwned => Some("no_longer_in_session"),
+        TargetVerdict::Confirmed | TargetVerdict::Gone => None,
+    }
 }
 
 pub(crate) fn terminate_all(
@@ -27,45 +55,39 @@ pub(crate) fn terminate_all(
     grace: Duration,
     check: &dyn Fn(u32, u64) -> TargetVerdict,
 ) -> io::Result<Termination> {
-    let mut attempted: Vec<(PlanTarget, ForcedHandle, bool)> = Vec::new();
+    let mut attempted: Vec<(PlanTarget, ForcedHandle, GracefulAsk)> = Vec::new();
     let mut terminated: Vec<u32> = Vec::new();
     let mut skipped: Vec<(u32, &'static str)> = Vec::new();
     for target in targets {
-        match check(target.pid, target.started_at_ms) {
-            TargetVerdict::Gone => terminated.push(target.pid),
-            TargetVerdict::Changed => skipped.push((target.pid, "creation_time_changed")),
-            TargetVerdict::Unverified => skipped.push((target.pid, "identity_unverifiable")),
-            TargetVerdict::Confirmed => match arm(target.pid, target.started_at_ms) {
-                ArmOutcome::Armed(handle) => {
-                    let landed = graceful(target.pid);
-                    attempted.push((target.clone(), handle, landed));
-                }
-                ArmOutcome::AlreadyGone => {
-                    terminated.push(target.pid);
-                }
-                ArmOutcome::Mismatch => skipped.push((target.pid, "creation_time_changed")),
-                ArmOutcome::NoAccess => {
-                    let landed = graceful(target.pid);
-                    attempted.push((target.clone(), no_handle(), landed));
-                }
-            },
+        let verdict = check(target.pid, target.started_at_ms);
+        if let Some(reason) = spare_reason(&verdict) {
+            skipped.push((target.pid, reason));
+            continue;
+        }
+        if matches!(verdict, TargetVerdict::Gone) {
+            terminated.push(target.pid);
+            continue;
+        }
+        match arm(target.pid, target.started_at_ms) {
+            ArmOutcome::Armed(handle) => {
+                let ask = graceful(target.pid);
+                attempted.push((target.clone(), handle, ask));
+            }
+            ArmOutcome::AlreadyGone => terminated.push(target.pid),
+            ArmOutcome::Mismatch => skipped.push((target.pid, "creation_time_changed")),
+            ArmOutcome::NoAccess => skipped.push((target.pid, "access_denied")),
         }
     }
 
-    // A graceful ask the OS refused (Windows: taskkill's "can only be
-    // terminated forcefully" on a headless process) has nothing to wait out —
-    // waiting the grace would only burn it, so those targets are checked
-    // once and handed to the forced pass straight away.
-    let landed_pids: Vec<u32> = attempted
+    // Only an ask the OS refused outright (Windows: taskkill's "can only be
+    // terminated forcefully" on a headless process) has nothing to wait out.
+    // An ask that was accepted or never got an answer gets its full grace:
+    // the process may still be closing.
+    let (refused, waiting): (Vec<_>, Vec<_>) = attempted
         .iter()
-        .filter(|(_, _, landed)| *landed)
-        .map(|(target, _, _)| target.pid)
-        .collect();
-    let refused_pids: Vec<u32> = attempted
-        .iter()
-        .filter(|(_, _, landed)| !*landed)
-        .map(|(target, _, _)| target.pid)
-        .collect();
+        .partition(|(_, _, ask)| *ask == GracefulAsk::Refused);
+    let landed_pids: Vec<u32> = waiting.iter().map(|(target, _, _)| target.pid).collect();
+    let refused_pids: Vec<u32> = refused.iter().map(|(target, _, _)| target.pid).collect();
     let mut survivors = wait_for_gone(&landed_pids, grace);
     survivors.extend(refused_pids.into_iter().filter(|pid| is_alive(*pid)));
     survivors.sort_unstable();
@@ -77,14 +99,12 @@ pub(crate) fn terminate_all(
             close_handle(handle);
             continue;
         }
-        match check(target.pid, target.started_at_ms) {
-            TargetVerdict::Confirmed => {
-                forced(target.pid, *handle);
-                forced_pids.push(target.pid);
-            }
-            TargetVerdict::Gone => {}
-            TargetVerdict::Changed => skipped.push((target.pid, "creation_time_changed")),
-            TargetVerdict::Unverified => skipped.push((target.pid, "identity_unverifiable")),
+        let verdict = check(target.pid, target.started_at_ms);
+        if let Some(reason) = spare_reason(&verdict) {
+            skipped.push((target.pid, reason));
+        } else if matches!(verdict, TargetVerdict::Confirmed) {
+            forced(target.pid, handle);
+            forced_pids.push(target.pid);
         }
         close_handle(handle);
     }
@@ -99,8 +119,13 @@ pub(crate) fn terminate_all(
     terminated.sort_unstable();
     terminated.dedup();
     skipped.sort_by_key(|(pid, _)| *pid);
+    let forced: Vec<u32> = forced_pids
+        .into_iter()
+        .filter(|pid| terminated.contains(pid))
+        .collect();
     Ok(Termination {
         terminated,
+        forced,
         still_running,
         skipped,
     })
@@ -176,101 +201,94 @@ fn arm(_pid: u32, _planned: u64) -> ArmOutcome {
 }
 
 #[cfg(windows)]
-fn no_handle() -> ForcedHandle {
-    std::ptr::null_mut()
-}
-
-#[cfg(target_os = "macos")]
-fn no_handle() -> ForcedHandle {}
-
-#[cfg(windows)]
 fn close_handle(handle: &ForcedHandle) {
-    if !handle.is_null() {
-        unsafe { windows_sys::Win32::Foundation::CloseHandle(*handle) };
-    }
+    unsafe { windows_sys::Win32::Foundation::CloseHandle(*handle) };
 }
 
 #[cfg(target_os = "macos")]
 fn close_handle(_handle: &ForcedHandle) {}
 
 /// The graceful signal: the OS's own soft ask, before anything is forced.
+/// The armed handle is still open here, so the pid cannot name another
+/// process while the ask is in flight.
 #[cfg(windows)]
-fn graceful(pid: u32) -> bool {
-    taskkill(pid, false)
+fn graceful(pid: u32) -> GracefulAsk {
+    ask_outcome(taskkill_command(pid), TASKKILL_LIMIT)
 }
 
 #[cfg(target_os = "macos")]
-fn graceful(pid: u32) -> bool {
+fn graceful(pid: u32) -> GracefulAsk {
     signal(pid, libc::SIGTERM);
-    true
+    GracefulAsk::Accepted
 }
 
-/// The forced signal. A handle takes the identity the check confirmed —
-/// it kills the original process whatever the pid means now; a null
-/// handle (no rights) falls back to the pid, which is why the check ran
-/// a moment before.
+/// The forced signal, through the handle the check confirmed: it kills the
+/// original process whatever the pid means now.
 #[cfg(windows)]
-fn forced(pid: u32, handle: ForcedHandle) {
-    if handle.is_null() {
-        taskkill(pid, true);
-        return;
-    }
+fn forced(_pid: u32, handle: &ForcedHandle) {
     // SAFETY: the handle was opened with PROCESS_TERMINATE for the
     // process whose creation time the check just confirmed.
-    unsafe { windows_sys::Win32::System::Threading::TerminateProcess(handle, 1) };
+    unsafe { windows_sys::Win32::System::Threading::TerminateProcess(*handle, 1) };
 }
 
 #[cfg(target_os = "macos")]
-fn forced(pid: u32, _handle: ForcedHandle) {
+fn forced(pid: u32, _handle: &ForcedHandle) {
     signal(pid, libc::SIGKILL);
 }
 
+/// How long `taskkill` gets to answer before the ask counts as unanswered.
+#[cfg(windows)]
+const TASKKILL_LIMIT: Duration = Duration::from_secs(3);
+
 /// `taskkill` without `/F` is the OS's graceful attempt for a foreign
 /// process — there is no documented native equivalent for one this daemon
-/// did not create a console group for — and its exit status is the OS's
-/// verdict on that ask: success means something may still land within the
-/// grace, a refusal ("can only be terminated forcefully" on a headless
-/// process) means the forced phase should not wait for it. The executable
-/// comes from `%SystemRoot%`, never from `PATH`.
+/// did not create a console group for. The executable comes from
+/// `%SystemRoot%`, never from `PATH`; without it nothing can be asked.
 #[cfg(windows)]
-fn taskkill(pid: u32, force: bool) -> bool {
+fn taskkill_command(pid: u32) -> Option<std::process::Command> {
     use std::os::windows::process::CommandExt;
-    use std::path::PathBuf;
     use std::process::{Command, Stdio};
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let Some(system_root) = std::env::var_os("SystemRoot") else {
-        return false;
-    };
-    let program = PathBuf::from(system_root)
-        .join("System32")
-        .join("taskkill.exe");
-    let mut arguments = vec!["/PID".to_string(), pid.to_string()];
-    if force {
-        arguments.insert(0, "/F".to_string());
-    }
-    let mut child = match Command::new(program)
-        .args(&arguments)
+    let system_root = std::env::var_os("SystemRoot")?;
+    let mut command = Command::new(
+        std::path::PathBuf::from(system_root)
+            .join("System32")
+            .join("taskkill.exe"),
+    );
+    command
+        .args(["/PID", &pid.to_string()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(_) => return false,
+        .creation_flags(CREATE_NO_WINDOW);
+    Some(command)
+}
+
+/// Run the ask and classify what came back: an exit status is the OS's
+/// verdict (success accepts, a failure status refuses — "can only be
+/// terminated forcefully"), while a command that cannot start or does not
+/// finish in `limit` is no verdict at all.
+#[cfg(windows)]
+pub(super) fn ask_outcome(command: Option<std::process::Command>, limit: Duration) -> GracefulAsk {
+    let Some(mut command) = command else {
+        return GracefulAsk::Unanswered;
     };
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let Ok(mut child) = command.spawn() else {
+        return GracefulAsk::Unanswered;
+    };
+    let deadline = Instant::now() + limit;
     loop {
         match child.try_wait() {
-            Ok(Some(status)) => return status.success(),
+            Ok(Some(status)) if status.success() => return GracefulAsk::Accepted,
+            Ok(Some(_)) => return GracefulAsk::Refused,
             Ok(None) if Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(10));
             }
             Ok(None) | Err(_) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return false;
+                return GracefulAsk::Unanswered;
             }
         }
     }
@@ -311,6 +329,11 @@ fn is_alive(pid: u32) -> bool {
 
 #[cfg(target_os = "macos")]
 fn is_alive(pid: u32) -> bool {
+    // A pid that does not fit `pid_t` names nothing: wrapped, it would be a
+    // negative pid, which `kill` reads as a process group.
+    let Ok(pid) = i32::try_from(pid) else {
+        return false;
+    };
     // SAFETY: signal 0 only asks whether the pid exists. A zombie still
     // answers, so a reaped orphan may be reported for a short while —
     // reaping happens outside our hands.
