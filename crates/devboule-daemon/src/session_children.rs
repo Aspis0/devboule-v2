@@ -1240,7 +1240,8 @@ impl super::SessionRegistry {
         // steer is the preferred shape (it lands in the creator's turn instead
         // of queueing behind it), and when it is refused the same envelope goes
         // out once as a plain prompt. Only if that fails too does the caller
-        // see an Err.
+        // see an Err. An uncertain steer takes no fallback: its bytes may
+        // already be in the turn, and a repeat could say them twice.
         let steer = self.send_to_creator(
             creator,
             owner,
@@ -1248,16 +1249,20 @@ impl super::SessionRegistry {
             true,
             crate::mcp_broker::ready_timeout(),
         );
-        if steer.is_ok() || !local {
-            return steer;
+        match steer {
+            Ok(outcome) => Ok(outcome),
+            Err(crate::session::SendError::Uncertain(error)) => Err(error),
+            Err(crate::session::SendError::Refused(error)) if !local => Err(error),
+            Err(crate::session::SendError::Refused(_)) => self
+                .send_to_creator(
+                    creator,
+                    owner,
+                    text,
+                    false,
+                    crate::mcp_broker::ready_timeout(),
+                )
+                .map_err(WireError::from),
         }
-        self.send_to_creator(
-            creator,
-            owner,
-            text,
-            false,
-            crate::mcp_broker::ready_timeout(),
-        )
     }
 
     /// One daemon notice a creator is owed without urgency: it queues behind
@@ -1278,6 +1283,7 @@ impl super::SessionRegistry {
         mcp_timeout: Duration,
     ) -> Result<Option<String>, WireError> {
         self.send_to_creator(creator, owner, text, false, mcp_timeout)
+            .map_err(WireError::from)
     }
 
     /// One daemon notice for a live session that is not a child's creator —
@@ -1289,7 +1295,7 @@ impl super::SessionRegistry {
         session_id: &str,
         owner: &OwnerId,
         text: &str,
-    ) -> Result<Option<String>, WireError> {
+    ) -> Result<Option<String>, crate::session::SendError> {
         self.send_to_creator(
             session_id,
             owner,
@@ -1306,7 +1312,7 @@ impl super::SessionRegistry {
         text: &str,
         steer: bool,
         mcp_timeout: Duration,
-    ) -> Result<Option<String>, WireError> {
+    ) -> Result<Option<String>, crate::session::SendError> {
         let internal_conn = ConnHandle::with_peer(0, None);
         self.send_with_subscription_timeout(&SendRequest {
             session_id: creator,
@@ -1337,7 +1343,6 @@ impl super::SessionRegistry {
             require_no_turn_running: false,
             require_queue_unfenced: false,
         })
-        .map_err(WireError::from)
         .map(|outcome| outcome.message_id)
     }
 

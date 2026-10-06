@@ -261,6 +261,7 @@ pub(crate) mod session_goal;
 mod session_items;
 #[path = "session_messaging.rs"]
 mod session_messaging;
+pub(crate) use session_messaging::SendError;
 /// The attachment and prompt planning carved out of `session_items`: the path
 /// lines a prompt carries, the reference resolution behind them, and the ACP
 /// prompt plan.

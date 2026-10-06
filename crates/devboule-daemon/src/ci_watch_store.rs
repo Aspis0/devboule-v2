@@ -41,6 +41,10 @@ pub(crate) enum Wake {
     /// it cannot know whether the message got out.
     Sending,
     Delivered,
+    /// Settled after an uncertain send: the bytes may already be out, so the
+    /// wake is never made again. Reads as delivered, with the uncertainty
+    /// kept in the value.
+    DeliveredUncertain,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,6 +134,34 @@ impl CiWatchStore {
             .cloned()
     }
 
+    /// Test-only: move a watch's start `by` milliseconds into the past, so a
+    /// test can reach the overdue close without waiting for it.
+    #[cfg(test)]
+    pub(crate) fn age(&self, watch_id: &str, by_ms: u64) {
+        let mut records = self.records();
+        if let Some(record) = records
+            .iter_mut()
+            .find(|record| record.watch_id == watch_id)
+        {
+            record.created_at_ms = record.created_at_ms.saturating_sub(by_ms);
+        }
+        let _ = self.persist(&records);
+    }
+
+    /// Test-only: put a settled wake back to claimed, which is what a daemon
+    /// restart finds when it died between the claim and the send.
+    #[cfg(test)]
+    pub(crate) fn leave_claim_unsettled(&self, watch_id: &str) {
+        let mut records = self.records();
+        if let Some(record) = records
+            .iter_mut()
+            .find(|record| record.watch_id == watch_id)
+        {
+            record.wake = Wake::Sending;
+        }
+        let _ = self.persist(&records);
+    }
+
     /// The watch this session already has on this commit, if any: asking twice
     /// answers the first watch instead of starting a second one.
     pub(crate) fn find(&self, session_id: &str, slug: &str, sha: &str) -> Option<CiWatchRecord> {
@@ -144,12 +176,43 @@ impl CiWatchStore {
     pub(crate) fn insert(&self, record: CiWatchRecord) -> io::Result<()> {
         let mut records = self.records();
         let now = now_ms();
+        // Terminal watches age out: finished history is kept a bounded time
+        // whatever its wake did, so dead sessions cannot fill the store.
         records.retain(|existing| {
-            existing.wake != Wake::Delivered
-                || now.saturating_sub(existing.created_at_ms) < DELIVERED_RETENTION_MS
+            let terminal = existing.state.is_terminal();
+            let fresh = now.saturating_sub(existing.created_at_ms) < DELIVERED_RETENTION_MS;
+            if terminal && !fresh {
+                if matches!(existing.wake, Wake::Pending | Wake::Sending) {
+                    eprintln!(
+                        "ci watch: dropping undelivered wake {} (owner session ended)",
+                        existing.watch_id
+                    );
+                }
+                return false;
+            }
+            true
         });
-        if records.len() >= MAX_WATCHES {
-            return Err(io::Error::other("too many CI watches are being kept"));
+        // Still full means genuinely busy, or a burst of recent history:
+        // make room from the oldest finished watch rather than refuse the
+        // tool forever. Only a store with nothing finished still refuses,
+        // and that refusal clears as watches finish.
+        while records.len() >= MAX_WATCHES {
+            let oldest = records
+                .iter()
+                .enumerate()
+                .filter(|(_, existing)| existing.state.is_terminal())
+                .min_by_key(|(_, existing)| existing.created_at_ms)
+                .map(|(index, _)| index);
+            let Some(index) = oldest else {
+                return Err(io::Error::other("too many CI watches are being kept"));
+            };
+            let dropped = records.remove(index);
+            if matches!(dropped.wake, Wake::Pending | Wake::Sending) {
+                eprintln!(
+                    "ci watch: evicting undelivered wake {} (owner session ended)",
+                    dropped.watch_id
+                );
+            }
         }
         records.push(record);
         self.persist(&records)
@@ -247,6 +310,20 @@ impl CiWatchStore {
         } else {
             Wake::Pending
         };
+        self.persist(&records)
+    }
+
+    /// Settle a claim whose send may already be out: never given back, never
+    /// made again. At-most-once beats at-least-once for a verdict wake.
+    pub(crate) fn settle_wake_uncertain(&self, watch_id: &str) -> io::Result<()> {
+        let mut records = self.records();
+        let Some(record) = records
+            .iter_mut()
+            .find(|record| record.watch_id == watch_id && record.wake == Wake::Sending)
+        else {
+            return Ok(());
+        };
+        record.wake = Wake::DeliveredUncertain;
         self.persist(&records)
     }
 }

@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use crate::ci_gh::{parse_repo_argument, CiError, RepoRef};
+use crate::ci_gh::{parse_repo_argument, CiError};
 use crate::mcp_broker::caller::{audit_mcp_tool, McpCaller};
 use crate::mcp_broker::dispatch::rpc_error;
 use crate::mcp_broker::RegisteredSession;
@@ -20,7 +20,7 @@ use crate::server::ServerState;
 
 struct Arguments {
     sha: String,
-    repo: Option<RepoRef>,
+    repo: Option<(String, String)>,
 }
 
 /// What the call accepts, and nothing else: a full 40-hex commit id and an
@@ -45,14 +45,14 @@ fn parse_arguments(arguments: &Value) -> Result<Arguments, String> {
         Some(_) => return Err("sha must be a full 40-character commit id".to_string()),
         None => return Err("sha is required".to_string()),
     };
-    let repo = match object.get("repo") {
-        None | Some(Value::Null) => None,
-        Some(Value::String(text)) => Some(
-            parse_repo_argument(text)
-                .ok_or_else(|| "repo must be owner/repo on a GitHub host".to_string())?,
-        ),
-        Some(_) => return Err("repo must be a string".to_string()),
-    };
+    let repo =
+        match object.get("repo") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(text)) => Some(parse_repo_argument(text).ok_or(
+                "repo must be owner/repo (the host always comes from the workspace origin)",
+            )?),
+            Some(_) => return Err("repo must be a string".to_string()),
+        };
     Ok(Arguments { sha, repo })
 }
 
@@ -97,24 +97,15 @@ fn watch(
     arguments: Arguments,
 ) -> Result<Value, CiError> {
     let watches = &state.ci_watches;
-    let repo = match arguments.repo {
-        Some(repo) => repo,
-        None => {
-            let root = state
-                .sessions
-                .session_workspace_root(&registration.session_id, &registration.owner)
-                .map_err(|error| CiError::new("not_found", error.message, false))?
-                .ok_or_else(|| {
-                    CiError::new(
-                        "repo_not_github",
-                        "This session has no workspace, so there is no repository to read. \
-                         Pass `repo` as owner/repo.",
-                        false,
-                    )
-                })?;
-            watches.gh().origin(&root)?
-        }
-    };
+    // The host always comes from the workspace origin — never the argument —
+    // so resolving needs the workspace even when the repo names owner/repo.
+    let root = state
+        .sessions
+        .session_workspace_root(&registration.session_id, &registration.owner)
+        .map_err(|error| CiError::new("not_found", error.message, false))?;
+    let repo = watches
+        .gh_tool()
+        .resolve_repo(root.as_deref(), arguments.repo)?;
     let record = watches.start(
         &registration.session_id,
         &registration.owner,

@@ -138,3 +138,90 @@ fn an_unreadable_file_is_moved_aside_and_the_store_starts_empty() {
         "the evidence is kept"
     );
 }
+
+fn aged(mut watch: CiWatchRecord, age_ms: u64) -> CiWatchRecord {
+    watch.created_at_ms = now_ms().saturating_sub(age_ms);
+    watch
+}
+
+const WEEK_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+
+#[test]
+fn terminal_watches_age_out_whatever_their_wake_did() {
+    let dir = dir("ageout");
+    let store = CiWatchStore::load(&dir);
+    let mut old_delivered = record("s1", "aaaa");
+    old_delivered.state = CiState::Failed;
+    old_delivered.wake = Wake::Delivered;
+    let mut old_owed = record("s2", "bbbb");
+    old_owed.state = CiState::Failed;
+    old_owed.wake = Wake::Pending;
+    let mut old_sending = record("s3", "cccc");
+    old_sending.state = CiState::Failed;
+    old_sending.wake = Wake::Sending;
+    for watch in [&old_delivered, &old_owed, &old_sending] {
+        store
+            .insert(aged(watch.clone(), WEEK_MS + 1))
+            .expect("seed");
+    }
+    let mut fresh = record("s4", "dddd");
+    fresh.state = CiState::Failed;
+    fresh.wake = Wake::Pending;
+    store.insert(fresh.clone()).expect("seed");
+    let open = record("s5", "eeee");
+    store.insert(open.clone()).expect("seed");
+
+    store.insert(record("s6", "ffff")).expect("insert");
+    assert!(store.get(&old_delivered.watch_id).is_none());
+    assert!(
+        store.get(&old_owed.watch_id).is_none(),
+        "an undeliverable wake is kept a bounded time, then dropped"
+    );
+    assert!(store.get(&old_sending.watch_id).is_none());
+    assert!(store.get(&fresh.watch_id).is_some(), "recent stays");
+    assert!(store.get(&open.watch_id).is_some(), "open stays");
+    let sixth = record("s6", "ffff");
+    let sixth_id = sixth.watch_id.clone();
+    store.insert(sixth).expect("insert");
+    assert!(store.get(&sixth_id).is_some(), "the new watch lands");
+}
+
+#[test]
+fn a_full_store_evicts_finished_history_before_refusing() {
+    let dir = dir("evict");
+    let store = CiWatchStore::load(&dir);
+    for index in 0..500 {
+        let mut watch = record("s", &format!("{index:040}"));
+        if index == 0 {
+            watch.state = CiState::Failed;
+            watch.wake = Wake::Delivered;
+        }
+        store.insert(watch).expect("seed");
+    }
+    let evicted = record("s", "ffff");
+    store.insert(evicted.clone()).expect("room is made");
+    assert_eq!(
+        store
+            .find("s", "acme/widgets", &format!("{:040}", 0))
+            .map(|found| found.watch_id),
+        None,
+        "the oldest finished watch went"
+    );
+    assert!(store.get(&evicted.watch_id).is_some());
+}
+
+#[test]
+fn a_full_store_of_open_watches_still_refuses() {
+    let dir = dir("full");
+    let store = CiWatchStore::load(&dir);
+    for index in 0..500 {
+        store
+            .insert(record("s", &format!("{index:040}")))
+            .expect("seed");
+    }
+    let refused = store.insert(record("s", "ffff"));
+    assert!(
+        refused.is_err(),
+        "with nothing finished there is nothing to evict"
+    );
+}

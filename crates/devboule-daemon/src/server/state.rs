@@ -551,7 +551,9 @@ impl ServerState {
             eprintln!("could not start quiet sweeper: {error}");
         }
         // The CI watch poll thread: resumes every watch the store holds, then
-        // follows each new one. It dies with the state, like the sweeper.
+        // follows each new one. It dies with the state, like the sweeper, and
+        // a pass that panics is reported and stepped over rather than ending
+        // CI watching for the life of the daemon.
         let state_for_ci = Arc::downgrade(&state);
         let ci_watches = Arc::clone(&state.ci_watches);
         if let Err(error) = std::thread::Builder::new()
@@ -560,7 +562,13 @@ impl ServerState {
                 let Some(state) = state_for_ci.upgrade() else {
                     return;
                 };
-                ci_watches.poll_once(&state.sessions);
+                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    ci_watches.poll_once(&state.sessions);
+                }))
+                .is_err()
+                {
+                    eprintln!("ci watch: a poll pass panicked; continuing with the next");
+                }
                 drop(state);
                 ci_watches.wait_for_work(crate::ci_watch::POLL_INTERVAL);
             })

@@ -4,12 +4,13 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
-use devboule_protocol::OwnerId;
+use devboule_protocol::{ErrorCode, OwnerId, WireError};
 use serde_json::{json, Value};
 
 use crate::ci_gh::CommandRunner;
 use crate::ci_wake::WakeSink;
 use crate::git::{GitOutput, GitRunError};
+use crate::session::SendError;
 
 pub(crate) const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
 
@@ -21,6 +22,7 @@ type Answer = Result<GitOutput, GitRunError>;
 pub(crate) struct ScriptedRunner {
     script: Mutex<Vec<(String, Answer)>>,
     calls: Mutex<Vec<String>>,
+    last_timeout: Mutex<Option<std::time::Duration>>,
 }
 
 impl ScriptedRunner {
@@ -32,6 +34,11 @@ impl ScriptedRunner {
 
     pub(crate) fn calls(&self) -> Vec<String> {
         self.calls.lock().expect("calls").clone()
+    }
+
+    /// The deadline the last call arrived with, if it named one.
+    pub(crate) fn last_timeout(&self) -> Option<std::time::Duration> {
+        *self.last_timeout.lock().expect("timeout")
     }
 }
 
@@ -45,6 +52,16 @@ impl CommandRunner for ScriptedRunner {
             .iter()
             .find(|(needle, _)| line.contains(needle.as_str()))
             .map_or(Err(GitRunError::SpawnFailed), |(_, answer)| answer.clone())
+    }
+
+    fn run_with_timeout(
+        &self,
+        program: &str,
+        args: &[String],
+        timeout: std::time::Duration,
+    ) -> Answer {
+        *self.last_timeout.lock().expect("timeout") = Some(timeout);
+        self.run(program, args)
     }
 }
 
@@ -94,10 +111,21 @@ pub(crate) fn github_with_commit() -> ScriptedRunner {
     runner
 }
 
+/// How the fake sink answers a delivery: accepted, refused before any
+/// write (the watch retries), or uncertain after the write began (the
+/// watch must not repeat it). One value, never a combination.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum SinkOutcome {
+    #[default]
+    Accept,
+    Refuse,
+    Uncertain,
+}
+
 #[derive(Default)]
 pub(crate) struct RecordingSink {
     pub(crate) live: AtomicBool,
-    pub(crate) refuse: AtomicBool,
+    pub(crate) outcome: Mutex<SinkOutcome>,
     pub(crate) delivered: Mutex<Vec<String>>,
 }
 
@@ -108,9 +136,19 @@ impl RecordingSink {
         sink
     }
 
+    pub(crate) fn refusing() -> Self {
+        let sink = Self::live();
+        *sink.outcome.lock().expect("outcome") = SinkOutcome::Refuse;
+        sink
+    }
+
     pub(crate) fn texts(&self) -> Vec<String> {
         self.delivered.lock().expect("delivered").clone()
     }
+}
+
+fn denied() -> WireError {
+    WireError::new(ErrorCode::Io, "the session did not take it")
 }
 
 impl WakeSink for RecordingSink {
@@ -118,14 +156,17 @@ impl WakeSink for RecordingSink {
         self.live.load(Ordering::SeqCst)
     }
 
-    fn deliver(&self, _session_id: &str, _owner: &OwnerId, text: &str) -> Result<(), String> {
-        if self.refuse.load(Ordering::SeqCst) {
-            return Err("the session did not take it".to_string());
+    fn deliver(&self, _session_id: &str, _owner: &OwnerId, text: &str) -> Result<(), SendError> {
+        match *self.outcome.lock().expect("outcome") {
+            SinkOutcome::Accept => {
+                self.delivered
+                    .lock()
+                    .expect("delivered")
+                    .push(text.to_string());
+                Ok(())
+            }
+            SinkOutcome::Refuse => Err(SendError::Refused(denied())),
+            SinkOutcome::Uncertain => Err(SendError::Uncertain(denied())),
         }
-        self.delivered
-            .lock()
-            .expect("delivered")
-            .push(text.to_string());
-        Ok(())
     }
 }

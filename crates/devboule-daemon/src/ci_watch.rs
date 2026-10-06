@@ -20,11 +20,25 @@ use crate::ci_watch_store::{new_watch_id, now_ms, CiWatchRecord, CiWatchStore, W
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_secs(30);
 /// A watch that has seen no verdict by then is closed as failed and says so.
 const WATCH_TIMEOUT_MS: u64 = 6 * 60 * 60 * 1000;
+/// How far past that a test ages a watch, so the overdue close is the pass
+/// under test.
+#[cfg(test)]
+pub(crate) const OVERDUE_AGE: Duration = Duration::from_millis(WATCH_TIMEOUT_MS + 60_000);
+/// Check runs are read a page at a time; `--paginate` merges the pages, so a
+/// commit with more than one page of checks is judged whole rather than on
+/// its first page.
 const CHECK_RUNS_PAGE: &str = "per_page=100";
 
 pub(crate) struct CiWatches {
     store: CiWatchStore,
     gh: GhClient,
+    /// The same login with a shorter fuse, sharing the backoff map: the
+    /// tool call validates fast, the poll thread keeps the minute.
+    gh_tool: GhClient,
+    /// A third fuse, for the job logs of a finished pass: a log is a
+    /// download that either arrives or never will, and the poll thread still
+    /// owes every other open watch its turn.
+    gh_logs: GhClient,
     /// Set by a new watch so the poll thread looks now instead of at its
     /// next interval.
     kicked: Mutex<bool>,
@@ -36,6 +50,8 @@ pub(crate) struct CiWatches {
 pub(crate) enum WakeStatus {
     Pending,
     Delivered,
+    /// The send may already be out, so the wake was never repeated.
+    DeliveredUncertain,
     OwnerSessionEnded,
 }
 
@@ -44,6 +60,7 @@ impl WakeStatus {
         match self {
             Self::Pending => "pending",
             Self::Delivered => "delivered",
+            Self::DeliveredUncertain => "delivered_uncertain",
             Self::OwnerSessionEnded => "owner_session_ended",
         }
     }
@@ -51,16 +68,21 @@ impl WakeStatus {
 
 impl CiWatches {
     pub(crate) fn new(store: CiWatchStore, gh: GhClient) -> Self {
+        let gh_tool = gh.with_timeout(crate::ci_gh::TOOL_GH_TIMEOUT);
+        let gh_logs = gh.with_timeout(crate::ci_gh::LOG_GH_TIMEOUT);
         Self {
             store,
             gh,
+            gh_tool,
+            gh_logs,
             kicked: Mutex::new(false),
             kick_signal: Condvar::new(),
         }
     }
 
-    pub(crate) fn gh(&self) -> &GhClient {
-        &self.gh
+    /// The short-fuse client for broker-facing calls.
+    pub(crate) fn gh_tool(&self) -> &GhClient {
+        &self.gh_tool
     }
 
     /// Watch `sha` in `repo` for `session_id`. Asking again for the same
@@ -75,7 +97,7 @@ impl CiWatches {
         if let Some(existing) = self.store.find(session_id, &repo.slug(), sha) {
             return Ok(existing);
         }
-        self.gh
+        self.gh_tool
             .get_json(repo, &format!("git/commits/{sha}"))
             .map_err(|error| match error.code {
                 "not_found" => CiError::new(
@@ -89,7 +111,7 @@ impl CiWatches {
                 ),
                 _ => error,
             })?;
-        let runs = self.check_runs(repo, sha)?;
+        let runs = self.check_runs(&self.gh_tool, repo, sha)?;
         // A watch that begins already finished still gets its verdict through
         // the poll thread, the one place that reads logs and wakes.
         let state = match ci_summary::overall(&runs) {
@@ -127,9 +149,27 @@ impl CiWatches {
         self.store.get(watch_id)
     }
 
+    /// Test-only: age a watch by `by`, so the overdue close is the pass
+    /// under test without waiting six hours for it.
+    #[cfg(test)]
+    pub(crate) fn age(&self, watch_id: &str, by: Duration) {
+        self.store
+            .age(watch_id, u64::try_from(by.as_millis()).unwrap_or(u64::MAX));
+    }
+
+    /// Test-only: leave a wake claimed, the state a daemon that died between
+    /// the claim and the send leaves on disk.
+    #[cfg(test)]
+    pub(crate) fn leave_claim_unsettled(&self, watch_id: &str) {
+        self.store.leave_claim_unsettled(watch_id);
+    }
+
     pub(crate) fn wake_status(&self, record: &CiWatchRecord, sink: &dyn WakeSink) -> WakeStatus {
         match record.wake {
-            Wake::Delivered | Wake::Sending => WakeStatus::Delivered,
+            // A claim found after a restart may or may not have gone out, and
+            // the daemon cannot know: it says uncertain, never delivered.
+            Wake::DeliveredUncertain | Wake::Sending => WakeStatus::DeliveredUncertain,
+            Wake::Delivered => WakeStatus::Delivered,
             Wake::NotDue | Wake::Pending => match owner_of(record) {
                 Some(owner) if sink.is_live(&record.session_id, &owner) => WakeStatus::Pending,
                 _ if record.state.is_terminal() => WakeStatus::OwnerSessionEnded,
@@ -163,19 +203,46 @@ impl CiWatches {
     }
 
     /// One pass: advance every open watch, then make every wake that is owed.
+    /// A panicking watch must not end CI watching: each step is caught,
+    /// logged and skipped. Wakes go out on scoped threads so one wedged
+    /// session cannot hold the others behind a readiness wait.
     pub(crate) fn poll_once(&self, sink: &dyn WakeSink) {
         for record in self.store.open() {
-            self.poll_watch(&record);
+            let id = record.watch_id.clone();
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.poll_watch(&record);
+            }))
+            .is_err()
+            {
+                eprintln!("ci watch: poll for {id} panicked; continuing");
+            }
         }
-        for record in self.store.pending_wakes() {
-            self.make_wake(&record, sink);
-        }
+        std::thread::scope(|scope| {
+            for record in self.store.pending_wakes() {
+                let _wake = scope.spawn(move || {
+                    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        self.make_wake(&record, sink);
+                    }))
+                    .is_err()
+                    {
+                        eprintln!(
+                            "ci watch: wake for {} panicked; continuing",
+                            record.watch_id
+                        );
+                    }
+                });
+            }
+        });
     }
 
-    fn check_runs(&self, repo: &RepoRef, sha: &str) -> Result<Vec<ci_summary::CheckRun>, CiError> {
-        let document = self
-            .gh
-            .get_json(repo, &format!("commits/{sha}/check-runs?{CHECK_RUNS_PAGE}"))?;
+    fn check_runs(
+        &self,
+        gh: &GhClient,
+        repo: &RepoRef,
+        sha: &str,
+    ) -> Result<Vec<ci_summary::CheckRun>, CiError> {
+        let document =
+            gh.get_json_merged(repo, &format!("commits/{sha}/check-runs?{CHECK_RUNS_PAGE}"))?;
         Ok(ci_summary::parse_check_runs(&document))
     }
 
@@ -185,13 +252,13 @@ impl CiWatches {
             owner: record.repo_owner.clone(),
             repo: record.repo.clone(),
         };
-        let runs = match self.check_runs(&repo, &record.sha) {
+        let runs = match self.check_runs(&self.gh, &repo, &record.sha) {
             Ok(runs) => runs,
             // A hiccup is retried next pass; a refusal that will not clear
             // ends the watch with the reason, so the owner is not left waiting
             // on a poll that can never succeed.
             Err(error) if error.retryable => {
-                self.close_if_overdue(record);
+                self.close_if_overdue(record, false);
                 return;
             }
             Err(error) => {
@@ -207,13 +274,12 @@ impl CiWatches {
                     record.watch_id
                 );
             }
-            self.close_if_overdue(record);
+            self.close_if_overdue(record, runs.is_empty());
             return;
         }
         let verdict = ci_summary::build(&runs, &mut |run| {
-            self.gh
+            self.gh_logs
                 .get_text(&repo, &format!("actions/jobs/{}/logs", run.id))
-                .ok()
         });
         let cause = if verdict.state == CiState::Passed {
             "none"
@@ -231,12 +297,20 @@ impl CiWatches {
         self.finish(record, verdict.state, verdict.render(&header));
     }
 
-    fn close_if_overdue(&self, record: &CiWatchRecord) {
+    /// A watch that has waited long enough is closed, and says which of the
+    /// two waits it was: a commit GitHub has no checks for (no workflow runs
+    /// on it) is not a build that failed.
+    fn close_if_overdue(&self, record: &CiWatchRecord, no_checks: bool) {
         if now_ms().saturating_sub(record.created_at_ms) < WATCH_TIMEOUT_MS {
             return;
         }
+        let reason = if no_checks {
+            "INFRA: GitHub has no checks registered for this commit"
+        } else {
+            "INFRA: no CI result within 6 hours"
+        };
         let text = format!(
-            "CI failed for {} in {} (cause: INFRA: no CI result within 6 hours)\n",
+            "CI failed for {} in {} (cause: {reason})\n",
             short(&record.sha),
             record.slug()
         );
@@ -262,18 +336,42 @@ impl CiWatches {
         let Some(claimed) = self.store.claim_wake(&record.watch_id) else {
             return;
         };
-        let delivered = sink
-            .deliver(&claimed.session_id, &owner, &wake_text(&claimed))
-            .is_ok();
-        if self
-            .store
-            .finish_wake(&claimed.watch_id, delivered)
-            .is_err()
-        {
-            eprintln!(
-                "ci watch: could not settle the wake of {}",
-                claimed.watch_id
-            );
+        // Refused never wrote anything, so the claim goes back and a later
+        // pass tries again. Uncertain may already be out: the claim settles
+        // as delivered-uncertain and is never made again.
+        match sink.deliver(&claimed.session_id, &owner, &wake_text(&claimed)) {
+            Ok(()) => {
+                if self.store.finish_wake(&claimed.watch_id, true).is_err() {
+                    eprintln!(
+                        "ci watch: could not settle the wake of {}",
+                        claimed.watch_id
+                    );
+                }
+            }
+            Err(crate::session::SendError::Refused(error)) => {
+                eprintln!(
+                    "ci watch: wake for {} refused ({}); retrying",
+                    claimed.watch_id, error.message
+                );
+                if self.store.finish_wake(&claimed.watch_id, false).is_err() {
+                    eprintln!(
+                        "ci watch: could not settle the wake of {}",
+                        claimed.watch_id
+                    );
+                }
+            }
+            Err(crate::session::SendError::Uncertain(error)) => {
+                eprintln!(
+                    "ci watch: wake for {} uncertain ({}); not repeating",
+                    claimed.watch_id, error.message
+                );
+                if self.store.settle_wake_uncertain(&claimed.watch_id).is_err() {
+                    eprintln!(
+                        "ci watch: could not settle the wake of {}",
+                        claimed.watch_id
+                    );
+                }
+            }
         }
     }
 }

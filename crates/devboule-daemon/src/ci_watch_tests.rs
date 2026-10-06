@@ -11,7 +11,8 @@ use super::{CiWatches, WakeStatus};
 use crate::ci_gh::{GhClient, RepoRef};
 use crate::ci_summary::CiState;
 use crate::ci_test_support::{
-    check_run, check_runs, fail, github_with_commit, ok, RecordingSink, ScriptedRunner, SHA,
+    check_run, check_runs, fail, github_with_commit, ok, RecordingSink, ScriptedRunner,
+    SinkOutcome, SHA,
 };
 use crate::ci_watch_store::CiWatchStore;
 
@@ -88,8 +89,9 @@ fn ci_watch_exact_sha_wakes_once() {
         text.contains(&format!("eventId: {}:failed", watch.watch_id)),
         "the idempotency key is watch id and verdict: {text}"
     );
-    assert!(text.contains("- build: success"), "{text}");
-    assert!(text.contains("- test: failure [CODE]"), "{text}");
+    assert!(text.contains("- job 11: success"), "{text}");
+    assert!(text.contains("- job 12: failure [CODE]"), "{text}");
+    assert!(text.contains("name: test"), "{text}");
     assert!(text.contains("no method named frobnicate"), "{text}");
 
     let asked_other_commit = runner
@@ -198,15 +200,14 @@ fn a_delivery_that_did_not_happen_is_retried_not_lost() {
         &[check_run(11, "build", "completed", Some("success"))],
     );
     let watches = service(&dir, &runner);
-    let sink = RecordingSink::live();
-    sink.refuse.store(true, Ordering::SeqCst);
+    let sink = RecordingSink::refusing();
     watches
         .start("session-1", &owner(), &repo(), SHA)
         .expect("start");
 
     watches.poll_once(&sink);
     assert!(sink.texts().is_empty());
-    sink.refuse.store(false, Ordering::SeqCst);
+    *sink.outcome.lock().expect("outcome") = SinkOutcome::Accept;
     watches.poll_once(&sink);
     watches.poll_once(&sink);
     assert_eq!(sink.texts().len(), 1);
@@ -293,4 +294,201 @@ fn a_hiccup_is_waited_out() {
         "a retryable failure does not end the watch"
     );
     assert!(sink.texts().is_empty());
+}
+
+#[test]
+fn an_uncertain_send_is_settled_never_repeated() {
+    let dir = dir("uncertain");
+    let runner = Arc::new(github_with_commit());
+    checks(
+        &runner,
+        &[check_run(11, "build", "completed", Some("failure"))],
+    );
+    runner.set("actions/jobs/11/logs", ok("error: boom\n"));
+    let watches = service(&dir, &runner);
+    let sink = RecordingSink::live();
+    *sink.outcome.lock().expect("outcome") = SinkOutcome::Uncertain;
+    let watch = watches
+        .start("session-1", &owner(), &repo(), SHA)
+        .expect("start");
+
+    watches.poll_once(&sink);
+    assert!(
+        sink.texts().is_empty(),
+        "an uncertain send is never confirmed"
+    );
+    let kept = watches.get(&watch.watch_id).expect("kept");
+    assert_eq!(
+        kept.wake,
+        crate::ci_watch_store::Wake::DeliveredUncertain,
+        "the claim settles instead of going back"
+    );
+    assert_eq!(
+        watches.wake_status(&kept, &sink),
+        WakeStatus::DeliveredUncertain
+    );
+    assert_eq!(
+        watches.wake_status(&kept, &sink).as_str(),
+        "delivered_uncertain"
+    );
+
+    watches.poll_once(&sink);
+    watches.poll_once(&sink);
+    assert!(
+        sink.texts().is_empty(),
+        "no later pass serves the settled wake"
+    );
+}
+
+/// A repository whose commit exists but has no checks registered at all: the
+/// overdue close must say that, not report a build that failed.
+#[test]
+fn a_commit_with_no_checks_is_not_reported_as_a_failed_build() {
+    let dir = dir("no-checks");
+    let runner = Arc::new(github_with_commit());
+    checks(&runner, &[]);
+    let watches = service(&dir, &runner);
+    let sink = RecordingSink::live();
+    let watch = watches
+        .start("session-1", &owner(), &repo(), SHA)
+        .expect("start");
+    watches.age(&watch.watch_id, crate::ci_watch::OVERDUE_AGE);
+
+    watches.poll_once(&sink);
+    let kept = watches.get(&watch.watch_id).expect("kept");
+    let summary = kept.summary.expect("a closed watch says why");
+    assert!(summary.contains("no checks registered"), "{summary}");
+    assert!(
+        !summary.contains("no CI result within 6 hours"),
+        "a commit with no workflow is not a build that never finished: {summary}"
+    );
+}
+
+/// A watch past its deadline with checks that simply never finished keeps the
+/// plain overdue sentence.
+#[test]
+fn a_watch_that_timed_out_says_the_result_never_arrived() {
+    let dir = dir("overdue");
+    let runner = Arc::new(github_with_commit());
+    checks(&runner, &[check_run(11, "build", "in_progress", None)]);
+    let watches = service(&dir, &runner);
+    let sink = RecordingSink::live();
+    let watch = watches
+        .start("session-1", &owner(), &repo(), SHA)
+        .expect("start");
+    watches.age(&watch.watch_id, crate::ci_watch::OVERDUE_AGE);
+
+    watches.poll_once(&sink);
+    let kept = watches.get(&watch.watch_id).expect("kept");
+    let summary = kept.summary.expect("a closed watch says why");
+    assert!(summary.contains("no CI result within 6 hours"), "{summary}");
+}
+
+/// A claim found after a restart may or may not have gone out, so the tool
+/// reports the uncertainty rather than a delivery it cannot vouch for.
+#[test]
+fn an_unsettled_claim_reads_as_uncertain_not_delivered() {
+    let dir = dir("unsettled");
+    let runner = Arc::new(github_with_commit());
+    checks(
+        &runner,
+        &[check_run(11, "build", "completed", Some("failure"))],
+    );
+    runner.set("actions/jobs/11/logs", ok("error: boom\n"));
+    let watches = service(&dir, &runner);
+    let sink = RecordingSink::live();
+    let watch = watches
+        .start("session-1", &owner(), &repo(), SHA)
+        .expect("start");
+    watches.poll_once(&sink);
+
+    // A daemon that died between the claim and the send leaves `sending` on
+    // disk; a fresh read of that record must not claim a delivery.
+    let settled = watches.get(&watch.watch_id).expect("kept");
+    watches.leave_claim_unsettled(&watch.watch_id);
+    let after_restart = watches.get(&watch.watch_id).expect("kept");
+    assert_eq!(settled.wake, crate::ci_watch_store::Wake::Delivered);
+    assert_eq!(
+        watches.wake_status(&after_restart, &sink),
+        WakeStatus::DeliveredUncertain,
+        "a crash mid-send cannot be reported as a delivery"
+    );
+}
+
+/// The verdict reads every check of the commit, not the first hundred: a
+/// truncated list can call a broken commit green.
+#[test]
+fn the_check_run_list_is_asked_for_whole() {
+    let dir = dir("paginate");
+    let runner = Arc::new(github_with_commit());
+    checks(
+        &runner,
+        &[check_run(11, "build", "completed", Some("failure"))],
+    );
+    let watches = service(&dir, &runner);
+    let sink = RecordingSink::live();
+    watches
+        .start("session-1", &owner(), &repo(), SHA)
+        .expect("start");
+    watches.poll_once(&sink);
+
+    let read = runner
+        .calls()
+        .into_iter()
+        .find(|call| call.contains("check-runs"))
+        .expect("the check-run read is recorded");
+    assert!(
+        read.contains("--paginate"),
+        "the verdict must not be read off one page: {read}"
+    );
+}
+
+/// A finished pass reads its job logs under their own fuse: one missing log
+/// must not hold the poll thread past the watches queued behind it.
+#[test]
+fn the_job_logs_read_under_their_own_fuse() {
+    use crate::ci_gh::LOG_GH_TIMEOUT;
+
+    let dir = dir("log-fuse");
+    let runner = Arc::new(github_with_commit());
+    checks(
+        &runner,
+        &[check_run(11, "build", "completed", Some("failure"))],
+    );
+    runner.set("actions/jobs/11/logs", ok("error: boom\n"));
+    let watches = service(&dir, &runner);
+    let sink = RecordingSink::live();
+    watches
+        .start("session-1", &owner(), &repo(), SHA)
+        .expect("start");
+    watches.poll_once(&sink);
+    assert_eq!(runner.last_timeout(), Some(LOG_GH_TIMEOUT));
+}
+
+/// The tool call validates under the short fuse, the poll thread keeps the
+/// full minute for the same reads.
+#[test]
+fn the_tool_call_validates_fast_and_the_poll_keeps_the_minute() {
+    use crate::ci_gh::TOOL_GH_TIMEOUT;
+    use crate::git::GIT_COMMAND_TIMEOUT;
+
+    let dir = dir("timeouts");
+    let runner = Arc::new(github_with_commit());
+    checks(&runner, &[check_run(11, "build", "in_progress", None)]);
+    let watches = service(&dir, &runner);
+    let sink = RecordingSink::live();
+    watches
+        .start("session-1", &owner(), &repo(), SHA)
+        .expect("start");
+    assert_eq!(
+        runner.last_timeout(),
+        Some(TOOL_GH_TIMEOUT),
+        "the inline validation carries the short deadline"
+    );
+    watches.poll_once(&sink);
+    assert_eq!(
+        runner.last_timeout(),
+        Some(GIT_COMMAND_TIMEOUT),
+        "the poll side keeps the full minute"
+    );
 }

@@ -296,7 +296,7 @@ pub(crate) fn classify_git_probe(
     }
 }
 
-const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+pub(crate) const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct GitOutput {
@@ -387,6 +387,19 @@ pub(crate) fn run_git_args_with_cap_and_timeout(
 /// calls behind the CI watch take this road with their own env and their own
 /// deadline, so there is one spawn path to audit rather than two.
 pub(crate) fn run_program_args(
+    program: &str,
+    env: &[(&str, &str)],
+    args: &[String],
+    max_bytes: usize,
+    timeout: Duration,
+) -> Result<GitOutput, GitRunError> {
+    run_program_args_with_cap_deadline(program, env, args, max_bytes, GIT_COMMAND_TIMEOUT)
+}
+
+/// [`run_program_args_with_cap`] with the caller's own deadline: a broker-
+/// facing validation waits seconds, not the full command minute, so one hung
+/// helper cannot hold a request path that long.
+pub(crate) fn run_program_args_with_cap_deadline(
     program: &str,
     env: &[(&str, &str)],
     args: &[String],
@@ -584,9 +597,33 @@ mod tests {
 
     use super::{
         append_git_stdout, bounded_reap, classify_git_probe, detect_git_repository,
-        detect_git_repository_with_program, new_captured_command, parse_git_root, GitReapOutcome,
-        GitReapPoll, GitRepositoryStatus, GIT_STDOUT_MAX_BYTES,
+        detect_git_repository_with_program, new_captured_command, parse_git_root,
+        run_program_args_with_cap_deadline, GitReapOutcome, GitReapPoll, GitRepositoryStatus,
+        GitRunError, GIT_STDOUT_MAX_BYTES,
     };
+    use std::time::Duration;
+
+    #[test]
+    fn a_caller_deadline_bounds_a_hung_child() {
+        // A program that outlives the deadline by an order of magnitude:
+        // the reap must give up in about the deadline, not the program.
+        #[cfg(windows)]
+        let (program, args) = (
+            "ping.exe",
+            vec!["-n".to_string(), "31".to_string(), "127.0.0.1".to_string()],
+        );
+        #[cfg(not(windows))]
+        let (program, args) = ("sleep", vec!["30".to_string()]);
+        let error = run_program_args_with_cap_deadline(
+            program,
+            &[],
+            &args,
+            GIT_STDOUT_MAX_BYTES,
+            Duration::from_secs(2),
+        )
+        .expect_err("a 30-second child must not survive a 2-second deadline");
+        assert_eq!(error, GitRunError::TimedOut);
+    }
 
     #[test]
     fn the_git_runner_pins_the_locale_to_c() {

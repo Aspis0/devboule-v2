@@ -6,16 +6,19 @@
 //! daemon's other reports use, with the idempotency key in it so the receiver
 //! can tell a repeat from a new event.
 
-use devboule_protocol::{OwnerId, WireError};
+use devboule_protocol::OwnerId;
 
 use crate::ci_watch_store::CiWatchRecord;
+use crate::session::SendError;
 use crate::session::{neutralise_envelope_text, SessionRegistry};
 
 /// What the watch service needs from the sessions: whether the owner is
-/// there, and a way to hand it a message.
+/// there, and a way to hand it a message. The delivery keeps the session
+/// layer's split: a refusal never wrote anything and may be tried again,
+/// an uncertain send may already be out and must not be repeated.
 pub(crate) trait WakeSink: Send + Sync {
     fn is_live(&self, session_id: &str, owner: &OwnerId) -> bool;
-    fn deliver(&self, session_id: &str, owner: &OwnerId, text: &str) -> Result<(), String>;
+    fn deliver(&self, session_id: &str, owner: &OwnerId, text: &str) -> Result<(), SendError>;
 }
 
 impl WakeSink for SessionRegistry {
@@ -24,10 +27,9 @@ impl WakeSink for SessionRegistry {
             .is_ok_and(|entries| entries.iter().any(|entry| entry.session.id == session_id))
     }
 
-    fn deliver(&self, session_id: &str, owner: &OwnerId, text: &str) -> Result<(), String> {
+    fn deliver(&self, session_id: &str, owner: &OwnerId, text: &str) -> Result<(), SendError> {
         self.deliver_daemon_notice(session_id, owner, text)
             .map(|_| ())
-            .map_err(|error: WireError| error.message)
     }
 }
 
@@ -47,3 +49,7 @@ pub(crate) fn wake_text(record: &CiWatchRecord) -> String {
         neutralise_envelope_text(summary.trim_end()),
     )
 }
+
+#[cfg(test)]
+#[path = "ci_wake_tests.rs"]
+mod tests;
