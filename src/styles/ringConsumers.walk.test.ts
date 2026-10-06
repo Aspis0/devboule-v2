@@ -10,23 +10,25 @@
 //   4. the selectors that draw their outline on a dark scope's descendants read
 //      `--ring`, never the accent directly.
 // @vitest-environment node
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { contrastRatio, HEX_COLOR } from "./contrast";
-import { collectTokens, parseRules, resolveVars, stripComments } from "./cssText";
-import { collectSrcSheets } from "./srcSheets";
+import { resolveVars } from "./cssText";
+import {
+  find,
+  groundOf,
+  hex,
+  label,
+  RULES,
+  THEMES,
+  tokens,
+  varName,
+  type SheetRule,
+  type Theme,
+} from "./sheetRules";
 
-const THEMES = ["light", "dark"] as const;
 const DARK_GROUNDS = new Set(["--code-bg", "--terminal-ground"]);
 const ON_DARK_RING = "var(--accent-on-code)";
 const RING_FLOOR = 3;
-
-const tokensCss = stripComments(readFileSync(resolve(import.meta.dirname, "tokens.css"), "utf8"));
-const tokens = {
-  light: collectTokens(tokensCss, "light"),
-  dark: collectTokens(tokensCss, "dark"),
-};
 
 /** The accent and every alias that resolves onto it, plus the ring tokens. */
 function ringFamily(): Set<string> {
@@ -43,52 +45,7 @@ function ringFamily(): Set<string> {
 
 const FAMILY = ringFamily();
 
-interface SheetRule {
-  file: string;
-  selector: string;
-  declarations: Map<string, string>;
-}
-
-function declarationsOf(body: string): Map<string, string> {
-  const declarations = new Map<string, string>();
-  for (const declaration of body.split(";")) {
-    const match = /^\s*([a-zA-Z-]+)\s*:\s*([\s\S]+?)\s*$/.exec(declaration);
-    if (match !== null) {
-      declarations.set(match[1]!.toLowerCase(), match[2]!.replace(/\s*!\s*important$/i, ""));
-    }
-  }
-  return declarations;
-}
-
-const RULES: SheetRule[] = collectSrcSheets()
-  .filter((sheet) => sheet.path !== "src/styles/tokens.css")
-  .flatMap((sheet) =>
-    parseRules(stripComments(sheet.css), { onNesting: "skip" }).map((rule) => ({
-      file: sheet.path,
-      selector: rule.selector,
-      declarations: declarationsOf(rule.body),
-    })),
-  );
-
-const label = (rule: SheetRule): string => `${rule.file}: ${rule.selector}`;
-
-function varName(value: string | undefined): string | null {
-  const match = /^var\(\s*(--[a-zA-Z0-9-]+)\s*\)$/.exec(value?.trim() ?? "");
-  return match === null ? null : match[1]!;
-}
-
-/** The ground token a rule paints, when it paints one token on its own. */
-function groundOf(rule: SheetRule): string | null {
-  return varName(rule.declarations.get("background") ?? rule.declarations.get("background-color"));
-}
-
-function hex(name: string, theme: (typeof THEMES)[number]): string {
-  const value = resolveVars(`var(${name})`, tokens[theme]).text.trim();
-  if (!HEX_COLOR.test(value)) throw new Error(`${name} does not resolve to a hex colour: ${value}`);
-  return value;
-}
-
-function ratio(ringToken: string, groundToken: string, theme: (typeof THEMES)[number]): number {
+function ratio(ringToken: string, groundToken: string, theme: Theme): number {
   return contrastRatio(hex(ringToken, theme), hex(groundToken, theme));
 }
 
@@ -148,10 +105,6 @@ const RING_READERS: ReadonlyArray<{ file: string; selector: string }> = [
   },
   { file: "src/components/codeBlocks.css", selector: ".copy-btn:focus-visible" },
 ];
-
-function find(file: string, selector: string): SheetRule | undefined {
-  return RULES.find((rule) => rule.file === file && rule.selector === selector);
-}
 
 /** The ring-like paint a rule draws: an outline or a thin edge. */
 const RING_PROPERTIES =

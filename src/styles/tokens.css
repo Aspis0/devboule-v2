@@ -42,6 +42,10 @@
   /* A selection on the dark code surfaces: translucent code text, so the
      selected text stays readable in both themes. */
   --code-selection: rgba(232, 231, 226, 0.28);
+  /* A button on those surfaces: its fill, hover fill and text (--code-text)
+     read 8:1 or better, and the on-dark ring reads on both fills. */
+  --code-control: #353532;
+  --code-control-hover: #43433f;
   --fill-code-inline: color-mix(in srgb, var(--ink) 7%, transparent);
   --diff-add: #6dbb80;
   --diff-del: #e08a7c;

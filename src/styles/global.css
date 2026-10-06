@@ -58,7 +58,24 @@ button,
 input,
 textarea {
   font: inherit;
+}
+
+input,
+textarea {
   color: inherit;
+}
+
+/* A button takes its fill and text from the surface it sits on: a surface that
+   stays dark in both themes sets the pair (--button-*), anywhere else the
+   browser's button fill and the inherited text stay. Specificity zero, so a
+   button that styles itself always wins. */
+:where(button) {
+  color: var(--button-text, currentColor);
+  background: var(--button-fill, ButtonFace);
+}
+
+:where(button:hover) {
+  background: var(--button-fill-hover, var(--button-fill, ButtonFace));
 }
 
 /* Select values are primary text: --ink, not the secondary parent's colour. */
@@ -67,7 +84,7 @@ select {
   color: var(--ink);
 }
 
-/* Radios and checkboxes in the app accent, never the browser blue —
+/* Radios and checkboxes in the neutral on colour, never the browser blue —
    inherited, so one line covers both themes. */
 input[type="checkbox"],
 input[type="radio"] {

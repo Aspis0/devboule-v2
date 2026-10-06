@@ -240,6 +240,9 @@
 
 .permission-card-command {
   --ring: var(--accent-on-code);
+  --button-fill: var(--code-control);
+  --button-fill-hover: var(--code-control-hover);
+  --button-text: var(--code-text);
   margin-top: var(--space-6);
   max-height: var(--transcript-detail-max);
   overflow: auto;

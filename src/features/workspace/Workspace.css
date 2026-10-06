@@ -356,6 +356,9 @@
    the inset where the fit cannot count it, on the ground wrapper's colour. */
 .workspace-terminal-ground {
   --ring: var(--accent-on-code);
+  --button-fill: var(--code-control);
+  --button-fill-hover: var(--code-control-hover);
+  --button-text: var(--code-text);
   display: flex;
   flex: 1;
   min-width: 0;
@@ -675,6 +678,9 @@
 
 .workspace-chat-tool:not(.workspace-chat-tool-group)[open] {
   --ring: var(--accent-on-code);
+  --button-fill: var(--code-control);
+  --button-fill-hover: var(--code-control-hover);
+  --button-text: var(--code-text);
   flex-direction: column;
   align-items: stretch;
   padding: 0;

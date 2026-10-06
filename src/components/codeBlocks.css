@@ -16,6 +16,9 @@
 .codeblock-sample {
   /* The copy button's ring is drawn over the dark block. */
   --ring: var(--accent-on-code);
+  --button-fill: var(--code-control);
+  --button-fill-hover: var(--code-control-hover);
+  --button-text: var(--code-text);
   position: relative;
   width: fit-content;
   max-width: 100%;

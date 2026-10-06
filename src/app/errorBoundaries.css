@@ -59,6 +59,9 @@ body:has(.root-fallback) {
 .root-fallback-details,
 .surface-fallback-details {
   --ring: var(--accent-on-code);
+  --button-fill: var(--code-control);
+  --button-fill-hover: var(--code-control-hover);
+  --button-text: var(--code-text);
   margin: 0;
   overflow: auto;
   background: var(--code-bg);
