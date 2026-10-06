@@ -20,10 +20,10 @@ use super::RegisteredSession;
 use crate::provider_catalog::ToolOverlay;
 use crate::server::ServerState;
 
-const SESSION: &str = "s.local.sender";
-const DEVICE: &str = "dev-far";
+pub(super) const SESSION: &str = "s.local.sender";
+pub(super) const DEVICE: &str = "dev-far";
 
-fn registration() -> RegisteredSession {
+pub(super) fn registration() -> RegisteredSession {
     RegisteredSession {
         session_id: SESSION.to_string(),
         owner: owner(),
@@ -38,7 +38,10 @@ fn registration() -> RegisteredSession {
 }
 
 /// A live Claude session in `mode`, the way a provider handshake records it.
-fn live_session(state: &Arc<ServerState>, mode: &str) -> Arc<crate::session::SessionRuntime> {
+pub(super) fn live_session(
+    state: &Arc<ServerState>,
+    mode: &str,
+) -> Arc<crate::session::SessionRuntime> {
     let runtime = crate::session::insert_test_live_agent_with_kind(
         &state.sessions,
         SESSION,
@@ -58,7 +61,7 @@ fn live_session(state: &Arc<ServerState>, mode: &str) -> Arc<crate::session::Ses
     runtime
 }
 
-fn send_call(text: &str) -> Value {
+pub(super) fn send_call(text: &str) -> Value {
     json!({
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {"name": crate::provider_catalog::MCP_SEND_MESSAGE_TOOL, "arguments": {
@@ -68,7 +71,7 @@ fn send_call(text: &str) -> Value {
 }
 
 /// One `tools/call` through the router, on its own thread: it parks on the card.
-fn route(state: &Arc<ServerState>, message: Value) -> std::thread::JoinHandle<Value> {
+pub(super) fn route(state: &Arc<ServerState>, message: Value) -> std::thread::JoinHandle<Value> {
     let state = Arc::clone(state);
     std::thread::spawn(move || {
         handle_rpc(&state, state.mcp.as_ref(), &registration(), &message)
@@ -78,7 +81,7 @@ fn route(state: &Arc<ServerState>, message: Value) -> std::thread::JoinHandle<Va
 }
 
 /// The card the person is looking at, waited for.
-fn the_card(runtime: &Arc<crate::session::SessionRuntime>) -> (String, SessionEvent) {
+pub(super) fn the_card(runtime: &Arc<crate::session::SessionRuntime>) -> (String, SessionEvent) {
     let broker = runtime.permission_broker().expect("the test broker");
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -91,7 +94,7 @@ fn the_card(runtime: &Arc<crate::session::SessionRuntime>) -> (String, SessionEv
     }
 }
 
-fn answer(runtime: &Arc<crate::session::SessionRuntime>, id: &str, option: &str) {
+pub(super) fn answer(runtime: &Arc<crate::session::SessionRuntime>, id: &str, option: &str) {
     let outcome = if option == "deny" {
         PermissionOutcome::Deny
     } else {
@@ -104,7 +107,7 @@ fn answer(runtime: &Arc<crate::session::SessionRuntime>, id: &str, option: &str)
         .expect("the person answers");
 }
 
-fn far_end(state: &Arc<ServerState>) -> Receiver<Option<ClientMessage>> {
+pub(super) fn far_end(state: &Arc<ServerState>) -> Receiver<Option<ClientMessage>> {
     pinned_responder(
         state,
         DEVICE,
@@ -118,7 +121,24 @@ fn far_end(state: &Arc<ServerState>) -> Receiver<Option<ClientMessage>> {
     )
 }
 
-fn card_text(card: &SessionEvent) -> (String, String, Vec<(String, String)>) {
+/// The next message the far end was asked to *send*, within `wait`: the roster
+/// read the card makes to name the session is a dial too, and is not a send.
+pub(super) fn next_send(
+    requests: &Receiver<Option<ClientMessage>>,
+    wait: Duration,
+) -> Option<String> {
+    let deadline = Instant::now() + wait;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match requests.recv_timeout(left) {
+            Ok(Some(ClientMessage::AgentMessageSend { text, .. })) => return Some(text),
+            Ok(_) => {}
+            Err(_) => return None,
+        }
+    }
+}
+
+pub(super) fn card_text(card: &SessionEvent) -> (String, String, Vec<(String, String)>) {
     let SessionEvent::PermissionRequest {
         title,
         description,
@@ -152,7 +172,12 @@ fn paired_send_always_cards_in_auto_mode() {
 
     let (title, description, options) = card_text(&card);
     assert!(title.contains("Device dev-far"), "the paired name: {title}");
-    for fact in ["Device dev-far", "s.far.target", "deploy the fix"] {
+    for fact in [
+        "| device: Device dev-far",
+        "| session: s.far.target",
+        "| message (14 characters):",
+        "| deploy the fix",
+    ] {
         assert!(description.contains(fact), "{fact}: {description}");
     }
     assert_eq!(
@@ -163,9 +188,10 @@ fn paired_send_always_cards_in_auto_mode() {
         ],
         "this call or nothing: no grant for a session"
     );
-    assert!(
-        requests.try_recv().is_err(),
-        "nothing was dialled before the person answered"
+    assert_eq!(
+        next_send(&requests, Duration::from_millis(300)),
+        None,
+        "nothing was sent before the person answered"
     );
 
     answer(&runtime, &id, "once");
@@ -175,14 +201,11 @@ fn paired_send_always_cards_in_auto_mode() {
         Some(&json!(false)),
         "{reply}"
     );
-    let sent = requests
-        .recv_timeout(Duration::from_secs(5))
-        .expect("the far daemon was dialled")
-        .expect("with a request");
-    assert!(matches!(
-        sent,
-        ClientMessage::AgentMessageSend { ref text, .. } if text == "deploy the fix"
-    ));
+    assert_eq!(
+        next_send(&requests, Duration::from_secs(5)).as_deref(),
+        Some("deploy the fix"),
+        "the far daemon was sent the message"
+    );
 }
 
 #[test]
@@ -200,8 +223,9 @@ fn a_refused_paired_send_dials_nothing_and_the_next_one_asks_again() {
         Some(&json!(true)),
         "{refused}"
     );
-    assert!(
-        requests.recv_timeout(Duration::from_millis(500)).is_err(),
+    assert_eq!(
+        next_send(&requests, Duration::from_millis(500)),
+        None,
         "a refusal sends nothing"
     );
 
@@ -215,25 +239,6 @@ fn a_refused_paired_send_dials_nothing_and_the_next_one_asks_again() {
             .pointer("/result/isError"),
         Some(&json!(false))
     );
-}
-
-/// A long message is cut on the card, with the cut in plain sight.
-#[test]
-fn a_long_message_is_shortened_on_the_card_with_a_visible_mark() {
-    let state = ServerState::new("always-card-long".to_string());
-    let runtime = live_session(&state, "bypassPermissions");
-    let _requests = far_end(&state);
-
-    let call = route(&state, send_call(&"a".repeat(2000)));
-    let (id, card) = the_card(&runtime);
-    let (_, description, _) = card_text(&card);
-    assert!(description.contains('…'), "{description}");
-    assert!(
-        description.len() < 1200,
-        "the card is not the whole message"
-    );
-    answer(&runtime, &id, "deny");
-    call.join().expect("the call");
 }
 
 /// A local send, and a local write in an automatic mode, keep the behaviour

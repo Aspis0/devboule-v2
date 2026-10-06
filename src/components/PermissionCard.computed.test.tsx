@@ -68,6 +68,16 @@ describe("PermissionCard computed styles", () => {
     card.remove();
   });
 
+  it("lets a long description scroll instead of cutting it or growing the card", () => {
+    // What an agent asked to send travels whole in the description: the card
+    // scrolls it, and wraps an unbroken run rather than clipping it.
+    const rules = cardCss.rulesFor(".permission-card-description");
+    expect(rules).toContain("max-height: 16em");
+    expect(rules).toContain("overflow: auto");
+    expect(rules).toContain("overflow-wrap: anywhere");
+    expect(rules).toContain("white-space: pre-wrap");
+  });
+
   it("puts the command on the code ground at mono 12.5, r6, 8px padding", () => {
     cardCss.inject([".permission-card-command"]);
     const command = document.createElement("div");

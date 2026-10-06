@@ -15,12 +15,33 @@ pub fn is_mandatory_line_break(character: char) -> bool {
     )
 }
 
-/// Zero-width and bidi formatting that makes a name render as something other than what it holds.
+/// Formatting that makes text render as something other than what it holds:
+/// the Unicode format category (Cf) — soft hyphen, zero-width and bidi controls,
+/// the deprecated 206A-206F set, interlinear annotations, the script-specific
+/// number and shorthand controls — and the tag block, which most fonts draw as
+/// nothing and models read as text.
 pub fn is_invisible_format(character: char) -> bool {
     matches!(
         character,
-        '\u{00ad}' | '\u{061c}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2064}'
-            | '\u{2066}'..='\u{2069}' | '\u{feff}'
+        '\u{00ad}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061c}'
+            | '\u{06dd}'
+            | '\u{070f}'
+            | '\u{08e2}'
+            | '\u{180e}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206f}'
+            | '\u{feff}'
+            | '\u{fff9}'..='\u{fffb}'
+            | '\u{110bd}'
+            | '\u{110cd}'
+            | '\u{13430}'..='\u{1343f}'
+            | '\u{1bca0}'..='\u{1bca3}'
+            | '\u{1d173}'..='\u{1d17a}'
+            | '\u{e0000}'..='\u{e007f}'
     )
 }
 
@@ -82,6 +103,49 @@ mod tests {
             assert!(
                 !is_invisible_format(character),
                 "{character:?} must not hide"
+            );
+        }
+    }
+
+    /// Each class a message can hide behind, one member at its edges: the
+    /// tag block (whole), the deprecated format set, annotation marks and the
+    /// script-specific controls; and neighbours that must stay visible text.
+    #[test]
+    fn the_invisible_set_covers_the_tag_block_and_the_rest_of_the_format_category() {
+        for character in [
+            '\u{e0000}',
+            '\u{e0001}',
+            '\u{e0041}',
+            '\u{e007f}',
+            '\u{206a}',
+            '\u{206f}',
+            '\u{fff9}',
+            '\u{fffb}',
+            '\u{600}',
+            '\u{605}',
+            '\u{6dd}',
+            '\u{70f}',
+            '\u{8e2}',
+            '\u{180e}',
+            '\u{110bd}',
+            '\u{1bca0}',
+            '\u{1d173}',
+            '\u{13430}',
+        ] {
+            assert!(is_invisible_format(character), "{character:?} must hide");
+        }
+        for character in [
+            '\u{e0080}',
+            '\u{2065}',
+            '\u{2070}',
+            '\u{fffc}',
+            '\u{606}',
+            '\u{fe0f}',
+            '\u{3000}',
+        ] {
+            assert!(
+                !is_invisible_format(character),
+                "{character:?} is not format"
             );
         }
     }

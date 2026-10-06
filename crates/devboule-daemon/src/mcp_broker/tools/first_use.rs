@@ -330,8 +330,8 @@ enum Answered {
 /// Ask the person to allow this call, offering the card's own choices, and
 /// hand back the option they chose, however the session's mode would answer.
 ///
-/// A plan or read-only mode is refused before the card, exactly as the write
-/// gate refuses it: those modes do not act. Every other mode — automatic ones
+/// A plan or read-only mode is refused before the card ([`mode_refusal`]),
+/// exactly as the write gate refuses it. Every other mode — automatic ones
 /// included — gets the card (`ask_card_in_any_mode`).
 pub(in crate::mcp_broker) fn ask_choice(
     state: &ServerState,
@@ -339,14 +339,27 @@ pub(in crate::mcp_broker) fn ask_choice(
     owner: &OwnerId,
     card: SessionEvent,
 ) -> Result<String, String> {
-    if let Some(crate::provider_catalog::ModeGate::Refuse(sentence)) = state
+    if let Some(sentence) = mode_refusal(state, session_id, owner) {
+        return Err(sentence);
+    }
+    ask_card_in_any_mode(state, session_id, owner, card)
+}
+
+/// The sentence a plan or read-only session is refused with before any card:
+/// those modes do not act, whatever would have been asked.
+pub(in crate::mcp_broker) fn mode_refusal(
+    state: &ServerState,
+    session_id: &str,
+    owner: &OwnerId,
+) -> Option<String> {
+    match state
         .sessions
         .live_runtime(session_id, owner)
         .map(|runtime| runtime.mode_gate())
     {
-        return Err(sentence);
+        Some(crate::provider_catalog::ModeGate::Refuse(sentence)) => Some(sentence),
+        _ => None,
     }
-    ask_card_in_any_mode(state, session_id, owner, card)
 }
 
 /// Raise `card` and hand back the option the person chose, without asking the
@@ -456,7 +469,7 @@ fn group_label(group: &str) -> String {
 
 /// One line of card text with no surprises in it: every line break a
 /// renderer may honour becomes a space, so a fact stays one fact.
-pub(super) fn oneline(value: &str) -> String {
+fn oneline(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut chars = value.chars().peekable();
     while let Some(char) = chars.next() {

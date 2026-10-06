@@ -152,28 +152,26 @@ pub(super) fn handle_rpc(
                     // A command bound for another machine asks the person in
                     // every mode, before anything is dialled.
                     Some(AlwaysCard::PairedDevice(command)) => {
-                        if let Err(reply) = ask_peer_command(state, registration, &id, &command) {
+                        let audit = |decision: &str| {
                             audit_mcp_tool(
                                 state,
                                 &caller,
                                 tool_name,
                                 &registration.session_id,
-                                "denied",
+                                &command.audit_outcome(decision),
                             );
+                        };
+                        if let Err(reply) = ask_peer_command(state, registration, &id, &command) {
+                            audit("denied");
                             return Ok(Some(reply));
                         }
                         // The person may have answered and the agent withdrawn
                         // the call since: a call that was cancelled sends nothing.
                         if super::current_mcp_call_withdrawn(&registration.session_id) {
-                            audit_mcp_tool(
-                                state,
-                                &caller,
-                                tool_name,
-                                &registration.session_id,
-                                "cancelled",
-                            );
+                            audit("cancelled");
                             return Ok(Some(rpc_error(id, -32800, "Request cancelled")));
                         }
+                        audit("approved");
                     }
                     // The saved-login card names the site and the login the
                     // host's preview finds, so the tool body raises it.

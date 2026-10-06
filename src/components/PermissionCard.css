@@ -112,9 +112,8 @@
      collapsing the breaks would flatten the block into a paragraph and hide
      the boundary. */
   white-space: pre-wrap;
-}
-
-.permission-card-plan {
+  /* A description can carry the whole of what an agent asked to send: it
+     scrolls instead of growing the card, and nothing in it is cut off. */
   max-height: 16em;
   overflow: auto;
   overflow-wrap: anywhere;

@@ -924,9 +924,15 @@ pub(crate) fn ready_timeout() -> Duration {
         .unwrap_or(MCP_READY_TIMEOUT)
 }
 
+/// The mode that does not act, and the audit row for each decision.
+#[cfg(test)]
+mod always_card_record_tests;
 /// The always-asking cards on the real road, in an automatic mode.
 #[cfg(test)]
 mod always_card_road_tests;
+/// What the paired-device card shows: the whole message, nothing invisible.
+#[cfg(test)]
+mod always_card_text_tests;
 /// The two always-asking acts, found by tracing where a call can land.
 #[cfg(test)]
 mod always_card_walk_tests;

@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use devboule_protocol::{
-    BrowserError, BrowserErrorCode, BrowserExecuteRequest, BrowserOutcome, DaemonMessage,
-    SessionKind,
+    BrowserError, BrowserErrorCode, BrowserExecuteRequest, BrowserOutcome, DaemonMessage, OwnerId,
+    PermissionOutcome, SessionKind,
 };
 
 use super::tests::{http_request, owner, response_json};
@@ -121,9 +121,30 @@ pub(super) fn host_refusal(message: &str) -> BrowserOutcome {
 /// bearer, and a test that had already called through it would then get a 401.
 pub(super) struct Panel {
     pub state: Arc<ServerState>,
+    owner: OwnerId,
     token: String,
     guards: Vec<McpSessionGuard>,
     _server: McpServerHandle,
+}
+
+impl Drop for Panel {
+    /// A test that fails while a call is parked on a card would hang the
+    /// teardown that waits for that call: refusing what is pending lets it
+    /// return, so the failure is reported instead of the run being stopped.
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        let Some(runtime) = self.state.sessions.live_runtime(SESSION, &self.owner) else {
+            return;
+        };
+        let Some(broker) = runtime.permission_broker() else {
+            return;
+        };
+        for card in broker.test_pending_ids() {
+            let _ = broker.test_answer(&card, PermissionOutcome::Deny, "deny");
+        }
+    }
 }
 
 impl Panel {
@@ -206,6 +227,7 @@ fn panel_lineage(tag: &str, workspace_id: &str, lineage: AgentLineage) -> Panel 
     let server = state.mcp.start(&state).expect("MCP server");
     Panel {
         state,
+        owner: owner(&format!("browser-user-{tag}"), "browser-client"),
         token,
         guards: vec![guard],
         _server: server,

@@ -257,8 +257,8 @@ fn group(entry: &str, site: &str) -> String {
     format!("saved_login:{entry}@{site}")
 }
 
-/// Ask the person, every time. A second call racing the first waits for that
-/// answer rather than raising a second card.
+/// Ask the person, every time. A second call racing the first is refused at
+/// once rather than raising a second card; it never rides the first answer.
 fn choose(
     state: &Arc<ServerState>,
     broker: &McpBroker,
