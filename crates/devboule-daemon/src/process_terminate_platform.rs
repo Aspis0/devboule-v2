@@ -306,9 +306,8 @@ fn signal(pid: u32, signal: i32) {
     }
 }
 
-/// Whether a pid still answers. An open we cannot interpret keeps the
-/// pid in the survivor set — a false `still_running` is safer than a
-/// missed kill.
+/// Whether a pid still runs. An open we cannot interpret keeps the pid in the
+/// survivor set — a false `still_running` is safer than a missed kill.
 #[cfg(windows)]
 fn is_alive(pid: u32) -> bool {
     use windows_sys::Win32::Foundation::{
@@ -331,11 +330,14 @@ fn is_alive(pid: u32) -> bool {
 fn is_alive(pid: u32) -> bool {
     // A pid that does not fit `pid_t` names nothing: wrapped, it would be a
     // negative pid, which `kill` reads as a process group.
-    let Ok(pid) = i32::try_from(pid) else {
+    let Ok(signalled) = i32::try_from(pid) else {
         return false;
     };
-    // SAFETY: signal 0 only asks whether the pid exists. A zombie still
-    // answers, so a reaped orphan may be reported for a short while —
-    // reaping happens outside our hands.
-    unsafe { libc::kill(pid, 0) == 0 }
+    // SAFETY: signal 0 only asks whether the pid exists.
+    if unsafe { libc::kill(signalled, 0) } != 0 {
+        return false;
+    }
+    // A killed child its parent has not reaped yet still answers signal 0; it
+    // is gone, not a survivor.
+    !crate::process_index::has_exited(pid)
 }

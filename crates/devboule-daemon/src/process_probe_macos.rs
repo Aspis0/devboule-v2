@@ -54,19 +54,7 @@ impl Probe {
         let listings = run_bounded("ps", &["-axo", "pid=,ppid=,pgid=,command="])?;
         let stamps = run_bounded("ps", &["-axo", "pid=,lstart="])?;
         self.rows = parse_ps_rows(&listings);
-        for line in stamps.lines() {
-            // `ps` right-aligns the pid column, so a line starts with spaces.
-            let Some((pid, stamp)) = line.trim_start().split_once(char::is_whitespace) else {
-                continue;
-            };
-            if let (Ok(pid), Some(started_at_ms)) =
-                (pid.parse::<u32>(), parse_lstart_ms(stamp.trim()))
-            {
-                if let Some(row) = self.rows.get_mut(&pid) {
-                    row.started_at_ms = Some(started_at_ms);
-                }
-            }
-        }
+        apply_start_times(&mut self.rows, &stamps);
         self.ports = parse_lsof_ports(&run_bounded(
             "lsof",
             &["-nP", "-iTCP", "-sTCP:LISTEN", "-F"],
@@ -118,13 +106,38 @@ pub(crate) fn creation_status(pid: u32) -> CreationStatus {
         .unwrap_or(CreationStatus::Unverified)
 }
 
+/// Whether the pid has left the process table or is a zombie — killed, and
+/// waiting only for its parent to reap it. Signal 0 still answers for a zombie,
+/// so this is what tells "gone" from "dead but unreaped". A helper that cannot
+/// answer reads as not exited: a false survivor is safer than a missed one.
+pub(crate) fn has_exited(pid: u32) -> bool {
+    match run_bounded("ps", &["-o", "stat=", "-p", &pid.to_string()]) {
+        Ok(output) => stat_is_exited(&output),
+        Err(_) => false,
+    }
+}
+
+/// `ps -o stat=` prints the state letters (`Ss`, `R+`, `Z`, `Z+`) and nothing
+/// at all for a pid that is no longer listed.
+fn stat_is_exited(output: &str) -> bool {
+    let stat = output.trim();
+    stat.is_empty() || stat.starts_with('Z')
+}
+
 /// The pid's process group read now, against the group the session leads.
 pub(crate) fn membership(job: &JobObject, pid: u32) -> Membership {
     let output = match run_bounded("ps", &["-o", "pgid=", "-p", &pid.to_string()]) {
         Ok(output) => output,
         Err(_) => return Membership::Unreadable,
     };
-    match (output.trim().parse::<u32>(), job.group_id()) {
+    group_membership(&output, job.group_id())
+}
+
+/// `ps -o pgid= -p PID` against the group the session leads: a padded number
+/// is the pid's group, nothing at all is a pid that is gone, anything else is
+/// no answer.
+fn group_membership(output: &str, led: Option<u32>) -> Membership {
+    match (output.trim().parse::<u32>(), led) {
         (Ok(group), Some(led)) if group == led => Membership::Member,
         (Ok(_), _) => Membership::Outside,
         (Err(_), _) if output.trim().is_empty() => Membership::Outside,
@@ -173,6 +186,23 @@ fn next_column(line: &str) -> Option<(&str, &str)> {
     let line = line.trim_start();
     let end = line.find(char::is_whitespace).unwrap_or(line.len());
     (end > 0).then(|| line.split_at(end))
+}
+
+/// `ps -axo pid=,lstart=` lines onto the rows they name. `ps` right-aligns the
+/// pid column, so a line starts with spaces; a row whose stamp cannot be read
+/// keeps no start time and stays unproven.
+fn apply_start_times(rows: &mut HashMap<u32, MacRow>, stamps: &str) {
+    for line in stamps.lines() {
+        let Some((pid, stamp)) = line.trim_start().split_once(char::is_whitespace) else {
+            continue;
+        };
+        if let (Ok(pid), Some(started_at_ms)) = (pid.parse::<u32>(), parse_lstart_ms(stamp.trim()))
+        {
+            if let Some(row) = rows.get_mut(&pid) {
+                row.started_at_ms = Some(started_at_ms);
+            }
+        }
+    }
 }
 
 /// `lsof -F` records into (port, pid) pairs: a pid line sets the owner of

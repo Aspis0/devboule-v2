@@ -369,6 +369,13 @@ pub(crate) fn creation_status(pid: u32) -> CreationStatus {
     platform::creation_status(pid)
 }
 
+/// Whether a signalled pid is gone for good: unlisted, or a zombie awaiting its
+/// parent's reap (macOS, where signal 0 still answers for a zombie).
+#[cfg(target_os = "macos")]
+pub(crate) fn has_exited(pid: u32) -> bool {
+    platform::has_exited(pid)
+}
+
 /// Whether a pid is in the session's job or group at this moment.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Membership {
