@@ -717,6 +717,15 @@ export class AgentSession {
   }
 
   /**
+   * Whether this session can take a hot switch at all. A controller still
+   * attaching refuses one, and a caller must be able to tell that from a switch
+   * it asked for and did not get.
+   */
+  canSwitch(): boolean {
+    return this.started && this.attached && !this.disposed && this.state.status !== "closed";
+  }
+
+  /**
    * Hot-switch the permission mode. Like setModel, the invoke response is not
    * a confirmation: the chip shows the chosen mode optimistically until a
    * later session_manifest reports it, and a rejected invoke is reported

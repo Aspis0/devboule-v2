@@ -102,8 +102,13 @@ import {
   sessionSetModel,
   sessionSetFeature,
 } from "../../lib/tauri";
-import { getPreferredMode, setPreferredEffort, setPreferredMode } from "../../lib/agentPrefs";
-import { recordCreatedSession } from "./createdSessions";
+import {
+  getPreferredMode,
+  setPreferredEffort,
+  setPreferredMode,
+  setPreferredModel,
+} from "../../lib/agentPrefs";
+import { recordCreatedSession, resetCreatedSessionsForTests } from "./createdSessions";
 import { AgentChatSurface, composerDisabledReason } from "./AgentChatSurface";
 import { excerptRenderFor } from "./transcript/PermissionRequestRow";
 
@@ -205,6 +210,7 @@ describe("AgentChatSurface", () => {
     channelHarness.deferNextAttach = false;
     channelHarness.releaseNextAttach = null;
     localStorage.removeItem("devboule.agentPrefs");
+    resetCreatedSessionsForTests();
     ResizeObserverStub.instances = [];
     vi.stubGlobal("ResizeObserver", ResizeObserverStub as unknown as typeof ResizeObserver);
   });
@@ -1229,7 +1235,12 @@ describe("AgentChatSurface", () => {
     root = createRoot(container);
     await act(async () => {
       root.render(
-        <AgentChatSurface daemonState="connected" sessionId="mode-second" title="Agent" />,
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="mode-second"
+          title="Agent"
+          observedState={LIVE_OBSERVED}
+        />,
       );
     });
     await act(async () => undefined);
@@ -1370,6 +1381,170 @@ describe("AgentChatSurface", () => {
 
     expect(sessionSend).toHaveBeenCalledWith("busy-session", 41, "Say hello");
     expect(sessionSetMode).not.toHaveBeenCalled();
+  });
+
+  it("waits for the roster row before it switches, and then switches", async () => {
+    setPreferredMode("claude", "plan");
+    recordCreatedSession("no-row-yet", 1);
+
+    // No roster row: nothing here can say this is still the session the person
+    // started, so nothing is switched.
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface daemonState="connected" sessionId="no-row-yet" title="Agent" />,
+      );
+    });
+    await act(async () => undefined);
+    await act(async () => {
+      channelHarness.emit?.({ ...MODES_MANIFEST });
+    });
+    expect(sessionSetMode).not.toHaveBeenCalled();
+
+    // The roster row arrives and it is the generation it started on. The row
+    // re-attaches the session, so the manifest comes again with it.
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="no-row-yet"
+          title="Agent"
+          observedState={LIVE_OBSERVED}
+        />,
+      );
+    });
+    await act(async () => {
+      channelHarness.emit?.({ ...MODES_MANIFEST });
+    });
+
+    expect(sessionSetMode).toHaveBeenCalledWith("no-row-yet", "plan");
+  });
+
+  it("leaves a resumed session alone while its roster row is missing", async () => {
+    setPreferredMode("claude", "plan");
+    recordCreatedSession("resumed-no-row", 1);
+
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface daemonState="connected" sessionId="resumed-no-row" title="Agent" />,
+      );
+    });
+    await act(async () => undefined);
+    await act(async () => {
+      channelHarness.emit?.({ ...MODES_MANIFEST });
+    });
+
+    expect(sessionSetMode).not.toHaveBeenCalled();
+  });
+
+  it("gives up on a session whose first manifest arrives while a turn is running", async () => {
+    setPreferredMode("claude", "plan");
+    recordCreatedSession("busy-first-manifest", 1);
+
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="busy-first-manifest"
+          title="Agent"
+          observedState={LIVE_OBSERVED}
+        />,
+      );
+    });
+    await act(async () => undefined);
+
+    // The person sent a turn, and the manifest lands while it is running.
+    const textarea = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Message the agent"]',
+    );
+    const send = container.querySelector<HTMLButtonElement>(".workspace-send-action");
+    if (textarea === null || send === null) throw new Error("the composer did not render");
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    if (setValue === undefined) throw new Error("textarea value setter did not exist");
+    setValue.call(textarea, "Say hello");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await act(async () => send.click());
+    await act(async () => {
+      channelHarness.emit?.({ ...MODES_MANIFEST });
+    });
+    expect(sessionSetMode).not.toHaveBeenCalled();
+
+    // The turn settles: the picks are not applied after the fact.
+    await act(async () => {
+      channelHarness.emit?.({ type: "agent_finished", stopReason: "end_turn", modelId: "grok" });
+    });
+
+    expect(sessionSetMode).not.toHaveBeenCalled();
+  });
+
+  it("switches once, and no re-render or remount puts it back", async () => {
+    setPreferredMode("claude", "plan");
+    setPreferredModel("claude", "opus");
+    recordCreatedSession("switched-once", 1);
+
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="switched-once"
+          title="Agent"
+          observedState={LIVE_OBSERVED}
+        />,
+      );
+    });
+    await act(async () => undefined);
+    await act(async () => {
+      channelHarness.emit?.({ ...MODES_MANIFEST });
+    });
+    expect(sessionSetMode).toHaveBeenCalledTimes(1);
+
+    // The person moves this session to another model of their own.
+    (sessionSetModel as unknown as Mock).mockClear();
+    await act(async () => {
+      channelHarness.emit?.({
+        type: "session_manifest",
+        providerId: "claude",
+        currentModelId: "opus",
+        models: [
+          { modelId: "sonnet", name: "Sonnet" },
+          { modelId: "opus", name: "Opus" },
+        ],
+        modes: MODES_MANIFEST.modes,
+      });
+    });
+
+    // An unrelated re-render, then a tab switch away and back.
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="switched-once"
+          title="Agent"
+          observedState={LIVE_OBSERVED}
+        />,
+      );
+    });
+    await act(async () => root?.unmount());
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="switched-once"
+          title="Agent"
+          observedState={LIVE_OBSERVED}
+        />,
+      );
+    });
+    await act(async () => {
+      channelHarness.emit?.({ ...MODES_MANIFEST });
+    });
+
+    expect(sessionSetModel).not.toHaveBeenCalled();
+    expect(sessionSetMode).toHaveBeenCalledTimes(1);
   });
 
   it("leaves the stored preference alone when the agent or a plan moves the mode", async () => {
@@ -1645,7 +1820,12 @@ describe("AgentChatSurface", () => {
     root = createRoot(container);
     await act(async () => {
       root.render(
-        <AgentChatSurface daemonState="connected" sessionId="pref-agent-2" title="Agent" />,
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="pref-agent-2"
+          title="Agent"
+          observedState={LIVE_OBSERVED}
+        />,
       );
     });
     await act(async () => undefined);
@@ -1703,7 +1883,12 @@ describe("AgentChatSurface", () => {
     root = createRoot(container);
     await act(async () => {
       root.render(
-        <AgentChatSurface daemonState="connected" sessionId="pref-combined" title="Agent" />,
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="pref-combined"
+          title="Agent"
+          observedState={LIVE_OBSERVED}
+        />,
       );
     });
     await act(async () => undefined);

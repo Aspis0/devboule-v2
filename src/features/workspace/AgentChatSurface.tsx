@@ -50,7 +50,7 @@ import { PaneHeader } from "./paneHeader/PaneHeader";
 import { headerDisplay } from "./paneHeader/paneHeaderStatus";
 import { headerMenu, type HeaderMenuSeam } from "./paneHeader/paneHeaderMenu";
 import { setPreferredEffort, setPreferredMode, setPreferredModel } from "../../lib/agentPrefs";
-import { wasCreatedHere } from "./createdSessions";
+import { forgetCreatedSession, mayApplyPicks } from "./createdSessions";
 import { rememberedSwitch } from "./rememberedPicks";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 import { sendChatImagesByReference } from "./chatImageTransport";
@@ -381,7 +381,6 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   // Undefined until a goal_changed frame arrives; then the last frame, even a clear.
   const goalFrameRef = useRef<string | null | undefined>(undefined);
   const sessionRef = useRef<AgentSession | null>(null);
-  const appliedPicksRef = useRef(false);
   const [state, setState] = useState<AgentSessionState>({
     items: [],
     status: "initializing",
@@ -566,7 +565,6 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         : undefined,
     });
     sessionRef.current = session;
-    appliedPicksRef.current = false;
     // `start()` is async: seed the new controller now so the old controller's
     // latched error cannot render until the first notification.
     setState(session.getState());
@@ -647,30 +645,37 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   );
 
   // A new agent starts in the provider's own default, and in whatever the person
-  // last picked for this provider once the manifest says what it offers. Applied
-  // once per session: a confirmation manifest is just another manifest here, and
-  // the ref guard keeps the auto-switch from re-triggering. A remembered pick the
-  // provider no longer offers is left for the provider's default — the daemon
-  // refuses a mode it cannot honour at create time, so a doomed switch is never
-  // worth sending.
+  // last picked for this provider once the manifest says what it offers. A
+  // remembered pick the provider no longer offers is left for the provider's
+  // default — the daemon refuses a mode it cannot honour at create time, so a
+  // doomed switch is never worth sending.
+  //
+  // The picks belong to an agent the person just started here, on the generation
+  // it started on, before anything has been sent to it. Whether this is still
+  // that agent, and whether it has already been asked, is the record's answer:
+  // a re-render or a remount cannot ask a second time.
   //
   // The picks are a localStorage/product concern, so they live on the surface
   // next to the manual handlers, not inside the headless session controller.
   useEffect(() => {
     const manifest = state.manifest;
-    if (manifest === null || appliedPicksRef.current) return;
-    // The picks belong to an agent the person just started here and has not
-    // sent anything to yet. A session this window did not create — a child of an
-    // agent, a row opened from the roster — is none of the owner's business, a
-    // resume replaced it under this id, and a running turn must not be moved.
-    if (!wasCreatedHere(sessionId, observedState?.generation ?? null)) return;
+    if (manifest === null) return;
+    if (!mayApplyPicks(sessionId, observedState?.generation ?? null)) return;
+    // A session still attaching refuses a switch, and this surface's own state
+    // can be a render behind the controller it is asking, so the controller
+    // answers. Until it can, the record is there and this asks again.
+    const session = sessionRef.current;
+    if (session === null || !session.canSwitch()) return;
+    // Already working when its first manifest arrived: this is not the moment
+    // the picks are for, and waiting for the turn to settle would be a hot
+    // switch on a session that is already answering.
+    forgetCreatedSession(sessionId);
     if (state.status === "running" || state.streaming) return;
-    appliedPicksRef.current = true;
     const asked = rememberedSwitch(manifest);
-    if (asked.mode !== undefined) void sessionRef.current?.setMode(asked.mode);
+    if (asked.mode !== undefined) void session.setMode(asked.mode);
     const modelId = asked.model ?? manifest.currentModelId;
     if (modelId !== undefined && (asked.model !== undefined || asked.effort !== undefined)) {
-      void sessionRef.current?.setModel(modelId, asked.effort);
+      void session.setModel(modelId, asked.effort);
     }
   }, [observedState?.generation, sessionId, state.manifest, state.status, state.streaming]);
 
