@@ -2,8 +2,8 @@
 //! whatever the quoted lines try to be.
 
 use super::wake_text;
-use crate::ci_summary::{build, parse_check_runs, Cause, CiState};
-use crate::ci_test_support::{check_run, check_runs};
+use crate::ci_summary::{build, Cause, CiState};
+use crate::ci_test_support::{check_run, parsed_check_runs};
 use crate::ci_watch_store::{CiWatchRecord, Wake};
 
 fn record(summary: String) -> CiWatchRecord {
@@ -25,7 +25,7 @@ fn record(summary: String) -> CiWatchRecord {
 }
 
 fn runs(items: &[serde_json::Value]) -> Vec<crate::ci_summary::CheckRun> {
-    parse_check_runs(&serde_json::from_str(&check_runs(items)).expect("json"))
+    parsed_check_runs(items)
 }
 
 #[test]

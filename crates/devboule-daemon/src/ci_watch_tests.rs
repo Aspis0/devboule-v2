@@ -11,7 +11,7 @@ use super::{CiWatches, WakeStatus};
 use crate::ci_gh::{GhClient, RepoRef};
 use crate::ci_summary::CiState;
 use crate::ci_test_support::{
-    check_run, check_runs, fail, github_with_commit, ok, RecordingSink, ScriptedRunner,
+    check_run, check_run_pages, check_runs, fail, github_origin, ok, RecordingSink, ScriptedRunner,
     SinkOutcome, SHA,
 };
 use crate::ci_watch_store::CiWatchStore;
@@ -43,7 +43,7 @@ fn dir(tag: &str) -> std::path::PathBuf {
 #[test]
 fn ci_watch_exact_sha_wakes_once() {
     let dir = dir("once");
-    let runner = Arc::new(github_with_commit());
+    let runner = Arc::new(github_origin());
     checks(&runner, &[check_run(11, "build", "queued", None)]);
     runner.set(
         "actions/jobs/12/logs",
@@ -108,7 +108,7 @@ fn ci_watch_exact_sha_wakes_once() {
 #[test]
 fn a_restart_after_completion_does_not_wake_again() {
     let dir = dir("restart");
-    let runner = Arc::new(github_with_commit());
+    let runner = Arc::new(github_origin());
     checks(
         &runner,
         &[check_run(11, "build", "completed", Some("success"))],
@@ -137,7 +137,7 @@ fn a_restart_after_completion_does_not_wake_again() {
 #[test]
 fn a_verdict_recorded_before_a_crash_is_delivered_after_the_restart() {
     let dir = dir("crash");
-    let runner = Arc::new(github_with_commit());
+    let runner = Arc::new(github_origin());
     checks(
         &runner,
         &[check_run(11, "build", "completed", Some("failure"))],
@@ -167,7 +167,7 @@ fn a_verdict_recorded_before_a_crash_is_delivered_after_the_restart() {
 #[test]
 fn a_wake_is_kept_while_the_owner_is_gone_and_reported() {
     let dir = dir("ended");
-    let runner = Arc::new(github_with_commit());
+    let runner = Arc::new(github_origin());
     checks(
         &runner,
         &[check_run(11, "build", "completed", Some("success"))],
@@ -194,7 +194,7 @@ fn a_wake_is_kept_while_the_owner_is_gone_and_reported() {
 #[test]
 fn a_delivery_that_did_not_happen_is_retried_not_lost() {
     let dir = dir("refused");
-    let runner = Arc::new(github_with_commit());
+    let runner = Arc::new(github_origin());
     checks(
         &runner,
         &[check_run(11, "build", "completed", Some("success"))],
@@ -216,7 +216,7 @@ fn a_delivery_that_did_not_happen_is_retried_not_lost() {
 #[test]
 fn asking_again_for_the_same_commit_returns_the_same_watch() {
     let dir = dir("same");
-    let runner = Arc::new(github_with_commit());
+    let runner = Arc::new(github_origin());
     checks(&runner, &[check_run(11, "build", "queued", None)]);
     let watches = service(&dir, &runner);
     let first = watches
@@ -228,25 +228,37 @@ fn asking_again_for_the_same_commit_returns_the_same_watch() {
     assert_eq!(first.watch_id, second.watch_id);
 }
 
+/// The commit's existence is a GitHub read like any other, so it is the poll
+/// thread's to find out: the watch ends and the owner is told which commit.
 #[test]
-fn a_commit_github_does_not_have_is_refused_with_the_sha() {
-    let runner = Arc::new(github_with_commit());
+fn a_commit_github_does_not_have_ends_the_watch_with_the_sha() {
+    let dir = dir("missing");
+    let runner = Arc::new(github_origin());
     runner.set(
-        &format!("git/commits/{SHA}"),
-        fail(1, "gh: Not Found (HTTP 404)"),
+        &format!("commits/{SHA}/check-runs"),
+        fail(1, "gh: No commit found for SHA: 0123 (HTTP 422)"),
     );
-    let watches = service(&dir("missing"), &runner);
-    let refused = watches
+    let watches = service(&dir, &runner);
+    let sink = RecordingSink::live();
+    let watch = watches
         .start("session-1", &owner(), &repo(), SHA)
-        .expect_err("unknown commit");
-    assert_eq!(refused.code, "sha_not_found");
-    assert!(refused.message.contains("0123456"), "{}", refused.message);
+        .expect("a watch is registered without asking GitHub");
+
+    watches.poll_once(&sink);
+    assert_eq!(
+        watches.get(&watch.watch_id).expect("kept").state,
+        CiState::Failed
+    );
+    let texts = sink.texts();
+    assert_eq!(texts.len(), 1);
+    assert!(texts[0].contains("sha_not_found"), "{}", texts[0]);
+    assert!(texts[0].contains("0123456"), "{}", texts[0]);
 }
 
 #[test]
 fn losing_the_login_mid_watch_ends_it_with_the_reason() {
     let dir = dir("lost-login");
-    let runner = Arc::new(github_with_commit());
+    let runner = Arc::new(github_origin());
     checks(&runner, &[check_run(11, "build", "in_progress", None)]);
     let watches = service(&dir, &runner);
     let sink = RecordingSink::live();
@@ -276,7 +288,7 @@ fn losing_the_login_mid_watch_ends_it_with_the_reason() {
 #[test]
 fn a_hiccup_is_waited_out() {
     let dir = dir("hiccup");
-    let runner = Arc::new(github_with_commit());
+    let runner = Arc::new(github_origin());
     checks(&runner, &[check_run(11, "build", "in_progress", None)]);
     let watches = service(&dir, &runner);
     let sink = RecordingSink::live();
@@ -290,7 +302,7 @@ fn a_hiccup_is_waited_out() {
     watches.poll_once(&sink);
     assert_eq!(
         watches.get(&watch.watch_id).expect("kept").state,
-        CiState::Running,
+        CiState::Queued,
         "a retryable failure does not end the watch"
     );
     assert!(sink.texts().is_empty());
@@ -299,7 +311,7 @@ fn a_hiccup_is_waited_out() {
 #[test]
 fn an_uncertain_send_is_settled_never_repeated() {
     let dir = dir("uncertain");
-    let runner = Arc::new(github_with_commit());
+    let runner = Arc::new(github_origin());
     checks(
         &runner,
         &[check_run(11, "build", "completed", Some("failure"))],
@@ -345,7 +357,7 @@ fn an_uncertain_send_is_settled_never_repeated() {
 #[test]
 fn a_commit_with_no_checks_is_not_reported_as_a_failed_build() {
     let dir = dir("no-checks");
-    let runner = Arc::new(github_with_commit());
+    let runner = Arc::new(github_origin());
     checks(&runner, &[]);
     let watches = service(&dir, &runner);
     let sink = RecordingSink::live();
@@ -369,7 +381,7 @@ fn a_commit_with_no_checks_is_not_reported_as_a_failed_build() {
 #[test]
 fn a_watch_that_timed_out_says_the_result_never_arrived() {
     let dir = dir("overdue");
-    let runner = Arc::new(github_with_commit());
+    let runner = Arc::new(github_origin());
     checks(&runner, &[check_run(11, "build", "in_progress", None)]);
     let watches = service(&dir, &runner);
     let sink = RecordingSink::live();
@@ -389,7 +401,7 @@ fn a_watch_that_timed_out_says_the_result_never_arrived() {
 #[test]
 fn an_unsettled_claim_reads_as_uncertain_not_delivered() {
     let dir = dir("unsettled");
-    let runner = Arc::new(github_with_commit());
+    let runner = Arc::new(github_origin());
     checks(
         &runner,
         &[check_run(11, "build", "completed", Some("failure"))],
@@ -420,7 +432,7 @@ fn an_unsettled_claim_reads_as_uncertain_not_delivered() {
 #[test]
 fn the_check_run_list_is_asked_for_whole() {
     let dir = dir("paginate");
-    let runner = Arc::new(github_with_commit());
+    let runner = Arc::new(github_origin());
     checks(
         &runner,
         &[check_run(11, "build", "completed", Some("failure"))],
@@ -438,9 +450,65 @@ fn the_check_run_list_is_asked_for_whole() {
         .find(|call| call.contains("check-runs"))
         .expect("the check-run read is recorded");
     assert!(
-        read.contains("--paginate"),
-        "the verdict must not be read off one page: {read}"
+        read.contains("--paginate --slurp"),
+        "gh prints one JSON value per page unless the pages are slurped: {read}"
     );
+}
+
+/// Two pages, the failure on the second: the verdict is failed, which the
+/// first page alone would have read as passed.
+#[test]
+fn a_failure_on_the_second_page_is_the_verdict() {
+    let dir = dir("two-pages");
+    let runner = Arc::new(github_origin());
+    let first: Vec<_> = (1..=100)
+        .map(|id| check_run(id, "build", "completed", Some("success")))
+        .collect();
+    let second = [check_run(101, "deploy", "completed", Some("failure"))];
+    runner.set(
+        &format!("commits/{SHA}/check-runs"),
+        ok(&check_run_pages(&[&first, &second])),
+    );
+    runner.set("actions/jobs/101/logs", ok("error: deploy refused\n"));
+    let watches = service(&dir, &runner);
+    let sink = RecordingSink::live();
+    let watch = watches
+        .start("session-1", &owner(), &repo(), SHA)
+        .expect("start");
+
+    watches.poll_once(&sink);
+    assert_eq!(
+        watches.get(&watch.watch_id).expect("kept").state,
+        CiState::Failed
+    );
+    let texts = sink.texts();
+    assert_eq!(texts.len(), 1);
+    assert!(texts[0].contains("CI failed for"), "{}", texts[0]);
+}
+
+/// A page that did not arrive is not a green: the watch waits and asks again.
+#[test]
+fn a_partial_check_run_list_gives_no_verdict() {
+    let dir = dir("partial");
+    let runner = Arc::new(github_origin());
+    let only = [check_run(1, "build", "completed", Some("success"))];
+    runner.set(
+        &format!("commits/{SHA}/check-runs"),
+        ok(&serde_json::json!([{"total_count": 2, "check_runs": only}]).to_string()),
+    );
+    let watches = service(&dir, &runner);
+    let sink = RecordingSink::live();
+    let watch = watches
+        .start("session-1", &owner(), &repo(), SHA)
+        .expect("start");
+
+    watches.poll_once(&sink);
+    assert!(!watches
+        .get(&watch.watch_id)
+        .expect("kept")
+        .state
+        .is_terminal());
+    assert!(sink.texts().is_empty(), "no verdict off half a list");
 }
 
 /// A finished pass reads its job logs under their own fuse: one missing log
@@ -450,7 +518,7 @@ fn the_job_logs_read_under_their_own_fuse() {
     use crate::ci_gh::LOG_GH_TIMEOUT;
 
     let dir = dir("log-fuse");
-    let runner = Arc::new(github_with_commit());
+    let runner = Arc::new(github_origin());
     checks(
         &runner,
         &[check_run(11, "build", "completed", Some("failure"))],
@@ -465,25 +533,23 @@ fn the_job_logs_read_under_their_own_fuse() {
     assert_eq!(runner.last_timeout(), Some(LOG_GH_TIMEOUT));
 }
 
-/// The tool call validates under the short fuse, the poll thread keeps the
-/// full minute for the same reads.
+/// The tool call only registers the watch: no GitHub read happens on the
+/// broker's request path, so it answers at once whatever `gh` is doing.
 #[test]
-fn the_tool_call_validates_fast_and_the_poll_keeps_the_minute() {
-    use crate::ci_gh::TOOL_GH_TIMEOUT;
+fn the_tool_call_asks_github_nothing_and_the_poll_keeps_the_minute() {
     use crate::git::GIT_COMMAND_TIMEOUT;
 
     let dir = dir("timeouts");
-    let runner = Arc::new(github_with_commit());
+    let runner = Arc::new(github_origin());
     checks(&runner, &[check_run(11, "build", "in_progress", None)]);
     let watches = service(&dir, &runner);
     let sink = RecordingSink::live();
     watches
         .start("session-1", &owner(), &repo(), SHA)
         .expect("start");
-    assert_eq!(
-        runner.last_timeout(),
-        Some(TOOL_GH_TIMEOUT),
-        "the inline validation carries the short deadline"
+    assert!(
+        runner.calls().is_empty(),
+        "registering a watch reads nothing from GitHub"
     );
     watches.poll_once(&sink);
     assert_eq!(

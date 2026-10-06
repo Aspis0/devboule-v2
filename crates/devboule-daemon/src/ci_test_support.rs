@@ -96,17 +96,36 @@ pub(crate) fn check_run(id: u64, name: &str, status: &str, conclusion: Option<&s
     })
 }
 
+/// What `gh api --paginate --slurp` prints for a single page of check runs.
 pub(crate) fn check_runs(runs: &[Value]) -> String {
-    json!({"total_count": runs.len(), "check_runs": runs}).to_string()
+    check_run_pages(&[runs])
 }
 
-/// A scripted GitHub where the commit exists and the origin is `acme/widgets`.
-pub(crate) fn github_with_commit() -> ScriptedRunner {
+/// The same for several pages: an array with one page object per entry, each
+/// stating the whole count as GitHub does.
+pub(crate) fn check_run_pages(pages: &[&[Value]]) -> String {
+    let total: usize = pages.iter().map(|runs| runs.len()).sum();
+    let pages: Vec<Value> = pages
+        .iter()
+        .map(|runs| json!({"total_count": total, "check_runs": runs}))
+        .collect();
+    Value::Array(pages).to_string()
+}
+
+/// The check runs a single page of `items` parses to.
+pub(crate) fn parsed_check_runs(items: &[Value]) -> Vec<crate::ci_summary::CheckRun> {
+    let pages: Vec<Value> = serde_json::from_str(&check_runs(items)).expect("a page list");
+    crate::ci_pages::join_check_run_pages(&pages).expect("a whole list")
+}
+
+/// A scripted workspace whose origin is `acme/widgets`; each test scripts the
+/// GitHub answers it reads.
+pub(crate) fn github_origin() -> ScriptedRunner {
     let runner = ScriptedRunner::default();
-    runner.set("git -C", ok("https://github.com/acme/widgets.git\n"));
     runner.set(
-        &format!("git/commits/{SHA}"),
-        ok(&format!("{{\"sha\":\"{SHA}\"}}")),
+        "git -C",
+        ok("https://github.com/acme/widgets.git
+"),
     );
     runner
 }

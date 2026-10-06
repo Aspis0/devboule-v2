@@ -6,9 +6,7 @@ use std::sync::{Arc, Mutex};
 use devboule_protocol::SessionKind;
 use serde_json::{json, Value};
 
-use crate::ci_test_support::{
-    check_run, check_runs, fail, github_with_commit, ok, ScriptedRunner, SHA,
-};
+use crate::ci_test_support::{check_run, check_runs, fail, github_origin, ok, ScriptedRunner, SHA};
 use crate::mcp_broker::terminal_write_harness::project_workspace;
 use crate::mcp_broker::tests::{http_request, owner, response_json};
 use crate::provider_catalog::MCP_CI_WATCH_TOOL;
@@ -24,7 +22,7 @@ struct Fixture {
 }
 
 fn fixture(tag: &str) -> Fixture {
-    let runner = Arc::new(github_with_commit());
+    let runner = Arc::new(github_origin());
     let state = ServerState::with_ci_runner(format!("mcp-ci-{tag}"), runner.clone());
     let owner = owner(&format!("mcp-ci-user-{tag}"), "mcp-ci-client");
     let session = "ci.caller";
@@ -125,11 +123,13 @@ fn a_session_with_no_workspace_has_no_origin_host() {
     }
 }
 
+/// The login is a GitHub read, so the call does not make it: the watch is
+/// registered at once and the owner learns the step to take from the wake.
 #[test]
-fn a_missing_login_is_a_tool_error_with_the_step_to_take() {
+fn a_missing_login_is_reported_by_the_wake_not_by_the_call() {
     let fixture = workspace_fixture("login");
     fixture.runner.set(
-        &format!("git/commits/{SHA}"),
+        &format!("commits/{SHA}/check-runs"),
         fail(
             4,
             "To get started with GitHub CLI, please run:  gh auth login",
@@ -141,23 +141,33 @@ fn a_missing_login_is_a_tool_error_with_the_step_to_take() {
     );
     assert_eq!(
         body.pointer("/result/isError"),
-        Some(&json!(true)),
+        Some(&json!(false)),
         "{body}"
     );
     let envelope = &body["result"]["structuredContent"];
-    assert_eq!(envelope["ok"], json!(false));
-    assert!(envelope["hostId"]
-        .as_str()
-        .is_some_and(|host| !host.is_empty()));
-    assert_eq!(envelope["error"]["code"], json!("github_auth_required"));
-    assert_eq!(envelope["error"]["retryable"], json!(false));
-    assert!(envelope["error"]["message"]
-        .as_str()
-        .is_some_and(|message| message.contains("gh auth login")));
+    assert_eq!(envelope["ok"], json!(true));
+    assert_eq!(envelope["data"]["state"], json!("queued"));
+
+    // The daemon's own poll thread may get there first; either pass delivers.
+    fixture.state.ci_watches.poll_once(&fixture.state.sessions);
+    let delivered = wait_for_delivery(&fixture);
+    assert!(delivered.contains("github_auth_required"), "{delivered}");
+    assert!(delivered.contains("gh auth login"), "{delivered}");
+}
+
+fn wait_for_delivery(fixture: &Fixture) -> String {
+    for _ in 0..100 {
+        let received = fixture.received.lock().expect("received").clone();
+        if !received.is_empty() {
+            return String::from_utf8(received).expect("utf8 delivery");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    String::new()
 }
 
 fn workspace_fixture(tag: &str) -> Fixture {
-    let runner = Arc::new(github_with_commit());
+    let runner = Arc::new(github_origin());
     let state = ServerState::with_ci_runner(format!("mcp-ci-{tag}"), runner.clone());
     let owner = owner(&format!("mcp-ci-user-{tag}"), "mcp-ci-client");
     let (workspace, _root) = project_workspace(&state, tag);
@@ -205,6 +215,7 @@ fn agent_repo_arg_cannot_select_arbitrary_host() {
     );
     let envelope = &body["result"]["structuredContent"];
     assert_eq!(envelope["data"]["repo"], json!("attacker/gadget"));
+    fixture.state.ci_watches.poll_once(&fixture.state.sessions);
     assert!(
         fixture
             .runner

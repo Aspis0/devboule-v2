@@ -34,6 +34,10 @@ mod browser_tool_title;
 #[cfg(feature = "server")]
 mod ci_gh;
 #[cfg(feature = "server")]
+mod ci_pages;
+#[cfg(feature = "server")]
+mod ci_pass;
+#[cfg(feature = "server")]
 mod ci_summary;
 #[cfg(all(test, feature = "server"))]
 mod ci_test_support;

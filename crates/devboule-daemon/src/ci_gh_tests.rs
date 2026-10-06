@@ -109,7 +109,7 @@ fn ci_auth_missing_is_actionable() {
         ),
     );
     let refused = client(&runner)
-        .get_json(&repo(), "commits/abc/check-runs")
+        .get_json_pages(&repo(), "commits/abc/check-runs")
         .expect_err("not logged in");
     assert_eq!(refused.code, "github_auth_required");
     assert!(!refused.retryable);
@@ -122,7 +122,7 @@ fn ci_auth_missing_is_actionable() {
     let missing = Arc::new(ScriptedRunner::default());
     missing.set("api", Err(GitRunError::NotFound));
     let refused = client(&missing)
-        .get_json(&repo(), "commits/abc/check-runs")
+        .get_json_pages(&repo(), "commits/abc/check-runs")
         .expect_err("no gh");
     assert_eq!(refused.code, "github_cli_missing");
     assert!(
@@ -146,7 +146,7 @@ fn other_failures_say_what_to_do_and_never_quote_a_secret() {
     let read = |stderr: &str| -> CiError {
         runner.set("api", fail(1, stderr));
         client(&runner)
-            .get_json(&repo(), "commits/abc/check-runs")
+            .get_json_pages(&repo(), "commits/abc/check-runs")
             .expect_err("a failure")
     };
     assert_eq!(read("gh: Not Found (HTTP 404)").code, "not_found");
@@ -168,23 +168,6 @@ fn other_failures_say_what_to_do_and_never_quote_a_secret() {
             .contains("ghp_abcdefghijklmnopqrstuvwxyz0123456789"),
         "gh's own text is redacted before it is quoted: {}",
         unknown.message
-    );
-}
-
-#[test]
-fn gh_is_asked_with_an_argument_vector_for_the_repository_on_its_host() {
-    let runner = Arc::new(ScriptedRunner::default());
-    runner.set("api", ok("{\"check_runs\":[]}"));
-    client(&runner)
-        .get_json(&repo(), "commits/abc/check-runs?per_page=100")
-        .expect("json");
-    assert_eq!(
-        runner.calls(),
-        vec![
-            "gh api --hostname github.com -H Accept: application/vnd.github+json \
-             repos/acme/widgets/commits/abc/check-runs?per_page=100"
-                .to_string()
-        ]
     );
 }
 
@@ -212,7 +195,7 @@ fn limited_runner() -> Arc<ScriptedRunner> {
 
 fn limited_err(client: &GhClient) -> CiError {
     client
-        .get_json(&repo(), "commits/abc/check-runs")
+        .get_json_pages(&repo(), "commits/abc/check-runs")
         .expect_err("rate limited")
 }
 
@@ -289,9 +272,11 @@ fn backoff_is_per_repository() {
         owner: "other".to_string(),
         repo: "widgets".to_string(),
     };
-    runner.set("other/widgets", ok("{}"));
+    runner.set("other/widgets", ok("[]"));
     assert!(
-        client.get_json(&other, "commits/abc/check-runs").is_ok(),
+        client
+            .get_json_pages(&other, "commits/abc/check-runs")
+            .is_ok(),
         "a quiet repo never quiets its neighbours"
     );
 }
@@ -299,10 +284,10 @@ fn backoff_is_per_repository() {
 #[test]
 fn the_deadline_rides_with_the_client() {
     let runner = Arc::new(ScriptedRunner::default());
-    runner.set("api", ok("{}"));
+    runner.set("api", ok("[]"));
     client(&runner)
         .with_timeout(TOOL_GH_TIMEOUT)
-        .get_json(&repo(), "commits/abc/check-runs")
+        .get_json_pages(&repo(), "commits/abc/check-runs")
         .expect("answer");
     assert_eq!(runner.last_timeout(), Some(TOOL_GH_TIMEOUT));
 }

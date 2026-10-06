@@ -2,16 +2,19 @@
 //! its checks finish, record the verdict, and wake the session that asked.
 //!
 //! One phrase: follow one commit's CI to a verdict for the session that
-//! pushed it. The tool call only validates the commit and reads the first
-//! state; everything slow — polling, log reads, the wake — happens on the
-//! daemon's poll thread, which a restart resumes from the persistent store.
+//! pushed it. The tool call only registers the watch; every GitHub read —
+//! the commit's existence included — polling, log reads and the wake happen
+//! on the daemon's poll thread, which a restart resumes from the persistent
+//! store.
 
 use std::sync::{Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use devboule_protocol::OwnerId;
 
 use crate::ci_gh::{CiError, GhClient, RepoRef};
+use crate::ci_pages::join_check_run_pages;
+use crate::ci_pass::{Budget, Limits, Passes, Turn};
 use crate::ci_summary::{self, CiState};
 use crate::ci_wake::{wake_text, WakeSink};
 use crate::ci_watch_store::{new_watch_id, now_ms, CiWatchRecord, CiWatchStore, Wake};
@@ -24,16 +27,20 @@ const WATCH_TIMEOUT_MS: u64 = 6 * 60 * 60 * 1000;
 /// under test.
 #[cfg(test)]
 pub(crate) const OVERDUE_AGE: Duration = Duration::from_millis(WATCH_TIMEOUT_MS + 60_000);
-/// Check runs are read a page at a time; `--paginate` merges the pages, so a
-/// commit with more than one page of checks is judged whole rather than on
-/// its first page.
+/// Check runs are read a page at a time and every page is joined, so a commit
+/// with more than one page of checks is judged whole rather than on its
+/// first page.
 const CHECK_RUNS_PAGE: &str = "per_page=100";
+/// How long one watch may spend reading job logs in a pass; the logs left
+/// after it read as unavailable instead of holding the repository's turn.
+const LOG_READ_TIME: Duration = Duration::from_secs(60);
 
 pub(crate) struct CiWatches {
     store: CiWatchStore,
     gh: GhClient,
     /// The same login with a shorter fuse, sharing the backoff map: the
-    /// tool call validates fast, the poll thread keeps the minute.
+    /// tool call resolves its repository fast, the poll thread keeps the
+    /// minute.
     gh_tool: GhClient,
     /// A third fuse, for the job logs of a finished pass: a log is a
     /// download that either arrives or never will, and the poll thread still
@@ -43,6 +50,7 @@ pub(crate) struct CiWatches {
     /// next interval.
     kicked: Mutex<bool>,
     kick_signal: Condvar,
+    passes: Passes,
 }
 
 /// Where a watch's wake stands, as the tool reports it.
@@ -77,6 +85,7 @@ impl CiWatches {
             gh_logs,
             kicked: Mutex::new(false),
             kick_signal: Condvar::new(),
+            passes: Passes::default(),
         }
     }
 
@@ -85,8 +94,10 @@ impl CiWatches {
         &self.gh_tool
     }
 
-    /// Watch `sha` in `repo` for `session_id`. Asking again for the same
-    /// commit from the same session answers the watch that exists.
+    /// Watch `sha` in `repo` for `session_id`, without asking GitHub
+    /// anything: the poll thread reads the commit's checks and ends the watch
+    /// with the reason when GitHub has no such commit. Asking again for the
+    /// same commit from the same session answers the watch that exists.
     pub(crate) fn start(
         &self,
         session_id: &str,
@@ -97,27 +108,6 @@ impl CiWatches {
         if let Some(existing) = self.store.find(session_id, &repo.slug(), sha) {
             return Ok(existing);
         }
-        self.gh_tool
-            .get_json(repo, &format!("git/commits/{sha}"))
-            .map_err(|error| match error.code {
-                "not_found" => CiError::new(
-                    "sha_not_found",
-                    format!(
-                        "GitHub has no commit {} in {}. Push it first, then watch it.",
-                        short(sha),
-                        repo.slug()
-                    ),
-                    false,
-                ),
-                _ => error,
-            })?;
-        let runs = self.check_runs(&self.gh_tool, repo, sha)?;
-        // A watch that begins already finished still gets its verdict through
-        // the poll thread, the one place that reads logs and wakes.
-        let state = match ci_summary::overall(&runs) {
-            CiState::Passed | CiState::Failed => CiState::Running,
-            other => other,
-        };
         let record = CiWatchRecord {
             watch_id: new_watch_id(),
             session_id: session_id.to_string(),
@@ -128,7 +118,7 @@ impl CiWatches {
             repo: repo.repo.clone(),
             sha: sha.to_string(),
             created_at_ms: now_ms(),
-            state,
+            state: CiState::Queued,
             summary: None,
             wake_key: None,
             wake: Wake::NotDue,
@@ -202,21 +192,16 @@ impl CiWatches {
         *kicked = false;
     }
 
-    /// One pass: advance every open watch, then make every wake that is owed.
-    /// A panicking watch must not end CI watching: each step is caught,
-    /// logged and skipped. Wakes go out on scoped threads so one wedged
-    /// session cannot hold the others behind a readiness wait.
+    /// One pass: advance the open watches the pass can afford, then make
+    /// every wake that is owed. A panicking watch must not end CI watching:
+    /// each step is caught, logged and skipped. Wakes go out on scoped
+    /// threads so one wedged session cannot hold the others behind a
+    /// readiness wait.
     pub(crate) fn poll_once(&self, sink: &dyn WakeSink) {
-        for record in self.store.open() {
-            let id = record.watch_id.clone();
-            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.poll_watch(&record);
-            }))
-            .is_err()
-            {
-                eprintln!("ci watch: poll for {id} panicked; continuing");
-            }
-        }
+        self.passes
+            .run(self.store.open(), Limits::default(), &|record, budget| {
+                self.poll_watch(record, budget)
+            });
         std::thread::scope(|scope| {
             for record in self.store.pending_wakes() {
                 let _wake = scope.spawn(move || {
@@ -235,35 +220,40 @@ impl CiWatches {
         });
     }
 
-    fn check_runs(
-        &self,
-        gh: &GhClient,
-        repo: &RepoRef,
-        sha: &str,
-    ) -> Result<Vec<ci_summary::CheckRun>, CiError> {
-        let document =
-            gh.get_json_merged(repo, &format!("commits/{sha}/check-runs?{CHECK_RUNS_PAGE}"))?;
-        Ok(ci_summary::parse_check_runs(&document))
+    fn check_runs(&self, repo: &RepoRef, sha: &str) -> Result<Vec<ci_summary::CheckRun>, CiError> {
+        let pages = self
+            .gh
+            .get_json_pages(repo, &format!("commits/{sha}/check-runs?{CHECK_RUNS_PAGE}"))?;
+        join_check_run_pages(&pages)
     }
 
-    fn poll_watch(&self, record: &CiWatchRecord) {
+    fn poll_watch(&self, record: &CiWatchRecord, budget: &Budget) -> Turn {
         let repo = RepoRef {
             host: record.host.clone(),
             owner: record.repo_owner.clone(),
             repo: record.repo.clone(),
         };
-        let runs = match self.check_runs(&self.gh, &repo, &record.sha) {
+        // GitHub asked for quiet: no process is spent, and the repository's
+        // other watches would only be told the same.
+        if self.gh.is_quiet(&repo) {
+            self.close_if_overdue(record, false);
+            return Turn::RepoFailed;
+        }
+        if !budget.take(1) {
+            return Turn::NoBudget;
+        }
+        let runs = match self.check_runs(&repo, &record.sha) {
             Ok(runs) => runs,
             // A hiccup is retried next pass; a refusal that will not clear
             // ends the watch with the reason, so the owner is not left waiting
             // on a poll that can never succeed.
             Err(error) if error.retryable => {
                 self.close_if_overdue(record, false);
-                return;
+                return Turn::RepoFailed;
             }
             Err(error) => {
                 self.finish(record, CiState::Failed, stopped_text(record, &error));
-                return;
+                return Turn::Done;
             }
         };
         let state = ci_summary::overall(&runs);
@@ -275,9 +265,23 @@ impl CiWatches {
                 );
             }
             self.close_if_overdue(record, runs.is_empty());
-            return;
+            return Turn::Done;
         }
+        // The logs are paid for before the first is read: a pass that cannot
+        // afford them leaves the watch for the next one rather than judging a
+        // failure with half its evidence.
+        if !budget.take(ci_summary::logs_wanted(&runs)) {
+            return Turn::NoBudget;
+        }
+        let reading_since = Instant::now();
         let verdict = ci_summary::build(&runs, &mut |run| {
+            if reading_since.elapsed() >= LOG_READ_TIME {
+                return Err(CiError::new(
+                    "github_unavailable",
+                    "this pass ran out of time for job logs",
+                    true,
+                ));
+            }
             self.gh_logs
                 .get_text(&repo, &format!("actions/jobs/{}/logs", run.id))
         });
@@ -295,6 +299,7 @@ impl CiWatches {
             record.slug()
         );
         self.finish(record, verdict.state, verdict.render(&header));
+        Turn::Done
     }
 
     /// A watch that has waited long enough is closed, and says which of the

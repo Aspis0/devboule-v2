@@ -156,6 +156,21 @@ pub(crate) struct Verdict {
     pub(crate) jobs_omitted: usize,
 }
 
+/// A failed job whose log `build` reads: GitHub Actions is the only place a
+/// log can be fetched from.
+fn wants_log(run: &CheckRun) -> bool {
+    run.actions && !is_green(run.conclusion.as_deref())
+}
+
+/// How many logs `build` will ask for, so a pass can pay for them before it
+/// starts.
+pub(crate) fn logs_wanted(runs: &[CheckRun]) -> usize {
+    runs.iter()
+        .take(MAX_JOBS_LISTED)
+        .filter(|run| wants_log(run))
+        .count()
+}
+
 /// Summarise finished checks. `fetch_log` is asked only for failed Actions
 /// jobs, and only the lines it matches are kept. A log that cannot be read
 /// is not an empty excerpt of a code failure: the job is labelled INFRA
@@ -169,7 +184,7 @@ pub(crate) fn build(
     for run in runs.iter().take(MAX_JOBS_LISTED) {
         let conclusion = run.conclusion.clone().unwrap_or_else(|| run.status.clone());
         let failed = !is_green(run.conclusion.as_deref());
-        let fetched = if failed && run.actions {
+        let fetched = if wants_log(run) {
             Some(fetch_log(run))
         } else {
             None

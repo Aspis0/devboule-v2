@@ -4,12 +4,32 @@
 use serde_json::json;
 
 use super::{
-    build, overall, parse_check_runs, Cause, CheckRun, CiState, MAX_EXCERPT_LINES, MAX_LINE_CHARS,
+    build, logs_wanted, overall, Cause, CheckRun, CiState, MAX_EXCERPT_LINES, MAX_LINE_CHARS,
 };
-use crate::ci_test_support::{check_run, check_runs};
+use crate::ci_test_support::{check_run, parsed_check_runs};
 
 fn runs(items: &[serde_json::Value]) -> Vec<CheckRun> {
-    parse_check_runs(&serde_json::from_str(&check_runs(items)).expect("json"))
+    parsed_check_runs(items)
+}
+
+#[test]
+fn a_pass_knows_how_many_logs_a_verdict_will_read() {
+    let finished = runs(&[
+        check_run(1, "build", "completed", Some("success")),
+        check_run(2, "test", "completed", Some("failure")),
+        check_run(3, "lint", "completed", Some("cancelled")),
+    ]);
+    assert_eq!(logs_wanted(&finished), 2, "only the failed jobs have a log");
+    let mut fetched = 0;
+    let _ = build(&finished, &mut |_| {
+        fetched += 1;
+        Ok(String::new())
+    });
+    assert_eq!(
+        fetched,
+        logs_wanted(&finished),
+        "the count is what build asks"
+    );
 }
 
 #[test]

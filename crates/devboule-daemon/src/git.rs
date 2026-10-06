@@ -358,6 +358,15 @@ fn new_captured_command(program: &str, args: &[String]) -> Command {
     command
 }
 
+fn apply_env(command: &mut Command, env: &[(&str, Option<&str>)]) {
+    for (name, value) in env {
+        match value {
+            Some(value) => command.env(name, value),
+            None => command.env_remove(name),
+        };
+    }
+}
+
 /// Run `git` with the given argv under `max_bytes` — a caller whose output
 /// is not the working tree (the log read's is the history) gets a ceiling
 /// sized to its own job. Same closed argv, timeouts and Job Object as
@@ -381,20 +390,21 @@ pub(crate) fn run_git_args_with_cap_and_timeout(
 }
 
 /// The captured-output runner every call above shares, and the one a program
-/// other than `git` goes through: closed argv, `env` added to the inherited
-/// environment, piped stdio drained concurrently under a Job Object, output
-/// capped at `max_bytes` and the process given at most `timeout`. The `gh`
-/// calls behind the CI watch take this road with their own env and their own
-/// deadline, so there is one spawn path to audit rather than two.
+/// other than `git` goes through: closed argv, `env` applied to the inherited
+/// environment (`Some` sets a variable, `None` removes it), piped stdio
+/// drained concurrently under a Job Object, output capped at `max_bytes` and
+/// the process given at most `timeout`. The `gh` calls behind the CI watch
+/// take this road with their own env and their own deadline, so there is one
+/// spawn path to audit rather than two.
 pub(crate) fn run_program_args(
     program: &str,
-    env: &[(&str, &str)],
+    env: &[(&str, Option<&str>)],
     args: &[String],
     max_bytes: usize,
     timeout: Duration,
 ) -> Result<GitOutput, GitRunError> {
     let mut command = new_captured_command(program, args);
-    command.envs(env.iter().copied());
+    apply_env(&mut command, env);
 
     let mut process = match spawn_captured_git_process(command, max_bytes) {
         Ok(process) => process,
@@ -583,7 +593,7 @@ mod tests {
     use std::process::Command;
 
     use super::{
-        append_git_stdout, bounded_reap, classify_git_probe, detect_git_repository,
+        append_git_stdout, apply_env, bounded_reap, classify_git_probe, detect_git_repository,
         detect_git_repository_with_program, new_captured_command, parse_git_root, run_program_args,
         GitReapOutcome, GitReapPoll, GitRepositoryStatus, GitRunError, GIT_STDOUT_MAX_BYTES,
     };
@@ -609,6 +619,24 @@ mod tests {
         )
         .expect_err("a 30-second child must not survive a 2-second deadline");
         assert_eq!(error, GitRunError::TimedOut);
+    }
+
+    #[test]
+    fn an_env_entry_sets_or_removes_what_the_child_inherits() {
+        let mut command = Command::new("program");
+        apply_env(
+            &mut command,
+            &[("KEPT_BY_TEST", Some("1")), ("REMOVED_BY_TEST", None)],
+        );
+        let envs: Vec<_> = command.get_envs().collect();
+        assert!(envs.contains(&(
+            std::ffi::OsStr::new("KEPT_BY_TEST"),
+            Some(std::ffi::OsStr::new("1"))
+        )));
+        assert!(
+            envs.contains(&(std::ffi::OsStr::new("REMOVED_BY_TEST"), None)),
+            "None names a variable the child must not inherit"
+        );
     }
 
     #[test]

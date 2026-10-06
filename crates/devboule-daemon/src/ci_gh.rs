@@ -15,25 +15,35 @@ use serde_json::Value;
 use crate::ci_watch_store::now_ms;
 
 use crate::git::{
-    run_git_args_with_cap, run_program_args, GitOutput, GitRunError, GIT_COMMAND_TIMEOUT,
-    GIT_STDOUT_MAX_BYTES,
+    run_git_args_with_cap, run_git_args_with_cap_and_timeout, run_program_args, GitOutput,
+    GitRunError, GIT_COMMAND_TIMEOUT, GIT_STDOUT_MAX_BYTES,
 };
 
 /// Job logs are the large read; anything past this is cut, and the summary
 /// only ever looks at the part it got.
 const GH_OUTPUT_MAX_BYTES: usize = 4 * 1024 * 1024;
 const ERROR_LINE_CHARS: usize = 300;
-/// The environment every `gh` spawn gets: no interactive prompt, and no
-/// colour in the output this reads as text.
-const GH_ENV: [(&str, &str); 2] = [("GH_PROMPT_DISABLED", "1"), ("NO_COLOR", "1")];
+/// The environment every `gh` spawn gets: no interactive prompt, no colour in
+/// the output this reads as text, and none of the variables that would let the
+/// daemon's own environment replace the person's `gh` login or point it at
+/// another host. `gh` then uses the stored login for the origin's host.
+const GH_ENV: [(&str, Option<&str>); 7] = [
+    ("GH_PROMPT_DISABLED", Some("1")),
+    ("NO_COLOR", Some("1")),
+    ("GH_TOKEN", None),
+    ("GITHUB_TOKEN", None),
+    ("GH_ENTERPRISE_TOKEN", None),
+    ("GITHUB_ENTERPRISE_TOKEN", None),
+    ("GH_HOST", None),
+];
 /// The ceiling on a `gh` call that names no deadline of its own: the same
 /// minute the git runner allows, stated here so `gh` never rides on git's
 /// timeout by accident.
 const GH_COMMAND_TIMEOUT: Duration = GIT_COMMAND_TIMEOUT;
-/// The broker-facing validation waits seconds, not the full command minute:
-/// a hung helper must not hold a tool call, and the slow path already lives
-/// on the poll thread with the minute.
-pub(crate) const TOOL_GH_TIMEOUT: Duration = Duration::from_secs(10);
+/// The broker-facing resolution (a local `git` read, a local `gh` login check)
+/// waits seconds, not the full command minute: a hung helper must not hold a
+/// tool call, and every GitHub read lives on the poll thread.
+pub(crate) const TOOL_GH_TIMEOUT: Duration = Duration::from_secs(5);
 /// The job logs of a finished pass: a download that either arrives or never
 /// will, read under a fuse short enough that one missing log does not hold
 /// the poll thread past the watches queued behind it.
@@ -99,7 +109,7 @@ impl CommandRunner for ProcessRunner {
         timeout: Duration,
     ) -> Result<GitOutput, GitRunError> {
         if program == "git" {
-            return run_git_args_with_cap(args, GIT_STDOUT_MAX_BYTES);
+            return run_git_args_with_cap_and_timeout(args, GIT_STDOUT_MAX_BYTES, timeout);
         }
         run_program_args(program, &GH_ENV, args, GH_OUTPUT_MAX_BYTES, timeout)
     }
@@ -272,7 +282,10 @@ impl GhClient {
             "get-url".to_string(),
             "origin".to_string(),
         ];
-        let output = self.runner.run("git", &args).map_err(|error| match error {
+        let output = self
+            .runner
+            .run_with_timeout("git", &args, self.timeout)
+            .map_err(|error| match error {
             GitRunError::NotFound => CiError::new(
                 "git_missing",
                 "git was not found on the daemon's PATH, so the workspace's origin remote cannot be read.",
@@ -294,29 +307,20 @@ impl GhClient {
         })
     }
 
-    /// `gh api` GET of a repository endpoint, parsed as JSON.
-    pub(crate) fn get_json(&self, repo: &RepoRef, endpoint: &str) -> Result<Value, CiError> {
-        let output = self.api(repo, endpoint, Api::Json)?;
-        serde_json::from_str(&output.stdout).map_err(|_| {
-            CiError::new(
-                "github_unavailable",
-                "GitHub answered with something that is not JSON; try again.",
-                true,
-            )
-        })
-    }
-
-    /// The same read with `gh`'s own paging: a list longer than one page is
-    /// merged, so a verdict is never read off the first hundred entries.
-    pub(crate) fn get_json_merged(&self, repo: &RepoRef, endpoint: &str) -> Result<Value, CiError> {
-        let output = self.api(repo, endpoint, Api::MergedJson)?;
-        serde_json::from_str(&output.stdout).map_err(|_| {
-            CiError::new(
-                "github_unavailable",
-                "GitHub answered with something that is not JSON; try again.",
-                true,
-            )
-        })
+    /// `gh api` GET of a list endpoint with `gh`'s own paging, one JSON value
+    /// per page. `gh` prints the pages as separate values unless they are
+    /// slurped into one array, and a list read off the first page alone is how
+    /// a verdict goes falsely green.
+    pub(crate) fn get_json_pages(
+        &self,
+        repo: &RepoRef,
+        endpoint: &str,
+    ) -> Result<Vec<Value>, CiError> {
+        let output = self.api(repo, endpoint, Api::Pages)?;
+        match parse_json(&output.stdout)? {
+            Value::Array(pages) => Ok(pages),
+            _ => Err(not_json()),
+        }
     }
 
     /// `gh api` GET of a repository endpoint whose answer is plain text (a
@@ -337,8 +341,9 @@ impl GhClient {
             "--hostname".to_string(),
             repo.host.clone(),
         ];
-        if matches!(shape, Api::MergedJson) {
+        if matches!(shape, Api::Pages) {
             args.push("--paginate".to_string());
+            args.push("--slurp".to_string());
         }
         if shape.needs_accept() {
             args.push("-H".to_string());
@@ -365,6 +370,11 @@ impl GhClient {
             }
             Err(failure)
         }
+    }
+
+    /// Whether GitHub asked this repository to be left alone for now.
+    pub(crate) fn is_quiet(&self, repo: &RepoRef) -> bool {
+        self.backed_off(&format!("{}/{}", repo.host, repo.slug()))
     }
 
     /// Whether this repository is quiet until its backoff lifts.
@@ -411,12 +421,11 @@ impl GhClient {
     }
 }
 
-/// What one `gh api` read is for: a JSON document, a JSON list read whole,
-/// or the plain text of a job log.
+/// What one `gh api` read is for: every page of a JSON list, or the plain
+/// text of a job log.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Api {
-    Json,
-    MergedJson,
+    Pages,
     Text,
 }
 
@@ -424,6 +433,18 @@ impl Api {
     fn needs_accept(self) -> bool {
         !matches!(self, Self::Text)
     }
+}
+
+fn parse_json(text: &str) -> Result<Value, CiError> {
+    serde_json::from_str(text).map_err(|_| not_json())
+}
+
+fn not_json() -> CiError {
+    CiError::new(
+        "github_unavailable",
+        "GitHub answered with something that is not JSON; try again.",
+        true,
+    )
 }
 
 fn not_github(message: &str) -> CiError {
@@ -466,6 +487,20 @@ fn classify_failure(output: &GitOutput) -> CiError {
             false,
         );
     }
+    if lower.contains("unknown flag") && lower.contains("slurp") {
+        return CiError::new(
+            "github_cli_missing",
+            "The installed GitHub CLI (`gh`) is too old to read every page of a list (`--slurp`).              Update it from https://cli.github.com.",
+            false,
+        );
+    }
+    if lower.contains("http 422") && lower.contains("no commit found") {
+        return CiError::new(
+            "sha_not_found",
+            "GitHub has no commit with that id in this repository. Push it first, then watch it.",
+            false,
+        );
+    }
     if lower.contains("http 404") {
         return CiError::new(
             "not_found",
@@ -500,3 +535,7 @@ fn classify_failure(output: &GitOutput) -> CiError {
 #[cfg(test)]
 #[path = "ci_gh_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "ci_gh_reads_tests.rs"]
+mod reads_tests;
