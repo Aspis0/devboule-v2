@@ -9,6 +9,7 @@ use devboule_protocol::OwnerId;
 
 use super::{CiWatches, WakeStatus};
 use crate::ci_gh::{GhClient, RepoRef};
+use crate::ci_pass::Limits;
 use crate::ci_summary::CiState;
 use crate::ci_test_support::{
     check_run, check_run_pages, check_runs, fail, github_origin, ok, RecordingSink, ScriptedRunner,
@@ -556,5 +557,121 @@ fn the_tool_call_asks_github_nothing_and_the_poll_keeps_the_minute() {
         runner.last_timeout(),
         Some(GIT_COMMAND_TIMEOUT),
         "the poll side keeps the full minute"
+    );
+}
+
+const OTHER: &str = "fedcba9876543210fedcba9876543210fedcba98";
+
+#[test]
+fn a_commit_id_of_the_wrong_shape_is_refused_before_it_is_stored() {
+    let runner = Arc::new(github_origin());
+    let watches = service(&dir("shape"), &runner);
+    for bad in ["", "abc", &"g".repeat(40), &"a".repeat(41)] {
+        let refused = watches
+            .start("session-1", &owner(), &repo(), bad)
+            .expect_err(bad);
+        assert_eq!(refused.code, "invalid_sha", "{bad}");
+    }
+    assert!(runner.calls().is_empty());
+}
+
+#[test]
+fn a_session_over_its_bound_is_told_so_and_others_are_not() {
+    use crate::ci_watch_quota::MAX_PER_SESSION;
+
+    let runner = Arc::new(github_origin());
+    let watches = service(&dir("session-bound"), &runner);
+    let bogus = |n: usize| format!("{n:040x}");
+    for n in 0..MAX_PER_SESSION {
+        watches
+            .start("flooder", &owner(), &repo(), &bogus(n))
+            .expect("within the bound");
+    }
+    let refused = watches
+        .start("flooder", &owner(), &repo(), &bogus(9999))
+        .expect_err("over the bound");
+    assert_eq!(refused.code, "too_many_watches");
+    assert!(refused.retryable);
+    assert!(refused.message.contains("25"), "{}", refused.message);
+    watches
+        .start("honest", &owner(), &repo(), SHA)
+        .expect("another session is unaffected");
+}
+
+/// The first watch's read keeps failing; the second watch of the repository
+/// is read the pass after, not held until the watch times out.
+#[test]
+fn a_failing_read_does_not_hold_the_repositorys_other_watches() {
+    let dir = dir("starve");
+    let runner = Arc::new(github_origin());
+    runner.set(
+        &format!("commits/{SHA}/check-runs"),
+        fail(1, "gh: connection reset by peer"),
+    );
+    runner.set(
+        &format!("commits/{OTHER}/check-runs"),
+        ok(&check_runs(&[check_run(5, "build", "in_progress", None)])),
+    );
+    let watches = service(&dir, &runner);
+    let sink = RecordingSink::live();
+    watches
+        .start("session-1", &owner(), &repo(), SHA)
+        .expect("first");
+    let second = watches
+        .start("session-1", &owner(), &repo(), OTHER)
+        .expect("second");
+
+    watches.poll_once(&sink);
+    assert_eq!(
+        watches.get(&second.watch_id).expect("kept").state,
+        CiState::Queued,
+        "the failed read ended the repository's turn"
+    );
+    watches.poll_once(&sink);
+    assert_eq!(
+        watches.get(&second.watch_id).expect("kept").state,
+        CiState::Running,
+        "the pass after reads the sibling first"
+    );
+}
+
+/// A paginated read costs a request for each page it returned, so a commit
+/// with many checks uses the pass's budget up faster than one with few.
+#[test]
+fn a_paginated_read_is_charged_for_every_page() {
+    let dir = dir("page-budget");
+    let runner = Arc::new(github_origin());
+    let page = |id| [check_run(id, "build", "in_progress", None)];
+    let (first, second, third) = (page(1), page(2), page(3));
+    runner.set(
+        &format!("commits/{SHA}/check-runs"),
+        ok(&check_run_pages(&[&first, &second, &third])),
+    );
+    runner.set(
+        &format!("commits/{OTHER}/check-runs"),
+        ok(&check_runs(&[check_run(9, "build", "in_progress", None)])),
+    );
+    let watches = service(&dir, &runner);
+    let sink = RecordingSink::live();
+    watches
+        .start("session-1", &owner(), &repo(), SHA)
+        .expect("three pages");
+    watches
+        .start("session-1", &owner(), &repo(), OTHER)
+        .expect("one page");
+
+    let three_requests = Limits {
+        requests: 3,
+        ..Limits::default()
+    };
+    watches.poll_within(&sink, three_requests);
+    assert!(
+        !runner.calls().iter().any(|call| call.contains(OTHER)),
+        "three pages spent the pass's three requests"
+    );
+    watches.poll_within(&sink, three_requests);
+    assert!(
+        runner.calls().iter().any(|call| call.contains(OTHER)),
+        "the watch the budget passed over is read first next time"
     );
 }

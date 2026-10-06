@@ -17,6 +17,7 @@ use crate::ci_pages::join_check_run_pages;
 use crate::ci_pass::{Budget, Limits, Passes, Turn};
 use crate::ci_summary::{self, CiState};
 use crate::ci_wake::{wake_text, WakeSink};
+use crate::ci_watch_quota::refusal_of;
 use crate::ci_watch_store::{new_watch_id, now_ms, CiWatchRecord, CiWatchStore, Wake};
 
 /// How often the poll thread looks at open watches.
@@ -105,6 +106,13 @@ impl CiWatches {
         repo: &RepoRef,
         sha: &str,
     ) -> Result<CiWatchRecord, CiError> {
+        if !is_commit_id(sha) {
+            return Err(CiError::new(
+                "invalid_sha",
+                "sha must be a full 40-character commit id.",
+                false,
+            ));
+        }
         if let Some(existing) = self.store.find(session_id, &repo.slug(), sha) {
             return Ok(existing);
         }
@@ -123,13 +131,9 @@ impl CiWatches {
             wake_key: None,
             wake: Wake::NotDue,
         };
-        self.store.insert(record.clone()).map_err(|error| {
-            CiError::new(
-                "internal",
-                format!("The watch could not be saved: {error}"),
-                true,
-            )
-        })?;
+        self.store
+            .insert(record.clone())
+            .map_err(|error| refusal_of(error, repo))?;
         self.kick();
         Ok(record)
     }
@@ -198,8 +202,12 @@ impl CiWatches {
     /// threads so one wedged session cannot hold the others behind a
     /// readiness wait.
     pub(crate) fn poll_once(&self, sink: &dyn WakeSink) {
+        self.poll_within(sink, Limits::default());
+    }
+
+    fn poll_within(&self, sink: &dyn WakeSink, limits: Limits) {
         self.passes
-            .run(self.store.open(), Limits::default(), &|record, budget| {
+            .run(self.store.open(), limits, &|record, budget| {
                 self.poll_watch(record, budget)
             });
         std::thread::scope(|scope| {
@@ -220,11 +228,16 @@ impl CiWatches {
         });
     }
 
-    fn check_runs(&self, repo: &RepoRef, sha: &str) -> Result<Vec<ci_summary::CheckRun>, CiError> {
+    /// The commit's check runs, and how many pages GitHub served them in.
+    fn check_runs(
+        &self,
+        repo: &RepoRef,
+        sha: &str,
+    ) -> Result<(Vec<ci_summary::CheckRun>, usize), CiError> {
         let pages = self
             .gh
             .get_json_pages(repo, &format!("commits/{sha}/check-runs?{CHECK_RUNS_PAGE}"))?;
-        join_check_run_pages(&pages)
+        Ok((join_check_run_pages(&pages)?, pages.len()))
     }
 
     fn poll_watch(&self, record: &CiWatchRecord, budget: &Budget) -> Turn {
@@ -243,7 +256,12 @@ impl CiWatches {
             return Turn::NoBudget;
         }
         let runs = match self.check_runs(&repo, &record.sha) {
-            Ok(runs) => runs,
+            Ok((runs, pages)) => {
+                // The first page was paid for with the turn; every page after
+                // it was one more request to GitHub.
+                budget.spend(pages.saturating_sub(1));
+                runs
+            }
             // A hiccup is retried next pass; a refusal that will not clear
             // ends the watch with the reason, so the owner is not left waiting
             // on a poll that can never succeed.
@@ -379,6 +397,12 @@ impl CiWatches {
             }
         }
     }
+}
+
+/// A full commit id: 40 hex digits. Anything else is refused before it is
+/// stored, so only well-formed ids reach GitHub.
+pub(crate) fn is_commit_id(sha: &str) -> bool {
+    sha.len() == 40 && sha.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn owner_of(record: &CiWatchRecord) -> Option<OwnerId> {

@@ -20,6 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::ci_summary::CiState;
+use crate::ci_watch_quota::{make_room, Refusal};
 
 const CI_WATCH_FILE: &str = "ci_watches.json";
 const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
@@ -28,6 +29,16 @@ const DELIVERED_RETENTION_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 const MAX_WATCHES: usize = 500;
 
 static WATCH_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Why a watch was not stored.
+#[derive(Debug)]
+pub(crate) enum InsertError {
+    /// Its session or its repository already holds as many as it may.
+    Quota(Refusal),
+    /// The whole store is busy with unfinished watches.
+    Full,
+    Io(io::Error),
+}
 
 /// Where the wake of a finished watch stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,8 +184,9 @@ impl CiWatchStore {
             .cloned()
     }
 
-    pub(crate) fn insert(&self, record: CiWatchRecord) -> io::Result<()> {
+    pub(crate) fn insert(&self, record: CiWatchRecord) -> Result<(), InsertError> {
         let mut records = self.records();
+        make_room(&mut records, &record).map_err(InsertError::Quota)?;
         let now = now_ms();
         // Terminal watches age out: finished history is kept a bounded time
         // whatever its wake did, so dead sessions cannot fill the store.
@@ -204,7 +216,7 @@ impl CiWatchStore {
                 .min_by_key(|(_, existing)| existing.created_at_ms)
                 .map(|(index, _)| index);
             let Some(index) = oldest else {
-                return Err(io::Error::other("too many CI watches are being kept"));
+                return Err(InsertError::Full);
             };
             let dropped = records.remove(index);
             if matches!(dropped.wake, Wake::Pending | Wake::Sending) {
@@ -215,7 +227,7 @@ impl CiWatchStore {
             }
         }
         records.push(record);
-        self.persist(&records)
+        self.persist(&records).map_err(InsertError::Io)
     }
 
     /// Watches still waiting on CI.

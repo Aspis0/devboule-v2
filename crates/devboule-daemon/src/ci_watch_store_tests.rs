@@ -1,6 +1,6 @@
 //! The persistent watches: what survives a restart, and the one-wake rule.
 
-use super::{new_watch_id, now_ms, CiWatchRecord, CiWatchStore, Wake};
+use super::{new_watch_id, now_ms, CiWatchRecord, CiWatchStore, InsertError, Wake};
 use crate::ci_summary::CiState;
 
 fn record(session: &str, sha: &str) -> CiWatchRecord {
@@ -19,6 +19,14 @@ fn record(session: &str, sha: &str) -> CiWatchRecord {
         wake_key: None,
         wake: Wake::NotDue,
     }
+}
+
+/// The `index`th of many watches that fit the per-session and per-repository
+/// bounds: one session each, fifty to a repository.
+fn spread(index: usize) -> CiWatchRecord {
+    let mut watch = record(&format!("s{index}"), &format!("{index:040}"));
+    watch.repo = format!("w{}", index / 50);
+    watch
 }
 
 fn dir(tag: &str) -> std::path::PathBuf {
@@ -191,7 +199,7 @@ fn a_full_store_evicts_finished_history_before_refusing() {
     let dir = dir("evict");
     let store = CiWatchStore::load(&dir);
     for index in 0..500 {
-        let mut watch = record("s", &format!("{index:040}"));
+        let mut watch = spread(index);
         if index == 0 {
             watch.state = CiState::Failed;
             watch.wake = Wake::Delivered;
@@ -202,7 +210,7 @@ fn a_full_store_evicts_finished_history_before_refusing() {
     store.insert(evicted.clone()).expect("room is made");
     assert_eq!(
         store
-            .find("s", "acme/widgets", &format!("{:040}", 0))
+            .find("s0", "acme/w0", &format!("{:040}", 0))
             .map(|found| found.watch_id),
         None,
         "the oldest finished watch went"
@@ -215,13 +223,11 @@ fn a_full_store_of_open_watches_still_refuses() {
     let dir = dir("full");
     let store = CiWatchStore::load(&dir);
     for index in 0..500 {
-        store
-            .insert(record("s", &format!("{index:040}")))
-            .expect("seed");
+        store.insert(spread(index)).expect("seed");
     }
     let refused = store.insert(record("s", "ffff"));
     assert!(
-        refused.is_err(),
-        "with nothing finished there is nothing to evict"
+        matches!(refused, Err(InsertError::Full)),
+        "with nothing finished there is nothing to evict: {refused:?}"
     );
 }

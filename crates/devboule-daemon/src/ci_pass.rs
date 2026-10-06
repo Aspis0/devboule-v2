@@ -1,10 +1,12 @@
-//! One poll pass over the open watches, bounded three ways: a request budget
-//! for the whole pass, one worker per repository (a few side by side), and a
-//! time limit per repository.
+//! One poll pass over the open watches, bounded three ways: an API request
+//! budget for the whole pass, one worker per repository (a few side by side),
+//! and a time limit per repository.
 //!
 //! One phrase: decide which watches get a turn. A watch that GitHub's limits
-//! or a slow repository cost its turn is served first on the next pass, and a
-//! repository that fails or hangs holds back only its own watches.
+//! or a slow repository cost its turn is served first on the next pass; a
+//! repository that fails ends its turn for the pass, its other watches go first
+//! next time, and the watch that failed goes behind them, so one watch that
+//! cannot be read never keeps its siblings waiting.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -19,38 +21,50 @@ pub(crate) enum Turn {
     Done,
     /// The pass had no requests left for it.
     NoBudget,
-    /// The repository did not answer: its other watches skip this pass.
+    /// The read failed in a way that may clear: the watch's turn ends, and so
+    /// does the repository's for this pass.
     RepoFailed,
 }
 
-/// The `gh` calls one pass may still make. A paginated read is one call here
-/// however many pages GitHub serves it in.
+/// The GitHub API requests one pass may still make: one for each plain read,
+/// and one for each page a paginated read turns out to have fetched.
 pub(crate) struct Budget(AtomicUsize);
 
 impl Budget {
-    pub(crate) fn take(&self, calls: usize) -> bool {
+    /// Pay for `requests` up front, or refuse when they are not there.
+    pub(crate) fn take(&self, requests: usize) -> bool {
         self.0
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
-                left.checked_sub(calls)
+                left.checked_sub(requests)
             })
             .is_ok()
+    }
+
+    /// Pay for requests already made, such as the pages after the first: the
+    /// budget runs down as far as it goes and the next turn finds it spent.
+    pub(crate) fn spend(&self, requests: usize) {
+        let _ = self
+            .0
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                Some(left.saturating_sub(requests))
+            });
     }
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct Limits {
-    pub(crate) calls: usize,
+    pub(crate) requests: usize,
     pub(crate) workers: usize,
     pub(crate) repo_time: Duration,
 }
 
 impl Default for Limits {
-    /// Forty calls per half-minute pass stays well under GitHub's hourly
+    /// Forty requests per half-minute pass stays well under GitHub's hourly
     /// budget, and four repositories at once with a minute and a half each
     /// keeps one stuck repository from holding the rest for long.
     fn default() -> Self {
         Self {
-            calls: 40,
+            requests: 40,
             workers: 4,
             repo_time: Duration::from_secs(90),
         }
@@ -76,7 +90,7 @@ impl Passes {
         let groups = self.grouped(open);
         let workers = limits.workers.min(groups.len());
         let queue = Mutex::new(groups);
-        let budget = Budget(AtomicUsize::new(limits.calls));
+        let budget = Budget(AtomicUsize::new(limits.requests));
         std::thread::scope(|scope| {
             for _ in 0..workers {
                 let _worker = scope.spawn(|| loop {
@@ -121,8 +135,11 @@ impl Passes {
     ) {
         let started = Instant::now();
         let mut failed = false;
+        let mut waiting = 0usize;
         for record in group {
             if failed {
+                self.pass_over(&record);
+                waiting += 1;
                 continue;
             }
             if started.elapsed() >= repo_time {
@@ -141,6 +158,11 @@ impl Passes {
                     record.watch_id
                 ),
             }
+        }
+        if waiting > 0 {
+            eprintln!(
+                "ci watch: a read failed; {waiting} more watch(es) of that repository go first next pass"
+            );
         }
     }
 

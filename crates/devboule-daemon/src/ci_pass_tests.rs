@@ -28,15 +28,15 @@ fn watch(id: &str, repo: &str) -> CiWatchRecord {
     }
 }
 
-fn limits(calls: usize) -> Limits {
+fn limits(requests: usize) -> Limits {
     Limits {
-        calls,
+        requests,
         workers: 4,
         repo_time: Duration::from_secs(30),
     }
 }
 
-/// Every turn costs one call; the ids served, in the order they ran.
+/// Every turn costs one request; the ids served, in the order they ran.
 fn costing_one(
     served: &Mutex<Vec<String>>,
 ) -> impl Fn(&CiWatchRecord, &Budget) -> Turn + Sync + '_ {
@@ -50,7 +50,7 @@ fn costing_one(
 }
 
 #[test]
-fn a_pass_stops_at_its_call_budget_and_the_rest_go_first_next_time() {
+fn a_pass_stops_at_its_request_budget_and_the_rest_go_first_next_time() {
     let passes = Passes::default();
     let open: Vec<_> = ["a", "b", "c", "d", "e"]
         .iter()
@@ -62,7 +62,7 @@ fn a_pass_stops_at_its_call_budget_and_the_rest_go_first_next_time() {
     assert_eq!(
         served.lock().expect("served").len(),
         3,
-        "three calls, three turns"
+        "three requests, three turns"
     );
 
     served.lock().expect("served").clear();
@@ -136,7 +136,7 @@ fn a_repository_past_its_time_passes_its_remaining_watches_over() {
     let open = vec![watch("first", "slow"), watch("second", "slow")];
     let served = Mutex::new(Vec::new());
     let tight = Limits {
-        calls: 40,
+        requests: 40,
         workers: 1,
         repo_time: Duration::from_millis(30),
     };
@@ -173,4 +173,63 @@ fn a_panicking_watch_does_not_end_the_pass() {
         Turn::Done
     });
     assert_eq!(*served.lock().expect("served"), ["fine"]);
+}
+
+/// One watch whose read keeps failing is retried first by store order; it must
+/// not keep the repository's other watches from ever being read.
+#[test]
+fn a_watch_that_keeps_failing_does_not_starve_its_siblings() {
+    let passes = Passes::default();
+    let open = vec![
+        watch("bad", "widgets"),
+        watch("b", "widgets"),
+        watch("c", "widgets"),
+    ];
+    let served = Mutex::new(Vec::new());
+    let read = |record: &CiWatchRecord, _budget: &Budget| {
+        served.lock().expect("served").push(record.watch_id.clone());
+        if record.watch_id == "bad" {
+            Turn::RepoFailed
+        } else {
+            Turn::Done
+        }
+    };
+
+    passes.run(open.clone(), limits(40), &read);
+    assert_eq!(
+        *served.lock().expect("served"),
+        ["bad"],
+        "its turn ends the pass"
+    );
+
+    served.lock().expect("served").clear();
+    passes.run(open, limits(40), &read);
+    let second = served.lock().expect("served").clone();
+    assert_eq!(
+        second,
+        ["b", "c", "bad"],
+        "the siblings it held back are read first, the failing watch last"
+    );
+}
+
+#[test]
+fn pages_read_after_the_first_are_paid_for_afterwards() {
+    let passes = Passes::default();
+    let open = vec![watch("paged", "widgets"), watch("next", "widgets")];
+    let served = Mutex::new(Vec::new());
+    passes.run(open, limits(3), &|record, budget| {
+        if !budget.take(1) {
+            return Turn::NoBudget;
+        }
+        served.lock().expect("served").push(record.watch_id.clone());
+        if record.watch_id == "paged" {
+            budget.spend(2);
+        }
+        Turn::Done
+    });
+    assert_eq!(
+        *served.lock().expect("served"),
+        ["paged"],
+        "three pages used the whole budget of three"
+    );
 }

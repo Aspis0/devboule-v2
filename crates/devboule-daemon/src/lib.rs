@@ -46,6 +46,8 @@ mod ci_wake;
 #[cfg(feature = "server")]
 mod ci_watch;
 #[cfg(feature = "server")]
+mod ci_watch_quota;
+#[cfg(feature = "server")]
 mod ci_watch_store;
 #[cfg(feature = "server")]
 mod claude_abort;

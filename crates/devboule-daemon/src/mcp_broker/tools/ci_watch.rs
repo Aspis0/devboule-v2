@@ -13,6 +13,7 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 
 use crate::ci_gh::{parse_repo_argument, CiError};
+use crate::ci_watch::is_commit_id;
 use crate::mcp_broker::caller::{audit_mcp_tool, McpCaller};
 use crate::mcp_broker::dispatch::rpc_error;
 use crate::mcp_broker::RegisteredSession;
@@ -37,11 +38,7 @@ fn parse_arguments(arguments: &Value) -> Result<Arguments, String> {
         }
     }
     let sha = match object.get("sha") {
-        Some(Value::String(sha))
-            if sha.len() == 40 && sha.bytes().all(|byte| byte.is_ascii_hexdigit()) =>
-        {
-            sha.to_ascii_lowercase()
-        }
+        Some(Value::String(sha)) if is_commit_id(sha) => sha.to_ascii_lowercase(),
         Some(_) => return Err("sha must be a full 40-character commit id".to_string()),
         None => return Err("sha is required".to_string()),
     };
