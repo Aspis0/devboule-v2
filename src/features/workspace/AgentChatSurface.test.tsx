@@ -102,7 +102,7 @@ import {
   sessionSetModel,
   sessionSetFeature,
 } from "../../lib/tauri";
-import { setPreferredEffort } from "../../lib/modelPrefs";
+import { setPreferredEffort, setPreferredMode } from "../../lib/agentPrefs";
 import { AgentChatSurface, composerDisabledReason } from "./AgentChatSurface";
 import { excerptRenderFor } from "./transcript/PermissionRequestRow";
 
@@ -203,7 +203,7 @@ describe("AgentChatSurface", () => {
     channelHarness.nextSubscriptionId = 41;
     channelHarness.deferNextAttach = false;
     channelHarness.releaseNextAttach = null;
-    localStorage.removeItem("devboule.modelEffortPrefs");
+    localStorage.removeItem("devboule.agentPrefs");
     ResizeObserverStub.instances = [];
     vi.stubGlobal("ResizeObserver", ResizeObserverStub as unknown as typeof ResizeObserver);
   });
@@ -1200,6 +1200,80 @@ describe("AgentChatSurface", () => {
     ).toContain("Plan");
   });
 
+  it("starts the next new agent in the mode the person picked, and leaves another provider alone", async () => {
+    // The person moves this session's mode.
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface daemonState="connected" sessionId="mode-first" title="Agent" />,
+      );
+    });
+    await act(async () => undefined);
+    await act(async () => {
+      channelHarness.emit?.({ ...MODES_MANIFEST });
+    });
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="mode-chip"]');
+    if (chip === null) throw new Error("mode chip did not render");
+    await act(async () => chip.click());
+    const plan = container.querySelector<HTMLButtonElement>('[data-testid="mode-option-plan"]');
+    if (plan === null) throw new Error("plan option did not render");
+    await act(async () => plan.click());
+    expect(sessionSetMode).toHaveBeenCalledWith("mode-first", "plan");
+
+    // The next new agent of that provider is asked for it on its first manifest.
+    await act(async () => root?.unmount());
+    (sessionSetMode as unknown as Mock).mockClear();
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface daemonState="connected" sessionId="mode-second" title="Agent" />,
+      );
+    });
+    await act(async () => undefined);
+    await act(async () => {
+      channelHarness.emit?.({ ...MODES_MANIFEST });
+    });
+    expect(sessionSetMode).toHaveBeenCalledWith("mode-second", "plan");
+
+    // A provider the person never moved starts in its own default.
+    await act(async () => root?.unmount());
+    (sessionSetMode as unknown as Mock).mockClear();
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface daemonState="connected" sessionId="mode-third" title="Agent" />,
+      );
+    });
+    await act(async () => undefined);
+    await act(async () => {
+      channelHarness.emit?.({
+        ...MODES_MANIFEST,
+        providerId: "codex",
+      });
+    });
+    expect(sessionSetMode).not.toHaveBeenCalled();
+  });
+
+  it("leaves a remembered mode the provider no longer offers to the provider's default", async () => {
+    setPreferredMode("claude", "a-mode-from-another-build");
+
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface daemonState="connected" sessionId="mode-stale" title="Agent" />,
+      );
+    });
+    await act(async () => undefined);
+    await act(async () => {
+      channelHarness.emit?.({ ...MODES_MANIFEST });
+    });
+
+    expect(sessionSetMode).not.toHaveBeenCalled();
+    expect(
+      container.querySelector<HTMLButtonElement>('[data-testid="mode-chip"]')?.textContent,
+    ).toContain("Ask before edits");
+  });
+
   it("reverts the chip to the manifest mode when sessionSetMode rejects", async () => {
     (sessionSetMode as unknown as Mock).mockRejectedValueOnce(new Error("mode refused"));
     root = createRoot(container);
@@ -1429,9 +1503,9 @@ describe("AgentChatSurface", () => {
     await pickFromChip("effort", "xhigh");
 
     expect(sessionSetModel).toHaveBeenCalledWith("pref-agent-1", undefined, "xhigh");
-    expect(localStorage.getItem("devboule.modelEffortPrefs")).toBe(
-      JSON.stringify({ [JSON.stringify(["grok", "grok-4.6"])]: "xhigh" }),
-    );
+    expect(JSON.parse(localStorage.getItem("devboule.agentPrefs") ?? "{}")).toEqual({
+      grok: { thinking: { [JSON.stringify(["grok", "grok-4.6"])]: "xhigh" } },
+    });
 
     await act(async () => root?.unmount());
     root = createRoot(container);

@@ -109,7 +109,7 @@ beforeEach(() => {
   harness.nextSubscriptionId = 41;
   harness.revision = 0;
   localStorage.removeItem("devboule.sendBehavior");
-  localStorage.removeItem("devboule.modelEffortPrefs");
+  localStorage.removeItem("devboule.agentPrefs");
   // Every queue frame answers cleanly unless this test says otherwise:
   // `clearAllMocks` leaves a queued one-shot refusal behind, and the next test
   // would read the row's own success as a failure.

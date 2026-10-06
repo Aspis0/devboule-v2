@@ -49,7 +49,8 @@ import { useConversationScrollStick } from "./useConversationScrollStick";
 import { PaneHeader } from "./paneHeader/PaneHeader";
 import { headerDisplay } from "./paneHeader/paneHeaderStatus";
 import { headerMenu, type HeaderMenuSeam } from "./paneHeader/paneHeaderMenu";
-import { getPreferredEffort, setPreferredEffort } from "../../lib/modelPrefs";
+import { setPreferredEffort, setPreferredMode, setPreferredModel } from "../../lib/agentPrefs";
+import { rememberedSwitch } from "./rememberedPicks";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 import { sendChatImagesByReference } from "./chatImageTransport";
 import { useFileAttachments } from "./useFileAttachments";
@@ -379,7 +380,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   // Undefined until a goal_changed frame arrives; then the last frame, even a clear.
   const goalFrameRef = useRef<string | null | undefined>(undefined);
   const sessionRef = useRef<AgentSession | null>(null);
-  const appliedEffortPrefRef = useRef(false);
+  const appliedPicksRef = useRef(false);
   const [state, setState] = useState<AgentSessionState>({
     items: [],
     status: "initializing",
@@ -564,7 +565,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         : undefined,
     });
     sessionRef.current = session;
-    appliedEffortPrefRef.current = false;
+    appliedPicksRef.current = false;
     // `start()` is async: seed the new controller now so the old controller's
     // latched error cannot render until the first notification.
     setState(session.getState());
@@ -644,25 +645,26 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     [focusComposer, onRefreshSubagents, sessionId],
   );
 
-  // Zed's pattern: re-apply the remembered effort once, on the first manifest
-  // of the session. The confirmation manifest is just another manifest here —
-  // the ref guard keeps the auto-switch from re-triggering. The preference is
-  // a localStorage/product concern, so it lives on the surface next to the
-  // manual onChange handler, not inside the headless session controller.
+  // A new agent starts in the provider's own default, and in whatever the person
+  // last picked for this provider once the manifest says what it offers. Applied
+  // once per session: a confirmation manifest is just another manifest here, and
+  // the ref guard keeps the auto-switch from re-triggering. A remembered pick the
+  // provider no longer offers is left for the provider's default — the daemon
+  // refuses a mode it cannot honour at create time, so a doomed switch is never
+  // worth sending.
+  //
+  // The picks are a localStorage/product concern, so they live on the surface
+  // next to the manual handlers, not inside the headless session controller.
   useEffect(() => {
     const manifest = state.manifest;
-    if (manifest === null || appliedEffortPrefRef.current) return;
-    appliedEffortPrefRef.current = true;
-    const { providerId, currentModelId } = manifest;
-    if (providerId === undefined || currentModelId === undefined) return;
-    const model = manifestModel(manifest);
-    if (model === null || !model.efforts || model.efforts.length === 0) return;
-    const stored = getPreferredEffort(providerId, currentModelId);
-    if (stored === null || stored === model.currentEffort) return;
-    // A stale preference (a model that no longer offers that effort) must not
-    // produce a doomed switch; skip it without surfacing an error.
-    if (!model.efforts.some((entry) => entry.id === stored)) return;
-    void sessionRef.current?.setModel(currentModelId, stored);
+    if (manifest === null || appliedPicksRef.current) return;
+    appliedPicksRef.current = true;
+    const asked = rememberedSwitch(manifest);
+    if (asked.mode !== undefined) void sessionRef.current?.setMode(asked.mode);
+    const modelId = asked.model ?? manifest.currentModelId;
+    if (modelId !== undefined && (asked.model !== undefined || asked.effort !== undefined)) {
+      void sessionRef.current?.setModel(modelId, asked.effort);
+    }
   }, [state.manifest]);
 
   // The toast is worded from what the app already holds, and this surface is
@@ -918,7 +920,11 @@ export const AgentChatSurface = memo(function AgentChatSurface({
                   description: modelOptionDescription(model),
                 }))}
                 currentId={manifest.currentModelId ?? null}
-                onSelect={(modelId) => void sessionRef.current?.setModel(modelId)}
+                onSelect={(modelId) => {
+                  if (manifest.providerId !== undefined)
+                    setPreferredModel(manifest.providerId, modelId);
+                  void sessionRef.current?.setModel(modelId);
+                }}
                 chipTestId="provider-model-chip"
                 optionTestId={(id) => `provider-model-option-${id}`}
                 disabled={composerDisabled}
@@ -939,7 +945,13 @@ export const AgentChatSurface = memo(function AgentChatSurface({
                   description: mode.description,
                 }))}
                 currentId={currentModeId}
-                onSelect={(modeId) => void sessionRef.current?.setMode(modeId)}
+                onSelect={(modeId) => {
+                  // Only a pick from this chip is a person's choice; a mode the
+                  // agent or a plan exit switches on its own never writes here.
+                  if (manifest?.providerId !== undefined)
+                    setPreferredMode(manifest.providerId, modeId);
+                  void sessionRef.current?.setMode(modeId);
+                }}
                 chipTestId="mode-chip"
                 optionTestId={(id) => `mode-option-${id}`}
                 dotFor={modeDotClass}

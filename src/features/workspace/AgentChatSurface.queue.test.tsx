@@ -153,7 +153,7 @@ beforeEach(() => {
   harness.revision = 0;
   surfaceProps = {};
   localStorage.removeItem(SETTING_KEY);
-  localStorage.removeItem("devboule.modelEffortPrefs");
+  localStorage.removeItem("devboule.agentPrefs");
   // The store reads storage once at boot; tests drive it through its API.
   setSendBehavior("queue");
 });
