@@ -230,7 +230,7 @@ describe("PermissionCard question answers", () => {
     // match — only a live check proves the Other input triggers the ring
     // (noted in the report).
     const ring = cardCss.rulesFor(".permission-card-question-option:has(:focus-visible)");
-    expect(ring).toContain("outline: 2px solid #bd4a26");
+    expect(ring).toContain("outline: 2px solid #7a5000");
     expect(ring).toContain("outline-offset: 2px");
 
     await act(async () => root.unmount());

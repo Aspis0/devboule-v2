@@ -79,8 +79,8 @@ describe("timeline computed styles", () => {
     expect(style.maxWidth).toBe("78%");
     expect(style.padding).toBe("12px");
     expect(style.borderRadius).toBe("12px 4px 12px 12px");
-    expect(style.backgroundColor).toBe("#fbf8f1");
-    expect(style.color).toBe("#1c1a17");
+    expect(style.backgroundColor).toBe("#ffffff");
+    expect(style.color).toBe("#242321");
     bubble.remove();
   });
 
@@ -166,11 +166,13 @@ describe("timeline computed styles", () => {
     expect(getComputedStyle(list).paddingLeft).toBe("16px");
     expect(getComputedStyle(inlineCode).fontSize).toBe("13px");
     expect(getComputedStyle(inlineCode).fontFamily).toContain("JetBrains Mono");
-    expect(getComputedStyle(codeBlock).backgroundColor).toBe("#262019");
+    expect(getComputedStyle(codeBlock).backgroundColor).toBe("#201f1e");
     expect(getComputedStyle(codeBlock).paddingRight).toBe("80px");
-    expect(getComputedStyle(copyable).backgroundColor).toBe("#ece4d4");
+    expect(getComputedStyle(copyable).backgroundColor).toBe("#e9e6dd");
     expect(getComputedStyle(copyable).borderLeftWidth).toBe("3px");
-    expect(getComputedStyle(copyable).borderLeftColor).toBe("#bd4a26");
+    // The code ground is dark in both themes, so its accent edge takes the tone
+    // that reads there rather than the light-theme accent (2.33:1).
+    expect(getComputedStyle(copyable).borderLeftColor).toBe("#e0b45d");
     expect(getComputedStyle(copyable).borderRadius).toBe("8px");
     expect(getComputedStyle(copyable).padding).toBe("10px 80px 10px 12px");
     expect(getComputedStyle(copyable).fontFamily).toContain("JetBrains Mono");
@@ -246,7 +248,7 @@ describe("timeline computed styles", () => {
     document.body.append(system, rail);
 
     expect(getComputedStyle(system).fontSize).toBe("12px");
-    expect(getComputedStyle(system).color).toBe("#4b473e");
+    expect(getComputedStyle(system).color).toBe("#4c4a43");
     expect(getComputedStyle(system).fontFamily).toContain("Inter");
     expect(getComputedStyle(typing).fontSize).toBe("12px");
     system.remove();
@@ -260,7 +262,7 @@ describe("timeline computed styles", () => {
     document.body.appendChild(footer);
 
     expect(getComputedStyle(footer).fontSize).toBe("12px");
-    expect(getComputedStyle(footer).color).toBe("#4b473e");
+    expect(getComputedStyle(footer).color).toBe("#4c4a43");
     expect(getComputedStyle(footer).fontFamily).toContain("Inter");
     // The trigger is a control, so it is a 24 px target. happy-dom computes
     // no width on a <summary>, so its box is read off the rule.

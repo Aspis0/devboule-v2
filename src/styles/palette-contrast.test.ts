@@ -280,3 +280,125 @@ describe("palette contrast (both themes, from tokens.css)", () => {
     expect(ratio, `--ink ${text} on inline-code fill ${ground}`).toBeGreaterThanOrEqual(7);
   });
 });
+
+/**
+ * The selected row's own fill, and the reference 6.97 floor for the ink on it:
+ * the row is the one ground whose fill changes when the strip is on it, and a
+ * person reads the tab name there more than anywhere else in the bar.
+ */
+const SELECTED_ROW_FLOORS: ReadonlyArray<{ theme: "light" | "dark"; text: string; why: string }> = [
+  { theme: "light", text: "--ink", why: "the tab name on the selected row" },
+  { theme: "light", text: "--ink-soft", why: "secondary text on the selected row" },
+  { theme: "dark", text: "--ink", why: "the tab name on the selected row" },
+  { theme: "dark", text: "--ink-soft", why: "secondary text on the selected row" },
+];
+
+/**
+ * The focus ring is the accent (`global.css:81`), and it has to be findable on
+ * every ground a focusable control can sit on — including the dark surfaces
+ * that keep their own ground in the light theme, which is why they take the
+ * accent that reads on them.
+ */
+const RING_GROUNDS: ReadonlyArray<{ ground: string; why: string }> = [
+  { ground: "--ground-app", why: "the app canvas" },
+  { ground: "--ground-center", why: "the transcript" },
+  { ground: "--panel-side", why: "the sidebar and right panel" },
+  { ground: "--panel-card", why: "cards, the composer and bubbles" },
+  { ground: "--panel-menu", why: "menus and popovers" },
+  { ground: "--fill-selected", why: "the selected row" },
+  { ground: "--fill-selected-soft", why: "multi-selected chips" },
+  { ground: "--fill-tool", why: "tool rows" },
+  { ground: "--code-bg", why: "code blocks and the terminal" },
+];
+
+describe("the selected row and the focus ring", () => {
+  for (const entry of SELECTED_ROW_FLOORS) {
+    const vars = entry.theme === "light" ? lightVars : darkVars;
+    it(`${entry.theme}: ${entry.text} on --fill-selected ≥ 6.97 (${entry.why})`, () => {
+      const text = vars.get(entry.text);
+      const ground = vars.get("--fill-selected");
+      expect(text, `${entry.text} missing from the ${entry.theme} block`).toMatch(
+        /^#[0-9a-fA-F]{6}$/,
+      );
+      expect(ground, `--fill-selected missing from the ${entry.theme} block`).toMatch(
+        /^#[0-9a-fA-F]{6}$/,
+      );
+      const ratio = contrastRatio(text!, ground!);
+      expect(ratio, `${entry.text} ${text} on --fill-selected ${ground}`).toBeGreaterThanOrEqual(
+        6.97,
+      );
+    });
+  }
+
+  for (const entry of RING_GROUNDS) {
+    for (const [theme, vars] of [
+      ["light", lightVars],
+      ["dark", darkVars],
+    ] as const) {
+      it(`${theme}: the focus ring ≥ 3 on ${entry.ground} (${entry.why})`, () => {
+        // The light theme's dark surfaces carry their own ring tone; the dark
+        // theme's accent is already the light one and reads on both.
+        const ring =
+          theme === "light" && entry.ground === "--code-bg"
+            ? (vars.get("--accent-on-code") ?? vars.get("--accent")!)
+            : vars.get("--accent")!;
+        const ground = vars.get(entry.ground);
+        expect(ring, `the ring colour for ${theme} ${entry.ground} is missing`).toMatch(
+          /^#[0-9a-fA-F]{6}$/,
+        );
+        expect(ground, `${entry.ground} missing from the ${theme} block`).toMatch(
+          /^#[0-9a-fA-F]{6}$/,
+        );
+        const ratio = contrastRatio(ring, ground!);
+        expect(ratio, `the ring ${ring} on ${entry.ground} ${ground}`).toBeGreaterThanOrEqual(3);
+      });
+    }
+  }
+});
+
+describe("palette A neutrality (both themes, from tokens.css)", () => {
+  /**
+   * Every structural surface stays near-neutral: ochre lives only in the
+   * accent and tone tokens, never in a ground, panel, line or fill.
+   * Chroma is the sRGB channel spread; the old warm grounds spread 21+
+   * (e.g. --line #ded6c4 at 26) while the new ones stay at 12 or under.
+   */
+  const NEAR_NEUTRAL_SURFACES = [
+    "--ground-app",
+    "--ground-center",
+    "--panel-side",
+    "--panel-card",
+    "--panel-composer",
+    "--panel-menu",
+    "--line",
+    "--line-strong",
+    "--fill-selected",
+    "--fill-selected-soft",
+    "--fill-tool",
+    "--fill-plus",
+    "--bubble-bg",
+    "--code-bg",
+    "--terminal-ground",
+  ] as const;
+  const CHROMA_CAP = 16;
+
+  function chroma(hex: string): number {
+    const channels = [1, 3, 5].map((at) => parseInt(hex.slice(at, at + 2), 16));
+    return Math.max(...channels) - Math.min(...channels);
+  }
+
+  for (const [theme, vars] of [
+    ["light", lightVars],
+    ["dark", darkVars],
+  ] as const) {
+    for (const name of NEAR_NEUTRAL_SURFACES) {
+      it(`${theme}: ${name} is near-neutral (chroma ≤ ${CHROMA_CAP})`, () => {
+        const value = vars.get(name);
+        expect(value, `${name} missing from the ${theme} block`).toMatch(/^#[0-9a-fA-F]{6}$/);
+        expect(chroma(value!), `${name} (${value}) exceeds the neutral cap`).toBeLessThanOrEqual(
+          CHROMA_CAP,
+        );
+      });
+    }
+  }
+});

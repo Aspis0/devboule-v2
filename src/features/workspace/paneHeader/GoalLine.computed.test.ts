@@ -60,14 +60,14 @@ function ruleBody(selector: string): string {
 
 const EXPECTED_RATIOS: Record<string, Record<string, string>> = {
   light: {
-    "--muted": "7.04",
-    "--ink-soft": "7.15",
-    "--tone-live": "3.87",
+    "--muted": "8.21",
+    "--ink-soft": "9.03",
+    "--tone-live": "4.71",
   },
   dark: {
-    "--muted": "7.41",
-    "--ink-soft": "9.67",
-    "--tone-live": "7.79",
+    "--muted": "8.01",
+    "--ink-soft": "11.04",
+    "--tone-live": "7.63",
   },
 };
 

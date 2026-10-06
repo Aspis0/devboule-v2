@@ -25,8 +25,8 @@ export const THEME_CHANGE_EVENT = "devboule:theme-change";
  * which cannot see CSS custom properties.
  */
 export const GROUND_BY_THEME: Record<ResolvedTheme, string> = {
-  light: "#e7e0d2",
-  dark: "#16120e",
+  light: "#f4f3f0",
+  dark: "#141414",
 };
 
 export interface StorageLike {

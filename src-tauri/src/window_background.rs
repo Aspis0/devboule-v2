@@ -13,8 +13,8 @@ use tauri::Theme;
 
 /// Copies of `--ground-app` in `src/styles/tokens.css`; the
 /// `nativeWindowBackground` frontend test fails if they drift.
-const LIGHT_GROUND: (u8, u8, u8, u8) = (0xE7, 0xE0, 0xD2, 255);
-const DARK_GROUND: (u8, u8, u8, u8) = (0x16, 0x12, 0x0E, 255);
+const LIGHT_GROUND: (u8, u8, u8, u8) = (0xF4, 0xF3, 0xF0, 255);
+const DARK_GROUND: (u8, u8, u8, u8) = (0x14, 0x14, 0x14, 255);
 
 /// Maps an OS theme answer onto the startup ground. Anything but an
 /// explicit light — dark, an unreadable OS theme, a future variant — is the

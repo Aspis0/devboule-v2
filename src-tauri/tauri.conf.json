@@ -37,7 +37,7 @@
         // themes; setup corrects it to the OS theme and the frontend keeps
         // it on the applied theme after that. Pinned by
         // src/lib/nativeWindowBackground.test.ts.
-        "backgroundColor": [22, 18, 14, 255],
+        "backgroundColor": [20, 20, 20, 255],
         // Tauri replaces WebView2's drag-drop handler on Windows and defaults
         // this to true, which swallows the DOM drag events entirely: dropping a
         // file on the Design composer fires no dragenter, dragover, or drop.

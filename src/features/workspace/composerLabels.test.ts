@@ -125,7 +125,7 @@ describe("the composer chrome's pinned values", () => {
     const css = assembleCssProof(OWNED_SHEETS);
     const rules = css.rulesFor(".workspace-composer:focus-within");
     // The ring rides the accent-soft tint, so it reads the same in both themes.
-    expect(rules).toContain("box-shadow: 0 0 0 2px color-mix(in srgb, #bd4a26 10%, transparent)");
+    expect(rules).toContain("box-shadow: 0 0 0 2px color-mix(in srgb, #7a5000 10%, transparent)");
   });
 
   it("caps the command menu on the lane's own inset", () => {

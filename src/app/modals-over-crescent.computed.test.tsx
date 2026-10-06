@@ -413,7 +413,7 @@ describe("every dialog outranks the crescent and no ancestor traps it", () => {
 });
 
 describe("the four owned modal backdrops share the one dim", () => {
-  const DIM = "rgba(28, 26, 23, 0.34)";
+  const DIM = "rgba(30, 30, 29, 0.34)";
   const DARK_DIM = "rgba(0, 0, 0, 0.5)";
   const BACKDROPS = [
     ".edit-scrim",

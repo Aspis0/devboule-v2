@@ -3,7 +3,7 @@
   margin: var(--space-4) 0 var(--space-2);
   padding: var(--space-10) 80px var(--space-10) var(--space-12);
   border: 1px solid var(--line-strong);
-  border-left: 3px solid var(--accent);
+  border-left: 3px solid var(--accent-on-code);
   border-radius: var(--radius-8);
   background: var(--fill-tool);
   color: var(--ink);
@@ -79,7 +79,7 @@
 .copy-btn:focus-visible {
   opacity: 1;
   pointer-events: auto;
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-on-code);
   outline-offset: 2px;
 }
 

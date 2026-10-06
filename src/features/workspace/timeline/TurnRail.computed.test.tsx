@@ -189,7 +189,7 @@ describe("turn rail computed styles", () => {
     expect(railStyle.pointerEvents).toBe("none");
     const threadStyle = getComputedStyle(thread);
     expect(threadStyle.width).toBe("1px");
-    expect(threadStyle.backgroundColor).toBe("#ded6c4");
+    expect(threadStyle.backgroundColor).toBe("#d4d2cc");
     expect(getComputedStyle(stop).position).toBe("absolute");
     rail.remove();
   });
@@ -226,7 +226,7 @@ describe("turn rail computed styles", () => {
     const currentStyle = getComputedStyle(glyph);
     expect(currentStyle.width).toBe("9px");
     expect(currentStyle.height).toBe("9px");
-    expect(currentStyle.backgroundColor).toBe("#bd4a26");
+    expect(currentStyle.backgroundColor).toBe("#7a5000");
     expect(currentStyle.boxShadow).toContain("3px");
     dot.remove();
 
@@ -255,13 +255,13 @@ describe("turn rail computed styles", () => {
     expect(previewStyle.position).toBe("absolute");
     expect(previewStyle.width).toBe("224px");
     expect(previewStyle.borderRadius).toBe("8px");
-    expect(previewStyle.backgroundColor).toBe("#fbf8f1");
+    expect(previewStyle.backgroundColor).toBe("#ffffff");
     expect(previewStyle.display).toBe("none");
     // Left, not the UA button centre the card would otherwise inherit.
     expect(previewStyle.textAlign).toBe("left");
     const titleStyle = getComputedStyle(title);
     expect(titleStyle.fontSize).toBe("12px");
-    expect(titleStyle.color).toBe("#1c1a17");
+    expect(titleStyle.color).toBe("#242321");
     expect(titleStyle.textOverflow).toBe("ellipsis");
     // The time sits under the title: the spec sizes it 12 like the title,
     // and small transcript metadata is muted.
@@ -329,7 +329,7 @@ describe("turn rail computed styles", () => {
     expect(getComputedStyle(dot).height).toBe("24px");
     dot.remove();
     expect(railCss.rulesFor(".turn-rail-dot:focus-visible")).toContain("outline: 2px solid");
-    expect(railCss.rulesFor(".turn-rail-dot:focus-visible")).toContain("#bd4a26");
+    expect(railCss.rulesFor(".turn-rail-dot:focus-visible")).toContain("#7a5000");
     expect(railCss.rulesFor(".workspace-conversation:hover .turn-rail .turn-rail-dot")).toContain(
       "pointer-events: auto",
     );

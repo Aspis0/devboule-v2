@@ -226,7 +226,7 @@ describe("the new token blocks", () => {
   });
 
   it("defines the one modal dim per theme: the dialogs' 0.34 in light, black 0.5 in dark", () => {
-    expect(sheet.light.get("--modal-dim")).toBe("rgba(28, 26, 23, 0.34)");
+    expect(sheet.light.get("--modal-dim")).toBe("rgba(30, 30, 29, 0.34)");
     expect(sheet.dark.get("--modal-dim")).toBe("rgba(0, 0, 0, 0.5)");
   });
 

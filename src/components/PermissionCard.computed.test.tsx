@@ -31,7 +31,7 @@ describe("PermissionCard computed styles", () => {
     expect(style.borderRadius).toBe("8px");
     expect(style.padding).toBe("10px 12px");
     // The hairline: the rule source carries the resolved token.
-    expect(cardCss.rulesFor(".permission-card")).toContain("border: 1px solid #ded6c4");
+    expect(cardCss.rulesFor(".permission-card")).toContain("border: 1px solid #d4d2cc");
     // The design surface's notice box shares the sheet and the ramp's floor.
     expect(cardCss.rulesFor(".permission-card-notice")).toContain("font-size: 12px");
     card.remove();
@@ -116,7 +116,7 @@ describe("PermissionCard computed styles", () => {
     // The accent-soft fill is a color-mix the DOM engine does not resolve;
     // the rule source carries it, with the token resolved.
     expect(cardCss.rulesFor(".permission-card-question-option-chosen")).toContain(
-      "background: color-mix(in srgb, #bd4a26 10%, transparent)",
+      "background: color-mix(in srgb, #7a5000 10%, transparent)",
     );
     // The asked question is the card's body text, not its headline: 13 px,
     // one step below the action line it answers.
@@ -126,7 +126,7 @@ describe("PermissionCard computed styles", () => {
     question.remove();
   });
 
-  it("pairs an outline Deny with a filled Allow once, both h28 r6 13px", () => {
+  it("pairs two outline actions of one size, the Allow once in ochre", () => {
     cardCss.inject([".permission-card-secondary-action", ".permission-card-primary-action"]);
     const deny = document.createElement("button");
     deny.className = "permission-card-secondary-action permission-card-deny-action";
@@ -141,8 +141,10 @@ describe("PermissionCard computed styles", () => {
     expect(denyStyle.backgroundColor).toBe("transparent");
     const allowStyle = getComputedStyle(allow);
     expect(allowStyle.height).toBe("28px");
-    expect(allowStyle.backgroundColor).toBe(cardCss.token("--accent"));
-    expect(allowStyle.color).toBe(cardCss.token("--accent-contrast"));
+    // The primary is a ghost, not a filled block: ochre on the card, nothing
+    // behind it, and the same size as Deny.
+    expect(allowStyle.backgroundColor).toBe("transparent");
+    expect(allowStyle.color).toBe(cardCss.token("--accent-text"));
     deny.remove();
     allow.remove();
   });
@@ -166,8 +168,8 @@ describe("PermissionCard computed styles", () => {
     expect(getComputedStyle(card).backgroundColor).toBe(cardCssDark.token("--panel-card"));
     expect(getComputedStyle(command).backgroundColor).toBe(cardCssDark.token("--code-bg"));
     expect(getComputedStyle(chosen).borderColor).toBe(cardCssDark.token("--accent"));
-    expect(getComputedStyle(allow).backgroundColor).toBe(cardCssDark.token("--accent"));
-    expect(getComputedStyle(allow).color).toBe(cardCssDark.token("--accent-contrast"));
+    expect(getComputedStyle(allow).backgroundColor).toBe("transparent");
+    expect(getComputedStyle(allow).color).toBe(cardCssDark.token("--accent-text"));
     card.remove();
     command.remove();
     chosen.remove();

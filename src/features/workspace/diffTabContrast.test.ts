@@ -127,14 +127,14 @@ const PAIRS = [
 
 const EXPECTED_RATIOS: Record<string, Record<string, string>> = {
   light: {
-    "--diff-text-add": "6.01",
-    "--diff-text-del": "6.07",
-    "--diff-text-hunk": "5.29",
+    "--diff-text-add": "6.85",
+    "--diff-text-del": "6.88",
+    "--diff-text-hunk": "5.91",
   },
   dark: {
-    "--diff-text-add": "5.96",
-    "--diff-text-del": "6.09",
-    "--diff-text-hunk": "7.96",
+    "--diff-text-add": "6.40",
+    "--diff-text-del": "6.52",
+    "--diff-text-hunk": "8.66",
   },
 };
 
@@ -142,16 +142,16 @@ const EXPECTED_RATIOS: Record<string, Record<string, string>> = {
 // carries no numbers today, but its tint is still a ground they could land on.
 const EXPECTED_NUMBER_RATIOS: Record<string, Record<string, string>> = {
   light: {
-    "--ground-center": "6.30",
-    "--diff-row-add": "4.60",
-    "--diff-row-del": "4.84",
-    "--diff-row-hunk": "5.81",
+    "--ground-center": "7.35",
+    "--diff-row-add": "5.27",
+    "--diff-row-del": "5.53",
+    "--diff-row-hunk": "6.69",
   },
   dark: {
-    "--ground-center": "7.26",
-    "--diff-row-add": "4.75",
-    "--diff-row-del": "5.44",
-    "--diff-row-hunk": "6.12",
+    "--ground-center": "8.55",
+    "--diff-row-add": "5.59",
+    "--diff-row-del": "6.39",
+    "--diff-row-hunk": "7.19",
   },
 };
 

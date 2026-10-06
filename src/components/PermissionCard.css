@@ -337,18 +337,24 @@
   background: var(--fill-hover);
 }
 
+/* The card's primary is a quiet ghost, Deny's shape with an ochre border and
+   ochre text: one filled block per card would out-shout the sentence the card
+   is asking about. */
 .permission-card-primary-action {
-  color: var(--accent-contrast);
-  background: var(--accent);
+  color: var(--accent-text);
+  background: transparent;
   border: 1px solid var(--accent);
 }
 
-/* An accent ring on the accent fill is invisible — exactly where keyboard
-   focus starts — so the filled action rings in the contrast colour, offset
-   inside its own fill. */
+.permission-card-primary-action:hover,
 .permission-card-primary-action:focus-visible {
-  outline: 2px solid var(--accent-contrast);
-  outline-offset: -2px;
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+
+.permission-card-primary-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .permission-card-secondary-action:disabled,
