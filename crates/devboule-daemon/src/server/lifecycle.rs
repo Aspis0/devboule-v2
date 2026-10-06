@@ -34,6 +34,42 @@ pub(super) fn arm_idle_shutdown(state: Arc<ServerState>, generation: u64) {
         });
 }
 
+/// How long between retention sweeps while the daemon runs, and the slice its
+/// wait is cut into so shutdown joins promptly.
+const ATTACHMENT_SWEEP_TICK: Duration = Duration::from_secs(30 * 60);
+const ATTACHMENT_SWEEP_SLICE: Duration = Duration::from_secs(1);
+
+/// Sweep attachment folders past their retention while the daemon runs.
+///
+/// The startup sweep covers a daemon that was killed before its sessions
+/// closed; a daemon that runs for weeks would otherwise carry a part file an
+/// abandoned upload left for as long as it lives. The thread stops on the same
+/// flag the accept loops read.
+fn start_attachment_sweeper(state: &Arc<ServerState>) -> Option<JoinHandle<()>> {
+    let state = Arc::clone(state);
+    std::thread::Builder::new()
+        .name("daemon-attachment-sweep".into())
+        .spawn(move || loop {
+            let mut waited = Duration::ZERO;
+            while waited < ATTACHMENT_SWEEP_TICK {
+                if state.stop.load(Ordering::SeqCst) {
+                    return;
+                }
+                std::thread::sleep(ATTACHMENT_SWEEP_SLICE);
+                waited += ATTACHMENT_SWEEP_SLICE;
+            }
+            let swept = state.sessions.sweep_attachments(SystemTime::now());
+            if !swept.is_empty() {
+                let reclaimed: u64 = swept.iter().filter_map(|(_, bytes)| *bytes).sum();
+                eprintln!(
+                    "daemon swept {} attachment folder(s) past retention, reclaiming at least {reclaimed} byte(s)",
+                    swept.len()
+                );
+            }
+        })
+        .ok()
+}
+
 /// The shutdown sequence between the quit signal and teardown, in
 /// production order: wait bounded for the accepted write jobs — a delete
 /// queued behind a slow read or mid-`git worktree remove` lands its row
@@ -194,6 +230,9 @@ pub(crate) fn run_with_paths(paths: RuntimePaths) -> Result<(), DaemonError> {
         .name("daemon-accept".into())
         .spawn(move || accept_loop(listener, accept_state))
         .map_err(DaemonError::from)?;
+    // Retention does not wait for the next start: a daemon that runs for weeks
+    // still reclaims the parts and folders an abandoned upload left behind.
+    let attachment_sweeper = start_attachment_sweeper(&state);
 
     // The peer listener is best-effort and runs beside the pipe: no Tailscale,
     // no tailnet address, or a missing key leaves the daemon local-only and
@@ -216,6 +255,9 @@ pub(crate) fn run_with_paths(paths: RuntimePaths) -> Result<(), DaemonError> {
         std::thread::sleep(JOIN_SLICE);
     }
     bounded_join(accept, JOIN_SLICE);
+    if let Some(handle) = attachment_sweeper {
+        bounded_join(handle, JOIN_BUDGET);
+    }
     drop(mcp_server);
     // The beat stops before the goodbye: a beat landing after it would date
     // the record to a moment the daemon was already gone.

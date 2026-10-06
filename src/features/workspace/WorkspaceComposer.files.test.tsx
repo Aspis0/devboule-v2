@@ -6,7 +6,7 @@
 import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AttachmentReference } from "../../types/ipc";
+import type { AttachmentReference, PromptAttachment } from "../../types/ipc";
 import type { AttachedFile } from "./useFileAttachments";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 import { composerProps } from "./composerTestKit";
@@ -48,7 +48,13 @@ const REFUSED: AttachedFile = {
 
 async function render(
   overrides: Partial<ComponentProps<typeof WorkspaceComposer>> = {},
-  onSend = vi.fn(async () => true),
+  onSend = vi.fn(
+    async (
+      _text: string,
+      _attachments: readonly PromptAttachment[],
+      _fileReferences?: readonly AttachmentReference[],
+    ) => true,
+  ),
 ) {
   const mocks = { onSend, onQueue: vi.fn() };
   await act(async () => {
@@ -165,6 +171,20 @@ describe("WorkspaceComposer file attachments", () => {
     expect(onAddFiles).toHaveBeenCalledTimes(1);
   });
 
+  it("leaves a plain text drop to the browser", async () => {
+    const onAddFiles = vi.fn();
+    await render({ onAddFiles });
+    const composer = container.querySelector<HTMLElement>(".workspace-composer")!;
+    const event = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "dataTransfer", {
+      value: { files: [], types: ["text/plain"] },
+    });
+    composer.dispatchEvent(event);
+    await act(async () => {});
+    expect(event.defaultPrevented).toBe(false);
+    expect(onAddFiles).not.toHaveBeenCalled();
+  });
+
   it("blocks a send while a file is still uploading or refused", async () => {
     const onSend = await render({ files: [UPLOADING] });
     await typeText("look at the notes");
@@ -177,11 +197,7 @@ describe("WorkspaceComposer file attachments", () => {
     await typeText("summarise the attached file");
     await pressSend();
     expect(onSend).toHaveBeenCalledTimes(1);
-    const [text, attachments, fileReferences] = onSend.mock.calls[0] as [
-      string,
-      unknown[],
-      readonly AttachmentReference[],
-    ];
+    const [text, attachments, fileReferences] = onSend.mock.calls[0]!;
     expect(text).toBe("summarise the attached file");
     expect(attachments).toHaveLength(0);
     expect(fileReferences).toEqual([REFERENCE]);

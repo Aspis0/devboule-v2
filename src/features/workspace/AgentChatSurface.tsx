@@ -19,6 +19,7 @@ import {
   sessionSetFeature,
   sessionSetMode,
   sessionSetModel,
+  sessionAttachmentDelete,
   sessionUploadAbort,
   sessionUploadBegin,
   sessionUploadChunk,
@@ -471,6 +472,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     sessionId,
     uploader: fileUploader,
     supported: fileUploadSupported,
+    remove: (reference) => sessionAttachmentDelete(reference),
   });
 
   // The composer takes the focus back when the queue hands it over (an emptied
@@ -862,9 +864,9 @@ export const AgentChatSurface = memo(function AgentChatSurface({
           // transfers and steers clear at once, a refused send keeps them.
           if (attachments.length > 0) {
             if (queueSupported && (turnActive || hasPendingPermission)) {
-              composerQueue.queueMessage(text, attachments, fileReferences);
-              fileAttachments.clearReady();
-              return true;
+              const queued = await composerQueue.queueMessage(text, attachments, fileReferences);
+              if (queued) fileAttachments.clearReady();
+              return queued;
             }
             // Images stay in the composer while sending; only the cleared
             // text rides a hand-back on failure, so the retry is whole. A

@@ -201,7 +201,14 @@ pub(super) fn resolve_attachment_references(
         }
         resolved.push(ResolvedReference {
             path,
-            name: reference.name.clone(),
+            // The name is untrusted wire text and goes straight into a prompt
+            // block: a newline in it would forge an `Uploaded file:`/`Path:`
+            // line, and an unbounded one would grow the prompt by a frame.
+            name: if reference.name.is_empty() {
+                String::new()
+            } else {
+                devboule_protocol::sanitize_attachment_name(&reference.name)
+            },
             stored_bytes,
         });
     }

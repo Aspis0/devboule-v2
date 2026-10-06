@@ -61,7 +61,7 @@ export interface MessageQueueUi {
     text: string,
     images?: readonly PromptAttachment[],
     fileReferences?: readonly AttachmentReference[],
-  ): Promise<void>;
+  ): Promise<boolean>;
   editRow(itemId: string, text: string): void;
   deleteRow(itemId: string): void;
   steerRow(itemId: string): void;
@@ -193,8 +193,8 @@ export function useMessageQueue(sessionId: string, options: MessageQueueOptions)
       text: string,
       images: readonly PromptAttachment[] = [],
       fileReferences: readonly AttachmentReference[] = [],
-    ): Promise<void> => {
-      if (!optionsRef.current.supported) return;
+    ): Promise<boolean> => {
+      if (!optionsRef.current.supported) return false;
       setError(null);
       const trimmed = text.trim();
       // The one check that stays here: a blank never leaves the composer, so
@@ -202,7 +202,7 @@ export function useMessageQueue(sessionId: string, options: MessageQueueOptions)
       if (trimmed === "" && images.length === 0 && fileReferences.length === 0) {
         setError(NOTHING_TO_QUEUE);
         optionsRef.current.onDraftBack(text, true, images);
-        return;
+        return false;
       }
       const lost = lostAddRef.current;
       lostAddRef.current = null;
@@ -236,8 +236,9 @@ export function useMessageQueue(sessionId: string, options: MessageQueueOptions)
             send: (references) => add(references),
           });
         }
+        return true;
       } catch (cause: unknown) {
-        if (abandoned()) return;
+        if (abandoned()) return false;
         say(cause);
         optionsRef.current.onDraftBack(text, true, images);
         // Only a lost answer leaves the daemon's state unknown; a refusal is an
@@ -245,6 +246,7 @@ export function useMessageQueue(sessionId: string, options: MessageQueueOptions)
         lostAddRef.current = answerNeverArrived(cause)
           ? { id: clientOperationId, text: trimmed, images, fileReferences }
           : null;
+        return false;
       }
     },
     [abandoned, ask, say],

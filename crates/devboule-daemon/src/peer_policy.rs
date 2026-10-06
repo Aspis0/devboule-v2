@@ -221,6 +221,10 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         | ClientMessage::SessionUploadChunk { .. }
         | ClientMessage::SessionUploadFinish { .. }
         | ClientMessage::SessionUploadAbort { .. } => with_capability(caps, CAP_SEND),
+        // The delete removes bytes the same road staged; a peer allowed to send
+        // reads the same capability, and the dispatch gate refuses it earlier
+        // anyway (a paired device may not carry attachments at all).
+        ClientMessage::SessionAttachmentDelete { .. } => with_capability(caps, CAP_SEND),
         ClientMessage::SessionPermissionRespond { .. } => {
             with_capability(caps, CAP_ANSWER_PERMISSIONS)
         }
@@ -1696,12 +1700,12 @@ pub(crate) mod tests {
     }
 
     /// The frames no `Deny` arm has ever covered: the handshake pair, the
-    /// act-named arms including the five upload frames, and the five queue
-    /// frames — which ride `send` for the same reason `SessionSend` does.
-    /// Spelled as wire names so the walk above can prove it covers every
+    /// act-named arms including the five upload frames and the delete, and the
+    /// five queue frames — which ride `send` for the same reason `SessionSend`
+    /// does. Spelled as wire names so the walk above can prove it covers every
     /// *other* variant — with `VARIANT_COUNT` that is a closed statement, not a
     /// guess.
-    const ALWAYS_ALLOWED_VARIANTS: [&str; 24] = [
+    const ALWAYS_ALLOWED_VARIANTS: [&str; 25] = [
         "Hello",
         "Ping",
         "SessionsList",
@@ -1717,6 +1721,7 @@ pub(crate) mod tests {
         "SessionUploadChunk",
         "SessionUploadFinish",
         "SessionUploadAbort",
+        "SessionAttachmentDelete",
         "SessionPermissionRespond",
         "SessionSetMode",
         "SessionSetName",
@@ -2610,6 +2615,9 @@ pub(crate) mod tests {
             | ClientMessage::SessionUploadChunk { .. }
             | ClientMessage::SessionUploadFinish { .. }
             | ClientMessage::SessionUploadAbort { .. } => under(CAP_SEND),
+            // The delete half of the same road: removing the bytes a send could
+            // still name is a write, so it reads `send`.
+            ClientMessage::SessionAttachmentDelete { .. } => under(CAP_SEND),
             // The read half of the deposit: a content read, so it rides the
             // administrative capability — scope still decides which reference resolves.
             ClientMessage::SessionAttachmentRead { .. } => administrative(),
@@ -2688,7 +2696,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 89;
+    pub(crate) const VARIANT_COUNT: usize = 90;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -2720,6 +2728,7 @@ pub(crate) mod tests {
             ClientMessage::SessionUploadFinish { .. } => "SessionUploadFinish",
             ClientMessage::SessionUploadAbort { .. } => "SessionUploadAbort",
             ClientMessage::SessionAttachmentRead { .. } => "SessionAttachmentRead",
+            ClientMessage::SessionAttachmentDelete { .. } => "SessionAttachmentDelete",
             ClientMessage::AgentMessageSend { .. } => "AgentMessageSend",
             ClientMessage::SessionResize { .. } => "SessionResize",
             ClientMessage::SessionInterrupt { .. } => "SessionInterrupt",
@@ -2895,6 +2904,15 @@ pub(crate) mod tests {
                     digest: "b".repeat(64),
                     stored_bytes: 512,
                     name: String::new(),
+                },
+            },
+            ClientMessage::SessionAttachmentDelete {
+                id: 1,
+                reference: devboule_protocol::AttachmentReference {
+                    session_id: "s.a.1".to_string(),
+                    digest: "b".repeat(64),
+                    stored_bytes: 512,
+                    name: "page.png".to_string(),
                 },
             },
             ClientMessage::SessionUploadBegin {

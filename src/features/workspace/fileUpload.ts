@@ -35,6 +35,12 @@ export interface FileUploader {
  * cannot match drops the declaration) and continue from that answer. `finish`
  * closes it and answers the reference a later send names.
  *
+ * `signal` is checked before every chunk and before `finish`: an aborted
+ * upload stops sending and rejects with an `AbortError`, and the caller is what
+ * tells the daemon to drop the staged bytes. A failed chunk after an abort is
+ * not a reason to resume — the re-`begin` a resume would issue is exactly the
+ * "start over and store it anyway" this must not do.
+ *
  * The file is read slice by slice, never whole: even a 50 MiB file costs one
  * chunk of transient memory here. A file the caller already refused for its
  * size is never read at all.
@@ -44,23 +50,42 @@ export async function uploadFile(
   sessionId: string,
   uploadId: string,
   uploader: FileUploader,
-  onProgress?: (received: number) => void,
+  signal?: AbortSignal,
 ): Promise<AttachmentReference> {
+  const abortError = () => {
+    const error = new Error("The upload was cancelled.");
+    error.name = "AbortError";
+    return error;
+  };
+  const throwIfAborted = () => {
+    if (signal?.aborted) throw abortError();
+  };
+  throwIfAborted();
   const declare = () => uploader.begin(sessionId, uploadId, file.name, file.size);
   let offset = await declare();
-  onProgress?.(offset);
+  // A chunk that does not move the offset is a retry, not progress; a daemon
+  // that keeps answering the same number must not spin this loop forever.
+  let stalls = 0;
   while (offset < file.size) {
+    throwIfAborted();
     const slice = file.slice(offset, Math.min(offset + MAX_UPLOAD_CHUNK_BYTES, file.size));
     const data = base64Of(new Uint8Array(await slice.arrayBuffer()));
     let received: number;
     try {
       received = await uploader.chunk(sessionId, uploadId, offset, data);
     } catch {
+      if (signal?.aborted) throw abortError();
       received = await resume(uploader, sessionId, uploadId, declare);
     }
+    if (received <= offset) {
+      stalls += 1;
+      if (stalls > 2) throw new Error("The upload stopped making progress.");
+    } else {
+      stalls = 0;
+    }
     offset = received;
-    onProgress?.(offset);
   }
+  throwIfAborted();
   return uploader.finish(sessionId, uploadId);
 }
 

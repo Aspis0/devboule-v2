@@ -8,7 +8,7 @@ use devboule_protocol::{sanitize_attachment_name, MAX_UPLOAD_BYTES};
 use super::AttachmentUploads;
 use crate::attachment_store::AttachmentStore;
 
-struct TempDir(std::path::PathBuf);
+pub(super) struct TempDir(pub(super) std::path::PathBuf);
 
 impl TempDir {
     fn new() -> Self {
@@ -22,13 +22,13 @@ impl Drop for TempDir {
     }
 }
 
-fn fixture() -> (TempDir, AttachmentStore, AttachmentUploads) {
+pub(super) fn fixture() -> (TempDir, AttachmentStore, AttachmentUploads) {
     let temp = TempDir::new();
     let store = AttachmentStore::new(&temp.0);
     (temp, store, AttachmentUploads::default())
 }
 
-fn encoded(bytes: &[u8]) -> String {
+pub(super) fn encoded(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
@@ -75,13 +75,19 @@ fn a_file_uploaded_in_chunks_finishes_as_a_stored_file() {
     let second = &data[100_000..];
     assert_eq!(
         uploads
-            .chunk(session_id, "up-1", 0, &encoded(first))
+            .chunk(&store, session_id, "up-1", 0, &encoded(first))
             .expect("first chunk"),
         first.len() as u64
     );
     assert_eq!(
         uploads
-            .chunk(session_id, "up-1", first.len() as u64, &encoded(second))
+            .chunk(
+                &store,
+                session_id,
+                "up-1",
+                first.len() as u64,
+                &encoded(second)
+            )
             .expect("second chunk"),
         data.len() as u64
     );
@@ -119,7 +125,7 @@ fn a_lost_acknowledgement_resumes_and_a_stale_chunk_is_refused() {
         .begin(&store, session_id, "up-2", "notes.txt", data.len() as u64)
         .expect("open");
     uploads
-        .chunk(session_id, "up-2", 0, &encoded(&data[..5]))
+        .chunk(&store, session_id, "up-2", 0, &encoded(&data[..5]))
         .expect("first chunk");
     // The same declaration under the same id is the reconnect: it answers the
     // offset instead of refusing or starting over.
@@ -130,7 +136,7 @@ fn a_lost_acknowledgement_resumes_and_a_stale_chunk_is_refused() {
         5
     );
     let stale = uploads
-        .chunk(session_id, "up-2", 0, &encoded(&data[5..10]))
+        .chunk(&store, session_id, "up-2", 0, &encoded(&data[5..10]))
         .expect_err("a stale offset is refused, not appended blind");
     assert!(
         stale.message.contains('5') && stale.message.contains('0'),
@@ -138,7 +144,7 @@ fn a_lost_acknowledgement_resumes_and_a_stale_chunk_is_refused() {
     );
     assert_eq!(uploads.status(session_id, "up-2").expect("status"), 5);
     uploads
-        .chunk(session_id, "up-2", 5, &encoded(&data[5..]))
+        .chunk(&store, session_id, "up-2", 5, &encoded(&data[5..]))
         .expect("the rest");
     let (deposited, _) = uploads.finish(&store, session_id, "up-2").expect("finish");
     assert_eq!(std::fs::read(deposited.path).expect("bytes"), data);
@@ -153,7 +159,7 @@ fn a_restarted_daemon_refuses_status_and_the_next_begin_starts_over() {
         .begin(&store, session_id, "up-3", "half.bin", data.len() as u64)
         .expect("open");
     uploads
-        .chunk(session_id, "up-3", 0, &encoded(&data[..4]))
+        .chunk(&store, session_id, "up-3", 0, &encoded(&data[..4]))
         .expect("half");
     assert_eq!(part_files(&store, session_id).len(), 1);
     // A restart loses the in-memory map, which is what `forget_session`
@@ -170,7 +176,7 @@ fn a_restarted_daemon_refuses_status_and_the_next_begin_starts_over() {
         0
     );
     uploads
-        .chunk(session_id, "up-3", 0, &encoded(data))
+        .chunk(&store, session_id, "up-3", 0, &encoded(data))
         .expect("the whole file");
     let (deposited, _) = uploads.finish(&store, session_id, "up-3").expect("finish");
     assert_eq!(std::fs::read(deposited.path).expect("bytes"), data);
@@ -201,7 +207,7 @@ fn a_chunk_past_the_declared_total_is_refused() {
         .begin(&store, session_id, "up-6", "short.bin", 4)
         .expect("open");
     let error = uploads
-        .chunk(session_id, "up-6", 0, &encoded(b"12345"))
+        .chunk(&store, session_id, "up-6", 0, &encoded(b"12345"))
         .expect_err("past the declared size");
     assert!(error.message.contains('4'), "{error:?}");
     assert_eq!(uploads.status(session_id, "up-6").expect("status"), 0);
@@ -220,7 +226,7 @@ fn the_display_name_is_sanitized_before_it_reaches_a_reference() {
             .begin(&store, session_id, upload_id, name, 3)
             .expect("open");
         uploads
-            .chunk(session_id, upload_id, 0, &encoded(b"abc"))
+            .chunk(&store, session_id, upload_id, 0, &encoded(b"abc"))
             .expect("chunk");
         let (_, answered) = uploads
             .finish(&store, session_id, upload_id)
@@ -241,7 +247,7 @@ fn the_same_bytes_twice_are_one_stored_file() {
             .begin(&store, session_id, upload_id, name, data.len() as u64)
             .expect("open");
         uploads
-            .chunk(session_id, upload_id, 0, &encoded(data))
+            .chunk(&store, session_id, upload_id, 0, &encoded(data))
             .expect("chunk");
         let (deposited, _) = uploads
             .finish(&store, session_id, upload_id)
@@ -264,15 +270,17 @@ fn abort_removes_the_staged_bytes_and_a_close_drops_the_state() {
         .begin(&store, session_id, "up-12", "gone.bin", 8)
         .expect("open");
     uploads
-        .chunk(session_id, "up-12", 0, &encoded(b"abcd"))
+        .chunk(&store, session_id, "up-12", 0, &encoded(b"abcd"))
         .expect("half");
     assert_eq!(part_files(&store, session_id).len(), 1);
-    uploads.abort(session_id, "up-12").expect("abort");
+    uploads.abort(&store, session_id, "up-12").expect("abort");
     assert!(part_files(&store, session_id).is_empty());
     assert!(uploads.status(session_id, "up-12").is_err());
     // An abort of an id the daemon no longer holds is an `Ok`: there is
     // nothing left to discard.
-    uploads.abort(session_id, "up-12").expect("abort twice");
+    uploads
+        .abort(&store, session_id, "up-12")
+        .expect("abort twice");
 
     uploads
         .begin(&store, session_id, "up-13", "gone2.bin", 8)
@@ -295,7 +303,7 @@ fn a_chunk_for_another_session_is_refused() {
         .begin(&store, session_id, "up-14", "mine.bin", 4)
         .expect("open");
     let error = uploads
-        .chunk("s.a.10", "up-14", 0, &encoded(b"abcd"))
+        .chunk(&store, "s.a.10", "up-14", 0, &encoded(b"abcd"))
         .expect_err("another session's frame");
     assert!(error.message.contains("start it again"), "{error:?}");
     assert_eq!(uploads.status(session_id, "up-14").expect("untouched"), 0);

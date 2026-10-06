@@ -229,7 +229,8 @@ impl super::SessionRegistry {
         data: &str,
     ) -> Result<u64, WireError> {
         self.check_upload_owner(session_id, owner, conn)?;
-        self.uploads.chunk(session_id, upload_id, offset, data)
+        self.uploads
+            .chunk(&self.attachments, session_id, upload_id, offset, data)
     }
 
     /// Close one fully received upload and answer the reference a send names.
@@ -276,7 +277,27 @@ impl super::SessionRegistry {
         upload_id: &str,
     ) -> Result<(), WireError> {
         self.check_upload_owner(session_id, owner, conn)?;
-        self.uploads.abort(session_id, upload_id)
+        self.uploads.abort(&self.attachments, session_id, upload_id)
+    }
+
+    /// Delete one stored attachment and release the bytes it held.
+    ///
+    /// The same ownership door the read walks, then the wire's reference rules
+    /// (the reference must name this session, and a digest that is not a digest
+    /// is refused before the store is asked), then the store removes the
+    /// content-addressed file and charges its bytes back to the owner budget.
+    pub(crate) fn delete_attachment(
+        &self,
+        reference: &AttachmentReference,
+        owner: &OwnerId,
+        conn: &ConnHandle,
+    ) -> Result<(), WireError> {
+        self.check_upload_owner(&reference.session_id, owner, conn)?;
+        validate_attachment_references(&reference.session_id, std::slice::from_ref(reference))
+            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        let hint = crate::attachment_store::reference_extension_hint(reference);
+        self.attachments
+            .remove_stored(&reference.session_id, &reference.digest, hint.as_deref())
     }
 
     /// The ownership door every upload frame walks, in the order the deposit

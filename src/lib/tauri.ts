@@ -195,6 +195,7 @@ export type CommandArgs = {
   };
   session_upload_finish: { id: Id; sessionId: string; uploadId: string };
   session_upload_abort: { id: Id; sessionId: string; uploadId: string };
+  session_attachment_delete: { reference: AttachmentReference };
   session_queue_add: {
     id: Id;
     /**
@@ -394,6 +395,7 @@ type CommandResults = {
   /** The reference the stored file is named by, `name` included. */
   session_upload_finish: AttachmentReference;
   session_upload_abort: void;
+  session_attachment_delete: void;
   session_queue_add: void;
   session_queue_edit: void;
   session_queue_remove: void;
@@ -582,6 +584,7 @@ export const COMMAND_ARG_KEYS = {
   session_upload_chunk: ["id", "sessionId", "uploadId", "offset", "data"],
   session_upload_finish: ["id", "sessionId", "uploadId"],
   session_upload_abort: ["id", "sessionId", "uploadId"],
+  session_attachment_delete: ["reference"],
   session_queue_add: ["id", "clientOperationId", "text", "attachments", "attachmentReferences"],
   session_queue_edit: ["id", "clientOperationId", "itemId", "text"],
   session_queue_remove: ["id", "clientOperationId", "itemId"],
@@ -1059,6 +1062,16 @@ export const sessionUploadFinish = (id: Id, sessionId: string, uploadId: string)
   invokeTyped("session_upload_finish", { id, sessionId, uploadId });
 export const sessionUploadAbort = (id: Id, sessionId: string, uploadId: string) =>
   invokeTyped("session_upload_abort", { id, sessionId, uploadId });
+
+/**
+ * Delete one stored attachment and release the bytes it held.
+ *
+ * The reference is the value a deposit or an upload finish answered with,
+ * verbatim: the daemon re-stats the file, so a value this side derived would
+ * name a different file. A reference whose file is already gone is `Ok`.
+ */
+export const sessionAttachmentDelete = (reference: AttachmentReference) =>
+  invokeTyped("session_attachment_delete", { reference });
 
 /**
  * The shared follow-up queue (protocol 22, `session.queue`). Five frames,

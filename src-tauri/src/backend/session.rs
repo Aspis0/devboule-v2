@@ -466,6 +466,22 @@ pub async fn session_upload_abort(
     off_main_thread(move || client.session_upload_abort(&session_id, &upload_id)).await
 }
 
+/// Delete one stored attachment and release the bytes it held.
+///
+/// The reference is the value a deposit or an upload finish answered with,
+/// verbatim: the daemon re-stats the file and refuses a disagreement, so
+/// re-deriving a digest or a size here would be naming a different file.
+#[tauri::command]
+pub async fn session_attachment_delete(
+    bridge: State<'_, DaemonBridge>,
+    reference: AttachmentReference,
+) -> Result<(), CommandError> {
+    require_session_id(&reference.session_id)?;
+    require_attachment_reference_limits(&reference.session_id, std::slice::from_ref(&reference))?;
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.session_attachment_delete(&reference)).await
+}
+
 /// Read back the bytes of one deposited attachment, by reference.
 ///
 /// The forwarder is `session_deposit`'s, minus the attachment: the reference

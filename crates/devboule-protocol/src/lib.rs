@@ -196,8 +196,9 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// chunked file uploads (`SessionUploadBegin`/`Chunk`/`Status`/`Finish`/
 /// `Abort` and the `SessionUploadProgress` reply), all gated on
 /// `attachments.upload`, so a peer that never negotiated the name is never sent
-/// one and the floor stays put.
-pub const PROTOCOL_VERSION: u32 = 26;
+/// one and the floor stays put. Protocol 27 adds the stored-attachment delete
+/// (`SessionAttachmentDelete`), gated on `attachments.delete`.
+pub const PROTOCOL_VERSION: u32 = 27;
 /// Oldest dialect this crate still accepts. Protocols 17, 18 and 20 added only
 /// optional fields, so a v16 peer still interoperates — it just shows no
 /// command chip, turn time, cache, cost or chat-image thumbnails until
@@ -331,6 +332,14 @@ pub mod caps {
     /// would fail on a frame the old peer never knew. The app gates the whole
     /// upload on this name, which is what it exists for.
     pub const ATTACHMENTS_UPLOAD: &str = "attachments.upload";
+
+    /// Stored-attachment deletion (`SessionAttachmentDelete`).
+    ///
+    /// Its own name rather than the upload's: a client gating a delete on
+    /// `attachments.upload` would send the frame to a daemon that knows the
+    /// uploads but not the delete, whose reader would fail on a variant it
+    /// never knew. In both lists for the reason `attachments.read` is.
+    pub const ATTACHMENTS_DELETE: &str = "attachments.delete";
 
     /// Agents create agents (`devboule_create_agent`) and the finish reports
     /// that come back.
@@ -794,6 +803,9 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     // it away — and the app reads it before offering the attach control that
     // would send them.
     capabilities.push(Capability::new(caps::ATTACHMENTS_UPLOAD));
+    // Same pairing, for the delete: the daemon removes a stored file, and the
+    // app reads the name before it offers a remove that would send the frame.
+    capabilities.push(Capability::new(caps::ATTACHMENTS_DELETE));
     // Same pairing again: `agent_create` names the MCP tool an agent may call
     // and the two events that come back from it. The daemon serves it, so the
     // app must offer it or the handshake would negotiate it away.
@@ -889,6 +901,9 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // intersection keeps it, and sends no upload frame to a daemon that
     // predates them.
     capabilities.push(Capability::new(caps::ATTACHMENTS_UPLOAD));
+    // Same pairing, for the delete: the app offers the name so the
+    // intersection keeps it, and releases hosted bytes only through it.
+    capabilities.push(Capability::new(caps::ATTACHMENTS_DELETE));
     // Same pairing, for the creation surface: the app offers it so the
     // intersection keeps it, and reads it to know whether the daemon serves
     // `devboule_create_agent` and its two events.

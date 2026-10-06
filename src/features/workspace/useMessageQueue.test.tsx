@@ -144,6 +144,16 @@ async function press(action: () => void): Promise<void> {
   });
 }
 
+/** The action's own answer, for the callers that read it (the queue's
+ * acceptance decides whether the composer's chips clear). */
+async function answer(action: () => Promise<boolean>): Promise<boolean> {
+  let result = false;
+  await act(async () => {
+    result = await action();
+  });
+  return result;
+}
+
 async function click(testId: string): Promise<void> {
   const button = container.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`);
   if (button === null) throw new Error(`${testId} did not render`);
@@ -216,6 +226,17 @@ describe("useMessageQueue", () => {
 
     expect(read().error).toBe("The agent daemon refused that request as invalid.");
     expect(handedBack).toEqual([{ text: "too big", focus: true }]);
+  });
+
+  it("answers true for an accepted add and false for a refusal", async () => {
+    renderProbe();
+    expect(await answer(() => latest!.queueMessage("hello"))).toBe(true);
+
+    vi.mocked(sessionQueueAdd).mockRejectedValue({
+      code: "invalid_request",
+      message: "A queued message needs text or an attachment.",
+    });
+    expect(await answer(() => latest!.queueMessage("again"))).toBe(false);
   });
 
   it("reuses the lost answer's id when the same text is submitted again", async () => {

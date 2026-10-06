@@ -134,6 +134,7 @@ pub fn run() {
             backend::session::session_upload_chunk,
             backend::session::session_upload_finish,
             backend::session::session_upload_abort,
+            backend::session::session_attachment_delete,
             backend::session::session_attachment_read,
             backend::session::session_interrupt,
             backend::session::session_set_model,

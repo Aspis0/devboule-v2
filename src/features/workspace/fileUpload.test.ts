@@ -116,3 +116,31 @@ describe("uploadFile", () => {
     );
   });
 });
+
+describe("uploadFile cancellation", () => {
+  it("stops at the next chunk when the signal aborts, and never resumes", async () => {
+    const controller = new AbortController();
+    const file = fileOf(2 * MAX_UPLOAD_CHUNK_BYTES);
+    let chunks = 0;
+    const uploader: FileUploader = {
+      begin: vi.fn(async () => 0),
+      status: vi.fn(async () => {
+        throw new Error("not in progress");
+      }),
+      chunk: vi.fn(async (_session, _upload, offset, data) => {
+        chunks += 1;
+        controller.abort();
+        return offset + rawLength(data);
+      }),
+      finish: vi.fn(async () => REFERENCE),
+      abort: vi.fn(async () => {}),
+    };
+
+    await expect(
+      uploadFile(file, "s.a.1", "up-1", uploader, controller.signal),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(chunks).toBe(1);
+    expect(uploader.begin).toHaveBeenCalledTimes(1);
+    expect(uploader.finish).not.toHaveBeenCalled();
+  });
+});

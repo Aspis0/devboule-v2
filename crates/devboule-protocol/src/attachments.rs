@@ -120,21 +120,23 @@ pub fn upload_extension(name: &str) -> Option<String> {
 }
 
 /// Whether `upload_id` is a token an in-progress upload may be keyed by:
-/// 1..=64 ASCII alphanumerics, `-` or `_`.
+/// 1..=64 lowercase ASCII alphanumerics, `-` or `_`.
 ///
 /// The id is the client's, because a reconnect has to name the same upload to
 /// resume it; the alphabet is what keeps an id from being a path or an empty
-/// key.
+/// key. Uppercase is refused rather than folded: the id names a staged file on
+/// a case-preserving but case-insensitive filesystem (NTFS, APFS), so `Up-1`
+/// and `up-1` would be two map entries over one file.
 pub fn validate_upload_id(upload_id: &str) -> Result<(), String> {
     let shape = !upload_id.is_empty()
         && upload_id.len() <= 64
-        && upload_id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_');
+        && upload_id.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'_'
+        });
     if shape {
         return Ok(());
     }
-    Err("An upload id must be 1 to 64 letters, digits, '-' or '_'.".to_string())
+    Err("An upload id must be 1 to 64 lowercase letters, digits, '-' or '_'.".to_string())
 }
 
 /// The first reason an upload may not be opened as declared, or `Ok(())`.
@@ -732,7 +734,15 @@ mod tests {
     #[test]
     fn an_upload_id_is_a_token_not_a_path() {
         assert!(validate_upload_id("0f7c-2a_9").is_ok());
-        for bad in ["", "../up", "a/b", "a\\b", "a b", "x".repeat(65).as_str()] {
+        for bad in [
+            "",
+            "../up",
+            "a/b",
+            "a\\b",
+            "a b",
+            "Up-1",
+            "x".repeat(65).as_str(),
+        ] {
             assert!(validate_upload_id(bad).is_err(), "{bad:?} must be refused");
         }
     }

@@ -1,5 +1,5 @@
 import { act, type ComponentProps } from "react";
-import type { PromptAttachment } from "../../types/ipc";
+import type { AttachmentReference, PromptAttachment } from "../../types/ipc";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 
 /**
@@ -15,8 +15,16 @@ export const MENU_COMMANDS = [
 ];
 
 export interface ComposerMocks {
-  onSend: (text: string, attachments: readonly PromptAttachment[]) => Promise<boolean>;
-  onQueue: (text: string, attachments: readonly PromptAttachment[]) => void | Promise<void>;
+  onSend: (
+    text: string,
+    attachments: readonly PromptAttachment[],
+    fileReferences?: readonly AttachmentReference[],
+  ) => Promise<boolean>;
+  onQueue: (
+    text: string,
+    attachments: readonly PromptAttachment[],
+    fileReferences?: readonly AttachmentReference[],
+  ) => void | Promise<unknown>;
 }
 
 export function composerProps(

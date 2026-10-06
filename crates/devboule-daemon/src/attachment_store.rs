@@ -894,6 +894,160 @@ impl AttachmentStore {
         Ok(session.dir)
     }
 
+    /// Create (or truncate) one upload's staged part file and answer its path.
+    ///
+    /// The redirect refusal is the store's own, not the caller's: `File::create`
+    /// follows a link, so a name planted as a junction or symlink would write
+    /// through it, and a non-file entry is a refusal rather than a truncation.
+    /// Truncating a part a restarted daemon left also drops the bytes it held
+    /// from the budget cache — they are gone from the disk.
+    pub(crate) fn create_staged(
+        &self,
+        session_id: &str,
+        upload_id: &str,
+    ) -> Result<PathBuf, WireError> {
+        let session = self.session(session_id).ok_or_else(no_such_session)?;
+        prepare_session_dir(&self.root, &session.dir)?;
+        let staged = staged_path(&session.dir, upload_id);
+        refuse_redirect(&staged, "the upload file this write would create")?;
+        if !is_regular_file(&staged) && std::fs::symlink_metadata(&staged).is_ok() {
+            return Err(WireError::new(
+                ErrorCode::Io,
+                format!(
+                    "Could not stage an uploaded file: {} is not a file.",
+                    staged.display()
+                ),
+            ));
+        }
+        let previous = std::fs::symlink_metadata(&staged)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        std::fs::File::create(&staged).map_err(|error| {
+            WireError::new(
+                ErrorCode::Io,
+                format!("Could not stage an uploaded file: {error}"),
+            )
+        })?;
+        self.release_staged(session_id, previous);
+        Ok(staged)
+    }
+
+    /// Append one chunk to a staged part file, and charge its bytes to the
+    /// session in the same critical section that checks the budget.
+    ///
+    /// One lock across the check and the write is what keeps a chunk from
+    /// landing uncharged: the comparison and the charge are `admit_locked`'s
+    /// own order, restated for the staging half. A refusal writes nothing.
+    pub(crate) fn append_staged(
+        &self,
+        session_id: &str,
+        upload_id: &str,
+        bytes: &[u8],
+    ) -> Result<(), WireError> {
+        let session = self.session(session_id).ok_or_else(no_such_session)?;
+        let staged = staged_path(&session.dir, upload_id);
+        // The chunk cap bounds this, but a charge is 64-bit arithmetic and the
+        // cast has to be explicit for a 32-bit target.
+        let added = bytes.len() as u64;
+        let mut state = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        AttachmentStore::seed_locked(&self.root, &mut state);
+        let Some(held) = store_total(&state) else {
+            return Err(budget_unknown());
+        };
+        let after = held.saturating_add(added);
+        if after > MAX_ATTACHMENT_OWNER_BYTES as u64 {
+            return Err(over_budget(after));
+        }
+        // The same refusal the create ran: a link planted between the two
+        // would otherwise take this append, and a non-file is not a part file.
+        refuse_redirect(&staged, "the upload file this write would append to")?;
+        if !is_regular_file(&staged) {
+            return Err(WireError::new(
+                ErrorCode::Io,
+                format!(
+                    "Could not stage an uploaded file: {} is not a file.",
+                    staged.display()
+                ),
+            ));
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&staged)
+            .map_err(|error| {
+                WireError::new(
+                    ErrorCode::Io,
+                    format!("Could not stage an uploaded file: {error}"),
+                )
+            })?;
+        use std::io::Write as _;
+        file.write_all(bytes).map_err(|error| {
+            WireError::new(
+                ErrorCode::Io,
+                format!("Could not stage an uploaded file: {error}"),
+            )
+        })?;
+        charge_locked(&mut state, session_id, added);
+        Ok(())
+    }
+
+    /// Give staged bytes back when they leave without being admitted: an
+    /// abort, a dedupe that removed the part, or a failed admission.
+    pub(crate) fn release_staged(&self, session_id: &str, bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
+        let mut state = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        release_locked(&mut state, session_id, bytes);
+    }
+
+    /// Remove one stored attachment and release the bytes it held.
+    ///
+    /// A file that is already gone is `Ok`: the caller asked for the bytes to
+    /// be released, and there are none left to release. The listing is what
+    /// names the file, so a redirect at the digest's name is refused rather
+    /// than followed.
+    pub(crate) fn remove_stored(
+        &self,
+        session_id: &str,
+        digest: &str,
+        extension_hint: Option<&str>,
+    ) -> Result<(), WireError> {
+        if !is_digest(digest) {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                invalid_attachment_digest_message(),
+            ));
+        }
+        let Some(session) = self.session(session_id) else {
+            return Err(no_such_session());
+        };
+        refuse_redirect(&session.dir, "the session folder")?;
+        let Some(path) = find_stored(&session.dir, digest, extension_hint) else {
+            return Ok(());
+        };
+        let bytes = std::fs::metadata(&path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        std::fs::remove_file(&path).map_err(|error| {
+            WireError::new(
+                ErrorCode::Io,
+                format!("Could not delete a stored attachment: {error}"),
+            )
+        })?;
+        let mut state = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        release_locked(&mut state, session_id, bytes);
+        Ok(())
+    }
+
     /// Admit one staged upload as a stored attachment and report what was
     /// written.
     ///
@@ -919,6 +1073,7 @@ impl AttachmentStore {
         };
         let extension = upload_extension(name).unwrap_or_else(|| "bin".to_string());
         let digest = sha256_file(staged)?;
+        let staged_bytes = staged_size(staged)?;
         let path = session.dir.join(format!("{digest}.{extension}"));
         let mut state = self
             .write_lock
@@ -927,21 +1082,25 @@ impl AttachmentStore {
         AttachmentStore::seed_locked(&self.root, &mut state);
         if already_stored(&path)? {
             let _ = std::fs::remove_file(staged);
+            release_locked(&mut state, session_id, staged_bytes);
             return Ok(Deposited {
                 digest,
                 stored_bytes: stored_size(&path)?,
                 path,
             });
         }
-        let staged_bytes = staged_size(staged)?;
+        // The staged bytes were charged as they arrived (or counted by the
+        // walk), so the rename adds nothing; the comparison is the defensive
+        // half, and it must not add `staged_bytes` a second time.
         let Some(held) = store_total(&state) else {
             let _ = std::fs::remove_file(staged);
+            release_locked(&mut state, session_id, staged_bytes);
             return Err(budget_unknown());
         };
-        let after = held.saturating_add(staged_bytes);
-        if after > MAX_ATTACHMENT_OWNER_BYTES as u64 {
+        if held > MAX_ATTACHMENT_OWNER_BYTES as u64 {
             let _ = std::fs::remove_file(staged);
-            return Err(over_budget(after));
+            release_locked(&mut state, session_id, staged_bytes);
+            return Err(over_budget(held));
         }
         let admitted = admit_staged(
             &self.root,
@@ -950,10 +1109,10 @@ impl AttachmentStore {
             &session.dir,
             &path,
             staged,
-            staged_bytes,
         );
         if admitted.is_err() {
             let _ = std::fs::remove_file(staged);
+            release_locked(&mut state, session_id, staged_bytes);
         }
         admitted?;
         Ok(Deposited {
@@ -1089,7 +1248,6 @@ fn admit_staged(
     dir: &Path,
     path: &Path,
     staged: &Path,
-    staged_bytes: u64,
 ) -> Result<(), WireError> {
     prepare_session_dir(root, dir)?;
     refuse_redirect(path, "the file this write would create")?;
@@ -1097,27 +1255,49 @@ fn admit_staged(
     // can name; the store's own write path scrubs it for the same reason.
     let scrubbed = discard_scratch(dir);
     if scrubbed > 0 {
-        if let Some(SessionBytes::Known(bytes)) = state.sessions.get_mut(session_id) {
-            *bytes = bytes.saturating_sub(scrubbed);
-        }
+        release_locked(state, session_id, scrubbed);
     }
     // A rename, not a copy: the staged file is already on this volume and the
     // target does not exist, so the agent can never observe a half-written
-    // file and no second copy of 50 MiB is made.
+    // file and no second copy of 50 MiB is made. The bytes stay charged — the
+    // name changed, not the folder's contents.
     std::fs::rename(staged, path).map_err(|error| {
         WireError::new(
             ErrorCode::Io,
             format!("Could not store an attached file: {error}"),
         )
     })?;
+    Ok(())
+}
+
+/// The staged part file one upload id names inside a session folder.
+fn staged_path(dir: &Path, upload_id: &str) -> PathBuf {
+    dir.join(format!("upload-{upload_id}.part"))
+}
+
+/// Add `bytes` to one session's cached count.
+fn charge_locked(state: &mut StoreState, session_id: &str, bytes: u64) {
     let entry = state
         .sessions
         .entry(session_id.to_string())
         .or_insert(SessionBytes::Known(0));
-    if let SessionBytes::Known(bytes) = entry {
-        *bytes = bytes.saturating_add(staged_bytes);
+    if let SessionBytes::Known(count) = entry {
+        *count = count.saturating_add(bytes);
     }
-    Ok(())
+}
+
+/// Subtract `bytes` from one session's cached count when it is known.
+///
+/// An entry the walk has not built yet has no number to correct: the bytes are
+/// already gone from the disk, so the walk that follows counts what is there.
+/// An `Unknown` entry stays unknown rather than pretending to a number.
+fn release_locked(state: &mut StoreState, session_id: &str, bytes: u64) {
+    if bytes == 0 {
+        return;
+    }
+    if let Some(SessionBytes::Known(count)) = state.sessions.get_mut(session_id) {
+        *count = count.saturating_sub(bytes);
+    }
 }
 
 /// Delete the scratch this store's own writer leaves behind, and report the bytes

@@ -858,6 +858,28 @@ impl DaemonClient {
         }
     }
 
+    /// Delete one stored attachment and release the bytes it held.
+    ///
+    /// The reference is the value a deposit or an upload finish answered with,
+    /// verbatim. The daemon removes the content-addressed file and charges its
+    /// bytes back to the owner budget; a reference whose file is already gone is
+    /// `Ok`, because there is nothing left to release.
+    pub fn session_attachment_delete(
+        &self,
+        reference: &AttachmentReference,
+    ) -> Result<(), DaemonError> {
+        self.require_agreed(devboule_protocol::caps::ATTACHMENTS_DELETE)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionAttachmentDelete {
+            id,
+            reference: reference.clone(),
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     /// Open one chunked file upload, or adopt the one already in progress under
     /// `upload_id`, and answer the offset it stands at.
     ///

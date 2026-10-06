@@ -650,6 +650,17 @@ pub(super) fn dispatch_session(
                 .read_attachment(&reference, owner, conn)
                 .map(|attachment| DaemonMessage::SessionAttachment { id, attachment }),
         ),
+        // The delete half: the same ownership door and the same reference
+        // rules, then the store removes the content-addressed file and gives
+        // its bytes back to the owner budget. Idempotent for a file that is
+        // already gone, because the caller asked for the bytes to be released.
+        ClientMessage::SessionAttachmentDelete { id, reference } => reply_result(
+            id,
+            state
+                .sessions
+                .delete_attachment(&reference, owner, conn)
+                .map(|()| DaemonMessage::Ok { id }),
+        ),
         // Closed on purpose (`S5`, block 6): every frame that is not a
         // session-level one is named, so a new frame has to be classified here
         // rather than falling into a catch-all. The sentence is constant and

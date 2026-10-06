@@ -2,18 +2,19 @@
 //! offset it stands at, and the declaration it was opened under.
 //!
 //! The bytes are the store's, not this module's: a part file lives in the
-//! session's own attachment folder, under the same owner-only hardening, so a
-//! close's `remove_dir_all` takes a half-upload with it. What lives here is the
-//! one fact the disk does not carry — where each part stands and what it
-//! promised — because a chunk that does not start at that offset must be
-//! refused rather than appended blind.
+//! session's own attachment folder, under the same owner-only hardening, and
+//! every byte appended to it is charged to the store's budget as it arrives —
+//! `AttachmentStore::append_staged` keeps the check and the charge in one
+//! critical section. What lives here is the one fact the disk does not carry —
+//! where each part stands and what it promised — because a chunk that does not
+//! start at that offset must be refused rather than appended blind.
 //!
 //! An upload survives a lost connection while the daemon lives: the client
 //! names the same upload id and asks for its offset. After a daemon restart the
 //! entry is gone and the restart is a refusal; the client aborts and opens a
 //! fresh one. A part the restart left behind is charged to the session's budget
-//! until the folder is closed or the retention sweep takes it, and the next
-//! `begin` under the same id truncates it.
+//! (the walk counts it), and the next `begin` under the same id truncates it
+//! and gives those bytes back.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -24,16 +25,32 @@ use devboule_protocol::{
     validate_upload_id, ErrorCode, WireError,
 };
 
-use crate::attachment_store::AttachmentStore;
+use crate::attachment_store::{AttachmentStore, Deposited};
 
-/// The suffix every staged part file carries. Not a stored extension
-/// (`STORED_EXTENSIONS`), so no `resolve` can ever name one.
-const PART_SUFFIX: &str = ".part";
+/// How many uploads one session may have open at once.
+///
+/// The composer sends one file at a time, so this is the backstop against a
+/// client that opens a hundred: each open upload is a part file the session's
+/// budget already charges, and the cap keeps the map and the folder bounded.
+const MAX_CONCURRENT_UPLOADS_PER_SESSION: usize = 4;
 
 struct InProgress {
     session_id: String,
     /// The sanitized display name; the store's extension and the prompt line
     /// both come from it.
+    name: String,
+    total_bytes: u64,
+    received: u64,
+    staged: PathBuf,
+    /// True from the moment `finish` starts until it settles. A second
+    /// `finish`, a `chunk`, a `status`, an `abort` or a re-`begin` refuses
+    /// while set, so a re-`begin` cannot truncate the file being admitted.
+    finishing: bool,
+}
+
+/// One opened upload, copied out of the map so the admission runs without the
+/// map lock held across a 50 MiB hash.
+struct OpenedUpload {
     name: String,
     total_bytes: u64,
     received: u64,
@@ -63,23 +80,28 @@ impl AttachmentUploads {
         if let Some(open) = state.get(upload_id) {
             if open.session_id == session_id && open.name == name && open.total_bytes == total_bytes
             {
+                if open.finishing {
+                    return Err(refusal(
+                        "That upload is being stored; start a new one.".to_string(),
+                    ));
+                }
                 return Ok(open.received);
             }
             return Err(refusal(
                 "An upload with that id is already in progress for another file.".to_string(),
             ));
         }
-        let dir = store.prepare_upload_dir(session_id)?;
-        let staged = dir.join(format!("upload-{upload_id}{PART_SUFFIX}"));
-        // Truncate: the id is the client's, and a part left by a restarted
-        // daemon is not resumable (the map is empty), so this upload starts at
-        // zero where the old one stood.
-        std::fs::File::create(&staged).map_err(|error| {
-            WireError::new(
-                ErrorCode::Io,
-                format!("Could not stage an uploaded file: {error}"),
-            )
-        })?;
+        if state
+            .values()
+            .filter(|open| open.session_id == session_id)
+            .count()
+            >= MAX_CONCURRENT_UPLOADS_PER_SESSION
+        {
+            return Err(refusal(format!(
+                "This session already has {MAX_CONCURRENT_UPLOADS_PER_SESSION} uploads in flight."
+            )));
+        }
+        let staged = store.create_staged(session_id, upload_id)?;
         state.insert(
             upload_id.to_string(),
             InProgress {
@@ -88,6 +110,7 @@ impl AttachmentUploads {
                 total_bytes,
                 received: 0,
                 staged,
+                finishing: false,
             },
         );
         Ok(0)
@@ -97,7 +120,7 @@ impl AttachmentUploads {
     pub(crate) fn status(&self, session_id: &str, upload_id: &str) -> Result<u64, WireError> {
         let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         match state.get(upload_id) {
-            Some(open) if open.session_id == session_id => Ok(open.received),
+            Some(open) if open.session_id == session_id && !open.finishing => Ok(open.received),
             _ => Err(not_in_progress()),
         }
     }
@@ -105,6 +128,7 @@ impl AttachmentUploads {
     /// Append one chunk at exactly the offset the upload stands at.
     pub(crate) fn chunk(
         &self,
+        store: &AttachmentStore,
         session_id: &str,
         upload_id: &str,
         offset: u64,
@@ -112,73 +136,104 @@ impl AttachmentUploads {
     ) -> Result<u64, WireError> {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let open = match state.get_mut(upload_id) {
-            Some(open) if open.session_id == session_id => open,
+            Some(open) if open.session_id == session_id && !open.finishing => open,
             _ => return Err(not_in_progress()),
         };
         validate_upload_chunk(data, offset, open.received, open.total_bytes).map_err(refusal)?;
         let bytes = decode(data)?;
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&open.staged)
-            .map_err(|error| {
-                WireError::new(
-                    ErrorCode::Io,
-                    format!("Could not stage an uploaded file: {error}"),
-                )
-            })?;
-        use std::io::Write as _;
-        file.write_all(&bytes).map_err(|error| {
-            WireError::new(
-                ErrorCode::Io,
-                format!("Could not stage an uploaded file: {error}"),
-            )
-        })?;
+        store.append_staged(session_id, upload_id, &bytes)?;
         open.received += bytes.len() as u64;
         Ok(open.received)
     }
 
     /// Admit a fully received upload as a stored attachment, and report the
     /// sanitized name the reference carries.
+    ///
+    /// The length on disk is compared with the declaration before anything is
+    /// admitted: the in-memory counter and the file can drift (a short write, a
+    /// resumed part), and the store's digest names whatever bytes are really
+    /// there. A mismatch discards the part and releases its bytes, the way
+    /// every other refusal does.
     pub(crate) fn finish(
         &self,
         store: &AttachmentStore,
         session_id: &str,
         upload_id: &str,
-    ) -> Result<(crate::attachment_store::Deposited, String), WireError> {
+    ) -> Result<(Deposited, String), WireError> {
         let open = {
             let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            match state.get(upload_id) {
-                Some(open) if open.session_id == session_id => {
+            match state.get_mut(upload_id) {
+                Some(open) if open.session_id == session_id && !open.finishing => {
                     if open.received != open.total_bytes {
                         return Err(refusal(format!(
                             "The upload has {} of its {} bytes; it cannot finish yet.",
                             open.received, open.total_bytes
                         )));
                     }
-                    state
-                        .remove(upload_id)
-                        .expect("the entry was just looked up")
+                    open.finishing = true;
+                    OpenedUpload {
+                        name: open.name.clone(),
+                        total_bytes: open.total_bytes,
+                        received: open.received,
+                        staged: open.staged.clone(),
+                    }
                 }
                 _ => return Err(not_in_progress()),
             }
         };
-        let deposited = store.admit_upload(session_id, &open.name, &open.staged)?;
-        Ok((deposited, open.name))
+        let outcome = match std::fs::metadata(&open.staged) {
+            Ok(metadata) if metadata.len() == open.total_bytes => {
+                store.admit_upload(session_id, &open.name, &open.staged)
+            }
+            Ok(metadata) => {
+                let _ = std::fs::remove_file(&open.staged);
+                store.release_staged(session_id, open.received);
+                Err(refusal(format!(
+                    "The staged upload has {} of its {} bytes; it cannot finish yet.",
+                    metadata.len(),
+                    open.total_bytes
+                )))
+            }
+            Err(error) => {
+                store.release_staged(session_id, open.received);
+                Err(WireError::new(
+                    ErrorCode::Io,
+                    format!("Could not read a staged upload: {error}"),
+                ))
+            }
+        };
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.remove(upload_id);
+        drop(state);
+        outcome.map(|deposited| (deposited, open.name))
     }
 
     /// Discard one upload and the bytes received so far. An id the daemon does
     /// not hold is `Ok`: there is nothing left to discard.
-    pub(crate) fn abort(&self, session_id: &str, upload_id: &str) -> Result<(), WireError> {
+    pub(crate) fn abort(
+        &self,
+        store: &AttachmentStore,
+        session_id: &str,
+        upload_id: &str,
+    ) -> Result<(), WireError> {
         let removed = {
             let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
             match state.get(upload_id) {
-                Some(open) if open.session_id == session_id => state.remove(upload_id),
+                Some(open) if open.session_id == session_id && !open.finishing => {
+                    state.remove(upload_id)
+                }
+                Some(open) if open.session_id == session_id => {
+                    return Err(refusal(
+                        "That upload is being stored; it cannot be aborted.".to_string(),
+                    ))
+                }
                 Some(_) => return Err(not_in_progress()),
                 None => None,
             }
         };
         if let Some(open) = removed {
             let _ = std::fs::remove_file(&open.staged);
+            store.release_staged(session_id, open.received);
         }
         Ok(())
     }
@@ -213,6 +268,9 @@ fn decode(data: &str) -> Result<Vec<u8>, WireError> {
         .map_err(|_| refusal(invalid_base64_message()))
 }
 
+#[cfg(test)]
+#[path = "attachment_upload_budget_tests.rs"]
+mod budget_tests;
 #[cfg(test)]
 #[path = "attachment_upload_tests.rs"]
 mod tests;

@@ -62,7 +62,7 @@ interface WorkspaceComposerProps {
   onSend: (
     text: string,
     attachments: readonly PromptAttachment[],
-    fileReferences: readonly AttachmentReference[],
+    fileReferences?: readonly AttachmentReference[],
   ) => Promise<boolean>;
   /** Queue the composer's text while the turn runs; absent, Enter always sends.
    * Settles when the daemon has answered, which is what holds a second
@@ -70,8 +70,8 @@ interface WorkspaceComposerProps {
   onQueue?: (
     text: string,
     attachments: readonly PromptAttachment[],
-    fileReferences: readonly AttachmentReference[],
-  ) => void | Promise<void>;
+    fileReferences?: readonly AttachmentReference[],
+  ) => void | Promise<unknown>;
   /** The resolved setting: Enter queues while the turn runs (the permission rule flips it to steer). */
   enterQueues?: boolean;
   onStop?: () => void;
@@ -286,6 +286,9 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   // route without their bytes being touched.
   const handleDrop = useCallback(
     (event: ReactDragEvent<HTMLDivElement>) => {
+      // Only a drag that carries files is ours: a text or URL drop keeps the
+      // browser's own behaviour and must not be swallowed by `preventDefault`.
+      if (!Array.from(event.dataTransfer?.types ?? []).includes("Files")) return;
       event.preventDefault();
       setDropTarget(false);
       const dropped = Array.from(event.dataTransfer?.files ?? []);

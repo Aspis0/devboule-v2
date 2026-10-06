@@ -2135,11 +2135,6 @@
   cursor: not-allowed;
 }
 
-/* Composer files mid-send: the chips stay visible but wait for the answer. */
-.workspace-composer-images.is-sending .workspace-composer-file-chip {
-  opacity: 0.6;
-}
-
 /* A file dragged over the composer would be attached here. */
 .workspace-composer.is-drop-target {
   border-color: var(--accent);

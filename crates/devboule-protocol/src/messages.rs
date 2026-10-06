@@ -546,6 +546,22 @@ pub enum ClientMessage {
         id: u64,
         reference: AttachmentReference,
     },
+    /// Delete one stored attachment and release the bytes it held.
+    ///
+    /// The reference names the file the same way a send does (session, digest,
+    /// stored size and, for an uploaded file, the display name). The daemon
+    /// removes the content-addressed file when it is there and charges the
+    /// bytes back to the owner budget; an id whose file is already gone is
+    /// `Ok`, because there is nothing left to release. The reply is
+    /// [`DaemonMessage::Ok`].
+    ///
+    /// State-changing: it removes a file from the session's folder, which is
+    /// why [`ClientMessage::is_state_changing`] says `true` and the audit trail
+    /// carries it.
+    SessionAttachmentDelete {
+        id: u64,
+        reference: AttachmentReference,
+    },
     /// Open one chunked file upload for a session, or adopt the one already in
     /// progress under `upload_id`.
     ///
@@ -1391,6 +1407,7 @@ impl ClientMessage {
             | Self::AgentMessageSend { id, .. }
             | Self::SessionDeposit { id, .. }
             | Self::SessionAttachmentRead { id, .. }
+            | Self::SessionAttachmentDelete { id, .. }
             | Self::SessionUploadBegin { id, .. }
             | Self::SessionUploadStatus { id, .. }
             | Self::SessionUploadChunk { id, .. }
@@ -1515,6 +1532,7 @@ impl ClientMessage {
             | Self::SessionStop { .. }
             | Self::SessionDeposit { .. }
             | Self::SessionAttachmentRead { .. }
+            | Self::SessionAttachmentDelete { .. }
             | Self::SessionUploadBegin { .. }
             | Self::SessionUploadStatus { .. }
             | Self::SessionUploadChunk { .. }
@@ -1611,6 +1629,7 @@ impl ClientMessage {
             Self::AgentMessageSend { .. } => "AgentMessageSend",
             Self::SessionDeposit { .. } => "SessionDeposit",
             Self::SessionAttachmentRead { .. } => "SessionAttachmentRead",
+            Self::SessionAttachmentDelete { .. } => "SessionAttachmentDelete",
             Self::SessionUploadBegin { .. } => "SessionUploadBegin",
             Self::SessionUploadStatus { .. } => "SessionUploadStatus",
             Self::SessionUploadChunk { .. } => "SessionUploadChunk",
@@ -1737,6 +1756,7 @@ impl ClientMessage {
             | Self::SessionQueueSendNow { .. }
             | Self::AgentMessageSend { .. }
             | Self::SessionDeposit { .. }
+            | Self::SessionAttachmentDelete { .. }
             | Self::SessionUploadBegin { .. }
             | Self::SessionUploadChunk { .. }
             | Self::SessionUploadFinish { .. }

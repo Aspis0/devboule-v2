@@ -22,6 +22,7 @@ import {
   peerSetCaps,
   providersRefresh,
   sessionAttach,
+  sessionAttachmentDelete,
   sessionAttachmentRead,
   sessionClaim,
   sessionClose,
@@ -36,6 +37,11 @@ import {
   sessionDelete,
   sessionPresence,
   sessionResume,
+  sessionUploadAbort,
+  sessionUploadBegin,
+  sessionUploadChunk,
+  sessionUploadFinish,
+  sessionUploadStatus,
   surfaceSettingsGet,
   surfaceSettingsSet,
   toolPolicyGet,
@@ -594,6 +600,87 @@ describe("create and attach command wrappers", () => {
     // The manifest the structural parity test compares with the Rust parameter
     // list, so a rename on either side has to fail here.
     expect(COMMAND_ARG_KEYS.session_attachment_read).toEqual(["reference"]);
+  });
+
+  it("sends the five upload frames with camelCase payloads and answers their replies", async () => {
+    vi.mocked(invoke).mockClear();
+    const reference = { sessionId: "s.owner.1", digest: "a".repeat(64), storedBytes: 8 };
+
+    vi.mocked(invoke).mockResolvedValue(0 as never);
+    expect(await sessionUploadBegin("s.owner.1", "s.owner.1", "up-1", "report.pdf", 52428800)).toBe(
+      0,
+    );
+    expect(invoke).toHaveBeenCalledWith("session_upload_begin", {
+      id: "s.owner.1",
+      sessionId: "s.owner.1",
+      uploadId: "up-1",
+      name: "report.pdf",
+      totalBytes: 52428800,
+    });
+
+    expect(await sessionUploadStatus("s.owner.1", "s.owner.1", "up-1")).toBe(0);
+    expect(invoke).toHaveBeenCalledWith("session_upload_status", {
+      id: "s.owner.1",
+      sessionId: "s.owner.1",
+      uploadId: "up-1",
+    });
+
+    vi.mocked(invoke).mockResolvedValue(4 as never);
+    expect(await sessionUploadChunk("s.owner.1", "s.owner.1", "up-1", 0, "AAAA")).toBe(4);
+    expect(invoke).toHaveBeenCalledWith("session_upload_chunk", {
+      id: "s.owner.1",
+      sessionId: "s.owner.1",
+      uploadId: "up-1",
+      offset: 0,
+      data: "AAAA",
+    });
+
+    vi.mocked(invoke).mockResolvedValue(reference as never);
+    expect(await sessionUploadFinish("s.owner.1", "s.owner.1", "up-1")).toEqual(reference);
+    expect(invoke).toHaveBeenCalledWith("session_upload_finish", {
+      id: "s.owner.1",
+      sessionId: "s.owner.1",
+      uploadId: "up-1",
+    });
+
+    vi.mocked(invoke).mockResolvedValue(undefined as never);
+    await sessionUploadAbort("s.owner.1", "s.owner.1", "up-1");
+    expect(invoke).toHaveBeenCalledWith("session_upload_abort", {
+      id: "s.owner.1",
+      sessionId: "s.owner.1",
+      uploadId: "up-1",
+    });
+
+    expect(COMMAND_ARG_KEYS.session_upload_begin).toEqual([
+      "id",
+      "sessionId",
+      "uploadId",
+      "name",
+      "totalBytes",
+    ]);
+    expect(COMMAND_ARG_KEYS.session_upload_chunk).toEqual([
+      "id",
+      "sessionId",
+      "uploadId",
+      "offset",
+      "data",
+    ]);
+  });
+
+  it("deletes one stored attachment by reference", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue(undefined as never);
+    const reference = {
+      sessionId: "s.owner.1",
+      digest: "a".repeat(64),
+      storedBytes: 512,
+      name: "report.pdf",
+    };
+
+    await sessionAttachmentDelete(reference);
+
+    expect(invoke).toHaveBeenCalledWith("session_attachment_delete", { reference });
+    expect(COMMAND_ARG_KEYS.session_attachment_delete).toEqual(["reference"]);
   });
 
   it("passes the subscription id when closing a session", async () => {

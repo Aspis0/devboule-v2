@@ -143,6 +143,9 @@ pub(super) fn peer_refusal_before_mode(
         | ClientMessage::SessionUploadChunk { .. }
         | ClientMessage::SessionUploadFinish { .. }
         | ClientMessage::SessionUploadAbort { .. } => true,
+        // The delete removes bytes the same road carried in; a paired device
+        // gets the same refusal the upload frames get.
+        ClientMessage::SessionAttachmentDelete { .. } => true,
         _ => false,
     };
     if carries_attachment && !crate::session::session_origin_for(conn_peer).is_local() {
@@ -307,6 +310,8 @@ pub(super) fn peer_mode_refusal_for_conn(
         | ClientMessage::SessionUploadChunk { .. }
         | ClientMessage::SessionUploadFinish { .. }
         | ClientMessage::SessionUploadAbort { .. } => None,
+        // The delete removes a file and never reaches the agent either.
+        ClientMessage::SessionAttachmentDelete { .. } => None,
         ClientMessage::Ping { .. } => None,
         ClientMessage::Status { .. } => None,
         ClientMessage::DaemonDiagnostics { .. } => None,
@@ -589,7 +594,8 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::SessionDelete { session_id, .. } => Some(session_id.clone()),
         // The reference names its session the way a frame names one: the
         // digest resolves only inside it.
-        ClientMessage::SessionAttachmentRead { reference, .. } => {
+        ClientMessage::SessionAttachmentRead { reference, .. }
+        | ClientMessage::SessionAttachmentDelete { reference, .. } => {
             Some(reference.session_id.clone())
         }
         // No session is named: a connection-level frame, a daemon-level one, a
