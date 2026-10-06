@@ -14,9 +14,11 @@ import {
 } from "./agentPrefs";
 
 const KEY = "devboule.agentPrefs";
+const LEGACY = "devboule.modelEffortPrefs";
 
 afterEach(() => {
   localStorage.removeItem(KEY);
+  localStorage.removeItem(LEGACY);
   vi.restoreAllMocks();
 });
 
@@ -80,6 +82,103 @@ describe("the picks a provider remembers", () => {
   });
 });
 
+describe("the effort map this machine used to keep", () => {
+  it("is carried over once, under this machine's new shape", () => {
+    localStorage.setItem(
+      LEGACY,
+      JSON.stringify({
+        [JSON.stringify(["grok", "grok-4.6"])]: "xhigh",
+        [JSON.stringify(["claude", "sonnet"])]: "low",
+      }),
+    );
+
+    expect(getPreferredEffort("grok", "grok-4.6")).toBe("xhigh");
+    expect(getPreferredEffort("claude", "sonnet")).toBe("low");
+    expect(JSON.parse(localStorage.getItem(KEY) ?? "{}")).toEqual({
+      grok: { thinking: { [JSON.stringify(["grok", "grok-4.6"])]: "xhigh" } },
+      claude: { thinking: { [JSON.stringify(["claude", "sonnet"])]: "low" } },
+    });
+    // Once, and then it is gone: the next read has nothing left to carry.
+    expect(localStorage.getItem(LEGACY)).toBeNull();
+    setPreferredEffort("grok", "grok-4.6", "low");
+    expect(getPreferredEffort("grok", "grok-4.6")).toBe("low");
+  });
+
+  it("keeps a value the new blob already holds and retires the old key", () => {
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({ grok: { thinking: { [JSON.stringify(["grok", "grok-4.6"])]: "low" } } }),
+    );
+    localStorage.setItem(
+      LEGACY,
+      JSON.stringify({ [JSON.stringify(["grok", "grok-4.6"])]: "xhigh" }),
+    );
+
+    expect(getPreferredEffort("grok", "grok-4.6")).toBe("low");
+    expect(localStorage.getItem(LEGACY)).toBeNull();
+  });
+
+  it("carries a pick beside the ones the new blob already holds", () => {
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({
+        grok: { mode: "plan", thinking: { [JSON.stringify(["grok", "grok-4.6"])]: "low" } },
+      }),
+    );
+    localStorage.setItem(
+      LEGACY,
+      JSON.stringify({ [JSON.stringify(["grok", "grok-4.7"])]: "xhigh" }),
+    );
+
+    expect(getPreferredMode("grok")).toBe("plan");
+    expect(getPreferredEffort("grok", "grok-4.6")).toBe("low");
+    expect(getPreferredEffort("grok", "grok-4.7")).toBe("xhigh");
+  });
+
+  it("leaves the old key in place when the write it needs fails", () => {
+    localStorage.setItem(
+      LEGACY,
+      JSON.stringify({ [JSON.stringify(["grok", "grok-4.6"])]: "xhigh" }),
+    );
+    const refused = vi.spyOn(window.localStorage, "setItem").mockImplementation(() => {
+      throw new Error("quota exceeded");
+    });
+
+    expect(getPreferredEffort("grok", "grok-4.6")).toBe("xhigh");
+    expect(localStorage.getItem(LEGACY)).not.toBeNull();
+    // Restored here, not in the next case: a spy that outlived its own case
+    // would fail the next one's writes.
+    refused.mockRestore();
+  });
+
+  it("ignores a blob it cannot read, and leaves it where it is", () => {
+    localStorage.setItem(LEGACY, "{not json");
+
+    expect(getPreferredEffort("grok", "grok-4.6")).toBeNull();
+    expect(getPreferredMode("grok")).toBeNull();
+    expect(localStorage.getItem(LEGACY)).toBe("{not json");
+  });
+
+  it("ignores pairs and efforts it cannot read, and carries the rest", () => {
+    localStorage.setItem(
+      LEGACY,
+      JSON.stringify({
+        "not a pair": "xhigh",
+        [JSON.stringify(["grok"])]: "xhigh",
+        [JSON.stringify(["grok", 7])]: "xhigh",
+        [JSON.stringify(["grok", "grok-4.6"])]: 7,
+        [JSON.stringify(["grok", "grok-4.7"])]: "",
+        [JSON.stringify(["grok", "grok-4.8"])]: "high",
+      }),
+    );
+
+    expect(getPreferredEffort("grok", "grok-4.6")).toBeNull();
+    expect(getPreferredEffort("grok", "grok-4.7")).toBeNull();
+    expect(getPreferredEffort("grok", "grok-4.8")).toBe("high");
+    expect(localStorage.getItem(LEGACY)).toBeNull();
+  });
+});
+
 describe("storage the machine cannot read", () => {
   it("answers with nothing on corrupt JSON", () => {
     localStorage.setItem(KEY, "{not json");
@@ -116,12 +215,13 @@ describe("storage the machine cannot read", () => {
 
   it("keeps the others when storage refuses a write", () => {
     setPreferredMode("claude", "plan");
-    vi.spyOn(window.localStorage, "setItem").mockImplementation(() => {
+    const refused = vi.spyOn(window.localStorage, "setItem").mockImplementation(() => {
       throw new Error("quota exceeded");
     });
 
     setPreferredMode("claude", "acceptEdits");
 
     expect(getPreferredMode("claude")).toBe("plan");
+    refused.mockRestore();
   });
 });

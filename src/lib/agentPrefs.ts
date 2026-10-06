@@ -5,6 +5,11 @@
 
 const STORAGE_KEY = "devboule.agentPrefs";
 
+/** The key the thinking effort used to live under, as one flat map of
+ * JSON-encoded `[provider, model]` pairs. Read once, on the first read that
+ * finds it, and only then removed. */
+const LEGACY_EFFORT_KEY = "devboule.modelEffortPrefs";
+
 interface ProviderPicks {
   mode?: string;
   model?: string;
@@ -46,6 +51,10 @@ function picksOf(source: Record<string, unknown>, providerId: string): ProviderP
 }
 
 function read(): Record<string, ProviderPicks> {
+  return withLegacyEfforts(readBlob());
+}
+
+function readBlob(): Record<string, ProviderPicks> {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw === null) return {};
@@ -64,17 +73,89 @@ function read(): Record<string, ProviderPicks> {
   }
 }
 
-function write(picks: ProviderPicks): void {
+/** Whether the blob landed, so a caller can tell a stored pick from a lost one. */
+function write(picks: Record<string, ProviderPicks>): boolean {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(picks));
+    return true;
   } catch {
     // Storage can be full or blocked; a lost pick must not break the chat.
+    return false;
   }
 }
 
 function remember(providerId: string, update: (current: ProviderPicks) => ProviderPicks): void {
   const all = read();
   write({ ...all, [providerId]: update(all[providerId] ?? {}) });
+}
+
+/** The efforts the old flat map holds, as `[provider, model, effort]`. A blob or
+ * a pair that cannot be read is left where it is and carries nothing. */
+function legacyEfforts(): [string, string, string][] {
+  let raw: string | null = null;
+  try {
+    raw = localStorage.getItem(LEGACY_EFFORT_KEY);
+  } catch {
+    return [];
+  }
+  if (raw === null) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return [];
+  const carried: [string, string, string][] = [];
+  for (const [pair, effort] of Object.entries(parsed as Record<string, unknown>)) {
+    const ids = pairIds(pair);
+    const value = text(effort);
+    if (ids === null || value === null) continue;
+    carried.push([ids[0], ids[1], value]);
+  }
+  return carried;
+}
+
+function pairIds(pair: string): [string, string] | null {
+  try {
+    const ids: unknown = JSON.parse(pair);
+    if (!Array.isArray(ids) || ids.length !== 2) return null;
+    if (typeof ids[0] !== "string" || typeof ids[1] !== "string") return null;
+    return [ids[0], ids[1]];
+  } catch {
+    return null;
+  }
+}
+
+/** Carry the old flat map into this blob's shape, once. A value the new blob
+ * already holds wins: it is the later pick. The old key goes only when there is
+ * nothing left in it to carry, so a write that failed leaves the whole of it for
+ * the next read to try again. */
+function withLegacyEfforts(picks: Record<string, ProviderPicks>): Record<string, ProviderPicks> {
+  const legacy = legacyEfforts();
+  if (legacy.length === 0) return picks;
+  const carried: Record<string, ProviderPicks> = { ...picks };
+  let moved = false;
+  for (const [providerId, modelId, effort] of legacy) {
+    const key = thinkingKey(providerId, modelId);
+    const current = carried[providerId];
+    if (current?.thinking?.[key] !== undefined) continue;
+    carried[providerId] = {
+      ...current,
+      thinking: { ...current?.thinking, [key]: effort },
+    };
+    moved = true;
+  }
+  if (!moved || write(carried)) forgetLegacyEfforts();
+  return moved ? carried : picks;
+}
+
+function forgetLegacyEfforts(): void {
+  try {
+    localStorage.removeItem(LEGACY_EFFORT_KEY);
+  } catch {
+    // Storage that refuses a removal keeps carrying nothing: nothing reads it.
+  }
 }
 
 /** The mode the person last picked for this provider, or null: a provider they
