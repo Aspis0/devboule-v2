@@ -73,6 +73,7 @@ fn an_app_that_answers_the_head_then_stays_silent_gets_the_timeout_phrase() {
         Duration::from_millis(300),
     );
     // The head is in, so the deadline hits the body read and the downcast in
-    // `body_timed_out` is what must recognise it — not the `send` arm.
+    // the egress client's `body_timed_out` is what must recognise it — not the
+    // `send` arm.
     assert_refused(result, TIMEOUT, "T18");
 }

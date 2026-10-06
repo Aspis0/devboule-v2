@@ -5,15 +5,20 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-#[cfg(not(test))]
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[cfg(not(test))]
+use crate::egress_client::{send, Answer, Limits, Method, OutboundError, Request};
+#[cfg(not(test))]
+use crate::egress_policy::Rule;
+
+const REGISTRY_HOST: &str = "cdn.agentclientprotocol.com";
 const REGISTRY_URL: &str = "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
 const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const NPM_REGISTRY_HOST: &str = "registry.npmjs.org";
 const NPM_REGISTRY_URL: &str = "https://registry.npmjs.org";
 const CACHE_FILE: &str = "acp-registry-cache.json";
 const MEMORY_TTL: Duration = Duration::from_secs(30 * 60);
@@ -96,25 +101,47 @@ impl NpmVersionFetch for CdnNpmVersionFetch {
     }
 }
 
+/// The two hosts this module may reach, each declared by its own call.
+#[cfg(not(test))]
+const CDN_RULE: Rule = Rule {
+    hosts: &[REGISTRY_HOST],
+    loopback_path: None,
+};
+#[cfg(not(test))]
+const NPM_RULE: Rule = Rule {
+    hosts: &[NPM_REGISTRY_HOST],
+    loopback_path: None,
+};
+
+#[cfg(not(test))]
+fn get_within(rule: &Rule, url: &str, max_body: usize) -> Result<Answer, String> {
+    let request = Request {
+        method: Method::Get,
+        url: url.to_string(),
+        headers: Vec::new(),
+        body: Vec::new(),
+    };
+    let limits = Limits {
+        timeout: FETCH_TIMEOUT,
+        max_body,
+        max_redirects: 2,
+    };
+    send(rule, &request, &limits).map_err(|error| match error {
+        OutboundError::Refused(why) => why,
+        OutboundError::TooLarge => format!("response exceeds {max_body} bytes"),
+        OutboundError::Timeout => "the request timed out".to_string(),
+        OutboundError::Cut | OutboundError::Transport => "the request failed".to_string(),
+    })
+}
+
 #[cfg(not(test))]
 fn fetch_registry_json() -> Result<String, String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(FETCH_TIMEOUT)
-        .build()
-        .map_err(|error| error.to_string())?;
-    let response = client
-        .get(REGISTRY_URL)
-        .send()
-        .map_err(|error| error.to_string())?;
-    if !response.status().is_success() {
-        return Err(format!("registry HTTP {}", response.status()));
+    let answer = get_within(&CDN_RULE, REGISTRY_URL, MAX_REGISTRY_BODY_BYTES)
+        .map_err(|error| format!("registry: {error}"))?;
+    if !(200..300).contains(&answer.status) {
+        return Err(format!("registry HTTP {}", answer.status));
     }
-    let mut body = Vec::new();
-    response
-        .take((MAX_REGISTRY_BODY_BYTES + 1) as u64)
-        .read_to_end(&mut body)
-        .map_err(|error| error.to_string())?;
-    let body = String::from_utf8(body).map_err(|error| error.to_string())?;
+    let body = String::from_utf8(answer.body).map_err(|error| error.to_string())?;
     bounded_registry_body(body)
 }
 
@@ -129,31 +156,17 @@ fn bounded_registry_body(body: String) -> Result<String, String> {
 
 #[cfg(not(test))]
 fn fetch_npm_latest(package: &str) -> Result<String, String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(FETCH_TIMEOUT)
-        .build()
-        .map_err(|error| error.to_string())?;
     let url = format!(
         "{NPM_REGISTRY_URL}/{}/latest",
         encode_url_component(package)
     );
-    let mut response = client.get(url).send().map_err(|error| error.to_string())?;
-    if !response.status().is_success() {
-        return Err(format!("npm registry HTTP {}", response.status()));
-    }
-    let mut body = Vec::new();
-    response
-        .by_ref()
-        .take((MAX_NPM_VERSION_BODY_BYTES + 1) as u64)
-        .read_to_end(&mut body)
-        .map_err(|error| error.to_string())?;
-    if body.len() > MAX_NPM_VERSION_BODY_BYTES {
-        return Err(format!(
-            "npm registry response exceeds {MAX_NPM_VERSION_BODY_BYTES} bytes"
-        ));
+    let answer = get_within(&NPM_RULE, &url, MAX_NPM_VERSION_BODY_BYTES)
+        .map_err(|error| format!("npm registry: {error}"))?;
+    if !(200..300).contains(&answer.status) {
+        return Err(format!("npm registry HTTP {}", answer.status));
     }
     let value: serde_json::Value =
-        serde_json::from_slice(&body).map_err(|error| error.to_string())?;
+        serde_json::from_slice(&answer.body).map_err(|error| error.to_string())?;
     value
         .get("version")
         .and_then(serde_json::Value::as_str)
@@ -552,6 +565,14 @@ mod tests {
 
     fn temp_dir(label: &str) -> PathBuf {
         crate::test_dirs::test_temp_dir(&format!("devboule-registry-{label}"))
+    }
+
+    /// The egress rule names the host the URL goes to, so the declaration and
+    /// the request cannot drift apart.
+    #[test]
+    fn each_fetch_url_is_on_the_host_its_rule_declares() {
+        assert!(REGISTRY_URL.starts_with(&format!("https://{REGISTRY_HOST}/")));
+        assert!(NPM_REGISTRY_URL == format!("https://{NPM_REGISTRY_HOST}"));
     }
 
     #[test]

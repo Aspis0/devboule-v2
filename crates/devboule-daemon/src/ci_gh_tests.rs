@@ -37,16 +37,85 @@ fn every_github_remote_form_names_the_same_repository() {
 }
 
 #[test]
-fn a_remote_that_is_not_github_is_not_a_repository() {
+fn a_remote_that_is_not_a_repository_path_is_refused() {
     for url in [
-        "https://gitlab.com/acme/widgets.git",
-        "git@bitbucket.org:acme/widgets.git",
         "https://github.com/acme",
         "https://github.com/../widgets",
         "/some/local/path",
+        "https://127.0.0.1/acme/widgets.git",
+        "https://localhost/acme/widgets.git",
+        "git@0x7f000001:acme/widgets.git",
     ] {
         assert_eq!(parse_remote(url), None, "{url}");
     }
+}
+
+/// A host other than github.com parses, and is then asked about only after the
+/// person's own `gh` login vouches for exactly that name.
+#[test]
+fn github_host_allowlist_exact() {
+    for origin in [
+        "https://gitlab.com/acme/widgets.git",
+        "git@bitbucket.org:acme/widgets.git",
+        "https://github.com.evil.test/acme/widgets.git",
+        "https://evil-github.example.com/acme/widgets.git",
+    ] {
+        let runner = origin_runner(origin);
+        // `gh` is logged in to one enterprise host, and not to these.
+        runner.set(
+            "auth status --hostname github.example.com",
+            ok("Logged in to github.example.com\n"),
+        );
+        let refused = client(&runner)
+            .resolve_repo(Some(Path::new("/work")), None)
+            .expect_err(origin);
+        assert_eq!(refused.code, "repo_not_github", "{origin}");
+        assert!(
+            !runner.calls().iter().any(|call| call.starts_with("gh api")),
+            "{origin}: nothing is asked of GitHub for a host nobody vouched for"
+        );
+    }
+    let runner = origin_runner("https://ghe.corp.example.com/acme/widgets.git");
+    runner.set(
+        "auth status --hostname ghe.corp.example.com",
+        ok("Logged in to ghe.corp.example.com\n"),
+    );
+    let resolved = client(&runner)
+        .resolve_repo(Some(Path::new("/work")), None)
+        .expect("a host the person is logged in to, by its exact name");
+    assert_eq!(resolved.host, "ghe.corp.example.com");
+}
+
+#[test]
+fn a_stored_watch_cannot_aim_gh_at_a_host_nobody_vouched_for() {
+    let runner = Arc::new(ScriptedRunner::default());
+    runner.set("api", ok("[]"));
+    let stored = RepoRef {
+        host: "internal.example.com".to_string(),
+        owner: "acme".to_string(),
+        repo: "widgets".to_string(),
+    };
+    let refused = client(&runner)
+        .get_json_pages(&stored, "commits/abc/check-runs")
+        .expect_err("no login for that host");
+    assert_eq!(refused.code, "repo_not_github");
+    assert!(
+        !runner.calls().iter().any(|call| call.starts_with("gh api")),
+        "no `gh api` was spawned: {:?}",
+        runner.calls()
+    );
+    let numeric = RepoRef {
+        host: "169.254.169.254".to_string(),
+        ..stored
+    };
+    let fresh = Arc::new(ScriptedRunner::default());
+    assert!(client(&fresh)
+        .get_json_pages(&numeric, "commits/abc/check-runs")
+        .is_err());
+    assert!(
+        fresh.calls().is_empty(),
+        "an address is refused before any spawn"
+    );
 }
 
 #[test]
@@ -72,20 +141,6 @@ fn origin_reads_the_workspace_remote_and_refuses_a_foreign_one() {
     assert_eq!(
         client(&runner).origin(Path::new("/work")).expect("origin"),
         repo()
-    );
-
-    runner.set(
-        "remote get-url origin",
-        ok("https://gitlab.com/acme/widgets.git\n"),
-    );
-    let refused = client(&runner)
-        .origin(Path::new("/work"))
-        .expect_err("not github");
-    assert_eq!(refused.code, "repo_not_github");
-    assert!(
-        refused.message.contains("repo"),
-        "it says how to name one: {}",
-        refused.message
     );
 
     runner.set(

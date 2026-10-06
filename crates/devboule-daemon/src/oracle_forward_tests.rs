@@ -10,7 +10,7 @@ use crate::oracle_app_record::OracleAppRecord;
 use crate::server::ServerState;
 use devboule_protocol::WorkspaceIsolation;
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;

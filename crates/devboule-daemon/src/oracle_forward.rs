@@ -13,13 +13,14 @@
 //! caller to open the app: an answer from an app that is open never becomes
 //! that sentence.
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use devboule_protocol::OwnerId;
 use serde_json::{json, Value};
 
+use crate::egress_client::{send, Limits, Method, OutboundError, Request};
+use crate::egress_policy::Rule;
 use crate::mcp_project_graph::GraphError;
 use crate::oracle_app_record::{oracle_app_lock_path, OracleAppState};
 use crate::paths::RuntimePaths;
@@ -32,6 +33,12 @@ const QUERY_PATH: &str = "/oracle/v1/query";
 const DEFAULT_LIMIT: i64 = 10;
 const MAX_QUERY_CHARS: usize = 4096;
 const MAX_FORWARD_BODY_BYTES: usize = 1024 * 1024;
+/// The one loopback endpoint this daemon may call over plain http: the app's
+/// query route, on whatever port its lock file names.
+const ORACLE_RULE: Rule = Rule {
+    hosts: &[],
+    loopback_path: Some(QUERY_PATH),
+};
 
 /// The one sentence for an app that is not answering from its record: absent,
 /// stale, live-but-unbound, unauthorized, or a port nobody listens on.
@@ -93,50 +100,32 @@ fn forward(
         "query": request.query,
         "limit": request.limit,
     });
-    let body = serde_json::to_vec(&document).expect("a JSON document serializes");
-    let response = reqwest::blocking::Client::builder()
-        .timeout(timeout)
-        .build()
-        .map_err(|_| refused(BUILD_PHRASE))?
-        .post(format!("http://127.0.0.1:{port}{QUERY_PATH}"))
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(body)
-        .send();
-    let response = match response {
-        Ok(response) => response,
-        Err(error) if error.is_timeout() => return Err(refused(TIMEOUT_PHRASE)),
-        Err(_) => return Err(refused(APP_PHRASE)),
+    let call = Request {
+        method: Method::Post,
+        url: format!("http://127.0.0.1:{port}{QUERY_PATH}"),
+        headers: vec![
+            ("Authorization", format!("Bearer {token}")),
+            ("Content-Type", "application/json".to_string()),
+        ],
+        body: serde_json::to_vec(&document).expect("a JSON document serializes"),
     };
-    let status = response.status().as_u16();
-    if status == 401 {
+    let limits = Limits {
+        timeout,
+        max_body: MAX_FORWARD_BODY_BYTES,
+        max_redirects: 0,
+    };
+    let answered = match send(&ORACLE_RULE, &call, &limits) {
+        Ok(answered) => answered,
+        Err(OutboundError::Refused(_)) => return Err(refused(BUILD_PHRASE)),
+        Err(OutboundError::Timeout) => return Err(refused(TIMEOUT_PHRASE)),
+        Err(OutboundError::Cut) => return Err(refused(CUT_PHRASE)),
+        Err(OutboundError::TooLarge) => return Err(refused(CAP_PHRASE)),
+        Err(OutboundError::Transport) => return Err(refused(APP_PHRASE)),
+    };
+    if answered.status == 401 {
         return Err(refused(APP_PHRASE));
     }
-    let mut bytes = Vec::new();
-    if let Err(error) = response
-        .take((MAX_FORWARD_BODY_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-    {
-        let phrase = if body_timed_out(&error) {
-            TIMEOUT_PHRASE
-        } else {
-            CUT_PHRASE
-        };
-        return Err(refused(phrase));
-    }
-    if bytes.len() > MAX_FORWARD_BODY_BYTES {
-        return Err(refused(CAP_PHRASE));
-    }
-    answer(status, &bytes)
-}
-
-/// reqwest wraps its own error inside the `io::Error` a body read fails with,
-/// so a body that hangs past the deadline still names itself a timeout.
-fn body_timed_out(error: &std::io::Error) -> bool {
-    error
-        .get_ref()
-        .and_then(|inner| inner.downcast_ref::<reqwest::Error>())
-        .is_some_and(reqwest::Error::is_timeout)
+    answer(answered.status, &answered.body)
 }
 
 fn answer(status: u16, bytes: &[u8]) -> Result<Value, GraphError> {

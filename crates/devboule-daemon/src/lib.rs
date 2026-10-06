@@ -85,6 +85,10 @@ mod device_identity;
 #[cfg(feature = "server")]
 mod device_recovery;
 mod diagnostics;
+#[cfg(feature = "server")]
+mod egress_client;
+#[cfg(feature = "server")]
+mod egress_policy;
 mod error;
 #[cfg(feature = "server")]
 mod file_collisions;

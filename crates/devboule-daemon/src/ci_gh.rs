@@ -13,6 +13,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::ci_watch_store::now_ms;
+use crate::egress_policy::{classify_gh_host, GhHost};
 
 use crate::git::{
     run_git_args_with_cap, run_git_args_with_cap_and_timeout, run_program_args, GitOutput,
@@ -157,9 +158,7 @@ pub(crate) fn parse_repo_argument(text: &str) -> Option<(String, String)> {
 }
 
 fn repo_from_path(host: &str, path: &str) -> Option<RepoRef> {
-    if !is_github_host(host) {
-        return None;
-    }
+    classify_gh_host(host).ok()?;
     let path = path.trim_matches('/');
     let path = path.strip_suffix(".git").unwrap_or(path);
     let (owner, repo) = path.split_once('/')?;
@@ -178,13 +177,6 @@ fn repo_from_path(host: &str, path: &str) -> Option<RepoRef> {
     })
 }
 
-/// GitHub.com, GitHub-hosted data residency (`*.ghe.com`) and the usual
-/// self-hosted `github.<company>` names. Anything else is not asked.
-fn is_github_host(host: &str) -> bool {
-    let host = host.to_ascii_lowercase();
-    host == "github.com" || host.ends_with(".ghe.com") || host.starts_with("github.")
-}
-
 #[derive(Clone)]
 pub(crate) struct GhClient {
     runner: Arc<dyn CommandRunner>,
@@ -193,6 +185,9 @@ pub(crate) struct GhClient {
     /// quiets the repository instead of spending the next passes on calls
     /// GitHub already refused. Shared by every client over one runner.
     backoff_until_ms: Arc<Mutex<std::collections::HashMap<String, u64>>>,
+    /// Enterprise hosts this machine's `gh` has been seen logged in to, by
+    /// exact name: a host is asked about only after one of these proofs.
+    vouched_hosts: Arc<Mutex<std::collections::HashSet<String>>>,
 }
 
 impl GhClient {
@@ -201,6 +196,7 @@ impl GhClient {
             runner,
             timeout: GIT_COMMAND_TIMEOUT,
             backoff_until_ms: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            vouched_hosts: Arc::new(Mutex::new(std::collections::HashSet::new())),
         }
     }
 
@@ -211,6 +207,7 @@ impl GhClient {
             runner: Arc::clone(&self.runner),
             timeout,
             backoff_until_ms: Arc::clone(&self.backoff_until_ms),
+            vouched_hosts: Arc::clone(&self.vouched_hosts),
         }
     }
 
@@ -232,15 +229,35 @@ impl GhClient {
             ));
         };
         let origin = self.origin(root)?;
-        if origin.host != "github.com" {
-            self.check_host_login(&origin.host)?;
-        }
+        let host = self.vouched_host(&origin.host)?;
         let (owner, repo) = repo.unwrap_or((origin.owner.clone(), origin.repo.clone()));
-        Ok(RepoRef {
-            host: origin.host,
-            owner,
-            repo,
-        })
+        Ok(RepoRef { host, owner, repo })
+    }
+
+    /// The host `gh` may be asked about, by its exact name: `github.com`, or
+    /// an enterprise host the person's own `gh` is logged in to. No pattern
+    /// admits a host, and no `gh` is spawned for one this has not passed.
+    /// `gh` makes its own connections, so their addresses are not checked
+    /// here, only the name.
+    fn vouched_host(&self, host: &str) -> Result<String, CiError> {
+        match classify_gh_host(host) {
+            Ok(GhHost::Dotcom) => Ok("github.com".to_string()),
+            Ok(GhHost::Enterprise(host)) => {
+                let known = self
+                    .vouched_hosts
+                    .lock()
+                    .map(|hosts| hosts.contains(&host))
+                    .unwrap_or(false);
+                if !known {
+                    self.check_host_login(&host)?;
+                    if let Ok(mut hosts) = self.vouched_hosts.lock() {
+                        hosts.insert(host.clone());
+                    }
+                }
+                Ok(host)
+            }
+            Err(refusal) => Err(not_github(&refusal.0)),
+        }
     }
 
     /// The person behind this daemon logged into `host` with `gh`: a local
@@ -332,6 +349,8 @@ impl GhClient {
     }
 
     fn api(&self, repo: &RepoRef, endpoint: &str, shape: Api) -> Result<GitOutput, CiError> {
+        // A stored watch names its host too: every spawn passes the same gate.
+        self.vouched_host(&repo.host)?;
         let key = format!("{}/{}", repo.host, repo.slug());
         if self.backed_off(&key) {
             return Err(rate_limited_error());
