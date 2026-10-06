@@ -4,21 +4,22 @@
 //! Two questions, two kinds of evidence, never mixed. `worktrees` is what
 //! git itself says about the repository's other checkouts; `writers` is what
 //! this daemon performed itself and can therefore vouch for. A shell command
-//! is not in either list (see [`crate::write_evidence`]), so an empty
-//! `writers` never means nobody touched the file.
+//! is in neither list (see [`crate::write_evidence`]), so an empty `writers`
+//! never means nobody touched the file.
 //!
 //! Identity is the bearer's, never an argument: the repository is the calling
 //! session's own workspace and the path is confined inside it, so no argument
-//! can aim this at another project. Read-only, so no card.
+//! can aim this at another project. Read-only, so no card — and behind the
+//! peer door, which judges it like the workspace inventory (`peer_policy`).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use crate::file_collisions::{self, KnownCheckout};
+use crate::file_collisions::{self, KnownCheckout, ScanFailure};
 use crate::mcp_broker::dispatch::rpc_error;
 use crate::mcp_broker::RegisteredSession;
 use crate::server::ServerState;
@@ -26,6 +27,13 @@ use crate::workspace_git_support::git_within;
 
 /// The default window a writer list is read over, in minutes.
 const DEFAULT_LOOKBACK_MINUTES: u16 = 60;
+
+/// The codes the envelope carries beside the sentence, so a caller can tell a
+/// path it may not ask about from a repository that would not answer.
+const NOT_FOUND: &str = "not_found";
+const INVALID_ARGS: &str = "invalid_args";
+const STALE_STATE: &str = "stale_state";
+const WORKTREE_UNREADABLE: &str = "worktree_unreadable";
 
 /// One validated call: the path asked about, and the window its writers are
 /// read over.
@@ -85,29 +93,19 @@ impl CollisionRequest {
     }
 }
 
-/// Why a collision call did not answer: the design's envelope carries the code
-/// beside the sentence, so a caller can tell "you asked about a path I do not
-/// serve" from "the repository was too slow to read".
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CollisionError {
-    NotFound,
-    InvalidArgs,
-    StaleState,
+/// Why a collision call did not answer: the code a caller may branch on, and
+/// whether the same call a moment later could.
+struct Refusal {
+    code: &'static str,
+    message: String,
+    retryable: bool,
 }
 
-impl CollisionError {
-    fn code(self) -> &'static str {
-        match self {
-            Self::NotFound => "not_found",
-            Self::InvalidArgs => "invalid_args",
-            Self::StaleState => "stale_state",
-        }
-    }
-
-    /// Only a read that could not be taken now is worth repeating; a refused
-    /// path and a workspace that is gone are not.
-    fn retryable(self) -> bool {
-        matches!(self, Self::StaleState)
+fn refusal(code: &'static str, message: impl Into<String>, retryable: bool) -> Refusal {
+    Refusal {
+        code,
+        message: message.into(),
+        retryable,
     }
 }
 
@@ -127,72 +125,98 @@ pub(in crate::mcp_broker) fn collisions(
     };
     Ok(Some(match report(state, registration, &request) {
         Ok(data) => envelope(state, id, &data),
-        Err((error, message)) => refused(state, id, error, &message),
+        Err(refused) => refusal_reply(state, id, &refused),
     }))
 }
 
-/// The answer, or the refusal that names which of the two facts is missing.
+/// The answer, or the refusal that names which of the facts is missing.
 fn report(
     state: &Arc<ServerState>,
     registration: &RegisteredSession,
     request: &CollisionRequest,
-) -> Result<Value, (CollisionError, String)> {
+) -> Result<Value, Refusal> {
     let (workspace_id, project_id) = state
         .sessions
         .caller_workspace_scope(&registration.session_id, &registration.owner)
-        .map_err(|error| (CollisionError::NotFound, error.message))?;
+        .map_err(|error| refusal(NOT_FOUND, error.message, false))?;
     let root = state
         .sessions
         .workspace_cwd(&workspace_id)
-        .map_err(|error| (CollisionError::NotFound, error.message))?;
+        .map_err(|error| refusal(NOT_FOUND, error.message, false))?;
     let subject = file_collisions::confine_subject(&root, &request.path)
-        .map_err(|sentence| (CollisionError::InvalidArgs, sentence.to_string()))?;
+        .map_err(|sentence| refusal(INVALID_ARGS, sentence, false))?;
     let known = state
         .sessions
         .workspace_records(&project_id)
-        .map_err(|error| (CollisionError::StaleState, error.message))?
+        .map_err(|error| refusal(STALE_STATE, error.message, true))?
         .iter()
         .map(|record| KnownCheckout {
             path: PathBuf::from(&record.path),
             workspace_id: record.id.clone(),
         })
         .collect::<Vec<_>>();
-    // The sweep runs on this repository's own git queue, so it is ordered
-    // against the workspace git arms and holds a read permit like any other
-    // read. It moves everything it borrows: the queue answers later, on the
-    // drain thread.
+    // One instant for both bounds: the sweep stops itself there, and the queue
+    // call waits for it plus the one command that may still be running. The
+    // caller therefore never walks away from a sweep that is still working.
+    let deadline = Instant::now() + file_collisions::SCAN_DEADLINE;
     let sweep_root = root.clone();
     let sweep_subject = subject.clone();
     let scan = state
-        .read_git_value(&root, move || {
-            file_collisions::scan(&sweep_root, &sweep_subject, &known, &|root, arguments| {
-                git_within(root, arguments, file_collisions::COMMAND_TIMEOUT)
+        .read_git_value(
+            &root,
+            file_collisions::SCAN_DEADLINE + file_collisions::COMMAND_TIMEOUT,
+            move || {
+                file_collisions::scan(
+                    &sweep_root,
+                    &sweep_subject,
+                    &known,
+                    deadline,
+                    &|root, args| git_within(root, args, file_collisions::COMMAND_TIMEOUT),
+                )
+            },
+        )
+        .map_err(|reason| refusal(STALE_STATE, reason, true))?
+        .map_err(unreadable)?;
+    // Writers are the caller's own repository only: a session that wrote the
+    // same relative path in another project is not touching this file.
+    let listed = crate::write_evidence::repo_key(&root)
+        .as_deref()
+        .map(|repo| {
+            crate::write_evidence::writers_for(
+                repo,
+                &subject,
+                Duration::from_secs(u64::from(request.lookback_minutes) * 60),
+            )
+        })
+        .unwrap_or_default();
+    let labels = agent_labels(state, &registration.owner)?;
+    let writers = listed
+        .writers
+        .into_iter()
+        .map(|write| {
+            json!({
+                "sessionId": write.session_id,
+                "agent": labels.get(&write.session_id).cloned(),
+                "lastWriteAt": write.at_ms,
+                "evidence": write.evidence.as_str(),
+                "confidence": write.evidence.confidence(),
             })
         })
-        .map_err(|reason| (CollisionError::StaleState, reason.to_string()))?
-        .map_err(|reason| (CollisionError::StaleState, reason))?;
-    let labels = agent_labels(state, &registration.owner)?;
-    let writers = crate::write_evidence::writers_for(
-        &subject,
-        Duration::from_secs(u64::from(request.lookback_minutes) * 60),
-    )
-    .into_iter()
-    .map(|write| {
-        json!({
-            "sessionId": write.session_id,
-            "agent": labels.get(&write.session_id).cloned(),
-            "lastWriteAt": write.at_ms,
-            "evidence": write.evidence.as_str(),
-            "confidence": write.evidence.confidence(),
-        })
-    })
-    .collect::<Vec<_>>();
+        .collect::<Vec<_>>();
     Ok(json!({
         "repoPath": crate::verbatim_path::plain_path(&root.to_string_lossy()),
         "worktrees": scan.worktrees.iter().map(worktree_document).collect::<Vec<_>>(),
         "writers": writers,
         "capped": scan.capped,
+        "writersMayBeIncomplete": listed.may_be_incomplete,
     }))
+}
+
+/// A sweep that could not read one checkout: its own code, because no retry
+/// helps a repository in the middle of a rebase. The sweep says which of the
+/// two it was — a command that failed, or a git that timed out.
+fn unreadable(failure: ScanFailure) -> Refusal {
+    refusal(WORKTREE_UNREADABLE, failure.message, failure.retryable)
 }
 
 /// The display name each session an agent may see is shown under. Read from
@@ -202,11 +226,11 @@ fn report(
 fn agent_labels(
     state: &Arc<ServerState>,
     owner: &devboule_protocol::OwnerId,
-) -> Result<HashMap<String, String>, (CollisionError, String)> {
+) -> Result<HashMap<String, String>, Refusal> {
     let labels = state
         .sessions
         .live_agent_entries(owner)
-        .map_err(|error| (CollisionError::StaleState, error.message))?
+        .map_err(|error| refusal(STALE_STATE, error.message, true))?
         .into_iter()
         .map(|entry| {
             let name = entry
@@ -251,19 +275,19 @@ fn envelope(state: &Arc<ServerState>, id: Value, data: &Value) -> Value {
 /// A refusal, in the envelope's own shape: the sentence an agent reads and
 /// the code a caller may branch on. `isError` is set, like every other broker
 /// refusal, so a client that only looks at that still sees the failure.
-fn refused(state: &Arc<ServerState>, id: Value, error: CollisionError, message: &str) -> Value {
+fn refusal_reply(state: &Arc<ServerState>, id: Value, refused: &Refusal) -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": id,
         "result": {
-            "content": [{"type": "text", "text": message}],
+            "content": [{"type": "text", "text": refused.message}],
             "structuredContent": {
                 "hostId": state.host_id(),
                 "ok": false,
                 "error": {
-                    "code": error.code(),
-                    "message": message,
-                    "retryable": error.retryable(),
+                    "code": refused.code,
+                    "message": refused.message,
+                    "retryable": refused.retryable,
                 },
             },
             "isError": true,
@@ -271,6 +295,10 @@ fn refused(state: &Arc<ServerState>, id: Value, error: CollisionError, message: 
     })
 }
 
+/// The tool at the peer door, through the real road.
+#[cfg(test)]
+#[path = "mcp_collisions_peer_tests.rs"]
+mod peer_tests;
 #[cfg(test)]
 #[path = "mcp_collisions_tests.rs"]
 mod tests;

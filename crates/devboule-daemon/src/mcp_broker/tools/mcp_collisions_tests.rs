@@ -58,8 +58,9 @@ fn git(root: &Path, arguments: &[&str]) {
 /// A git project with a local workspace, one sibling worktree workspace on
 /// another branch, and a live agent session inside the local one. `seed`
 /// names the tracked file this case asks about, so cases running beside each
-/// other never read one another's writer rows.
-fn project(tag: &str, seed: &str) -> (Arc<ServerState>, PathBuf, String) {
+/// other never read one another's writer rows. Returns the project folder
+/// too: a writer row is keyed by that repository.
+fn project(tag: &str, seed: &str) -> (Arc<ServerState>, PathBuf, String, PathBuf) {
     let state = ServerState::new(format!("mcp-collisions-{tag}"));
     let dir = crate::test_dirs::test_temp_dir(&format!("devboule-mcp-collisions-{tag}"));
     let root = dir.join("project");
@@ -95,7 +96,7 @@ fn project(tag: &str, seed: &str) -> (Arc<ServerState>, PathBuf, String) {
         owner(),
         &local.id,
     );
-    (state, dir, other.id)
+    (state, dir, other.id, root)
 }
 
 fn call(state: &Arc<ServerState>, arguments: Value) -> Value {
@@ -116,7 +117,7 @@ fn structured(reply: &Value) -> &Value {
 
 #[test]
 fn collision_answers_its_own_envelope_for_the_callers_repository() {
-    let (state, dir, other_workspace) = project("envelope", "envelope-seed.txt");
+    let (state, dir, other_workspace, _root) = project("envelope", "envelope-seed.txt");
     let reply = call(
         &state,
         json!({"path": "envelope-seed.txt", "lookbackMinutes": 30}),
@@ -146,8 +147,12 @@ fn collision_answers_its_own_envelope_for_the_callers_repository() {
 
 #[test]
 fn collision_reports_a_write_it_can_vouch_for_and_names_its_own_host() {
-    let (state, dir, _other) = project("writers", "writers-seed.txt");
-    crate::write_evidence::record_path_write("a-session-that-ended", "writers-seed.txt");
+    let (state, dir, _other, root) = project("writers", "writers-seed.txt");
+    crate::write_evidence::record_path_write(
+        "a-session-that-ended",
+        &root,
+        &root.join("writers-seed.txt"),
+    );
     let reply = call(&state, json!({"path": "writers-seed.txt"}));
     let writers = structured(&reply)["data"]["writers"]
         .as_array()
@@ -170,9 +175,48 @@ fn collision_reports_a_write_it_can_vouch_for_and_names_its_own_host() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A write to the same relative path in **another repository** is not a write
+/// to this one: two projects both have a `src/main.rs`, and reporting the
+/// other project's session as a colliding writer would name an innocent agent.
+#[test]
+fn collision_does_not_report_a_writer_from_another_repository() {
+    let (state, dir, _other, _root) = project("cross-repo", "cross-repo-seed.txt");
+    let (elsewhere, elsewhere_dir, _other, elsewhere_root) =
+        project("cross-repo-other", "cross-repo-seed.txt");
+    crate::write_evidence::record_path_write(
+        "s.far.project",
+        &elsewhere_root,
+        &elsewhere_root.join("cross-repo-seed.txt"),
+    );
+
+    let reply = call(&state, json!({"path": "cross-repo-seed.txt"}));
+    let writers = structured(&reply)["data"]["writers"]
+        .as_array()
+        .expect("writers")
+        .clone();
+    assert!(
+        writers.is_empty(),
+        "a write in another repository is not a writer here: {writers:?}"
+    );
+    assert_eq!(
+        structured(&reply)["data"]["writersMayBeIncomplete"],
+        json!(false)
+    );
+
+    // The same write is reported to the project it happened in.
+    let home = call(&elsewhere, json!({"path": "cross-repo-seed.txt"}));
+    assert_eq!(
+        home["result"]["structuredContent"]["data"]["writers"][0]["sessionId"],
+        json!("s.far.project")
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+    let _ = std::fs::remove_dir_all(elsewhere_dir);
+}
+
 #[test]
 fn collision_refuses_a_path_the_caller_may_not_ask_about() {
-    let (state, dir, _other) = project("refuse", "refuse-seed.txt");
+    let (state, dir, _other, _root) = project("refuse", "refuse-seed.txt");
     for (path, code) in [
         ("../outside/seed.txt", "invalid_args"),
         (".git/config", "invalid_args"),
@@ -212,7 +256,7 @@ fn collision_refuses_a_path_the_caller_may_not_ask_about() {
 
 #[test]
 fn collision_takes_no_argument_but_the_two_it_documents() {
-    let (state, dir, _other) = project("arguments", "arguments-seed.txt");
+    let (state, dir, _other, _root) = project("arguments", "arguments-seed.txt");
     for (arguments, why) in [
         (json!({}), "path is required"),
         (json!({"path": 7}), "path is required"),

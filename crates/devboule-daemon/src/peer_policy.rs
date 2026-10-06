@@ -646,11 +646,12 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
         MCP_ACTIVITY_TOOL, MCP_ANSWER_PERMISSION_TOOL, MCP_ARCHIVE_WORKSPACE_TOOL,
         MCP_CANCEL_AGENT_TOOL, MCP_CAPTURE_TERMINAL_TOOL, MCP_CLOSE_AGENT_TOOL,
         MCP_CREATE_AGENT_TOOL, MCP_CREATE_TERMINAL_TOOL, MCP_CREATE_WORKSPACE_TOOL,
-        MCP_GET_AGENT_STATUS_TOOL, MCP_IMPORTERS_TOOL, MCP_IMPORTS_TOOL, MCP_KILL_TERMINAL_TOOL,
-        MCP_LIST_DEVICES_TOOL, MCP_LIST_PEER_AGENTS_TOOL, MCP_LIST_PENDING_PERMISSIONS_TOOL,
-        MCP_LIST_PROFILES_TOOL, MCP_LIST_TERMINALS_TOOL, MCP_LIST_WORKSPACES_TOOL,
-        MCP_NEIGHBORHOOD_TOOL, MCP_ORACLE_SEARCH_TOOL, MCP_ROSTER_TOOL, MCP_SEND_MESSAGE_TOOL,
-        MCP_SEND_TERMINAL_KEYS_TOOL, MCP_SET_AGENT_PROFILE_TOOL, MCP_STOP_AGENT_TOOL,
+        MCP_FILE_COLLISIONS_TOOL, MCP_GET_AGENT_STATUS_TOOL, MCP_IMPORTERS_TOOL, MCP_IMPORTS_TOOL,
+        MCP_KILL_TERMINAL_TOOL, MCP_LIST_DEVICES_TOOL, MCP_LIST_PEER_AGENTS_TOOL,
+        MCP_LIST_PENDING_PERMISSIONS_TOOL, MCP_LIST_PROFILES_TOOL, MCP_LIST_TERMINALS_TOOL,
+        MCP_LIST_WORKSPACES_TOOL, MCP_NEIGHBORHOOD_TOOL, MCP_ORACLE_SEARCH_TOOL, MCP_ROSTER_TOOL,
+        MCP_SEND_MESSAGE_TOOL, MCP_SEND_TERMINAL_KEYS_TOOL, MCP_SET_AGENT_PROFILE_TOOL,
+        MCP_STOP_AGENT_TOOL,
     };
     if tool == MCP_ROSTER_TOOL {
         Some(McpToolWire::Judged(vec![ClientMessage::SessionsList {
@@ -824,6 +825,13 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
             id: 0,
             project_id: String::new(),
         }]))
+    } else if tool == MCP_FILE_COLLISIONS_TOOL {
+        // The collision report is this machine's repository layout: every other
+        // worktree's branch and merge base, the workspace ids behind them and
+        // the sessions that wrote the path. A paired device's agent reads none
+        // of those files, so the door requires the administrative capability,
+        // like the workspace inventory above.
+        Some(McpToolWire::Requires(CAP_ADMIN))
     } else if tool == MCP_CREATE_WORKSPACE_TOOL {
         // The workspace write: judged as the wire's own `WorkspaceCreate`,
         // which rides the administrative capability — a device the owner

@@ -3,6 +3,7 @@
 //! neither.
 
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use super::fixture::Repo;
 use super::{scan, KnownCheckout};
@@ -12,6 +13,12 @@ use crate::workspace_git_support::{git_within, OUTSIDE_THE_WORKSPACE};
 /// The sweep's git runner, exactly as the tool supplies it.
 fn runner() -> impl Fn(&Path, &[&str]) -> Result<crate::git::GitOutput, crate::git::GitRunError> {
     |root, arguments| git_within(root, arguments, super::COMMAND_TIMEOUT)
+}
+
+/// The bound the tool hands the sweep. These repositories answer in
+/// milliseconds.
+fn plenty_of_time() -> Instant {
+    Instant::now() + Duration::from_secs(60)
 }
 
 #[test]
@@ -40,27 +47,35 @@ fn collision_reports_committed_and_dirty_paths() {
     }];
     let run = runner();
 
-    let committed = scan(&repo.root, "src/shared.rs", &known, &run).expect("sweep");
+    let committed =
+        scan(&repo.root, "src/shared.rs", &known, plenty_of_time(), &run).expect("sweep");
     assert!(!committed.capped, "two checkouts fit the cap");
     assert_eq!(committed.worktrees.len(), 1);
     let row = &committed.worktrees[0];
     assert_eq!(row.branch.as_deref(), Some("feature-collision"));
     assert_eq!(row.workspace_id.as_deref(), Some("ws-other"));
     assert_eq!(row.base_sha.as_deref(), Some(branch_point.as_str()));
-    assert!(row.committed_change, "the other branch committed this file");
+    assert_eq!(
+        row.committed_change,
+        Some(true),
+        "the other branch committed this file"
+    );
     assert!(!row.dirty_change, "and committed it, so it is not dirty");
 
-    let dirty = scan(&repo.root, "src/other.rs", &known, &run).expect("sweep");
+    let dirty = scan(&repo.root, "src/other.rs", &known, plenty_of_time(), &run).expect("sweep");
     let row = &dirty.worktrees[0];
-    assert!(
-        !row.committed_change,
+    assert_eq!(
+        row.committed_change,
+        Some(false),
         "the other branch never committed this file"
     );
     assert!(row.dirty_change, "but has it open in its working tree");
 
-    let untouched = scan(&repo.root, "src/quiet.rs", &known, &run).expect("sweep");
+    let untouched =
+        scan(&repo.root, "src/quiet.rs", &known, plenty_of_time(), &run).expect("sweep");
     let row = &untouched.worktrees[0];
-    assert!(!row.committed_change && !row.dirty_change);
+    assert_eq!(row.committed_change, Some(false));
+    assert!(!row.dirty_change);
     assert_eq!(
         row.base_sha.as_deref(),
         Some(branch_point.as_str()),
@@ -89,7 +104,7 @@ fn collision_reports_the_caller_own_checkout_as_nobody() {
         },
     ];
     let run = runner();
-    let sweep = scan(&repo.root, "seed.txt", &known, &run).expect("sweep");
+    let sweep = scan(&repo.root, "seed.txt", &known, plenty_of_time(), &run).expect("sweep");
     assert_eq!(sweep.worktrees.len(), 1);
     assert_eq!(sweep.worktrees[0].workspace_id.as_deref(), Some("ws-other"));
 }

@@ -37,6 +37,14 @@ pub(super) const MAX_IN_FLIGHT_READ_JOBS: usize = 4;
 /// a poll is re-issued on its timer, a person's commit is not re-issued at
 /// all, so the write wins.
 pub(super) const MAX_IN_FLIGHT_WRITE_JOBS: usize = 2;
+/// The value lane: a read that answers a value instead of a wire frame (a
+/// repository sweep) rather than a poll. Its own small ceiling, because one
+/// such job runs several git commands under a single permit for as long as the
+/// sweep lasts — four of them would hold the whole read lane, the sidebar's
+/// status and diff polls included. Two keeps two sweeps answering without
+/// spending a permit the workspace reads need. The price is the write lane's
+/// own: a third sweep waits, and waits on its root's drain thread.
+pub(super) const MAX_IN_FLIGHT_VALUE_JOBS: usize = 2;
 /// Queued read jobs allowed per root. Beyond it a new poll waits on the
 /// root's waitlist and is admitted when a read on that root frees its
 /// queued slot — it is then a fresh read that runs after everything already
@@ -54,9 +62,9 @@ pub(super) const WAITING_READ_CAP: usize = 12;
 /// queue. A freed read permit wakes it at once; this poll bounds only the
 /// wait for a write arriving behind a read that cannot take its permit.
 const PICK_POLL: Duration = Duration::from_millis(50);
-/// How long a [`GitQueue::read_value`] caller waits for its job. Longer than
-/// any one sweep's own bound so the sweep's own answer wins; short enough that
-/// a wedged queue refuses the call instead of holding the caller for ever.
+/// The ceiling on any [`GitQueue::read_value`] wait, whatever the caller asks
+/// for: a wedged queue must refuse a call rather than hold its thread for
+/// ever. A caller that passes its own bound below this gets that bound.
 const VALUE_WAIT: Duration = Duration::from_secs(30);
 
 /// One queued unit of git work.
@@ -72,9 +80,10 @@ pub(super) enum Job {
     },
     /// A mutation or any non-poll arm: the closure answers its own caller.
     Write(Box<dyn FnOnce() + Send>),
-    /// A read whose answer is a value rather than a wire frame: an MCP tool
-    /// runs git and has no [`DaemonMessage`] to deliver. Runs in the read
-    /// lane and in this root's queue order, coalescing nothing.
+    /// A read that answers a value rather than a wire frame: an MCP tool
+    /// runs git and has no [`DaemonMessage`] to deliver. Runs in this root's
+    /// queue order on its own lane ([`MAX_IN_FLIGHT_VALUE_JOBS`]), coalescing
+    /// nothing.
     ///
     /// Its compute MUST NOT enqueue another job on this root and wait for
     /// it: one root has one drain thread, so such a job would sit behind this
@@ -126,6 +135,8 @@ struct Shared {
     read_freed: Condvar,
     write_permits: Mutex<usize>,
     write_freed: Condvar,
+    value_permits: Mutex<usize>,
+    value_freed: Condvar,
     /// Write jobs accepted and not finished — queued behind slower work or
     /// running. Shutdown waits for zero, bounded, before it flushes the
     /// journal, so a delete that has not started yet still lands its row.
@@ -145,6 +156,8 @@ impl Default for Shared {
             read_freed: Condvar::new(),
             write_permits: Mutex::new(MAX_IN_FLIGHT_WRITE_JOBS),
             write_freed: Condvar::new(),
+            value_permits: Mutex::new(MAX_IN_FLIGHT_VALUE_JOBS),
+            value_freed: Condvar::new(),
             writes_outstanding: Mutex::new(0),
             write_done: Condvar::new(),
             writes_cancelled: AtomicBool::new(false),
@@ -200,6 +213,7 @@ impl Drop for DrainGuard {
 enum Lane {
     Read,
     Write,
+    Value,
 }
 
 /// Returns the lane's permit on the way out, however the job ends.
@@ -236,6 +250,7 @@ impl Shared {
         match lane {
             Lane::Read => (&self.read_permits, &self.read_freed),
             Lane::Write => (&self.write_permits, &self.write_freed),
+            Lane::Value => (&self.value_permits, &self.value_freed),
         }
     }
 
@@ -274,7 +289,7 @@ fn queued_reads(inner: &Inner) -> usize {
     inner
         .jobs
         .iter()
-        .filter(|job| matches!(job, Job::Read { .. } | Job::Value(_)))
+        .filter(|job| matches!(job, Job::Read { .. }))
         .count()
 }
 
@@ -318,13 +333,13 @@ fn next_runnable(shared: &Shared, inner: &mut Inner) -> Pick {
     let Some(head) = inner.jobs.front() else {
         return Pick::Exit;
     };
-    if matches!(head, Job::Write(_)) || read_permit_free(shared) {
+    if matches!(head, Job::Write(_) | Job::Value(_)) || read_permit_free(shared) {
         return Pick::Run(inner.jobs.pop_front().expect("front checked"));
     }
     if let Some(index) = inner
         .jobs
         .iter()
-        .position(|job| matches!(job, Job::Write(_)))
+        .position(|job| matches!(job, Job::Write(_) | Job::Value(_)))
     {
         return Pick::Run(inner.jobs.remove(index).expect("position checked"));
     }
@@ -393,15 +408,25 @@ fn join_read(inner: &Inner, key: &ReadKey, sinks: &Arc<Mutex<Vec<Sink>>>) -> boo
 
 impl GitQueue {
     /// Run `compute` on `root`'s queue and hand its value back to the caller,
-    /// bounded by [`VALUE_WAIT`]. Nothing coalesces on this key and nothing
-    /// is counted as a write, but the read lane and the per-root order are the
-    /// same ones the workspace git arms take, so a sweep observes the tree as
-    /// the writes before it left it.
+    /// waiting at most `within` (and never past this queue's own ceiling).
+    /// Nothing coalesces on this key and nothing is counted as a write; the
+    /// per-root order is the same one the workspace git arms take, so a sweep
+    /// observes the tree as the writes before it left it, and the lane is its
+    /// own so a long sweep never holds a permit a status poll needs.
+    ///
+    /// `within` is the caller's own bound on its own work, which is what keeps
+    /// the two honest: a job that overruns it is reported as a refusal, and
+    /// that job still runs to its end on the drain thread.
     ///
     /// The caller blocks here, on the thread that asked the question. `Err`
     /// means the worker could not start the job, or the bound ran out with it
     /// still queued — never a partial value.
-    pub(super) fn read_value<T, F>(&self, root: String, compute: F) -> Result<T, &'static str>
+    pub(super) fn read_value<T, F>(
+        &self,
+        root: String,
+        within: Duration,
+        compute: F,
+    ) -> Result<T, &'static str>
     where
         T: Send + 'static,
         F: FnOnce() -> T + Send + 'static,
@@ -414,7 +439,7 @@ impl GitQueue {
         }));
         self.enqueue_job(root, job)?;
         answer_rx
-            .recv_timeout(VALUE_WAIT)
+            .recv_timeout(within.min(VALUE_WAIT))
             .map_err(|_| "the repository's git queue did not answer in time")
     }
 
@@ -681,10 +706,10 @@ fn drain(shared: Arc<Shared>, queue: Arc<RootQueue>) {
                 }
             }
             Job::Value(run) => {
-                acquire(&shared, Lane::Read);
+                acquire(&shared, Lane::Value);
                 let _permit = PermitGuard {
                     shared: &shared,
-                    lane: Lane::Read,
+                    lane: Lane::Value,
                 };
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
             }

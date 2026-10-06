@@ -539,16 +539,22 @@ impl ServerState {
         super::git_write_lock::acquire(&self.git_write_locks, root)
     }
 
-    /// Run a read-only git job on `root`'s queue and hand back its value.
-    /// The one way out of the queue for a caller with no wire frame to
-    /// deliver (the collision sweep), so `git_jobs` stays private.
-    pub(crate) fn read_git_value<T, F>(&self, root: &Path, compute: F) -> Result<T, &'static str>
+    /// Run a read-only git job on `root`'s queue and hand back its value,
+    /// waiting at most `within`. The one way out of the queue for a caller
+    /// with no wire frame to deliver (the collision sweep), so `git_jobs`
+    /// stays private.
+    pub(crate) fn read_git_value<T, F>(
+        &self,
+        root: &Path,
+        within: Duration,
+        compute: F,
+    ) -> Result<T, &'static str>
     where
         T: Send + 'static,
         F: FnOnce() -> T + Send + 'static,
     {
         self.git_jobs
-            .read_value(root.to_string_lossy().into_owned(), compute)
+            .read_value(root.to_string_lossy().into_owned(), within, compute)
     }
 
     /// Which daemon answered — the instance id every queue snapshot already
