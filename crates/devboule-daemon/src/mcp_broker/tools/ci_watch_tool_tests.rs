@@ -150,20 +150,27 @@ fn a_missing_login_is_reported_by_the_wake_not_by_the_call() {
 
     // The daemon's own poll thread may get there first; either pass delivers.
     fixture.state.ci_watches.poll_once(&fixture.state.sessions);
-    let delivered = wait_for_delivery(&fixture);
+    let delivered = wait_for_delivery(&fixture, WAKE_END);
     assert!(delivered.contains("github_auth_required"), "{delivered}");
     assert!(delivered.contains("gh auth login"), "{delivered}");
 }
 
-fn wait_for_delivery(fixture: &Fixture) -> String {
+/// The last thing a daemon message says: the wake is whole once it is there.
+const WAKE_END: &str = "</devboule-system>";
+
+/// What the session's writer holds once `needle` is in it. The daemon's own
+/// poll thread runs the same passes as the test's, so whichever of them makes
+/// the wake may still be writing when the other returns.
+fn wait_for_delivery(fixture: &Fixture, needle: &str) -> String {
     for _ in 0..100 {
         let received = fixture.received.lock().expect("received").clone();
-        if !received.is_empty() {
-            return String::from_utf8(received).expect("utf8 delivery");
+        let text = String::from_utf8_lossy(&received).into_owned();
+        if text.contains(needle) {
+            return text;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    String::new()
+    String::from_utf8_lossy(&fixture.received.lock().expect("received")).into_owned()
 }
 
 fn workspace_fixture(tag: &str) -> Fixture {
@@ -258,6 +265,12 @@ fn the_verdict_reaches_the_caller_once() {
     assert_eq!(data["wake"], json!("pending"));
     let watch_id = data["watchId"].as_str().expect("watch id").to_string();
 
+    // The log first: the daemon's poll thread may read the finished run the
+    // moment it is scripted, and must find its log.
+    fixture.runner.set(
+        "actions/jobs/31/logs",
+        ok("error: assertion failed: left == right\n"),
+    );
     fixture.runner.set(
         &format!("commits/{SHA}/check-runs"),
         ok(&check_runs(&[check_run(
@@ -267,13 +280,8 @@ fn the_verdict_reaches_the_caller_once() {
             Some("failure"),
         )])),
     );
-    fixture.runner.set(
-        "actions/jobs/31/logs",
-        ok("error: assertion failed: left == right\n"),
-    );
     fixture.state.ci_watches.poll_once(&fixture.state.sessions);
-    let delivered = String::from_utf8(fixture.received.lock().expect("received").clone())
-        .expect("utf8 delivery");
+    let delivered = wait_for_delivery(&fixture, WAKE_END);
     assert!(delivered.contains("kind: ci_verdict"), "{delivered}");
     assert!(delivered.contains("role: daemon"), "{delivered}");
     assert!(
