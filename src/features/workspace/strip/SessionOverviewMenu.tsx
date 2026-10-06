@@ -11,7 +11,7 @@ import { relativeTime } from "../../../lib/relativeTime";
 import { isImeComposition } from "../../../lib/imeComposition";
 import { useMenuOpen } from "../../../lib/menuOpen";
 import { AnchoredPopover } from "../popoverPlace";
-import { sessionKindWord, sessionTitle } from "../workspaceSessions";
+import { sessionKindWord, sessionProviderLabel, sessionTitle } from "../workspaceSessions";
 import { chipDisplay } from "./stripDisplay";
 import { sessionAttentionLabel } from "../sessionAttention";
 import { sessionLastActiveMs, sessionStartedLabel } from "./sessionOverview";
@@ -266,7 +266,7 @@ export function SessionOverviewMenu({
                     role="option"
                     tabIndex={session.id === currentId ? 0 : -1}
                     aria-selected={session.id === activeTabId}
-                    aria-label={`${title}, ${display.stateLine}${attentionLabel === null ? "" : `, ${attentionLabel}`}${row.open ? ", open tab" : ""}`}
+                    aria-label={`${title}, ${sessionProviderLabel(session)}, ${display.stateLine}${attentionLabel === null ? "" : `, ${attentionLabel}`}${row.open ? ", open tab" : ""}`}
                     data-overview-option={session.id}
                     className="workspace-overview-option"
                     onClick={() => onOpen(session.id)}

@@ -1,7 +1,7 @@
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
 import { isAgentKind, type Session } from "../../../types/ipc";
 import { sessionTabElementId } from "./useTabCloseFlow";
-import { sessionKindLabel, sessionTitle } from "../workspaceSessions";
+import { sessionProviderLabel, sessionTitle } from "../workspaceSessions";
 import type { ChipDisplay } from "./stripDisplay";
 import { StripKindMark } from "./StripKindMark";
 import { toolTabKindLabel, toolTabLabel, toolTabSubject, type ToolTab } from "./toolTabs";
@@ -100,7 +100,7 @@ export function StripChip({
         <StripKindMark kind={session.kind} />
         <span className="workspace-tab-label">{title}</span>
         {/* Heard, never seen: a chip paints a dot tone, never a sentence. */}
-        <span className="workspace-sr-only">{`${sessionKindLabel(session.kind)}, ${display.stateLine}`}</span>
+        <span className="workspace-sr-only">{`${sessionProviderLabel(session)}, ${display.stateLine}`}</span>
       </button>
       {/* The description lives beside the button, never inside it: a
           described-by span inside the button would join the accessible

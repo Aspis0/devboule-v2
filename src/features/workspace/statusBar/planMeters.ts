@@ -1,4 +1,5 @@
 import type { PlanUsage, PlanWindow } from "../../../types/ipc";
+import { providerName } from "../providerNames";
 import {
   planWindowBarPercent,
   planWindowLabel,
@@ -6,12 +7,9 @@ import {
   updatedAgoLabel,
 } from "../contextUsageView";
 
-// The two providers whose frames the daemon stamps (`reportsPlanLimits`). A
-// frame under any other id has no name the app can print, so it shows nothing.
-const PROVIDER_NAMES = new Map([
-  ["claude", "Claude"],
-  ["codex", "Codex"],
-]);
+// The providers whose frames the daemon stamps (`reportsPlanLimits`); a frame
+// under any other id shows nothing, whatever name the app has for it.
+const REPORTS_PLAN_LIMITS = new Set(["claude", "codex"]);
 
 export interface WindowPart {
   /** `5h`, `wk`, or the minutes when the provider names a window of another length. */
@@ -58,8 +56,8 @@ export function providerMeter(
   recordedAtMs: number | null,
   nowMs: number,
 ): ProviderMeter | null {
-  const name = PROVIDER_NAMES.get(plan.providerId);
-  if (name === undefined) return null;
+  const name = REPORTS_PLAN_LIMITS.has(plan.providerId) ? providerName(plan.providerId) : null;
+  if (name === null) return null;
   const measured = plan.windows.filter(
     (window) => window.usedPercent !== undefined && isCurrent(window, recordedAtMs, nowMs),
   );

@@ -7,6 +7,7 @@ import {
   sessionsWatch,
 } from "../../lib/tauri";
 import { recordCreatedSession } from "./createdSessions";
+import { providerName } from "./providerNames";
 import type {
   Attention,
   DelegationState,
@@ -170,20 +171,11 @@ export function sessionKindWord(kind: SessionKind): "Agent" | "Terminal" {
   return isAgentKind(kind) ? "Agent" : "Terminal";
 }
 
-/** The name a screen reader hears for a session's kind: the provider for an agent. */
-export function sessionKindLabel(kind: SessionKind): string {
-  switch (kind) {
-    case "claude":
-      return "Claude";
-    case "codex":
-      return "Codex";
-    case "pi":
-      return "Pi";
-    case "acp":
-      return "Agent";
-    case "terminal":
-      return "Terminal";
-  }
+/** The name a screen reader hears for a session's kind: the provider for an
+ * agent, the id it reports when the app has no name for it, else the kind's word. */
+export function sessionProviderLabel(session: Pick<Session, "kind" | "provider">): string {
+  if (!isAgentKind(session.kind)) return sessionKindWord(session.kind);
+  return providerName(session.provider ?? session.kind) ?? session.provider ?? "Agent";
 }
 
 /** Whether the session carries a name a human gave it — a display name set

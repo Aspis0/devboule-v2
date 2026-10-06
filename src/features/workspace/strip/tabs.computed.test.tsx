@@ -52,6 +52,36 @@ function tab(className: string): { button: HTMLElement; label: HTMLElement } {
 }
 
 describe("agent and tool tabs", () => {
+  it("keeps the marker clear of the close scrim, which starts under the tab's top edge", () => {
+    const css = assembleCssProof(sheets, "light");
+    expect(css.rulesFor(".workspace-session-chip::before")).toContain("inset: 2px 0 0");
+    // The reveal rules only repaint the scrim: none of them moves its edge back to the top.
+    const reveals = css.rules.filter(
+      (rule) =>
+        rule.selector.includes(".workspace-session-chip::before") && !/inset|top/.test(rule.body),
+    );
+    expect(reveals.length).toBeGreaterThan(0);
+    for (const hovered of [
+      ".workspace-session-tab-selected:hover",
+      ".workspace-session-tab-selected:focus-visible",
+    ]) {
+      expect(css.rulesFor(hovered)).not.toContain("box-shadow");
+    }
+  });
+
+  it.each(["light", "dark"] as const)(
+    "keeps a multi-selected quiet tab above the contrast floor in the %s theme",
+    (theme) => {
+      const css = assembleCssProof(sheets, theme);
+      css.inject([".workspace-session-tab", ".workspace-session-tab-multiselected"]);
+      const { button } = tab("workspace-session-tab-quiet workspace-session-tab-multiselected");
+      const style = getComputedStyle(button);
+
+      expect(style.backgroundColor).toBe(css.token("--fill-selected-soft"));
+      expect(contrast(style.color, style.backgroundColor)).toBeGreaterThanOrEqual(6.97);
+    },
+  );
+
   it.each(["light", "dark"] as const)(
     "reads an agent in ink at 14px and a tool muted at 12px regular, in the %s theme",
     (theme) => {

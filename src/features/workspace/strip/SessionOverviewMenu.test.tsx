@@ -254,6 +254,18 @@ describe("SessionOverviewMenu", () => {
     expect(rendered.option("d").getAttribute("aria-label")).toContain("Recovered");
   });
 
+  it("names a row's provider the way its tab does", () => {
+    const rendered = renderMenu({
+      sessions: [
+        session("a", { kind: "claude", provider: "claude" }),
+        session("b", { provider: "gemini" }),
+      ],
+      stripOrder: ["a", "b"],
+    });
+    expect(rendered.option("a").getAttribute("aria-label")).toContain("title a, Claude, ");
+    expect(rendered.option("b").getAttribute("aria-label")).toContain("title b, gemini, ");
+  });
+
   it("activates a row on click with its session id", () => {
     const rendered = renderMenu();
     act(() => {

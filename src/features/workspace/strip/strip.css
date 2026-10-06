@@ -96,6 +96,13 @@
   box-shadow: inset 0 2px 0 var(--accent);
 }
 
+/* Forced colours drop box-shadow, so the edge becomes a border. */
+@media (forced-colors: active) {
+  .workspace-session-tab-selected {
+    border-top: 2px solid Highlight;
+  }
+}
+
 /* A hovered multi-selected chip keeps the hover look: the multi fill
    already loses to :hover on specificity, and the 1 px accent outline
    below is what keeps the multi identity visible. Placed before the
@@ -120,6 +127,7 @@
 /* The active tab is a fill; multi-selection is a soft fill plus an inset
    outline, so a tab can be both without lying about which is which. */
 .workspace-session-tab-multiselected {
+  color: var(--ink);
   background: var(--fill-selected-soft);
   outline: 1px solid var(--accent);
   outline-offset: -1px;
@@ -492,10 +500,12 @@ button.workspace-rate:focus-visible:hover {
     visibility 120ms;
 }
 
+/* The scrim starts under the tab's 2px top edge, so the marker stays whole
+   whenever the × is showing. */
 .workspace-session-chip::before {
   content: "";
   position: absolute;
-  inset: 0;
+  inset: 2px 0 0;
   background: var(--ground-center);
 }
 

@@ -88,6 +88,14 @@ describe("a tab's tone and name", () => {
     },
   );
 
+  it("tells two generic agents apart by the provider each reports", async () => {
+    const gemini = await renderSession({ ...session("acp", "Plan"), provider: "gemini" });
+    expect(gemini.querySelector(".workspace-sr-only")?.textContent).toMatch(/^gemini,/);
+
+    const named = await renderSession({ ...session("acp", "Plan"), provider: "claude" });
+    expect(named.querySelector(".workspace-sr-only")?.textContent).toMatch(/^Claude,/);
+  });
+
   it("makes a terminal a quiet tab that announces itself as a terminal", async () => {
     const tab = await renderSession(session("terminal", "Terminal 2"));
 
