@@ -1,4 +1,10 @@
 .copyblock {
+  /* A light block can sit inside a dark surface (a fence in an open plan row):
+     its button and ring belong to its own ground, not the one around it. */
+  --ring: var(--accent);
+  --button-fill: initial;
+  --button-fill-hover: initial;
+  --button-text: initial;
   position: relative;
   margin: var(--space-4) 0 var(--space-2);
   padding: var(--space-10) 80px var(--space-10) var(--space-12);

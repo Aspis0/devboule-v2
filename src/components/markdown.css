@@ -20,7 +20,7 @@
   padding: 0;
   border: 0;
   background: none;
-  color: var(--ink);
+  color: inherit;
   text-decoration: underline;
   font: inherit;
   line-height: inherit;
@@ -45,6 +45,7 @@
 }
 
 .plan-markdown-table th {
+  color: var(--ink);
   background: var(--fill-tool);
   font-weight: var(--weight-heading);
 }
