@@ -4,7 +4,7 @@
 
 use devboule_protocol::MAX_ATTACHMENT_OWNER_BYTES;
 
-use super::tests::{encoded, fixture};
+use super::tests::{encoded, fixture, part_files};
 
 #[test]
 fn staged_bytes_are_charged_to_the_store_and_released_on_abort() {
@@ -166,5 +166,55 @@ fn a_send_over_a_charge_that_would_pass_the_budget_is_refused_before_admit() {
             .message
             .contains(&MAX_ATTACHMENT_OWNER_BYTES.to_string()),
         "{error:?}"
+    );
+}
+
+#[test]
+fn an_abort_of_an_id_not_yet_open_refuses_the_begin_that_raced_it() {
+    let (_temp, store, uploads) = fixture();
+    let session_id = "s.tomb.1";
+    uploads
+        .abort(&store, session_id, "up-t1")
+        .expect("an abort of an id that is not open is an Ok");
+    // The abort cannot see the file a `begin` is about to create, so the
+    // tombstone is what keeps that begin from leaving a charged part.
+    let error = uploads
+        .begin(&store, session_id, "up-t1", "a.bin", 4)
+        .expect_err("the late begin is refused");
+    assert!(error.message.contains("cancelled"), "{error:?}");
+    assert!(
+        part_files(&store, session_id).is_empty(),
+        "the refused begin leaves no part"
+    );
+    assert_eq!(store.store_bytes(), Some(0));
+}
+
+#[test]
+fn a_tombstone_from_one_session_does_not_refuse_another() {
+    let (_temp, store, uploads) = fixture();
+    uploads
+        .abort(&store, "s.tomb.a", "up-t2")
+        .expect("an abort in one session");
+    assert_eq!(
+        uploads
+            .begin(&store, "s.tomb.b", "up-t2", "a.bin", 4)
+            .expect("the other session's id is free"),
+        0
+    );
+}
+
+#[test]
+fn an_abort_of_an_open_id_leaves_no_tombstone() {
+    let (_temp, store, uploads) = fixture();
+    let session_id = "s.tomb.3";
+    uploads
+        .begin(&store, session_id, "up-t3", "a.bin", 4)
+        .expect("open");
+    uploads.abort(&store, session_id, "up-t3").expect("abort");
+    assert_eq!(
+        uploads
+            .begin(&store, session_id, "up-t3", "a.bin", 4)
+            .expect("an id whose upload was aborted is free to open again"),
+        0
     );
 }

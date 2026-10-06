@@ -135,6 +135,7 @@ impl AgentImageSink {
             session_id: self.session_id.clone(),
             digest: deposited.digest,
             stored_bytes: deposited.stored_bytes,
+            name: attachment.name.clone(),
         })
     }
 

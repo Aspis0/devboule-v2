@@ -167,6 +167,7 @@ fn forged_reference(session_id: &str) -> serde_json::Value {
         session_id: session_id.to_string(),
         digest: "a".repeat(64),
         stored_bytes: 9,
+        name: String::new(),
     })
     .expect("a reference serializes")
 }

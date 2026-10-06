@@ -4,7 +4,12 @@
 
 import { describe, expect, it, vi } from "vitest";
 import type { AttachmentReference } from "../../types/ipc";
-import { MAX_UPLOAD_CHUNK_BYTES, uploadFile, type FileUploader } from "./fileUpload";
+import {
+  MAX_UPLOAD_CHUNK_BYTES,
+  UPLOAD_CALL_TIMEOUT_MS,
+  uploadFile,
+  type FileUploader,
+} from "./fileUpload";
 
 const REFERENCE: AttachmentReference = {
   sessionId: "s.a.1",
@@ -142,5 +147,47 @@ describe("uploadFile cancellation", () => {
     expect(chunks).toBe(1);
     expect(uploader.begin).toHaveBeenCalledTimes(1);
     expect(uploader.finish).not.toHaveBeenCalled();
+  });
+});
+
+describe("uploadFile frame deadlines", () => {
+  it("fails the upload when one chunk call hangs past the timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const file = fileOf(4);
+      const uploader: FileUploader = {
+        begin: vi.fn(async () => 0),
+        status: vi.fn(async () => 0),
+        chunk: vi.fn(() => new Promise<number>(() => {})),
+        finish: vi.fn(async () => REFERENCE),
+        abort: vi.fn(async () => {}),
+      };
+      const pending = uploadFile(file, "s.a.1", "up-1", uploader);
+      const rejection = expect(pending).rejects.toThrow(/timed out after 30000 ms/);
+      // The first advance lands `begin` and the slice read, so the chunk's own
+      // timer exists before the second one fires it.
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.advanceTimersByTimeAsync(UPLOAD_CALL_TIMEOUT_MS + 1);
+      await rejection;
+      expect(uploader.begin).toHaveBeenCalledTimes(1);
+      expect(uploader.finish).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects a hung call as soon as the signal aborts", async () => {
+    const controller = new AbortController();
+    const uploader: FileUploader = {
+      begin: vi.fn(() => new Promise<number>(() => {})),
+      status: vi.fn(async () => 0),
+      chunk: vi.fn(async () => 0),
+      finish: vi.fn(async () => REFERENCE),
+      abort: vi.fn(async () => {}),
+    };
+    const pending = uploadFile(fileOf(4), "s.a.1", "up-1", uploader, controller.signal);
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(uploader.status).not.toHaveBeenCalled();
   });
 });

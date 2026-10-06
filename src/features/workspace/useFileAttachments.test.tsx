@@ -258,3 +258,29 @@ describe("useFileAttachments", () => {
     expect(api!.files.map((file) => file.state)).toEqual(["refused"]);
   });
 });
+
+it("does not start an upload for a chip removed while it was queued", async () => {
+  const releases: Array<() => void> = [];
+  const uploader = instantUploader({
+    begin: vi.fn(
+      () =>
+        new Promise<number>((resolve) => {
+          releases.push(() => resolve(0));
+        }),
+    ),
+  });
+  await render({ uploader });
+  await add(pdfFile("a.pdf"), pdfFile("b.pdf"));
+  expect(uploader.begin).toHaveBeenCalledTimes(1);
+
+  await act(async () => {
+    api!.removeFile(api!.files[1]!.id);
+  });
+  await act(async () => {
+    releases[0]!();
+  });
+  await act(async () => {});
+  await act(async () => {});
+  expect(uploader.begin).toHaveBeenCalledTimes(1);
+  expect(api!.files.map((file) => file.name)).toEqual(["a.pdf"]);
+});

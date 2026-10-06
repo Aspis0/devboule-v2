@@ -12,6 +12,16 @@ export const MAX_UPLOAD_CHUNK_BYTES = 256 * 1024;
 export const MAX_FILE_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 
 /**
+ * How long one upload frame may take before the upload fails.
+ *
+ * A hung IPC call is a promise that never settles: without this deadline the
+ * one-at-a-time queue would park forever behind it, and Send would stay
+ * disabled for the session. The timeout fails *this* upload with a visible
+ * reason, so the queue moves on to the next file.
+ */
+export const UPLOAD_CALL_TIMEOUT_MS = 30_000;
+
+/**
  * The five frames one upload is made of, as the app can call them. The Tauri
  * wrappers are one implementation; a test's fake is another.
  */
@@ -39,7 +49,9 @@ export interface FileUploader {
  * upload stops sending and rejects with an `AbortError`, and the caller is what
  * tells the daemon to drop the staged bytes. A failed chunk after an abort is
  * not a reason to resume — the re-`begin` a resume would issue is exactly the
- * "start over and store it anyway" this must not do.
+ * "start over and store it anyway" this must not do. Every call is also raced
+ * against the signal and [`UPLOAD_CALL_TIMEOUT_MS`], so a hung IPC frame
+ * rejects instead of parking the queue.
  *
  * The file is read slice by slice, never whole: even a 50 MiB file costs one
  * chunk of transient memory here. A file the caller already refused for its
@@ -52,16 +64,12 @@ export async function uploadFile(
   uploader: FileUploader,
   signal?: AbortSignal,
 ): Promise<AttachmentReference> {
-  const abortError = () => {
-    const error = new Error("The upload was cancelled.");
-    error.name = "AbortError";
-    return error;
-  };
   const throwIfAborted = () => {
     if (signal?.aborted) throw abortError();
   };
   throwIfAborted();
-  const declare = () => uploader.begin(sessionId, uploadId, file.name, file.size);
+  const call = <T>(promise: Promise<T>) => raced(promise, UPLOAD_CALL_TIMEOUT_MS, signal);
+  const declare = () => call(uploader.begin(sessionId, uploadId, file.name, file.size));
   let offset = await declare();
   // A chunk that does not move the offset is a retry, not progress; a daemon
   // that keeps answering the same number must not spin this loop forever.
@@ -72,10 +80,13 @@ export async function uploadFile(
     const data = base64Of(new Uint8Array(await slice.arrayBuffer()));
     let received: number;
     try {
-      received = await uploader.chunk(sessionId, uploadId, offset, data);
-    } catch {
+      received = await call(uploader.chunk(sessionId, uploadId, offset, data));
+    } catch (error: unknown) {
       if (signal?.aborted) throw abortError();
-      received = await resume(uploader, sessionId, uploadId, declare);
+      // A frame that never came back is not a transient refusal to resume
+      // past: the same call would hang again, and the queue would park.
+      if (error instanceof Error && error.name === "TimeoutError") throw error;
+      received = await resume(uploader, sessionId, uploadId, declare, call);
     }
     if (received <= offset) {
       stalls += 1;
@@ -86,7 +97,7 @@ export async function uploadFile(
     offset = received;
   }
   throwIfAborted();
-  return uploader.finish(sessionId, uploadId);
+  return call(uploader.finish(sessionId, uploadId));
 }
 
 /**
@@ -100,10 +111,52 @@ async function resume(
   sessionId: string,
   uploadId: string,
   declare: () => Promise<number>,
+  call: <T>(promise: Promise<T>) => Promise<T>,
 ): Promise<number> {
   try {
-    return await uploader.status(sessionId, uploadId);
+    return await call(uploader.status(sessionId, uploadId));
   } catch {
     return declare();
   }
+}
+
+function abortError(): Error {
+  const error = new Error("The upload was cancelled.");
+  error.name = "AbortError";
+  return error;
+}
+
+/**
+ * One frame's promise, bounded by the deadline and the caller's abort.
+ *
+ * The underlying IPC call cannot be cancelled once sent, so this only decides
+ * which rejection the loop sees first; the late settlement is still observed
+ * by these handlers, so it can never surface as an unhandled rejection.
+ */
+function raced<T>(promise: Promise<T>, timeoutMs: number, signal?: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError());
+      return;
+    }
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const finish = (error: unknown, value?: T) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      if (error !== null) reject(error);
+      else resolve(value as T);
+    };
+    const onAbort = () => finish(abortError());
+    const timeoutError = new Error(`The upload call timed out after ${timeoutMs} ms.`);
+    timeoutError.name = "TimeoutError";
+    timer = setTimeout(() => finish(timeoutError), timeoutMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => finish(null, value),
+      (error: unknown) => finish(error),
+    );
+  });
 }

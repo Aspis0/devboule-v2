@@ -38,7 +38,7 @@ fn session_dir(store: &AttachmentStore, session_id: &str) -> std::path::PathBuf 
         .expect("the session folder")
 }
 
-fn part_files(store: &AttachmentStore, session_id: &str) -> Vec<std::path::PathBuf> {
+pub(super) fn part_files(store: &AttachmentStore, session_id: &str) -> Vec<std::path::PathBuf> {
     let Ok(entries) = std::fs::read_dir(session_dir(store, session_id)) else {
         return Vec::new();
     };
@@ -49,7 +49,7 @@ fn part_files(store: &AttachmentStore, session_id: &str) -> Vec<std::path::PathB
         .collect()
 }
 
-fn stored_files(store: &AttachmentStore, session_id: &str) -> Vec<std::path::PathBuf> {
+pub(super) fn stored_files(store: &AttachmentStore, session_id: &str) -> Vec<std::path::PathBuf> {
     let Ok(entries) = std::fs::read_dir(session_dir(store, session_id)) else {
         return Vec::new();
     };

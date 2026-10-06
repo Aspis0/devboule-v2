@@ -9,6 +9,13 @@
 //! where each part stands and what it promised — because a chunk that does not
 //! start at that offset must be refused rather than appended blind.
 //!
+//! The map lock is never held across disk I/O: `begin` and `chunk` claim their
+//! entry under it, stage the bytes outside it, and record the result when they
+//! take it again. An abort that lands in that gap names an id whose entry is
+//! mid-create or mid-append, so it is remembered as a short-lived tombstone and
+//! the claimant reads it on its return and cleans up instead of leaving a
+//! charged part behind.
+//!
 //! An upload survives a lost connection while the daemon lives: the client
 //! names the same upload id and asks for its offset. After a daemon restart the
 //! entry is gone and the restart is a refusal; the client aborts and opens a
@@ -19,6 +26,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use devboule_protocol::{
     invalid_base64_message, sanitize_attachment_name, validate_upload_begin, validate_upload_chunk,
@@ -34,6 +42,10 @@ use crate::attachment_store::{AttachmentStore, Deposited};
 /// budget already charges, and the cap keeps the map and the folder bounded.
 const MAX_CONCURRENT_UPLOADS_PER_SESSION: usize = 4;
 
+/// How long an abort of an id with no idle entry is remembered. It only has to
+/// outlive the staged write the claimant is already inside, not a reconnect.
+const CANCEL_TOMBSTONE_TTL: Duration = Duration::from_secs(30);
+
 struct InProgress {
     session_id: String,
     /// The sanitized display name; the store's extension and the prompt line
@@ -42,10 +54,30 @@ struct InProgress {
     total_bytes: u64,
     received: u64,
     staged: PathBuf,
+    /// Set while `begin` creates the part outside the map lock. A `chunk`, a
+    /// `finish`, a re-`begin` or a second `abort` refuses until it clears, so
+    /// nothing acts on a path that does not exist yet.
+    creating: bool,
+    /// Set while `chunk` appends outside the map lock, for the same reason: a
+    /// second chunk at the same offset would otherwise be judged against an
+    /// offset the first one is about to move.
+    appending: bool,
     /// True from the moment `finish` starts until it settles. A second
     /// `finish`, a `chunk`, a `status`, an `abort` or a re-`begin` refuses
     /// while set, so a re-`begin` cannot truncate the file being admitted.
     finishing: bool,
+}
+
+/// An abort that found no idle entry to remove.
+struct Cancelled {
+    session_id: String,
+    at: Instant,
+}
+
+#[derive(Default)]
+struct UploadsState {
+    open: HashMap<String, InProgress>,
+    cancelled: HashMap<String, Cancelled>,
 }
 
 /// One opened upload, copied out of the map so the admission runs without the
@@ -59,7 +91,7 @@ struct OpenedUpload {
 
 #[derive(Default, Clone)]
 pub(crate) struct AttachmentUploads {
-    state: std::sync::Arc<Mutex<HashMap<String, InProgress>>>,
+    state: std::sync::Arc<Mutex<UploadsState>>,
 }
 
 impl AttachmentUploads {
@@ -76,51 +108,109 @@ impl AttachmentUploads {
         validate_upload_id(upload_id).map_err(refusal)?;
         validate_upload_begin(total_bytes).map_err(refusal)?;
         let name = sanitize_attachment_name(name);
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some(open) = state.get(upload_id) {
-            if open.session_id == session_id && open.name == name && open.total_bytes == total_bytes
-            {
-                if open.finishing {
-                    return Err(refusal(
-                        "That upload is being stored; start a new one.".to_string(),
-                    ));
-                }
-                return Ok(open.received);
-            }
-            return Err(refusal(
-                "An upload with that id is already in progress for another file.".to_string(),
-            ));
-        }
-        if state
-            .values()
-            .filter(|open| open.session_id == session_id)
-            .count()
-            >= MAX_CONCURRENT_UPLOADS_PER_SESSION
         {
-            return Err(refusal(format!(
-                "This session already has {MAX_CONCURRENT_UPLOADS_PER_SESSION} uploads in flight."
-            )));
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            state
+                .cancelled
+                .retain(|_, cancelled| cancelled.at.elapsed() < CANCEL_TOMBSTONE_TTL);
+            let cancelled = match state.cancelled.get(upload_id) {
+                Some(cancelled) if cancelled.session_id == session_id => {
+                    state.cancelled.remove(upload_id);
+                    true
+                }
+                _ => false,
+            };
+            if cancelled {
+                return Err(cancelled_upload());
+            }
+            if let Some(open) = state.open.get(upload_id) {
+                if open.session_id == session_id
+                    && open.name == name
+                    && open.total_bytes == total_bytes
+                {
+                    if open.finishing || open.creating {
+                        return Err(refusal(
+                            "That upload is being stored; start a new one.".to_string(),
+                        ));
+                    }
+                    if open.appending {
+                        return Err(not_in_progress());
+                    }
+                    return Ok(open.received);
+                }
+                return Err(refusal(
+                    "An upload with that id is already in progress for another file.".to_string(),
+                ));
+            }
+            if state
+                .open
+                .values()
+                .filter(|open| open.session_id == session_id)
+                .count()
+                >= MAX_CONCURRENT_UPLOADS_PER_SESSION
+            {
+                return Err(refusal(format!(
+                    "This session already has {MAX_CONCURRENT_UPLOADS_PER_SESSION} uploads in flight."
+                )));
+            }
+            state.open.insert(
+                upload_id.to_string(),
+                InProgress {
+                    session_id: session_id.to_string(),
+                    name,
+                    total_bytes,
+                    received: 0,
+                    staged: PathBuf::new(),
+                    creating: true,
+                    appending: false,
+                    finishing: false,
+                },
+            );
         }
-        let staged = store.create_staged(session_id, upload_id)?;
-        state.insert(
-            upload_id.to_string(),
-            InProgress {
-                session_id: session_id.to_string(),
-                name,
-                total_bytes,
-                received: 0,
-                staged,
-                finishing: false,
-            },
+        let staged = match store.create_staged(session_id, upload_id) {
+            Ok(staged) => staged,
+            Err(error) => {
+                let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+                state.open.remove(upload_id);
+                return Err(error);
+            }
+        };
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let cancelled = match state.cancelled.get(upload_id) {
+            Some(cancelled) if cancelled.session_id == session_id => {
+                state.cancelled.remove(upload_id);
+                true
+            }
+            _ => false,
+        };
+        let ours = matches!(
+            state.open.get(upload_id),
+            Some(open) if open.session_id == session_id && open.creating
         );
+        if cancelled || !ours {
+            state.open.remove(upload_id);
+            drop(state);
+            let _ = std::fs::remove_file(&staged);
+            return Err(if cancelled {
+                cancelled_upload()
+            } else {
+                not_in_progress()
+            });
+        }
+        if let Some(open) = state.open.get_mut(upload_id) {
+            open.staged = staged;
+            open.creating = false;
+        }
         Ok(0)
     }
 
     /// How many bytes the daemon holds for one upload.
     pub(crate) fn status(&self, session_id: &str, upload_id: &str) -> Result<u64, WireError> {
         let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        match state.get(upload_id) {
-            Some(open) if open.session_id == session_id && !open.finishing => Ok(open.received),
+        match state.open.get(upload_id) {
+            Some(open) if open.session_id == session_id && !open.finishing && !open.creating => {
+                Ok(open.received)
+            }
             _ => Err(not_in_progress()),
         }
     }
@@ -134,16 +224,71 @@ impl AttachmentUploads {
         offset: u64,
         data: &str,
     ) -> Result<u64, WireError> {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let open = match state.get_mut(upload_id) {
-            Some(open) if open.session_id == session_id && !open.finishing => open,
-            _ => return Err(not_in_progress()),
-        };
-        validate_upload_chunk(data, offset, open.received, open.total_bytes).map_err(refusal)?;
         let bytes = decode(data)?;
-        store.append_staged(session_id, upload_id, &bytes)?;
-        open.received += bytes.len() as u64;
-        Ok(open.received)
+        let (staged, received) = {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            let open = match state.open.get_mut(upload_id) {
+                Some(open)
+                    if open.session_id == session_id
+                        && !open.finishing
+                        && !open.creating
+                        && !open.appending =>
+                {
+                    open
+                }
+                _ => return Err(not_in_progress()),
+            };
+            validate_upload_chunk(data, offset, open.received, open.total_bytes)
+                .map_err(refusal)?;
+            open.appending = true;
+            (open.staged.clone(), open.received)
+        };
+        let appended = store.append_staged(session_id, upload_id, &bytes);
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let cancelled = match state.cancelled.get(upload_id) {
+            Some(cancelled) if cancelled.session_id == session_id => {
+                state.cancelled.remove(upload_id);
+                true
+            }
+            _ => false,
+        };
+        let ours = matches!(
+            state.open.get(upload_id),
+            Some(open) if open.session_id == session_id
+        );
+        if cancelled || !ours {
+            if ours {
+                state.open.remove(upload_id);
+            }
+            drop(state);
+            let _ = std::fs::remove_file(&staged);
+            if cancelled && ours {
+                // The abort found the entry mid-append, so it charged nothing
+                // back; this is the one place that knows what the file holds.
+                let appended_bytes = if appended.is_ok() {
+                    bytes.len() as u64
+                } else {
+                    0
+                };
+                store.release_staged(session_id, received + appended_bytes);
+                return Err(cancelled_upload());
+            }
+            return Err(not_in_progress());
+        }
+        match appended {
+            Ok(()) => {
+                let open = state.open.get_mut(upload_id).expect("checked above");
+                open.appending = false;
+                open.received += bytes.len() as u64;
+                Ok(open.received)
+            }
+            Err(error) => {
+                if let Some(open) = state.open.get_mut(upload_id) {
+                    open.appending = false;
+                }
+                Err(error)
+            }
+        }
     }
 
     /// Admit a fully received upload as a stored attachment, and report the
@@ -162,8 +307,13 @@ impl AttachmentUploads {
     ) -> Result<(Deposited, String), WireError> {
         let open = {
             let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            match state.get_mut(upload_id) {
-                Some(open) if open.session_id == session_id && !open.finishing => {
+            match state.open.get_mut(upload_id) {
+                Some(open)
+                    if open.session_id == session_id
+                        && !open.finishing
+                        && !open.creating
+                        && !open.appending =>
+                {
                     if open.received != open.total_bytes {
                         return Err(refusal(format!(
                             "The upload has {} of its {} bytes; it cannot finish yet.",
@@ -203,13 +353,18 @@ impl AttachmentUploads {
             }
         };
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        state.remove(upload_id);
+        state.open.remove(upload_id);
         drop(state);
         outcome.map(|deposited| (deposited, open.name))
     }
 
-    /// Discard one upload and the bytes received so far. An id the daemon does
-    /// not hold is `Ok`: there is nothing left to discard.
+    /// Discard one upload and the bytes received so far.
+    ///
+    /// An id with no idle entry — never opened, or mid-create or mid-append —
+    /// is remembered as a tombstone and answers `Ok`: the staged write already
+    /// in flight is the one that must clean up, because this call cannot see a
+    /// file it would delete out from under a writer. The tombstone outlives
+    /// that write, and the claimant consumes it on its return.
     pub(crate) fn abort(
         &self,
         store: &AttachmentStore,
@@ -218,17 +373,37 @@ impl AttachmentUploads {
     ) -> Result<(), WireError> {
         let removed = {
             let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            match state.get(upload_id) {
-                Some(open) if open.session_id == session_id && !open.finishing => {
-                    state.remove(upload_id)
+            state
+                .cancelled
+                .retain(|_, cancelled| cancelled.at.elapsed() < CANCEL_TOMBSTONE_TTL);
+            match state.open.get(upload_id) {
+                None => {
+                    state.cancelled.insert(
+                        upload_id.to_string(),
+                        Cancelled {
+                            session_id: session_id.to_string(),
+                            at: Instant::now(),
+                        },
+                    );
+                    return Ok(());
                 }
-                Some(open) if open.session_id == session_id => {
+                Some(open) if open.session_id != session_id => return Err(not_in_progress()),
+                Some(open) if open.finishing => {
                     return Err(refusal(
                         "That upload is being stored; it cannot be aborted.".to_string(),
                     ))
                 }
-                Some(_) => return Err(not_in_progress()),
-                None => None,
+                Some(open) if open.creating || open.appending => {
+                    state.cancelled.insert(
+                        upload_id.to_string(),
+                        Cancelled {
+                            session_id: session_id.to_string(),
+                            at: Instant::now(),
+                        },
+                    );
+                    return Ok(());
+                }
+                Some(_) => state.open.remove(upload_id),
             }
         };
         if let Some(open) = removed {
@@ -246,8 +421,18 @@ impl AttachmentUploads {
     /// gone.
     pub(crate) fn forget_session(&self, session_id: &str) {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        state.retain(|_, open| open.session_id != session_id);
+        state.open.retain(|_, open| open.session_id != session_id);
+        state
+            .cancelled
+            .retain(|_, cancelled| cancelled.session_id != session_id);
     }
+}
+
+fn cancelled_upload() -> WireError {
+    WireError::new(
+        ErrorCode::InvalidRequest,
+        "That upload was cancelled; start a new one.".to_string(),
+    )
 }
 
 fn not_in_progress() -> WireError {

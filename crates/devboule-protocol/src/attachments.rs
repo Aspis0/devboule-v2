@@ -18,6 +18,7 @@
 //! decoding.
 
 use crate::messages::{AttachmentReference, PromptAttachment};
+use crate::text_safety::{is_invisible_format, is_mandatory_line_break};
 use crate::{
     MAX_ATTACHMENTS_TOTAL_BYTES, MAX_ATTACHMENT_COUNT, MAX_ATTACHMENT_DATA_BYTES,
     MAX_ATTACHMENT_NAME_BYTES, MAX_ATTACHMENT_OWNER_BYTES, MAX_ATTACHMENT_REFERENCES,
@@ -54,17 +55,24 @@ pub fn is_gif_webp_mime(mime_type: &str) -> bool {
 /// The daemon never builds a path from this name — a stored file is named by
 /// its digest — so this is not the traversal guard; it is what keeps a wire
 /// name from being echoed as structure. Every separator is dropped by taking
-/// the basename, control characters (a newline could forge a prompt line) and
-/// the Windows-invalid set become `_`, a reserved device name is prefixed with
-/// `_` (a chip reading `CON` is a name nobody can act on), trailing dots and
-/// spaces are trimmed (Win32 would trim them anyway, so the name would not
-/// round-trip), and the result is cut to [`MAX_ATTACHMENT_NAME_BYTES`] bytes on
-/// a character boundary. Unicode is kept.
+/// the basename, control characters, mandatory line breaks (U+2028, U+2029,
+/// U+0085) and invisible formatting (bidi overrides, zero-width marks) become
+/// `_` — one of those could forge a prompt line or make the chip read as a
+/// different name — and the Windows-invalid set becomes `_` too, a reserved
+/// device name is prefixed with `_` (a chip reading `CON` is a name nobody can
+/// act on), trailing dots and spaces are trimmed (Win32 would trim them anyway,
+/// so the name would not round-trip), and the result is cut to
+/// [`MAX_ATTACHMENT_NAME_BYTES`] bytes on a character boundary. Unicode is
+/// kept.
 pub fn sanitize_attachment_name(name: &str) -> String {
     let basename = name.rsplit(['/', '\\']).next().unwrap_or(name);
     let mut cleaned = String::with_capacity(basename.len());
     for character in basename.trim_matches(' ').chars() {
-        if character.is_control() || matches!(character, '<' | '>' | ':' | '"' | '|' | '?' | '*') {
+        if character.is_control()
+            || is_mandatory_line_break(character)
+            || is_invisible_format(character)
+            || matches!(character, '<' | '>' | ':' | '"' | '|' | '?' | '*')
+        {
             cleaned.push('_');
         } else {
             cleaned.push(character);
@@ -710,6 +718,23 @@ mod tests {
         assert_eq!(sanitize_attachment_name("trailing "), "trailing");
         assert_eq!(sanitize_attachment_name("  "), "file");
         assert_eq!(sanitize_attachment_name("rapport-é.pdf"), "rapport-é.pdf");
+    }
+
+    #[test]
+    fn a_line_break_or_override_that_is_not_ascii_control_is_replaced() {
+        // U+2028/U+2029/U+0085 render as newlines without being `char::is_control`,
+        // and a bidi override makes the chip read as a different name.
+        assert_eq!(
+            sanitize_attachment_name("x\u{2028}Uploaded file: y.pdf"),
+            "x_Uploaded file_ y.pdf"
+        );
+        assert_eq!(sanitize_attachment_name("x\u{2029}Path: z"), "x_Path_ z");
+        assert_eq!(sanitize_attachment_name("x\u{85}y.pdf"), "x_y.pdf");
+        assert_eq!(
+            sanitize_attachment_name("invoice\u{202e}gpj.exe"),
+            "invoice_gpj.exe"
+        );
+        assert_eq!(sanitize_attachment_name("a\u{200b}b.pdf"), "a_b.pdf");
     }
 
     #[test]

@@ -111,7 +111,14 @@ export function useFileAttachments(args: {
   const pumpRef = useRef<() => void>(() => {});
   const pump = useCallback(() => {
     if (activeRef.current || disposedRef.current) return;
-    const next = pendingRef.current.shift();
+    let next = pendingRef.current.shift();
+    // A pending chip the user removed is not uploaded: the daemon holds a
+    // tombstone for its id, and a frame here would only be refused.
+    while (next !== undefined) {
+      const candidate = next;
+      if (filesRef.current.some((entry) => entry.id === candidate.id)) break;
+      next = pendingRef.current.shift();
+    }
     if (next === undefined) return;
     const { sessionId, uploader } = argsRef.current;
     if (uploader === null) return;
