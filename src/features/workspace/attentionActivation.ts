@@ -77,6 +77,8 @@ function applyAttentionActivation(payload: unknown): void {
 
 let activationListener: Promise<UnlistenFn> | null = null;
 let releaseListener: UnlistenFn | null = null;
+/** Bumped by every dispose, so a registration that resolves afterwards knows it is stale. */
+let generation = 0;
 
 /**
  * The one listener for the app run. Repeated calls share the first
@@ -84,10 +86,18 @@ let releaseListener: UnlistenFn | null = null;
  * StrictMode asks for the effect twice.
  */
 export function startAttentionActivation(): Promise<UnlistenFn> {
+  const startedIn = generation;
   activationListener ??= listen<unknown>(ATTENTION_ACTIVATED_EVENT, (event) =>
     applyAttentionActivation(event.payload),
   )
     .then((unlisten) => {
+      if (startedIn !== generation) {
+        // Disposed while the bridge was still answering: nobody holds this
+        // unlisten, so releasing it here is the only way the listener does not
+        // outlive the module.
+        unlisten();
+        return () => undefined;
+      }
       releaseListener = unlisten;
       return unlisten;
     })
@@ -105,6 +115,7 @@ export function startAttentionActivation(): Promise<UnlistenFn> {
  * answer every click a second time, through the opener it captured.
  */
 export function disposeAttentionActivation(): void {
+  generation += 1;
   releaseListener?.();
   releaseListener = null;
   activationListener = null;

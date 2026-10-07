@@ -127,19 +127,16 @@ tauri-winrt-notification = "=0.7.3"
 webview2-com = "=0.38.2"
 # `Win32_System_Pipes` and `Win32_Storage_FileSystem` are for
 # `src-tauri/src/browser/host_wire_tests.rs`, which binds the daemon's own pipe
-# to drive the host loop over a real connection. `Win32_UI_Shell` and
-# `Win32_System_Com` resolve the Start-menu folder the installer's shortcut
-# lives in, and `UI_Notifications` clears our toasts from Action Center on the
-# way out (`attention_toast.rs`). No new package: these are features of the
-# crate already linked here for WebView2's COM interfaces.
+# to drive the host loop over a real connection. `UI_Notifications` clears our
+# toasts from Action Center on the way out (`attention_toast.rs`). No new
+# package: these are features of the crate already linked here for WebView2's
+# COM interfaces.
 windows = { version = "=0.61.3", features = [
     "UI_Notifications",
     "Win32_Security",
     "Win32_Storage_FileSystem",
-    "Win32_System_Com",
     "Win32_System_IO",
     "Win32_System_Pipes",
-    "Win32_UI_Shell",
 ] }
 
 [dev-dependencies]

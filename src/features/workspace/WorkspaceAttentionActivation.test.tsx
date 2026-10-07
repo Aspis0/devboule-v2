@@ -159,6 +159,28 @@ describe("a click on an attention toast", () => {
     expect(listeners.has(ATTENTION_ACTIVATED_EVENT)).toBe(true);
   });
 
+  it("releases a registration that resolves after the module was replaced", async () => {
+    // The bridge answers late: the dispose lands while listen() is pending, so
+    // nobody is left holding the unlisten the promise is about to hand over.
+    let settle: (unlisten: () => void) => void = () => undefined;
+    vi.mocked(listen).mockImplementationOnce(
+      () =>
+        new Promise<() => void>((resolve) => {
+          settle = resolve;
+        }),
+    );
+    const unlisten = vi.fn();
+
+    const pending = startAttentionActivation();
+    disposeAttentionActivation();
+    await act(async () => {
+      settle(unlisten);
+      await pending;
+    });
+
+    expect(unlisten).toHaveBeenCalledTimes(1);
+  });
+
   it("a click with no strip mounted opens the tab through the roster", async () => {
     // Settings or Design on screen: the surface's opener is withdrawn with it,
     // and the app-lifetime roads have to carry the click on their own.

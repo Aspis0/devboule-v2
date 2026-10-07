@@ -5,7 +5,11 @@
 //! the toast was about, and leave no toast of ours in the OS history behind.
 
 #[cfg(windows)]
-use std::path::Path;
+use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(windows)]
+use std::sync::OnceLock;
 
 use devboule_protocol::ErrorCode;
 use serde::{Deserialize, Serialize};
@@ -61,7 +65,7 @@ enum ToastSender {
 /// The clickable sender needs the AUMID the installer's Start-menu shortcut
 /// registers: a toast raised under one Windows was never told about can be
 /// dropped for good with no error to catch. `programs_dir` is that folder,
-/// `None` when the shell will not name it.
+/// `None` when this process cannot name it.
 #[cfg(windows)]
 fn attention_sender(programs_dir: Option<&Path>, product_name: &str) -> ToastSender {
     match programs_dir {
@@ -72,17 +76,42 @@ fn attention_sender(programs_dir: Option<&Path>, product_name: &str) -> ToastSen
     }
 }
 
+/// The Start Menu Programs folder, which is where the installer's `currentUser`
+/// shortcut lands: NSIS resolves `$SMPROGRAMS` to
+/// `%APPDATA%\Microsoft\Windows\Start Menu\Programs` for that install mode.
+#[cfg(windows)]
+fn programs_folder() -> Option<PathBuf> {
+    std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .map(|app_data| app_data.join(r"Microsoft\Windows\Start Menu\Programs"))
+}
+
+/// Whether this process's toasts can carry a click, asked once: the installer
+/// would have to run again for the answer to move under a live app.
+#[cfg(windows)]
+fn clickable(app: &AppHandle) -> bool {
+    *CLICKABLE.get_or_init(|| {
+        attention_sender(programs_folder().as_deref(), &app.package_info().name)
+            == ToastSender::Clickable
+    })
+}
+
+#[cfg(windows)]
+static CLICKABLE: OnceLock<bool> = OnceLock::new();
+
+/// Whether this process ever showed a toast Windows could keep and route.
+#[cfg(windows)]
+static SHOWED: AtomicBool = AtomicBool::new(false);
+
 /// The toast, through the one sender this install state can honestly use: an
 /// uninstalled run keeps the visible toast it has always had instead of one
 /// Windows may never show.
 fn show(app: &AppHandle, toast: &AttentionToast) -> Result<(), String> {
     #[cfg(windows)]
-    if attention_sender(
-        winrt::programs_folder().as_deref(),
-        &app.package_info().name,
-    ) == ToastSender::Clickable
-    {
-        return winrt::show(app, toast);
+    if clickable(app) {
+        winrt::show(app, toast)?;
+        SHOWED.store(true, Ordering::Relaxed);
+        return Ok(());
     }
     send_with_plugin(app, toast)
 }
@@ -92,6 +121,10 @@ fn show(app: &AppHandle, toast: &AttentionToast) -> Result<(), String> {
 /// it. A crash is not covered.
 #[cfg(windows)]
 pub(crate) fn clear_pending(app: &AppHandle) {
+    if !SHOWED.load(Ordering::Relaxed) {
+        return;
+    }
+    // ClearWithId takes the AUMID's whole history, a second live instance's toasts included; one instance is the normal case.
     winrt::clear_history(app);
 }
 
@@ -111,13 +144,8 @@ fn send_with_plugin(app: &AppHandle, toast: &AttentionToast) -> Result<(), Strin
 /// Windows' own WinRT toast, the one platform whose click this app can hear.
 #[cfg(windows)]
 mod winrt {
-    use std::ffi::c_void;
-    use std::path::PathBuf;
-
     use tauri::{AppHandle, Emitter};
     use windows::core::HSTRING;
-    use windows::Win32::System::Com::CoTaskMemFree;
-    use windows::Win32::UI::Shell::{FOLDERID_Programs, SHGetKnownFolderPath, KF_FLAG_DEFAULT};
     use windows::UI::Notifications::ToastNotificationManager;
 
     use super::{AttentionTarget, AttentionToast};
@@ -126,19 +154,6 @@ mod winrt {
     /// The app event a click publishes. The frontend's listener
     /// (`attentionActivation.ts`) is the one reader; both sides declare the name.
     const ACTIVATED_EVENT: &str = "attention:activated";
-
-    /// The per-user Start Menu Programs folder: where the installer's
-    /// `currentUser` shortcut lands (`nsis/installer.nsi`'s `$SMPROGRAMS`).
-    /// `None` when the shell will not name it, which its caller reads as "no
-    /// shortcut stands".
-    pub(super) fn programs_folder() -> Option<PathBuf> {
-        let raw =
-            unsafe { SHGetKnownFolderPath(&FOLDERID_Programs, KF_FLAG_DEFAULT, None) }.ok()?;
-        let folder = unsafe { raw.to_string() }.ok().map(PathBuf::from);
-        // The shell hands this out on the task allocator.
-        unsafe { CoTaskMemFree(Some(raw.0 as *const c_void)) };
-        folder
-    }
 
     /// Drops every toast this app raised from Action Center, by the one AUMID
     /// they all carry.
