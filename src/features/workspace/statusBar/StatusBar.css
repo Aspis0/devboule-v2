@@ -23,6 +23,22 @@
   text-overflow: ellipsis;
 }
 
+.status-bar-who .workspace-status-dot {
+  width: 6px;
+  height: 6px;
+}
+
+/* The title clips at 28 characters: the state after the dash is what the
+   person reads, so the title never takes the bar's width. */
+.status-bar-title {
+  display: inline-block;
+  max-width: 28ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
+
 .status-bar-sep {
   color: var(--muted);
 }
@@ -52,7 +68,7 @@
 .status-meter-fill {
   display: block;
   height: 100%;
-  background: var(--control-on);
+  background: var(--accent);
 }
 
 .status-bar-daemon .workspace-status-dot {

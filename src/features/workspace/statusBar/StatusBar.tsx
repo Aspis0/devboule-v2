@@ -74,13 +74,22 @@ export function StatusBar({ agent, daemon }: StatusBarProps) {
     agent === null
       ? null
       : (agent.attentionWord ?? (agent.working ? (reading?.task ?? "working") : "idle"));
+  const stateTone =
+    agent === null
+      ? "border"
+      : agent.attentionWord !== null
+        ? "attention"
+        : agent.working
+          ? "green"
+          : "border";
   const tooltip = daemonLabel(daemon);
   return (
     <div className="workspace-status-bar" role="group" aria-label="Status">
       {agent === null ? null : (
         <span className="status-bar-who">
+          <span className={`workspace-status-dot workspace-dot-${stateTone}`} />
           <span className="status-bar-state">
-            {agent.title}
+            <span className="status-bar-title">{agent.title}</span>
             <span className="status-bar-sep"> — </span>
             {state}
           </span>
@@ -89,8 +98,8 @@ export function StatusBar({ agent, daemon }: StatusBarProps) {
       {frames.map((plan) => (
         <ProviderUsage key={plan.providerId} plan={plan} nowMs={nowMs} />
       ))}
-      <span className="status-bar-spacer" />
       {agent === null ? null : <FocusedAgentContext sessionId={agent.sessionId} />}
+      <span className="status-bar-spacer" />
       <span className="status-bar-daemon" title={tooltip}>
         <span className={`workspace-status-dot workspace-dot-${daemonDotTone(daemon.state)}`} />
         <span className="sr-only">{tooltip}</span>

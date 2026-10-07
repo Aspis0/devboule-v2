@@ -158,6 +158,38 @@ describe("the status bar", () => {
     expect(bar.querySelector(".workspace-context-meter-text")?.textContent).toBe("ctx 24k/1m");
   });
 
+  it("runs title, usage, context, then the daemon at the far right", async () => {
+    recordPlanUsage({
+      type: "plan_usage",
+      providerId: "claude",
+      windows: [{ durationMins: 300, usedPercent: 58, resetsAt: later }],
+    });
+    await act(async () =>
+      publishAgentReading("bar-agent", {
+        usage: { type: "context_usage", usedTokens: 24_000, maxTokens: 1_000_000, live: true },
+        manifest: null,
+        lastFinished: null,
+        task: null,
+      }),
+    );
+    const bar = await render(<StatusBar agent={AGENT} daemon={DAEMON} />);
+
+    const order = Array.from(bar.querySelector(".workspace-status-bar")?.children ?? []).map(
+      (child) => child.className,
+    );
+    // Usage meters come from the shared store, so earlier cases may leave more
+    // than one provider: the order is what this case pins.
+    const providers = order.filter((name) => name === "status-bar-provider").length;
+    expect(providers).toBeGreaterThan(0);
+    expect(order).toEqual([
+      "status-bar-who",
+      ...Array<string>(providers).fill("status-bar-provider"),
+      "workspace-context-meter",
+      "status-bar-spacer",
+      "status-bar-daemon",
+    ]);
+  });
+
   it("ends with the daemon, said to a screen reader and a tooltip, with no agent in front", async () => {
     const bar = await render(<StatusBar agent={null} daemon={DAEMON} />);
     expect(bar.querySelector(".status-bar-who")).toBeNull();

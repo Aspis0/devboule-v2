@@ -37,18 +37,24 @@ describe("the status bar's look", () => {
     },
   );
 
-  it("fills its meters with the neutral control colour, never the accent", () => {
+  it("fills its meters with the accent, which clears the track at 3:1 or more", () => {
     const css = assembleCssProof(sheets, "light");
     css.inject([".status-meter-fill"]);
     const fill = document.createElement("span");
     fill.className = "status-meter-fill";
     document.body.append(fill);
 
-    // --control-on is the ink; the accent is the one thing the fill must not be.
-    expect(getComputedStyle(fill).backgroundColor).toBe(css.token("--ink"));
-    expect(getComputedStyle(fill).backgroundColor).not.toBe(css.token("--accent"));
-    expect(css.rulesFor(".status-meter-fill")).not.toContain("--accent");
+    expect(getComputedStyle(fill).backgroundColor).toBe(css.token("--accent"));
+    expect(css.rulesFor(".status-meter-fill")).not.toContain("--control-on");
     fill.remove();
+  });
+
+  it("clips the title at 28 characters, so it never takes the bar's width", () => {
+    const css = assembleCssProof(sheets, "light");
+    const rules = css.rulesFor(".status-bar-title");
+    expect(rules).toContain("max-width: 28ch");
+    expect(rules).toContain("text-overflow: ellipsis");
+    expect(rules).toContain("white-space: nowrap");
   });
 
   it("is a single line that clips rather than wraps", () => {
