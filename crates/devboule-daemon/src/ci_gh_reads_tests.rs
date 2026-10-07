@@ -203,7 +203,7 @@ fn a_head_that_names_no_commit_is_an_outage() {
 }
 
 #[test]
-fn a_branch_name_that_could_rewrite_the_path_is_refused() {
+fn a_branch_name_that_could_rewrite_the_path_or_a_line_is_refused() {
     for bad in [
         "",
         "main..dev",
@@ -215,8 +215,15 @@ fn a_branch_name_that_could_rewrite_the_path_is_refused() {
         "/main",
         "main@{1}",
         "main.",
+        // A name that draws as a line break of its own, or as nothing at all:
+        // it must not be able to forge a line of the message it is quoted in.
+        "main\u{2028}forged: yes",
+        "main\u{2029}forged: yes",
+        "main\u{85}forged",
+        "main\u{200b}forged",
+        "main\u{202e}forged",
     ] {
-        assert!(!is_branch_name(bad), "{bad} must be refused");
+        assert!(!is_branch_name(bad), "{bad:?} must be refused");
     }
     for good in ["main", "feature/nested-name", "release_1.2", "fix+plus"] {
         assert!(is_branch_name(good), "{good} is a branch name");

@@ -163,10 +163,12 @@ pub(crate) fn is_commit_id(sha: &str) -> bool {
     sha.len() == 40 && sha.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-/// A branch name that may be put into a `gh api` path: git's own refname
-/// rules where they matter here — no controls, no space, no `..`, no `@{`,
-/// no leading dash or slash, bounded — so the argument can only ever name a
-/// ref under `heads/`, never another endpoint or a rewritten path.
+/// A branch name that may be put into a `gh api` path and into a wake text:
+/// git's own refname rules where they matter here — no controls, no space,
+/// no `..`, no `@{`, no leading dash or slash, bounded — plus every scalar
+/// that draws as a line break or as nothing (U+2028 and U+2029 included, the
+/// shared protocol tables), so the argument can only ever name a ref under
+/// `heads/` and can never forge a line of the message it is quoted in.
 pub(crate) fn is_branch_name(branch: &str) -> bool {
     const MAX_CHARS: usize = 255;
     const BANNED: [char; 16] = [
@@ -180,9 +182,12 @@ pub(crate) fn is_branch_name(branch: &str) -> bool {
         && !branch.ends_with('.')
         && !branch.contains("..")
         && !branch.contains("@{")
-        && !branch
-            .chars()
-            .any(|character| character.is_control() || BANNED.contains(&character))
+        && !branch.chars().any(|character| {
+            character.is_control()
+                || devboule_protocol::is_mandatory_line_break(character)
+                || devboule_protocol::is_invisible_format(character)
+                || BANNED.contains(&character)
+        })
 }
 
 fn repo_from_path(host: &str, path: &str) -> Option<RepoRef> {

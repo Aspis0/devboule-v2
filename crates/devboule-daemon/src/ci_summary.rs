@@ -5,7 +5,9 @@
 //! Whole logs never leave this module — a failed job contributes at most
 //! [`MAX_EXCERPT_LINES`] matched lines, each capped, each redacted before it
 //! is kept — and a cancelled or never-started job is labelled INFRA with its
-//! reason while every other failure reads as CODE.
+//! reason, a job whose log could not be read is labelled UNKNOWN, and every
+//! other failure reads as CODE. Only INFRA is the platform's doing: an
+//! unread log proves nothing, so it is never a reason to re-run.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -138,7 +140,13 @@ pub(crate) fn overall(runs: &[CheckRun]) -> CiState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Cause {
     Code,
+    /// Positive evidence the platform failed the job: it was cancelled, or
+    /// GitHub says no runner took it.
     Infra(&'static str),
+    /// The job failed and its log could not be read, so why is unknown. The
+    /// summary says so, and the retry decision reads it as CODE: an unread
+    /// log is not the platform's doing, it is no evidence at all.
+    Unknown(&'static str),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -175,9 +183,21 @@ pub(crate) fn logs_wanted(runs: &[CheckRun]) -> usize {
         .count()
 }
 
+/// The checks a verdict may be read from once a re-run is out: the old
+/// attempt's failed check runs are what the retry was asked to replace, so
+/// they are dropped rather than judged again. Its passing ones stay — a
+/// `--failed` re-run does not run them again — and every check the retry was
+/// not decided on is the new attempt's own.
+pub(crate) fn drop_superseded_failures(runs: &[CheckRun], old_attempt: &[u64]) -> Vec<CheckRun> {
+    runs.iter()
+        .filter(|run| !(old_attempt.contains(&run.id) && !is_green(run.conclusion.as_deref())))
+        .cloned()
+        .collect()
+}
+
 /// Summarise finished checks. `fetch_log` is asked only for failed Actions
 /// jobs, and only the lines it matches are kept. A log that cannot be read
-/// is not an empty excerpt of a code failure: the job is labelled INFRA
+/// is not an empty excerpt of a code failure: the job is labelled UNKNOWN
 /// with why the log is missing, and carries no lines at all.
 pub(crate) fn build(
     runs: &[CheckRun],
@@ -204,7 +224,7 @@ pub(crate) fn build(
                 )
             }
             Some(Err(error)) => (
-                Some(Cause::Infra(log_unavailable_reason(&error))),
+                Some(Cause::Unknown(log_unavailable_reason(&error))),
                 Vec::new(),
                 0,
             ),
@@ -389,6 +409,7 @@ impl Verdict {
                 None => {}
                 Some(Cause::Code) => out.push_str(" [CODE]"),
                 Some(Cause::Infra(reason)) => out.push_str(&format!(" [INFRA: {reason}]")),
+                Some(Cause::Unknown(reason)) => out.push_str(&format!(" [UNKNOWN: {reason}]")),
             }
             if job.cause.is_some() {
                 let run = job.run_id.map_or(String::new(), |id| format!("run {id}, "));

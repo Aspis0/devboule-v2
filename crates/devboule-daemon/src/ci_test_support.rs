@@ -20,10 +20,13 @@ pub(crate) const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
 type Answer = Result<GitOutput, GitRunError>;
 
 /// Answers each command line from the first script entry whose needle it
-/// contains; the most recently set entry for a needle wins.
+/// contains; the most recently set entry for a needle wins. A one-shot
+/// answer set with [`ScriptedRunner::answer_next`] is spent before the script
+/// is consulted, which is how a test makes two reads of one endpoint differ.
 #[derive(Default)]
 pub(crate) struct ScriptedRunner {
     script: Mutex<Vec<(String, Answer)>>,
+    next: Mutex<Vec<(String, Answer)>>,
     calls: Mutex<Vec<String>>,
     last_timeout: Mutex<Option<std::time::Duration>>,
 }
@@ -33,6 +36,15 @@ impl ScriptedRunner {
         let mut script = self.script.lock().expect("script");
         script.retain(|(existing, _)| existing != needle);
         script.insert(0, (needle.to_string(), answer));
+    }
+
+    /// The next matching call answers `answer`; the ones after it fall back to
+    /// the script.
+    pub(crate) fn answer_next(&self, needle: &str, answer: Answer) {
+        self.next
+            .lock()
+            .expect("next")
+            .insert(0, (needle.to_string(), answer));
     }
 
     pub(crate) fn calls(&self) -> Vec<String> {
@@ -49,6 +61,15 @@ impl CommandRunner for ScriptedRunner {
     fn run(&self, program: &str, args: &[String]) -> Answer {
         let line = format!("{program} {}", args.join(" "));
         self.calls.lock().expect("calls").push(line.clone());
+        {
+            let mut next = self.next.lock().expect("next");
+            if let Some(index) = next
+                .iter()
+                .position(|(needle, _)| line.contains(needle.as_str()))
+            {
+                return next.remove(index).1;
+            }
+        }
         self.script
             .lock()
             .expect("script")

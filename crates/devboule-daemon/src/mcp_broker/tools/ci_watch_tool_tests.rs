@@ -224,6 +224,50 @@ fn workspace_fixture(tag: &str) -> Fixture {
     }
 }
 
+/// The session's current mode, recorded the way a provider handshake records
+/// it: the write gate reads it at call time.
+fn set_mode(fixture: &Fixture, session: &str, mode: &str) {
+    fixture
+        .state
+        .sessions
+        .live_runtime(session, &fixture.owner)
+        .expect("live session")
+        .store_session_manifest(devboule_protocol::SessionEvent::SessionManifest {
+            provider_id: Some("acp".to_string()),
+            current_model_id: None,
+            models: Vec::new(),
+            modes: Some(devboule_protocol::SessionModeStateView {
+                current_mode_id: mode.to_string(),
+                available_modes: Vec::new(),
+            }),
+        });
+}
+
+/// The audit row this tool wrote last: the journal thread writes it, so the
+/// raw connection polls until it lands rather than guessing at a flush.
+fn audit_outcome(fixture: &Fixture, session: &str) -> String {
+    let path = fixture.state.paths.journal_file();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let connection = rusqlite::Connection::open(&path).expect("raw journal");
+        let found = connection
+            .query_row(
+                "SELECT outcome FROM audit WHERE session_id = ?1 AND action = ?2 ORDER BY rowid DESC LIMIT 1",
+                rusqlite::params![session, MCP_CI_WATCH_TOOL],
+                |row| row.get(0),
+            )
+            .ok();
+        if let Some(outcome) = found {
+            return outcome;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the audit row lands within five seconds"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// The pending card's id, waited for: the call that raises it blocks until a
 /// person answers, so it runs on another thread.
 fn wait_for_card(fixture: &Fixture, session: &str) -> String {
@@ -436,12 +480,63 @@ fn a_retry_asks_the_person_and_the_approval_rides_the_watch() {
     let data = &body["result"]["structuredContent"]["data"];
     assert_eq!(data["retryCount"], json!(0));
     let watch_id = data["watchId"].as_str().expect("watch id");
+    assert_eq!(
+        data["retryIssued"],
+        json!(false),
+        "nothing has been re-run yet"
+    );
     let watch = fixture
         .state
         .ci_watches
         .get(watch_id)
         .expect("the watch the call started");
     assert!(watch.retry_approved, "the card's yes reached the watch");
+    let outcome = audit_outcome(&fixture, "ci.host");
+    assert!(
+        outcome.contains("approved by person"),
+        "the audit row names who approved: {outcome}"
+    );
+}
+
+/// An automatic mode approves the retry card itself — and the audit row still
+/// says the approval was the mode's, never a person's.
+#[test]
+fn a_mode_approved_retry_is_logged_as_the_mode() {
+    let fixture = workspace_fixture("retry-mode");
+    fixture
+        .state
+        .sessions
+        .live_runtime("ci.host", &fixture.owner)
+        .expect("live session")
+        .set_agent_kind(SessionKind::Acp);
+    set_mode(&fixture, "ci.host", "auto_accept");
+
+    let body = call(
+        &fixture,
+        &format!(r#"{{"sha":"{SHA}","repo":"acme/widgets","retryInfra":true}}"#),
+    );
+
+    assert_eq!(
+        body.pointer("/result/isError"),
+        Some(&json!(false)),
+        "an automatic mode raises no card: {body}"
+    );
+    let data = &body["result"]["structuredContent"]["data"];
+    assert_eq!(data["retryCount"], json!(0));
+    let watch_id = data["watchId"].as_str().expect("watch id");
+    assert!(
+        fixture
+            .state
+            .ci_watches
+            .get(watch_id)
+            .expect("the watch")
+            .retry_approved
+    );
+    let outcome = audit_outcome(&fixture, "ci.host");
+    assert!(
+        outcome.contains("approved by automatic mode"),
+        "the audit row names the approval: {outcome}"
+    );
 }
 
 #[test]

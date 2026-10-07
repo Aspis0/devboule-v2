@@ -30,6 +30,15 @@ const MAX_WATCHES: usize = 500;
 
 static WATCH_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+/// What a keyed insert did.
+#[derive(Clone, Debug)]
+pub(crate) enum Admit {
+    /// The key already had a watch, which is the one this call answers.
+    Existing(CiWatchRecord),
+    /// The watch is new and stored.
+    Inserted(CiWatchRecord),
+}
+
 /// Why a watch was not stored.
 #[derive(Debug)]
 pub(crate) enum InsertError {
@@ -87,10 +96,20 @@ pub(crate) struct CiWatchRecord {
     /// 0 until the one approved retry has been spent; never reset.
     #[serde(default)]
     pub(crate) retry_count: u32,
-    /// The workflow runs that retry re-ran, so the record says which ids were
-    /// re-run and not only how many times.
+    /// Whether `gh` accepted the re-run. A count of 1 with this false is a
+    /// spend whose answer was never recorded — a daemon that died in that
+    /// window — so nobody can say whether the re-run went out.
+    #[serde(default)]
+    pub(crate) retry_issued: bool,
+    /// The workflow runs that retry asked for, so the record says which ids
+    /// were asked for and not only how many times.
     #[serde(default)]
     pub(crate) retried_runs: Vec<u64>,
+    /// The check run ids the retry was decided on: the old attempt's whole
+    /// evidence, so the new attempt can be told from it and the old failed
+    /// checks dropped instead of judged a second time.
+    #[serde(default)]
+    pub(crate) retry_evidence: Vec<u64>,
 }
 
 impl CiWatchRecord {
@@ -175,6 +194,21 @@ impl CiWatchStore {
         let _ = self.persist(&records);
     }
 
+    /// Test-only: put a spent retry back to unconfirmed, which is what a
+    /// daemon restart finds when it died between the reservation and the
+    /// answer `gh` never got to record.
+    #[cfg(test)]
+    pub(crate) fn leave_retry_unissued(&self, watch_id: &str) {
+        let mut records = self.records();
+        if let Some(record) = records
+            .iter_mut()
+            .find(|record| record.watch_id == watch_id)
+        {
+            record.retry_issued = false;
+        }
+        let _ = self.persist(&records);
+    }
+
     /// Test-only: put a settled wake back to claimed, which is what a daemon
     /// restart finds when it died between the claim and the send.
     #[cfg(test)]
@@ -189,60 +223,55 @@ impl CiWatchStore {
         let _ = self.persist(&records);
     }
 
-    /// The watch this session already has on this commit, if any: asking twice
-    /// answers the first watch instead of starting a second one.
-    pub(crate) fn find(&self, session_id: &str, slug: &str, sha: &str) -> Option<CiWatchRecord> {
+    /// The watch this session already has on this commit, if any. Test-only:
+    /// production admits through [`CiWatchStore::find_or_insert`], which looks
+    /// the key up and stores under one lock. The key is the whole watch —
+    /// session, repository, commit and the branch it follows — so a commit
+    /// watched as a sha and the same commit watched as a branch head are two
+    /// watches, and only the second one follows a head.
+    #[cfg(test)]
+    pub(crate) fn find(
+        &self,
+        session_id: &str,
+        slug: &str,
+        sha: &str,
+        branch: Option<&str>,
+    ) -> Option<CiWatchRecord> {
         self.records()
             .iter()
             .find(|record| {
-                record.session_id == session_id && record.sha == sha && record.slug() == slug
+                record.session_id == session_id
+                    && record.sha == sha
+                    && record.slug() == slug
+                    && record.branch.as_deref() == branch
             })
             .cloned()
     }
 
+    /// The watch this session already has on this key, or the one just
+    /// stored: one look and one write under one lock, so two calls racing for
+    /// the same key cannot both insert and end up with two retry counters on
+    /// one commit.
+    pub(crate) fn find_or_insert(&self, record: CiWatchRecord) -> Result<Admit, InsertError> {
+        let mut records = self.records();
+        if let Some(existing) = records
+            .iter()
+            .find(|existing| same_watch(existing, &record))
+            .cloned()
+        {
+            return Ok(Admit::Existing(existing));
+        }
+        push_with_room(&mut records, record.clone())?;
+        self.persist(&records).map_err(InsertError::Io)?;
+        Ok(Admit::Inserted(record))
+    }
+
+    /// Test-only: seed a watch without asking the key, which is how a test
+    /// fills a store to its bounds.
+    #[cfg(test)]
     pub(crate) fn insert(&self, record: CiWatchRecord) -> Result<(), InsertError> {
         let mut records = self.records();
-        make_room(&mut records, &record).map_err(InsertError::Quota)?;
-        let now = now_ms();
-        // Terminal watches age out: finished history is kept a bounded time
-        // whatever its wake did, so dead sessions cannot fill the store.
-        records.retain(|existing| {
-            let terminal = existing.state.is_terminal();
-            let fresh = now.saturating_sub(existing.created_at_ms) < DELIVERED_RETENTION_MS;
-            if terminal && !fresh {
-                if matches!(existing.wake, Wake::Pending | Wake::Sending) {
-                    eprintln!(
-                        "ci watch: dropping undelivered wake {} (owner session ended)",
-                        existing.watch_id
-                    );
-                }
-                return false;
-            }
-            true
-        });
-        // Still full means genuinely busy, or a burst of recent history:
-        // make room from the oldest finished watch rather than refuse the
-        // tool forever. Only a store with nothing finished still refuses,
-        // and that refusal clears as watches finish.
-        while records.len() >= MAX_WATCHES {
-            let oldest = records
-                .iter()
-                .enumerate()
-                .filter(|(_, existing)| existing.state.is_terminal())
-                .min_by_key(|(_, existing)| existing.created_at_ms)
-                .map(|(index, _)| index);
-            let Some(index) = oldest else {
-                return Err(InsertError::Full);
-            };
-            let dropped = records.remove(index);
-            if matches!(dropped.wake, Wake::Pending | Wake::Sending) {
-                eprintln!(
-                    "ci watch: evicting undelivered wake {} (owner session ended)",
-                    dropped.watch_id
-                );
-            }
-        }
-        records.push(record);
+        push_with_room(&mut records, record)?;
         self.persist(&records).map_err(InsertError::Io)
     }
 
@@ -370,11 +399,16 @@ impl CiWatchStore {
         Ok(Some(approved))
     }
 
-    /// Spend the watch's one approved retry on `runs`, before any re-run is
-    /// asked for: a daemon that dies after this finds the retry spent and
-    /// never issues it twice. `false` means another pass already spent it, or
-    /// the record could not be written — either way nothing may be issued.
-    pub(crate) fn note_retry_issued(&self, watch_id: &str, runs: &[u64]) -> bool {
+    /// Reserve the watch's one approved retry on `runs`, before any re-run is
+    /// asked for: a daemon that dies after this finds the retry reserved and
+    /// never issues it twice. `false` means another pass already reserved it,
+    /// or the record could not be written — either way nothing may be issued.
+    pub(crate) fn note_retry_reserved(
+        &self,
+        watch_id: &str,
+        runs: &[u64],
+        evidence: &[u64],
+    ) -> bool {
         let mut records = self.records();
         let Some(record) = records
             .iter_mut()
@@ -387,6 +421,7 @@ impl CiWatchStore {
         }
         record.retry_count = 1;
         record.retried_runs = runs.to_vec();
+        record.retry_evidence = evidence.to_vec();
         if self.persist(&records).is_err() {
             if let Some(record) = records
                 .iter_mut()
@@ -394,13 +429,28 @@ impl CiWatchStore {
             {
                 record.retry_count = 0;
                 record.retried_runs.clear();
+                record.retry_evidence.clear();
             }
             // The spend is what keeps the retry at one, so an unrecorded
             // spend issues nothing and the watch tries again next pass.
-            eprintln!("ci watch: could not record the retry of {watch_id}; it is not issued");
+            eprintln!("ci watch: could not reserve the retry of {watch_id}; it is not issued");
             return false;
         }
         true
+    }
+
+    /// Record that `gh` took the re-run: the difference between a retry that
+    /// was only asked for and one that is really on its way.
+    pub(crate) fn mark_retry_issued(&self, watch_id: &str) -> io::Result<()> {
+        let mut records = self.records();
+        let Some(record) = records
+            .iter_mut()
+            .find(|record| record.watch_id == watch_id && !record.state.is_terminal())
+        else {
+            return Ok(());
+        };
+        record.retry_issued = true;
+        self.persist(&records)
     }
 
     /// Settle a claim whose send may already be out: never given back, never
@@ -416,6 +466,67 @@ impl CiWatchStore {
         record.wake = Wake::DeliveredUncertain;
         self.persist(&records)
     }
+}
+
+/// The one key a watch is unique by: the session that asked, the repository,
+/// the commit, and whether it follows a branch — and which one.
+fn same_watch(left: &CiWatchRecord, right: &CiWatchRecord) -> bool {
+    left.session_id == right.session_id
+        && left.sha == right.sha
+        && left.branch == right.branch
+        && left.host.eq_ignore_ascii_case(&right.host)
+        && left.repo_owner.eq_ignore_ascii_case(&right.repo_owner)
+        && left.repo.eq_ignore_ascii_case(&right.repo)
+}
+
+/// Fit one more watch in, ageing out finished history first: the bounds are
+/// the caller's to refuse, so this only reports them.
+fn push_with_room(
+    records: &mut Vec<CiWatchRecord>,
+    record: CiWatchRecord,
+) -> Result<(), InsertError> {
+    make_room(records, &record).map_err(InsertError::Quota)?;
+    let now = now_ms();
+    // Terminal watches age out: finished history is kept a bounded time
+    // whatever its wake did, so dead sessions cannot fill the store.
+    records.retain(|existing| {
+        let terminal = existing.state.is_terminal();
+        let fresh = now.saturating_sub(existing.created_at_ms) < DELIVERED_RETENTION_MS;
+        if terminal && !fresh {
+            if matches!(existing.wake, Wake::Pending | Wake::Sending) {
+                eprintln!(
+                    "ci watch: dropping undelivered wake {} (owner session ended)",
+                    existing.watch_id
+                );
+            }
+            return false;
+        }
+        true
+    });
+    // Still full means genuinely busy, or a burst of recent history: make
+    // room from the oldest finished watch rather than refuse the tool
+    // forever. Only a store with nothing finished still refuses, and that
+    // refusal clears as watches finish.
+    while records.len() >= MAX_WATCHES {
+        let oldest = records
+            .iter()
+            .enumerate()
+            .filter(|(_, existing)| existing.state.is_terminal())
+            .min_by_key(|(_, existing)| existing.created_at_ms)
+            .map(|(index, _)| index);
+        let Some(index) = oldest else {
+            return Err(InsertError::Full);
+        };
+        let dropped = records.remove(index);
+        if matches!(dropped.wake, Wake::Pending | Wake::Sending) {
+            eprintln!(
+                "ci watch: evicting undelivered wake {} (owner session ended)",
+                dropped.watch_id
+            );
+        }
+    }
+    records.push(record);
+    Ok(())
 }
 
 fn read_records(path: &Path) -> Result<Vec<CiWatchRecord>, String> {

@@ -17,7 +17,7 @@ use crate::ci_gh::{is_branch_name, is_commit_id, parse_repo_argument, CiError, R
 use crate::ci_watch::short;
 use crate::mcp_broker::caller::{audit_mcp_tool, McpCaller};
 use crate::mcp_broker::dispatch::{rpc_error, tool_error};
-use crate::mcp_broker::tools::first_use::{ensure_write_approved, CI_RETRY_GROUP};
+use crate::mcp_broker::tools::first_use::{ensure_write_approved, Approval, CI_RETRY_GROUP};
 use crate::mcp_broker::{McpBroker, RegisteredSession};
 use crate::server::ServerState;
 
@@ -116,9 +116,11 @@ pub(in crate::mcp_broker) fn call(
     };
     let host_id = host_id(state);
     match watch(state, broker, registration, arguments) {
-        Ok(data) => {
-            audit("ok");
-            Ok(Some(reply(&id, &host_id, Ok(data))))
+        Ok(watched) => {
+            // Who approved the retry card is part of the row: an automatic
+            // mode's approval and a person's are never the same log line.
+            audit(outcome_text(watched.approval));
+            Ok(Some(reply(&id, &host_id, Ok(watched.data))))
         }
         Err(Refusal::Ci(error)) => {
             audit("failed");
@@ -131,12 +133,29 @@ pub(in crate::mcp_broker) fn call(
     }
 }
 
+/// What a started watch answers: the tool's data, and who approved the retry
+/// card when one was raised.
+struct Watched {
+    data: Value,
+    approval: Option<Approval>,
+}
+
+/// The audit row of a watch that started: nothing to name when no retry was
+/// asked for, and the approver named whenever one was.
+fn outcome_text(approval: Option<Approval>) -> &'static str {
+    match approval {
+        None => "ok",
+        Some(Approval::Mode) => "ok; approved by automatic mode",
+        Some(Approval::Person) => "ok; approved by person",
+    }
+}
+
 fn watch(
     state: &Arc<ServerState>,
     broker: &McpBroker,
     registration: &RegisteredSession,
     arguments: Arguments,
-) -> Result<Value, Refusal> {
+) -> Result<Watched, Refusal> {
     let watches = &state.ci_watches;
     // The host always comes from the workspace origin — never the argument —
     // so resolving needs the workspace even when the repo names owner/repo.
@@ -161,9 +180,18 @@ fn watch(
             (sha, Some(branch))
         }
     };
-    if arguments.retry_infra {
-        approve_retry(state, broker, registration, &repo, branch.as_deref(), &sha)?;
-    }
+    let approval = if arguments.retry_infra {
+        Some(approve_retry(
+            state,
+            broker,
+            registration,
+            &repo,
+            branch.as_deref(),
+            &sha,
+        )?)
+    } else {
+        None
+    };
     let record = watches
         .start(
             &registration.session_id,
@@ -181,12 +209,13 @@ fn watch(
         "state": record.state.as_str(),
         "repo": record.slug(),
         "retryCount": record.retry_count,
+        "retryIssued": record.retry_issued,
         "wake": wake.as_str(),
     });
     if let Some(branch) = &record.branch {
         data["branch"] = json!(branch);
     }
-    Ok(data)
+    Ok(Watched { data, approval })
 }
 
 /// The card a retryInfra call raises before anything is watched: re-running
@@ -200,7 +229,7 @@ fn approve_retry(
     repo: &RepoRef,
     branch: Option<&str>,
     sha: &str,
-) -> Result<(), Refusal> {
+) -> Result<Approval, Refusal> {
     let slug = repo.slug();
     let target = match branch {
         Some(branch) => format!("branch {branch} at {}", short(sha)),
@@ -224,7 +253,6 @@ fn approve_retry(
         &subject,
         &facts,
     )
-    .map(|_| ())
     .map_err(Refusal::Card)
 }
 

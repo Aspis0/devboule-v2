@@ -24,7 +24,9 @@ fn record(summary: String) -> CiWatchRecord {
         wake: Wake::Pending,
         retry_approved: false,
         retry_count: 0,
+        retry_issued: false,
         retried_runs: Vec::new(),
+        retry_evidence: Vec::new(),
     }
 }
 

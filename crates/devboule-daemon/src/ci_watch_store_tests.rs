@@ -1,6 +1,6 @@
 //! The persistent watches: what survives a restart, and the one-wake rule.
 
-use super::{new_watch_id, now_ms, CiWatchRecord, CiWatchStore, InsertError, Wake};
+use super::{new_watch_id, now_ms, Admit, CiWatchRecord, CiWatchStore, InsertError, Wake};
 use crate::ci_summary::CiState;
 
 fn record(session: &str, sha: &str) -> CiWatchRecord {
@@ -21,7 +21,9 @@ fn record(session: &str, sha: &str) -> CiWatchRecord {
         wake: Wake::NotDue,
         retry_approved: false,
         retry_count: 0,
+        retry_issued: false,
         retried_runs: Vec::new(),
+        retry_evidence: Vec::new(),
     }
 }
 
@@ -128,15 +130,46 @@ fn asking_twice_for_one_commit_finds_the_first_watch() {
     store.insert(watch.clone()).expect("insert");
     assert_eq!(
         store
-            .find("s1", "acme/widgets", "aaaa")
+            .find("s1", "acme/widgets", "aaaa", None)
             .map(|found| found.watch_id),
         Some(watch.watch_id)
     );
     assert!(
-        store.find("s2", "acme/widgets", "aaaa").is_none(),
+        store.find("s2", "acme/widgets", "aaaa", None).is_none(),
         "another session has its own"
     );
-    assert!(store.find("s1", "acme/widgets", "bbbb").is_none());
+    assert!(store.find("s1", "acme/widgets", "bbbb", None).is_none());
+    assert!(
+        store
+            .find("s1", "acme/widgets", "aaaa", Some("main"))
+            .is_none(),
+        "a branch watch is its own watch"
+    );
+}
+
+/// The key is looked up and the watch stored under one lock: a second call
+/// for the same key answers the first watch and stores nothing.
+#[test]
+fn a_keyed_insert_answers_the_watch_that_is_already_there() {
+    let store = CiWatchStore::load(&dir("admit"));
+    let first = record("s1", "aaaa");
+    let inserted = store.find_or_insert(first.clone()).expect("first");
+    assert!(matches!(inserted, Admit::Inserted(_)));
+
+    let again = store.find_or_insert(record("s1", "aaaa")).expect("second");
+    let Admit::Existing(existing) = again else {
+        panic!("the key already had a watch");
+    };
+    assert_eq!(existing.watch_id, first.watch_id);
+    assert_eq!(store.open().len(), 1, "and only one watch exists");
+
+    let mut branch = record("s1", "aaaa");
+    branch.branch = Some("main".to_string());
+    assert!(matches!(
+        store.find_or_insert(branch).expect("branch"),
+        Admit::Inserted(_)
+    ));
+    assert_eq!(store.open().len(), 2);
 }
 
 #[test]
@@ -214,7 +247,7 @@ fn a_full_store_evicts_finished_history_before_refusing() {
     store.insert(evicted.clone()).expect("room is made");
     assert_eq!(
         store
-            .find("s0", "acme/w0", &format!("{:040}", 0))
+            .find("s0", "acme/w0", &format!("{:040}", 0), None)
             .map(|found| found.watch_id),
         None,
         "the oldest finished watch went"

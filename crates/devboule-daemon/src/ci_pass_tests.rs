@@ -28,7 +28,9 @@ fn watch(id: &str, repo: &str) -> CiWatchRecord {
         wake: Wake::NotDue,
         retry_approved: false,
         retry_count: 0,
+        retry_issued: false,
         retried_runs: Vec::new(),
+        retry_evidence: Vec::new(),
     }
 }
 

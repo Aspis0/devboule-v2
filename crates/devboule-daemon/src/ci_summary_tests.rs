@@ -4,7 +4,8 @@
 use serde_json::json;
 
 use super::{
-    build, logs_wanted, overall, Cause, CheckRun, CiState, MAX_EXCERPT_LINES, MAX_LINE_CHARS,
+    build, drop_superseded_failures, logs_wanted, overall, Cause, CheckRun, CiState,
+    MAX_EXCERPT_LINES, MAX_LINE_CHARS,
 };
 use crate::ci_test_support::{check_run, parsed_check_runs};
 
@@ -183,7 +184,7 @@ fn a_green_job_is_listed_without_its_log_being_read() {
 }
 
 #[test]
-fn an_unreadable_log_is_infra_with_its_reason_and_no_excerpt() {
+fn an_unreadable_log_is_unknown_with_its_reason_and_no_excerpt() {
     use crate::ci_gh::CiError;
 
     let failed = runs(&[check_run(5, "test", "completed", Some("failure"))]);
@@ -200,16 +201,48 @@ fn an_unreadable_log_is_infra_with_its_reason_and_no_excerpt() {
         assert_eq!(verdict.jobs.len(), 1);
         assert_eq!(
             verdict.jobs[0].cause,
-            Some(Cause::Infra(reason)),
-            "a missing log never reads as a code failure: {code}"
+            Some(Cause::Unknown(reason)),
+            "an unread log is no evidence at all: {code}"
+        );
+        assert!(
+            !verdict.only_infra() && !verdict.all_failures_infra(),
+            "and it is never a reason to re-run: {code}"
         );
         assert!(verdict.jobs[0].excerpt.is_empty());
         assert_eq!(verdict.jobs[0].more_lines, 0);
+        let text = verdict.render("CI failed");
         assert!(
-            verdict.render("CI failed").contains(reason),
-            "the reason travels to the owner: {code}"
+            text.contains(&format!("[UNKNOWN: {reason}]")),
+            "the reason travels to the owner: {code}: {text}"
         );
     }
+}
+
+/// After a re-run, the old attempt's failures are not judged again while its
+/// greens stay evidence: a `--failed` re-run does not run them again.
+#[test]
+fn a_rerun_drops_the_old_attempts_failures_and_keeps_its_greens() {
+    let runs = runs(&[
+        check_run(1, "build", "completed", Some("success")),
+        check_run(2, "test", "completed", Some("failure")),
+        check_run(3, "deploy", "completed", Some("cancelled")),
+    ]);
+
+    let judged = drop_superseded_failures(&runs, &[1, 2, 3]);
+    assert_eq!(
+        judged.iter().map(|run| run.id).collect::<Vec<_>>(),
+        vec![1],
+        "the old greens stay and the old failures go"
+    );
+
+    let mut with_new = runs.clone();
+    with_new.push(parsed_check_runs(&[check_run(4, "test", "queued", None)]).remove(0));
+    let judged = drop_superseded_failures(&with_new, &[1, 2, 3]);
+    assert_eq!(
+        judged.iter().map(|run| run.id).collect::<Vec<_>>(),
+        vec![1, 4],
+        "the new attempt's own check is judged"
+    );
 }
 
 #[test]
