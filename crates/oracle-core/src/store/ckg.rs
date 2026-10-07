@@ -357,18 +357,16 @@ impl CkgStore {
 mod tests {
     use super::*;
 
-    /// The crate's one test temp-dir site: a directory under the shared
-    /// per-run root, `%TEMP%\devboule-tests\<pid>\`, whose removal
-    /// belongs to whichever run comes next and finds this pid gone.
-    fn unique_temp_db(tag: &str) -> PathBuf {
-        let root = std::env::temp_dir()
-            .join("devboule-tests")
-            .join(std::process::id().to_string());
-        std::fs::create_dir_all(&root).expect("this run's temp root");
-        let dir = root.join(format!("ckg-store-test-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir.join("ckg.sqlite")
+    /// The crate's one test temp-dir site: an RAII directory, so this crate
+    /// creates no pid root of its own — the directory goes with the test that
+    /// holds it, panic included.
+    fn unique_temp_db(tag: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("ckg-store-test-{tag}-"))
+            .tempdir()
+            .expect("temp dir");
+        let db = dir.path().join("ckg.sqlite");
+        (dir, db)
     }
 
     /// Port of `oracle/store/ckg_store.py::test_ckg_store_roundtrip`.
@@ -377,7 +375,7 @@ mod tests {
     /// `replace_for_files` wipes the neighborhood back to empty.
     #[test]
     fn test_ckg_store_roundtrip() {
-        let db = unique_temp_db("roundtrip");
+        let (_dir, db) = unique_temp_db("roundtrip");
         let store = CkgStore::new(&db).expect("create store");
 
         let nodes = vec![
@@ -481,7 +479,7 @@ mod tests {
     /// uses these names, so any drift is a wire-break.
     #[test]
     fn test_ckg_schema_matches_python() {
-        let db = unique_temp_db("schema");
+        let (_dir, db) = unique_temp_db("schema");
         let store = CkgStore::new(&db).expect("create store");
 
         let conn = store.connect().expect("connect");

@@ -15,7 +15,7 @@ struct TempDir(std::path::PathBuf);
 
 impl TempDir {
     fn fresh() -> Self {
-        Self(crate::test_dirs::test_temp_dir("uxs"))
+        Self(crate::test_dirs::short_test_dir("uxs"))
     }
 
     fn paths(&self) -> RuntimePaths {

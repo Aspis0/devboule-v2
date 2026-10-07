@@ -18,7 +18,7 @@ struct TempDir(PathBuf);
 
 impl TempDir {
     fn fresh() -> Self {
-        Self(crate::test_dirs::test_temp_dir("ux"))
+        Self(crate::test_dirs::short_test_dir("ux"))
     }
 
     fn paths(&self) -> RuntimePaths {

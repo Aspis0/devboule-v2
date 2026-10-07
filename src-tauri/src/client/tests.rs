@@ -1639,8 +1639,8 @@ fn the_lost_connection_question_answers_a_requested_stop_only() {
         !declared_exit_from(None),
         "a runtime folder that cannot be named has no goodbye to report"
     );
-    let absent =
-        RuntimePaths::from_dir(devboule_daemon::test_dirs::test_temp_dir("devboule absent"));
+    let absent_parent = devboule_daemon::test_dirs::test_temp_dir("devboule absent");
+    let absent = RuntimePaths::from_dir(absent_parent.join("runtime"));
     assert!(
         !declared_exit_from(Some(&absent)),
         "a daemon that never wrote a record has said nothing about leaving"

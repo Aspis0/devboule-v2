@@ -1,10 +1,12 @@
 //! The one place this crate's test code asks the OS for its temp dir:
 //! `test_temp_dir(prefix)` gives the test a fresh directory under this run's
-//! own root, `%TEMP%\devboule-tests\<pid>\`, composed as a pid +
+//! own root, `<temp>\devboule-tests-<user>\<pid>\`, composed as a pid +
 //! nanosecond + counter name and created with `create_dir`, which refuses
 //! anything already there. Nothing is removed while the run lives — on the
 //! first call in a process the helper sweeps the roots of the runs whose pid
-//! is no longer alive, so a run clears the runs before it.
+//! is no longer alive, so a run clears the runs before it. A root that is a
+//! symlink or a reparse point is refused before it is ever used or swept
+//! through, and the sweep skips links instead of deleting through them.
 //! `temp_dir_guard_tests.rs` enforces that this is the only such place by
 //! scanning every other file for the token — its header lists the
 //! spellings it matches and the spellings it does not see.
@@ -12,17 +14,92 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Every run's directories under one name in the system temp dir, so the
-/// sweep can walk a fixed, known directory and nothing else.
+/// Who this run is, for naming a root no other account can collide with
+/// (a shared `/tmp` otherwise hands the second account a directory it
+/// cannot write into).
+#[cfg(windows)]
+fn user_tag() -> String {
+    std::env::var("USERNAME").unwrap_or_else(|_| "unknown".to_string())
+}
+
+#[cfg(unix)]
+fn user_tag() -> String {
+    // SAFETY: `getuid` takes no arguments and cannot fail.
+    unsafe { libc::getuid() }.to_string()
+}
+
+/// Every run's directories under one name per user in the system temp dir,
+/// so the sweep can walk a fixed, known directory and nothing else.
 fn runs_root() -> PathBuf {
-    std::env::temp_dir().join("devboule-tests")
+    std::env::temp_dir().join(format!("devboule-tests-{}", user_tag()))
+}
+
+/// The short root for unix-domain-socket fixtures: `sun_path` holds 104
+/// bytes on macOS, and a system temp dir is most of that already.
+#[cfg(unix)]
+fn short_runs_root() -> PathBuf {
+    PathBuf::from("/tmp").join(format!("dbt-{}", user_tag()))
+}
+
+/// One decision for both rules below: a symlink on any platform, and on
+/// Windows every reparse point (a junction is not always reported as a
+/// symlink), is a link this code must not follow.
+#[cfg(windows)]
+pub(crate) fn is_link(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    // 0x400 is FILE_ATTRIBUTE_REPARSE_POINT: every Windows link carries it.
+    metadata.file_type().is_symlink() || metadata.file_attributes() & 0x400 != 0
+}
+
+#[cfg(not(windows))]
+pub(crate) fn is_link(metadata: &std::fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
+/// The refusal the roots go through before anything uses or sweeps them:
+/// read the entry's own metadata, never its target's, and stop if it is a
+/// link. A planted root would otherwise make every later removal happen
+/// through it.
+pub(crate) fn refuse_if_link(path: &Path) {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return;
+    };
+    if is_link(&metadata) {
+        panic!(
+            "{} is a symlink or a reparse point; refusing to use it or sweep through it",
+            path.display()
+        );
+    }
+}
+
+/// The root, existing or not: refuse a planted link, then create it —
+/// private to this user on unix (0700), because a shared root the second
+/// account cannot write into would make its tests panic.
+fn ensure_root(root: &Path) {
+    refuse_if_link(root);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut builder = std::fs::DirBuilder::new();
+        builder.mode(0o700);
+        // Already there (an earlier run of this user) is the expected case.
+        let _ = builder.create(root);
+    }
+    #[cfg(windows)]
+    let _ = std::fs::create_dir_all(root);
+}
+
+/// This run's root under `root`: `<root>\<pid>`, created on first use.
+fn run_root_under(root: &Path) -> PathBuf {
+    ensure_root(root);
+    let mine = root.join(std::process::id().to_string());
+    std::fs::create_dir_all(&mine).expect("this run's temp root");
+    mine
 }
 
 /// This run's own root: `<runs root>\<pid>`, created on first use.
 fn run_root() -> PathBuf {
-    let root = runs_root().join(std::process::id().to_string());
-    std::fs::create_dir_all(&root).expect("this run's temp root");
-    root
+    run_root_under(&runs_root())
 }
 
 /// Best effort: whether `pid` is gone, read conservatively — only a pid this
@@ -58,23 +135,39 @@ fn is_dead(pid: u32) -> bool {
 }
 
 /// One sweep per process: the first test to ask for a directory clears the
-/// roots of the runs whose pid is gone.
+/// roots of the runs whose pid is gone — the main root, and the short root
+/// the socket fixtures use on unix.
 fn sweep_dead_runs() {
     static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| sweep_runs_under(&runs_root(), std::process::id()));
+    ONCE.call_once(|| {
+        sweep_root(&runs_root());
+        #[cfg(unix)]
+        sweep_root(&short_runs_root());
+    });
+}
+
+/// One root, checked before it is swept: a planted link would otherwise be
+/// enumerated — and removed through — by the loop below.
+fn sweep_root(root: &Path) {
+    refuse_if_link(root);
+    sweep_runs_under(root, std::process::id());
 }
 
 /// The sweep itself, as a function of the root it walks and the pid whose
 /// root it must keep: it reads only `root`'s own children, skips anything
-/// that is not a pid-named directory, and ignores every error — a directory
-/// it cannot remove stays for the next run to try.
-fn sweep_runs_under(root: &Path, me: u32) {
+/// that is not a pid-named ordinary directory — a link above all, which is
+/// never followed and never deleted through — and ignores every error: a
+/// directory it cannot remove stays for the next run to try.
+pub(crate) fn sweep_runs_under(root: &Path, me: u32) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_dir() {
+        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if is_link(&metadata) || !metadata.is_dir() {
             continue;
         }
         let name = entry.file_name();
@@ -94,8 +187,21 @@ fn sweep_runs_under(root: &Path, me: u32) {
 /// nobody (a protected parent hands its children nothing), and no later run
 /// can delete it as it stands: re-grant this user level by level, then remove.
 /// Every step ignores errors — what still cannot go stays for the next run.
+/// A link is taken as a link, before any of that: only the link itself goes,
+/// never its target's files and never its ACL.
 #[cfg(windows)]
-fn force_remove(path: &Path) {
+pub(crate) fn force_remove(path: &Path) {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return;
+    };
+    if is_link(&metadata) {
+        // A directory junction only goes with `remove_dir`, a file link with
+        // `remove_file`; try both — the wrong one just fails, and neither
+        // call looks inside the link.
+        let _ = std::fs::remove_dir(path);
+        let _ = std::fs::remove_file(path);
+        return;
+    }
     let _ = crate::security::apply_current_user_dacl(path);
     let Ok(entries) = std::fs::read_dir(path) else {
         let _ = std::fs::remove_file(path);
@@ -169,11 +275,13 @@ pub fn test_temp_dir(prefix: &str) -> PathBuf {
     create_test_dir_in(&run_root(), &fresh_name(prefix))
 }
 
-/// The same, directly under `/tmp`, for a unix-domain socket: `sun_path` holds
-/// 104 bytes on macOS, and the system temp dir there is most of that already.
-#[cfg(target_os = "macos")]
+/// The same under the short root, `/tmp/dbt-<uid>\<pid>\`, for the fixtures
+/// that bind a unix-domain socket: `sun_path` holds 104 bytes on macOS.
+/// Same sweep, same refusal of a planted link — only the root is shorter.
+#[cfg(unix)]
 pub fn short_test_dir(prefix: &str) -> PathBuf {
-    create_test_dir_in(Path::new("/tmp"), &fresh_name(prefix))
+    sweep_dead_runs();
+    create_test_dir_in(&run_root_under(&short_runs_root()), &fresh_name(prefix))
 }
 
 #[cfg(test)]

@@ -187,6 +187,8 @@ mod spawn;
 mod tailscale_localapi;
 #[cfg(test)]
 mod temp_dir_guard_tests;
+#[cfg(test)]
+mod test_dirs_link_tests;
 // The temp-dir helper the integration tests call: a test API, absent from a
 // release build (audit S5B-10).
 #[cfg(any(test, feature = "test-support"))]
