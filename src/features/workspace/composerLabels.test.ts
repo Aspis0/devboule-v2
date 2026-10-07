@@ -124,11 +124,11 @@ describe("the restyled labels speak the UI font at 12px or above", () => {
 });
 
 describe("the composer chrome's pinned values", () => {
-  it("keeps a 2px focus ring on the card, not just the 1px border move", () => {
+  it("takes the accent on the top rule at focus, with no ring", () => {
     const css = assembleCssProof(OWNED_SHEETS);
-    const rules = css.rulesFor(".workspace-composer:focus-within");
-    // The ring rides the accent-soft tint, so it reads the same in both themes.
-    expect(rules).toContain("box-shadow: 0 0 0 2px color-mix(in srgb, #7a5000 10%, transparent)");
+    const rules = css.rulesFor(".workspace-composer-wrap:focus-within");
+    expect(rules).toContain(`border-top-color: ${css.token("--accent")}`);
+    expect(rules).not.toContain("box-shadow");
   });
 
   it("caps the command menu on the lane's own cap", () => {

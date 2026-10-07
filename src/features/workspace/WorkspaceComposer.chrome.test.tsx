@@ -67,16 +67,26 @@ afterEach(async () => {
 });
 
 describe("the composer's box", () => {
-  it("floors itself at one line plus the control row, borders included", async () => {
+  it("floors itself at one line plus the control row", async () => {
     // The floor names a height: 10 of top padding, one 14px line at 1.45, the
-    // bar's 6px gap and its 28px height, 10 of bottom padding, and the 2px
-    // of border the floor has to count to be a floor at all.
+    // bar's 6px gap and its 28px height, and 10 of bottom padding.
     const floor = workspaceCss.rulesFor(".workspace-composer");
     expect(floor).toContain("min-height: calc(");
     expect(floor).toContain("(14px * 1.45)");
-    expect(floor).toContain("28px + 10px + 2px");
-    expect(floor).toContain("border-radius: 8px");
+    expect(floor).toContain("28px + 10px");
+    expect(floor).not.toContain("border: 1px");
+    expect(floor).not.toContain("border-radius");
+  });
 
+  it("draws one full-width top rule on the wrap, and takes accent on focus", () => {
+    const wrap = workspaceCss.rulesFor(".workspace-composer-wrap");
+    expect(wrap).toContain("border-top: 1px solid");
+    expect(workspaceCss.rulesFor(".workspace-composer-wrap:focus-within")).toContain(
+      "border-top-color:",
+    );
+  });
+
+  it("renders the textarea as a block, so no strut sits under its line", async () => {
     workspaceCss.inject([".workspace-composer textarea"]);
     await renderComposer();
     const textarea = container.querySelector("textarea");

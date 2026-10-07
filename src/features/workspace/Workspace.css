@@ -1220,7 +1220,10 @@
 .workspace-composer-wrap {
   position: relative;
   flex: none;
-  /* No side padding: the lane rule insets the card and the track, so a
+  /* The rule spans the pane: the box inside is capped at the reading width,
+     so only the wrap can carry a full-width edge. */
+  border-top: 1px solid var(--line);
+  /* No side padding: the lane rule insets the box and the track, so a
      second inset here would drift them off the transcript's edges. */
   padding: var(--space-4) 0 var(--space-12);
 }
@@ -1313,20 +1316,15 @@
 .workspace-composer {
   /* Sized by the shared lane rule above. */
   /* One line of text plus the control row, and no more until the textarea
-     grows: the box must not read as an empty panel. The trailing 2px is the
-     box's own 1px border a side — without it the floor sits under the height
-     it names and never binds. */
+     grows: the box must not read as an empty panel. */
   min-height: calc(
     var(--space-10) + (var(--type-interface) * var(--leading-body)) + var(--space-6) +
-      var(--control-default) + var(--space-10) + 2px
+      var(--control-default) + var(--space-10)
   );
   /* Block padding only: the lane rule's 20 px sides are what the composer
      shares with the transcript, so its text lands on the rows' axis. */
   padding-top: var(--space-10);
   padding-bottom: var(--space-10);
-  background: var(--panel-composer);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-8);
 }
 
 .workspace-agent-shell.has-turn-rail .workspace-composer {
@@ -1335,11 +1333,8 @@
   padding-left: 52px;
 }
 
-.workspace-composer:focus-within {
-  border-color: var(--accent);
-  /* The border move alone is 1 px; the ring is the visible focus cue the
-     textarea (outline: 0) and the 1 px border cannot give. */
-  box-shadow: 0 0 0 2px var(--accent-soft);
+.workspace-composer-wrap:focus-within {
+  border-top-color: var(--accent);
 }
 
 .workspace-composer textarea {
@@ -2161,7 +2156,6 @@
 
 /* A file dragged over the composer would be attached here. */
 .workspace-composer.is-drop-target {
-  border-color: var(--accent);
   background: var(--fill-hover);
 }
 
