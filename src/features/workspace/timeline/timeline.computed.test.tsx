@@ -189,7 +189,7 @@ describe("timeline computed styles", () => {
     expect(getComputedStyle(copy).padding).toBe("0px");
     expect(getComputedStyle(copy).borderTopWidth).toBe("0px");
     expect(getComputedStyle(copy).backgroundColor).toBe("transparent");
-    expect(getComputedStyle(copiedBtn).color).toBe("#3f7a56");
+    expect(getComputedStyle(copiedBtn).color).toBe("#315e43");
     expect(getComputedStyle(copiedBtn).opacity).toBe("1");
     expect(blockCss.rulesFor(".copyblock:hover .copy-btn")).toContain("opacity: 1");
     expect(blockCss.rulesFor(".copyblock:hover .copy-btn")).toContain("pointer-events: auto");

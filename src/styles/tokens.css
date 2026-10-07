@@ -89,7 +89,7 @@
   --accent-soft: color-mix(in srgb, var(--accent) 10%, transparent);
 
   /* status dot tones */
-  --tone-live: #3f7a56;
+  --tone-live: #315e43;
   --tone-idle: #96968f;
   --tone-attention: #b8862e;
   --tone-unattended: #6b5b95;
@@ -283,7 +283,7 @@
   --accent-contrast: #141414;
   --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
 
-  --tone-live: #7cba92;
+  --tone-live: #86b99a;
   --tone-idle: #6e6e68;
   --tone-attention: #d1a35a;
   --tone-unattended: #a893cf;

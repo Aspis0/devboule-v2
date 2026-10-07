@@ -319,7 +319,8 @@
   height: var(--control-default);
   padding: 0 var(--space-12);
   border-radius: var(--radius-6);
-  font-size: 12.5px;
+  /* 12.5 is the one ramp step; the buttons take it from the token, not a literal. */
+  font-size: var(--type-mono-cmd);
   line-height: 1;
   cursor: pointer;
 }
