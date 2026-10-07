@@ -1108,7 +1108,9 @@ fn main() -> io::Result<()> {
                             writeln!(handle, "{prompt_text}")
                         });
                 }
-                if prompt_text.contains("block") {
+                // The phrase, not the word: framed prompts say
+                // "after this block" and must still be answered.
+                if prompt_text.contains("block until cancelled") {
                     continue;
                 }
                 if prompt_text.contains("chooser") {
