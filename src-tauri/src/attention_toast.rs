@@ -1,8 +1,11 @@
 //! The OS toast an attention raise becomes, and what a click on it means.
 //!
-//! One responsibility: show the toast that stands for a raise and turn a click
-//! on it into the window coming forward plus one app event that names the
-//! session the toast was about.
+//! One responsibility: show the toast that stands for a raise, turn a click on
+//! it into the window coming forward plus one app event that names the session
+//! the toast was about, and leave no toast of ours in the OS history behind.
+
+#[cfg(windows)]
+use std::path::Path;
 
 use devboule_protocol::ErrorCode;
 use serde::{Deserialize, Serialize};
@@ -45,25 +48,56 @@ pub async fn attention_toast_show(
     .await
 }
 
-/// The toast, with the click wired where the platform allows one.
-///
-/// A show the Windows notification platform refuses — an AUMID it will not
-/// take — falls back to the plugin's own sender: a toast without a click is a
-/// smaller loss than a raise nobody sees.
+/// Which sender a raise gets on this machine's install state.
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToastSender {
+    /// Windows' own WinRT toast: a click on it comes back to this process.
+    Clickable,
+    /// The notification plugin's toast: visible, with no click to route.
+    VisibleOnly,
+}
+
+/// The clickable sender needs the AUMID the installer's Start-menu shortcut
+/// registers: a toast raised under one Windows was never told about can be
+/// dropped for good with no error to catch. `programs_dir` is that folder,
+/// `None` when the shell will not name it.
+#[cfg(windows)]
+fn attention_sender(programs_dir: Option<&Path>, product_name: &str) -> ToastSender {
+    match programs_dir {
+        // The installer writes `${PRODUCTNAME}.lnk` straight into the Programs
+        // folder (`nsis/installer.nsi`).
+        Some(dir) if dir.join(format!("{product_name}.lnk")).is_file() => ToastSender::Clickable,
+        _ => ToastSender::VisibleOnly,
+    }
+}
+
+/// The toast, through the one sender this install state can honestly use: an
+/// uninstalled run keeps the visible toast it has always had instead of one
+/// Windows may never show.
 fn show(app: &AppHandle, toast: &AttentionToast) -> Result<(), String> {
     #[cfg(windows)]
-    match winrt::show(app, toast) {
-        Ok(()) => return Ok(()),
-        Err(error) => eprintln!(
-            "devboule: the attention toast did not reach the Windows notification platform: {error}"
-        ),
+    if attention_sender(
+        winrt::programs_folder().as_deref(),
+        &app.package_info().name,
+    ) == ToastSender::Clickable
+    {
+        return winrt::show(app, toast);
     }
     send_with_plugin(app, toast)
 }
 
+/// Drops this app's toasts from Action Center on an orderly exit: one left
+/// there outlives the process, and the target its click would open dies with
+/// it. A crash is not covered.
+#[cfg(windows)]
+pub(crate) fn clear_pending(app: &AppHandle) {
+    winrt::clear_history(app);
+}
+
 /// The notification plugin's own sender: every non-Windows platform's toast
-/// (macOS keeps the toast it has always shown, with no click to route), and
-/// Windows' fallback when WinRT takes no toast at all.
+/// (macOS keeps the toast it has always shown, with no click to route), and the
+/// Windows run that owns no AUMID.
 fn send_with_plugin(app: &AppHandle, toast: &AttentionToast) -> Result<(), String> {
     use tauri_plugin_notification::NotificationExt;
     app.notification()
@@ -77,7 +111,14 @@ fn send_with_plugin(app: &AppHandle, toast: &AttentionToast) -> Result<(), Strin
 /// Windows' own WinRT toast, the one platform whose click this app can hear.
 #[cfg(windows)]
 mod winrt {
+    use std::ffi::c_void;
+    use std::path::PathBuf;
+
     use tauri::{AppHandle, Emitter};
+    use windows::core::HSTRING;
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::UI::Shell::{FOLDERID_Programs, SHGetKnownFolderPath, KF_FLAG_DEFAULT};
+    use windows::UI::Notifications::ToastNotificationManager;
 
     use super::{AttentionTarget, AttentionToast};
     use crate::tray;
@@ -85,6 +126,28 @@ mod winrt {
     /// The app event a click publishes. The frontend's listener
     /// (`attentionActivation.ts`) is the one reader; both sides declare the name.
     const ACTIVATED_EVENT: &str = "attention:activated";
+
+    /// The per-user Start Menu Programs folder: where the installer's
+    /// `currentUser` shortcut lands (`nsis/installer.nsi`'s `$SMPROGRAMS`).
+    /// `None` when the shell will not name it, which its caller reads as "no
+    /// shortcut stands".
+    pub(super) fn programs_folder() -> Option<PathBuf> {
+        let raw =
+            unsafe { SHGetKnownFolderPath(&FOLDERID_Programs, KF_FLAG_DEFAULT, None) }.ok()?;
+        let folder = unsafe { raw.to_string() }.ok().map(PathBuf::from);
+        // The shell hands this out on the task allocator.
+        unsafe { CoTaskMemFree(Some(raw.0 as *const c_void)) };
+        folder
+    }
+
+    /// Drops every toast this app raised from Action Center, by the one AUMID
+    /// they all carry.
+    pub(super) fn clear_history(app: &AppHandle) {
+        let Ok(history) = ToastNotificationManager::History() else {
+            return;
+        };
+        let _ = history.ClearWithId(&HSTRING::from(app.config().identifier.as_str()));
+    }
 
     /// The toast, with the click wired. The app id is the bundle identifier —
     /// the AUMID the installer writes onto the Start-menu shortcut
@@ -155,5 +218,30 @@ mod tests {
             serde_json::to_value(&target).expect("the payload serializes"),
             serde_json::json!({ "sessionId": "s1", "workspaceId": null })
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_installers_shortcut_decides_whether_the_toast_can_carry_a_click() {
+        // A temp folder stands in for the Start Menu: the decision is the
+        // installer's own file, never the real folder the machine has.
+        let programs = tempfile::tempdir().expect("a temp Programs folder");
+        assert_eq!(
+            attention_sender(Some(programs.path()), "Devboule"),
+            ToastSender::VisibleOnly
+        );
+        std::fs::write(programs.path().join("Devboule.lnk"), b"").expect("the shortcut");
+        assert_eq!(
+            attention_sender(Some(programs.path()), "Devboule"),
+            ToastSender::Clickable
+        );
+        // Another product's shortcut registers another AUMID, not ours.
+        std::fs::remove_file(programs.path().join("Devboule.lnk")).expect("remove it");
+        std::fs::write(programs.path().join("Other.lnk"), b"").expect("another shortcut");
+        assert_eq!(
+            attention_sender(Some(programs.path()), "Devboule"),
+            ToastSender::VisibleOnly
+        );
+        assert_eq!(attention_sender(None, "Devboule"), ToastSender::VisibleOnly);
     }
 }

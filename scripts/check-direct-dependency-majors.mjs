@@ -58,7 +58,7 @@ const inlineExceptions = {
       reason:
         "0.7.3 is the copy notify-rust (behind tauri-plugin-notification) already compiles, so the attention toast adds no second WinRT wrapper and no second windows copy; 0.8.1 demands windows ^0.62, a second set of the COM types beside the 0.61.3 wry compiles",
       exitCondition:
-        "notify-rust moves to tauri-winrt-notification 0.8, or the wry version Tauri resolves moves the workspace to windows 0.62",
+        "notify-rust (behind tauri-plugin-notification) moves to tauri-winrt-notification 0.8, so the plugin's sender and this direct toast share one wrapper and one windows copy; a wry move to windows 0.62 alone leaves the plugin on 0.7.x and does not",
     },
   },
 };

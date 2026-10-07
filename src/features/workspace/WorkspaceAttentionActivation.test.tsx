@@ -34,7 +34,7 @@ import {
 } from "./bulkCloseHarness";
 import { sessionCreate, sessionsList, workspacesList } from "../../lib/tauri";
 import type { Session, SessionStateSnapshot } from "../../types/ipc";
-import { resetAttentionActivationForTests, startAttentionActivation } from "./attentionActivation";
+import { disposeAttentionActivation, startAttentionActivation } from "./attentionActivation";
 import { localWorkspaceKey } from "./hosts/hostIdentity";
 import { getLastSelectedWorkspaceKey } from "./lastSelectedWorkspace";
 import { useAppStore } from "../../store/appStore";
@@ -82,7 +82,7 @@ const tabId = (sessionId: string): string => `workspace-session-tab-${sessionId}
 
 beforeEach(() => {
   beforeEachHarness();
-  resetAttentionActivationForTests();
+  disposeAttentionActivation();
   listeners.clear();
   vi.mocked(workspacesList).mockResolvedValue([workspace, secondWorkspace]);
   vi.mocked(sessionsList).mockResolvedValue([
@@ -144,6 +144,19 @@ describe("a click on an attention toast", () => {
     await clickToast({ sessionId: "agent-two" });
 
     expect(document.getElementById(tabId("agent-two"))).toBeNull();
+  });
+
+  it("releases the listener when the module is replaced", async () => {
+    await renderWorkspace(false);
+    await startAttentionActivation();
+    expect(listeners.has(ATTENTION_ACTIVATED_EVENT)).toBe(true);
+
+    disposeAttentionActivation();
+    expect(listeners.has(ATTENTION_ACTIVATED_EVENT)).toBe(false);
+
+    // The replaced module starts over: one registration, one listener.
+    await startAttentionActivation();
+    expect(listeners.has(ATTENTION_ACTIVATED_EVENT)).toBe(true);
   });
 
   it("a click with no strip mounted opens the tab through the roster", async () => {

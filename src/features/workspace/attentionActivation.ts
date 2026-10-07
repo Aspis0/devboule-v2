@@ -76,6 +76,7 @@ function applyAttentionActivation(payload: unknown): void {
 }
 
 let activationListener: Promise<UnlistenFn> | null = null;
+let releaseListener: UnlistenFn | null = null;
 
 /**
  * The one listener for the app run. Repeated calls share the first
@@ -85,16 +86,29 @@ let activationListener: Promise<UnlistenFn> | null = null;
 export function startAttentionActivation(): Promise<UnlistenFn> {
   activationListener ??= listen<unknown>(ATTENTION_ACTIVATED_EVENT, (event) =>
     applyAttentionActivation(event.payload),
-  ).catch(() => {
-    // No event bridge — a host without Tauri, or a test: nothing can click,
-    // and there is nothing to unlisten.
-    return () => undefined;
-  });
+  )
+    .then((unlisten) => {
+      releaseListener = unlisten;
+      return unlisten;
+    })
+    .catch(() => {
+      // No event bridge — a host without Tauri, or a test: nothing can click,
+      // and there is nothing to unlisten.
+      return () => undefined;
+    });
   return activationListener;
 }
 
-/** Test seam: the module holds the registration and the opener for the run. */
-export function resetAttentionActivationForTests(): void {
+/**
+ * Releases the listener and forgets the opener. Vite replaces this module while
+ * the webview stays alive, and the replaced copy's listener would otherwise
+ * answer every click a second time, through the opener it captured.
+ */
+export function disposeAttentionActivation(): void {
+  releaseListener?.();
+  releaseListener = null;
   activationListener = null;
   opener = null;
 }
+
+import.meta.hot?.dispose(disposeAttentionActivation);

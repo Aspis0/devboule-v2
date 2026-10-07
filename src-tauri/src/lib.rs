@@ -261,6 +261,9 @@ pub fn run() {
                 let daemon = app_handle.state::<client::DaemonBridge>();
                 daemon.shutdown();
                 app_handle.state::<plugins::rpc::PluginRuntime>().stop_all();
+                // A toast left in Action Center would open nothing after this; a crash can still leave one.
+                #[cfg(windows)]
+                attention_toast::clear_pending(app_handle);
             }
             // macOS: with the window closed into the menu bar, a dock click
             // is how the user comes back.
