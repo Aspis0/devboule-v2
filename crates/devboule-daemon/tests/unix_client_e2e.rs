@@ -36,7 +36,7 @@ fn daemon_bin() -> PathBuf {
 }
 
 fn temp_paths() -> (RuntimePaths, TempGuard) {
-    let dir = devboule_daemon::test_dirs::test_temp_dir("devboule-uxc");
+    let dir = devboule_daemon::test_dirs::short_test_dir("uxc");
     let paths = RuntimePaths::from_dir(&dir);
     (paths.clone(), TempGuard { paths })
 }
