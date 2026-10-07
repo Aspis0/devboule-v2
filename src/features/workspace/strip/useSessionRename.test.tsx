@@ -108,6 +108,7 @@ describe("the tab menu's rename entry", () => {
       "Close to the right",
       "Close other tabs",
       "Close",
+      "Archive",
       "Delete",
     ]);
     const rename = entries.find((entry) => entry.key === "rename");

@@ -117,7 +117,7 @@ describe("tab menu copy actions", () => {
     expect(sessionStop).not.toHaveBeenCalled();
   });
 
-  it.each(["agent-one", "session-2"])("copies %s from its workspace pane menu", async (id) => {
+  it.each(["session-2"])("copies the terminal %s from its pane menu", async (id) => {
     await renderWorkspace();
     await plainClick(id);
     const kebab = document.querySelector<HTMLButtonElement>(".pane-header-kebab");

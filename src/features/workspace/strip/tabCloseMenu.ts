@@ -10,6 +10,7 @@ export interface TabMenuEntry {
   key:
     | TabCloseAction
     | "close-selection"
+    | "archive"
     | "delete"
     | "rename"
     | "split-down"
@@ -23,12 +24,19 @@ export interface TabMenuEntry {
   separatorAfter?: boolean;
 }
 
-export function buildTabCloseEntries(index: number, tabCount: number): TabMenuEntry[] {
+/** Archive sits after Close and before Delete; only an agent tab has a
+ * session to archive, so the entry is offered when the caller says so. */
+export function buildTabCloseEntries(
+  index: number,
+  tabCount: number,
+  archivable = false,
+): TabMenuEntry[] {
   return [
     { key: "left", label: "Close to the left", disabled: index === 0 },
     { key: "right", label: "Close to the right", disabled: index === tabCount - 1 },
     { key: "others", label: "Close other tabs", disabled: tabCount <= 1 },
     { key: "close", label: "Close", disabled: false },
+    ...(archivable ? [{ key: "archive" as const, label: "Archive", disabled: false }] : []),
     { key: "delete", label: "Delete", disabled: false, destructive: true },
   ];
 }

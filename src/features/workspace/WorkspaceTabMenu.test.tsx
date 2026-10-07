@@ -16,11 +16,11 @@ import {
   endedAgentSession,
   DIALOG_SELECTOR,
   dialog,
-  headerMenuSeamFor,
   liveSnapshot,
   menu,
   menuLabels,
   pushSnapshots,
+  agentSession,
   recoveredAgentSession,
   renderWorkspace,
   resizeWindow,
@@ -61,6 +61,7 @@ describe("the tab context menu", () => {
       "Close to the right",
       "Close other tabs",
       "Close",
+      "Archive",
       "Delete",
     ]);
     const deleteEntry = [...document.querySelectorAll<HTMLButtonElement>("[role='menuitem']")].find(
@@ -71,6 +72,7 @@ describe("the tab context menu", () => {
       "menuitem",
       "menuitem",
       "separator",
+      "menuitem",
       "menuitem",
       "menuitem",
       "menuitem",
@@ -137,6 +139,44 @@ describe("the tab context menu", () => {
     expect(document.querySelector("#workspace-session-tab-agent-old")).toBeNull();
   });
 
+  it("Archive is offered on an agent tab only, between Close and Delete", async () => {
+    await renderWorkspace();
+
+    await rightClick("session-2");
+    expect(menuLabels()).not.toContain("Archive");
+    await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
+
+    await rightClick("agent-one");
+    expect(menuLabels().slice(-3)).toEqual(["Close", "Archive", "Delete"]);
+  });
+
+  it("Archive on a running agent asks the archive question and stops nothing until confirmed", async () => {
+    vi.mocked(sessionsList).mockResolvedValue([agentSession("agent-live", "Busy one")]);
+    await renderWorkspace();
+
+    await rightClick("agent-live");
+    await clickMenuEntry("Archive");
+
+    expect(dialog().textContent).toContain("Archive running agent?");
+    await clickDialogButton("Cancel");
+    expect(vi.mocked(sessionStop)).not.toHaveBeenCalled();
+  });
+
+  it("Archive on a recovered agent takes the close path: stop, then the tab goes", async () => {
+    vi.mocked(sessionsList).mockResolvedValue([
+      recoveredAgentSession("agent-old", "Old transcript"),
+    ]);
+    await renderWorkspace();
+
+    await rightClick("agent-old");
+    await clickMenuEntry("Archive");
+    await settleCloseActs();
+
+    expect(document.querySelector(DIALOG_SELECTOR)).toBeNull();
+    expect(vi.mocked(sessionStop)).toHaveBeenCalledWith("agent-old");
+    expect(document.querySelector("#workspace-session-tab-agent-old")).toBeNull();
+  });
+
   it("Delete asks, and confirming destroys through session_close", async () => {
     await renderWorkspace();
 
@@ -182,13 +222,13 @@ describe("the tab context menu", () => {
   it("the menu survives a harmless republication of the same rows", async () => {
     await renderWorkspace();
     await rightClick("agent-one");
-    expect(menuLabels()).toHaveLength(7);
+    expect(menuLabels()).toHaveLength(8);
 
     // An elapsed-time tick: new array, new row objects, same ids and
     // generations — nothing the menu's entries would act on differently.
     await pushSnapshots(defaultSessions().map((s) => liveSnapshot(s.id, s.title)));
 
-    expect(menuLabels()).toHaveLength(7);
+    expect(menuLabels()).toHaveLength(8);
   });
 
   it("the menu closes when its anchor's generation changes, and focus returns to the anchor", async () => {
@@ -277,6 +317,7 @@ describe("the tab menu rename", () => {
       "Close to the right",
       "Close other tabs",
       "Close",
+      "Archive",
       "Delete",
     ]);
     expect(
@@ -293,6 +334,7 @@ describe("the tab menu rename", () => {
       "Close to the right",
       "Close other tabs",
       "Close",
+      "Archive",
       "separator",
       "Delete",
     ]);
@@ -344,23 +386,6 @@ describe("the tab menu rename", () => {
 
     expect(tabTitles().some((title) => title.includes("Renamed agent"))).toBe(true);
     expect(document.activeElement).toBe(tabElement("agent-one"));
-  });
-
-  it("the pane kebab hides Rename on a recovered session", async () => {
-    // The seam's second gate, at the pane: the flow's entry is pinned in
-    // strip/useSessionRename.test.tsx, this is Workspace's own condition.
-    daemonWithCapabilities(["sessions"]);
-    vi.mocked(sessionsList).mockResolvedValue([recoveredAgentSession("agent-one", "Agent one")]);
-    await renderWorkspace();
-
-    expect(headerMenuSeamFor("agent-one")?.onRename ?? null).toBeNull();
-  });
-
-  it("the pane kebab offers Rename on a live session with the capability", async () => {
-    daemonWithCapabilities(["sessions"]);
-    await renderWorkspace();
-
-    expect(typeof headerMenuSeamFor("agent-one")?.onRename).toBe("function");
   });
 
   it("hides Rename on a recovered agent — the daemon's road needs a live process", async () => {

@@ -45,8 +45,6 @@ import { AgentSession, lastAssistantMessage, normalizeGoal } from "../../lib/age
 import type { AgentSessionState, AgentStatus } from "../../lib/agentSession";
 import { errorSentence } from "../../lib/errorSentence";
 import { useConversationScrollStick } from "./useConversationScrollStick";
-import { PaneHeaderKebab } from "./paneHeader/PaneHeaderKebab";
-import { headerMenu, type HeaderMenuSeam } from "./paneHeader/paneHeaderMenu";
 import { setPreferredEffort, setPreferredMode, setPreferredModel } from "../../lib/agentPrefs";
 import { forgetCreatedSession, mayApplyPicks } from "./createdSessions";
 import { rememberedSwitch } from "./rememberedPicks";
@@ -139,7 +137,6 @@ export function goalCommandsFor(
 
 interface AgentChatSurfaceProps {
   sessionId: string;
-  cwd?: string;
   id?: string;
   auxiliary?: ReactNode;
   /** The recovered reopen bar: renders nothing on a live pane, so the
@@ -148,8 +145,6 @@ interface AgentChatSurfaceProps {
   onOpenSubagent?: (sessionId: string) => void;
   subagentAttention?: ReadonlyMap<string, string>;
   onRefreshSubagents?: () => Promise<void>;
-  /** The kebab's close-group wiring, from the tab-close flow. Absent until the workspace passes it. */
-  headerMenuSeam?: HeaderMenuSeam;
   /**
    * Workspace context that renders agent-written file paths as links into
    * the tab opener, exactly the Files panel's open action. Null (or absent)
@@ -348,14 +343,12 @@ export const QUEUE_UNSUPPORTED =
 
 export const AgentChatSurface = memo(function AgentChatSurface({
   sessionId,
-  cwd,
   id,
   auxiliary,
   headerTrailing,
   onOpenSubagent,
   subagentAttention,
   onRefreshSubagents,
-  headerMenuSeam,
   fileLinks = null,
   activity,
   observedState = null,
@@ -785,7 +778,6 @@ export const AgentChatSurface = memo(function AgentChatSurface({
       focusComposer,
     ],
   );
-  const menu = headerMenu(cwd, headerMenuSeam, sessionId);
   return (
     <div
       id={id}
@@ -801,9 +793,8 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         lastFinished={state.lastFinished}
         task={currentTask}
       />
-      {/* No row of its own: the wrapper has zero height, and the kebab floats
-          over the transcript's top edge. Its Close and Archive have no other
-          entry point, so the kebab stays in this smallest form. */}
+      {/* No row of its own: the wrapper has zero height on a live pane without
+          subagents. Archive lives in the tab menu. */}
       <div className="workspace-agent-extras">
         {subagentRows.length > 0 ? (
           <SubagentMenu
@@ -814,7 +805,6 @@ export const AgentChatSurface = memo(function AgentChatSurface({
           />
         ) : null}
         {headerTrailing}
-        {menu === null ? null : <PaneHeaderKebab menu={menu} />}
       </div>
       {/* Remounted per goal text: the disclosure state belongs to the text,
           so a replaced goal arrives collapsed. */}

@@ -103,7 +103,6 @@ const surfaceHooks = vi.hoisted(() => ({
     {
       request: (sessionId: string, subscriptionId: number, request: PermissionRequest) => void;
       resolved: (sessionId: string, resolution: PermissionResolved) => void;
-      close: () => void;
     }
   >(),
 }));
@@ -114,11 +113,9 @@ vi.mock("./AgentChatSurface", () => ({
     auxiliary,
     onPermissionRequest,
     onPermissionResolved,
-    headerMenuSeam,
   }: {
     sessionId: string;
     auxiliary?: import("react").ReactNode;
-    headerMenuSeam?: import("./paneHeader/paneHeaderMenu").HeaderMenuSeam;
     onPermissionRequest?: (
       sessionId: string,
       subscriptionId: number,
@@ -129,7 +126,6 @@ vi.mock("./AgentChatSurface", () => ({
     surfaceHooks.bySession.set(sessionId, {
       request: onPermissionRequest ?? (() => undefined),
       resolved: onPermissionResolved ?? (() => undefined),
-      close: () => headerMenuSeam?.onCloseEntry("close"),
     });
     return (
       <div data-testid="agent-chat-surface">
@@ -232,6 +228,18 @@ function tabElement(id: string): HTMLButtonElement {
   );
   if (tab === null) throw new Error(`tab did not render: ${id}`);
   return tab;
+}
+
+/** Archives an agent from its tab menu: the same entry a person uses. */
+async function archiveFromTabMenu(id: string): Promise<void> {
+  await act(async () => {
+    tabElement(id).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+  });
+  const item = [...document.querySelectorAll<HTMLButtonElement>("[role='menuitem']")].find(
+    (candidate) => candidate.textContent === "Archive",
+  );
+  if (item === undefined) throw new Error(`Archive did not render for ${id}`);
+  await act(async () => item.click());
 }
 
 async function flush(): Promise<void> {
@@ -415,7 +423,7 @@ describe("closing a session and its permission cards", () => {
     await emitRequest("agent-live", "tool-a");
     expect(cards().length).toBe(1);
 
-    await act(async () => surfaceHooks.bySession.get("agent-live")?.close());
+    await archiveFromTabMenu("agent-live");
     expect(dialog().textContent).toContain("Archive running agent?");
     await clickDialogButton("Archive");
     await flush();
@@ -440,7 +448,7 @@ describe("closing a session and its permission cards", () => {
     await emitRequest("agent-old", "tool-a");
     expect(cards().length).toBe(1);
 
-    await act(async () => surfaceHooks.bySession.get("agent-old")?.close());
+    await archiveFromTabMenu("agent-old");
     await flush();
 
     expect(vi.mocked(sessionStop)).toHaveBeenCalledWith("agent-old");
@@ -470,7 +478,7 @@ describe("closing a session and its permission cards", () => {
     await emitRequest("agent-old", "tool-a");
     expect(cards().length).toBe(1);
 
-    await act(async () => surfaceHooks.bySession.get("agent-old")?.close());
+    await archiveFromTabMenu("agent-old");
     await flush();
 
     expect(vi.mocked(sessionStop)).toHaveBeenCalledWith("agent-old");

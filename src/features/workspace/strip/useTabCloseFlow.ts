@@ -235,6 +235,7 @@ export function useTabCloseFlow({
                 ...buildTabCloseEntries(
                   tabs.findIndex((tab) => tab.id === openMenuState.anchorId),
                   tabs.length,
+                  anchorTab.type === "session" && isAgentKind(anchorTab.session.kind),
                 ),
               ]),
         };
@@ -428,9 +429,13 @@ export function useTabCloseFlow({
         removeTabs(sessionsForSelection(selection, tabs));
         return;
       }
+      if (key === "archive") {
+        closeSingle(open.anchorId);
+        return;
+      }
       fireAnchorEntry(open.anchorId, key);
     },
-    [fireAnchorEntry, menuState, openRename, selection, tabs, removeTabs],
+    [closeSingle, fireAnchorEntry, menuState, openRename, selection, tabs, removeTabs],
   );
 
   // Pane Close stops the session; its other close entries remove tabs locally.

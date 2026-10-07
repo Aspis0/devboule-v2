@@ -9,6 +9,7 @@ import {
   beforeEachHarness,
   chipButton,
   chipClick,
+  archiveAgent,
   lifecycleClose,
   clickDialogButton,
   DIALOG_SELECTOR,
@@ -125,7 +126,7 @@ describe("the close chip", () => {
     // the turn has ended.
     await renderWorkspace();
 
-    await lifecycleClose("agent-one");
+    await archiveAgent("agent-one");
 
     const confirm = dialog();
     expect(confirm.textContent).toContain("Archive running agent?");
@@ -143,7 +144,7 @@ describe("the close chip", () => {
     ]);
     await renderWorkspace();
 
-    await lifecycleClose("agent-old");
+    await archiveAgent("agent-old");
 
     expect(document.querySelector(DIALOG_SELECTOR)).toBeNull();
     await settleCloseActs();
@@ -158,7 +159,7 @@ describe("the close chip", () => {
     ]);
     await renderWorkspace();
 
-    await lifecycleClose("agent-live");
+    await archiveAgent("agent-live");
 
     const confirm = dialog();
     expect(confirm.textContent).toContain("Archive running agent?");

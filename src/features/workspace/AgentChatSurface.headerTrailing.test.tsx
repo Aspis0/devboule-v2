@@ -69,10 +69,9 @@ it("renders no trailing control when the workspace passes none", async () => {
   expect(host.querySelector(".workspace-agent-toolbar")).toBeNull();
 });
 
-it("draws no title or state text: the kebab is the surface's only header control", async () => {
+it("draws no title, state or kebab: the surface draws no header controls", async () => {
   await renderSurface();
 
   expect(host.querySelector(".workspace-agent-title, .workspace-agent-status")).toBeNull();
-  const extras = host.querySelector(".workspace-agent-extras");
-  expect(extras?.querySelector(".pane-header-kebab")).not.toBeNull();
+  expect(host.querySelector(".pane-header-kebab")).toBeNull();
 });

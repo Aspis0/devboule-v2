@@ -166,13 +166,10 @@ const headerMenuSeams = vi.hoisted(() => ({
 
 vi.mock("./AgentChatSurface", async () => {
   const { SubagentMenu } = await import("./SubagentMenu");
-  const { PaneHeaderKebab } = await import("./paneHeader/PaneHeaderKebab");
-  const { headerMenu } = await import("./paneHeader/paneHeaderMenu");
   const { deriveSubagentRows } = await import("./subagentRows");
   return {
     AgentChatSurface: ({
       sessionId,
-      headerMenuSeam,
       sessionRoster = [],
       onOpenSubagent,
       subagentAttention,
@@ -181,7 +178,6 @@ vi.mock("./AgentChatSurface", async () => {
       onPermissionRequest,
     }: {
       sessionId: string;
-      headerMenuSeam?: import("./paneHeader/paneHeaderMenu").HeaderMenuSeam;
       sessionRoster?: Session[];
       onOpenSubagent?: (sessionId: string) => void;
       subagentAttention?: ReadonlyMap<string, string>;
@@ -193,15 +189,12 @@ vi.mock("./AgentChatSurface", async () => {
         request: import("../../types/ipc").PermissionRequest,
       ) => void;
     }) => {
-      headerMenuSeams.bySession.set(sessionId, headerMenuSeam);
       headerMenuSeams.permissionBySession.set(sessionId, onPermissionRequest);
-      const menu = headerMenu(undefined, headerMenuSeam, sessionId);
       const rows = deriveSubagentRows(sessionId, sessionRoster, []);
       return (
         <div data-testid="agent-chat-surface">
           {sessionId}
           {auxiliary}
-          {menu === null ? null : <PaneHeaderKebab menu={menu} />}
           {/* The act's ordering only — close each child, then read the roster
               back; which children may close is pinned in its own tests. */}
           <SubagentMenu
@@ -472,6 +465,13 @@ export async function lifecycleClose(id: string): Promise<void> {
   if (kebab === null) throw new Error(`pane menu did not render: ${id}`);
   await act(async () => kebab.click());
   await clickMenuEntry("Close");
+}
+
+/** An agent is archived from its tab menu: the pane has no menu of its own. */
+export async function archiveAgent(id: string): Promise<void> {
+  await plainClick(id);
+  await rightClick(id);
+  await clickMenuEntry("Archive");
 }
 
 export async function requestChildPermission(parentId: string, childId: string): Promise<void> {

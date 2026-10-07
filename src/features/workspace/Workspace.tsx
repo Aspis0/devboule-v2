@@ -2216,7 +2216,6 @@ export function Workspace({
                     key={paneSession.id}
                     id={WORKSPACE_TERMINAL_PANEL_ID}
                     sessionId={paneSession.id}
-                    cwd={paneSession.cwd}
                     fileLinks={chatFileLinks}
                     observedState={paneSession.state}
                     initialGoal={paneSession.goal}
@@ -2226,23 +2225,6 @@ export function Workspace({
                     onOpenSubagent={handleOpenSubagent}
                     subagentAttention={subagentAttention}
                     onRefreshSubagents={refreshSessions}
-                    headerMenuSeam={{
-                      workspaceKey: paneWorkspaceKey,
-                      closeEntries: buildTabCloseEntries(
-                        composedTabs.findIndex((tab) => tab.id === paneSession.id),
-                        composedTabs.length,
-                      ),
-                      onCloseEntry: (key) => tabClose.activatePaneEntry(paneSession.id, key),
-                      // Two gates, both daemon-side: the terminal's seam carries
-                      // no rename, and a journal-replayed (recovered) session is
-                      // refused by the daemon's one rename road (it reaches the
-                      // record only through a live process). An ended-but-live
-                      // session renames fine.
-                      onRename:
-                        renameSupported && paneSession.state.type !== "recovered"
-                          ? () => rename.openRename(paneSession.id)
-                          : null,
-                    }}
                     deviceNames={peerNames}
                     hasPendingPermission={hasPendingPermission}
                     pendingPlanToolCallId={pendingPlanToolCallId}
