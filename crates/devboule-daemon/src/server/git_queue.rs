@@ -304,12 +304,6 @@ enum Pick {
     Exit,
 }
 
-/// Whether `lane` has a permit to hand out, without taking one.
-fn permit_free(shared: &Shared, lane: Lane) -> bool {
-    let (permits, _) = shared.lane(lane);
-    *permits.lock().unwrap_or_else(|error| error.into_inner()) > 0
-}
-
 /// Take `lane`'s permit if it has one to spare, so that taking it and acting
 /// on it are one step: two drains can never both believe they hold the last
 /// one, which is what would let a job block its root's queue on a permit it
@@ -348,13 +342,13 @@ fn next_runnable(shared: &Shared, inner: &mut Inner) -> Pick {
         return Pick::Exit;
     };
     // A write takes the write lane's permit in the drain, which is where that
-    // wait has always lived, and so does a read. A value job's permit is taken
-    // here, with the pick: the drain then runs it without taking one, so a
-    // sweep with no permit to spare waits in this queue rather than blocking
-    // the drain that also has to serve this root's writes.
+    // wait has always lived. A read's and a value job's permits are taken
+    // here, with the pick: the drain then runs them without taking one, so a
+    // read or sweep with no permit to spare waits in this queue rather than
+    // blocking the drain that also has to serve this root's writes.
     let blocked = match head {
         Job::Write(_) => false,
-        Job::Read { .. } => !permit_free(shared, Lane::Read),
+        Job::Read { .. } => !reserve_permit(shared, Lane::Read),
         Job::Value(_) => !reserve_permit(shared, Lane::Value),
     };
     if !blocked {
@@ -657,8 +651,9 @@ impl GitQueue {
 }
 
 /// Run this root's queued jobs one at a time, in queue order — except that
-/// a read with no read permit to take steps aside for the root's own writes
-/// ([`next_runnable`]). Each job waits for its lane's permit before it
+/// a read or value job with no permit to take steps aside for the root's
+/// own writes ([`next_runnable`]). A picked read or value job arrives
+/// holding its lane's permit; a write waits for its lane's permit before it
 /// starts, so the concurrently running git count is bounded per lane no
 /// matter how many roots have work.
 fn drain(shared: Arc<Shared>, queue: Arc<RootQueue>) {
@@ -701,21 +696,20 @@ fn drain(shared: Arc<Shared>, queue: Arc<RootQueue>) {
                 compute,
                 sinks,
             } => {
-                acquire(&shared, Lane::Read);
-                {
-                    let _permit = PermitGuard {
-                        shared: &shared,
-                        lane: Lane::Read,
-                    };
-                    let reply = std::panic::catch_unwind(std::panic::AssertUnwindSafe(compute))
-                        .unwrap_or_else(|_| {
-                            DaemonMessage::Error(WireError::new(
-                                ErrorCode::Io,
-                                "the workspace git request failed",
-                            ))
-                        });
-                    deliver_all(sinks, &reply);
-                }
+                // The permit came with the pick, so this guard only hands it
+                // back once the read is done with it.
+                let _permit = PermitGuard {
+                    shared: &shared,
+                    lane: Lane::Read,
+                };
+                let reply = std::panic::catch_unwind(std::panic::AssertUnwindSafe(compute))
+                    .unwrap_or_else(|_| {
+                        DaemonMessage::Error(WireError::new(
+                            ErrorCode::Io,
+                            "the workspace git request failed",
+                        ))
+                    });
+                deliver_all(sinks, &reply);
             }
             Job::Write(run) => {
                 // The count was taken at enqueue; this guard closes it
@@ -742,3 +736,8 @@ fn drain(shared: Arc<Shared>, queue: Arc<RootQueue>) {
         }));
     }
 }
+
+/// The read lane's pick-and-take, beside the substrate it pins.
+#[cfg(test)]
+#[path = "git_queue_read_permit_tests.rs"]
+mod read_permit_tests;
