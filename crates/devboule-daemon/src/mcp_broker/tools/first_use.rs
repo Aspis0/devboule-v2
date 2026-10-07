@@ -29,6 +29,9 @@ pub(in crate::mcp_broker) const TERMINAL_KILL_GROUP: &str = "terminal_kill";
 /// Stopping a session's processes: its own mark, spent after each call
 /// (the cleanup tool resets it), so an asking mode cards every time.
 pub(in crate::mcp_broker) const PROCESS_CLEANUP_GROUP: &str = "process_cleanup";
+/// Re-running failed CI jobs once: a state-changing GitHub action, so a watch
+/// started with `retryInfra` asks the person before it is registered.
+pub(in crate::mcp_broker) const CI_RETRY_GROUP: &str = "ci_infra_retry";
 
 /// Every first-use group's label, one table for all of them: the approval
 /// card's button and its sentence both read from here, so a group id — the
@@ -42,6 +45,7 @@ const FIRST_USE_GROUP_LABELS: &[(&str, &str)] = &[
     (TERMINAL_KEYS_GROUP, "typing into terminals"),
     (TERMINAL_KILL_GROUP, "closing terminals"),
     (PROCESS_CLEANUP_GROUP, "cleaning up processes"),
+    (CI_RETRY_GROUP, "re-running failed CI jobs"),
 ];
 
 /// The card choice that approves only the call it was raised for.

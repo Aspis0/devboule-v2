@@ -341,7 +341,7 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
     (
         MCP_CI_WATCH_TOOL,
-        "Watches CI for one commit you pushed and wakes you with a short verdict when its checks finish, so you do not poll GitHub yourself. sha is the full 40-character commit id (required); repo is optional owner/repo and defaults to the repository the calling session's own workspace's origin remote names. The daemon asks GitHub through the GitHub CLI login of the user that runs Devboule on this machine: with gh missing the call fails github_cli_missing, with no login github_auth_required, each with the step to take. It answers watchId, resolvedSha, state (queued, running, passed or failed), repo and wake (pending, delivered, delivered_uncertain when the send may already be out, or owner_session_ended when this session is gone and the verdict is kept). The verdict arrives later, once, as a daemon message in your own session: per job its name and conclusion and, for failed jobs, at most 10 matched error lines (secret-looking text removed, long lines cut, a truncation marker when more matched) with the run and job ids and the job URL; a cancelled job, or one no runner took, is labelled INFRA with its reason and every other failure CODE. Asking again for the same commit returns the same watch. Read-only: no card, and nothing is retried or rerun.",
+        "Watches CI for one commit you pushed and wakes you with a short verdict when its checks finish, so you do not poll GitHub yourself. Give exactly one of sha, the full 40-character commit id, and branch, whose remote head is resolved now and followed; repo is optional owner/repo and defaults to the repository the calling session's own workspace's origin remote names. A branch head that moves while the watch runs - a force-push included - supersedes the watch: you are woken once with the old and the new commit and it stops polling, and a watch on the new head is yours to ask for. The daemon asks GitHub through the GitHub CLI login of the user that runs Devboule on this machine: with gh missing the call fails github_cli_missing, with no login github_auth_required, with an unknown commit or branch sha_not_found, each with the step to take. It answers watchId, resolvedSha, branch when the watch follows one, state (queued, running, passed, failed or superseded), repo, retryCount and wake (pending, delivered, delivered_uncertain when the send may already be out, or owner_session_ended when this session is gone and the verdict is kept). The verdict arrives later, once, as a daemon message in your own session: per job its name and conclusion and, for failed jobs, at most 10 matched error lines (secret-looking text removed, long lines cut, a truncation marker when more matched) with the run and job ids and the job URL; a cancelled job, or one no runner took, is labelled INFRA with its reason and every other failure CODE. retryInfra true asks the person, when the watch starts and following the session's mode like every other card, to re-run the failed jobs once if every failure is INFRA; a failure that is not entirely INFRA, or a watch that did not ask, is never re-run. Asking again for the same commit returns the same watch.",
     ),
     (
         MCP_BROWSER_NEW_TAB_TOOL,
@@ -444,6 +444,10 @@ pub(crate) const MCP_CARD_WAIT_TOOLS: &[&str] = &[
     MCP_BROWSER_FILL_LOGIN_TOOL,
     // A send to a paired device is carded on every call, in every mode.
     MCP_SEND_MESSAGE_TOOL,
+    // A watch started with `retryInfra` waits on the card that approves the
+    // one retry; without it the call reads nothing state-changing and answers
+    // at once.
+    MCP_CI_WATCH_TOOL,
 ];
 
 #[cfg_attr(not(feature = "server"), allow(dead_code))]

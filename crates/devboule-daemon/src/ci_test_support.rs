@@ -1,14 +1,17 @@
-//! Test doubles for the CI watch: a scripted `gh`/`git` and a recording
-//! wake target, so no test needs a network, a login or a session.
+//! Test doubles for the CI watch: a scripted `gh`/`git`, a recording wake
+//! target and the fixtures every watch test starts from, so no test needs a
+//! network, a login or a session.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use devboule_protocol::{ErrorCode, OwnerId, WireError};
 use serde_json::{json, Value};
 
-use crate::ci_gh::CommandRunner;
+use crate::ci_gh::{CommandRunner, GhClient, RepoRef};
 use crate::ci_wake::WakeSink;
+use crate::ci_watch::CiWatches;
+use crate::ci_watch_store::CiWatchStore;
 use crate::git::{GitOutput, GitRunError};
 use crate::session::SendError;
 
@@ -188,4 +191,42 @@ impl WakeSink for RecordingSink {
             SinkOutcome::Uncertain => Err(SendError::Uncertain(denied())),
         }
     }
+}
+
+pub(crate) fn owner() -> OwnerId {
+    OwnerId::new("user", "client").expect("owner")
+}
+
+pub(crate) fn repo() -> RepoRef {
+    RepoRef {
+        host: "github.com".to_string(),
+        owner: "acme".to_string(),
+        repo: "widgets".to_string(),
+    }
+}
+
+/// The watch service over a scripted GitHub, kept in `dir` so a test can
+/// build a second one over the same store and mean a daemon restart.
+pub(crate) fn service(dir: &std::path::Path, runner: &Arc<ScriptedRunner>) -> CiWatches {
+    CiWatches::new(CiWatchStore::load(dir), GhClient::new(runner.clone()))
+}
+
+pub(crate) fn watch_dir(tag: &str) -> std::path::PathBuf {
+    crate::test_dirs::test_temp_dir(&format!("ci-watch-{tag}"))
+}
+
+/// Script one commit's check runs, as `gh api --paginate --slurp` answers
+/// them.
+pub(crate) fn checks(runner: &ScriptedRunner, sha: &str, runs: &[Value]) {
+    runner.set(&format!("commits/{sha}/check-runs"), ok(&check_runs(runs)));
+}
+
+/// What `gh api repos/o/r/git/ref/heads/<branch>` prints: one object naming
+/// the commit a branch's head points at.
+pub(crate) fn branch_head(sha: &str) -> String {
+    json!({
+        "ref": "refs/heads/main",
+        "object": {"sha": sha, "type": "commit"},
+    })
+    .to_string()
 }

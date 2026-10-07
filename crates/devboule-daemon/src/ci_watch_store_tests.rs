@@ -13,11 +13,15 @@ fn record(session: &str, sha: &str) -> CiWatchRecord {
         repo_owner: "acme".to_string(),
         repo: "widgets".to_string(),
         sha: sha.to_string(),
+        branch: None,
         created_at_ms: now_ms(),
         state: CiState::Queued,
         summary: None,
         wake_key: None,
         wake: Wake::NotDue,
+        retry_approved: false,
+        retry_count: 0,
+        retried_runs: Vec::new(),
     }
 }
 

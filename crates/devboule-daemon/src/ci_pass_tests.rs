@@ -20,11 +20,15 @@ fn watch(id: &str, repo: &str) -> CiWatchRecord {
         repo_owner: "acme".to_string(),
         repo: repo.to_string(),
         sha: "0".repeat(40),
+        branch: None,
         created_at_ms: 0,
         state: CiState::Running,
         summary: None,
         wake_key: None,
         wake: Wake::NotDue,
+        retry_approved: false,
+        retry_count: 0,
+        retried_runs: Vec::new(),
     }
 }
 

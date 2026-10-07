@@ -1,51 +1,28 @@
 //! The watch service over a scripted GitHub: an exact commit is followed to a
 //! verdict, the owner is woken once, and nothing wakes twice across a retry
-//! or a restart.
+//! or a restart. Branch mode, supersession and the one infra retry live in
+//! `ci_lifecycle_tests.rs`.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use devboule_protocol::OwnerId;
-
-use super::{CiWatches, WakeStatus};
-use crate::ci_gh::{GhClient, RepoRef};
+use super::WakeStatus;
 use crate::ci_pass::Limits;
 use crate::ci_summary::CiState;
 use crate::ci_test_support::{
-    check_run, check_run_pages, check_runs, fail, github_origin, ok, RecordingSink, ScriptedRunner,
-    SinkOutcome, SHA,
+    check_run, check_run_pages, check_runs, checks, fail, github_origin, ok, owner, repo, service,
+    watch_dir, RecordingSink, SinkOutcome, SHA,
 };
-use crate::ci_watch_store::CiWatchStore;
-
-fn owner() -> OwnerId {
-    OwnerId::new("user", "client").expect("owner")
-}
-
-fn repo() -> RepoRef {
-    RepoRef {
-        host: "github.com".to_string(),
-        owner: "acme".to_string(),
-        repo: "widgets".to_string(),
-    }
-}
-
-fn service(dir: &std::path::Path, runner: &Arc<ScriptedRunner>) -> CiWatches {
-    CiWatches::new(CiWatchStore::load(dir), GhClient::new(runner.clone()))
-}
-
-fn checks(runner: &ScriptedRunner, runs: &[serde_json::Value]) {
-    runner.set(&format!("commits/{SHA}/check-runs"), ok(&check_runs(runs)));
-}
 
 fn dir(tag: &str) -> std::path::PathBuf {
-    crate::test_dirs::test_temp_dir(&format!("ci-watch-{tag}"))
+    watch_dir(tag)
 }
 
 #[test]
 fn ci_watch_exact_sha_wakes_once() {
     let dir = dir("once");
     let runner = Arc::new(github_origin());
-    checks(&runner, &[check_run(11, "build", "queued", None)]);
+    checks(&runner, SHA, &[check_run(11, "build", "queued", None)]);
     runner.set(
         "actions/jobs/12/logs",
         ok("2025-01-01T00:00:00.0000000Z error[E0599]: no method named frobnicate\n"),
@@ -54,7 +31,7 @@ fn ci_watch_exact_sha_wakes_once() {
     let sink = RecordingSink::live();
 
     let watch = watches
-        .start("session-1", &owner(), &repo(), SHA)
+        .start("session-1", &owner(), &repo(), SHA, None, false)
         .expect("start");
     assert_eq!(watch.state, CiState::Queued);
     assert_eq!(
@@ -62,7 +39,7 @@ fn ci_watch_exact_sha_wakes_once() {
         "the exact commit asked for is the one watched"
     );
 
-    checks(&runner, &[check_run(11, "build", "in_progress", None)]);
+    checks(&runner, SHA, &[check_run(11, "build", "in_progress", None)]);
     watches.poll_once(&sink);
     assert_eq!(
         watches.get(&watch.watch_id).expect("kept").state,
@@ -72,6 +49,7 @@ fn ci_watch_exact_sha_wakes_once() {
 
     checks(
         &runner,
+        SHA,
         &[
             check_run(11, "build", "completed", Some("success")),
             check_run(12, "test", "completed", Some("failure")),
@@ -112,13 +90,14 @@ fn a_restart_after_completion_does_not_wake_again() {
     let runner = Arc::new(github_origin());
     checks(
         &runner,
+        SHA,
         &[check_run(11, "build", "completed", Some("success"))],
     );
     let sink = RecordingSink::live();
     let watch_id = {
         let watches = service(&dir, &runner);
         let watch = watches
-            .start("session-1", &owner(), &repo(), SHA)
+            .start("session-1", &owner(), &repo(), SHA, None, false)
             .expect("start");
         watches.poll_once(&sink);
         assert_eq!(sink.texts().len(), 1);
@@ -141,6 +120,7 @@ fn a_verdict_recorded_before_a_crash_is_delivered_after_the_restart() {
     let runner = Arc::new(github_origin());
     checks(
         &runner,
+        SHA,
         &[check_run(11, "build", "completed", Some("failure"))],
     );
     runner.set("actions/jobs/11/logs", ok("error: boom\n"));
@@ -148,7 +128,7 @@ fn a_verdict_recorded_before_a_crash_is_delivered_after_the_restart() {
     {
         let watches = service(&dir, &runner);
         watches
-            .start("session-1", &owner(), &repo(), SHA)
+            .start("session-1", &owner(), &repo(), SHA, None, false)
             .expect("start");
         watches.poll_once(&gone);
         assert!(gone.texts().is_empty(), "the owner is not there to hear it");
@@ -171,12 +151,13 @@ fn a_wake_is_kept_while_the_owner_is_gone_and_reported() {
     let runner = Arc::new(github_origin());
     checks(
         &runner,
+        SHA,
         &[check_run(11, "build", "completed", Some("success"))],
     );
     let watches = service(&dir, &runner);
     let sink = RecordingSink::default();
     let watch = watches
-        .start("session-1", &owner(), &repo(), SHA)
+        .start("session-1", &owner(), &repo(), SHA, None, false)
         .expect("start");
     watches.poll_once(&sink);
 
@@ -198,12 +179,13 @@ fn a_delivery_that_did_not_happen_is_retried_not_lost() {
     let runner = Arc::new(github_origin());
     checks(
         &runner,
+        SHA,
         &[check_run(11, "build", "completed", Some("success"))],
     );
     let watches = service(&dir, &runner);
     let sink = RecordingSink::refusing();
     watches
-        .start("session-1", &owner(), &repo(), SHA)
+        .start("session-1", &owner(), &repo(), SHA, None, false)
         .expect("start");
 
     watches.poll_once(&sink);
@@ -218,13 +200,13 @@ fn a_delivery_that_did_not_happen_is_retried_not_lost() {
 fn asking_again_for_the_same_commit_returns_the_same_watch() {
     let dir = dir("same");
     let runner = Arc::new(github_origin());
-    checks(&runner, &[check_run(11, "build", "queued", None)]);
+    checks(&runner, SHA, &[check_run(11, "build", "queued", None)]);
     let watches = service(&dir, &runner);
     let first = watches
-        .start("session-1", &owner(), &repo(), SHA)
+        .start("session-1", &owner(), &repo(), SHA, None, false)
         .expect("first");
     let second = watches
-        .start("session-1", &owner(), &repo(), SHA)
+        .start("session-1", &owner(), &repo(), SHA, None, false)
         .expect("second");
     assert_eq!(first.watch_id, second.watch_id);
 }
@@ -242,7 +224,7 @@ fn a_commit_github_does_not_have_ends_the_watch_with_the_sha() {
     let watches = service(&dir, &runner);
     let sink = RecordingSink::live();
     let watch = watches
-        .start("session-1", &owner(), &repo(), SHA)
+        .start("session-1", &owner(), &repo(), SHA, None, false)
         .expect("a watch is registered without asking GitHub");
 
     watches.poll_once(&sink);
@@ -260,11 +242,11 @@ fn a_commit_github_does_not_have_ends_the_watch_with_the_sha() {
 fn losing_the_login_mid_watch_ends_it_with_the_reason() {
     let dir = dir("lost-login");
     let runner = Arc::new(github_origin());
-    checks(&runner, &[check_run(11, "build", "in_progress", None)]);
+    checks(&runner, SHA, &[check_run(11, "build", "in_progress", None)]);
     let watches = service(&dir, &runner);
     let sink = RecordingSink::live();
     let watch = watches
-        .start("session-1", &owner(), &repo(), SHA)
+        .start("session-1", &owner(), &repo(), SHA, None, false)
         .expect("start");
 
     runner.set(
@@ -290,11 +272,11 @@ fn losing_the_login_mid_watch_ends_it_with_the_reason() {
 fn a_hiccup_is_waited_out() {
     let dir = dir("hiccup");
     let runner = Arc::new(github_origin());
-    checks(&runner, &[check_run(11, "build", "in_progress", None)]);
+    checks(&runner, SHA, &[check_run(11, "build", "in_progress", None)]);
     let watches = service(&dir, &runner);
     let sink = RecordingSink::live();
     let watch = watches
-        .start("session-1", &owner(), &repo(), SHA)
+        .start("session-1", &owner(), &repo(), SHA, None, false)
         .expect("start");
     runner.set(
         &format!("commits/{SHA}/check-runs"),
@@ -315,6 +297,7 @@ fn an_uncertain_send_is_settled_never_repeated() {
     let runner = Arc::new(github_origin());
     checks(
         &runner,
+        SHA,
         &[check_run(11, "build", "completed", Some("failure"))],
     );
     runner.set("actions/jobs/11/logs", ok("error: boom\n"));
@@ -322,7 +305,7 @@ fn an_uncertain_send_is_settled_never_repeated() {
     let sink = RecordingSink::live();
     *sink.outcome.lock().expect("outcome") = SinkOutcome::Uncertain;
     let watch = watches
-        .start("session-1", &owner(), &repo(), SHA)
+        .start("session-1", &owner(), &repo(), SHA, None, false)
         .expect("start");
 
     watches.poll_once(&sink);
@@ -359,11 +342,11 @@ fn an_uncertain_send_is_settled_never_repeated() {
 fn a_commit_with_no_checks_is_not_reported_as_a_failed_build() {
     let dir = dir("no-checks");
     let runner = Arc::new(github_origin());
-    checks(&runner, &[]);
+    checks(&runner, SHA, &[]);
     let watches = service(&dir, &runner);
     let sink = RecordingSink::live();
     let watch = watches
-        .start("session-1", &owner(), &repo(), SHA)
+        .start("session-1", &owner(), &repo(), SHA, None, false)
         .expect("start");
     watches.age(&watch.watch_id, crate::ci_watch::OVERDUE_AGE);
 
@@ -383,11 +366,11 @@ fn a_commit_with_no_checks_is_not_reported_as_a_failed_build() {
 fn a_watch_that_timed_out_says_the_result_never_arrived() {
     let dir = dir("overdue");
     let runner = Arc::new(github_origin());
-    checks(&runner, &[check_run(11, "build", "in_progress", None)]);
+    checks(&runner, SHA, &[check_run(11, "build", "in_progress", None)]);
     let watches = service(&dir, &runner);
     let sink = RecordingSink::live();
     let watch = watches
-        .start("session-1", &owner(), &repo(), SHA)
+        .start("session-1", &owner(), &repo(), SHA, None, false)
         .expect("start");
     watches.age(&watch.watch_id, crate::ci_watch::OVERDUE_AGE);
 
@@ -405,13 +388,14 @@ fn an_unsettled_claim_reads_as_uncertain_not_delivered() {
     let runner = Arc::new(github_origin());
     checks(
         &runner,
+        SHA,
         &[check_run(11, "build", "completed", Some("failure"))],
     );
     runner.set("actions/jobs/11/logs", ok("error: boom\n"));
     let watches = service(&dir, &runner);
     let sink = RecordingSink::live();
     let watch = watches
-        .start("session-1", &owner(), &repo(), SHA)
+        .start("session-1", &owner(), &repo(), SHA, None, false)
         .expect("start");
     watches.poll_once(&sink);
 
@@ -436,12 +420,13 @@ fn the_check_run_list_is_asked_for_whole() {
     let runner = Arc::new(github_origin());
     checks(
         &runner,
+        SHA,
         &[check_run(11, "build", "completed", Some("failure"))],
     );
     let watches = service(&dir, &runner);
     let sink = RecordingSink::live();
     watches
-        .start("session-1", &owner(), &repo(), SHA)
+        .start("session-1", &owner(), &repo(), SHA, None, false)
         .expect("start");
     watches.poll_once(&sink);
 
@@ -474,7 +459,7 @@ fn a_failure_on_the_second_page_is_the_verdict() {
     let watches = service(&dir, &runner);
     let sink = RecordingSink::live();
     let watch = watches
-        .start("session-1", &owner(), &repo(), SHA)
+        .start("session-1", &owner(), &repo(), SHA, None, false)
         .expect("start");
 
     watches.poll_once(&sink);
@@ -500,7 +485,7 @@ fn a_partial_check_run_list_gives_no_verdict() {
     let watches = service(&dir, &runner);
     let sink = RecordingSink::live();
     let watch = watches
-        .start("session-1", &owner(), &repo(), SHA)
+        .start("session-1", &owner(), &repo(), SHA, None, false)
         .expect("start");
 
     watches.poll_once(&sink);
@@ -522,13 +507,14 @@ fn the_job_logs_read_under_their_own_fuse() {
     let runner = Arc::new(github_origin());
     checks(
         &runner,
+        SHA,
         &[check_run(11, "build", "completed", Some("failure"))],
     );
     runner.set("actions/jobs/11/logs", ok("error: boom\n"));
     let watches = service(&dir, &runner);
     let sink = RecordingSink::live();
     watches
-        .start("session-1", &owner(), &repo(), SHA)
+        .start("session-1", &owner(), &repo(), SHA, None, false)
         .expect("start");
     watches.poll_once(&sink);
     assert_eq!(runner.last_timeout(), Some(LOG_GH_TIMEOUT));
@@ -542,11 +528,11 @@ fn the_tool_call_asks_github_nothing_and_the_poll_keeps_the_minute() {
 
     let dir = dir("timeouts");
     let runner = Arc::new(github_origin());
-    checks(&runner, &[check_run(11, "build", "in_progress", None)]);
+    checks(&runner, SHA, &[check_run(11, "build", "in_progress", None)]);
     let watches = service(&dir, &runner);
     let sink = RecordingSink::live();
     watches
-        .start("session-1", &owner(), &repo(), SHA)
+        .start("session-1", &owner(), &repo(), SHA, None, false)
         .expect("start");
     assert!(
         runner.calls().is_empty(),
@@ -568,7 +554,7 @@ fn a_commit_id_of_the_wrong_shape_is_refused_before_it_is_stored() {
     let watches = service(&dir("shape"), &runner);
     for bad in ["", "abc", &"g".repeat(40), &"a".repeat(41)] {
         let refused = watches
-            .start("session-1", &owner(), &repo(), bad)
+            .start("session-1", &owner(), &repo(), bad, None, false)
             .expect_err(bad);
         assert_eq!(refused.code, "invalid_sha", "{bad}");
     }
@@ -584,17 +570,17 @@ fn a_session_over_its_bound_is_told_so_and_others_are_not() {
     let bogus = |n: usize| format!("{n:040x}");
     for n in 0..MAX_PER_SESSION {
         watches
-            .start("flooder", &owner(), &repo(), &bogus(n))
+            .start("flooder", &owner(), &repo(), &bogus(n), None, false)
             .expect("within the bound");
     }
     let refused = watches
-        .start("flooder", &owner(), &repo(), &bogus(9999))
+        .start("flooder", &owner(), &repo(), &bogus(9999), None, false)
         .expect_err("over the bound");
     assert_eq!(refused.code, "too_many_watches");
     assert!(refused.retryable);
     assert!(refused.message.contains("25"), "{}", refused.message);
     watches
-        .start("honest", &owner(), &repo(), SHA)
+        .start("honest", &owner(), &repo(), SHA, None, false)
         .expect("another session is unaffected");
 }
 
@@ -615,10 +601,10 @@ fn a_failing_read_does_not_hold_the_repositorys_other_watches() {
     let watches = service(&dir, &runner);
     let sink = RecordingSink::live();
     watches
-        .start("session-1", &owner(), &repo(), SHA)
+        .start("session-1", &owner(), &repo(), SHA, None, false)
         .expect("first");
     let second = watches
-        .start("session-1", &owner(), &repo(), OTHER)
+        .start("session-1", &owner(), &repo(), OTHER, None, false)
         .expect("second");
 
     watches.poll_once(&sink);
@@ -654,10 +640,10 @@ fn a_paginated_read_is_charged_for_every_page() {
     let watches = service(&dir, &runner);
     let sink = RecordingSink::live();
     watches
-        .start("session-1", &owner(), &repo(), SHA)
+        .start("session-1", &owner(), &repo(), SHA, None, false)
         .expect("three pages");
     watches
-        .start("session-1", &owner(), &repo(), OTHER)
+        .start("session-1", &owner(), &repo(), OTHER, None, false)
         .expect("one page");
 
     let three_requests = Limits {

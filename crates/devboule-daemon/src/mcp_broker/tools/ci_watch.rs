@@ -1,46 +1,75 @@
 //! `devboule_ci_watch`: watch one pushed commit's CI and get woken with a
 //! verdict, instead of polling `gh` from the agent.
 //!
-//! The arguments are a closed set (`sha`, optional `repo`). The repository is
-//! the one the caller's own workspace's `origin` names unless `repo` says
+//! The arguments are a closed set: exactly one of `sha` and `branch`, an
+//! optional `repo`, and `retryInfra` for the one infra retry. The repository
+//! is the one the caller's own workspace's `origin` names unless `repo` says
 //! otherwise; the daemon's own `gh` login does the asking. A malformed call is
 //! a protocol error; everything the tool can refuse for a reason an owner can
-//! act on (no `gh`, not logged in, an unknown commit) is a tool error in the
-//! `{hostId, ok, data?, error?}` envelope.
+//! act on (no `gh`, not logged in, an unknown commit or branch) is a tool
+//! error in the `{hostId, ok, data?, error?}` envelope.
 
 use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use crate::ci_gh::{parse_repo_argument, CiError};
-use crate::ci_watch::is_commit_id;
+use crate::ci_gh::{is_branch_name, is_commit_id, parse_repo_argument, CiError, RepoRef};
+use crate::ci_watch::short;
 use crate::mcp_broker::caller::{audit_mcp_tool, McpCaller};
-use crate::mcp_broker::dispatch::rpc_error;
-use crate::mcp_broker::RegisteredSession;
+use crate::mcp_broker::dispatch::{rpc_error, tool_error};
+use crate::mcp_broker::tools::first_use::{ensure_write_approved, CI_RETRY_GROUP};
+use crate::mcp_broker::{McpBroker, RegisteredSession};
 use crate::server::ServerState;
 
-struct Arguments {
-    sha: String,
-    repo: Option<(String, String)>,
+/// What the call watches: a commit id, or a branch the call resolves to its
+/// head now.
+enum Target {
+    Sha(String),
+    Branch(String),
 }
 
-/// What the call accepts, and nothing else: a full 40-hex commit id and an
-/// optional `owner/repo` (or `host/owner/repo`).
+struct Arguments {
+    target: Target,
+    repo: Option<(String, String)>,
+    retry_infra: bool,
+}
+
+/// Why a call started no watch: a refusal the owner can act on, or the
+/// permission gate's own sentence.
+enum Refusal {
+    Ci(CiError),
+    Card(String),
+}
+
+/// What the call accepts, and nothing else: exactly one of a full 40-hex
+/// commit id and a branch name, an optional `owner/repo`, and the one infra
+/// retry as a boolean.
 fn parse_arguments(arguments: &Value) -> Result<Arguments, String> {
     let object = match arguments {
         Value::Object(map) => map,
-        Value::Null => return Err("sha is required".to_string()),
+        Value::Null => return Err("sha or branch is required".to_string()),
         _ => return Err("arguments must be an object".to_string()),
     };
     for key in object.keys() {
-        if key != "sha" && key != "repo" {
+        if !matches!(key.as_str(), "sha" | "branch" | "repo" | "retryInfra") {
             return Err(format!("unknown parameter '{key}'"));
         }
     }
     let sha = match object.get("sha") {
-        Some(Value::String(sha)) if is_commit_id(sha) => sha.to_ascii_lowercase(),
+        None | Some(Value::Null) => None,
+        Some(Value::String(sha)) if is_commit_id(sha) => Some(sha.to_ascii_lowercase()),
         Some(_) => return Err("sha must be a full 40-character commit id".to_string()),
-        None => return Err("sha is required".to_string()),
+    };
+    let branch = match object.get("branch") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(branch)) if is_branch_name(branch) => Some(branch.clone()),
+        Some(_) => return Err("branch must be a branch name".to_string()),
+    };
+    let target = match (sha, branch) {
+        (Some(sha), None) => Target::Sha(sha),
+        (None, Some(branch)) => Target::Branch(branch),
+        (Some(_), Some(_)) => return Err("pass exactly one of sha and branch".to_string()),
+        (None, None) => return Err("sha or branch is required".to_string()),
     };
     let repo =
         match object.get("repo") {
@@ -50,11 +79,21 @@ fn parse_arguments(arguments: &Value) -> Result<Arguments, String> {
             )?),
             Some(_) => return Err("repo must be a string".to_string()),
         };
-    Ok(Arguments { sha, repo })
+    let retry_infra = match object.get("retryInfra") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(value)) => *value,
+        Some(_) => return Err("retryInfra must be true or false".to_string()),
+    };
+    Ok(Arguments {
+        target,
+        repo,
+        retry_infra,
+    })
 }
 
 pub(in crate::mcp_broker) fn call(
     state: &Arc<ServerState>,
+    broker: &McpBroker,
     registration: &RegisteredSession,
     caller: McpCaller,
     id: Value,
@@ -76,47 +115,117 @@ pub(in crate::mcp_broker) fn call(
         }
     };
     let host_id = host_id(state);
-    match watch(state, registration, arguments) {
+    match watch(state, broker, registration, arguments) {
         Ok(data) => {
             audit("ok");
             Ok(Some(reply(&id, &host_id, Ok(data))))
         }
-        Err(error) => {
+        Err(Refusal::Ci(error)) => {
             audit("failed");
             Ok(Some(reply(&id, &host_id, Err(error))))
+        }
+        Err(Refusal::Card(sentence)) => {
+            audit("denied");
+            Ok(Some(tool_error(&id, &sentence)))
         }
     }
 }
 
 fn watch(
     state: &Arc<ServerState>,
+    broker: &McpBroker,
     registration: &RegisteredSession,
     arguments: Arguments,
-) -> Result<Value, CiError> {
+) -> Result<Value, Refusal> {
     let watches = &state.ci_watches;
     // The host always comes from the workspace origin — never the argument —
     // so resolving needs the workspace even when the repo names owner/repo.
     let root = state
         .sessions
         .session_workspace_root(&registration.session_id, &registration.owner)
-        .map_err(|error| CiError::new("not_found", error.message, false))?;
+        .map_err(|error| Refusal::Ci(CiError::new("not_found", error.message, false)))?;
     let repo = watches
         .gh_tool()
-        .resolve_repo(root.as_deref(), arguments.repo)?;
-    let record = watches.start(
-        &registration.session_id,
-        &registration.owner,
-        &repo,
-        &arguments.sha,
-    )?;
+        .resolve_repo(root.as_deref(), arguments.repo)
+        .map_err(Refusal::Ci)?;
+    // Branch mode resolves the remote head now and watches that commit: the
+    // call is where the head is read, and the poll thread is what notices a
+    // head that moves afterwards.
+    let (sha, branch) = match arguments.target {
+        Target::Sha(sha) => (sha, None),
+        Target::Branch(branch) => {
+            let sha = watches
+                .gh_tool()
+                .head_sha(&repo, &branch)
+                .map_err(Refusal::Ci)?;
+            (sha, Some(branch))
+        }
+    };
+    if arguments.retry_infra {
+        approve_retry(state, broker, registration, &repo, branch.as_deref(), &sha)?;
+    }
+    let record = watches
+        .start(
+            &registration.session_id,
+            &registration.owner,
+            &repo,
+            &sha,
+            branch.as_deref(),
+            arguments.retry_infra,
+        )
+        .map_err(Refusal::Ci)?;
     let wake = watches.wake_status(&record, &state.sessions);
-    Ok(json!({
+    let mut data = json!({
         "watchId": record.watch_id,
         "resolvedSha": record.sha,
         "state": record.state.as_str(),
         "repo": record.slug(),
+        "retryCount": record.retry_count,
         "wake": wake.as_str(),
-    }))
+    });
+    if let Some(branch) = &record.branch {
+        data["branch"] = json!(branch);
+    }
+    Ok(data)
+}
+
+/// The card a retryInfra call raises before anything is watched: re-running
+/// failed jobs is a state-changing GitHub action, so it follows the session's
+/// mode like every other Devboule card, and a refusal starts no watch. Without
+/// `retryInfra` this is never called and there is never a retry.
+fn approve_retry(
+    state: &Arc<ServerState>,
+    broker: &McpBroker,
+    registration: &RegisteredSession,
+    repo: &RepoRef,
+    branch: Option<&str>,
+    sha: &str,
+) -> Result<(), Refusal> {
+    let slug = repo.slug();
+    let target = match branch {
+        Some(branch) => format!("branch {branch} at {}", short(sha)),
+        None => format!("commit {}", short(sha)),
+    };
+    let subject = format!("re-run failed CI jobs once for {slug}");
+    let facts: [(&str, &str); 3] = [
+        ("repository", &slug),
+        ("watch", &target),
+        (
+            "retry",
+            "re-run the failed jobs once, only if every failure is infrastructure",
+        ),
+    ];
+    ensure_write_approved(
+        state,
+        broker,
+        &registration.session_id,
+        &registration.owner,
+        CI_RETRY_GROUP,
+        &subject,
+        &facts,
+    )
+    .map(|_| ())
+    .map_err(Refusal::Card)
 }
 
 /// The id that tells a caller which machine's daemon answered: its device id

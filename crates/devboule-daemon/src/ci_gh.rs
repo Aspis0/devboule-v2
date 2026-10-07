@@ -157,6 +157,34 @@ pub(crate) fn parse_repo_argument(text: &str) -> Option<(String, String)> {
     Some((repo.owner, repo.repo))
 }
 
+/// A full commit id: 40 hex digits. Anything else is refused before it is
+/// stored, so only well-formed ids reach GitHub.
+pub(crate) fn is_commit_id(sha: &str) -> bool {
+    sha.len() == 40 && sha.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// A branch name that may be put into a `gh api` path: git's own refname
+/// rules where they matter here — no controls, no space, no `..`, no `@{`,
+/// no leading dash or slash, bounded — so the argument can only ever name a
+/// ref under `heads/`, never another endpoint or a rewritten path.
+pub(crate) fn is_branch_name(branch: &str) -> bool {
+    const MAX_CHARS: usize = 255;
+    const BANNED: [char; 16] = [
+        ' ', '~', '^', ':', '?', '*', '[', '\\', '"', '\'', '`', '#', '%', '<', '>', '|',
+    ];
+    !branch.is_empty()
+        && branch.chars().count() <= MAX_CHARS
+        && !branch.starts_with('-')
+        && !branch.starts_with('/')
+        && !branch.ends_with('/')
+        && !branch.ends_with('.')
+        && !branch.contains("..")
+        && !branch.contains("@{")
+        && !branch
+            .chars()
+            .any(|character| character.is_control() || BANNED.contains(&character))
+}
+
 fn repo_from_path(host: &str, path: &str) -> Option<RepoRef> {
     classify_gh_host(host).ok()?;
     let path = path.trim_matches('/');
@@ -340,6 +368,44 @@ impl GhClient {
         }
     }
 
+    /// `gh api` GET of a single JSON object: a ref, not a list.
+    pub(crate) fn get_json(&self, repo: &RepoRef, endpoint: &str) -> Result<Value, CiError> {
+        let output = self.api(repo, endpoint, Api::Json)?;
+        parse_json(&output.stdout)
+    }
+
+    /// The commit a branch's remote head points at now. A branch GitHub does
+    /// not have is a missing commit to watch, not an outage: the watch is
+    /// refused at once instead of waiting on a poll that can never succeed.
+    pub(crate) fn head_sha(&self, repo: &RepoRef, branch: &str) -> Result<String, CiError> {
+        let document = self
+            .get_json(repo, &format!("git/ref/heads/{branch}"))
+            .map_err(|error| match error.code {
+                "not_found" => CiError::new(
+                    "sha_not_found",
+                    format!(
+                        "GitHub has no branch named `{branch}` in {}, or this login cannot see it. Push it first, then watch it.",
+                        repo.slug()
+                    ),
+                    false,
+                ),
+                _ => error,
+            })?;
+        let sha = document
+            .pointer("/object/sha")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !is_commit_id(&sha) {
+            return Err(CiError::new(
+                "github_unavailable",
+                "GitHub's answer for that branch named no commit; try again.",
+                true,
+            ));
+        }
+        Ok(sha)
+    }
+
     /// `gh api` GET of a repository endpoint whose answer is plain text (a
     /// job log). Each job's log is its own call, capped at
     /// [`GH_OUTPUT_MAX_BYTES`]: the per-job bound, kept at the fetch so a
@@ -396,6 +462,38 @@ impl GhClient {
         self.backed_off(&format!("{}/{}", repo.host, repo.slug()))
     }
 
+    /// `gh run rerun --failed <run-id>`: the one retry a watch may hold, and
+    /// only with the person's approval recorded at watch time. `--repo`
+    /// carries host, owner and repository, so a run id can never be re-run on
+    /// a host the workspace origin did not name.
+    pub(crate) fn rerun_failed(&self, repo: &RepoRef, run_id: u64) -> Result<(), CiError> {
+        self.vouched_host(&repo.host)?;
+        let args = vec![
+            "run".to_string(),
+            "rerun".to_string(),
+            "--failed".to_string(),
+            run_id.to_string(),
+            "--repo".to_string(),
+            format!("{}/{}/{}", repo.host, repo.owner, repo.repo),
+        ];
+        let output = self
+            .runner
+            .run_with_timeout("gh", &args, self.timeout)
+            .map_err(|error| match error {
+                GitRunError::NotFound => cli_missing_error(),
+                GitRunError::TimedOut | GitRunError::SpawnFailed => CiError::new(
+                    "github_unavailable",
+                    "`gh` did not answer in time; try again.",
+                    true,
+                ),
+            })?;
+        if output.success {
+            Ok(())
+        } else {
+            Err(rerun_error(&output))
+        }
+    }
+
     /// Whether this repository is quiet until its backoff lifts.
     fn backed_off(&self, key: &str) -> bool {
         let until = self
@@ -440,11 +538,12 @@ impl GhClient {
     }
 }
 
-/// What one `gh api` read is for: every page of a JSON list, or the plain
-/// text of a job log.
+/// What one `gh api` read is for: every page of a JSON list, one JSON
+/// object, or the plain text of a job log.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Api {
     Pages,
+    Json,
     Text,
 }
 
@@ -479,6 +578,26 @@ fn cli_missing_error() -> CiError {
          Homebrew's directory.",
         false,
     )
+}
+
+/// What a refused re-run means: the same login and host sentences a read
+/// gives, with the write the person must grant named, and GitHub's own line
+/// for anything else.
+fn rerun_error(output: &GitOutput) -> CiError {
+    let classified = classify_failure(output);
+    match classified.code {
+        "permission_required" => CiError::new(
+            "permission_required",
+            "This GitHub login cannot re-run workflow runs for the repository. Run `gh auth refresh -s repo` (or use a token with Actions write access).",
+            false,
+        ),
+        "not_found" => CiError::new(
+            "not_found",
+            "GitHub does not know that workflow run, or this login cannot see it.",
+            false,
+        ),
+        _ => classified,
+    }
 }
 
 fn rate_limited_error() -> CiError {

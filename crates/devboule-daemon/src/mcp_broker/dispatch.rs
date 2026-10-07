@@ -274,7 +274,7 @@ pub(super) fn handle_rpc(
             } else if tool_name == Some(crate::provider_catalog::MCP_CLEANUP_PROCESSES_TOOL) {
                 tools::process_cleanup::cleanup(state, broker, registration, caller, id, message)
             } else if tool_name == Some(crate::provider_catalog::MCP_CI_WATCH_TOOL) {
-                tools::ci_watch::call(state, registration, caller, id, message)
+                tools::ci_watch::call(state, broker, registration, caller, id, message)
             } else if tool_name == Some(crate::provider_catalog::MCP_BROWSER_FILL_LOGIN_TOOL) {
                 tools::browser_login::call(state, broker, registration, caller, id, message)
             } else if tool_name.is_some_and(tools::browser_commands::serves) {
@@ -484,13 +484,16 @@ pub(super) fn enabled_tool_list(
                     "additionalProperties": false,
                 })
             } else if *name == crate::provider_catalog::MCP_CI_WATCH_TOOL {
+                // Exactly one key at runtime; the schema states both as
+                // optional because a JSON schema cannot express xor.
                 json!({
                     "type": "object",
                     "properties": {
-                        "sha": {"type": "string", "description": "The full 40-character commit id to watch."},
+                        "sha": {"type": "string", "description": "The full 40-character commit id to watch. Exactly one of sha and branch."},
+                        "branch": {"type": "string", "description": "A branch whose remote head is resolved now and followed. Exactly one of sha and branch."},
                         "repo": {"type": "string", "description": "owner/repo. Default: the repository the workspace's origin remote names."},
+                        "retryInfra": {"type": "boolean", "description": "Re-run the failed jobs once if every failure is infrastructure. Shows a permission card."},
                     },
-                    "required": ["sha"],
                     "additionalProperties": false,
                 })
             } else if *name == crate::provider_catalog::MCP_ACTIVITY_TOOL {

@@ -68,6 +68,11 @@ pub(crate) struct CiWatchRecord {
     pub(crate) repo_owner: String,
     pub(crate) repo: String,
     pub(crate) sha: String,
+    /// The branch whose head this watch follows, in branch mode: the `sha`
+    /// above is the head resolved when the watch was started, and a head that
+    /// no longer matches it supersedes the watch.
+    #[serde(default)]
+    pub(crate) branch: Option<String>,
     pub(crate) created_at_ms: u64,
     pub(crate) state: CiState,
     /// The redacted, bounded verdict text, once the watch has finished.
@@ -75,6 +80,17 @@ pub(crate) struct CiWatchRecord {
     /// `<watch id>:<state>`: the key a wake is made under.
     pub(crate) wake_key: Option<String>,
     pub(crate) wake: Wake,
+    /// Whether a person approved the one infra retry when the watch was
+    /// started. Without it there is never a retry.
+    #[serde(default)]
+    pub(crate) retry_approved: bool,
+    /// 0 until the one approved retry has been spent; never reset.
+    #[serde(default)]
+    pub(crate) retry_count: u32,
+    /// The workflow runs that retry re-ran, so the record says which ids were
+    /// re-run and not only how many times.
+    #[serde(default)]
+    pub(crate) retried_runs: Vec<u64>,
 }
 
 impl CiWatchRecord {
@@ -323,6 +339,68 @@ impl CiWatchStore {
             Wake::Pending
         };
         self.persist(&records)
+    }
+
+    /// Record the person's yes for the one infra retry on a watch that is
+    /// still open: a later call may bring an approval the first one did not
+    /// have, and it is the same watch. `Ok(None)` means the watch is terminal
+    /// or gone, so the yes changes nothing.
+    pub(crate) fn approve_retry(&self, watch_id: &str) -> io::Result<Option<CiWatchRecord>> {
+        let mut records = self.records();
+        let Some(record) = records
+            .iter_mut()
+            .find(|record| record.watch_id == watch_id && !record.state.is_terminal())
+        else {
+            return Ok(None);
+        };
+        if record.retry_approved {
+            return Ok(Some(record.clone()));
+        }
+        record.retry_approved = true;
+        let approved = record.clone();
+        if let Err(error) = self.persist(&records) {
+            if let Some(record) = records
+                .iter_mut()
+                .find(|record| record.watch_id == watch_id)
+            {
+                record.retry_approved = false;
+            }
+            return Err(error);
+        }
+        Ok(Some(approved))
+    }
+
+    /// Spend the watch's one approved retry on `runs`, before any re-run is
+    /// asked for: a daemon that dies after this finds the retry spent and
+    /// never issues it twice. `false` means another pass already spent it, or
+    /// the record could not be written — either way nothing may be issued.
+    pub(crate) fn note_retry_issued(&self, watch_id: &str, runs: &[u64]) -> bool {
+        let mut records = self.records();
+        let Some(record) = records
+            .iter_mut()
+            .find(|record| record.watch_id == watch_id && !record.state.is_terminal())
+        else {
+            return false;
+        };
+        if record.retry_count > 0 {
+            return false;
+        }
+        record.retry_count = 1;
+        record.retried_runs = runs.to_vec();
+        if self.persist(&records).is_err() {
+            if let Some(record) = records
+                .iter_mut()
+                .find(|record| record.watch_id == watch_id)
+            {
+                record.retry_count = 0;
+                record.retried_runs.clear();
+            }
+            // The spend is what keeps the retry at one, so an unrecorded
+            // spend issues nothing and the watch tries again next pass.
+            eprintln!("ci watch: could not record the retry of {watch_id}; it is not issued");
+            return false;
+        }
+        true
     }
 
     /// Settle a claim whose send may already be out: never given back, never

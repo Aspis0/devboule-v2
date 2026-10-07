@@ -4,8 +4,10 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use super::{CommandRunner, GhClient, ProcessRunner, RepoRef, GH_ENV, TOOL_GH_TIMEOUT};
-use crate::ci_test_support::{check_run, check_run_pages, fail, ok, ScriptedRunner};
+use super::{
+    is_branch_name, CommandRunner, GhClient, ProcessRunner, RepoRef, GH_ENV, TOOL_GH_TIMEOUT,
+};
+use crate::ci_test_support::{branch_head, check_run, check_run_pages, fail, ok, ScriptedRunner};
 
 fn repo() -> RepoRef {
     RepoRef {
@@ -156,6 +158,98 @@ fn a_commit_github_does_not_know_reads_as_that_not_as_an_outage() {
         .expect_err("unknown commit");
     assert_eq!(refused.code, "sha_not_found");
     assert!(!refused.retryable);
+}
+
+#[test]
+fn a_branch_head_is_read_as_one_object() {
+    let runner = Arc::new(ScriptedRunner::default());
+    runner.set(
+        "git/ref/heads/main",
+        ok(&branch_head("0123456789ABCDEF0123456789abcdef01234567")),
+    );
+    let head = client(&runner).head_sha(&repo(), "main").expect("head");
+    assert_eq!(head, "0123456789abcdef0123456789abcdef01234567");
+    assert_eq!(
+        runner.calls(),
+        vec![
+            "gh api --hostname github.com -H Accept: application/vnd.github+json \
+             repos/acme/widgets/git/ref/heads/main"
+                .to_string()
+        ]
+    );
+}
+
+#[test]
+fn a_branch_github_does_not_have_reads_as_a_missing_commit() {
+    let runner = Arc::new(ScriptedRunner::default());
+    runner.set("git/ref", fail(1, "gh: Not Found (HTTP 404)"));
+    let refused = client(&runner)
+        .head_sha(&repo(), "nope")
+        .expect_err("unknown branch");
+    assert_eq!(refused.code, "sha_not_found");
+    assert!(!refused.retryable);
+    assert!(refused.message.contains("nope"), "{}", refused.message);
+}
+
+#[test]
+fn a_head_that_names_no_commit_is_an_outage() {
+    let runner = Arc::new(ScriptedRunner::default());
+    runner.set("git/ref", ok("{\"ref\":\"refs/heads/main\"}"));
+    let refused = client(&runner)
+        .head_sha(&repo(), "main")
+        .expect_err("no commit");
+    assert_eq!(refused.code, "github_unavailable");
+    assert!(refused.retryable);
+}
+
+#[test]
+fn a_branch_name_that_could_rewrite_the_path_is_refused() {
+    for bad in [
+        "",
+        "main..dev",
+        "../commits",
+        "feature branch",
+        "main?per_page=1",
+        "-x",
+        "main/",
+        "/main",
+        "main@{1}",
+        "main.",
+    ] {
+        assert!(!is_branch_name(bad), "{bad} must be refused");
+    }
+    for good in ["main", "feature/nested-name", "release_1.2", "fix+plus"] {
+        assert!(is_branch_name(good), "{good} is a branch name");
+    }
+}
+
+#[test]
+fn the_one_rerun_asks_for_the_failed_jobs_of_that_run() {
+    let runner = Arc::new(ScriptedRunner::default());
+    runner.set("run rerun", ok("✓ Requested rerun of run 900"));
+    client(&runner).rerun_failed(&repo(), 900).expect("rerun");
+    assert_eq!(
+        runner.calls(),
+        vec!["gh run rerun --failed 900 --repo github.com/acme/widgets".to_string()]
+    );
+}
+
+#[test]
+fn a_refused_rerun_names_the_write_the_login_needs() {
+    let runner = Arc::new(ScriptedRunner::default());
+    runner.set(
+        "run rerun",
+        fail(1, "gh: Resource not accessible (HTTP 403)"),
+    );
+    let refused = client(&runner)
+        .rerun_failed(&repo(), 900)
+        .expect_err("refused");
+    assert_eq!(refused.code, "permission_required");
+    assert!(
+        refused.message.contains("write access"),
+        "a re-run needs a write, not the read a log needs: {}",
+        refused.message
+    );
 }
 
 #[test]

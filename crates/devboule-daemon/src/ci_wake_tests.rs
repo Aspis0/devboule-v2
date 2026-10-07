@@ -16,11 +16,15 @@ fn record(summary: String) -> CiWatchRecord {
         repo_owner: "acme".to_string(),
         repo: "widgets".to_string(),
         sha: "0123456789abcdef0123456789abcdef01234567".to_string(),
+        branch: None,
         created_at_ms: 0,
         state: CiState::Failed,
         summary: Some(summary),
         wake_key: Some("w1:failed".to_string()),
         wake: Wake::Pending,
+        retry_approved: false,
+        retry_count: 0,
+        retried_runs: Vec::new(),
     }
 }
 

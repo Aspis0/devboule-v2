@@ -12,10 +12,10 @@ use std::time::{Duration, Instant};
 
 use devboule_protocol::OwnerId;
 
-use crate::ci_gh::{CiError, GhClient, RepoRef};
+use crate::ci_gh::{is_commit_id, CiError, GhClient, RepoRef};
 use crate::ci_pages::join_check_run_pages;
 use crate::ci_pass::{Budget, Limits, Passes, Turn};
-use crate::ci_summary::{self, CiState};
+use crate::ci_summary::{self, CiState, Verdict};
 use crate::ci_wake::{wake_text, WakeSink};
 use crate::ci_watch_quota::refusal_of;
 use crate::ci_watch_store::{new_watch_id, now_ms, CiWatchRecord, CiWatchStore, Wake};
@@ -99,12 +99,22 @@ impl CiWatches {
     /// anything: the poll thread reads the commit's checks and ends the watch
     /// with the reason when GitHub has no such commit. Asking again for the
     /// same commit from the same session answers the watch that exists.
+    ///
+    /// `branch` names the branch this commit was resolved as, when the caller
+    /// started the watch in branch mode: the poll thread then reads that
+    /// branch's head first and supersedes the watch when it moved on. It is
+    /// the caller that resolves the head, so a start still reads nothing.
+    ///
+    /// `retry_approved` is the person's answer at watch time to the one infra
+    /// retry; without it no failure is ever re-run.
     pub(crate) fn start(
         &self,
         session_id: &str,
         owner: &OwnerId,
         repo: &RepoRef,
         sha: &str,
+        branch: Option<&str>,
+        retry_approved: bool,
     ) -> Result<CiWatchRecord, CiError> {
         if !is_commit_id(sha) {
             return Err(CiError::new(
@@ -113,7 +123,24 @@ impl CiWatches {
                 false,
             ));
         }
-        if let Some(existing) = self.store.find(session_id, &repo.slug(), sha) {
+        // GitHub answers a head in lower case, so a stored id must be one too
+        // or the first poll would read a move that never happened.
+        let sha = sha.to_ascii_lowercase();
+        if let Some(existing) = self.store.find(session_id, &repo.slug(), &sha) {
+            // A later call may bring the retry approval the first one did not
+            // have; it is the same watch, so the yes lands on it. A watch
+            // that already finished keeps its verdict and never retries.
+            if retry_approved && !existing.retry_approved {
+                return match self.store.approve_retry(&existing.watch_id) {
+                    Ok(Some(approved)) => Ok(approved),
+                    Ok(None) => Ok(existing),
+                    Err(error) => Err(CiError::new(
+                        "internal",
+                        format!("The retry approval could not be saved: {error}"),
+                        true,
+                    )),
+                };
+            }
             return Ok(existing);
         }
         let record = CiWatchRecord {
@@ -124,12 +151,16 @@ impl CiWatches {
             host: repo.host.clone(),
             repo_owner: repo.owner.clone(),
             repo: repo.repo.clone(),
-            sha: sha.to_string(),
+            sha,
+            branch: branch.map(str::to_string),
             created_at_ms: now_ms(),
             state: CiState::Queued,
             summary: None,
             wake_key: None,
             wake: Wake::NotDue,
+            retry_approved,
+            retry_count: 0,
+            retried_runs: Vec::new(),
         };
         self.store
             .insert(record.clone())
@@ -141,6 +172,12 @@ impl CiWatches {
     #[cfg(test)]
     pub(crate) fn get(&self, watch_id: &str) -> Option<CiWatchRecord> {
         self.store.get(watch_id)
+    }
+
+    /// Test-only: every watch still waiting on CI.
+    #[cfg(test)]
+    pub(crate) fn open(&self) -> Vec<CiWatchRecord> {
+        self.store.open()
     }
 
     /// Test-only: age a watch by `by`, so the overdue close is the pass
@@ -252,8 +289,33 @@ impl CiWatches {
             self.close_if_overdue(record, false);
             return Turn::RepoFailed;
         }
-        if !budget.take(1) {
+        // A branch watch reads the head before the checks and pays for the
+        // pair with its turn: a pass that cannot afford both leaves the watch
+        // whole for the next one.
+        let requests = if record.branch.is_some() { 2 } else { 1 };
+        if !budget.take(requests) {
             return Turn::NoBudget;
+        }
+        if let Some(branch) = record.branch.as_deref() {
+            match self.gh.head_sha(&repo, branch) {
+                // A head that moved, a force-push included, ends this watch:
+                // the commit it was watching is not the branch's head any
+                // more. The new head is not watched by itself — the agent
+                // decides whether to ask for it.
+                Ok(head) if head != record.sha => {
+                    self.finish(record, CiState::Superseded, superseded_text(record, &head));
+                    return Turn::Done;
+                }
+                Ok(_) => {}
+                Err(error) if error.retryable => {
+                    self.close_if_overdue(record, false);
+                    return Turn::RepoFailed;
+                }
+                Err(error) => {
+                    self.finish(record, CiState::Failed, stopped_text(record, &error));
+                    return Turn::Done;
+                }
+            }
         }
         let runs = match self.check_runs(&repo, &record.sha) {
             Ok((runs, pages)) => {
@@ -305,7 +367,7 @@ impl CiWatches {
         });
         let cause = if verdict.state == CiState::Passed {
             "none"
-        } else if verdict.only_infra() {
+        } else if verdict.all_failures_infra() {
             "INFRA"
         } else {
             "CODE"
@@ -316,8 +378,41 @@ impl CiWatches {
             short(&record.sha),
             record.slug()
         );
+        // The one retry: only a failure that is entirely the platform's, and
+        // only when the person approved it when the watch was started.
+        if let Some(runs) = retry_runs(record, &verdict) {
+            if !budget.take(runs.len()) {
+                return Turn::NoBudget;
+            }
+            // Spent on disk before GitHub is asked: a daemon that dies here
+            // must never issue a second retry, and one that cannot write the
+            // spend must not issue the first.
+            if !self.store.note_retry_issued(&record.watch_id, &runs) {
+                return Turn::Done;
+            }
+            if let Err(error) = self.issue_retry(&repo, &runs) {
+                // The retry was spent and GitHub refused it, so the failure
+                // that was there stands and nothing will change it: the owner
+                // reads why instead of waiting on the same failed checks.
+                let text = format!(
+                    "{header}\nThe approved infra retry could not be issued: {} ({})\n",
+                    error.message, error.code
+                );
+                self.finish(record, CiState::Failed, text);
+            }
+            return Turn::Done;
+        }
         self.finish(record, verdict.state, verdict.render(&header));
         Turn::Done
+    }
+
+    /// Ask GitHub to re-run the failed jobs of each run. The spend is already
+    /// recorded, so a refusal here cannot lead to a second attempt.
+    fn issue_retry(&self, repo: &RepoRef, runs: &[u64]) -> Result<(), CiError> {
+        for run in runs {
+            self.gh.rerun_failed(repo, *run)?;
+        }
+        Ok(())
     }
 
     /// A watch that has waited long enough is closed, and says which of the
@@ -399,10 +494,38 @@ impl CiWatches {
     }
 }
 
-/// A full commit id: 40 hex digits. Anything else is refused before it is
-/// stored, so only well-formed ids reach GitHub.
-pub(crate) fn is_commit_id(sha: &str) -> bool {
-    sha.len() == 40 && sha.bytes().all(|byte| byte.is_ascii_hexdigit())
+/// The bounded text a superseded branch watch wakes its owner with: which
+/// branch moved, from which commit to which.
+fn superseded_text(record: &CiWatchRecord, head: &str) -> String {
+    format!(
+        "CI watch superseded: {} {} moved {} → {}; it no longer polls. Start a watch on the new head if you want its verdict.\n",
+        record.slug(),
+        record.branch.as_deref().unwrap_or_default(),
+        short(&record.sha),
+        short(head)
+    )
+}
+
+/// The workflow runs the one approved retry would re-run, or `None` when this
+/// failure is not the retry's: no watch-time approval, a retry already spent,
+/// a code failure, a check that was never read (an omitted one could be a
+/// code failure), or a failed job that names no run — a partial retry would
+/// leave part of the failure the person approved to re-run.
+fn retry_runs(record: &CiWatchRecord, verdict: &Verdict) -> Option<Vec<u64>> {
+    if !record.retry_approved || record.retry_count > 0 || verdict.state != CiState::Failed {
+        return None;
+    }
+    if !verdict.all_failures_infra() {
+        return None;
+    }
+    let mut runs = Vec::new();
+    for job in verdict.jobs.iter().filter(|job| job.cause.is_some()) {
+        let run_id = job.run_id?;
+        if !runs.contains(&run_id) {
+            runs.push(run_id);
+        }
+    }
+    (!runs.is_empty()).then_some(runs)
 }
 
 fn owner_of(record: &CiWatchRecord) -> Option<OwnerId> {
@@ -426,3 +549,7 @@ pub(crate) fn short(sha: &str) -> &str {
 #[cfg(test)]
 #[path = "ci_watch_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "ci_lifecycle_tests.rs"]
+mod lifecycle_tests;

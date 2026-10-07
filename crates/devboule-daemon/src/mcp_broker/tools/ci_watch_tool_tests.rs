@@ -2,19 +2,24 @@
 //! result envelope, and a verdict that reaches the caller's own session once.
 
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use devboule_protocol::SessionKind;
+use devboule_protocol::{OwnerId, PermissionOutcome, SessionKind};
 use serde_json::{json, Value};
 
-use crate::ci_test_support::{check_run, check_runs, fail, github_origin, ok, ScriptedRunner, SHA};
+use crate::ci_test_support::{
+    branch_head, check_run, check_runs, fail, github_origin, ok, ScriptedRunner, SHA,
+};
 use crate::mcp_broker::terminal_write_harness::project_workspace;
 use crate::mcp_broker::tests::{http_request, owner, response_json};
+use crate::mcp_broker::tools::first_use::CI_RETRY_GROUP;
 use crate::provider_catalog::MCP_CI_WATCH_TOOL;
 use crate::server::ServerState;
 
 struct Fixture {
     state: Arc<ServerState>,
     runner: Arc<ScriptedRunner>,
+    owner: OwnerId,
     token: String,
     received: Arc<Mutex<Vec<u8>>>,
     _guard: crate::mcp_broker::McpSessionGuard,
@@ -42,6 +47,7 @@ fn fixture(tag: &str) -> Fixture {
     Fixture {
         state,
         runner,
+        owner,
         token,
         received,
         _guard: guard,
@@ -75,7 +81,17 @@ fn the_tool_is_served_with_a_closed_schema() {
         .expect("the CI watch is served")
         .clone();
     assert_eq!(tool["inputSchema"]["additionalProperties"], json!(false));
-    assert_eq!(tool["inputSchema"]["required"], json!(["sha"]));
+    let properties = tool["inputSchema"]["properties"]
+        .as_object()
+        .expect("properties");
+    for name in ["sha", "branch", "repo", "retryInfra"] {
+        assert!(properties.contains_key(name), "{name} is accepted");
+    }
+    assert_eq!(properties.len(), 4, "and nothing else is");
+    assert!(
+        tool["inputSchema"].get("required").is_none(),
+        "exactly one of sha and branch is a rule the schema cannot express"
+    );
 }
 
 #[test]
@@ -85,10 +101,15 @@ fn malformed_arguments_are_refused_before_github_is_asked() {
         "{}",
         r#"{"sha":"abc123"}"#,
         r#"{"sha":"0123456789abcdef0123456789abcdef0123456z"}"#,
+        r#"{"branch":""}"#,
+        r#"{"branch":"main..dev"}"#,
+        r#"{"branch":"../commits"}"#,
+        r#"{"branch":"feature branch"}"#,
         &format!(r#"{{"sha":"{SHA}","branch":"main"}}"#),
         &format!(r#"{{"sha":"{SHA}","repo":"not a repo"}}"#),
         &format!(r#"{{"sha":"{SHA}","repo":"evil.com/attacker/gadget"}}"#),
         &format!(r#"{{"sha":"{SHA}","repo":7}}"#),
+        &format!(r#"{{"sha":"{SHA}","retryInfra":"yes"}}"#),
     ] {
         let body = call(&fixture, arguments);
         assert_eq!(
@@ -195,11 +216,68 @@ fn workspace_fixture(tag: &str) -> Fixture {
     Fixture {
         state,
         runner,
+        owner,
         token,
         received,
         _guard: guard,
         _server: server,
     }
+}
+
+/// The pending card's id, waited for: the call that raises it blocks until a
+/// person answers, so it runs on another thread.
+fn wait_for_card(fixture: &Fixture, session: &str) -> String {
+    let start = Instant::now();
+    loop {
+        let pending = fixture
+            .state
+            .sessions
+            .live_runtime(session, &fixture.owner)
+            .expect("live session")
+            .permission_broker()
+            .expect("test broker")
+            .test_pending_ids();
+        if let Some(card) = pending.into_iter().next() {
+            return card;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "the retry card was never raised"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Answer the card the retry call raised, and hand back the tool's answer.
+fn call_with_retry_card(
+    fixture: &Fixture,
+    session: &str,
+    outcome: PermissionOutcome,
+    option: &str,
+) -> Value {
+    let url = fixture.state.mcp.url.clone();
+    let token = fixture.token.clone();
+    let request = format!(
+        r#"{{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{{"name":"{MCP_CI_WATCH_TOOL}","arguments":{{"sha":"{SHA}","repo":"acme/widgets","retryInfra":true}}}}}}"#
+    );
+    let calling = std::thread::spawn(move || {
+        response_json(&http_request(
+            &url,
+            Some(&format!("Bearer {token}")),
+            &request,
+        ))
+    });
+    let card = wait_for_card(fixture, session);
+    fixture
+        .state
+        .sessions
+        .live_runtime(session, &fixture.owner)
+        .expect("live session")
+        .permission_broker()
+        .expect("test broker")
+        .test_answer(&card, outcome, option)
+        .expect("answer the retry card");
+    calling.join().expect("the call thread")
 }
 
 #[test]
@@ -294,4 +372,103 @@ fn the_verdict_reaches_the_caller_once() {
     fixture.state.ci_watches.poll_once(&fixture.state.sessions);
     let after = fixture.received.lock().expect("received").len();
     assert_eq!(before, after, "the second pass wakes nobody");
+}
+
+#[test]
+fn the_branch_head_is_resolved_at_call_time_and_reported() {
+    let fixture = workspace_fixture("branch");
+    fixture
+        .runner
+        .set("git/ref/heads/main", ok(&branch_head(SHA)));
+    let body = call(&fixture, r#"{"branch":"main"}"#);
+    assert_eq!(
+        body.pointer("/result/isError"),
+        Some(&json!(false)),
+        "{body}"
+    );
+    let data = &body["result"]["structuredContent"]["data"];
+    assert_eq!(data["resolvedSha"], json!(SHA));
+    assert_eq!(data["branch"], json!("main"));
+    assert_eq!(data["state"], json!("queued"));
+    assert_eq!(data["retryCount"], json!(0));
+    assert!(
+        fixture
+            .runner
+            .calls()
+            .iter()
+            .any(|call| call.contains("git/ref/heads/main")),
+        "the head is read on the call path, where the answer names it"
+    );
+}
+
+#[test]
+fn an_unknown_branch_is_a_missing_commit() {
+    let fixture = workspace_fixture("no-branch");
+    fixture
+        .runner
+        .set("git/ref", fail(1, "gh: Not Found (HTTP 404)"));
+    let body = call(&fixture, r#"{"branch":"nope"}"#);
+    assert_eq!(
+        body.pointer("/result/isError"),
+        Some(&json!(true)),
+        "{body}"
+    );
+    assert_eq!(
+        body.pointer("/result/structuredContent/error/code"),
+        Some(&json!("sha_not_found")),
+        "{body}"
+    );
+    assert!(fixture.state.ci_watches.open().is_empty());
+}
+
+/// Re-running failed jobs is a state-changing GitHub action, so a call that
+/// asks for it waits on a card in a mode that asks — and the person's yes is
+/// what the watch then holds.
+#[test]
+fn a_retry_asks_the_person_and_the_approval_rides_the_watch() {
+    let fixture = workspace_fixture("retry-card");
+    let body = call_with_retry_card(&fixture, "ci.host", PermissionOutcome::AllowOnce, "once");
+    assert_eq!(
+        body.pointer("/result/isError"),
+        Some(&json!(false)),
+        "{body}"
+    );
+    let data = &body["result"]["structuredContent"]["data"];
+    assert_eq!(data["retryCount"], json!(0));
+    let watch_id = data["watchId"].as_str().expect("watch id");
+    let watch = fixture
+        .state
+        .ci_watches
+        .get(watch_id)
+        .expect("the watch the call started");
+    assert!(watch.retry_approved, "the card's yes reached the watch");
+}
+
+#[test]
+fn a_denied_retry_starts_no_watch() {
+    let fixture = workspace_fixture("retry-denied");
+    let body = call_with_retry_card(&fixture, "ci.host", PermissionOutcome::Deny, "deny");
+    assert_eq!(
+        body.pointer("/result/isError"),
+        Some(&json!(true)),
+        "{body}"
+    );
+    assert!(
+        body.pointer("/result/content/0/text")
+            .and_then(Value::as_str)
+            .is_some_and(|text| text.contains("permission refused")),
+        "{body}"
+    );
+    assert!(
+        fixture.state.ci_watches.open().is_empty(),
+        "a refusal starts nothing"
+    );
+    assert!(
+        fixture
+            .state
+            .mcp
+            .first_use_mark("ci.host", CI_RETRY_GROUP)
+            .is_none(),
+        "and leaves the gate shut"
+    );
 }

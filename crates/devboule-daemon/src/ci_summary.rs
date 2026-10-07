@@ -31,6 +31,9 @@ pub(crate) enum CiState {
     Running,
     Passed,
     Failed,
+    /// The branch a branch-mode watch was following moved on, so the watched
+    /// commit is no longer that branch's head and this watch stops polling.
+    Superseded,
 }
 
 impl CiState {
@@ -40,11 +43,12 @@ impl CiState {
             Self::Running => "running",
             Self::Passed => "passed",
             Self::Failed => "failed",
+            Self::Superseded => "superseded",
         }
     }
 
     pub(crate) fn is_terminal(self) -> bool {
-        matches!(self, Self::Passed | Self::Failed)
+        matches!(self, Self::Passed | Self::Failed | Self::Superseded)
     }
 }
 
@@ -424,6 +428,13 @@ impl Verdict {
             out.push_str(&format!("\n{TRUNCATED}\n"));
         }
         out
+    }
+
+    /// Whether every failing job is the platform's doing and every check was
+    /// examined: a check past [`MAX_JOBS_LISTED`] was never read, and an
+    /// unexamined failure could be the code's, which is never INFRA.
+    pub(crate) fn all_failures_infra(&self) -> bool {
+        self.jobs_omitted == 0 && self.only_infra()
     }
 
     /// Whether every failing job is the platform's doing.
