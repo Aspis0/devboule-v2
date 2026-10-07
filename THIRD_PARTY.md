@@ -1043,7 +1043,7 @@ No unresolved asset provenance remains: the icon is original project artwork car
 | tauri-runtime-wry | 2.11.4 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
 | tauri-utils | 2.9.3 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
 | tauri-winres | 0.3.6 | Rust transitive (lockfile) | MIT |
-| tauri-winrt-notification | 0.7.3 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
+| tauri-winrt-notification | 0.7.3 | Rust direct Windows | MIT OR Apache-2.0 |
 | tempfile | 3.27.0 | Rust direct runtime test | MIT OR Apache-2.0 |
 | tendril | 0.5.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | thiserror | 1.0.69 | Rust transitive (lockfile) | MIT OR Apache-2.0 |

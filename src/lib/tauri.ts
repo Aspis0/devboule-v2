@@ -81,12 +81,29 @@ export type StoredAttachment = {
 };
 
 /**
+ * What a click on an attention toast routes to: the session it announced, and
+ * the workspace to fall back to when the roster no longer holds that session.
+ */
+export interface AttentionTarget {
+  sessionId: string;
+  workspaceId: string | null;
+}
+
+/** One attention toast for the Rust half: its words, and what a click opens. */
+export interface AttentionToast {
+  title: string;
+  body: string;
+  target: AttentionTarget;
+}
+
+/**
  * The typed argument shape of every Tauri command. Exported (type-only) so
  * call sites outside this module — e.g. injected presence seams — can reference
  * a command's payload without re-writing its keys by hand.
  */
 export type CommandArgs = {
   app_identity: undefined;
+  attention_toast_show: { toast: AttentionToast };
   daemon_status: undefined;
   daemon_restart: undefined;
   daemon_diagnostics: undefined;
@@ -339,6 +356,7 @@ export type CommandArgs = {
 
 type CommandResults = {
   app_identity: string;
+  attention_toast_show: void;
   daemon_status: DaemonStatus;
   daemon_restart: void;
   daemon_diagnostics: DaemonDiagnostics;
@@ -540,6 +558,7 @@ type CommandName = keyof CommandArgs & keyof CommandResults;
  */
 export const COMMAND_ARG_KEYS = {
   app_identity: [],
+  attention_toast_show: ["toast"],
   daemon_status: [],
   daemon_restart: [],
   daemon_diagnostics: [],

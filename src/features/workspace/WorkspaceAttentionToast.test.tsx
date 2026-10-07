@@ -7,16 +7,11 @@
 // only writer, exactly as in the app.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// The notification plugin records what goes out; the window's own answers come
-// through the daemon pipe instead (see `answerWindow` below), because that is
-// how the production read reaches the OS: `getCurrentWindow()` asks
+// No toast service to read: the sender is the app's own command to the Rust
+// side, so the invoke pipe is where a test sees a toast. The window's answers
+// come down the same pipe (see `answerWindow` below): `getCurrentWindow()` asks
 // `__TAURI_INTERNALS__` for the window label and the three questions are
-// `invoke` calls. A test has no window to look at and no toast service to read.
-vi.mock("@tauri-apps/plugin-notification", () => ({
-  sendNotification: vi.fn(),
-}));
-
-import { sendNotification } from "@tauri-apps/plugin-notification";
+// `invoke` calls.
 import {
   agentSession,
   afterEachHarness,
@@ -27,7 +22,13 @@ import {
   workspace,
 } from "./bulkCloseHarness";
 import { invoke } from "@tauri-apps/api/core";
-import { createSessionStateChannel, sessionsList, workspacesList } from "../../lib/tauri";
+import {
+  createSessionStateChannel,
+  invokeTyped,
+  sessionsList,
+  workspacesList,
+  type AttentionToast,
+} from "../../lib/tauri";
 import type { Session, SessionStateSnapshot } from "../../types/ipc";
 import { lookedAtSessionId } from "./presence";
 import { forgetAttentionFor } from "./attentionNotice";
@@ -80,20 +81,27 @@ function pushRoster(snapshots: SessionStateSnapshot[]): void {
 }
 
 /**
- * The toasts sent from `mark` on. Reading the sender — not a count of
+ * The attention toasts sent from `mark` on. Reading the sender — not a count of
  * notifications — is what makes "held back" and "never got as far as sending"
  * different answers, and slicing at `mark` keeps a hop that lands after another
- * test finished out of this one's claim.
+ * test finished out of this one's claim. The command name is the literal the
+ * Rust half declares, so a rename on either side breaks here.
  */
+function toastsSince(mark: number): AttentionToast[] {
+  const sent = vi
+    .mocked(invokeTyped)
+    .mock.calls.filter(([command]) => command === "attention_toast_show")
+    .map(([, args]) => (args as { toast: AttentionToast }).toast);
+  return sent.slice(mark);
+}
+
 function titlesSince(mark: number): string[] {
-  return vi
-    .mocked(sendNotification)
-    .mock.calls.slice(mark)
-    .map(([options]) => (options as { title: string }).title);
+  return toastsSince(mark).map((toast) => toast.title);
 }
 
 function sentToasts(): number {
-  return vi.mocked(sendNotification).mock.calls.length;
+  return vi.mocked(invokeTyped).mock.calls.filter(([command]) => command === "attention_toast_show")
+    .length;
 }
 
 function workspaceRow(title: string): HTMLButtonElement {
@@ -136,8 +144,8 @@ beforeEach(() => {
   // The window module is the Tauri API's own code: it asks `__TAURI_INTERNALS__`
   // for this window's label and sends its three questions down the same pipe as
   // every other command. Answering there is what makes the window read real
-  // rather than unreachable — the mock of `sendNotification` below stays the
-  // only place a toast is observed.
+  // rather than unreachable — the invoke mock below stays the only place a toast
+  // is observed.
   const internals: TauriInternals = globalThis;
   internals.__TAURI_INTERNALS__ = {
     metadata: { currentWindow: { label: "main" } },
@@ -160,6 +168,27 @@ afterEach(async () => {
 });
 
 describe("the toast gate, judged by the surface's own write", () => {
+  it("toast_carries_session_and_workspace_target", async () => {
+    await renderWorkspace();
+    await pushSnapshots(bothAgents);
+
+    const before = sentToasts();
+    pushRoster(
+      rosterOf([
+        { id: "agent-one", workspace: "workspace-1" },
+        { id: "agent-two", workspace: "workspace-2", raisedAt: 5_000 },
+      ]),
+    );
+    await settleToastPath(["agent-two — finished"], before);
+
+    // What a click will route on: the session the raise named and the
+    // workspace to fall back to when the roster no longer holds it.
+    expect(toastsSince(before)[0]?.target).toEqual({
+      sessionId: "agent-two",
+      workspaceId: "workspace-2",
+    });
+  });
+
   it("holds the new workspace's raise back in the task the switch happened in", async () => {
     await renderWorkspace();
     await pushSnapshots(bothAgents);

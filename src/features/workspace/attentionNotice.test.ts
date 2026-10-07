@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Attention, AttentionReason, Session, SessionStateSnapshot } from "../../types/ipc";
-import type { ToastContent, ToastDeps, WindowState } from "./attentionNotice";
+import type { AttentionTarget, AttentionToast } from "../../lib/tauri";
+import type { ToastDeps, WindowState } from "./attentionNotice";
 import {
   PREVIEW_LIMIT,
   TOAST_RETRY_DELAY_MS,
@@ -48,6 +49,11 @@ const windowStateOf =
 const hiddenInTray = windowStateOf({ visible: false, focused: false, minimized: false });
 const onScreenFocused = windowStateOf({ visible: true, focused: true, minimized: false });
 const minimized = windowStateOf({ visible: true, focused: true, minimized: true });
+
+/** The target a test toast was about; the workspace half has its own cases. */
+function target(sessionId: string): AttentionTarget {
+  return { sessionId, workspaceId: null };
+}
 
 function attention(reason: Attention["reason"], atMs: number): Attention {
   return { reason, atMs };
@@ -285,23 +291,24 @@ describe("sendWithPermission", () => {
   // the live check measured the Rust side answering granted at the same
   // moment.
   it("sends when the Rust side says granted", async () => {
+    const toast: AttentionToast = { title: "t", body: "b", target: target("s1") };
     const plugin = {
       rustPermissionGranted: vi.fn(async () => true),
-      sendNotification: vi.fn(async () => undefined),
+      showToast: vi.fn(async () => undefined),
     };
-    await sendWithPermission({ title: "t", body: "b" }, plugin);
-    expect(plugin.sendNotification).toHaveBeenCalledWith({ title: "t", body: "b" });
+    await sendWithPermission(toast, plugin);
+    expect(plugin.showToast).toHaveBeenCalledWith(toast);
   });
 
   it("throws on a Rust-side denial, and sends nothing", async () => {
     const plugin = {
       rustPermissionGranted: vi.fn(async () => false),
-      sendNotification: vi.fn(async () => undefined),
+      showToast: vi.fn(async () => undefined),
     };
-    await expect(sendWithPermission({ title: "t", body: "b" }, plugin)).rejects.toThrow(
-      "the OS permission answer was not granted",
-    );
-    expect(plugin.sendNotification).not.toHaveBeenCalled();
+    await expect(
+      sendWithPermission({ title: "t", body: "b", target: target("s1") }, plugin),
+    ).rejects.toThrow("the OS permission answer was not granted");
+    expect(plugin.showToast).not.toHaveBeenCalled();
   });
 
   it("asks the Rust side again on the next raise: no denial is cached", async () => {
@@ -310,13 +317,35 @@ describe("sendWithPermission", () => {
     let granted = false;
     const plugin = {
       rustPermissionGranted: vi.fn(async () => granted),
-      sendNotification: vi.fn(async () => undefined),
+      showToast: vi.fn(async () => undefined),
     };
-    await expect(sendWithPermission({ title: "t", body: "b" }, plugin)).rejects.toThrow();
+    await expect(
+      sendWithPermission({ title: "t", body: "b", target: target("s1") }, plugin),
+    ).rejects.toThrow();
     granted = true;
-    await sendWithPermission({ title: "t2", body: "b2" }, plugin);
+    await sendWithPermission({ title: "t2", body: "b2", target: target("s2") }, plugin);
     expect(plugin.rustPermissionGranted).toHaveBeenCalledTimes(2);
-    expect(plugin.sendNotification).toHaveBeenCalledTimes(1);
+    expect(plugin.showToast).toHaveBeenCalledTimes(1);
+  });
+
+  it("permission_preview_never_in_activation_payload", async () => {
+    // The preview belongs to the toast's words; the payload a click routes on
+    // is the target alone, so the words cannot travel back through activation.
+    const content = toastContent("agent one", "permission", {
+      permissionText: "Deploy to production?",
+    });
+    const plugin = {
+      rustPermissionGranted: vi.fn(async () => true),
+      showToast: vi.fn(async (_toast: AttentionToast) => undefined),
+    };
+    await sendWithPermission(
+      { ...content, target: { sessionId: "s1", workspaceId: "workspace-1" } },
+      plugin,
+    );
+    const sent = plugin.showToast.mock.calls[0]?.[0];
+    expect(sent?.body).toContain("Deploy to production");
+    expect(sent?.target).toEqual({ sessionId: "s1", workspaceId: "workspace-1" });
+    expect(JSON.stringify(sent?.target)).not.toContain("Deploy to production");
   });
 });
 
@@ -331,7 +360,7 @@ describe("fireAttentionToast delivery", () => {
     const send = vi.fn(async () => {
       throw new Error("the toast did not land");
     });
-    fireAttentionToast("s1", "agent one", attention("finished", 1000), { send, ...hidden });
+    fireAttentionToast(target("s1"), "agent one", attention("finished", 1000), { send, ...hidden });
     await vi.advanceTimersByTimeAsync(0);
     expect(send).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(0);
@@ -365,7 +394,13 @@ describe("fireAttentionToast delivery", () => {
           };
         }),
       },
-      (session, raised) => fireAttentionToast(session.id, sessionTitle(session), raised, deps),
+      (session, raised) =>
+        fireAttentionToast(
+          { sessionId: session.id, workspaceId: session.workspaceId },
+          sessionTitle(session),
+          raised,
+          deps,
+        ),
     );
     const snapshot = (atMs: number): SessionStateSnapshot[] => [
       {
@@ -402,9 +437,9 @@ describe("fireAttentionToast delivery", () => {
     vi.useFakeTimers();
     forgetAttentionFor(new Set());
     const send = vi.fn(async () => undefined);
-    fireAttentionToast("s2", "agent two", attention("finished", 1000), { send, ...hidden });
+    fireAttentionToast(target("s2"), "agent two", attention("finished", 1000), { send, ...hidden });
     await vi.advanceTimersByTimeAsync(0);
-    fireAttentionToast("s2", "agent two", attention("finished", 1000), { send, ...hidden });
+    fireAttentionToast(target("s2"), "agent two", attention("finished", 1000), { send, ...hidden });
     await vi.advanceTimersByTimeAsync(0);
     expect(send).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
@@ -416,8 +451,8 @@ describe("fireAttentionToast delivery", () => {
     setAttentionHeldContentProvider((sessionId) =>
       sessionId === "s3" ? { permissionText: "Run npm install" } : undefined,
     );
-    const send = vi.fn(async (_content: ToastContent) => undefined);
-    fireAttentionToast("s3", "agent three", attention("permission", 1000), {
+    const send = vi.fn(async (_toast: AttentionToast) => undefined);
+    fireAttentionToast(target("s3"), "agent three", attention("permission", 1000), {
       send,
       ...hidden,
     });
@@ -435,13 +470,13 @@ describe("fireAttentionToast ordering and rejection", () => {
     vi.useFakeTimers();
     forgetAttentionFor(new Set());
     const { windowState, resolveNext } = deferredWindowState();
-    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const send = vi.fn(async (_toast: AttentionToast) => undefined);
     const deps = { send, windowState };
     const hidden = { visible: false, focused: false, minimized: false };
     // The older raise pauses in its window-state read; the newer one (same
     // session) takes the slot and resolves first.
-    fireAttentionToast("s9", "agent nine", attention("finished", 1000), deps);
-    fireAttentionToast("s9", "agent nine", attention("finished", 2000), deps);
+    fireAttentionToast(target("s9"), "agent nine", attention("finished", 1000), deps);
+    fireAttentionToast(target("s9"), "agent nine", attention("finished", 2000), deps);
     resolveNext(hidden); // the newer raise's read
     await vi.advanceTimersByTimeAsync(0);
     resolveNext(hidden); // the older raise's read, late
@@ -455,8 +490,8 @@ describe("fireAttentionToast ordering and rejection", () => {
     // it behaves as if they are not.
     forgetAttentionFor(new Set());
     documentClaimsVisibleAndFocused();
-    const send = vi.fn(async (_content: ToastContent) => undefined);
-    fireAttentionToast("s10", "agent ten", attention("finished", 1000), {
+    const send = vi.fn(async (_toast: AttentionToast) => undefined);
+    fireAttentionToast(target("s10"), "agent ten", attention("finished", 1000), {
       send,
       windowState: async () => {
         throw new Error("the window could not be asked");
@@ -488,8 +523,8 @@ describe("fireAttentionToast window gate", () => {
   });
 
   it("toasts a hidden-but-document-visible window", async () => {
-    const send = vi.fn(async (_content: ToastContent) => undefined);
-    fireAttentionToast("g1", "agent one", attention("finished", 1000), {
+    const send = vi.fn(async (_toast: AttentionToast) => undefined);
+    fireAttentionToast(target("g1"), "agent one", attention("finished", 1000), {
       send,
       windowState: hiddenInTray,
     });
@@ -498,9 +533,9 @@ describe("fireAttentionToast window gate", () => {
   });
 
   it("stays silent for the session this window shows in a seen window", async () => {
-    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const send = vi.fn(async (_toast: AttentionToast) => undefined);
     reportSelection("g2");
-    fireAttentionToast("g2", "agent two", attention("finished", 1000), {
+    fireAttentionToast(target("g2"), "agent two", attention("finished", 1000), {
       send,
       windowState: onScreenFocused,
     });
@@ -511,15 +546,15 @@ describe("fireAttentionToast window gate", () => {
 
   it("toasts a same-millisecond escalation of an announced raise", async () => {
     forgetAttentionFor(new Set());
-    const send = vi.fn(async (_content: ToastContent) => undefined);
-    fireAttentionToast("e0", "agent zero", attention("finished", 1000), {
+    const send = vi.fn(async (_toast: AttentionToast) => undefined);
+    fireAttentionToast(target("e0"), "agent zero", attention("finished", 1000), {
       send,
       windowState: hiddenInTray,
     });
     await vi.advanceTimersByTimeAsync(0);
     expect(send).toHaveBeenCalledTimes(1);
     // The same millisecond, a different reason: the second produces a toast.
-    fireAttentionToast("e0", "agent zero", attention("permission", 1000), {
+    fireAttentionToast(target("e0"), "agent zero", attention("permission", 1000), {
       send,
       windowState: hiddenInTray,
     });
@@ -535,14 +570,14 @@ describe("fireAttentionToast window gate", () => {
       new Promise((resolve) => {
         resolvePermissionRead = resolve;
       });
-    const send = vi.fn(async (_content: ToastContent) => undefined);
-    fireAttentionToast("d1", "agent one", attention("permission", 1000), {
+    const send = vi.fn(async (_toast: AttentionToast) => undefined);
+    fireAttentionToast(target("d1"), "agent one", attention("permission", 1000), {
       send,
       windowState: permissionWindowState,
     });
     // ...a delayed roster push arrives with finished at the SAME stamp: a
     // downgrade, not a raise. It must be ignored entirely.
-    fireAttentionToast("d1", "agent one", attention("finished", 1000), {
+    fireAttentionToast(target("d1"), "agent one", attention("finished", 1000), {
       send,
       windowState: hiddenInTray,
     });
@@ -555,8 +590,8 @@ describe("fireAttentionToast window gate", () => {
   });
 
   it("toasts a minimized window", async () => {
-    const send = vi.fn(async (_content: ToastContent) => undefined);
-    fireAttentionToast("g3", "agent three", attention("permission", 1000), {
+    const send = vi.fn(async (_toast: AttentionToast) => undefined);
+    fireAttentionToast(target("g3"), "agent three", attention("permission", 1000), {
       send,
       windowState: minimized,
     });
@@ -575,7 +610,7 @@ describe("the toast gate holds raises for the session in view", () => {
   let watched: { listener: ((snapshots: SessionStateSnapshot[]) => void) | null };
 
   function harness(
-    send: (content: ToastContent) => Promise<void>,
+    send: (_toast: AttentionToast) => Promise<void>,
     windowState: () => Promise<WindowState>,
     list: () => Promise<Session[]> = async () => [],
   ) {
@@ -594,7 +629,12 @@ describe("the toast gate holds raises for the session in view", () => {
         }),
       },
       (session, raised) =>
-        fireAttentionToast(session.id, sessionTitle(session), raised, { send, windowState }),
+        fireAttentionToast(
+          { sessionId: session.id, workspaceId: session.workspaceId },
+          sessionTitle(session),
+          raised,
+          { send, windowState },
+        ),
     );
     const release = controller.watch();
     return { controller, release };
@@ -630,7 +670,7 @@ describe("the toast gate holds raises for the session in view", () => {
   });
 
   it("announces another session's raise while this window stays focused", async () => {
-    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const send = vi.fn(async (_toast: AttentionToast) => undefined);
     const { release } = harness(send, onScreenFocused);
     reportSelection("agent-one");
     watched.listener?.(roster(null));
@@ -642,7 +682,7 @@ describe("the toast gate holds raises for the session in view", () => {
   });
 
   it("never offers an ended permission raise to the tray, but announces the same live raise", async () => {
-    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const send = vi.fn(async (_toast: AttentionToast) => undefined);
     const { release } = harness(send, hiddenInTray);
     watched.listener?.(roster(null));
     const live = roster(null).map((row) =>
@@ -669,7 +709,7 @@ describe("the toast gate holds raises for the session in view", () => {
   });
 
   it("stays silent for the raise of the session this window shows", async () => {
-    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const send = vi.fn(async (_toast: AttentionToast) => undefined);
     const { release } = harness(send, onScreenFocused);
     reportSelection("agent-two");
     watched.listener?.(roster(null));
@@ -680,7 +720,7 @@ describe("the toast gate holds raises for the session in view", () => {
   });
 
   it("announces every raise while the window is hidden, the shown session included", async () => {
-    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const send = vi.fn(async (_toast: AttentionToast) => undefined);
     const { release } = harness(send, hiddenInTray);
     reportSelection("agent-one");
     watched.listener?.(roster(null));
@@ -695,7 +735,7 @@ describe("the toast gate holds raises for the session in view", () => {
     // The away case, twice over: the controller offers the standing raise on
     // every application, and the notifier's own record — never written for a
     // raise the gate suppressed — is what keeps this to one toast.
-    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const send = vi.fn(async (_toast: AttentionToast) => undefined);
     const { release } = harness(send, hiddenInTray);
     reportSelection("agent-one");
     watched.listener?.(roster(null));
@@ -713,7 +753,7 @@ describe("the toast gate holds raises for the session in view", () => {
     // A raise the gate held back stays due: the next publication of
     // the same event announces it once the user has switched away. The controller
     // offers that publication because it no longer filters the raise itself.
-    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const send = vi.fn(async (_toast: AttentionToast) => undefined);
     const { controller, release } = harness(send, onScreenFocused);
     reportSelection("agent-one");
     watched.listener?.(roster(null));
@@ -735,7 +775,7 @@ describe("the toast gate holds raises for the session in view", () => {
     // flight together. The two continuations still cannot both toast, because
     // the claim test and the write share no await — deferred reads make it real.
     const { windowState, resolveNext } = deferredWindowState();
-    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const send = vi.fn(async (_toast: AttentionToast) => undefined);
     const { release } = harness(send, windowState);
     reportSelection("agent-one");
     watched.listener?.(roster(null));
@@ -755,7 +795,7 @@ describe("the toast gate holds raises for the session in view", () => {
     // a real switch — the write landing with the click that decided it — is
     // pinned in WorkspaceAttentionToast.test.tsx, where no test hand-calls the
     // bridge; here the point is only that one record answers both questions.
-    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const send = vi.fn(async (_toast: AttentionToast) => undefined);
     const presence = vi.fn(async (_args: unknown) => undefined);
     const reporter = startPresenceReporting({
       invoke: presence as unknown as PresenceDeps["invoke"],
@@ -794,7 +834,7 @@ describe("the toast gate holds raises for the session in view", () => {
   it("a surface without a strip shows no session, so every raise announces", async () => {
     // Settings or Design on screen: the Workspace unmounted and withdrew its
     // selection, so nothing may be held back as "already looked at".
-    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const send = vi.fn(async (_toast: AttentionToast) => undefined);
     const { release } = harness(send, onScreenFocused);
     reportSelection("agent-one");
     watched.listener?.(roster(null));
@@ -806,7 +846,7 @@ describe("the toast gate holds raises for the session in view", () => {
   });
 
   it("quotes the words of a row this window renders, and nothing for the rest", async () => {
-    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const send = vi.fn(async (_toast: AttentionToast) => undefined);
     const { release } = harness(send, hiddenInTray);
     reportSelection("agent-one");
     setAttentionHeldContentProvider(
@@ -831,7 +871,7 @@ describe("the toast gate holds raises for the session in view", () => {
 
   it("ending an open session preserves its tab and does not re-announce its spent raise", async () => {
     // Dedupe follows roster lifetime; ending a process does not remove its journal row.
-    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const send = vi.fn(async (_toast: AttentionToast) => undefined);
     let ended = false;
     const { controller, release } = harness(send, onScreenFocused, async () => [
       {

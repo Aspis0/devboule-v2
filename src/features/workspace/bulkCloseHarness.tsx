@@ -25,6 +25,10 @@ vi.mock("@tauri-apps/api/core", () => ({
 let watchListener: ((snapshots: SessionStateSnapshot[]) => void) | null = null;
 
 vi.mock("../../lib/tauri", () => ({
+  // The app's own commands go through the typed client; a test that wants to
+  // read one (the attention toast) records here, and the daemon doubles below
+  // are the rest of the surface.
+  invokeTyped: vi.fn(async () => undefined),
   daemonStatus: vi.fn(async () => ({
     state: "connected",
     pid: 42,

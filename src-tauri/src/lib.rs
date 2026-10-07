@@ -1,4 +1,5 @@
 mod artifact_export;
+mod attention_toast;
 mod backend;
 mod browser;
 mod client;
@@ -120,6 +121,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_identity,
+            attention_toast::attention_toast_show,
             client::daemon_status,
             client::daemon_restart,
             backend::session::session_create,

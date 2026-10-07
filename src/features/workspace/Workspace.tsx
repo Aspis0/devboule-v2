@@ -115,6 +115,7 @@ import {
   setAttentionHeldContentProvider,
   workspaceHeldContentProvider,
 } from "./attentionNotice";
+import { setAttentionOpener } from "./attentionActivation";
 import { RecoveredSessionBar } from "./recoveredSessionBar";
 import { DaemonRestartNotice } from "./daemonRestartNotice";
 import type {
@@ -125,7 +126,13 @@ import type {
   SessionKind,
 } from "../../types/ipc";
 import { isAgentKind } from "../../types/ipc";
-import { daemonRestart, providersList, sessionClose, sessionStop } from "../../lib/tauri";
+import {
+  daemonRestart,
+  providersList,
+  sessionClose,
+  sessionStop,
+  type AttentionTarget,
+} from "../../lib/tauri";
 import { isCommandError } from "../../lib/commandError";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import "./Workspace.css";
@@ -1498,6 +1505,32 @@ export function Workspace({
     },
     [landingTabFor, selectTab, selectedKey, setSelectedKey],
   );
+  // A click on an attention toast is this surface's own act, through the roads
+  // a row click uses: the session opens as its tab, and a session the roster no
+  // longer holds leaves its workspace in front instead of opening anything. The
+  // opener is registered while this surface is mounted; the app-scope listener
+  // falls back to the roster's own roads while it is not.
+  const openAttentionTarget = useCallback(
+    (target: AttentionTarget) => {
+      const session = sharedSessionController()
+        .getState()
+        .sessions.find((row) => row.id === target.sessionId);
+      if (session !== undefined) {
+        handleReopenSession(session);
+        return;
+      }
+      const key = target.workspaceId === null ? null : localWorkspaceKey(target.workspaceId);
+      if (key !== null && knownWorkspaceKeys.has(key)) selectWorkspace(key);
+      void refreshSessions();
+    },
+    [handleReopenSession, knownWorkspaceKeys, refreshSessions, selectWorkspace],
+  );
+
+  useEffect(() => {
+    setAttentionOpener(openAttentionTarget);
+    return () => setAttentionOpener(null);
+  }, [openAttentionTarget]);
+
   const handleNewSession = useCallback(
     (trigger: HTMLButtonElement | null) => {
       void chooseProvider({ kind: "strip" }, addSessionToWorkspace, trigger ?? undefined);

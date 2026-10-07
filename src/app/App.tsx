@@ -10,6 +10,7 @@ import {
   productionOnWindowFocusChange,
   productionWindowState,
 } from "../features/workspace/attentionNotice";
+import { startAttentionActivation } from "../features/workspace/attentionActivation";
 import { startPresenceReporting } from "../features/workspace/presence";
 import type { DesignHost, DesignSurfaceProps } from "../features/design/DesignSurface";
 import { createAgentHost, disposeAgentHost } from "../features/design/agentHost";
@@ -132,6 +133,13 @@ export function App() {
     // it is what keeps attention — and the OS toasts that come from it —
     // alive while a surface other than Workspace is on screen.
     sharedSessionController().watch();
+  }, []);
+
+  useEffect(() => {
+    // One activation listener for the whole app run: a click on an attention
+    // toast must open its session even while another surface is on screen, and
+    // the Rust side has already brought the window forward.
+    void startAttentionActivation();
   }, []);
 
   useEffect(() => {

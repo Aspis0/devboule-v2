@@ -1,4 +1,5 @@
 import type { Attention, AttentionReason } from "../../types/ipc";
+import { invokeTyped, type AttentionTarget, type AttentionToast } from "../../lib/tauri";
 import { getShowMessagePreviews, getShowNotifications } from "../../lib/notificationPrefs";
 import { lookedAtSessionId } from "./presence";
 
@@ -288,15 +289,15 @@ export function forgetAttentionFor(sessionIds: ReadonlySet<string>): void {
   }
 }
 
-/** The plugin surface `sendWithPermission` needs, narrowed to what is used.
- *  `sendNotification` is `void` on the desktop plugin and async in tests, so
- *  the caller awaits either. The permission answer is the plugin's RUST
- *  side: the plugin's own JS check reads `window.Notification.permission`,
+/** The permission surface `sendWithPermission` needs, narrowed to what is
+ *  used. `showToast` is `void` where the platform is synchronous and async in
+ *  tests, so the caller awaits either. The permission answer is the plugin's
+ *  RUST side: the plugin's own JS check reads `window.Notification.permission`,
  *  which WebView2 reports as "denied" even while the Rust side says granted
  *  — the web value never stands for the OS permission here. */
 export interface NotificationPlugin {
   rustPermissionGranted(): Promise<boolean>;
-  sendNotification(options: { title: string; body: string }): void | Promise<void>;
+  showToast(toast: AttentionToast): void | Promise<void>;
 }
 
 /**
@@ -310,33 +311,34 @@ export interface NotificationPlugin {
  * repeat.
  */
 export async function sendWithPermission(
-  content: ToastContent,
+  toast: AttentionToast,
   plugin: NotificationPlugin,
 ): Promise<void> {
   const granted = await plugin.rustPermissionGranted();
   if (!granted) {
     throw new Error("the OS permission answer was not granted");
   }
-  await plugin.sendNotification({ title: content.title, body: content.body });
+  await plugin.showToast(toast);
 }
 
-/** The production sender: the Rust side's permission answer, then the
- *  toast. The invoke goes straight to the plugin command; the JS wrapper
- *  would prefer the web permission, which is the one value that lies. */
-async function defaultSend(content: ToastContent): Promise<void> {
-  const [{ invoke }, plugin] = await Promise.all([
-    import("@tauri-apps/api/core"),
-    import("@tauri-apps/plugin-notification"),
-  ]);
-  await sendWithPermission(content, {
+/** The production sender: the Rust side's permission answer, then the toast.
+ *  The permission invoke goes straight to the plugin command — the JS wrapper
+ *  would prefer the web permission, which is the one value that lies — and the
+ *  toast goes to this app's own command, because the WinRT toast that can route
+ *  a click is the Rust side's to show. */
+async function defaultSend(toast: AttentionToast): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await sendWithPermission(toast, {
     rustPermissionGranted: () => invoke("plugin:notification|is_permission_granted"),
-    sendNotification: (options) => plugin.sendNotification(options),
+    showToast: async (request) => {
+      await invokeTyped("attention_toast_show", { toast: request });
+    },
   });
 }
 
 /** Everything the OS side of a toast needs, injected for tests. */
 export interface ToastDeps {
-  send: (content: ToastContent) => Promise<void>;
+  send: (toast: AttentionToast) => Promise<void>;
   windowState: () => Promise<WindowState>;
 }
 
@@ -385,11 +387,12 @@ export function productionOnWindowFocusChange(
  * failure is dropped — the raise was announced as far as this app can push it.
  */
 export function fireAttentionToast(
-  sessionId: string,
+  target: AttentionTarget,
   title: string,
   attention: Attention,
   deps?: Partial<ToastDeps>,
 ): void {
+  const sessionId = target.sessionId;
   // The Notifications page's master switch, read at fire time. A raise
   // that arrives while the switch is off is consumed, not kept due:
   // turning the switch back on announces new raises only, never a burst
@@ -441,7 +444,7 @@ export function fireAttentionToast(
     const held = getShowMessagePreviews() ? heldContentProvider?.(sessionId) : undefined;
     const content = toastContent(title, attention.reason, held);
     try {
-      await send(content);
+      await send({ ...content, target });
     } catch {
       // A newer raise may have taken the record while this send was in
       // flight: a stale retry must not land after the newer toast.
@@ -454,7 +457,7 @@ export function fireAttentionToast(
         // switch promises. A master that is off now drops the retry.
         if (!getShowNotifications()) return;
         const retryHeld = getShowMessagePreviews() ? heldContentProvider?.(sessionId) : undefined;
-        void send(toastContent(title, attention.reason, retryHeld)).catch(() => {});
+        void send({ ...toastContent(title, attention.reason, retryHeld), target }).catch(() => {});
       }, TOAST_RETRY_DELAY_MS);
     }
   })();

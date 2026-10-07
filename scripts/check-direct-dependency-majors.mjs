@@ -54,6 +54,12 @@ const inlineExceptions = {
         "same as webview2-com: the HWND and COM types the browser tab passes to and from wry's WebView2 controller must come from the windows copy wry 0.55 compiles (0.61.3)",
       exitCondition: "the wry version Tauri resolves moves to windows 0.62",
     },
+    "tauri-winrt-notification": {
+      reason:
+        "0.7.3 is the copy notify-rust (behind tauri-plugin-notification) already compiles, so the attention toast adds no second WinRT wrapper and no second windows copy; 0.8.1 demands windows ^0.62, a second set of the COM types beside the 0.61.3 wry compiles",
+      exitCondition:
+        "notify-rust moves to tauri-winrt-notification 0.8, or the wry version Tauri resolves moves the workspace to windows 0.62",
+    },
   },
 };
 

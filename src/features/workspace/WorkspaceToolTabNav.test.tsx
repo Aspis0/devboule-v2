@@ -240,7 +240,7 @@ describe("presence reporting", () => {
     expect(lookedAtSessionId()).toBeNull();
     const sent: ToastContent[] = [];
     fireAttentionToast(
-      "session-2",
+      { sessionId: "session-2", workspaceId: null },
       "shell two",
       { reason: "finished", atMs: Date.now() },
       {

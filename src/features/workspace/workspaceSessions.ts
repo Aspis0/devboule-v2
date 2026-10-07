@@ -971,7 +971,11 @@ let sharedController: WorkspaceSessionController | null = null;
 export function sharedSessionController(): WorkspaceSessionController {
   if (sharedController === null) {
     sharedController = createWorkspaceSessionController(DEFAULT_SOURCE, (session, attention) =>
-      fireAttentionToast(session.id, sessionTitle(session), attention),
+      fireAttentionToast(
+        { sessionId: session.id, workspaceId: session.workspaceId },
+        sessionTitle(session),
+        attention,
+      ),
     );
   }
   return sharedController;

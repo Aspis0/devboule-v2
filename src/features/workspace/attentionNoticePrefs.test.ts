@@ -46,7 +46,12 @@ describe("fireAttentionToast honours the notification preferences", () => {
   it("stays silent while Show notifications is off", async () => {
     setShowNotifications(false);
     const send = vi.fn(async (_content: ToastContent) => undefined);
-    fireAttentionToast("s1", "agent one", attention("finished", 1000), { send, ...hidden });
+    fireAttentionToast(
+      { sessionId: "s1", workspaceId: null },
+      "agent one",
+      attention("finished", 1000),
+      { send, ...hidden },
+    );
     await vi.advanceTimersByTimeAsync(0);
     expect(send).not.toHaveBeenCalled();
   });
@@ -57,19 +62,39 @@ describe("fireAttentionToast honours the notification preferences", () => {
     // raises only, never a burst of old toasts.
     setShowNotifications(false);
     const send = vi.fn(async (_content: ToastContent) => undefined);
-    fireAttentionToast("s1", "agent one", attention("finished", 1000), { send, ...hidden });
+    fireAttentionToast(
+      { sessionId: "s1", workspaceId: null },
+      "agent one",
+      attention("finished", 1000),
+      { send, ...hidden },
+    );
     await vi.advanceTimersByTimeAsync(0);
-    fireAttentionToast("s1", "agent one", attention("finished", 2000), { send, ...hidden });
+    fireAttentionToast(
+      { sessionId: "s1", workspaceId: null },
+      "agent one",
+      attention("finished", 2000),
+      { send, ...hidden },
+    );
     await vi.advanceTimersByTimeAsync(0);
     expect(send).not.toHaveBeenCalled();
 
     setShowNotifications(true);
-    fireAttentionToast("s1", "agent one", attention("finished", 2000), { send, ...hidden });
+    fireAttentionToast(
+      { sessionId: "s1", workspaceId: null },
+      "agent one",
+      attention("finished", 2000),
+      { send, ...hidden },
+    );
     await vi.advanceTimersByTimeAsync(0);
     expect(send).not.toHaveBeenCalled();
 
     // A genuinely new raise after the switch still announces.
-    fireAttentionToast("s1", "agent one", attention("finished", 3000), { send, ...hidden });
+    fireAttentionToast(
+      { sessionId: "s1", workspaceId: null },
+      "agent one",
+      attention("finished", 3000),
+      { send, ...hidden },
+    );
     await vi.advanceTimersByTimeAsync(0);
     expect(send).toHaveBeenCalledTimes(1);
   });
@@ -77,7 +102,12 @@ describe("fireAttentionToast honours the notification preferences", () => {
   it("names the session and the reason but carries no preview text while previews are off", async () => {
     setShowMessagePreviews(false);
     const send = vi.fn(async (_content: ToastContent) => undefined);
-    fireAttentionToast("s1", "agent one", attention("finished", 1000), { send, ...hidden });
+    fireAttentionToast(
+      { sessionId: "s1", workspaceId: null },
+      "agent one",
+      attention("finished", 1000),
+      { send, ...hidden },
+    );
     await vi.advanceTimersByTimeAsync(0);
     expect(send).toHaveBeenCalledTimes(1);
     const sent = send.mock.calls[0]?.[0];
@@ -93,7 +123,12 @@ describe("fireAttentionToast honours the notification preferences", () => {
     const send = vi.fn(async (_content: ToastContent) => {
       throw new Error("the toast did not land");
     });
-    fireAttentionToast("s1", "agent one", attention("finished", 1000), { send, ...hidden });
+    fireAttentionToast(
+      { sessionId: "s1", workspaceId: null },
+      "agent one",
+      attention("finished", 1000),
+      { send, ...hidden },
+    );
     await vi.advanceTimersByTimeAsync(0);
     expect(send).toHaveBeenCalledTimes(1);
     expect(send.mock.calls[0]?.[0].body).toContain("Deploy finished");
@@ -111,7 +146,12 @@ describe("fireAttentionToast honours the notification preferences", () => {
     const send = vi.fn(async (_content: ToastContent) => {
       throw new Error("the toast did not land");
     });
-    fireAttentionToast("s4", "agent four", attention("finished", 1000), { send, ...hidden });
+    fireAttentionToast(
+      { sessionId: "s4", workspaceId: null },
+      "agent four",
+      attention("finished", 1000),
+      { send, ...hidden },
+    );
     await vi.advanceTimersByTimeAsync(0);
     expect(send).toHaveBeenCalledTimes(1);
 
@@ -131,24 +171,39 @@ describe("fireAttentionToast honours the notification preferences", () => {
         resolvers.push(resolve);
       });
     const send = vi.fn(async (_content: ToastContent) => undefined);
-    fireAttentionToast("s5", "agent five", attention("finished", 1000), { send, windowState });
+    fireAttentionToast(
+      { sessionId: "s5", workspaceId: null },
+      "agent five",
+      attention("finished", 1000),
+      { send, windowState },
+    );
     setShowNotifications(false);
     resolvers.shift()?.({ visible: false, focused: false, minimized: false });
     await vi.advanceTimersByTimeAsync(0);
     expect(send).not.toHaveBeenCalled();
 
     setShowNotifications(true);
-    fireAttentionToast("s5", "agent five", attention("finished", 1000), {
-      send,
-      ...hidden,
-    });
+    fireAttentionToast(
+      { sessionId: "s5", workspaceId: null },
+      "agent five",
+      attention("finished", 1000),
+      {
+        send,
+        ...hidden,
+      },
+    );
     await vi.advanceTimersByTimeAsync(0);
     expect(send).toHaveBeenCalledTimes(1);
   });
 
   it("reads the preferences at fire time, not from an earlier answer", async () => {
     const send = vi.fn(async (_content: ToastContent) => undefined);
-    fireAttentionToast("s1", "agent one", attention("finished", 1000), { send, ...hidden });
+    fireAttentionToast(
+      { sessionId: "s1", workspaceId: null },
+      "agent one",
+      attention("finished", 1000),
+      { send, ...hidden },
+    );
     await vi.advanceTimersByTimeAsync(0);
     expect(send).toHaveBeenCalledTimes(1);
 
@@ -156,12 +211,22 @@ describe("fireAttentionToast honours the notification preferences", () => {
     // raise obeys the new answers with no remount in between.
     setShowMessagePreviews(false);
     setShowNotifications(false);
-    fireAttentionToast("s1", "agent one", attention("finished", 2000), { send, ...hidden });
+    fireAttentionToast(
+      { sessionId: "s1", workspaceId: null },
+      "agent one",
+      attention("finished", 2000),
+      { send, ...hidden },
+    );
     await vi.advanceTimersByTimeAsync(0);
     expect(send).toHaveBeenCalledTimes(1);
 
     setShowNotifications(true);
-    fireAttentionToast("s1", "agent one", attention("finished", 3000), { send, ...hidden });
+    fireAttentionToast(
+      { sessionId: "s1", workspaceId: null },
+      "agent one",
+      attention("finished", 3000),
+      { send, ...hidden },
+    );
     await vi.advanceTimersByTimeAsync(0);
     expect(send).toHaveBeenCalledTimes(2);
     expect(send.mock.calls[1]?.[0].body).toBe("finished");

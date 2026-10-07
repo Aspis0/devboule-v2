@@ -691,14 +691,19 @@ describe("workspace session controller", () => {
         }),
       },
       (session, attention) =>
-        fireAttentionToast(session.id, sessionTitle(session), attention, {
-          send,
-          windowState: async () => ({
-            visible: false,
-            focused: false,
-            minimized: false,
-          }),
-        }),
+        fireAttentionToast(
+          { sessionId: session.id, workspaceId: session.workspaceId },
+          sessionTitle(session),
+          attention,
+          {
+            send,
+            windowState: async () => ({
+              visible: false,
+              focused: false,
+              minimized: false,
+            }),
+          },
+        ),
     );
     const release = controller.watch();
     const raise = (atMs: number): SessionStateSnapshot[] => [
@@ -1889,12 +1894,17 @@ describe("attention raises from the roster", () => {
   const toaster =
     (sends: ToastContent[]) =>
     (session: Session, attention: Attention): void =>
-      fireAttentionToast(session.id, sessionTitle(session), attention, {
-        send: async (content) => {
-          sends.push(content);
+      fireAttentionToast(
+        { sessionId: session.id, workspaceId: session.workspaceId },
+        sessionTitle(session),
+        attention,
+        {
+          send: async (content) => {
+            sends.push(content);
+          },
+          windowState: awayFromWindow,
         },
-        windowState: awayFromWindow,
-      });
+      );
 
   it("treats attention already active in the first roster as the baseline", async () => {
     forgetAttentionFor(new Set());

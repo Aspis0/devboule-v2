@@ -119,6 +119,11 @@ fs2 = "=0.4.3"
 # Cargo.lock exactly, so we name the SAME types wry and Tauri use. Windows
 # only; every other target compiles the refusals in the same module.
 [target.'cfg(windows)'.dependencies]
+# The attention toast's click: `attention_toast.rs` shows Windows' own WinRT
+# toast so activation arrives in this process, which the notification plugin's
+# sender cannot do. 0.7.3 is the version notify-rust (behind that plugin)
+# already resolves, so the lock gains no package.
+tauri-winrt-notification = "=0.7.3"
 webview2-com = "=0.38.2"
 # `Win32_System_Pipes` and `Win32_Storage_FileSystem` are for
 # `src-tauri/src/browser/host_wire_tests.rs`, which binds the daemon's own pipe
