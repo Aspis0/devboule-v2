@@ -29,30 +29,27 @@ const footerCss = assembleCssProof([
 afterEach(removeCssProof);
 
 describe("timeline computed styles", () => {
-  it("centers a 760 px rail with the specified padding and gaps the card from the transcript", () => {
+  it("fills the pane up to the reading cap with the lane's 20 px sides and the card gaps", () => {
     workspaceCss.inject([".workspace-conversation"]);
     const rail = document.createElement("div");
     rail.className = "workspace-conversation";
     document.body.appendChild(rail);
 
     const style = getComputedStyle(rail);
-    // Capped by the pane as well as the column: width 760 bound by
-    // max-width calc(100% - 32px) — the chat cap still applies wherever
-    // the pane is wider, the box can never outgrow a narrower one, and
-    // its outer edges land on the composer's card at every width.
-    expect(style.maxWidth).toBe("calc(100% - 32px)");
+    // The lane fills the pane and the 1060 px cap binds it when the pane
+    // grows past the reading width; the 20 px sides are the lane's own
+    // padding, so the rows and the composer share one axis.
+    expect(style.maxWidth).toBe("1060px");
     expect(style.marginLeft).toBe("auto");
     expect(style.marginRight).toBe("auto");
-    // Fills the pane up to the cap: a definite width with the auto margins
-    // keeps the column centred, instead of shrink-wrapping to the longest
+    // Fills the pane up to the cap instead of shrink-wrapping to the longest
     // row. Shared with the composer card and the queue track by one rule.
-    expect(style.width).toBe("760px");
+    expect(style.width).toBe("100%");
     expect(style.paddingTop).toBe("4px");
-    expect(style.paddingRight).toBe("0px");
+    expect(style.paddingRight).toBe("20px");
     expect(style.paddingBottom).toBe("0px");
-    // Rows span the lane full-bleed: message text meets the composer card's
-    // edges instead of sitting inside the conversation's padding.
-    expect(style.paddingLeft).toBe("0px");
+    // Rows start on the lane's inset, the same axis the composer text uses.
+    expect(style.paddingLeft).toBe("20px");
     // The container's gap now only separates the transcript from the permission
     // card; the entry rhythm lives on the wrapper.
     expect(style.gap).toBe("8px");

@@ -1,8 +1,8 @@
 /* The gutter is reserved inside the content box, not on the conversation:
-   the conversation carries no side padding of its own, so rows span the
-   lane full-bleed and the content box gives up 32 px of its column for
-   the rail instead. The thread sits 8 px inside the lane, 24 short of
-   the text. */
+   the conversation's only side padding is the lane's shared 20 px, so rows
+   span the lane and the content box gives up 32 px of its column for
+   the rail instead. The thread sits 8 px past the lane's padding edge,
+   24 px short of the text. */
 .workspace-conversation.has-turn-rail {
   position: relative;
 }
@@ -13,8 +13,8 @@
 }
 
 /* Reaching back from the content box into the gutter it reserved: the box
-   starts at the lane's own edge, so -16 reaches 16 px past it and the
-   thread holds 8 px inside the lane. */
+   starts at the lane's padding edge, so -16 reaches 16 px past it and the
+   thread holds 8 px past that edge. */
 .turn-rail {
   position: absolute;
   top: 0;

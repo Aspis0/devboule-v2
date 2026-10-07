@@ -1,5 +1,5 @@
 /* The agent's plan checklist above the composer: the collapsed "N of M" head
- * on the composer's 760 rail, expanding to the list. Marks are status, so
+ * on the composer's lane, expanding to the list. Marks are status, so
  * nothing on a row responds to a pointer — only the head is a control. */
 
 .agent-task-pill {

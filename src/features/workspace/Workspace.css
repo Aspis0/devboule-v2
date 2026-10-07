@@ -450,19 +450,21 @@
   font-size: var(--type-meta);
 }
 
-/* The one centered column the transcript, the queued follow-ups and the
-   composer share: a single width rule, so their edges cannot diverge.
-   The width is definite (never shrink-wrapped to the longest row) and the
-   max binds it to the pane; together they act as the 760 cap. The 32 px
-   is the lane's inset from the pane — the wrap carries no side padding of
-   its own. Rows span the lane full-bleed, so message text meets the
-   composer's card edges instead of sitting 16 px inside them. */
+/* The one lane the transcript, the queued follow-ups and the composer
+   share: a single width rule, so their edges cannot diverge. The lane
+   fills the pane up to the reading cap and carries its own 20 px side
+   padding (border-box), so rows and controls inset alike and the three
+   boxes stay on one axis at every pane width. */
 .workspace-conversation,
 .workspace-composer-track,
 .workspace-composer {
-  width: 760px;
-  max-width: calc(100% - var(--space-32));
-  margin: 0 auto;
+  width: 100%;
+  max-width: 1060px;
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: 20px;
+  padding-right: 20px;
+  box-sizing: border-box;
 }
 
 .workspace-conversation {
@@ -471,16 +473,20 @@
   min-height: 0;
   flex-direction: column;
   gap: var(--space-8);
-  padding: var(--space-4) 0 0;
+  /* The lane's 20 px sides are restated here because this block comes after
+     the shared lane rule and would otherwise reset them. */
+  padding: var(--space-4) 20px 0;
   overflow-y: auto;
   overflow-anchor: none;
 }
 
-/* The Diff tab is a code surface, not a chat column: full main-pane width.
-   The File tab keeps the chat cap, its Markdown column being capped by spec. */
+/* The Diff tab is a code surface, not a chat column: full main-pane width
+   and no lane inset — it is not chat prose. */
 .workspace-tool-pane-diff {
   width: 100%;
   max-width: none;
+  padding-left: 0;
+  padding-right: 0;
 }
 
 .workspace-conversation-content {
@@ -1208,11 +1214,11 @@
   bottom: calc(100% - 1px);
   left: 50%;
   z-index: 2;
-  width: 760px;
   /* An absolute element's 100% is the wrap's padding box — the pane, now
-     that the wrap carries no side padding — so 32 px short matches the
-     lane's own inset and the menu sits on the card's edges. */
-  max-width: calc(100% - var(--space-32));
+     that the wrap carries no side padding — so the lane's own width and
+     cap put the menu's edges exactly on the composer's. */
+  width: 100%;
+  max-width: 1060px;
   transform: translateX(-50%);
   display: flex;
   /* A window-height budget, so it is charged to the band like every other one:
@@ -1298,18 +1304,19 @@
     var(--space-10) + (var(--type-interface) * var(--leading-body)) + var(--space-6) +
       var(--control-default) + var(--space-10) + 2px
   );
-  /* While the rail shows, the shell rule below meets transcript text at
-     the gutter's 32 px inset. */
-  padding: var(--space-10) var(--space-12);
+  /* Block padding only: the lane rule's 20 px sides are what the composer
+     shares with the transcript, so its text lands on the rows' axis. */
+  padding-top: var(--space-10);
+  padding-bottom: var(--space-10);
   background: var(--panel-composer);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-8);
 }
 
 .workspace-agent-shell.has-turn-rail .workspace-composer {
-  /* The rail's gutter reserves 32 px in the content box; the composer meets
-     transcript text at the same inset. */
-  padding-left: var(--space-32);
+  /* The rail's gutter reserves 32 px inside the content box, which the lane
+     already inset 20 px; 52 px meets transcript text at the same axis. */
+  padding-left: 52px;
 }
 
 .workspace-composer:focus-within {

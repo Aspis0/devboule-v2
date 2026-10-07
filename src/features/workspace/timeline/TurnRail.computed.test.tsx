@@ -31,12 +31,12 @@ describe("turn rail computed styles", () => {
     conversation.appendChild(content);
     document.body.appendChild(conversation);
 
-    expect(getComputedStyle(conversation).paddingLeft).toBe("0px");
+    expect(getComputedStyle(conversation).paddingLeft).toBe("20px");
 
     conversation.classList.add("has-turn-rail");
     // The conversation's own box does not change with the rail; the
     // content box gives up 32 px of column for the gutter.
-    expect(getComputedStyle(conversation).paddingLeft).toBe("0px");
+    expect(getComputedStyle(conversation).paddingLeft).toBe("20px");
     expect(getComputedStyle(content).paddingLeft).toBe("32px");
     expect(getComputedStyle(conversation).position).toBe("relative");
     expect(getComputedStyle(content).position).toBe("relative");
@@ -88,25 +88,25 @@ describe("turn rail computed styles", () => {
       return { shell, aux, track, composer };
     };
 
-    // Rail off: no sibling takes an inset; the composer keeps its 12 and the
-    // track shares the lane rule, so it keeps the composer's box.
+    // Rail off: no sibling takes an inset; the composer keeps the lane's
+    // 20 px and the track shares the lane rule, so it keeps the composer's box.
     const off = build(false);
     expect(getComputedStyle(off.aux).marginLeft).toBe("");
-    expect(getComputedStyle(off.track).paddingLeft).toBe("");
-    expect(getComputedStyle(off.track).maxWidth).toBe("calc(100% - 32px)");
-    expect(getComputedStyle(off.composer).paddingLeft).toBe("12px");
+    expect(getComputedStyle(off.track).paddingLeft).toBe("20px");
+    expect(getComputedStyle(off.track).maxWidth).toBe("1060px");
+    expect(getComputedStyle(off.composer).paddingLeft).toBe("20px");
     off.shell.remove();
 
     // The card takes the gutter as margin, the composer meets transcript
-    // text at the gutter's inset; the track takes no rail inset and keeps
-    // the card's box in both states.
+    // text at the gutter's inset beside the lane's own 20 px; the track
+    // keeps the lane rule in both states.
     // Separate trees per state with classes set at build: happy-dom keeps a
     // stale computed style for deeper descendants after a later class add.
     const on = build(true);
     expect(getComputedStyle(on.aux).marginLeft).toBe("32px");
-    expect(getComputedStyle(on.track).paddingLeft).toBe("");
-    expect(getComputedStyle(on.track).maxWidth).toBe("calc(100% - 32px)");
-    expect(getComputedStyle(on.composer).paddingLeft).toBe("32px");
+    expect(getComputedStyle(on.track).paddingLeft).toBe("20px");
+    expect(getComputedStyle(on.track).maxWidth).toBe("1060px");
+    expect(getComputedStyle(on.composer).paddingLeft).toBe("52px");
     on.shell.remove();
   });
 
@@ -141,15 +141,13 @@ describe("turn rail computed styles", () => {
     const off = build(false);
     const on = build(true);
 
-    // The pane cap: width 760 bound by max-width calc(100% - 32px) of the
-    // 720 px parent — the conversation is bounded by the pane and the chat
-    // cap in both states, inset like the composer card.
-    expect(getComputedStyle(off).maxWidth).toBe("calc(100% - 32px)");
-    expect(getComputedStyle(on).maxWidth).toBe("calc(100% - 32px)");
-    // The gutter comes out of the column: the conversation carries no
-    // side padding of its own in either state.
-    expect(getComputedStyle(off).paddingLeft).toBe("0px");
-    expect(getComputedStyle(on).paddingLeft).toBe("0px");
+    // The pane cap: the lane fills the pane up to 1060 px, inset 20 px on
+    // each side — the conversation is bounded by the cap in both states.
+    expect(getComputedStyle(off).maxWidth).toBe("1060px");
+    expect(getComputedStyle(on).maxWidth).toBe("1060px");
+    // The lane's own sides: the conversation carries the 20 px in either state.
+    expect(getComputedStyle(off).paddingLeft).toBe("20px");
+    expect(getComputedStyle(on).paddingLeft).toBe("20px");
     expect(getComputedStyle(on.querySelector(".workspace-conversation-content")!).paddingLeft).toBe(
       "32px",
     );
@@ -162,7 +160,7 @@ describe("turn rail computed styles", () => {
     for (const conversation of [off, on]) {
       expect(conversation.scrollWidth).toBeLessThanOrEqual(conversation.clientWidth);
       expect(conversation.scrollWidth).toBeLessThanOrEqual(720);
-      expect(conversation.scrollWidth).toBeLessThanOrEqual(760);
+      expect(conversation.scrollWidth).toBeLessThanOrEqual(1060);
     }
     off.parentElement!.remove();
     on.parentElement!.remove();

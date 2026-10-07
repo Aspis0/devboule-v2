@@ -103,7 +103,10 @@ describe("the restyled labels speak the UI font at 12px or above", () => {
   it("the composer text is the spec's 14/1.45 on the transcript column", () => {
     const css = assembleCssProof(OWNED_SHEETS);
     const rules = css.rulesFor(".workspace-composer");
-    expect(rules).toContain("padding: 10px 12px;");
+    expect(rules).toContain("padding-top: 10px;");
+    expect(rules).toContain("padding-bottom: 10px;");
+    // The sides belong to the lane rule: the composer shares the rows' axis.
+    expect(rules).not.toContain("padding-left: 12px;");
     expect(css.rulesFor(".workspace-composer textarea")).toContain("font-size: 14px");
     expect(css.rulesFor(".workspace-composer textarea")).toContain("line-height: 1.45");
   });
@@ -128,10 +131,10 @@ describe("the composer chrome's pinned values", () => {
     expect(rules).toContain("box-shadow: 0 0 0 2px color-mix(in srgb, #7a5000 10%, transparent)");
   });
 
-  it("caps the command menu on the lane's own inset", () => {
+  it("caps the command menu on the lane's own cap", () => {
     const css = assembleCssProof(OWNED_SHEETS);
     const rules = css.rulesFor(".workspace-command-menu");
-    expect(rules).toContain("max-width: calc(100% - 32px)");
+    expect(rules).toContain("max-width: 1060px");
     expect(rules).not.toContain("max-width: 100%");
   });
 
