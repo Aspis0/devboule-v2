@@ -3182,8 +3182,9 @@ describe("AgentChatSurface", () => {
     const aux = container.querySelector('[data-testid="aux-node"]');
     if (conversation === null || aux === null) throw new Error("auxiliary did not render");
     expect(conversation.textContent).toContain("hello");
-    expect(aux.parentElement).toBe(conversation);
-    expect(conversation.lastElementChild).toBe(aux);
+    expect(aux.parentElement?.className).toBe("workspace-pending-cards");
+    expect(aux.parentElement?.parentElement).toBe(conversation);
+    expect(conversation.lastElementChild).toBe(aux.parentElement);
     const composer = container.querySelector(".workspace-composer-wrap");
     if (composer === null) throw new Error("composer did not render");
     expect(conversation.compareDocumentPosition(composer)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);

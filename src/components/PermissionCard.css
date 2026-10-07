@@ -3,6 +3,7 @@
    the card reads the same in both themes and at every host scale. */
 .permission-card {
   flex: none;
+  max-width: 640px;
   overflow: hidden;
   padding: var(--space-10) var(--space-12);
   background: var(--panel-card);
@@ -60,11 +61,6 @@
 .permission-card-shield {
   width: 14px;
   height: 14px;
-  flex: none;
-  color: var(--muted);
-}
-
-.permission-card-title {
   flex: none;
   color: var(--muted);
 }
@@ -323,7 +319,7 @@
   height: var(--control-default);
   padding: 0 var(--space-12);
   border-radius: var(--radius-6);
-  font-size: var(--type-small);
+  font-size: 12.5px;
   line-height: 1;
   cursor: pointer;
 }
@@ -331,7 +327,7 @@
 .permission-card-secondary-action {
   color: var(--ink-soft);
   background: transparent;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--line);
 }
 
 .permission-card-secondary-action:hover,

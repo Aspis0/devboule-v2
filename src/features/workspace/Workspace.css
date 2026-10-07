@@ -521,6 +521,14 @@
   flex-direction: column;
 }
 
+/* Pending cards sit side by side while the lane is wide enough, each capped at
+   its own 640 px, and stack on a narrow lane. */
+.workspace-pending-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+}
+
 .workspace-agent-extras > .pane-header-kebab {
   position: absolute;
   top: var(--space-4);

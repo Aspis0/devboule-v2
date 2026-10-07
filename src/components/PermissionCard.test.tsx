@@ -195,6 +195,30 @@ describe("PermissionCard", () => {
     document.body.replaceChildren();
   });
 
+  it("draws the heading without a Permission label: the shield and the card are the marker", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <PermissionCard
+          sessionId="session-1"
+          subscriptionId={41}
+          request={request}
+          capabilities={["typed_permissions"]}
+        />,
+      );
+    });
+
+    expect(container.querySelector(".permission-card-title")).toBeNull();
+    expect(container.querySelector(".permission-card-heading")?.textContent).not.toContain(
+      "Permission",
+    );
+
+    await act(async () => root.unmount());
+  });
+
   it("renders a peer origin's provenance as the card's first line", async () => {
     const container = document.createElement("div");
     document.body.appendChild(container);

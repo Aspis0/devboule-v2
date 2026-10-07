@@ -32,39 +32,33 @@ describe("PermissionCard computed styles", () => {
     expect(style.padding).toBe("10px 12px");
     // The hairline: the rule source carries the resolved token.
     expect(cardCss.rulesFor(".permission-card")).toContain("border: 1px solid #d4d2cc");
+    // The card caps at 640 px so two pending cards can sit side by side when wide.
+    expect(cardCss.rulesFor(".permission-card")).toContain("max-width: 640px");
     // The design surface's notice box shares the sheet and the ramp's floor.
     expect(cardCss.rulesFor(".permission-card-notice")).toContain("font-size: 12px");
     card.remove();
   });
 
   it("sets the head at 12/500 muted with an 8 px gap, and the action line at 14 px ink", () => {
-    cardCss.inject([
-      ".permission-card-heading",
-      ".permission-card-title",
-      ".permission-card > .permission-card-action",
-    ]);
+    cardCss.inject([".permission-card-heading", ".permission-card > .permission-card-action"]);
     const head = document.createElement("div");
     head.className = "permission-card-heading";
-    const title = document.createElement("span");
-    title.className = "permission-card-title";
     // The action line's rule is scoped to a direct child of the card.
     const card = document.createElement("div");
     card.className = "permission-card";
     const action = document.createElement("div");
     action.className = "permission-card-action";
     card.appendChild(action);
-    document.body.append(head, title, card);
+    document.body.append(head, card);
     const headStyle = getComputedStyle(head);
     expect(headStyle.fontSize).toBe("12px");
     expect(headStyle.fontWeight).toBe("500");
     expect(headStyle.gap).toBe("8px");
-    expect(getComputedStyle(title).color).toBe(cardCss.token("--muted"));
     const actionStyle = getComputedStyle(action);
     expect(actionStyle.fontSize).toBe("14px");
     expect(actionStyle.fontWeight).toBe("500");
     expect(actionStyle.color).toBe(cardCss.token("--ink"));
     head.remove();
-    title.remove();
     card.remove();
   });
 
@@ -142,7 +136,8 @@ describe("PermissionCard computed styles", () => {
     const denyStyle = getComputedStyle(deny);
     expect(denyStyle.height).toBe("28px");
     expect(denyStyle.borderRadius).toBe("6px");
-    expect(denyStyle.fontSize).toBe("13px");
+    expect(denyStyle.fontSize).toBe("12.5px");
+    expect(denyStyle.borderTopColor).toBe(cardCss.token("--line"));
     expect(denyStyle.color).toBe(cardCss.token("--ink-soft"));
     expect(denyStyle.backgroundColor).toBe("transparent");
     const allowStyle = getComputedStyle(allow);
