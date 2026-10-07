@@ -1384,6 +1384,10 @@ impl Write for BytewiseRecordingWriter {
     }
 }
 
+pub(super) fn received_text(bytes: &Arc<Mutex<Vec<u8>>>) -> String {
+    String::from_utf8(bytes.lock().expect("received").clone()).expect("utf8")
+}
+
 pub(super) fn insert_live_agent(
     registry: &SessionRegistry,
     id: &str,

@@ -8,6 +8,7 @@
 //! parent still builds.
 
 use super::*;
+use crate::origin_chain::Chain;
 
 pub(super) fn spawn_os_liveness_sweeper(registry: &SessionRegistry) {
     let inner = Arc::downgrade(&registry.inner);
@@ -254,6 +255,9 @@ pub(super) fn start_spawned_session(
         // on `first_prompt_owed` promises a resume never re-injects the
         // standing instructions into the next prompt the human sends.
         runtime.clear_first_prompt_owed();
+        // The old generation's provenance has no chain to rebuild: the
+        // respawned session starts fail-closed, until the person types to it.
+        runtime.update_ingress_chain(|_| Chain::restored());
         // Peers can attach from the `Live` promotion below, and a lagged
         // attach's goal correction publishes the runtime goal as
         // authoritative. The value is the resumed row's own `goal` column,

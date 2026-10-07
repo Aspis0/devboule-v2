@@ -458,6 +458,11 @@ mod session_child_commands;
 #[cfg(test)]
 #[path = "session_hook_seq_lifecycle_tests.rs"]
 mod session_hook_seq_lifecycle_tests;
+/// The taint a rebuilt runtime starts with: fail-closed restore, the fresh
+/// session's clean chain, and the person's message that clears the taint.
+#[cfg(test)]
+#[path = "session_restored_taint_tests.rs"]
+mod session_restored_taint_tests;
 /// The untrusted-content frame on the agent-message road: the origin chain across
 /// local and far hops, and a person's typed message left unframed.
 #[cfg(test)]

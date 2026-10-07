@@ -1,5 +1,6 @@
 //! The hops behind a piece of untrusted content, and whether any of them was
-//! data (a page, a screen, a CI log) rather than an agent.
+//! data (a page, a screen, a CI log, a restore whose provenance is gone)
+//! rather than an agent.
 //!
 //! One responsibility: the daemon's own record of how content reached a session,
 //! so a message that session relays names where its input came from. Hops are
@@ -25,7 +26,8 @@ pub(crate) fn hop(kind: &str, id: &str) -> String {
 pub(crate) struct Chain {
     /// Agent hops, oldest first, sender last.
     agents: Vec<String>,
-    /// Data hops (`browser:<host>`, `terminal`, `ci`), distinct, oldest first.
+    /// Data hops (`browser:<host>`, `terminal`, `ci`) and the `restored` marker
+    /// of a rebuild, distinct, oldest first.
     data: Vec<String>,
     /// Whether data ever reached this chain, even if its hop was since dropped
     /// to keep the chain bounded.
@@ -35,6 +37,17 @@ pub(crate) struct Chain {
 }
 
 impl Chain {
+    /// A rebuild whose provenance is gone: the session comes back as data may
+    /// have reached it — `restored` is the daemon's own marker, never a
+    /// body's — and only the person's own message takes it off.
+    pub(crate) fn restored() -> Chain {
+        Chain {
+            data: vec!["restored".to_string()],
+            tainted: true,
+            ..Chain::default()
+        }
+    }
+
     pub(crate) fn is_tainted(&self) -> bool {
         self.tainted
     }

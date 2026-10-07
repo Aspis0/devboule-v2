@@ -4,15 +4,12 @@
 
 use super::tests::{
     attach_live_agent_for_test, attachment, insert_live_agent_with_kind_and_writer,
-    insert_live_agent_with_writer, remote_conn, test_owner, tmp_delete_registry, RecordingWriter,
+    insert_live_agent_with_writer, received_text, remote_conn, test_owner, tmp_delete_registry,
+    RecordingWriter,
 };
 use super::*;
 use crate::origin_chain::{hop, Chain};
 use crate::raster_metadata::clean_png;
-
-fn received_text(bytes: &Arc<Mutex<Vec<u8>>>) -> String {
-    String::from_utf8(bytes.lock().expect("received").clone()).expect("utf8")
-}
 
 /// A far agent writes to a local one, which writes on to a second local one:
 /// the second envelope names both hops, sender last, from ids the daemon holds

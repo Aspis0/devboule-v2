@@ -837,6 +837,11 @@ impl SessionRuntime {
         // instructions were either on it or predate them. This is what makes the
         // injection a session-start rule rather than a resume rule.
         runtime.clear_first_prompt_owed();
+        // The transcript is back without the provenance of what it holds: a
+        // replay with history starts fail-closed, until the person types.
+        if replay.last_seq > 0 || !replay.events.is_empty() {
+            runtime.update_ingress_chain(|_| Chain::restored());
+        }
         let mut stream = runtime
             .stream
             .lock()

@@ -394,6 +394,49 @@ fn session_notice_survives_detach_and_reattach() {
     journal.shutdown();
 }
 
+/// A transcript rebuilt **with** history has no provenance to carry: the
+/// runtime starts fail-closed on the daemon's own `restored` hop — from the
+/// journal's last seq or from the events it holds, either signal is history —
+/// and a replay that holds nothing starts clean.
+#[test]
+fn a_replay_with_history_starts_restored_and_an_empty_one_stays_clean() {
+    let replay = |last_seq: u64, events: Vec<SessionEvent>| crate::journal::Replay {
+        generation: 1,
+        last_seq,
+        integrity: TranscriptIntegrity::Complete,
+        event_seqs: Vec::new(),
+        event_ts_ms: Vec::new(),
+        events,
+    };
+    let notice = SessionEvent::SessionNotice {
+        text: "from the old life".to_string(),
+        severity: NoticeSeverity::Info,
+    };
+    for (label, built) in [
+        ("a last seq", replay(3, Vec::new())),
+        ("an event", replay(0, vec![notice])),
+    ] {
+        let chain = SessionRuntime::from_replay("s.restore.history".to_string(), None, built)
+            .ingress_chain();
+        assert!(
+            chain.is_tainted(),
+            "{label} is history: the restore fails closed"
+        );
+        assert_eq!(
+            chain.hops(),
+            vec!["restored".to_string()],
+            "{label} names the restore, nothing more"
+        );
+    }
+    let never_spoken =
+        SessionRuntime::from_replay("s.restore.empty".to_string(), None, replay(0, Vec::new()))
+            .ingress_chain();
+    assert!(
+        !never_spoken.is_tainted() && never_spoken.hops().is_empty(),
+        "a replay that holds nothing is no history"
+    );
+}
+
 #[test]
 fn plan_rows_and_agent_report_outcomes_replay_from_the_journal() {
     let dir = crate::test_dirs::test_temp_dir("devboule-plan-decision-replay");
