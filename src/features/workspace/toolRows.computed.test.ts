@@ -236,7 +236,7 @@ describe("tool row computed styles", () => {
     // The only edge a diff draws is a rule on its inline start.
     expect(
       css.rulesFor(".workspace-chat-tool-output.is-diff .workspace-chat-tool-output-lines"),
-    ).toContain("border-inline-start: 2px solid");
+    ).toContain(`border-inline-start: 1px solid ${css.token("--line")}`);
     expect(noWidth(getComputedStyle(diff).borderTopWidth)).toBe(true);
 
     diff.remove();

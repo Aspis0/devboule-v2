@@ -51,18 +51,18 @@ describe("ToolRow output", () => {
     expect(container.querySelector(".workspace-chat-tool-summary")?.tagName).toBe("DIV");
   });
 
-  it("shows six lines of output, then a button that opens the rest", async () => {
+  it("shows two lines of output, then a button that opens the rest", async () => {
     const container = await renderRow(tool({ kind: "search", title: "q", output: lines(10) }));
     const shown = (): string[] =>
       Array.from(container.querySelectorAll(".workspace-chat-tool-output-line")).map(
         (line) => line.textContent ?? "",
       );
-    expect(shown()).toEqual(Array.from({ length: 6 }, (_, index) => `line ${index + 1}`));
+    expect(shown()).toEqual(Array.from({ length: 2 }, (_, index) => `line ${index + 1}`));
     const more = container.querySelector<HTMLButtonElement>(".workspace-chat-tool-more");
     if (more === null) throw new Error("the output offered no way to open the rest");
     expect(more.tagName).toBe("BUTTON");
     // The sentence's tail is for a screen reader: "+4 lines" of what.
-    expect(more.textContent).toBe("+4 lines of output");
+    expect(more.textContent).toBe("+8 lines of output");
     expect(more.querySelector(".sr-only")?.textContent).toBe(" of output");
     expect(more.getAttribute("aria-expanded")).toBe("false");
 
@@ -74,7 +74,7 @@ describe("ToolRow output", () => {
   });
 
   it("offers no expander for output that fits", async () => {
-    const container = await renderRow(tool({ kind: "search", title: "q", output: lines(6) }));
+    const container = await renderRow(tool({ kind: "search", title: "q", output: lines(2) }));
     expect(container.querySelector(".workspace-chat-tool-more")).toBeNull();
   });
 
@@ -91,6 +91,20 @@ describe("ToolRow output", () => {
     expect(kinds).toEqual(["is-hunk", "is-removed", "is-added", "is-added", "is-plain"]);
     // The path is the target already: no second chip for the same file.
     expect(container.querySelector(".workspace-chat-tool-location")).toBeNull();
+  });
+
+  it("opens an edit at once with six lines of its diff, then a button for the rest", async () => {
+    const diff = ["@@ f", ...Array.from({ length: 9 }, (_, index) => `+ line ${index + 1}`)].join(
+      "\n",
+    );
+    const container = await renderRow(
+      tool({ kind: "edit", title: "src/a.ts", locations: [{ path: "src/a.ts" }], output: diff }),
+    );
+    const details = container.querySelector("details");
+    if (details === null) throw new Error("the edit had no diff to open");
+    expect(details.open).toBe(true);
+    expect(container.querySelectorAll(".workspace-chat-tool-output-line")).toHaveLength(6);
+    expect(container.querySelector(".workspace-chat-tool-more")?.textContent).toContain("+4 lines");
   });
 
   it("does not read a shell's dashed output as a diff", async () => {
@@ -127,15 +141,15 @@ describe("ToolRow output", () => {
     expect(excerpt.querySelector(".workspace-chat-tool-more")?.textContent).toContain("+2 lines");
   });
 
-  it("starts every row that has something to show closed", async () => {
+  it("opens every row that has something to show", async () => {
     const container = await renderRow(tool({ kind: "search", title: "q", output: lines(10) }));
     const details = container.querySelector("details");
     if (details === null) throw new Error("the row had nothing to open");
-    expect(details.open).toBe(false);
+    expect(details.open).toBe(true);
   });
 
   it("says a single hidden line in the singular", async () => {
-    const container = await renderRow(tool({ kind: "search", title: "q", output: lines(7) }));
+    const container = await renderRow(tool({ kind: "search", title: "q", output: lines(3) }));
     expect(container.querySelector(".workspace-chat-tool-more")?.textContent).toContain("+1 line");
     expect(container.querySelector(".workspace-chat-tool-more")?.textContent).not.toContain(
       "lines",

@@ -918,8 +918,8 @@
 }
 
 .workspace-chat-tool-output.is-diff .workspace-chat-tool-output-lines {
-  padding-inline-start: var(--space-10);
-  border-inline-start: 2px solid var(--line-strong);
+  padding-inline-start: var(--space-8);
+  border-inline-start: 1px solid var(--line);
 }
 
 .workspace-chat-tool-output-line.is-added {

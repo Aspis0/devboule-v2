@@ -121,6 +121,7 @@ export const ToolRow = memo(function ToolRow({
         <details
           ref={details}
           className="workspace-chat-tool-details"
+          open
           onToggle={() => {
             collapsedByUser.current = hasImages && details.current?.open === false;
           }}
