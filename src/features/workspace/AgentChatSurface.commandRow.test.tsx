@@ -93,9 +93,7 @@ describe("command tool row", () => {
   async function mount() {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="codex-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="codex-agent" />);
     });
     await act(async () => undefined);
   }

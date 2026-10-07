@@ -84,7 +84,6 @@ async function renderSurface(
       <AgentChatSurface
         daemonState="connected"
         sessionId={SESSION}
-        title="Agent"
         activity={props.activity ?? "idle"}
         queueSupported={props.queueSupported ?? false}
         fileUploadSupported

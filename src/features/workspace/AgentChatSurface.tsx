@@ -32,7 +32,6 @@ import {
 import type {
   ActiveTurnBehavior,
   AgentActivityState,
-  Attention,
   DaemonConnectionState,
   PermissionRequest,
   PermissionResolved,
@@ -46,8 +45,7 @@ import { AgentSession, lastAssistantMessage, normalizeGoal } from "../../lib/age
 import type { AgentSessionState, AgentStatus } from "../../lib/agentSession";
 import { errorSentence } from "../../lib/errorSentence";
 import { useConversationScrollStick } from "./useConversationScrollStick";
-import { PaneHeader } from "./paneHeader/PaneHeader";
-import { headerDisplay } from "./paneHeader/paneHeaderStatus";
+import { PaneHeaderKebab } from "./paneHeader/PaneHeaderKebab";
 import { headerMenu, type HeaderMenuSeam } from "./paneHeader/paneHeaderMenu";
 import { setPreferredEffort, setPreferredMode, setPreferredModel } from "../../lib/agentPrefs";
 import { forgetCreatedSession, mayApplyPicks } from "./createdSessions";
@@ -141,13 +139,11 @@ export function goalCommandsFor(
 
 interface AgentChatSurfaceProps {
   sessionId: string;
-  title: string;
   cwd?: string;
   id?: string;
   auxiliary?: ReactNode;
-  /** Extra controls at the header's trailing edge, after the status word:
-   * the recovered reopen bar on a recovered transcript, nothing on a live
-   * pane. The header owns the row; this only fills its end. */
+  /** The recovered reopen bar: renders nothing on a live pane, so the
+   * transcript gains a row only when the session was recovered. */
   headerTrailing?: ReactNode;
   onOpenSubagent?: (sessionId: string) => void;
   subagentAttention?: ReadonlyMap<string, string>;
@@ -160,16 +156,14 @@ interface AgentChatSurfaceProps {
    * turns recognition off — no workspace, or a surface that cannot open one.
    */
   fileLinks?: ChatFileLinks | null;
-  /** The roster's turn status and pending ask, painted by the header. Absent until the workspace passes them. */
+  /** The roster's turn status, read by the composer's send predicate. Absent until the workspace passes it. */
   activity?: AgentActivityState;
-  attention?: Attention;
   observedState?: SessionState | null;
   /**
    * The roster snapshot's goal: the row's seed before the first frame, and
    * what a stopped or recovered session shows, since those receive no frames.
    */
   initialGoal?: string | null;
-  elapsedMs?: number | null;
   /** The daemon connection's state; input is disabled while it cannot carry sends. Required so an omission is compile-visible. */
   daemonState: DaemonConnectionState;
   /**
@@ -354,7 +348,6 @@ export const QUEUE_UNSUPPORTED =
 
 export const AgentChatSurface = memo(function AgentChatSurface({
   sessionId,
-  title,
   cwd,
   id,
   auxiliary,
@@ -365,10 +358,8 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   headerMenuSeam,
   fileLinks = null,
   activity,
-  attention,
   observedState = null,
   initialGoal = null,
-  elapsedMs = null,
   daemonState,
   sessionRoster,
   deviceNames,
@@ -735,7 +726,6 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   // failure, not a guarantee: sends may be slow, and a failure is recorded
   // as a turn-level note.
   const daemonGone = daemonState === "disconnected" || daemonState === "connecting";
-  const header = headerDisplay(observedState, elapsedMs, state.status, activity, attention);
   // The workspace's reopen bar describes this recovered attach state once —
   // while it is shown (a recovered row always shows it), the controller's own
   // attach-state ERROR entry and the composer footer would be second and third
@@ -795,6 +785,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
       focusComposer,
     ],
   );
+  const menu = headerMenu(cwd, headerMenuSeam, sessionId);
   return (
     <div
       id={id}
@@ -810,24 +801,21 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         lastFinished={state.lastFinished}
         task={currentTask}
       />
-      <PaneHeader
-        kind="agent"
-        title={title || "Agent"}
-        display={header}
-        menu={headerMenu(cwd, headerMenuSeam, sessionId)}
-        trailingSlot={headerTrailing}
-        wordSaidElsewhere={!osGone && header.word === "Running"}
-        subagentSlot={
-          subagentRows.length > 0 ? (
-            <SubagentMenu
-              rows={subagentRows}
-              onOpenSession={onOpenSubagent}
-              attentionById={subagentAttention}
-              onArchiveFinished={archiveFinishedSubagents}
-            />
-          ) : null
-        }
-      />
+      {/* No row of its own: the wrapper has zero height, and the kebab floats
+          over the transcript's top edge. Its Close and Archive have no other
+          entry point, so the kebab stays in this smallest form. */}
+      <div className="workspace-agent-extras">
+        {subagentRows.length > 0 ? (
+          <SubagentMenu
+            rows={subagentRows}
+            onOpenSession={onOpenSubagent}
+            attentionById={subagentAttention}
+            onArchiveFinished={archiveFinishedSubagents}
+          />
+        ) : null}
+        {headerTrailing}
+        {menu === null ? null : <PaneHeaderKebab menu={menu} />}
+      </div>
       {/* Remounted per goal text: the disclosure state belongs to the text,
           so a replaced goal arrives collapsed. */}
       <GoalLine key={state.goal ?? "no-goal"} goal={state.goal ?? null} />

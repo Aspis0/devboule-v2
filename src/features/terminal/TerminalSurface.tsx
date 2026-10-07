@@ -320,7 +320,6 @@ export const TerminalSurface = memo(function TerminalSurface({
   return (
     <div id={id} className="workspace-terminal-shell" role="tabpanel" aria-label="Terminal output">
       <PaneHeader
-        kind="terminal"
         title={title ?? "Terminal"}
         display={headerDisplay(
           observedState,

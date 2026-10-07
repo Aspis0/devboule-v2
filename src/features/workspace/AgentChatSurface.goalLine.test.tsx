@@ -52,7 +52,6 @@ async function renderSurface(props: {
       <AgentChatSurface
         daemonState="connected"
         sessionId="agent-1"
-        title="Agent"
         initialGoal={props.initialGoal}
         observedState={props.observedState ?? null}
       />,
@@ -70,7 +69,6 @@ async function rerenderSurface(props: {
       <AgentChatSurface
         daemonState="connected"
         sessionId="agent-1"
-        title="Agent"
         initialGoal={props.initialGoal}
         observedState={props.observedState ?? null}
       />,
@@ -95,15 +93,15 @@ function follows(earlier: Element | null, later: Element | null): boolean {
 }
 
 describe("the goal row on the agent surface", () => {
-  it("sits between the pane header and the transcript, above the composer", async () => {
+  it("sits between the subagent and recovery row and the transcript, above the composer", async () => {
     await renderSurface({ initialGoal: GOAL });
 
-    const header = container.querySelector(".workspace-agent-toolbar");
+    const extras = container.querySelector(".workspace-agent-extras");
     const goal = container.querySelector('[data-testid="goal-line"]');
     const conversation = container.querySelector(".workspace-conversation");
     const composer = container.querySelector(".workspace-composer-track");
     expect(goal?.textContent).toContain(GOAL);
-    expect(follows(header, goal)).toBe(true);
+    expect(follows(extras, goal)).toBe(true);
     expect(follows(goal, conversation)).toBe(true);
     expect(follows(conversation, composer)).toBe(true);
   });

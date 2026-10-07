@@ -49,9 +49,7 @@ let root: ReturnType<typeof createRoot>;
 async function mount() {
   root = createRoot(container);
   await act(async () => {
-    root.render(
-      <AgentChatSurface daemonState="connected" sessionId="agent-images-surface" title="Agent" />,
-    );
+    root.render(<AgentChatSurface daemonState="connected" sessionId="agent-images-surface" />);
   });
   await act(async () => {});
 }

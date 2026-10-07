@@ -73,7 +73,6 @@ async function rerenderSurface(observedState: SessionState | null): Promise<void
       <AgentChatSurface
         daemonState="connected"
         sessionId="agent-1"
-        title="Agent"
         observedState={observedState}
       />,
     );

@@ -28,11 +28,7 @@ afterEach(async () => {
   Reflect.deleteProperty(navigator, "clipboard");
 });
 
-async function open(
-  kind: "agent" | "terminal",
-  cwd?: string,
-  closeEntries = buildTabCloseEntries(1, 3),
-) {
+async function open(cwd?: string, closeEntries = buildTabCloseEntries(1, 3)) {
   const host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -40,7 +36,6 @@ async function open(
   await act(async () =>
     root!.render(
       <PaneHeader
-        kind={kind}
         title="Human title"
         menu={menu}
         display={{
@@ -66,8 +61,8 @@ function item(label: string): HTMLButtonElement {
 }
 
 describe("pane menu copies", () => {
-  it.each(["agent", "terminal"] as const)("copies the stable ID of a %s pane", async (kind) => {
-    await open(kind);
+  it("copies the stable ID of the pane", async () => {
+    await open();
     expect(
       [...document.querySelectorAll('[role="menuitem"]')].map((row) => row.textContent),
     ).toEqual(["Copy session ID", "Close to the right", "Close other tabs", "Close"]);
@@ -93,7 +88,7 @@ describe("pane menu copies", () => {
     ],
     [String.raw`\\?\UNC\server\share\project`, String.raw`\\server\share\project`],
   ])("displays and copies the human path for %s", async (cwd, expected) => {
-    await open("agent", cwd);
+    await open(cwd);
     expect(document.querySelector(".pane-header-path")?.getAttribute("title")).toBe(expected);
     const copyPath = item("Copy path");
     expect(copyPath.nextElementSibling?.getAttribute("role")).toBe("separator");
@@ -115,7 +110,7 @@ describe("pane menu copies", () => {
   ])("reports a %s clipboard failure for %s", async (kind, label, announcement) => {
     if (kind === "rejected") writeText.mockRejectedValueOnce(new Error("denied"));
     else Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
-    await open("terminal", "C:/project");
+    await open("C:/project");
     await act(async () => item(label).click());
     expect(item("Copy failed")).not.toBeNull();
     expect(document.querySelector('.pane-header-menu [role="status"]')?.textContent).toBe(
@@ -125,7 +120,7 @@ describe("pane menu copies", () => {
   });
 
   it("omits the separator when copy rows have no close group", async () => {
-    await open("agent", "C:/p", []);
+    await open("C:/p", []);
     expect(item("Copy path")).not.toBeNull();
     expect(document.querySelector('[role="separator"]')).toBeNull();
   });
@@ -138,7 +133,7 @@ describe("pane menu copies", () => {
           completeId = resolve;
         }),
     );
-    await open("agent", "C:/project");
+    await open("C:/project");
     await act(async () => item("Copy session ID").click());
     await act(async () => item("Copy path").click());
     await act(async () => completeId!());

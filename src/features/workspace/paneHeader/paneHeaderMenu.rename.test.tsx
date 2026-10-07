@@ -52,7 +52,7 @@ function renderHeader() {
 async function openMenu(menu: PaneHeaderMenu) {
   const { host, root } = renderHeader();
   await act(async () => {
-    root.render(<PaneHeader kind="agent" title="Claude" display={DISPLAY} menu={menu} />);
+    root.render(<PaneHeader title="Claude" display={DISPLAY} menu={menu} />);
   });
   const kebab = host.querySelector<HTMLButtonElement>(".pane-header-kebab");
   if (kebab === null) throw new Error("kebab did not render");
@@ -187,7 +187,7 @@ async function openHeaderWithDialog() {
     });
     return (
       <>
-        <PaneHeader kind="agent" title="worker one" display={DISPLAY} menu={menu} />
+        <PaneHeader title="worker one" display={DISPLAY} menu={menu} />
         <SessionRenameDialog rename={rename} onClose={() => setRename(null)} />
       </>
     );

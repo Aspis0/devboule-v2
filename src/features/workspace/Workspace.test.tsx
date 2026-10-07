@@ -131,13 +131,11 @@ vi.mock("../terminal/TerminalSurface", () => ({
 // it is gated on, and the title prop — the pane header's only input — captured
 // so a test can prove the tab's label and the header's title are one string.
 const surfaceQueueSupported = vi.hoisted(() => ({ bySession: new Map<string, boolean>() }));
-const surfaceTitles = vi.hoisted(() => ({ bySession: new Map<string, string>() }));
 const surfaceGifWebpSupported = vi.hoisted(() => ({ bySession: new Map<string, boolean>() }));
 
 vi.mock("./AgentChatSurface", () => ({
   AgentChatSurface: ({
     sessionId,
-    title,
     auxiliary,
     hasPendingPermission,
     queueSupported,
@@ -146,7 +144,6 @@ vi.mock("./AgentChatSurface", () => ({
     onPermissionResolved,
   }: {
     sessionId: string;
-    title?: string;
     auxiliary?: ReactNode;
     hasPendingPermission?: boolean;
     queueSupported?: boolean;
@@ -160,7 +157,6 @@ vi.mock("./AgentChatSurface", () => ({
   }) => {
     surfaceQueueSupported.bySession.set(sessionId, queueSupported === true);
     surfaceGifWebpSupported.bySession.set(sessionId, gifWebpSupported === true);
-    surfaceTitles.bySession.set(sessionId, title ?? "");
     return (
       <div data-testid="agent-chat-surface">
         {sessionId}
@@ -559,7 +555,6 @@ describe("Workspace sessions", () => {
     setLastSelectedWorkspaceKey(null);
     surfaceQueueSupported.bySession.clear();
     surfaceGifWebpSupported.bySession.clear();
-    surfaceTitles.bySession.clear();
     container = document.createElement("div");
     document.body.appendChild(container);
     vi.mocked(projectsList).mockResolvedValue([project]);
@@ -3552,14 +3547,11 @@ describe("Workspace sessions", () => {
     expect(tab.title).not.toContain("input_required");
   });
 
-  it("the tab and the header read the same title", async () => {
+  it("the tab takes the auto-title the daemon pushes", async () => {
     // The daemon's first-prompt auto-title lands on the roster row's own
-    // name, pushed after the session was created nameless. The tab's label
-    // and the pane header's title are the same string from the same
-    // function — one name rule, two surfaces. This pins the plumbing; it
-    // cannot catch a label collapsed to 0 px inside the chip, which is
-    // what the live screenshots showed and what the strip's CSS fixes
-    // address.
+    // name, pushed after the session was created nameless. The tab label
+    // must follow it. This pins the plumbing; it cannot catch a label
+    // collapsed to 0 px inside the chip, which the strip's CSS addresses.
     const autoTitle = "Plan how to create hello.txt in this folder containing the word hi.";
     vi.mocked(sessionsList).mockResolvedValue([acpSession("session-auto", "")]);
     root = createRoot(container);
@@ -3600,9 +3592,6 @@ describe("Workspace sessions", () => {
       throw new Error("tab label did not take the auto-title");
     });
     expect(relabeled.textContent).toBe(autoTitle);
-    // The header's only input is the title prop the workspace passes the
-    // chat surface — the same string, from the same function.
-    expect(surfaceTitles.bySession.get("session-auto")).toBe(autoTitle);
   });
 
   it("leaves a parked session's reason to the attention's own words", async () => {

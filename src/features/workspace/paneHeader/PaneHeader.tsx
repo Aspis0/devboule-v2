@@ -5,49 +5,26 @@ import type { PaneHeaderMenu as PaneHeaderMenuConfig } from "./paneHeaderMenu";
 import { PaneHeaderKebab } from "./PaneHeaderKebab";
 
 export interface PaneHeaderProps {
-  kind: "agent" | "terminal";
   title: string;
   display: HeaderDisplay;
   /** Null renders no kebab: a menu with nothing actionable is a dead control. */
   menu: PaneHeaderMenuConfig | null;
-  subagentSlot?: ReactNode;
+  /** The terminal's interrupt and close: they share the header's row, not a second one. */
   trailingSlot?: ReactNode;
-  /** The status word is said elsewhere (the working line, the status bar): keep
-      it for assistive tech and the tooltip, draw it nowhere. */
-  wordSaidElsewhere?: boolean;
 }
 
-export function PaneHeader({
-  kind,
-  title,
-  display,
-  menu,
-  subagentSlot,
-  trailingSlot,
-  wordSaidElsewhere = false,
-}: PaneHeaderProps) {
-  const agent = kind === "agent";
+export function PaneHeader({ title, display, menu, trailingSlot }: PaneHeaderProps) {
   const text = display.detail === null ? display.word : `${display.word} · ${display.detail}`;
   return (
-    <div className={agent ? "workspace-agent-toolbar" : "workspace-terminal-toolbar"}>
+    <div className="workspace-terminal-toolbar">
       <span
         className={`workspace-status-dot workspace-dot-${display.tone}${display.pulse ? " dot-pulse" : ""}`}
       />
-      <span className={agent ? "workspace-agent-title" : "workspace-terminal-title"}>{title}</span>
-      {agent ? subagentSlot : null}
-      <span
-        className={`${agent ? "workspace-agent-status" : "workspace-terminal-status"}${
-          wordSaidElsewhere ? " sr-only" : ""
-        }`}
-        role={wordSaidElsewhere ? undefined : "status"}
-        title={display.tooltip}
-      >
+      <span className="workspace-terminal-title">{title}</span>
+      <span className="workspace-terminal-status" role="status" title={display.tooltip}>
         {text}
         {display.srDetail === null ? null : <span className="sr-only"> — {display.srDetail}</span>}
       </span>
-      {/* The recovered reopen bar on an agent pane, the interrupt/close on a
-          terminal one: either way the header's own row carries the pane's
-          extra control, and no second row is added for it. */}
       {trailingSlot}
       {menu === null ? null : <PaneHeaderKebab menu={menu} />}
     </div>

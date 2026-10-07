@@ -81,23 +81,6 @@
   background: transparent;
 }
 
-.workspace-agent-toolbar {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: var(--space-8);
-  height: var(--control-bar);
-  padding: 0 var(--space-8) 0 var(--space-12);
-  border-bottom: 1px solid var(--line);
-}
-
-.workspace-agent-toolbar .workspace-status-dot {
-  width: 6px;
-  height: 6px;
-}
-
 /* The recovered ring, never a fill — the same token as the strip's ring. */
 .workspace-dot-recovered {
   background: transparent;
@@ -107,51 +90,6 @@
 
 .workspace-dot-attention {
   background: var(--tone-attention);
-}
-
-/* Descendant selectors on purpose: see the terminal title above. */
-.workspace-agent-toolbar .workspace-agent-title {
-  flex: 1 1 160px;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--ink);
-  font-family: var(--font-ui);
-  font-size: var(--type-interface);
-  font-weight: var(--weight-label);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-agent-toolbar .workspace-agent-status {
-  flex: 1 1 90px;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--muted);
-  font-family: var(--font-ui);
-  font-size: var(--type-meta);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* The recovered reopen bar inside the agent header: the header's own row is
-   the transcript's one compact recovery row, so the bar drops its outer
-   margin and truncates instead of wrapping. The failed-reopen block drops
-   its box and keeps only the danger text. Descendants on purpose: the
-   shared bare rules in Workspace.css load after this sheet. */
-.workspace-agent-toolbar .workspace-session-recovered,
-.workspace-agent-toolbar .workspace-session-error {
-  min-width: 0;
-  flex: 0 1 auto;
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-
-.workspace-agent-toolbar .workspace-session-notice-text,
-.workspace-agent-toolbar .workspace-session-error-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .pane-header-menu {

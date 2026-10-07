@@ -182,18 +182,13 @@ const CASES: StatusCase[] = [
   },
 ];
 
-async function renderHeader(kind: "agent" | "terminal", display: HeaderDisplay): Promise<void> {
+async function renderHeader(display: HeaderDisplay): Promise<void> {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
   await act(async () => {
     root.render(
-      <PaneHeader
-        kind={kind}
-        title={kind === "agent" ? "Agent" : "zsh · api"}
-        display={display}
-        menu={headerMenu("C:\\x", undefined)}
-      />,
+      <PaneHeader title="zsh · api" display={display} menu={headerMenu("C:\\x", undefined)} />,
     );
   });
 }
@@ -202,32 +197,30 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-for (const kind of ["agent", "terminal"] as const) {
-  const toolbar = kind === "agent" ? ".workspace-agent-toolbar" : ".workspace-terminal-toolbar";
+describe("the terminal pane status", () => {
+  const toolbar = ".workspace-terminal-toolbar";
 
-  describe(`the ${kind} pane status`, () => {
-    for (const c of CASES) {
-      it(`announces ${c.name} once, with the detail and the title intact`, async () => {
-        const display = headerDisplay(c.observed, c.elapsedMs, c.status, undefined, c.attention);
-        await renderHeader(kind, display);
+  for (const c of CASES) {
+    it(`announces ${c.name} once, with the detail and the title intact`, async () => {
+      const display = headerDisplay(c.observed, c.elapsedMs, c.status, undefined, c.attention);
+      await renderHeader(display);
 
-        const status = document.querySelector(toolbar)?.querySelector('[role="status"]');
-        if (status === null || status === undefined) throw new Error("pane status did not render");
-        expect(status.getAttribute("aria-label")).toBeNull();
+      const status = document.querySelector(toolbar)?.querySelector('[role="status"]');
+      if (status === null || status === undefined) throw new Error("pane status did not render");
+      expect(status.getAttribute("aria-label")).toBeNull();
 
-        const spoken = c.suffix === null ? c.visible : `${c.visible} — ${c.suffix}`;
-        expect(status.textContent).toBe(spoken);
-        expect(status.textContent?.split(c.word).length - 1).toBe(1);
-        if (c.suffix !== null) expect(status.textContent).toContain(c.suffix);
-        expect(status.getAttribute("title")).toBe(c.tooltip);
+      const spoken = c.suffix === null ? c.visible : `${c.visible} — ${c.suffix}`;
+      expect(status.textContent).toBe(spoken);
+      expect(status.textContent?.split(c.word).length - 1).toBe(1);
+      if (c.suffix !== null) expect(status.textContent).toContain(c.suffix);
+      expect(status.getAttribute("title")).toBe(c.tooltip);
 
-        const suffix = status.querySelector(".sr-only");
-        if (c.suffix === null) {
-          expect(suffix).toBeNull();
-        } else {
-          expect(suffix?.textContent).toBe(` — ${c.suffix}`);
-        }
-      });
-    }
-  });
-}
+      const suffix = status.querySelector(".sr-only");
+      if (c.suffix === null) {
+        expect(suffix).toBeNull();
+      } else {
+        expect(suffix?.textContent).toBe(` — ${c.suffix}`);
+      }
+    });
+  }
+});

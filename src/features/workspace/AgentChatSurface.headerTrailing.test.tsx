@@ -1,5 +1,6 @@
-// The agent header's trailing slot: the workspace hands the recovered reopen
-// bar down and the header renders it on its own row, after the status word.
+// The recovered reopen bar: the workspace hands it down and the surface renders
+// it above the transcript, in the extras wrapper that holds no row of its own
+// when there is nothing to show.
 // @vitest-environment happy-dom
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -40,7 +41,6 @@ async function renderSurface(headerTrailing?: ReactNode): Promise<void> {
       <AgentChatSurface
         daemonState="connected"
         sessionId="agent-trailing-id"
-        title="Agent"
         observedState={{ type: "live", generation: 1 }}
         headerTrailing={headerTrailing}
       />,
@@ -48,23 +48,31 @@ async function renderSurface(headerTrailing?: ReactNode): Promise<void> {
   });
 }
 
-it("renders the trailing slot inside the agent toolbar, before the kebab", async () => {
+it("renders the trailing slot above the transcript, with no pane header row", async () => {
   await renderSurface(<span data-testid="trailing-probe">probe</span>);
 
-  const toolbar = host.querySelector(".workspace-agent-toolbar");
-  if (toolbar === null) throw new Error("agent toolbar did not render");
-  const probe = toolbar.querySelector('[data-testid="trailing-probe"]');
-  if (probe === null) throw new Error("trailing slot did not render in the toolbar");
-  const children = [...toolbar.children];
-  expect(children.at(-1)?.className).toContain("pane-header-kebab");
-  expect(children.indexOf(probe)).toBeLessThan(children.length - 1);
+  const probe = host.querySelector('[data-testid="trailing-probe"]');
+  if (probe === null) throw new Error("trailing slot did not render");
+  const extras = probe.closest(".workspace-agent-extras");
+  expect(extras).not.toBeNull();
+  const conversation = host.querySelector(".workspace-conversation");
+  expect(extras?.compareDocumentPosition(conversation as Node)).toBe(
+    Node.DOCUMENT_POSITION_FOLLOWING,
+  );
+  expect(host.querySelector(".workspace-agent-toolbar")).toBeNull();
 });
 
 it("renders no trailing control when the workspace passes none", async () => {
   await renderSurface();
 
-  const toolbar = host.querySelector(".workspace-agent-toolbar");
-  if (toolbar === null) throw new Error("agent toolbar did not render");
-  expect(toolbar.querySelector('[data-testid="trailing-probe"]')).toBeNull();
-  expect(toolbar.lastElementChild?.className).toContain("pane-header-kebab");
+  expect(host.querySelector('[data-testid="trailing-probe"]')).toBeNull();
+  expect(host.querySelector(".workspace-agent-toolbar")).toBeNull();
+});
+
+it("draws no title or state text: the kebab is the surface's only header control", async () => {
+  await renderSurface();
+
+  expect(host.querySelector(".workspace-agent-title, .workspace-agent-status")).toBeNull();
+  const extras = host.querySelector(".workspace-agent-extras");
+  expect(extras?.querySelector(".pane-header-kebab")).not.toBeNull();
 });

@@ -56,7 +56,6 @@ async function renderSurface(props: Record<string, unknown> = {}): Promise<void>
       <AgentChatSurface
         daemonState="connected"
         sessionId="agent-1"
-        title="Agent"
         queueSupported
         {...surfaceProps}
       />,
@@ -72,7 +71,6 @@ function updateSurfaceProps(next: Record<string, unknown>): void {
       <AgentChatSurface
         daemonState="connected"
         sessionId="agent-1"
-        title="Agent"
         queueSupported
         {...surfaceProps}
       />,

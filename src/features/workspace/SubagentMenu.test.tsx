@@ -68,7 +68,7 @@ describe("SubagentMenu pill words", () => {
     await act(async () => {
       root.render(
         <StrictMode>
-          <AgentChatSurface daemonState="connected" sessionId="pill-words" title="Agent" />
+          <AgentChatSurface daemonState="connected" sessionId="pill-words" />
         </StrictMode>,
       );
     });
@@ -121,7 +121,7 @@ describe("SubagentMenu pill words", () => {
     await act(async () => {
       root.render(
         <StrictMode>
-          <AgentChatSurface daemonState="connected" sessionId="pill-name" title="Agent" />
+          <AgentChatSurface daemonState="connected" sessionId="pill-name" />
         </StrictMode>,
       );
     });
@@ -168,7 +168,7 @@ describe("SubagentMenu pill words", () => {
     await act(async () => {
       root.render(
         <StrictMode>
-          <AgentChatSurface daemonState="connected" sessionId="pill-dot" title="Agent" />
+          <AgentChatSurface daemonState="connected" sessionId="pill-dot" />
         </StrictMode>,
       );
     });
@@ -202,7 +202,7 @@ describe("SubagentMenu pill words", () => {
     await act(async () => {
       root.render(
         <StrictMode>
-          <AgentChatSurface daemonState="connected" sessionId="breathing-dot" title="Agent" />
+          <AgentChatSurface daemonState="connected" sessionId="breathing-dot" />
         </StrictMode>,
       );
     });
@@ -263,7 +263,7 @@ describe("SubagentMenu pill words", () => {
     await act(async () => {
       root.render(
         <StrictMode>
-          <AgentChatSurface daemonState="connected" sessionId="pill-one" title="Agent" />
+          <AgentChatSurface daemonState="connected" sessionId="pill-one" />
         </StrictMode>,
       );
     });
@@ -301,7 +301,7 @@ describe("SubagentMenu pill words", () => {
     await act(async () => {
       root.render(
         <StrictMode>
-          <AgentChatSurface daemonState="connected" sessionId="pill-idle" title="Agent" />
+          <AgentChatSurface daemonState="connected" sessionId="pill-idle" />
         </StrictMode>,
       );
     });
@@ -380,7 +380,6 @@ describe("SubagentMenu list", () => {
           <AgentChatSurface
             daemonState="connected"
             sessionId="list-escape"
-            title="Agent"
             onOpenSubagent={() => undefined}
             sessionRoster={[
               {
@@ -419,7 +418,7 @@ describe("SubagentMenu list", () => {
     await act(async () => {
       root.render(
         <StrictMode>
-          <AgentChatSurface daemonState="connected" sessionId="list-upward" title="Agent" />
+          <AgentChatSurface daemonState="connected" sessionId="list-upward" />
         </StrictMode>,
       );
     });
@@ -454,7 +453,7 @@ describe("SubagentMenu list", () => {
     await act(async () => {
       root.render(
         <StrictMode>
-          <AgentChatSurface daemonState="connected" sessionId="list-structure" title="Agent" />
+          <AgentChatSurface daemonState="connected" sessionId="list-structure" />
         </StrictMode>,
       );
     });
@@ -501,7 +500,7 @@ describe("SubagentMenu list", () => {
     await act(async () => {
       root.render(
         <StrictMode>
-          <AgentChatSurface daemonState="connected" sessionId="list-pill-press" title="Agent" />
+          <AgentChatSurface daemonState="connected" sessionId="list-pill-press" />
         </StrictMode>,
       );
     });
@@ -539,7 +538,7 @@ describe("SubagentMenu list", () => {
     await act(async () => {
       root.render(
         <StrictMode>
-          <AgentChatSurface daemonState="connected" sessionId="list-keyboard" title="Agent" />
+          <AgentChatSurface daemonState="connected" sessionId="list-keyboard" />
         </StrictMode>,
       );
     });

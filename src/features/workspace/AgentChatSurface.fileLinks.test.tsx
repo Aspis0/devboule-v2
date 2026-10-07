@@ -54,12 +54,7 @@ describe("file links in the agent transcript", () => {
     root = createRoot(container);
     await act(async () => {
       root.render(
-        <AgentChatSurface
-          daemonState="connected"
-          sessionId="codex-agent"
-          title="Agent"
-          fileLinks={fileLinks}
-        />,
+        <AgentChatSurface daemonState="connected" sessionId="codex-agent" fileLinks={fileLinks} />,
       );
     });
     await act(async () => {

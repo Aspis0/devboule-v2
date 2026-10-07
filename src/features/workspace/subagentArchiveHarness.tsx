@@ -62,7 +62,6 @@ export function surface(
     <AgentChatSurface
       daemonState="connected"
       sessionId="parent"
-      title="Parent"
       observedState={observedState ?? null}
       onOpenSubagent={onOpenSubagent}
       sessionRoster={roster}

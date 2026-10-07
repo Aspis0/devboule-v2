@@ -139,7 +139,6 @@ vi.mock("../terminal/TerminalSurface", async () => {
         <>
           <div data-testid="terminal-surface">{sessionId}</div>
           <PaneHeader
-            kind="terminal"
             title={sessionId}
             display={headerDisplay(observedState, null, null, undefined, attention)}
             menu={menu}

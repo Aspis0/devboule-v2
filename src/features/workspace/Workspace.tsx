@@ -2216,14 +2216,11 @@ export function Workspace({
                     key={paneSession.id}
                     id={WORKSPACE_TERMINAL_PANEL_ID}
                     sessionId={paneSession.id}
-                    title={sessionTitle(paneSession)}
                     cwd={paneSession.cwd}
                     fileLinks={chatFileLinks}
                     observedState={paneSession.state}
                     initialGoal={paneSession.goal}
-                    elapsedMs={paneSession.elapsedMs}
                     activity={paneSession.activity}
-                    attention={activeSessionAttention(paneSession)}
                     daemonState={daemon.state}
                     sessionRoster={sessions}
                     onOpenSubagent={handleOpenSubagent}

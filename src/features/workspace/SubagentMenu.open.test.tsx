@@ -40,7 +40,6 @@ describe("a provider task row in the subagent menu", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="parent"
-          title="Parent"
           onOpenSubagent={open}
           sessionRoster={[sameId]}
           subagentAttention={new Map([["provider-internal", "Needs your approval"]])}
@@ -80,7 +79,6 @@ describe("a provider task row in the subagent menu", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="parent"
-          title="Parent"
           onOpenSubagent={open}
           sessionRoster={[child]}
         />,

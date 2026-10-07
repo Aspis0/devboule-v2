@@ -94,7 +94,6 @@ async function renderAgent(observedState: SessionState | null = null): Promise<v
       <AgentChatSurface
         daemonState="connected"
         sessionId="agent-1"
-        title="Agent"
         observedState={observedState}
       />,
     );

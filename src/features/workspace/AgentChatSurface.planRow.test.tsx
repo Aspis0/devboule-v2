@@ -163,7 +163,6 @@ describe("pending plan row suppression", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId={SESSION}
-          title="Agent"
           observedState={LIVE}
           pendingPlanToolCallId={pendingPlanId(selectedCard())}
           auxiliary={cardStub()}

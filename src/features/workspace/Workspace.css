@@ -512,6 +512,22 @@
   flex-direction: column;
 }
 
+/* Zero height: the pane's own controls float over the transcript instead of
+   taking a row. The kebab is the one control that needs its own placement. */
+.workspace-agent-extras {
+  position: relative;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+}
+
+.workspace-agent-extras > .pane-header-kebab {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-8);
+  z-index: 1;
+}
+
 .workspace-chat-entry {
   flex: none;
   max-width: 100%;

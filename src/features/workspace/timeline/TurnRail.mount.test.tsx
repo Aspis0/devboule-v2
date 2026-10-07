@@ -40,9 +40,7 @@ describe("the turn rail through the surface", () => {
     const surfaceRoot = createRoot(container);
     root = surfaceRoot;
     await act(async () => {
-      surfaceRoot.render(
-        <AgentChatSurface daemonState="connected" sessionId="rail-session" title="Agent" />,
-      );
+      surfaceRoot.render(<AgentChatSurface daemonState="connected" sessionId="rail-session" />);
     });
     await act(async () => undefined);
 
@@ -96,9 +94,7 @@ describe("the turn rail through the surface", () => {
     const surfaceRoot = createRoot(container);
     root = surfaceRoot;
     await act(async () => {
-      surfaceRoot.render(
-        <AgentChatSurface daemonState="connected" sessionId="time-session" title="Agent" />,
-      );
+      surfaceRoot.render(<AgentChatSurface daemonState="connected" sessionId="time-session" />);
     });
     await act(async () => undefined);
 

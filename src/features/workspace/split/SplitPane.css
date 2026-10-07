@@ -147,12 +147,10 @@
     height: var(--control-dense);
   }
 
-  .workspace-split-pane .workspace-agent-toolbar,
   .workspace-split-pane .workspace-terminal-toolbar {
     height: var(--control-dense);
   }
 
-  .workspace-split-pane .workspace-agent-title,
   .workspace-split-pane .workspace-terminal-title {
     font-size: var(--type-small);
   }

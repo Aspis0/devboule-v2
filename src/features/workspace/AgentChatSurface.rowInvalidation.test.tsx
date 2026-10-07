@@ -47,7 +47,6 @@ async function renderSurface(extra: Partial<ComponentProps<typeof AgentChatSurfa
       <AgentChatSurface
         daemonState="connected"
         sessionId="invalidation"
-        title="Agent"
         fileLinks={fileLinks}
         observedState={{ type: "live", generation: 1 }}
         {...extra}

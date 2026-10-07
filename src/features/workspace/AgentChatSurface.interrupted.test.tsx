@@ -88,7 +88,6 @@ describe("interrupted tool row", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="cutoff-agent"
-          title="Agent"
           observedState={RECOVERED}
         />,
       );
@@ -120,12 +119,7 @@ describe("interrupted tool row", () => {
     root = createRoot(container);
     await act(async () => {
       root.render(
-        <AgentChatSurface
-          daemonState="connected"
-          sessionId="live-agent"
-          title="Agent"
-          observedState={LIVE}
-        />,
+        <AgentChatSurface daemonState="connected" sessionId="live-agent" observedState={LIVE} />,
       );
     });
     await act(async () => undefined);
@@ -154,7 +148,6 @@ describe("interrupted tool row", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="group-agent"
-          title="Agent"
           observedState={RECOVERED}
         />,
       );

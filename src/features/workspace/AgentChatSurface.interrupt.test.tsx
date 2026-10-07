@@ -43,7 +43,6 @@ async function mount(
       <AgentChatSurface
         daemonState="connected"
         sessionId="esc-agent"
-        title="Agent"
         observedState={{ type: "live", generation: 1 }}
         {...props}
       />,

@@ -39,7 +39,6 @@ it("renders the agent surface's session ID copy row without cwd or close actions
       <AgentChatSurface
         daemonState="connected"
         sessionId="agent-copy-id"
-        title="Human title"
         observedState={{ type: "live", generation: 1 }}
       />,
     );

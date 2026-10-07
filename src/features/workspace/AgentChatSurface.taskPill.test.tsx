@@ -49,14 +49,7 @@ describe("the checklist pill in the composer track", () => {
   it("shows an agent_tasks frame above the queued follow-ups", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface
-          daemonState="connected"
-          sessionId="agent-1"
-          title="Agent"
-          queueSupported
-        />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" queueSupported />);
     });
     await act(async () => undefined);
     pushQueuedRow();
@@ -93,14 +86,7 @@ describe("the checklist pill in the composer track", () => {
   it("counts and names the next item from the list the reducer kept", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface
-          daemonState="connected"
-          sessionId="agent-1"
-          title="Agent"
-          queueSupported
-        />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" queueSupported />);
     });
     await act(async () => undefined);
 

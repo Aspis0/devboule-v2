@@ -50,7 +50,7 @@ it("renders stable historical rows once while the last assistant streams", async
   document.body.append(container);
   root = createRoot(container);
   await act(async () => {
-    root.render(<AgentChatSurface daemonState="connected" sessionId="row-memo" title="Agent" />);
+    root.render(<AgentChatSurface daemonState="connected" sessionId="row-memo" />);
   });
   const textarea = container.querySelector<HTMLTextAreaElement>("textarea")!;
   await act(async () => {

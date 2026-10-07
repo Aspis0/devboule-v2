@@ -81,7 +81,7 @@ describe("AgentChatSurface question transcript", () => {
   async function mount(): Promise<void> {
     root = createRoot(container);
     await act(async () => {
-      root?.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root?.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
   }

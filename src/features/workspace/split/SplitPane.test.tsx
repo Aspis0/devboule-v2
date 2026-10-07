@@ -337,8 +337,8 @@ describe("a pane too small to read at full size", () => {
     );
     expect(query).toMatch(/height:\s*var\(--control-dense\)/);
     expect(query).toMatch(/font-size:\s*var\(--type-small\)/);
-    // The pane above compacts too: the chat's own header row is named here.
-    expect(query).toMatch(/\.workspace-split-pane \.workspace-agent-toolbar/);
+    // The pane above compacts too: the terminal's own header row is named here.
+    expect(query).toMatch(/\.workspace-split-pane \.workspace-terminal-toolbar/);
     // 13 px is the step below the 14 px interface: the 12 px meta floor holds.
     expect(query).not.toMatch(/font-size:\s*var\(--type-meta\)/);
   });

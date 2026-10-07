@@ -232,7 +232,7 @@ describe("AgentChatSurface", () => {
   it("renders plan tool rows with Markdown and an explicit outcome", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
     for (const [id, status, decision] of [
@@ -315,7 +315,7 @@ describe("AgentChatSurface", () => {
   it("renders session notices as muted system rows with their severity", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
 
@@ -340,7 +340,7 @@ describe("AgentChatSurface", () => {
   it("renders user bubbles and assistant Markdown without role labels", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
     await act(async () => {
@@ -378,7 +378,7 @@ describe("AgentChatSurface", () => {
   it("publishes the last assistant message while the chat is on screen", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
     expect(heldAssistantTextFor("agent-1")).toBeUndefined();
@@ -392,7 +392,7 @@ describe("AgentChatSurface", () => {
     // A different session takes the surface: the old entry goes with it, so
     // a toast for a transcript no longer on screen cannot quote it.
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-2" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-2" />);
     });
     expect(heldAssistantTextFor("agent-1")).toBeUndefined();
   });
@@ -400,7 +400,7 @@ describe("AgentChatSurface", () => {
   it("attaches, sends from the composer, renders streamed events, and detaches", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
 
@@ -451,9 +451,7 @@ describe("AgentChatSurface", () => {
   it("shows the turn cost on the short line and the cache figures behind it, and neither when absent", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="agent-cost" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-cost" />);
     });
     await act(async () => undefined);
 
@@ -517,9 +515,7 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="strict-agent"
-          title="Agent"
           observedState={LIVE_OBSERVED}
-          elapsedMs={0}
         />
       </StrictMode>
     );
@@ -528,9 +524,6 @@ describe("AgentChatSurface", () => {
     await act(async () => root.render(renderSurface()));
     await act(async () => undefined);
 
-    expect(container.querySelector(".workspace-agent-status")?.childNodes[0]?.textContent).toBe(
-      "Running",
-    );
     expect(
       container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
         ?.disabled,
@@ -541,9 +534,6 @@ describe("AgentChatSurface", () => {
     await act(async () => root.render(renderSurface()));
     await act(async () => undefined);
 
-    expect(container.querySelector(".workspace-agent-status")?.childNodes[0]?.textContent).toBe(
-      "Running",
-    );
     const textarea = container.querySelector<HTMLTextAreaElement>(
       'textarea[aria-label="Message the agent"]',
     );
@@ -569,7 +559,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="permission-agent"
-          title="Agent"
           onPermissionRequest={onPermissionRequest}
         />,
       );
@@ -590,9 +579,7 @@ describe("AgentChatSurface", () => {
   it("labels only the current thought stream and keeps an open row through new chunks", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="thought-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="thought-agent" />);
     });
     await act(async () => undefined);
 
@@ -682,9 +669,7 @@ describe("AgentChatSurface", () => {
           <AgentChatSurface
             daemonState="connected"
             sessionId="live-agent"
-            title="Agent"
             observedState={LIVE_OBSERVED}
-            elapsedMs={0}
           />
         </StrictMode>,
       );
@@ -748,14 +733,8 @@ describe("AgentChatSurface", () => {
     });
 
     expect(container.textContent).toContain("DEVBOULE");
-    expect(container.querySelector(".workspace-agent-status")?.childNodes[0]?.textContent).toBe(
-      "Running",
-    );
     expect(container.querySelector(".workspace-working-line")).toBeNull();
-    // A finished turn leaves no status row, and the composer holds no meter.
-    expect(container.querySelector(".workspace-agent-status")?.classList.contains("sr-only")).toBe(
-      true,
-    );
+    // A finished turn leaves no working line, and the composer holds no meter.
     expect(container.querySelector(".workspace-composer .workspace-context-meter")).toBeNull();
 
     const conversation = container.querySelector(".workspace-conversation");
@@ -780,7 +759,7 @@ describe("AgentChatSurface", () => {
   it("does not invent provider or model values before a manifest arrives", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
 
@@ -793,7 +772,7 @@ describe("AgentChatSurface", () => {
   it("does not render the subagent pill when there are no children", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
 
@@ -804,9 +783,7 @@ describe("AgentChatSurface", () => {
   it("shows the failed and working counts on the pill, hiding a zero part, and lists every subagent", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="subagents-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="subagents-agent" />);
     });
     await act(async () => undefined);
 
@@ -869,9 +846,7 @@ describe("AgentChatSurface", () => {
   it("renders finished and failed children when those states are present", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="terminal-subagents" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="terminal-subagents" />);
     });
     await act(async () => undefined);
 
@@ -914,9 +889,7 @@ describe("AgentChatSurface", () => {
   it("renders child transcript items with their type, depth, and id fallback", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="child-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="child-agent" />);
     });
     await act(async () => undefined);
 
@@ -983,9 +956,7 @@ describe("AgentChatSurface", () => {
   it("closes the subagent list on Escape and an outside press", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="close-subagents" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="close-subagents" />);
     });
     await act(async () => undefined);
 
@@ -1019,7 +990,7 @@ describe("AgentChatSurface", () => {
   it("shows provider, model, and effort as chips from the session manifest", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
 
@@ -1069,7 +1040,7 @@ describe("AgentChatSurface", () => {
   it("shows no chips for the claude shape: one model and no efforts", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
 
@@ -1093,7 +1064,7 @@ describe("AgentChatSurface", () => {
   it("keeps the mode chip hidden when the manifest carries no modes", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
 
@@ -1112,7 +1083,7 @@ describe("AgentChatSurface", () => {
   it("shows the current mode on the chip and lists every mode with its description", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
 
@@ -1139,7 +1110,7 @@ describe("AgentChatSurface", () => {
   it("shows and switches plan mode only after the provider declares it", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
 
@@ -1174,7 +1145,7 @@ describe("AgentChatSurface", () => {
   it("names what the plan mode chip switches", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => {
       channelHarness.emit?.({
@@ -1194,7 +1165,7 @@ describe("AgentChatSurface", () => {
   it("selects a mode optimistically and calls sessionSetMode before the manifest lands", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
 
@@ -1233,9 +1204,7 @@ describe("AgentChatSurface", () => {
     recordCreatedSession("mode-first", 1);
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="mode-first" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="mode-first" />);
     });
     await act(async () => undefined);
     await act(async () => {
@@ -1259,7 +1228,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="mode-second"
-          title="Agent"
           observedState={LIVE_OBSERVED}
         />,
       );
@@ -1275,9 +1243,7 @@ describe("AgentChatSurface", () => {
     (sessionSetMode as unknown as Mock).mockClear();
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="mode-third" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="mode-third" />);
     });
     await act(async () => undefined);
     await act(async () => {
@@ -1294,9 +1260,7 @@ describe("AgentChatSurface", () => {
 
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="mode-stale" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="mode-stale" />);
     });
     await act(async () => undefined);
     await act(async () => {
@@ -1320,7 +1284,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="roster-session"
-          title="Agent"
           observedState={LIVE_OBSERVED}
         />,
       );
@@ -1343,7 +1306,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="resumed-session"
-          title="Agent"
           observedState={LIVE_OBSERVED}
         />,
       );
@@ -1356,7 +1318,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="resumed-session"
-          title="Agent"
           observedState={{ type: "live", generation: 2 }}
         />,
       );
@@ -1378,7 +1339,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="busy-session"
-          title="Agent"
           observedState={LIVE_OBSERVED}
         />,
       );
@@ -1412,9 +1372,7 @@ describe("AgentChatSurface", () => {
     // started, so nothing is switched.
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="no-row-yet" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="no-row-yet" />);
     });
     await act(async () => undefined);
     await act(async () => {
@@ -1429,7 +1387,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="no-row-yet"
-          title="Agent"
           observedState={LIVE_OBSERVED}
         />,
       );
@@ -1447,9 +1404,7 @@ describe("AgentChatSurface", () => {
 
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="resumed-no-row" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="resumed-no-row" />);
     });
     await act(async () => undefined);
     await act(async () => {
@@ -1469,7 +1424,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="busy-first-manifest"
-          title="Agent"
           observedState={LIVE_OBSERVED}
         />,
       );
@@ -1507,7 +1461,7 @@ describe("AgentChatSurface", () => {
     // The manifest comes before any roster row: nothing is switched yet.
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="late-row" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="late-row" />);
     });
     await act(async () => undefined);
     await act(async () => {
@@ -1528,7 +1482,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="late-row"
-          title="Agent"
           observedState={LIVE_OBSERVED}
         />,
       );
@@ -1559,9 +1512,7 @@ describe("AgentChatSurface", () => {
     try {
       root = createRoot(container);
       await act(async () => {
-        root.render(
-          <AgentChatSurface daemonState="connected" sessionId="render-behind" title="Agent" />,
-        );
+        root.render(<AgentChatSurface daemonState="connected" sessionId="render-behind" />);
       });
       await act(async () => undefined);
       await act(async () => {
@@ -1578,7 +1529,6 @@ describe("AgentChatSurface", () => {
           <AgentChatSurface
             daemonState="connected"
             sessionId="render-behind"
-            title="Agent"
             observedState={LIVE_OBSERVED}
           />,
         );
@@ -1603,7 +1553,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="peer-turn"
-          title="Agent"
           observedState={LIVE_OBSERVED}
         />,
       );
@@ -1644,7 +1593,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="switched-once"
-          title="Agent"
           observedState={LIVE_OBSERVED}
         />,
       );
@@ -1676,7 +1624,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="switched-once"
-          title="Agent"
           observedState={LIVE_OBSERVED}
         />,
       );
@@ -1688,7 +1635,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="switched-once"
-          title="Agent"
           observedState={LIVE_OBSERVED}
         />,
       );
@@ -1711,7 +1657,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="agent-moves-mode"
-          title="Agent"
           observedState={LIVE_OBSERVED}
         />,
       );
@@ -1739,7 +1684,7 @@ describe("AgentChatSurface", () => {
     (sessionSetMode as unknown as Mock).mockRejectedValueOnce(new Error("mode refused"));
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
 
@@ -1763,7 +1708,7 @@ describe("AgentChatSurface", () => {
   it("moves focus with the arrow keys and closes the mode menu on Escape and an outside click", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
 
@@ -1801,7 +1746,7 @@ describe("AgentChatSurface", () => {
   it("renders the model and effort pickers inside the composer control bar", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
 
@@ -1840,7 +1785,7 @@ describe("AgentChatSurface", () => {
   it("grows the composer textarea with content and caps it at eight lines", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
 
@@ -1872,7 +1817,7 @@ describe("AgentChatSurface", () => {
   it("calls session_set_model on model change and keeps the confirmed value until the manifest lands", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
 
@@ -1938,9 +1883,7 @@ describe("AgentChatSurface", () => {
     recordCreatedSession("pref-agent-2", 1);
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="pref-agent-1" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="pref-agent-1" />);
     });
     await act(async () => undefined);
 
@@ -1977,7 +1920,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="pref-agent-2"
-          title="Agent"
           observedState={LIVE_OBSERVED}
         />,
       );
@@ -2040,7 +1982,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="pref-combined"
-          title="Agent"
           observedState={LIVE_OBSERVED}
         />,
       );
@@ -2088,9 +2029,7 @@ describe("AgentChatSurface", () => {
     setPreferredEffort("grok", "grok-4.6", "xhigh");
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="pref-skip-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="pref-skip-agent" />);
     });
     await act(async () => undefined);
 
@@ -2121,7 +2060,7 @@ describe("AgentChatSurface", () => {
   it("labels the pending switch and clears the label on confirmation", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
 
@@ -2206,7 +2145,7 @@ describe("AgentChatSurface", () => {
     (sessionSetModel as unknown as Mock).mockRejectedValueOnce(new Error("provider refused"));
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
 
@@ -2231,7 +2170,7 @@ describe("AgentChatSurface", () => {
   it("does not show a current effort the model did not declare", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
 
@@ -2279,20 +2218,11 @@ describe("AgentChatSurface", () => {
     root = createRoot(container);
     await act(async () => {
       root.render(
-        <AgentChatSurface
-          daemonState="connected"
-          sessionId="agent-1"
-          title="Agent"
-          observedState={ended}
-          elapsedMs={4600}
-        />,
+        <AgentChatSurface daemonState="connected" sessionId="agent-1" observedState={ended} />,
       );
     });
     await act(async () => undefined);
 
-    expect(container.querySelector(".workspace-agent-status")?.childNodes[0]?.textContent).toBe(
-      "Stopped",
-    );
     expect(container.querySelector('[role="status"]')?.textContent).not.toBe("Ready");
     expect(container.querySelector('[role="status"]')?.textContent).not.toBe("Finished");
     expect(
@@ -2313,9 +2243,7 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="rec-agent"
-          title="Old chat"
           observedState={recovered}
-          elapsedMs={null}
         />,
       );
     });
@@ -2342,9 +2270,6 @@ describe("AgentChatSurface", () => {
 
     expect(container.textContent).toContain("what did we decide");
     expect(container.textContent).toContain("we decided to ship it");
-    expect(container.querySelector(".workspace-agent-status")?.childNodes[0]?.textContent).toBe(
-      "Recovered",
-    );
     expect(
       container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
         ?.disabled,
@@ -2359,7 +2284,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="rec-once"
-          title="Old chat"
           observedState={{
             type: "recovered",
             generation: 2,
@@ -2399,7 +2323,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="reopened-agent"
-          title="Agent"
           observedState={recovered}
         />,
       );
@@ -2424,7 +2347,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="reopened-agent"
-          title="Agent"
           observedState={{ type: "live", generation: 2 }}
         />,
       );
@@ -2443,7 +2365,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="reopened-agent"
-          title="Agent"
           observedState={{ type: "live", generation: 3 }}
         />,
       );
@@ -2480,9 +2401,6 @@ describe("AgentChatSurface", () => {
       container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
         ?.disabled,
     ).toBe(false);
-    expect(container.querySelector(".workspace-agent-status")?.childNodes[0]?.textContent).toBe(
-      "Running",
-    );
     expect(container.querySelector(".workspace-composer-hint")).toBeNull();
     expect(container.querySelector('[data-testid="provider-model-chip"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="effort-chip"]')).not.toBeNull();
@@ -2496,7 +2414,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="same-generation-agent"
-          title="Agent"
           observedState={observed}
         />,
       );
@@ -2508,7 +2425,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="same-generation-agent"
-          title="Agent"
           observedState={{ type: "live", generation: 7 }}
         />,
       );
@@ -2526,7 +2442,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="err-agent"
-          title="Agent"
           observedState={LIVE_OBSERVED}
         />,
       );
@@ -2562,7 +2477,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="err-icon"
-          title="Agent"
           observedState={LIVE_OBSERVED}
         />,
       );
@@ -2587,9 +2501,7 @@ describe("AgentChatSurface", () => {
   it("keeps the composer usable while the daemon reports connected", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface sessionId="daemon-connected" title="Agent" daemonState="connected" />,
-      );
+      root.render(<AgentChatSurface sessionId="daemon-connected" daemonState="connected" />);
     });
     await act(async () => undefined);
     await act(async () => {
@@ -2607,9 +2519,7 @@ describe("AgentChatSurface", () => {
     // composer must say so instead of inviting messages into the void.
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface sessionId="daemon-gone" title="Agent" daemonState="disconnected" />,
-      );
+      root.render(<AgentChatSurface sessionId="daemon-gone" daemonState="disconnected" />);
     });
     await act(async () => undefined);
     await act(async () => {
@@ -2631,9 +2541,7 @@ describe("AgentChatSurface", () => {
     // it gates input exactly like the other non-connected states.
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface sessionId="daemon-connecting" title="Agent" daemonState="connecting" />,
-      );
+      root.render(<AgentChatSurface sessionId="daemon-connecting" daemonState="connecting" />);
     });
     await act(async () => undefined);
     await act(async () => {
@@ -2655,9 +2563,7 @@ describe("AgentChatSurface", () => {
     // recorded as a note, so the gate covers only the client-less states.
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface sessionId="daemon-degraded" title="Agent" daemonState="error" />,
-      );
+      root.render(<AgentChatSurface sessionId="daemon-degraded" daemonState="error" />);
     });
     await act(async () => undefined);
     await act(async () => {
@@ -2684,7 +2590,6 @@ describe("AgentChatSurface", () => {
       root.render(
         <AgentChatSurface
           sessionId="mask-agent"
-          title="Agent"
           observedState={LIVE_OBSERVED}
           daemonState="connected"
         />,
@@ -2708,12 +2613,7 @@ describe("AgentChatSurface", () => {
 
     await act(async () => {
       root.render(
-        <AgentChatSurface
-          sessionId="mask-agent"
-          title="Agent"
-          observedState={ended}
-          daemonState="connecting"
-        />,
+        <AgentChatSurface sessionId="mask-agent" observedState={ended} daemonState="connecting" />,
       );
     });
 
@@ -2730,7 +2630,6 @@ describe("AgentChatSurface", () => {
       root.render(
         <AgentChatSurface
           sessionId="stop-daemon-gone"
-          title="Agent"
           observedState={LIVE_OBSERVED}
           daemonState="connected"
         />,
@@ -2752,7 +2651,6 @@ describe("AgentChatSurface", () => {
       root.render(
         <AgentChatSurface
           sessionId="stop-daemon-gone"
-          title="Agent"
           observedState={LIVE_OBSERVED}
           daemonState="disconnected"
         />,
@@ -2779,7 +2677,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="refused-send"
-          title="Agent"
           observedState={LIVE_OBSERVED}
         />,
       );
@@ -2820,7 +2717,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="dead-send"
-          title="Agent"
           observedState={LIVE_OBSERVED}
         />,
       );
@@ -2851,9 +2747,7 @@ describe("AgentChatSurface", () => {
     (sessionAttach as unknown as Mock).mockRejectedValueOnce(new Error("no such session"));
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="gone-attach" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="gone-attach" />);
     });
     await act(async () => undefined);
 
@@ -2875,7 +2769,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="gone-exit"
-          title="Agent"
           observedState={LIVE_OBSERVED}
         />,
       );
@@ -2913,7 +2806,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="gone-recovered"
-          title="Agent"
           observedState={LIVE_OBSERVED}
         />,
       );
@@ -2946,7 +2838,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="dead-chips"
-          title="Agent"
           observedState={LIVE_OBSERVED}
         />,
       );
@@ -3007,7 +2898,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="refused-midturn"
-          title="Agent"
           observedState={LIVE_OBSERVED}
         />,
       );
@@ -3047,9 +2937,7 @@ describe("AgentChatSurface", () => {
   it("keeps one persistent notice when journal writes degrade, naming the loss", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="journal-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="journal-agent" />);
     });
     await act(async () => undefined);
 
@@ -3073,9 +2961,7 @@ describe("AgentChatSurface", () => {
   it("updates the one journal notice instead of stacking a second", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="journal-agent-2" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="journal-agent-2" />);
     });
     await act(async () => undefined);
 
@@ -3099,35 +2985,6 @@ describe("AgentChatSurface", () => {
     expect(banners[0]?.textContent).toContain("at least 61 KB");
   });
 
-  it("shows Quiet from a silent sessions_watch snapshot, with the elapsed detail in the tooltip", async () => {
-    const silent: SessionState = { type: "silent", generation: 1 };
-    root = createRoot(container);
-    await act(async () => {
-      root.render(
-        <AgentChatSurface
-          daemonState="connected"
-          sessionId="agent-1"
-          title="Agent"
-          observedState={silent}
-          elapsedMs={12_000}
-        />,
-      );
-    });
-    await act(async () => undefined);
-
-    const status = container.querySelector('[role="status"]');
-    // The first text node is the visible word; the sentence follows in a
-    // screen-reader-only span inside the same live region.
-    expect(status?.childNodes[0]?.textContent).toBe("Quiet · 12 s");
-    expect(container.querySelector('[role="status"]')?.getAttribute("title")).toContain(
-      "Quiet — no output for 12 seconds, may still be working.",
-    );
-    expect(container.querySelector('[role="status"]')?.getAttribute("aria-label")).toBeNull();
-    expect(container.querySelector("[role='status'] .sr-only")?.textContent).toBe(
-      " — no output for 12 seconds, may still be working.",
-    );
-  });
-
   it("shows the Stop button only while the turn is running and interrupts on click", async () => {
     root = createRoot(container);
     await act(async () => {
@@ -3136,7 +2993,6 @@ describe("AgentChatSurface", () => {
           <AgentChatSurface
             daemonState="connected"
             sessionId="stop-agent"
-            title="Agent"
             observedState={LIVE_OBSERVED}
           />
         </StrictMode>,
@@ -3179,7 +3035,6 @@ describe("AgentChatSurface", () => {
           <AgentChatSurface
             daemonState="connected"
             sessionId="steer-agent"
-            title="Agent"
             observedState={LIVE_OBSERVED}
           />
         </StrictMode>,
@@ -3242,10 +3097,6 @@ describe("AgentChatSurface", () => {
     expect(conversation.querySelectorAll(".workspace-chat-user")).toHaveLength(1);
     expect(conversation.querySelectorAll(".workspace-chat-assistant")).toHaveLength(1);
     expect(container.querySelector(".workspace-working-line")).not.toBeNull();
-    // The plain "Running" is the dot's and the bar's to say: the header keeps the word for assistive tech only.
-    expect(container.querySelector(".workspace-agent-status")?.classList.contains("sr-only")).toBe(
-      true,
-    );
     expect(container.querySelector(".workspace-chat-finish")).toBeNull();
     expect(textarea.disabled).toBe(false);
   });
@@ -3257,7 +3108,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="ime-agent"
-          title="Agent"
           observedState={LIVE_OBSERVED}
         />,
       );
@@ -3319,7 +3169,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="aux-agent"
-          title="Agent"
           auxiliary={<div data-testid="aux-node">Permission card</div>}
         />,
       );
@@ -3343,9 +3192,7 @@ describe("AgentChatSurface", () => {
   it("nests the conversation directly in the agent shell the rail toggles", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="shell-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="shell-agent" />);
     });
     await act(async () => undefined);
 
@@ -3359,9 +3206,7 @@ describe("AgentChatSurface", () => {
   it("scrolls an arriving permission card into view even away from the bottom", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="scroll-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="scroll-agent" />);
     });
     await act(async () => undefined);
 
@@ -3377,7 +3222,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="scroll-agent"
-          title="Agent"
           auxiliary={<div data-testid="aux-node">Permission card</div>}
         />,
       );
@@ -3389,9 +3233,7 @@ describe("AgentChatSurface", () => {
   it("follows auxiliary updates when the reader is already at the bottom", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="scroll-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="scroll-agent" />);
     });
     await act(async () => undefined);
 
@@ -3407,7 +3249,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="scroll-agent"
-          title="Agent"
           auxiliary={<div data-testid="aux-node">Permission card</div>}
         />,
       );
@@ -3419,9 +3260,7 @@ describe("AgentChatSurface", () => {
   it("scrolls to the bottom when the reader sends while away from the bottom", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="scroll-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="scroll-agent" />);
     });
     await act(async () => undefined);
 
@@ -3447,9 +3286,7 @@ describe("AgentChatSurface", () => {
   it("keeps following the transcript after the reader's own send re-pins", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="scroll-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="scroll-agent" />);
     });
     await act(async () => undefined);
 
@@ -3488,9 +3325,7 @@ describe("AgentChatSurface", () => {
   it("keeps the view at the bottom when content grows while pinned", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="scroll-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="scroll-agent" />);
     });
     await act(async () => undefined);
 
@@ -3517,9 +3352,7 @@ describe("AgentChatSurface", () => {
   it("leaves the reader alone when content grows while away from the bottom", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="scroll-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="scroll-agent" />);
     });
     await act(async () => undefined);
 
@@ -3546,9 +3379,7 @@ describe("AgentChatSurface", () => {
   it("stops following when a container resize pushes the reader off the bottom", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="scroll-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="scroll-agent" />);
     });
     await act(async () => undefined);
 
@@ -3579,9 +3410,7 @@ describe("AgentChatSurface", () => {
   it("keeps following when a container resize leaves the reader near the bottom", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="scroll-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="scroll-agent" />);
     });
     await act(async () => undefined);
 
@@ -3611,9 +3440,7 @@ describe("AgentChatSurface", () => {
   it("keeps the pin through the container observer's initial delivery on a first mount with history", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="scroll-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="scroll-agent" />);
     });
     await act(async () => undefined);
 
@@ -3645,9 +3472,7 @@ describe("AgentChatSurface", () => {
   it("does not yank when the same permission card re-renders", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="scroll-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="scroll-agent" />);
     });
     await act(async () => undefined);
 
@@ -3663,7 +3488,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="scroll-agent"
-          title="Agent"
           auxiliary={
             <div key="request-1" data-testid="aux-node">
               Permission card
@@ -3681,7 +3505,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="scroll-agent"
-          title="Agent"
           auxiliary={
             <div key="request-1" data-testid="aux-node">
               Permission card
@@ -3697,9 +3520,7 @@ describe("AgentChatSurface", () => {
   it("scrolls a replacement permission card into view", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="scroll-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="scroll-agent" />);
     });
     await act(async () => undefined);
 
@@ -3715,7 +3536,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="scroll-agent"
-          title="Agent"
           auxiliary={
             <div key="request-1" data-testid="aux-node">
               Permission card
@@ -3733,7 +3553,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="scroll-agent"
-          title="Agent"
           auxiliary={
             <div key="request-2" data-testid="aux-node">
               Permission card
@@ -3749,9 +3568,7 @@ describe("AgentChatSurface", () => {
   it("a keyless auxiliary arrives once and never re-fires", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="scroll-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="scroll-agent" />);
     });
     await act(async () => undefined);
 
@@ -3767,7 +3584,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="scroll-agent"
-          title="Agent"
           auxiliary={<div data-testid="aux-node">Permission card</div>}
         />,
       );
@@ -3781,7 +3597,6 @@ describe("AgentChatSurface", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="scroll-agent"
-          title="Agent"
           auxiliary={<div data-testid="aux-node">Permission card</div>}
         />,
       );
@@ -3793,9 +3608,7 @@ describe("AgentChatSurface", () => {
   it("registers one observer pair per mount and disconnects on unmount", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="scroll-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="scroll-agent" />);
     });
     await act(async () => undefined);
 
@@ -3821,7 +3634,7 @@ describe("AgentChatSurface", () => {
   it("does not infer Ready from attach alone without observed OS state", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
 
@@ -3831,9 +3644,7 @@ describe("AgentChatSurface", () => {
   it("renders a running shell tool row with the command and running indicator", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="tool-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="tool-agent" />);
     });
     await act(async () => undefined);
 
@@ -3859,9 +3670,7 @@ describe("AgentChatSurface", () => {
   it("renders a running status dot as the trailing child of single rows and groups", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="tool-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="tool-agent" />);
     });
     await act(async () => undefined);
 
@@ -3909,9 +3718,7 @@ describe("AgentChatSurface", () => {
   it("rotates only an open row's own chevron inside an open group", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="chevron-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="chevron-agent" />);
     });
     await act(async () => undefined);
     await act(async () => {
@@ -3971,9 +3778,7 @@ describe("AgentChatSurface", () => {
   it("renders a websearch tool row with the query and keeps output in the body", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="tool-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="tool-agent" />);
     });
     await act(async () => undefined);
 
@@ -4005,9 +3810,7 @@ describe("AgentChatSurface", () => {
   it("renders accessible failed and running marks on single tool rows", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="tool-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="tool-agent" />);
     });
     await act(async () => undefined);
 
@@ -4050,9 +3853,7 @@ describe("AgentChatSurface", () => {
   it("marks cancelled tool rows as cancelled without the failed mark", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="tool-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="tool-agent" />);
     });
     await act(async () => undefined);
 
@@ -4086,9 +3887,7 @@ describe("AgentChatSurface", () => {
   it("renders three consecutive tools as one collapsed group with the overview summary", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="tool-group-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="tool-group-agent" />);
     });
     await act(async () => undefined);
 
@@ -4135,9 +3934,7 @@ describe("AgentChatSurface", () => {
   it("opens and closes grouped tools with click", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="tool-group-keyboard" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="tool-group-keyboard" />);
     });
     await act(async () => undefined);
 
@@ -4173,9 +3970,7 @@ describe("AgentChatSurface", () => {
   it("keeps parent and subagent tools in separate runs with the subagent frame", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="tool-depth-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="tool-depth-agent" />);
     });
     await act(async () => undefined);
 
@@ -4224,9 +4019,7 @@ describe("AgentChatSurface", () => {
   it("marks groups running or failed from their items", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="tool-state-agent" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="tool-state-agent" />);
     });
     await act(async () => undefined);
 
@@ -4272,9 +4065,7 @@ describe("AgentChatSurface", () => {
   it("keeps an expanded group open and updates its count as tools stream in", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="tool-group-stream" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="tool-group-stream" />);
     });
     await act(async () => undefined);
 
@@ -4372,7 +4163,7 @@ describe("creator permission-request message", () => {
   it("renders the daemon's facts in system styling and the excerpt quoted as the child's own", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
     await act(async () => {
@@ -4407,7 +4198,7 @@ describe("creator permission-request message", () => {
   it("keeps a hostile excerpt inert: text, never markup", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
     const hostile = envelope
@@ -4439,7 +4230,7 @@ describe("creator permission-request message", () => {
   it("presents the cardId as information, never as an answer affordance", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
     await act(async () => {
@@ -4465,7 +4256,7 @@ describe("creator permission-request message", () => {
     // a verification the code never did.
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
     await act(async () => {
@@ -4486,7 +4277,7 @@ describe("creator permission-request message", () => {
   it("says so on screen when the excerpt's closing fence never arrived", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
     const unterminated = envelope.replace(
@@ -4514,7 +4305,7 @@ describe("creator permission-request message", () => {
   it("bounds the sentence's daemon-supplied fields while keeping the whole values on the title", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
     const longName = `w-${"x".repeat(8000)}`;
@@ -4550,7 +4341,7 @@ describe("creator permission-request message", () => {
     // The absence is its own visible fact.
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
     const openerless = envelope.replace(
@@ -4586,7 +4377,7 @@ describe("creator permission-request message", () => {
     // the whole name standing.
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
     const astralName = "🚀".repeat(100);
@@ -4619,7 +4410,7 @@ describe("creator permission-request message", () => {
     // either: the cluster bound leaves it whole.)
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
     const overLimit = "🚀".repeat(201);
@@ -4701,7 +4492,7 @@ describe("creator daemon notice cards", () => {
   async function renderEnvelope(text: string) {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
     await act(async () => {
@@ -4964,7 +4755,6 @@ describe("agent-to-agent message cards", () => {
         <AgentChatSurface
           daemonState="connected"
           sessionId="agent-1"
-          title="Agent"
           sessionRoster={names?.sessionRoster}
           deviceNames={names?.deviceNames}
         />,
@@ -4986,7 +4776,7 @@ describe("agent-to-agent message cards", () => {
   ) {
     root = createRoot(container);
     await act(async () => {
-      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
     });
     await act(async () => undefined);
     await act(async () => {

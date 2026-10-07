@@ -104,9 +104,7 @@ describe("chat surface images", () => {
   it("deposits composer images and sends their references, never the bytes", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="chat-images-surface" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="chat-images-surface" />);
     });
     await act(async () => {});
     await pickImage();
@@ -127,9 +125,7 @@ describe("chat surface images", () => {
   it("shows thumbnails on the echoed user row from the stored bytes", async () => {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="chat-images-surface" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="chat-images-surface" />);
     });
     await act(async () => {});
     if (harness.emit === null) throw new Error("surface did not attach");
@@ -154,9 +150,7 @@ describe("failed chat image sends", () => {
   async function renderSurface() {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <AgentChatSurface daemonState="connected" sessionId="chat-images-surface" title="Agent" />,
-      );
+      root.render(<AgentChatSurface daemonState="connected" sessionId="chat-images-surface" />);
     });
     await act(async () => {});
   }

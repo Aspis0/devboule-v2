@@ -51,17 +51,15 @@ describe("workspace chrome labels", () => {
     });
   }
 
-  for (const selector of [
-    ".workspace-terminal-toolbar .workspace-terminal-title",
-    ".workspace-agent-toolbar .workspace-agent-title",
-  ]) {
-    it(`${selector} paints at or below 500`, () => {
-      const pane = read("src/features/workspace/paneHeader/paneHeader.css");
-      for (const weight of declaredWeights(pane, selector)) {
-        expect(weight).toBeLessThanOrEqual(500);
-      }
-    });
-  }
+  it(".workspace-terminal-toolbar .workspace-terminal-title paints at or below 500", () => {
+    const pane = read("src/features/workspace/paneHeader/paneHeader.css");
+    for (const weight of declaredWeights(
+      pane,
+      ".workspace-terminal-toolbar .workspace-terminal-title",
+    )) {
+      expect(weight).toBeLessThanOrEqual(500);
+    }
+  });
 });
 
 describe("panel and diff metadata", () => {

@@ -71,9 +71,7 @@ function pushSnapshot(items: readonly QueuedMessage[]): void {
 async function renderSurface(items: readonly QueuedMessage[]) {
   root = createRoot(container);
   await act(async () => {
-    root.render(
-      <AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" queueSupported />,
-    );
+    root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" queueSupported />);
   });
   await act(async () => undefined);
   pushSnapshot(items);
