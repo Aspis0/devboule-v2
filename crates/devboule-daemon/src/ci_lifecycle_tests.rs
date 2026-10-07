@@ -783,3 +783,85 @@ fn ci_retry_judged_by_new_attempt_jobs() {
     );
     assert!(texts[0].contains("assertion failed"), "{}", texts[0]);
 }
+
+/// Two old failures sharing a display name cannot be cleared by one passing
+/// job of that name: nothing pairs them, so both keep their failure.
+#[test]
+fn ci_duplicate_job_names_never_hide_a_failure() {
+    let runner = Arc::new(github_origin());
+    checks(
+        &runner,
+        SHA,
+        &[
+            check_run(11, "test", "completed", Some("cancelled")),
+            check_run(12, "test", "completed", Some("cancelled")),
+        ],
+    );
+    runner.set("actions/jobs/11/logs", ok(""));
+    runner.set("actions/jobs/12/logs", ok(""));
+    runner.set("actions/runs/900", ok(&run_state(1, "completed")));
+    runner.set("run rerun", ok("✓ Requested rerun of run 900"));
+    let watches = service(&watch_dir("retry-duplicate-names"), &runner);
+    let sink = RecordingSink::live();
+    let watch = sha_watch(&watches, true);
+
+    watches.poll_once(&sink);
+    assert_eq!(reruns(&runner), 1, "the one retry is issued");
+
+    // The newer attempt ran one job of that name and it passed.
+    newer_attempt(
+        &runner,
+        &[attempt_job(21, "test", "completed", Some("success"))],
+    );
+    watches.poll_once(&sink);
+
+    let kept = watches.get(&watch.watch_id).expect("kept");
+    assert_eq!(
+        kept.state,
+        CiState::Failed,
+        "one passing job cannot clear two same-named failures"
+    );
+    let texts = sink.texts();
+    assert_eq!(texts.len(), 1);
+    assert!(texts[0].contains("CI failed for"), "{}", texts[0]);
+    assert!(
+        texts[0].contains("shared by more than one job"),
+        "the failures say why they were not matched: {}",
+        texts[0]
+    );
+}
+
+/// A name only one job carries is still matched to the newer attempt's job:
+/// the replacement is the whole point of the retry.
+#[test]
+fn ci_unique_job_name_still_replaced() {
+    let runner = Arc::new(github_origin());
+    cancelled(&runner, 11);
+    runner.set("run rerun", ok("✓ Requested rerun of run 900"));
+    let watches = service(&watch_dir("retry-unique-name"), &runner);
+    let sink = RecordingSink::live();
+    let watch = sha_watch(&watches, true);
+
+    watches.poll_once(&sink);
+    newer_attempt(
+        &runner,
+        &[attempt_job(21, "test", "completed", Some("success"))],
+    );
+    watches.poll_once(&sink);
+
+    let kept = watches.get(&watch.watch_id).expect("kept");
+    assert_eq!(kept.state, CiState::Passed);
+    let texts = sink.texts();
+    assert_eq!(texts.len(), 1);
+    assert!(texts[0].contains("CI passed for"), "{}", texts[0]);
+    assert!(
+        texts[0].contains("- job 21: success"),
+        "the newer attempt's own job is the evidence: {}",
+        texts[0]
+    );
+    assert!(
+        !texts[0].contains("- job 11:"),
+        "the old check is gone: {}",
+        texts[0]
+    );
+}

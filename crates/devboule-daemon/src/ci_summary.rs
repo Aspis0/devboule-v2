@@ -68,7 +68,15 @@ pub(crate) struct CheckRun {
     /// The check's own title, summary and text: where GitHub says why a job
     /// never ran.
     note: String,
+    /// Whether this check's display name is shared by more than one job on
+    /// either side of a re-run, so no newer attempt's job can be matched to
+    /// it: a failure it carries is never cleared by that attempt.
+    ambiguous_name: bool,
 }
+
+/// Why a check whose display name is shared reads as unknown: the newer
+/// attempt ran a job of that name, and nothing says which job it was.
+const AMBIGUOUS_NAME: &str = "the job's display name is shared by more than one job, so no newer attempt's job can be matched to it";
 
 pub(crate) fn parse_check_runs(document: &Value) -> Vec<CheckRun> {
     let Some(runs) = document.get("check_runs").and_then(Value::as_array) else {
@@ -96,6 +104,7 @@ pub(crate) fn parse_check_runs(document: &Value) -> Vec<CheckRun> {
                 actions: text("/app/slug") == "github-actions",
                 url,
                 note: note.chars().take(MAX_NOTE_CHARS).collect(),
+                ambiguous_name: false,
             })
         })
         .collect()
@@ -218,34 +227,59 @@ pub(crate) fn parse_jobs(document: &Value) -> Vec<CheckRun> {
                 run_id: job.get("run_id").and_then(Value::as_u64),
                 actions: true,
                 note: String::new(),
+                ambiguous_name: false,
             })
         })
         .collect()
 }
 
+/// Whether a display name is carried by more than one job on either side of
+/// the re-run. Job ids are unique; display names are not, and GitHub
+/// documents no order that would pair two jobs of one name.
+fn shared_name(name: &str, old: &[CheckRun], attempt_jobs: &[CheckRun]) -> bool {
+    old.iter().filter(|check| check.name == name).count() > 1
+        || attempt_jobs.iter().filter(|job| job.name == name).count() > 1
+}
+
 /// What one retried run contributes once its newer attempt finished: the
-/// attempt's own jobs, with the old attempt's check of the same name kept
-/// when the newer attempt settled nothing for a job that had failed. A
-/// failure stops counting on a pass — or on a failure of the newer attempt's
-/// own — while a skip, a neutral result or a job GitHub left without a
-/// conclusion leaves the failure that was there; an old check the newer
-/// attempt did not run keeps its own verdict.
+/// attempt's own jobs, matched to the old attempt's checks by display name.
+/// A failure stops counting on a pass — or on a failure of the newer
+/// attempt's own — while a skip, a neutral result or a job GitHub left
+/// without a conclusion leaves the failure that was there; an old check the
+/// newer attempt did not run keeps its own verdict.
+///
+/// A display name shared by more than one job is matched to none of them: an
+/// old failure of that name keeps its verdict and says so, and the newer
+/// attempt's own jobs of that name are listed beside it, whatever they say.
+/// Nothing here pairs duplicates by order — GitHub documents no such order.
 pub(crate) fn newer_attempt_evidence(old: &[CheckRun], attempt_jobs: &[CheckRun]) -> Vec<CheckRun> {
     let mut evidence = Vec::new();
-    for job in attempt_jobs {
-        match old.iter().find(|check| check.name == job.name) {
-            Some(check)
-                if !is_green(check.conclusion.as_deref())
-                    && !settled(job.conclusion.as_deref()) =>
-            {
-                evidence.push(check.clone());
-            }
-            _ => evidence.push(job.clone()),
-        }
-    }
     for check in old {
         if !attempt_jobs.iter().any(|job| job.name == check.name) {
+            // Not re-run: its own verdict is still the run's.
             evidence.push(check.clone());
+            continue;
+        }
+        if shared_name(&check.name, old, attempt_jobs) {
+            let mut kept = check.clone();
+            kept.ambiguous_name = true;
+            evidence.push(kept);
+            continue;
+        }
+        let job = attempt_jobs
+            .iter()
+            .find(|job| job.name == check.name)
+            .expect("a job of this name is in hand");
+        if !is_green(check.conclusion.as_deref()) && !settled(job.conclusion.as_deref()) {
+            evidence.push(check.clone());
+        } else {
+            evidence.push(job.clone());
+        }
+    }
+    for job in attempt_jobs {
+        let matched = old.iter().any(|check| check.name == job.name);
+        if !matched || shared_name(&job.name, old, attempt_jobs) {
+            evidence.push(job.clone());
         }
     }
     evidence
@@ -284,6 +318,14 @@ pub(crate) fn build(
                 Vec::new(),
                 0,
             ),
+        };
+        // A name two jobs share can never be matched to the newer attempt's
+        // job of that name, so this failure is unknown rather than the code's
+        // or the platform's — while the log just read is still its own.
+        let cause = if run.ambiguous_name {
+            failed.then_some(Cause::Unknown(AMBIGUOUS_NAME))
+        } else {
+            cause
         };
         jobs.push(JobVerdict {
             name: escape_untrusted(&redacted_line(&strip_unsafe_controls(&run.name))),

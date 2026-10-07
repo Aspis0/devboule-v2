@@ -4,7 +4,7 @@
 use serde_json::json;
 
 use super::{
-    build, logs_wanted, newer_attempt_evidence, overall, Cause, CheckRun, CiState,
+    build, logs_wanted, newer_attempt_evidence, overall, Cause, CheckRun, CiState, AMBIGUOUS_NAME,
     MAX_EXCERPT_LINES, MAX_LINE_CHARS,
 };
 use crate::ci_test_support::{check_run, parsed_check_runs};
@@ -232,15 +232,15 @@ fn a_newer_attempts_job_replaces_the_old_check_of_its_name() {
     let evidence = newer_attempt_evidence(&old, &passed);
     assert_eq!(
         evidence.iter().map(|run| run.id).collect::<Vec<_>>(),
-        vec![21, 1],
-        "the newer attempt's job replaces its old check, the build it did not run stays"
+        vec![1, 21],
+        "the build it did not re-run stays, and the newer attempt's job replaces its old check"
     );
 
     let failed = runs(&[check_run(21, "test", "completed", Some("failure"))]);
     let evidence = newer_attempt_evidence(&old, &failed);
     assert_eq!(
         evidence.iter().map(|run| run.id).collect::<Vec<_>>(),
-        vec![21, 1],
+        vec![1, 21],
         "the newer attempt's own failure is the verdict"
     );
 
@@ -249,11 +249,59 @@ fn a_newer_attempts_job_replaces_the_old_check_of_its_name() {
     let evidence = newer_attempt_evidence(&old, &skipped);
     assert_eq!(
         evidence.iter().map(|run| run.id).collect::<Vec<_>>(),
-        vec![2, 1],
+        vec![1, 2],
         "only a pass stops a failure counting"
     );
     let verdict = build(&evidence, &mut |_| Ok(String::new()));
     assert_eq!(verdict.state, CiState::Failed);
+}
+
+/// A display name two jobs share is matched to neither of them: the old
+/// failures keep their verdicts, marked as unmatched, and the newer attempt's
+/// own job is listed beside them whatever it says.
+#[test]
+fn a_shared_name_is_never_matched() {
+    let old = runs(&[
+        check_run(11, "test", "completed", Some("failure")),
+        check_run(12, "test", "completed", Some("failure")),
+        check_run(13, "build", "completed", Some("success")),
+    ]);
+    let one_job = runs(&[check_run(21, "test", "completed", Some("success"))]);
+    let evidence = newer_attempt_evidence(&old, &one_job);
+    assert_eq!(
+        evidence.iter().map(|run| run.id).collect::<Vec<_>>(),
+        vec![11, 12, 13, 21],
+        "both old failures stay, the build was not re-run, and the one newer job rides beside them"
+    );
+    assert!(
+        evidence[0].ambiguous_name && evidence[1].ambiguous_name,
+        "the failures say they were not matched"
+    );
+    assert!(
+        !evidence[2].ambiguous_name && !evidence[3].ambiguous_name,
+        "only the unmatched failures carry the mark"
+    );
+    let verdict = build(&evidence, &mut |_| Ok(String::new()));
+    assert_eq!(verdict.state, CiState::Failed);
+    let text = verdict.render("CI failed");
+    assert!(text.contains(AMBIGUOUS_NAME), "{text}");
+
+    // Two same-named jobs on the newer side are just as ambiguous: the old
+    // failure is cleared by neither of them.
+    let old_one = runs(&[check_run(11, "test", "completed", Some("failure"))]);
+    let two_jobs = runs(&[
+        check_run(21, "test", "completed", Some("success")),
+        check_run(22, "test", "completed", Some("success")),
+    ]);
+    let evidence = newer_attempt_evidence(&old_one, &two_jobs);
+    assert_eq!(
+        evidence.iter().map(|run| run.id).collect::<Vec<_>>(),
+        vec![11, 21, 22]
+    );
+    assert_eq!(
+        build(&evidence, &mut |_| Ok(String::new())).state,
+        CiState::Failed
+    );
 }
 
 #[test]
