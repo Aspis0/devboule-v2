@@ -3,7 +3,7 @@ import type { ToolChatItem } from "../../../lib/toolCallGroups";
 import { hideUntrustedFrame } from "../../../lib/untrustedFrame";
 import { ExternalLink } from "../../../components/ExternalLink";
 import { MarkdownText } from "../../../components/MarkdownText";
-import { toolRowDisplay } from "../toolRowDisplay";
+import { toolPathText, toolRowDisplay } from "../toolRowDisplay";
 import { CommandChip, ExitMarker } from "../CommandRow";
 import {
   INTERRUPTED_TOOL_CLASS,
@@ -47,6 +47,8 @@ export const ToolRow = memo(function ToolRow({
   const hasSummary = model.summary !== undefined || planDecision !== undefined;
   const lines = useMemo(() => outputLines(hideUntrustedFrame(item.output)), [item.output]);
   const isEdit = item.kind === "edit" || item.kind === "delete";
+  // A file row's summary is the path itself, so it prints with forward slashes.
+  const isPathRow = isEdit || item.kind === "read";
   const stats = useMemo(() => (isEdit ? diffStats(lines) : null), [isEdit, lines]);
   // A failure's words stand under its line without a click; every other
   // output waits in the body.
@@ -86,7 +88,9 @@ export const ToolRow = memo(function ToolRow({
         ) : null}
         {commandRow && model.summary !== undefined ? <CommandChip command={model.summary} /> : null}
         {!commandRow && model.summary !== undefined ? (
-          <span className="workspace-chat-tool-summary-text">{model.summary}</span>
+          <span className="workspace-chat-tool-summary-text">
+            {isPathRow ? toolPathText(model.summary) : model.summary}
+          </span>
         ) : null}
         {planDecision !== undefined ? (
           <span className="workspace-chat-tool-summary-text">{planDecision}</span>
@@ -138,8 +142,8 @@ export const ToolRow = memo(function ToolRow({
                 {locations.map((location, index) => (
                   <span className="workspace-chat-tool-location" key={index}>
                     {location.line !== undefined
-                      ? `${location.path}:${location.line}`
-                      : location.path}
+                      ? `${toolPathText(location.path)}:${location.line}`
+                      : toolPathText(location.path)}
                   </span>
                 ))}
               </div>

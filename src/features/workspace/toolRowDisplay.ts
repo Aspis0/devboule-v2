@@ -154,6 +154,12 @@ function browserSummary(title: string): string | undefined {
   return browserToolName(trimmed) === null && trimmed.length > 0 ? trimmed : undefined;
 }
 
+/** The path as a tool row prints it: forward slashes on every OS. Copy and
+ * open take the raw path; only the printed text goes through here. */
+export function toolPathText(path: string): string {
+  return path.replaceAll("\\", "/");
+}
+
 export type ToolPhase = "done" | "running" | "cancelled";
 
 export function toolRowDisplay(item: ToolItem, phase: ToolPhase = "done"): ToolRowModel {

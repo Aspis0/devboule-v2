@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { humanizeToolName, toolRowDisplay, type ToolItem } from "./toolRowDisplay";
+import { humanizeToolName, toolPathText, toolRowDisplay, type ToolItem } from "./toolRowDisplay";
 
 function tool(overrides: Partial<ToolItem> = {}): ToolItem {
   return {
@@ -346,5 +346,10 @@ describe("humanizeToolName", () => {
   it("keeps letters as sent when case-mapping would change their code-point count", () => {
     expect(humanizeToolName("ßTool")).toBe("ß tool");
     expect(humanizeToolName("İTool")).toBe("İ tool");
+  });
+
+  it("prints a Windows path with forward slashes and leaves a POSIX path alone", () => {
+    expect(toolPathText("docs\\handoff.md")).toBe("docs/handoff.md");
+    expect(toolPathText("src/summary.ts")).toBe("src/summary.ts");
   });
 });
