@@ -540,11 +540,10 @@
   flex: none;
   max-width: 100%;
   color: var(--ink);
-  /* Message body: 15px on a 21px line. The value is translated from the
-     reference message scale; every secondary line in the transcript
-     overrides down to --type-meta. */
-  font-size: 15px;
-  line-height: 21px;
+  /* Message body: 14px on a 1.45 line, the mock's prose. Every secondary
+     line in the transcript overrides down to --type-meta. */
+  font-size: var(--type-interface);
+  line-height: var(--leading-body);
   text-wrap: pretty;
   white-space: pre-wrap;
 }

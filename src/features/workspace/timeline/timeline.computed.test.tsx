@@ -147,8 +147,8 @@ describe("timeline computed styles", () => {
     ) {
       throw new Error("Markdown or copy markup did not render");
     }
-    expect(getComputedStyle(assistant).fontSize).toBe("15px");
-    expect(getComputedStyle(assistant).lineHeight).toBe("21px");
+    expect(getComputedStyle(assistant).fontSize).toBe("14px");
+    expect(getComputedStyle(assistant).lineHeight).toBe("1.45");
     expect(heading).not.toBeNull();
     for (const level of [1, 2, 3, 4, 5, 6]) {
       const levelHeading = assistant.querySelector<HTMLElement>(`.plan-markdown-heading-${level}`);

@@ -12,16 +12,16 @@
   border-radius: var(--radius-12) var(--radius-4) var(--radius-12) var(--radius-12);
   background: var(--bubble-bg);
   color: var(--ink);
-  font-size: 15px;
-  line-height: 21px;
+  font-size: var(--type-interface);
+  line-height: var(--leading-body);
   overflow-wrap: anywhere;
 }
 
 .workspace-chat-assistant {
   position: relative;
   width: 100%;
-  font-size: 15px;
-  line-height: 21px;
+  font-size: var(--type-interface);
+  line-height: var(--leading-body);
   color: var(--ink);
 }
 
