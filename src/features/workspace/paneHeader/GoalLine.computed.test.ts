@@ -62,12 +62,12 @@ const EXPECTED_RATIOS: Record<string, Record<string, string>> = {
   light: {
     "--muted": "8.73",
     "--ink-soft": "9.03",
-    "--tone-live": "4.71",
+    "--tone-live": "6.91",
   },
   dark: {
     "--muted": "8.57",
     "--ink-soft": "11.04",
-    "--tone-live": "7.63",
+    "--tone-live": "7.73",
   },
 };
 
