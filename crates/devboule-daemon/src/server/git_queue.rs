@@ -1,5 +1,5 @@
 //! The substrate under the workspace git arms: one FIFO per repository
-//! root, two permit lanes, per-root caps on queued and waitlisted reads,
+//! root, three permit lanes, per-root caps on queued and waitlisted reads,
 //! and the write-drain that shutdown waits on. This file knows nothing
 //! about `ClientMessage` — a job carries an opaque read key, a closure that
 //! produces the reply, and the sinks that receive it; read-versus-write is
@@ -9,6 +9,8 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
+use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,12 +41,11 @@ pub(super) const MAX_IN_FLIGHT_READ_JOBS: usize = 4;
 pub(super) const MAX_IN_FLIGHT_WRITE_JOBS: usize = 2;
 /// The value lane: a read that answers a value instead of a wire frame (a
 /// repository sweep) rather than a poll. Its own small ceiling, because one
-/// such job runs several git commands under a single permit for as long as the
-/// sweep lasts — four of them would hold the whole read lane, the sidebar's
-/// status and diff polls included. Two keeps two sweeps answering without
-/// spending a permit the workspace reads need. A sweep with no permit waits
-/// its turn in the queue like any other blocked job: it is never picked up
-/// only to block the drain, so a write behind it still runs.
+/// such job runs several git commands under a single permit for as long as
+/// the sweep lasts. Two bounds how many sweeps run at once; the sidebar's
+/// status and diff polls keep their own lane regardless. A sweep with no
+/// permit waits its turn in the queue like any other blocked job: it is
+/// never picked up only to block the drain, so a write behind it still runs.
 pub(super) const MAX_IN_FLIGHT_VALUE_JOBS: usize = 2;
 /// Queued read jobs allowed per root. Beyond it a new poll waits on the
 /// root's waitlist and is admitted when a read on that root frees its
@@ -60,8 +61,9 @@ pub(super) const QUEUED_READ_CAP: usize = 4;
 pub(super) const WAITING_READ_CAP: usize = 12;
 
 /// How long a drain with nothing runnable sleeps before it re-picks its
-/// queue. A freed read permit wakes it at once; this poll bounds only the
-/// wait for a write arriving behind a read that cannot take its permit.
+/// queue. A freed permit on the waited lane wakes it at once; this poll
+/// bounds every other wait — a write arriving behind a permit-less head,
+/// or a permit freeing on a lane this drain is not waiting on.
 const PICK_POLL: Duration = Duration::from_millis(50);
 /// The ceiling on any [`GitQueue::read_value`] wait, whatever the caller asks
 /// for: a wedged queue must refuse a call rather than hold its thread for
@@ -276,15 +278,127 @@ impl Shared {
     }
 }
 
-fn acquire(shared: &Shared, lane: Lane) {
-    let (permits, freed) = shared.lane(lane);
-    let mut permits = permits.lock().unwrap_or_else(|error| error.into_inner());
-    while *permits == 0 {
-        permits = freed
-            .wait(permits)
-            .unwrap_or_else(|error| error.into_inner());
+/// Test-only seams, compiled out of production: park a drain between its
+/// pick and the job's run, and retain drain handles so tests join the
+/// threads they started. Keyed by the queue's [`Shared`], so tests on
+/// separate queues never observe each other.
+#[cfg(test)]
+static SEAMS: std::sync::OnceLock<Mutex<Seams>> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn seams() -> &'static Mutex<Seams> {
+    SEAMS.get_or_init(|| Mutex::new(Seams::new()))
+}
+
+#[cfg(test)]
+struct Seams {
+    parks: HashMap<usize, Park>,
+    drains: HashMap<usize, Vec<std::thread::JoinHandle<()>>>,
+}
+
+#[cfg(test)]
+impl Seams {
+    fn new() -> Self {
+        Self {
+            parks: HashMap::new(),
+            drains: HashMap::new(),
+        }
     }
-    *permits -= 1;
+}
+
+/// One parked pick: the outcome channel tells the test what the drain
+/// decided, and the release channel holds the drain until the test lets a
+/// second root's pick interleave. Only the first picked job parks; later
+/// picks and every wait are only reported, until the test disarms.
+#[cfg(test)]
+struct Park {
+    outcome: mpsc::Sender<PickOutcome>,
+    release: Option<mpsc::Receiver<()>>,
+}
+
+/// What a parked drain's pick decided, reported to the test.
+#[cfg(test)]
+#[derive(Debug)]
+enum PickOutcome {
+    Ran,
+    Waited,
+}
+
+#[cfg(test)]
+fn seams_key(shared: &Arc<Shared>) -> usize {
+    Arc::as_ptr(shared) as usize
+}
+
+/// Arm the park for `shared`'s next picked job: the test learns the outcome
+/// from the receiver and releases the drain through the sender.
+#[cfg(test)]
+fn arm_pick_park(shared: &Arc<Shared>) -> (mpsc::Receiver<PickOutcome>, mpsc::Sender<()>) {
+    let (outcome_tx, outcome_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    seams()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .parks
+        .insert(
+            seams_key(shared),
+            Park {
+                outcome: outcome_tx,
+                release: Some(release_rx),
+            },
+        );
+    (outcome_rx, release_tx)
+}
+
+/// Forget an armed park without parking: later picks run undisturbed.
+#[cfg(test)]
+fn disarm_pick_park(shared: &Arc<Shared>) {
+    seams()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .parks
+        .remove(&seams_key(shared));
+}
+
+/// A picked job is about to run: report it, then wait for the test's
+/// release the first time. A dropped test releases the wait instead of
+/// stranding the drain.
+#[cfg(test)]
+fn park_after_pick(shared: &Arc<Shared>) {
+    let mut seams = seams().lock().unwrap_or_else(|error| error.into_inner());
+    let Some(park) = seams.parks.get_mut(&seams_key(shared)) else {
+        return;
+    };
+    let _ = park.outcome.send(PickOutcome::Ran);
+    let Some(release) = park.release.take() else {
+        return;
+    };
+    drop(seams);
+    let _ = release.recv();
+}
+
+/// A pick found nothing runnable while the park is armed: report it. Fires
+/// on every wait until the test disarms, so the test reads one and moves on.
+#[cfg(test)]
+fn note_pick_wait(shared: &Arc<Shared>) {
+    let seams = seams().lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(park) = seams.parks.get(&seams_key(shared)) {
+        let _ = park.outcome.send(PickOutcome::Waited);
+    }
+}
+
+/// Reap every drain thread this queue started. Production detaches its
+/// drains and reaps them by queue-empty exit; tests join instead.
+#[cfg(test)]
+fn join_drains(shared: &Arc<Shared>) {
+    let handles = seams()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .drains
+        .remove(&seams_key(shared))
+        .unwrap_or_default();
+    for handle in handles {
+        handle.join().expect("a test drain finished cleanly");
+    }
 }
 
 fn queued_reads(inner: &Inner) -> usize {
@@ -322,8 +436,8 @@ fn reserve_permit(shared: &Shared, lane: Lane) -> bool {
 /// queued slots [`QUEUED_READ_CAP`] has free — behind everything queued
 /// now, newest admitted first, because the read the user just asked for is
 /// the one whose latency they feel. The head runs, unless its lane has no
-/// permit and the queue holds a write: the write then runs ahead of the
-/// blocked job, unconditionally, and the blocked job keeps its place. The
+/// permit and the queue holds a write while the write lane has room: that
+/// write then runs ahead of the blocked job, and the blocked job keeps its place. The
 /// reordering is only ever of a write ahead — every other job then observes
 /// the write, which is fresher than the tree it was queued against, never
 /// staler, and a value job never overtakes a read either.
@@ -341,25 +455,30 @@ fn next_runnable(shared: &Shared, inner: &mut Inner) -> Pick {
     let Some(head) = inner.jobs.front() else {
         return Pick::Exit;
     };
-    // A write takes the write lane's permit in the drain, which is where that
-    // wait has always lived. A read's and a value job's permits are taken
-    // here, with the pick: the drain then runs them without taking one, so a
-    // read or sweep with no permit to spare waits in this queue rather than
-    // blocking the drain that also has to serve this root's writes.
+    // Every lane's permit is taken here, with the pick: the drain runs a
+    // picked job without taking one, so a job with no permit to spare waits
+    // in this queue rather than blocking the drain that also has to serve
+    // this root's other jobs — and a write behind a blocked head still runs
+    // ahead of it while the write lane has room.
     let blocked = match head {
-        Job::Write(_) => false,
+        Job::Write(_) => !reserve_permit(shared, Lane::Write),
         Job::Read { .. } => !reserve_permit(shared, Lane::Read),
         Job::Value(_) => !reserve_permit(shared, Lane::Value),
     };
     if !blocked {
         return Pick::Run(inner.jobs.pop_front().expect("front checked"));
     }
+    // The head is blocked, but a write behind it may still run ahead while
+    // the write lane has room. The permit is taken only for the write that
+    // actually runs — a pick that runs nothing takes nothing.
     if let Some(index) = inner
         .jobs
         .iter()
         .position(|job| matches!(job, Job::Write(_)))
     {
-        return Pick::Run(inner.jobs.remove(index).expect("position checked"));
+        if reserve_permit(shared, Lane::Write) {
+            return Pick::Run(inner.jobs.remove(index).expect("position checked"));
+        }
     }
     Pick::Wait(match head {
         Job::Read { .. } => Lane::Read,
@@ -570,21 +689,33 @@ impl GitQueue {
                 let queue = Arc::clone(&queue);
                 move || drain(shared, queue)
             });
-        if spawn.is_err() {
-            let mut inner = queue
-                .inner
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            inner.busy = false;
-            if let Some(unrun) = inner.jobs.pop_front() {
-                // The job was never run; a write's count is taken at enqueue
-                // and closes here, and a value job's sender is dropped with
-                // the job, so its caller reads a refusal instead of waiting.
-                if matches!(unrun, Job::Write(_)) {
-                    self.shared.write_finished();
-                }
+        match spawn {
+            Ok(_handle) => {
+                #[cfg(test)]
+                seams()
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .drains
+                    .entry(seams_key(&self.shared))
+                    .or_default()
+                    .push(_handle);
             }
-            return Err("could not start the workspace git request");
+            Err(_) => {
+                let mut inner = queue
+                    .inner
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                inner.busy = false;
+                if let Some(unrun) = inner.jobs.pop_front() {
+                    // The job was never run; a write's count is taken at enqueue
+                    // and closes here, and a value job's sender is dropped with
+                    // the job, so its caller reads a refusal instead of waiting.
+                    if matches!(unrun, Job::Write(_)) {
+                        self.shared.write_finished();
+                    }
+                }
+                return Err("could not start the workspace git request");
+            }
         }
         Ok(())
     }
@@ -651,11 +782,10 @@ impl GitQueue {
 }
 
 /// Run this root's queued jobs one at a time, in queue order — except that
-/// a read or value job with no permit to take steps aside for the root's
-/// own writes ([`next_runnable`]). A picked read or value job arrives
-/// holding its lane's permit; a write waits for its lane's permit before it
-/// starts, so the concurrently running git count is bounded per lane no
-/// matter how many roots have work.
+/// a job with no permit to take steps aside for the root's own writes
+/// ([`next_runnable`]). A picked job arrives holding its lane's permit, so
+/// the concurrently running git count is bounded per lane no matter how many
+/// roots have work.
 fn drain(shared: Arc<Shared>, queue: Arc<RootQueue>) {
     let mut guard = DrainGuard {
         queue: Arc::clone(&queue),
@@ -668,13 +798,19 @@ fn drain(shared: Arc<Shared>, queue: Arc<RootQueue>) {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
             match next_runnable(&shared, &mut inner) {
-                Pick::Run(job) => break job,
+                Pick::Run(job) => {
+                    #[cfg(test)]
+                    park_after_pick(&shared);
+                    break job;
+                }
                 Pick::Exit => {
                     inner.busy = false;
                     guard.armed = false;
                     return;
                 }
                 Pick::Wait(lane) => {
+                    #[cfg(test)]
+                    note_pick_wait(&shared);
                     drop(inner);
                     let (permits, freed) = shared.lane(lane);
                     let permits = permits.lock().unwrap_or_else(|error| error.into_inner());
@@ -713,16 +849,15 @@ fn drain(shared: Arc<Shared>, queue: Arc<RootQueue>) {
             }
             Job::Write(run) => {
                 // The count was taken at enqueue; this guard closes it
-                // however the job ends, after any permit wait.
+                // however the job ends.
                 let _finished = WriteFinishedGuard { shared: &shared };
-                acquire(&shared, Lane::Write);
-                {
-                    let _permit = PermitGuard {
-                        shared: &shared,
-                        lane: Lane::Write,
-                    };
-                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
-                }
+                // The permit came with the pick, so this guard only hands it
+                // back once the write is done with it.
+                let _permit = PermitGuard {
+                    shared: &shared,
+                    lane: Lane::Write,
+                };
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
             }
             Job::Value(run) => {
                 // The permit came with the pick, so this guard only hands it
@@ -737,7 +872,7 @@ fn drain(shared: Arc<Shared>, queue: Arc<RootQueue>) {
     }
 }
 
-/// The read lane's pick-and-take, beside the substrate it pins.
+/// Every lane's pick-and-take, beside the substrate it pins.
 #[cfg(test)]
 #[path = "git_queue_read_permit_tests.rs"]
 mod read_permit_tests;
