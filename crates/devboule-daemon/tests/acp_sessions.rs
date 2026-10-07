@@ -15,9 +15,9 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Child;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Barrier, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use devboule_daemon::{
     connect, current_user_sid, spawn_daemon, spawn_daemon_with_env, DaemonClient, EventHandler,
@@ -103,30 +103,10 @@ fn stub_bin() -> PathBuf {
     );
 }
 
-/// A directory no other run can hand back.
-///
-/// `process::id()` plus a per-process counter is not unique across runs:
-/// Windows recycles pids, and `create_dir_all` reuses a directory it finds
-/// without clearing it, so a recycled pid would hand this run the previous
-/// run's observation files — which `wait_for_observations` reads whole.
-/// The nonce makes the name unrepeatable; the removal covers the directory a
-/// crashed earlier run could still own.
+/// A directory under this run's own root: the helper's clock keeps one run's
+/// names apart, and the next run's sweep clears what this one leaves.
 fn unique_dir() -> PathBuf {
-    static COUNTER: AtomicU64 = AtomicU64::new(1);
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock past the epoch")
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "devboule acp {}-{}-{nonce}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    if dir.exists() {
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-    std::fs::create_dir_all(&dir).expect("runtime directory with spaces");
-    dir
+    devboule_daemon::test_dirs::test_temp_dir("devboule acp")
 }
 
 fn hello(name: &str) -> ClientHello {
@@ -514,26 +494,13 @@ fn acp_create_after_the_last_close_still_contains_the_child() {
 #[test]
 fn acp_session_new_carries_a_plain_cwd() {
     let _test_lock = lock_tests();
-    let stdin_file = std::env::temp_dir().join(format!(
-        "devboule acp stdin {}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_millis()
-    ));
+    let stdin_file =
+        devboule_daemon::test_dirs::test_temp_dir("devboule acp stdin").join("requests.txt");
     std::env::set_var("DEVBOULE_ACP_STUB_REQUESTS_FILE", &stdin_file);
     let mut test = AcpTest::new(&[]);
     test._env.names.push("DEVBOULE_ACP_STUB_REQUESTS_FILE");
 
-    let dir = std::env::temp_dir().join(format!(
-        "devboule acp cwd {}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_millis()
-    ));
+    let dir = devboule_daemon::test_dirs::test_temp_dir("devboule acp cwd");
     std::fs::create_dir_all(&dir).expect("project dir");
     let project = test
         .client
@@ -593,14 +560,8 @@ fn acp_close_kills_a_grandchild_that_holds_the_output_pipe() {
     let _test_lock = lock_tests();
     // The grandchild's pid file must be named before the daemon spawns the
     // stub, which inherits this process's environment and passes it on.
-    let grandchild_file = std::env::temp_dir().join(format!(
-        "devboule acp grandchild {}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_millis()
-    ));
+    let grandchild_file =
+        devboule_daemon::test_dirs::test_temp_dir("devboule acp grandchild").join("pid.txt");
     std::env::set_var("DEVBOULE_ACP_STUB_GRANDCHILD_PID_FILE", &grandchild_file);
     let mut test = AcpTest::new(&[]);
     test._env

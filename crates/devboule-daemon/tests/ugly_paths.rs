@@ -8,7 +8,6 @@
 use std::fs::OpenOptions;
 use std::path::PathBuf;
 use std::process::Child;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use devboule_daemon::{
@@ -53,13 +52,7 @@ fn daemon_bin() -> PathBuf {
 }
 
 fn unique_paths() -> (RuntimePaths, PathBuf) {
-    static COUNTER: AtomicU64 = AtomicU64::new(1);
-    let dir = std::env::temp_dir().join(format!(
-        "devboule m3a {}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).expect("runtime dir with spaces");
+    let dir = devboule_daemon::test_dirs::test_temp_dir("devboule m3a");
     assert!(
         dir.to_string_lossy().contains(' '),
         "test dir must contain a space: {}",

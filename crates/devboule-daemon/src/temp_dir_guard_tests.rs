@@ -1,5 +1,5 @@
-//! Guard: outside `test_dirs.rs`, no scanned line may carry the system
-//! temp dir in a spelling this rule matches: the token
+//! Guard: outside `test_dirs.rs`, no scanned line of `src` or `tests` may
+//! carry the system temp dir in a spelling this rule matches: the token
 //! (`std::env::temp_dir()`, `env::temp_dir()`), a `use` line importing
 //! `temp_dir` from `std::env`, or a bare `temp_dir()` call in a file that
 //! carries such an import.
@@ -23,6 +23,9 @@ use std::path::{Path, PathBuf};
 /// nested `test_dirs.rs` deeper in the tree stays in scope.
 const HELPER: &str = "test_dirs.rs";
 
+/// The two trees this rule walks: every test file this crate has.
+const TREES: &[&str] = &["src", "tests"];
+
 /// Production sites that may keep the token: relative path + the exact
 /// text of the allowed line. `concat!` spells it so this file's own scan
 /// does not meet the token in its own source; test code has no entries.
@@ -33,11 +36,14 @@ const ALLOW: &[(&str, &str)] = &[(
 
 #[test]
 fn no_code_line_outside_the_helper_asks_for_the_temp_dir() {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let token = ["env", "temp_dir"].join("::");
     let mut violations = Vec::new();
     let mut used = vec![false; ALLOW.len()];
-    walk(&src, &src, &token, &mut violations, &mut used);
+    for tree in TREES {
+        let tree_root = root.join(tree);
+        walk(&tree_root, &tree_root, &token, &mut violations, &mut used);
+    }
     for (index, (path, snippet)) in ALLOW.iter().enumerate() {
         if !used[index] {
             violations.push(format!(
@@ -53,7 +59,7 @@ fn no_code_line_outside_the_helper_asks_for_the_temp_dir() {
 }
 
 fn walk(dir: &Path, src: &Path, token: &str, violations: &mut Vec<String>, used: &mut [bool]) {
-    let entries = std::fs::read_dir(dir).expect("read the src tree");
+    let entries = std::fs::read_dir(dir).expect("read a scanned tree");
     for entry in entries {
         let path: PathBuf = entry.expect("an entry").path();
         if path.is_dir() {

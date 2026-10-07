@@ -81,8 +81,7 @@ fn wait_argv_contains(argv_file: &std::path::Path, needle: &str) -> String {
 #[test]
 fn claude_resume_after_daemon_death_reuses_the_row() {
     let _test_lock = common::lock_tests();
-    let observation =
-        std::env::temp_dir().join(format!("devboule-claude-resume-{}-1", std::process::id()));
+    let observation = devboule_daemon::test_dirs::test_temp_dir("devboule-claude-resume-1");
     std::fs::create_dir_all(&observation).expect("observation dir");
     let argv_file = observation.join("argv.txt");
     let console_file = observation.join("console.txt");
@@ -209,8 +208,7 @@ fn claude_resume_accepts_the_old_acp_tag() {
     // that still sends the pre-Claude tag resumes the same row — the journal
     // decides, through `Provider::resumable()`.
     let _test_lock = common::lock_tests();
-    let observation =
-        std::env::temp_dir().join(format!("devboule-claude-resume-{}-2", std::process::id()));
+    let observation = devboule_daemon::test_dirs::test_temp_dir("devboule-claude-resume-2");
     std::fs::create_dir_all(&observation).expect("observation dir");
     let argv_file = observation.join("argv.txt");
     let console_file = observation.join("console.txt");
@@ -266,8 +264,7 @@ fn claude_resume_refuses_a_deleted_history_by_name() {
     // The human deleted the provider's file (or the CLI rotated it): the
     // resume refuses naming the conversation, before any process exists.
     let _test_lock = common::lock_tests();
-    let observation =
-        std::env::temp_dir().join(format!("devboule-claude-resume-{}-3", std::process::id()));
+    let observation = devboule_daemon::test_dirs::test_temp_dir("devboule-claude-resume-3");
     std::fs::create_dir_all(&observation).expect("observation dir");
     let argv_file = observation.join("argv.txt");
     let console_file = observation.join("console.txt");
@@ -327,8 +324,7 @@ fn claude_resume_refuses_a_deleted_history_by_name() {
 #[test]
 fn claude_resume_of_a_deleted_history_ends_the_offer() {
     let _test_lock = common::lock_tests();
-    let observation =
-        std::env::temp_dir().join(format!("devboule-claude-resume-{}-4", std::process::id()));
+    let observation = devboule_daemon::test_dirs::test_temp_dir("devboule-claude-resume-4");
     std::fs::create_dir_all(&observation).expect("observation dir");
     let argv_file = observation.join("argv.txt");
     let console_file = observation.join("console.txt");
@@ -424,8 +420,7 @@ fn claude_resume_of_a_deleted_history_ends_the_offer() {
 #[test]
 fn claude_resume_of_an_unreadable_history_keeps_the_offer() {
     let _test_lock = common::lock_tests();
-    let observation =
-        std::env::temp_dir().join(format!("devboule-claude-resume-{}-5", std::process::id()));
+    let observation = devboule_daemon::test_dirs::test_temp_dir("devboule-claude-resume-5");
     std::fs::create_dir_all(&observation).expect("observation dir");
     let argv_file = observation.join("argv.txt");
     let console_file = observation.join("console.txt");

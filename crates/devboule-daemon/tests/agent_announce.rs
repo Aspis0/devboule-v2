@@ -5,7 +5,6 @@
 
 use std::path::PathBuf;
 use std::process::Child;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -65,14 +64,7 @@ fn stub_bin() -> PathBuf {
 }
 
 fn unique_dir() -> PathBuf {
-    static COUNTER: AtomicU64 = AtomicU64::new(1);
-    let dir = std::env::temp_dir().join(format!(
-        "devboule announce {}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).expect("runtime directory with spaces");
-    dir
+    devboule_daemon::test_dirs::test_temp_dir("devboule announce")
 }
 
 fn hello(name: &str) -> ClientHello {

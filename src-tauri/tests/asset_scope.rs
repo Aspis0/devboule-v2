@@ -156,10 +156,8 @@ fn a_runtime_dir_override_gets_the_same_flat_concession_as_the_default() {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("clock")
         .as_nanos();
-    let override_dir = std::env::temp_dir().join(format!(
-        "devboule-other-runtime-{}-{stamp}",
-        std::process::id()
-    ));
+    let override_dir =
+        devboule_daemon::test_dirs::test_temp_dir(&format!("devboule-other-runtime-{stamp}"));
     devboule_lib::concede_previews_of(&app, &override_dir);
 
     let scope = app.asset_protocol_scope();

@@ -10,7 +10,7 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -25,13 +25,7 @@ use crate::oracle::{OracleModelStatus, OracleResult, OracleSearchResponse};
 pub(super) const QUERY_PATH: &str = "/oracle/v1/query";
 
 pub(super) fn unique_paths() -> (RuntimePaths, DirGuard) {
-    static COUNTER: AtomicU64 = AtomicU64::new(1);
-    let dir = std::env::temp_dir().join(format!(
-        "devboule oracle endpoint {}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let dir = devboule_daemon::test_dirs::test_temp_dir("devboule oracle endpoint");
     let guard = DirGuard(dir.clone());
     (RuntimePaths::from_dir(dir), guard)
 }

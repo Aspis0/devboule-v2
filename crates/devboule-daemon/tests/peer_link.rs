@@ -80,14 +80,7 @@ fn two_free_ports() -> (u16, u16) {
 }
 
 fn unique_dir(tag: &str) -> PathBuf {
-    static COUNTER: AtomicU64 = AtomicU64::new(1);
-    let dir = std::env::temp_dir().join(format!(
-        "devboule peer {tag} {}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).expect("runtime directory");
-    dir
+    devboule_daemon::test_dirs::test_temp_dir(&format!("devboule peer {tag}"))
 }
 
 /// The ACP stub provider's argv, as the daemon reads `DEVBOULE_ACP_COMMAND`.

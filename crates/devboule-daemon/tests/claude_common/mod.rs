@@ -49,15 +49,7 @@ pub fn claude_stub_bin() -> PathBuf {
 }
 
 fn unique_dir(prefix: &str) -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(1);
-    let dir = std::env::temp_dir().join(format!(
-        "{prefix} {}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).expect("runtime directory");
-    dir
+    devboule_daemon::test_dirs::test_temp_dir(prefix)
 }
 
 fn hello(name: &str) -> ClientHello {

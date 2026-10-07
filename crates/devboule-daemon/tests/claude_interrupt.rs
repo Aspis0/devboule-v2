@@ -54,10 +54,8 @@ struct InterruptEnv {
 
 fn setup(name: &str) -> InterruptEnv {
     let _test_lock = common::lock_tests();
-    let observation = std::env::temp_dir().join(format!(
-        "devboule-claude-interrupt-{}-{name}",
-        std::process::id()
-    ));
+    let observation =
+        devboule_daemon::test_dirs::test_temp_dir(&format!("devboule-claude-interrupt-{name}"));
     std::fs::create_dir_all(&observation).expect("observation dir");
     let console_file = observation.join("console.txt");
     let home = observation.join("home");

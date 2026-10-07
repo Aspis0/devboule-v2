@@ -357,8 +357,15 @@ impl CkgStore {
 mod tests {
     use super::*;
 
+    /// The crate's one test temp-dir site: a directory under the shared
+    /// per-run root, `%TEMP%\devboule-tests\<pid>\`, whose removal
+    /// belongs to whichever run comes next and finds this pid gone.
     fn unique_temp_db(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("ckg-store-test-{tag}-{}", std::process::id()));
+        let root = std::env::temp_dir()
+            .join("devboule-tests")
+            .join(std::process::id().to_string());
+        std::fs::create_dir_all(&root).expect("this run's temp root");
+        let dir = root.join(format!("ckg-store-test-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("ckg.sqlite")

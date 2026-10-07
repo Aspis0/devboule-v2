@@ -142,6 +142,9 @@ windows = { version = "=0.61.3", features = [
 [dev-dependencies]
 # Already in the workspace; used to assert the Tauri error payload JSON.
 serde_json = "=1.0.151"
+# The daemon's test-only temp-dir helper: the one place that hands out a
+# directory under the per-run root these tests clean up through.
+devboule-daemon = { path = "../crates/devboule-daemon", default-features = false, features = ["test-support"] }
 # The loopback listener the in-process CDP endpoint in
 # `browser/cdp_ws_fake.rs` accepts the transport's own tests on. The runtime
 # that drives it is Tauri's, as it is for every other browser test. `rt` builds

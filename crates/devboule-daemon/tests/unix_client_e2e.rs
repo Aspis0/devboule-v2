@@ -36,15 +36,7 @@ fn daemon_bin() -> PathBuf {
 }
 
 fn temp_paths() -> (RuntimePaths, TempGuard) {
-    let dir = std::env::temp_dir().join(format!(
-        "devboule-uxc-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
-    ));
-    std::fs::create_dir(&dir).expect("temp runtime dir");
+    let dir = devboule_daemon::test_dirs::test_temp_dir("devboule-uxc");
     let paths = RuntimePaths::from_dir(&dir);
     (paths.clone(), TempGuard { paths })
 }

@@ -1499,8 +1499,7 @@ fn a_declared_exit_is_not_charged_to_the_crash_brake_and_a_crash_still_is() {
 /// as long as that goodbye still decides anything.
 #[test]
 fn a_record_that_says_the_daemon_left_is_read_off_disk_not_guessed() {
-    let dir = std::env::temp_dir().join(format!("devboule connect failure {}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let dir = devboule_daemon::test_dirs::test_temp_dir("devboule connect failure");
     let paths = RuntimePaths::from_dir(dir.clone());
     let error = || DaemonError::ConnectionLost;
 
@@ -1544,13 +1543,7 @@ fn a_record_that_says_the_daemon_left_is_read_off_disk_not_guessed() {
 /// dated by the write. The folder name says nothing about the reason, so only
 /// the record can decide the answer.
 fn lost_connection_record(reason: ExitReason) -> (RuntimePaths, PathBuf) {
-    static COUNTER: AtomicUsize = AtomicUsize::new(1);
-    let dir = std::env::temp_dir().join(format!(
-        "devboule lost connection {}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let dir = devboule_daemon::test_dirs::test_temp_dir("devboule lost connection");
     let paths = RuntimePaths::from_dir(dir.clone());
     let mut record = devboule_daemon::DaemonRecord::starting(1, "1-1", &paths.pipe_name);
     record.stopped(reason);
@@ -1646,9 +1639,8 @@ fn the_lost_connection_question_answers_a_requested_stop_only() {
         !declared_exit_from(None),
         "a runtime folder that cannot be named has no goodbye to report"
     );
-    let absent = RuntimePaths::from_dir(
-        std::env::temp_dir().join(format!("devboule absent {}", std::process::id())),
-    );
+    let absent =
+        RuntimePaths::from_dir(devboule_daemon::test_dirs::test_temp_dir("devboule absent"));
     assert!(
         !declared_exit_from(Some(&absent)),
         "a daemon that never wrote a record has said nothing about leaving"

@@ -69,7 +69,8 @@ pub struct WireDaemon {
 
 impl WireDaemon {
     pub fn start(label: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("devboule-browser-host-{label}"));
+        let dir =
+            devboule_daemon::test_dirs::test_temp_dir(&format!("devboule-browser-host-{label}"));
         let paths = RuntimePaths::from_dir(dir);
         paths.ensure_dir().expect("runtime dir");
         let connection: Arc<Mutex<Vec<Sender<ToServer>>>> = Arc::new(Mutex::new(Vec::new()));

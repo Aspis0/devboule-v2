@@ -78,13 +78,7 @@ fn daemon_bin() -> PathBuf {
 }
 
 fn unique_paths() -> (RuntimePaths, PathBuf) {
-    static COUNTER: AtomicU64 = AtomicU64::new(1);
-    let dir = std::env::temp_dir().join(format!(
-        "devboule m3b {}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).expect("runtime dir with spaces");
+    let dir = devboule_daemon::test_dirs::test_temp_dir("devboule m3b");
     (RuntimePaths::from_dir(&dir), dir)
 }
 
@@ -2265,14 +2259,8 @@ fn real_pty_channel_file_transport_ab_benchmark() {
     const DATA_LINES: usize = 200_000;
     const PAYLOAD: &str = "DEVBOULE_TRANSPORT_0123456789abcdefghijklmnopqrstuvwxyz0123456789";
 
-    let file_path = std::env::temp_dir().join(format!(
-        "devboule-pty-transport-{}-{}.txt",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis()
-    ));
+    let file_path =
+        devboule_daemon::test_dirs::test_temp_dir("devboule-pty-transport").join("transport.txt");
     {
         let file = std::fs::File::create(&file_path).unwrap();
         let mut file = std::io::BufWriter::new(file);
@@ -2799,14 +2787,8 @@ fn stale_generation_on_recovered_session_is_a_mismatch() {
 fn journal_growth_after_13mb_flood() {
     const DATA_LINES: usize = 200_000;
     const PAYLOAD: &str = "DEVBOULE_TRANSPORT_0123456789abcdefghijklmnopqrstuvwxyz0123456789";
-    let file_path = std::env::temp_dir().join(format!(
-        "devboule-journal-growth-{}-{}.txt",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis()
-    ));
+    let file_path =
+        devboule_daemon::test_dirs::test_temp_dir("devboule-journal-growth").join("growth.txt");
     {
         let file = std::fs::File::create(&file_path).unwrap();
         let mut file = std::io::BufWriter::new(file);
@@ -3508,7 +3490,7 @@ fn control_traffic_is_answered_within_bound_during_flood() {
 fn a_terminal_in_a_workspace_starts_in_a_plain_path() {
     let harness = Harness::spawn();
     let client = harness.client("plain-cwd");
-    let dir = std::env::temp_dir().join(format!("devboule plain cwd {}", std::process::id()));
+    let dir = devboule_daemon::test_dirs::test_temp_dir("devboule plain cwd");
     std::fs::create_dir_all(&dir).expect("project dir");
     let project = client
         .project_add(&dir.to_string_lossy())
