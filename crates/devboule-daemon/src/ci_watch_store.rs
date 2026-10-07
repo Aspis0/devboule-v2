@@ -105,16 +105,27 @@ pub(crate) struct CiWatchRecord {
     /// were asked for and not only how many times.
     #[serde(default)]
     pub(crate) retried_runs: Vec<u64>,
-    /// The check run ids the retry was decided on: the old attempt's whole
-    /// evidence, so the new attempt can be told from it and the old failed
-    /// checks dropped instead of judged a second time.
+    /// One entry per [`CiWatchRecord::retried_runs`]: the attempt each of
+    /// those runs was on when the retry was decided. The re-run is the
+    /// attempt after it, so a later check of the attempt before — or another
+    /// app's check — can never be mistaken for it.
     #[serde(default)]
-    pub(crate) retry_evidence: Vec<u64>,
+    pub(crate) retry_attempts: Vec<u64>,
 }
 
 impl CiWatchRecord {
     pub(crate) fn slug(&self) -> String {
         format!("{}/{}", self.repo_owner, self.repo)
+    }
+
+    /// Each workflow run the retry asked for, with the attempt it was on when
+    /// the retry was decided. A record written before the attempt was kept
+    /// pairs with nothing, so nothing is dropped for it.
+    pub(crate) fn retried_run_attempts(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
+        self.retried_runs
+            .iter()
+            .copied()
+            .zip(self.retry_attempts.iter().copied())
     }
 }
 
@@ -399,16 +410,12 @@ impl CiWatchStore {
         Ok(Some(approved))
     }
 
-    /// Reserve the watch's one approved retry on `runs`, before any re-run is
-    /// asked for: a daemon that dies after this finds the retry reserved and
-    /// never issues it twice. `false` means another pass already reserved it,
-    /// or the record could not be written — either way nothing may be issued.
-    pub(crate) fn note_retry_reserved(
-        &self,
-        watch_id: &str,
-        runs: &[u64],
-        evidence: &[u64],
-    ) -> bool {
+    /// Reserve the watch's one approved retry on `runs` — each with the
+    /// attempt it was on — before any re-run is asked for: a daemon that dies
+    /// after this finds the retry reserved and never issues it twice. `false`
+    /// means another pass already reserved it, or the record could not be
+    /// written — either way nothing may be issued.
+    pub(crate) fn note_retry_reserved(&self, watch_id: &str, runs: &[(u64, u64)]) -> bool {
         let mut records = self.records();
         let Some(record) = records
             .iter_mut()
@@ -420,8 +427,8 @@ impl CiWatchStore {
             return false;
         }
         record.retry_count = 1;
-        record.retried_runs = runs.to_vec();
-        record.retry_evidence = evidence.to_vec();
+        record.retried_runs = runs.iter().map(|(run_id, _)| *run_id).collect();
+        record.retry_attempts = runs.iter().map(|(_, attempt)| *attempt).collect();
         if self.persist(&records).is_err() {
             if let Some(record) = records
                 .iter_mut()
@@ -429,7 +436,7 @@ impl CiWatchStore {
             {
                 record.retry_count = 0;
                 record.retried_runs.clear();
-                record.retry_evidence.clear();
+                record.retry_attempts.clear();
             }
             // The spend is what keeps the retry at one, so an unrecorded
             // spend issues nothing and the watch tries again next pass.

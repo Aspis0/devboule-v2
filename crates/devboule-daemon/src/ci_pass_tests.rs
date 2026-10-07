@@ -30,7 +30,7 @@ fn watch(id: &str, repo: &str) -> CiWatchRecord {
         retry_count: 0,
         retry_issued: false,
         retried_runs: Vec::new(),
-        retry_evidence: Vec::new(),
+        retry_attempts: Vec::new(),
     }
 }
 

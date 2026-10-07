@@ -52,6 +52,9 @@ pub(crate) const LOG_GH_TIMEOUT: Duration = Duration::from_secs(20);
 /// A rate-limited answer quiets a repository this long when GitHub names no
 /// reset time of its own.
 const RATE_LIMIT_FALLBACK_MS: u64 = 60_000;
+/// One attempt's jobs are read a page at a time and every page is joined, so
+/// an attempt with more than one page of jobs is judged whole.
+const JOBS_PAGE: &str = "per_page=100";
 
 /// A refusal the tool contract names: the code, a sentence that says what to
 /// do next, and whether asking again later can help.
@@ -114,6 +117,14 @@ impl CommandRunner for ProcessRunner {
         }
         run_program_args(program, &GH_ENV, args, GH_OUTPUT_MAX_BYTES, timeout)
     }
+}
+
+/// A workflow run's own answer about its attempts: the number the re-run
+/// moves on, and whether the run is finished.
+pub(crate) struct RunAttempt {
+    pub(crate) attempt: u64,
+    /// The run's own status: `completed` is the one that ends an attempt.
+    pub(crate) status: String,
 }
 
 /// A GitHub repository on a named host.
@@ -465,6 +476,48 @@ impl GhClient {
     /// Whether GitHub asked this repository to be left alone for now.
     pub(crate) fn is_quiet(&self, repo: &RepoRef) -> bool {
         self.backed_off(&format!("{}/{}", repo.host, repo.slug()))
+    }
+
+    /// The attempt a workflow run is on now, and whether it has finished. A
+    /// re-run keeps the run's id and moves this number on, which is the one
+    /// fact on a commit that says *this* re-run ran; anything else that
+    /// appears on the commit is another check, not this retry.
+    pub(crate) fn run_attempt(&self, repo: &RepoRef, run_id: u64) -> Result<RunAttempt, CiError> {
+        let document = self.get_json(repo, &format!("actions/runs/{run_id}"))?;
+        let attempt = document
+            .get("run_attempt")
+            .and_then(Value::as_u64)
+            .filter(|attempt| *attempt > 0);
+        let Some(attempt) = attempt else {
+            return Err(CiError::new(
+                "github_unavailable",
+                "GitHub's answer for that workflow run named no attempt; try again.",
+                true,
+            ));
+        };
+        Ok(RunAttempt {
+            attempt,
+            status: document
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        })
+    }
+
+    /// The pages of one attempt's jobs, as `gh api --paginate --slurp` hands
+    /// them over. A `--failed` re-run runs the failed jobs, so this is the
+    /// attempt's own work and never the attempt before it.
+    pub(crate) fn attempt_job_pages(
+        &self,
+        repo: &RepoRef,
+        run_id: u64,
+        attempt: u64,
+    ) -> Result<Vec<Value>, CiError> {
+        self.get_json_pages(
+            repo,
+            &format!("actions/runs/{run_id}/attempts/{attempt}/jobs?{JOBS_PAGE}"),
+        )
     }
 
     /// `gh run rerun --failed <run-id>`: the one retry a watch may hold, and

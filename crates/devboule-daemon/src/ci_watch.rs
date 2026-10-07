@@ -148,7 +148,7 @@ impl CiWatches {
             retry_count: 0,
             retry_issued: false,
             retried_runs: Vec::new(),
-            retry_evidence: Vec::new(),
+            retry_attempts: Vec::new(),
         };
         match self
             .store
@@ -336,28 +336,34 @@ impl CiWatches {
                 return Turn::Done;
             }
         };
-        // A re-run `gh` accepted is never judged on the old attempt: that
-        // failure is what the retry was asked to replace, and the old greens
-        // are not a verdict for a run that has not started. The watch waits
-        // until a check the retry was not decided on appears.
-        if record.retry_issued && !new_attempt_visible(record, &runs) {
-            if self
-                .store
-                .set_state(&record.watch_id, CiState::Running)
-                .is_err()
-            {
-                eprintln!(
-                    "ci watch: could not record the state of {}",
-                    record.watch_id
-                );
+        // A re-run is judged by the run's own newer attempt and by nothing
+        // else that appears on the commit: another app's check, a late check
+        // of the attempt before, or a green check of another workflow must
+        // never turn a red commit green. While that attempt is not finished
+        // the watch waits, and a run whose attempt cannot be read keeps the
+        // failure that was there.
+        let judged = if record.retry_issued && !record.retried_runs.is_empty() {
+            match self.retried_runs_state(record, &repo, budget) {
+                RetriedRuns::NoBudget => return Turn::NoBudget,
+                RetriedRuns::Waiting => {
+                    if self
+                        .store
+                        .set_state(&record.watch_id, CiState::Running)
+                        .is_err()
+                    {
+                        eprintln!(
+                            "ci watch: could not record the state of {}",
+                            record.watch_id
+                        );
+                    }
+                    self.close_if_overdue(record, runs.is_empty());
+                    return Turn::Done;
+                }
+                RetriedRuns::Attempts(attempts) => replace_retried_run_checks(&runs, &attempts),
             }
-            self.close_if_overdue(record, runs.is_empty());
-            return Turn::Done;
-        }
-        // The old attempt's failed checks are not evidence once a re-run is
-        // out; its passing ones are, because a re-run of the failed jobs does
-        // not run them again.
-        let judged = judged_runs(record, &runs);
+        } else {
+            runs.clone()
+        };
         let state = ci_summary::overall(&judged);
         if !state.is_terminal() {
             if self.store.set_state(&record.watch_id, state).is_err() {
@@ -413,20 +419,41 @@ impl CiWatches {
         }
         // The one retry: only a failure that is entirely the platform's, and
         // only when the person approved it when the watch was started.
-        if let Some(retry) = retry_runs(record, &verdict) {
-            if !budget.take(retry.runs.len()) {
+        if let Some(runs) = retry_runs(record, &verdict) {
+            // The attempt each run is on now is read before the re-run is
+            // asked for: the attempt after it is the one this retry will be
+            // judged by, and nothing else on the commit can stand in for it.
+            let mut targets = Vec::with_capacity(runs.len());
+            for run_id in &runs {
+                if !budget.take(1) {
+                    return Turn::NoBudget;
+                }
+                match self.gh.run_attempt(&repo, *run_id) {
+                    Ok(state) => targets.push((*run_id, state.attempt)),
+                    Err(error) if error.retryable => {
+                        self.close_if_overdue(record, false);
+                        return Turn::RepoFailed;
+                    }
+                    Err(error) => {
+                        // The run cannot be read, so the re-run could not be
+                        // told apart from anything else: it is not issued, and
+                        // the failure that was there stands.
+                        let heading = heading(&header, Some(refused_note(&runs, &error)));
+                        self.finish(record, verdict.state, verdict.render(&heading));
+                        return Turn::Done;
+                    }
+                }
+            }
+            if !budget.take(targets.len()) {
                 return Turn::NoBudget;
             }
             // Reserved on disk before GitHub is asked: a daemon that dies here
             // must never issue a second retry, and one that cannot write the
             // reservation must not issue the first.
-            if !self
-                .store
-                .note_retry_reserved(&record.watch_id, &retry.runs, &retry.evidence)
-            {
+            if !self.store.note_retry_reserved(&record.watch_id, &targets) {
                 return Turn::Done;
             }
-            match self.issue_retry(&repo, &retry.runs) {
+            match self.issue_retry(&repo, &runs) {
                 Ok(()) => {
                     // The re-run is on its way; the record must say so, or a
                     // restart in the next instant would read it as a retry
@@ -452,7 +479,7 @@ impl CiWatches {
                     // The verdict is still the owner's to read: the retry's
                     // own line names what it hit, and the jobs below say what
                     // failed while it was being asked for.
-                    let heading = heading(&header, Some(refused_note(&retry.runs, &error)));
+                    let heading = heading(&header, Some(refused_note(&runs, &error)));
                     self.finish(record, verdict.state, verdict.render(&heading));
                 }
             }
@@ -497,6 +524,52 @@ impl CiWatches {
             self.gh.rerun_failed(repo, *run)?;
         }
         Ok(())
+    }
+
+    /// The finished newer attempt of every retried run, read from the run
+    /// itself: a re-run keeps the run id and moves its attempt number on, so
+    /// that number is what tells this retry apart from anything else on the
+    /// commit. A run whose attempt is not there yet, or is still running,
+    /// keeps the watch waiting; one whose attempt cannot be read contributes
+    /// nothing, so the failure that was there stands.
+    fn retried_runs_state(
+        &self,
+        record: &CiWatchRecord,
+        repo: &RepoRef,
+        budget: &Budget,
+    ) -> RetriedRuns {
+        let mut attempts = Vec::new();
+        for (run_id, decided_at) in record.retried_run_attempts() {
+            if !budget.take(1) {
+                return RetriedRuns::NoBudget;
+            }
+            let state = match self.gh.run_attempt(repo, run_id) {
+                Ok(state) => state,
+                Err(error) if error.retryable => return RetriedRuns::Waiting,
+                Err(_) => continue,
+            };
+            if state.attempt <= decided_at || state.status != "completed" {
+                return RetriedRuns::Waiting;
+            }
+            if !budget.take(1) {
+                return RetriedRuns::NoBudget;
+            }
+            let jobs = match self.gh.attempt_job_pages(repo, run_id, state.attempt) {
+                Ok(pages) => match crate::ci_pages::join_job_pages(&pages) {
+                    Ok(jobs) => jobs,
+                    Err(_) => continue,
+                },
+                Err(error) if error.retryable => return RetriedRuns::Waiting,
+                Err(_) => continue,
+            };
+            // An attempt with no jobs is nothing to judge from: the failure
+            // that was there stands rather than a run reading green on no
+            // evidence at all.
+            if !jobs.is_empty() {
+                attempts.push((run_id, jobs));
+            }
+        }
+        RetriedRuns::Attempts(attempts)
     }
 
     /// A watch that has waited long enough is closed, and says which of the
@@ -593,13 +666,16 @@ fn superseded_text(record: &CiWatchRecord, head: &str) -> String {
     )
 }
 
-/// What the one approved retry would ask for.
-struct Retry {
-    /// The workflow runs whose failed jobs are re-run, one id each.
-    runs: Vec<u64>,
-    /// The check runs the decision was taken on — the old attempt's whole
-    /// evidence, so the new attempt can be told from it.
-    evidence: Vec<u64>,
+/// What the retried runs say about their newer attempts.
+enum RetriedRuns {
+    /// A newer attempt is not there yet, or is still running: the watch waits
+    /// for it rather than judging the attempt it was asked to replace.
+    Waiting,
+    /// The pass ran out of requests; the watch keeps its place for the next.
+    NoBudget,
+    /// One finished attempt's jobs per run the pass could read. A run that is
+    /// missing here keeps the failure that was there.
+    Attempts(Vec<(u64, Vec<CheckRun>)>),
 }
 
 /// The retry this failure earns, or `None` when it earns none: no watch-time
@@ -607,7 +683,7 @@ struct Retry {
 /// read (an omitted one could be a code failure), an unread log (unknown is
 /// not infra), or a failed job that names no run — a partial retry would
 /// leave part of the failure the person approved to re-run.
-fn retry_runs(record: &CiWatchRecord, verdict: &Verdict) -> Option<Retry> {
+fn retry_runs(record: &CiWatchRecord, verdict: &Verdict) -> Option<Vec<u64>> {
     if !record.retry_approved || record.retry_count > 0 || verdict.state != CiState::Failed {
         return None;
     }
@@ -621,30 +697,41 @@ fn retry_runs(record: &CiWatchRecord, verdict: &Verdict) -> Option<Retry> {
             runs.push(run_id);
         }
     }
-    if runs.is_empty() {
-        return None;
-    }
-    Some(Retry {
-        runs,
-        evidence: verdict.jobs.iter().map(|job| job.job_id).collect(),
-    })
+    (!runs.is_empty()).then_some(runs)
 }
 
-/// Whether the checks in hand are the new attempt's: a re-run creates check
-/// runs the retry was not decided on, so an id outside the old evidence is
-/// the new attempt arriving.
-fn new_attempt_visible(record: &CiWatchRecord, runs: &[CheckRun]) -> bool {
-    runs.iter()
-        .any(|run| !record.retry_evidence.contains(&run.id))
-}
-
-/// The checks a verdict may be read from: the old attempt's failures are not
-/// judged again once a re-run is out, while its passing checks stay evidence.
-fn judged_runs(record: &CiWatchRecord, runs: &[CheckRun]) -> Vec<CheckRun> {
-    if !record.retry_issued {
-        return runs.to_vec();
+/// The checks a verdict may be read from once a re-run is out: for every run
+/// the retry asked for, its newer attempt's evidence takes the place of the
+/// old attempt's checks. Every other check — another workflow, another app, a
+/// late check of the attempt before — keeps its own latest verdict, and a run
+/// whose attempt could not be read keeps the failure that was there.
+fn replace_retried_run_checks(
+    runs: &[CheckRun],
+    attempts: &[(u64, Vec<CheckRun>)],
+) -> Vec<CheckRun> {
+    let mut judged = Vec::with_capacity(runs.len());
+    let mut placed: Vec<u64> = Vec::new();
+    for run in runs {
+        let Some(run_id) = run.run_id else {
+            judged.push(run.clone());
+            continue;
+        };
+        let Some((_, jobs)) = attempts.iter().find(|(asked, _)| *asked == run_id) else {
+            judged.push(run.clone());
+            continue;
+        };
+        if placed.contains(&run_id) {
+            continue;
+        }
+        placed.push(run_id);
+        let old: Vec<CheckRun> = runs
+            .iter()
+            .filter(|check| check.run_id == Some(run_id))
+            .cloned()
+            .collect();
+        judged.extend(ci_summary::newer_attempt_evidence(&old, jobs));
     }
-    ci_summary::drop_superseded_failures(runs, &record.retry_evidence)
+    judged
 }
 
 /// The verdict's first lines: the header, and — when a retry was asked for —

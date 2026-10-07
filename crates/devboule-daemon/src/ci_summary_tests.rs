@@ -4,7 +4,7 @@
 use serde_json::json;
 
 use super::{
-    build, drop_superseded_failures, logs_wanted, overall, Cause, CheckRun, CiState,
+    build, logs_wanted, newer_attempt_evidence, overall, Cause, CheckRun, CiState,
     MAX_EXCERPT_LINES, MAX_LINE_CHARS,
 };
 use crate::ci_test_support::{check_run, parsed_check_runs};
@@ -218,31 +218,42 @@ fn an_unreadable_log_is_unknown_with_its_reason_and_no_excerpt() {
     }
 }
 
-/// After a re-run, the old attempt's failures are not judged again while its
-/// greens stay evidence: a `--failed` re-run does not run them again.
+/// One retried run's evidence once its newer attempt finished: the attempt's
+/// jobs come first, then the old checks it did not re-run, and a failure the
+/// newer attempt did not pass is kept rather than dropped.
 #[test]
-fn a_rerun_drops_the_old_attempts_failures_and_keeps_its_greens() {
-    let runs = runs(&[
+fn a_newer_attempts_job_replaces_the_old_check_of_its_name() {
+    let old = runs(&[
         check_run(1, "build", "completed", Some("success")),
         check_run(2, "test", "completed", Some("failure")),
-        check_run(3, "deploy", "completed", Some("cancelled")),
     ]);
 
-    let judged = drop_superseded_failures(&runs, &[1, 2, 3]);
+    let passed = runs(&[check_run(21, "test", "completed", Some("success"))]);
+    let evidence = newer_attempt_evidence(&old, &passed);
     assert_eq!(
-        judged.iter().map(|run| run.id).collect::<Vec<_>>(),
-        vec![1],
-        "the old greens stay and the old failures go"
+        evidence.iter().map(|run| run.id).collect::<Vec<_>>(),
+        vec![21, 1],
+        "the newer attempt's job replaces its old check, the build it did not run stays"
     );
 
-    let mut with_new = runs.clone();
-    with_new.push(parsed_check_runs(&[check_run(4, "test", "queued", None)]).remove(0));
-    let judged = drop_superseded_failures(&with_new, &[1, 2, 3]);
+    let failed = runs(&[check_run(21, "test", "completed", Some("failure"))]);
+    let evidence = newer_attempt_evidence(&old, &failed);
     assert_eq!(
-        judged.iter().map(|run| run.id).collect::<Vec<_>>(),
-        vec![1, 4],
-        "the new attempt's own check is judged"
+        evidence.iter().map(|run| run.id).collect::<Vec<_>>(),
+        vec![21, 1],
+        "the newer attempt's own failure is the verdict"
     );
+
+    // A skip is not a pass: the failure that was there keeps counting.
+    let skipped = runs(&[check_run(21, "test", "completed", Some("skipped"))]);
+    let evidence = newer_attempt_evidence(&old, &skipped);
+    assert_eq!(
+        evidence.iter().map(|run| run.id).collect::<Vec<_>>(),
+        vec![2, 1],
+        "only a pass stops a failure counting"
+    );
+    let verdict = build(&evidence, &mut |_| Ok(String::new()));
+    assert_eq!(verdict.state, CiState::Failed);
 }
 
 #[test]

@@ -8,16 +8,15 @@ use std::sync::Arc;
 use super::CiWatches;
 use crate::ci_summary::CiState;
 use crate::ci_test_support::{
-    branch_head, check_run, checks, fail, github_origin, ok, owner, repo, service, watch_dir,
-    RecordingSink, ScriptedRunner, SHA,
+    attempt_job, attempt_jobs, branch_head, check_run, checks, fail, github_origin, ok,
+    other_app_check_run, owner, repo, run_state, service, watch_dir, RecordingSink, ScriptedRunner,
+    RUN_ID, SHA,
 };
 use crate::ci_watch_store::CiWatchRecord;
 
 const BRANCH: &str = "main";
 /// A commit the watched branch never led to: what a force-push leaves.
 const REWRITTEN: &str = "fedcba9876543210fedcba9876543210fedcba98";
-/// The workflow run every scripted check run of this file belongs to.
-const RUN: u64 = 900;
 
 fn head(runner: &ScriptedRunner, sha: &str) {
     runner.set("git/ref/heads/main", ok(&branch_head(sha)));
@@ -44,7 +43,7 @@ fn reruns(runner: &ScriptedRunner) -> usize {
 }
 
 /// An all-INFRA failure: a job the platform cancelled, with the log its
-/// verdict reads.
+/// verdict reads, and the run it belongs to on its first attempt.
 fn cancelled(runner: &ScriptedRunner, job: u64) {
     checks(
         runner,
@@ -52,6 +51,15 @@ fn cancelled(runner: &ScriptedRunner, job: u64) {
         &[check_run(job, "test", "completed", Some("cancelled"))],
     );
     runner.set(&format!("actions/jobs/{job}/logs"), ok(""));
+    runner.set("actions/runs/900", ok(&run_state(1, "completed")));
+}
+
+/// The newer attempt of the scripted run, finished, with the jobs it ran.
+/// Set the run state before this: the mock answers the first matching needle
+/// it holds, and a jobs URL contains the run's own.
+fn newer_attempt(runner: &ScriptedRunner, jobs: &[serde_json::Value]) {
+    runner.set("actions/runs/900", ok(&run_state(2, "completed")));
+    runner.answer_next("attempts/2/jobs", ok(&attempt_jobs(jobs)));
 }
 
 #[test]
@@ -205,7 +213,12 @@ fn ci_infra_retries_once() {
     let kept = watches.get(&watch.watch_id).expect("kept");
     assert_eq!(kept.retry_count, 1);
     assert!(kept.retry_issued, "gh took the re-run");
-    assert_eq!(kept.retried_runs, vec![RUN]);
+    assert_eq!(kept.retried_runs, vec![RUN_ID]);
+    assert_eq!(
+        kept.retry_attempts,
+        vec![1],
+        "the attempt the run was on when the retry was decided"
+    );
     assert!(
         !kept.state.is_terminal(),
         "the watch keeps following the same commit"
@@ -238,8 +251,9 @@ fn ci_infra_retries_once() {
     assert!(sink.texts().is_empty(), "and never wakes the owner");
     assert_eq!(reruns(&runner), 1);
 
-    // Then the new attempt appears, queued.
-    checks(&runner, SHA, &[check_run(21, "test", "queued", None)]);
+    // The run moves on to its second attempt, still running: nothing to
+    // judge from yet.
+    runner.set("actions/runs/900", ok(&run_state(2, "queued")));
     watches.poll_once(&sink);
     assert!(!watches
         .get(&watch.watch_id)
@@ -248,9 +262,13 @@ fn ci_infra_retries_once() {
         .is_terminal());
     assert!(sink.texts().is_empty());
 
-    // And it fails the same way: the one retry is spent, so this is the
-    // verdict, and it says which re-run it is reading.
-    cancelled(&runner, 21);
+    // And the second attempt finishes the same way: the one retry is spent,
+    // so this is the verdict, read off the attempt's own job.
+    runner.set("actions/jobs/21/logs", ok(""));
+    newer_attempt(
+        &runner,
+        &[attempt_job(21, "test", "completed", Some("cancelled"))],
+    );
     watches.poll_once(&sink);
 
     let kept = watches.get(&watch.watch_id).expect("kept");
@@ -259,8 +277,8 @@ fn ci_infra_retries_once() {
     let texts = sink.texts();
     assert_eq!(texts.len(), 1);
     assert!(
-        texts[0].contains("[INFRA: the job was cancelled]"),
-        "{}",
+        texts[0].contains("- job 21: cancelled [INFRA: the job was cancelled]"),
+        "the verdict is the newer attempt's own job: {}",
         texts[0]
     );
     assert!(
@@ -369,11 +387,11 @@ fn ci_retry_not_reissued_after_restart() {
         "a retry already issued is never issued again"
     );
 
-    // The new attempt arrives and finishes green: the resumed watch reads it.
-    checks(
+    // The newer attempt arrives and finishes green: the resumed watch reads
+    // its own jobs, not a check of the attempt before.
+    newer_attempt(
         &runner,
-        SHA,
-        &[check_run(21, "test", "completed", Some("success"))],
+        &[attempt_job(21, "test", "completed", Some("success"))],
     );
     restarted.poll_once(&sink);
     let kept = restarted.get(&watch_id).expect("kept");
@@ -640,4 +658,128 @@ fn a_superseded_wake_redacts_a_token_shaped_branch() {
         texts[0]
     );
     assert!(texts[0].contains("superseded"), "{}", texts[0]);
+}
+
+/// A check of another app landing green while the re-run has not started is
+/// not the re-run: the failure that was there must not read as a pass.
+#[test]
+fn ci_unrelated_new_check_does_not_hide_failure() {
+    let runner = Arc::new(github_origin());
+    cancelled(&runner, 11);
+    runner.set("run rerun", ok("✓ Requested rerun of run 900"));
+    let watches = service(&watch_dir("retry-unrelated"), &runner);
+    let sink = RecordingSink::live();
+    let watch = sha_watch(&watches, true);
+
+    watches.poll_once(&sink);
+    assert_eq!(reruns(&runner), 1, "the one retry is issued");
+
+    checks(
+        &runner,
+        SHA,
+        &[
+            check_run(11, "test", "completed", Some("cancelled")),
+            other_app_check_run(77, "lint", "completed", Some("success")),
+        ],
+    );
+    watches.poll_once(&sink);
+
+    let kept = watches.get(&watch.watch_id).expect("kept");
+    assert!(
+        !kept.state.is_terminal(),
+        "another app's check is not this run's re-run"
+    );
+    assert!(sink.texts().is_empty(), "and it never wakes the owner");
+}
+
+/// A late check of the attempt before is not the re-run either: only the
+/// run's own newer attempt can stop a failure counting.
+#[test]
+fn ci_late_first_attempt_check_does_not_hide_failure() {
+    let runner = Arc::new(github_origin());
+    cancelled(&runner, 11);
+    runner.set("run rerun", ok("✓ Requested rerun of run 900"));
+    let watches = service(&watch_dir("retry-late-check"), &runner);
+    let sink = RecordingSink::live();
+    let watch = sha_watch(&watches, true);
+
+    watches.poll_once(&sink);
+    assert_eq!(reruns(&runner), 1, "the one retry is issued");
+
+    checks(
+        &runner,
+        SHA,
+        &[
+            check_run(11, "test", "completed", Some("cancelled")),
+            check_run(12, "lint", "completed", Some("success")),
+        ],
+    );
+    watches.poll_once(&sink);
+
+    let kept = watches.get(&watch.watch_id).expect("kept");
+    assert!(
+        !kept.state.is_terminal(),
+        "the first attempt's late check is not the re-run"
+    );
+    assert!(sink.texts().is_empty(), "and it never wakes the owner");
+}
+
+/// The re-run is judged by the newer attempt's own jobs: passing turns the
+/// commit green, failing is the verdict, and the one retry is spent.
+#[test]
+fn ci_retry_judged_by_new_attempt_jobs() {
+    let passing = Arc::new(github_origin());
+    cancelled(&passing, 11);
+    passing.set("run rerun", ok("✓ Requested rerun of run 900"));
+    let watches = service(&watch_dir("retry-attempt-pass"), &passing);
+    let sink = RecordingSink::live();
+    let watch = sha_watch(&watches, true);
+
+    watches.poll_once(&sink);
+    newer_attempt(
+        &passing,
+        &[attempt_job(21, "test", "completed", Some("success"))],
+    );
+    watches.poll_once(&sink);
+
+    let kept = watches.get(&watch.watch_id).expect("kept");
+    assert_eq!(kept.state, CiState::Passed);
+    let texts = sink.texts();
+    assert_eq!(texts.len(), 1);
+    assert!(texts[0].contains("CI passed for"), "{}", texts[0]);
+    assert!(
+        texts[0].contains("infra retry: one re-run was issued for run(s) 900."),
+        "{}",
+        texts[0]
+    );
+
+    // The newer attempt fails: the verdict is the re-run's own job, and the
+    // retry is never issued again.
+    let failing = Arc::new(github_origin());
+    cancelled(&failing, 11);
+    failing.set("run rerun", ok("✓ Requested rerun of run 900"));
+    let watches = service(&watch_dir("retry-attempt-fail"), &failing);
+    let sink = RecordingSink::live();
+    let watch = sha_watch(&watches, true);
+
+    watches.poll_once(&sink);
+    failing.set("actions/jobs/21/logs", ok("error: assertion failed\n"));
+    newer_attempt(
+        &failing,
+        &[attempt_job(21, "test", "completed", Some("failure"))],
+    );
+    watches.poll_once(&sink);
+
+    let kept = watches.get(&watch.watch_id).expect("kept");
+    assert_eq!(kept.state, CiState::Failed);
+    assert_eq!(reruns(&failing), 1, "never a second retry");
+    let texts = sink.texts();
+    assert_eq!(texts.len(), 1);
+    assert!(texts[0].contains("cause: CODE"), "{}", texts[0]);
+    assert!(
+        texts[0].contains("- job 21: failure [CODE]"),
+        "the verdict is the newer attempt's own job: {}",
+        texts[0]
+    );
+    assert!(texts[0].contains("assertion failed"), "{}", texts[0]);
 }

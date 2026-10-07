@@ -183,16 +183,72 @@ pub(crate) fn logs_wanted(runs: &[CheckRun]) -> usize {
         .count()
 }
 
-/// The checks a verdict may be read from once a re-run is out: the old
-/// attempt's failed check runs are what the retry was asked to replace, so
-/// they are dropped rather than judged again. Its passing ones stay — a
-/// `--failed` re-run does not run them again — and every check the retry was
-/// not decided on is the new attempt's own.
-pub(crate) fn drop_superseded_failures(runs: &[CheckRun], old_attempt: &[u64]) -> Vec<CheckRun> {
-    runs.iter()
-        .filter(|run| !(old_attempt.contains(&run.id) && !is_green(run.conclusion.as_deref())))
-        .cloned()
+/// Whether a newer attempt's job settled the job it carries the name of: a
+/// pass, or a failure of its own. A skip, a neutral result or a job GitHub
+/// left without a conclusion settles nothing, so a failure that was there
+/// keeps counting.
+fn settled(conclusion: Option<&str>) -> bool {
+    match conclusion {
+        Some("success") => true,
+        Some(conclusion) => !is_green(Some(conclusion)),
+        None => false,
+    }
+}
+
+/// One job of a workflow-run attempt, as `actions/runs/<id>/attempts/<n>/jobs`
+/// lists it: the same facts a check run carries for an Actions job, so a
+/// verdict reads it the same way. GitHub states no output note there, so an
+/// INFRA reason has to come from the job's conclusion or its log.
+pub(crate) fn parse_jobs(document: &Value) -> Vec<CheckRun> {
+    let Some(jobs) = document.get("jobs").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    jobs.iter()
+        .filter_map(|job| {
+            let text = |name: &str| job.get(name).and_then(Value::as_str).unwrap_or("");
+            Some(CheckRun {
+                id: job.get("id")?.as_u64()?,
+                name: text("name").to_string(),
+                status: text("status").to_string(),
+                conclusion: job
+                    .get("conclusion")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                url: text("html_url").to_string(),
+                run_id: job.get("run_id").and_then(Value::as_u64),
+                actions: true,
+                note: String::new(),
+            })
+        })
         .collect()
+}
+
+/// What one retried run contributes once its newer attempt finished: the
+/// attempt's own jobs, with the old attempt's check of the same name kept
+/// when the newer attempt settled nothing for a job that had failed. A
+/// failure stops counting on a pass — or on a failure of the newer attempt's
+/// own — while a skip, a neutral result or a job GitHub left without a
+/// conclusion leaves the failure that was there; an old check the newer
+/// attempt did not run keeps its own verdict.
+pub(crate) fn newer_attempt_evidence(old: &[CheckRun], attempt_jobs: &[CheckRun]) -> Vec<CheckRun> {
+    let mut evidence = Vec::new();
+    for job in attempt_jobs {
+        match old.iter().find(|check| check.name == job.name) {
+            Some(check)
+                if !is_green(check.conclusion.as_deref())
+                    && !settled(job.conclusion.as_deref()) =>
+            {
+                evidence.push(check.clone());
+            }
+            _ => evidence.push(job.clone()),
+        }
+    }
+    for check in old {
+        if !attempt_jobs.iter().any(|job| job.name == check.name) {
+            evidence.push(check.clone());
+        }
+    }
+    evidence
 }
 
 /// Summarise finished checks. `fetch_log` is asked only for failed Actions

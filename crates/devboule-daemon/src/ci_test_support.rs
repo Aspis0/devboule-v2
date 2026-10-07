@@ -16,6 +16,8 @@ use crate::git::{GitOutput, GitRunError};
 use crate::session::SendError;
 
 pub(crate) const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+/// The workflow run every scripted check run and attempt job belongs to.
+pub(crate) const RUN_ID: u64 = 900;
 
 type Answer = Result<GitOutput, GitRunError>;
 
@@ -114,10 +116,54 @@ pub(crate) fn check_run(id: u64, name: &str, status: &str, conclusion: Option<&s
         "name": name,
         "status": status,
         "conclusion": conclusion,
-        "html_url": format!("https://github.com/acme/widgets/actions/runs/900/job/{id}"),
+        "html_url": format!("https://github.com/acme/widgets/actions/runs/{RUN_ID}/job/{id}"),
         "app": {"slug": "github-actions"},
         "output": {"title": null, "summary": null, "text": null},
     })
+}
+
+/// One check run of another app on the same commit: it has no workflow run
+/// behind it, so nothing about it can be a re-run of one.
+pub(crate) fn other_app_check_run(
+    id: u64,
+    name: &str,
+    status: &str,
+    conclusion: Option<&str>,
+) -> Value {
+    json!({
+        "id": id,
+        "name": name,
+        "status": status,
+        "conclusion": conclusion,
+        "html_url": format!("https://example.test/checks/{id}"),
+        "app": {"slug": "other-checker"},
+        "output": {"title": null, "summary": null, "text": null},
+    })
+}
+
+/// What `gh api repos/o/r/actions/runs/<id>` prints: the attempt the run is on
+/// now and whether it has finished.
+pub(crate) fn run_state(attempt: u64, status: &str) -> String {
+    json!({"id": RUN_ID, "run_attempt": attempt, "status": status}).to_string()
+}
+
+/// One job of a workflow-run attempt, as the attempt's jobs endpoint lists
+/// it. The run id is the one every scripted check run belongs to.
+pub(crate) fn attempt_job(id: u64, name: &str, status: &str, conclusion: Option<&str>) -> Value {
+    json!({
+        "id": id,
+        "run_id": RUN_ID,
+        "name": name,
+        "status": status,
+        "conclusion": conclusion,
+        "html_url": format!("https://github.com/acme/widgets/actions/runs/{RUN_ID}/job/{id}"),
+    })
+}
+
+/// What `gh api --paginate --slurp repos/o/r/actions/runs/<id>/attempts/<n>/jobs`
+/// prints: one page object per array entry, as the check-run read does.
+pub(crate) fn attempt_jobs(jobs: &[Value]) -> String {
+    json!([{"total_count": jobs.len(), "jobs": jobs}]).to_string()
 }
 
 /// What `gh api --paginate --slurp` prints for a single page of check runs.
