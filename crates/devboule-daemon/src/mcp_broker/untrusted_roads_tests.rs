@@ -258,11 +258,17 @@ fn browser_url_and_ci_job_origin_present() {
         repo_owner: "acme".to_string(),
         repo: "widgets".to_string(),
         sha: "0123456789abcdef".to_string(),
+        branch: None,
         created_at_ms: 0,
         state: crate::ci_summary::CiState::Failed,
         summary: Some(format!("build failed\n{HOSTILE}")),
         wake_key: Some("w-7:failed".to_string()),
         wake: crate::ci_watch_store::Wake::Pending,
+        retry_approved: false,
+        retry_count: 0,
+        retry_issued: false,
+        retried_runs: Vec::new(),
+        retry_attempts: Vec::new(),
     };
     let wake = crate::ci_wake::wake_text(&record);
     for fact in [
