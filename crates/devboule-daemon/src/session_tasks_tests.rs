@@ -375,6 +375,7 @@ mod derive {
             SessionEvent::SessionManifest {
                 provider_id: None,
                 current_model_id: Some("m".to_string()),
+                current_model_provider_id: None,
                 models: Vec::new(),
                 modes: None,
             },
