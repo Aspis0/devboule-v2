@@ -61,6 +61,7 @@ async function openPopover(host: HTMLElement): Promise<HTMLElement> {
 /** Render the meter with a reading (so the popover can open) and read its rows. */
 async function popoverRows(props: {
   providerId?: string;
+  currentModelProviderId?: string;
   lastFinished?: AgentFinished | null;
 }): Promise<HTMLElement> {
   const host = await render(
@@ -68,6 +69,9 @@ async function popoverRows(props: {
       usage={usage({ usedTokens: 76_000, maxTokens: 200_000 })}
       manifest={manifest({
         ...(props.providerId === undefined ? {} : { providerId: props.providerId }),
+        ...(props.currentModelProviderId === undefined
+          ? {}
+          : { currentModelProviderId: props.currentModelProviderId }),
         models: [],
       })}
       lastFinished={props.lastFinished ?? null}
@@ -146,6 +150,48 @@ describe("the popover's per-provider usage rows", () => {
     expect(popover.textContent).not.toContain("gemini");
     expect(popover.textContent).toContain("This provider does not report plan limits.");
     expect(popover.textContent).not.toContain("$0.00");
+  });
+
+  it("shows the OpenCode Go plan under a Pi session on an OpenCode model, beside pi's own turn cost", async () => {
+    // A far-future reset keeps both windows current whatever day the suite runs.
+    recordPlanUsage(
+      plan({
+        providerId: "opencode-go",
+        planLabel: "OpenCode Go",
+        windows: [
+          { durationMins: 300, usedPercent: 58, resetsAt: 2_000_000_000 },
+          { durationMins: 10_080, usedPercent: 41, resetsAt: 2_000_000_000 },
+        ],
+      }),
+    );
+    const popover = await popoverRows({
+      providerId: "pi",
+      currentModelProviderId: "opencode",
+      lastFinished: null,
+    });
+    expect(popover.textContent).toContain("5-hour");
+    expect(popover.textContent).toContain("Weekly");
+    expect(popover.textContent).toContain("58%");
+    expect(popover.textContent).toContain("41%");
+    expect(popover.textContent).toContain("Turn cost: no reading yet");
+    expect(popover.textContent).not.toContain("does not report plan limits");
+  });
+
+  it("keeps the absence line for a Pi backend that reports no plan, even with the Go frame cached", async () => {
+    recordPlanUsage(
+      plan({
+        providerId: "opencode-go",
+        planLabel: "OpenCode Go",
+        windows: [{ durationMins: 300, usedPercent: 58, resetsAt: 2_000_000_000 }],
+      }),
+    );
+    const popover = await popoverRows({
+      providerId: "pi",
+      currentModelProviderId: "anthropic",
+      lastFinished: null,
+    });
+    expect(popover.textContent).toContain("This provider does not report plan limits.");
+    expect(popover.textContent).not.toContain("58%");
   });
 
   it("claims nothing about a manifest that named no provider id", async () => {

@@ -10,11 +10,13 @@ import type { PlanUsage } from "../types/ipc";
  * receive the push. It therefore lives here keyed by the `providerId` the
  * daemon sent, not in `AgentSessionState`.
  *
- * The frame carries no time of its own, and the daemon hands its cached
+ * A provider frame carries no time of its own, and the daemon hands its cached
  * latest frame to every viewer that attaches, so delivery time says nothing
  * about the reading's age. The stamp is therefore the moment the content
  * changed: a frame delivered again unchanged keeps the stored frame and its
- * stamp, and a frame first seen here has no stamp at all.
+ * stamp, and a frame first seen here has no stamp at all. A frame that names
+ * when the daemon observed it (a quota poll) is stamped with that moment
+ * instead, so an identical poll with a newer observation still refreshes the age.
  *
  * Snapshots handed out below stay stable until a changed frame replaces one.
  */
@@ -29,7 +31,7 @@ export function recordPlanUsage(event: PlanUsage): void {
   if (prior !== undefined && JSON.stringify(prior.plan) === JSON.stringify(event)) return;
   byProvider.set(event.providerId, {
     plan: event,
-    changedAtMs: prior === undefined ? null : Date.now(),
+    changedAtMs: event.observedAtMs ?? (prior === undefined ? null : Date.now()),
   });
   allFrames = [...byProvider.values()].map((entry) => entry.plan);
   for (const listener of listeners) listener();

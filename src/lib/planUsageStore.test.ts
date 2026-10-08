@@ -7,6 +7,26 @@ function plan(partial: Partial<PlanUsage> & { providerId: string }): PlanUsage {
 }
 
 describe("the plan-usage store", () => {
+  it("stamps a frame that names its observation with that moment, and refreshes it on an identical poll", () => {
+    recordPlanUsage(
+      plan({
+        providerId: "opencode-go-stamp",
+        windows: [{ durationMins: 300, usedPercent: 12, resetsAt: 2_000_000_000 }],
+        observedAtMs: 1_000,
+      }),
+    );
+    expect(planRecordedAtFor("opencode-go-stamp")).toBe(1_000);
+    recordPlanUsage(
+      plan({
+        providerId: "opencode-go-stamp",
+        windows: [{ durationMins: 300, usedPercent: 12, resetsAt: 2_000_000_000 }],
+        observedAtMs: 5_000,
+      }),
+    );
+    expect(planRecordedAtFor("opencode-go-stamp")).toBe(5_000);
+    expect(planUsageFor("opencode-go-stamp")?.observedAtMs).toBe(5_000);
+  });
+
   it("keeps the newest live frame whatever windows each frame carries", () => {
     // There is no per-window merge: the newest live write wins whole. This
     // pins the pass-1 fix — a live 5-hour-only refresh lands even after a

@@ -698,6 +698,8 @@ export interface SessionManifest {
   type: "session_manifest";
   providerId?: string;
   currentModelId?: string;
+  /** The provider serving the current model, when the agent reports one. */
+  currentModelProviderId?: string;
   models: SessionModel[];
   modes?: SessionModeState;
 }
@@ -1457,6 +1459,8 @@ export type SessionEvent =
       planLabel?: string;
       windows: PlanWindow[];
       credits?: PlanCredits;
+      /** When the daemon observed this reading (Unix ms); absent for a provider frame. */
+      observedAtMs?: number;
     }
   /**
    * Echo of the user prompt, one ACP `user_message_chunk` at a time.

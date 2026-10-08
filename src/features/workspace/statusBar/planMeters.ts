@@ -9,7 +9,7 @@ import {
 
 // The providers whose frames the daemon stamps (`reportsPlanLimits`); a frame
 // under any other id shows nothing, whatever name the app has for it.
-const REPORTS_PLAN_LIMITS = new Set(["claude", "codex"]);
+const REPORTS_PLAN_LIMITS = new Set(["claude", "codex", "opencode-go"]);
 
 export interface WindowPart {
   /** `5h`, `wk`, or the minutes when the provider names a window of another length. */

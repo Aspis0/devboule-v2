@@ -11,6 +11,23 @@ function plan(providerId: string, windows: PlanUsage["windows"]): PlanUsage {
 }
 
 describe("providerMeter", () => {
+  it("names the OpenCode Go plan and spells its 5-hour and weekly windows with their percents", () => {
+    const meter = providerMeter(
+      plan("opencode-go", [
+        { durationMins: 300, usedPercent: 58, resetsAt: LATER },
+        { durationMins: 10_080, usedPercent: 41, resetsAt: LATER },
+      ]),
+      null,
+      NOW,
+    );
+    expect(meter?.name).toBe("OpenCode Go");
+    expect(meter?.parts).toEqual([
+      { label: "5h", percent: 58 },
+      { label: "wk", percent: 41 },
+    ]);
+    expect(meter?.barPercent).toBe(58);
+  });
+
   it("names the two providers and spells each window with the provider's own number", () => {
     const meter = providerMeter(
       plan("claude", [

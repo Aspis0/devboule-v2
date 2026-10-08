@@ -148,14 +148,28 @@ export function planFrameHasContent(plan: PlanUsage): boolean {
 }
 
 /**
- * Whether the daemon ever pushes plan frames for a provider id: only its
- * Claude and Codex roads produce them, and those views stamp exactly these
- * ids (`crates/devboule-daemon/src/plan_usage_cache.rs`). Null = the manifest
+ * Whether the daemon ever pushes plan frames for a provider id: its Claude and
+ * Codex roads, and the OpenCode Go quota poll, stamp exactly these ids
+ * (`crates/devboule-daemon/src/plan_usage_cache.rs`). Null = the manifest
  * named no id, which claims nothing either way.
  */
 export function reportsPlanLimits(providerId: string | undefined): boolean | null {
   if (providerId === undefined) return null;
-  return providerId === "claude" || providerId === "codex";
+  return providerId === "claude" || providerId === "codex" || providerId === "opencode-go";
+}
+
+/**
+ * The provider whose plan limits a session shows. A Pi session on an OpenCode
+ * model draws on the OpenCode Go plan; every other Pi backend reports no plan,
+ * so it keeps its own id and its own absence line. Any other agent is its own
+ * plan provider.
+ */
+export function planProviderFor(
+  agentProviderId: string | undefined,
+  currentModelProviderId: string | undefined,
+): string | undefined {
+  if (agentProviderId === "pi" && currentModelProviderId === "opencode") return "opencode-go";
+  return agentProviderId;
 }
 
 /**

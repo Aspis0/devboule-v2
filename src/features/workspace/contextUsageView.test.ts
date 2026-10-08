@@ -6,6 +6,7 @@ import {
   planAbsenceCopy,
   planCreditsCopy,
   planFrameHasContent,
+  planProviderFor,
   planWindowBarPercent,
   planWindowKey,
   planWindowLabel,
@@ -309,10 +310,21 @@ describe("planFrameHasContent", () => {
   });
 });
 
+describe("planProviderFor", () => {
+  it("draws a Pi session on an OpenCode model on the OpenCode Go plan, and no other Pi backend", () => {
+    expect(planProviderFor("pi", "opencode")).toBe("opencode-go");
+    expect(planProviderFor("pi", "anthropic")).toBe("pi");
+    expect(planProviderFor("pi", undefined)).toBe("pi");
+    expect(planProviderFor("claude", "opencode")).toBe("claude");
+    expect(planProviderFor(undefined, "opencode")).toBeUndefined();
+  });
+});
+
 describe("reportsPlanLimits", () => {
-  it("is true only for the two roads whose daemon view stamps a plan frame", () => {
+  it("is true only for the roads whose daemon view stamps a plan frame", () => {
     expect(reportsPlanLimits("claude")).toBe(true);
     expect(reportsPlanLimits("codex")).toBe(true);
+    expect(reportsPlanLimits("opencode-go")).toBe(true);
     expect(reportsPlanLimits("pi")).toBe(false);
     expect(reportsPlanLimits("grok")).toBe(false);
     expect(reportsPlanLimits("qwen")).toBe(false);

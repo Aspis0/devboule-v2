@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import type { ContextUsage, SessionManifest } from "../../types/ipc";
 import type { AgentFinished } from "../../lib/agentSession";
 import { usePlanRecordedAt, usePlanUsage } from "../../lib/planUsageStore";
-import { contextMeterNumbers, formatContextTokens } from "./contextUsageView";
+import { contextMeterNumbers, formatContextTokens, planProviderFor } from "./contextUsageView";
 import { ContextPopover } from "./ContextPopover";
 import { MeterBar } from "./statusBar/MeterBar";
 
@@ -28,8 +28,10 @@ export function ContextMeter({ usage, manifest, lastFinished }: ContextMeterProp
   // Escape/outside-close lives with the panel that can see both elements.
   const buttonRef = useRef<HTMLButtonElement>(null);
   const numbers = contextMeterNumbers(usage, manifest);
-  const plan = usePlanUsage(manifest?.providerId ?? null);
-  const planRecordedAt = usePlanRecordedAt(manifest?.providerId ?? null);
+  const planProviderId =
+    planProviderFor(manifest?.providerId, manifest?.currentModelProviderId) ?? null;
+  const plan = usePlanUsage(planProviderId);
+  const planRecordedAt = usePlanRecordedAt(planProviderId);
 
   const close = useCallback(() => setOpen(false), []);
 
@@ -72,6 +74,7 @@ export function ContextMeter({ usage, manifest, lastFinished }: ContextMeterProp
         planRecordedAt={planRecordedAt}
         lastFinished={lastFinished}
         providerId={manifest?.providerId}
+        planProviderId={planProviderId ?? undefined}
       />
     </span>
   );

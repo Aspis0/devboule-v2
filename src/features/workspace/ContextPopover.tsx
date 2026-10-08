@@ -108,6 +108,9 @@ export interface ContextPopoverProps {
   /** The manifest's provider id: the key both absence lines make their claim
       about; absent when the manifest named none. */
   providerId?: string;
+  /** The provider whose plan limits the plan section shows: the agent's own, or
+      the OpenCode Go plan under a Pi session on an OpenCode model. */
+  planProviderId?: string;
 }
 
 function readingBody(numbers: ContextMeterNumbers, live: boolean): ReactNode {
@@ -247,6 +250,7 @@ export function ContextPopover({
   planRecordedAt,
   lastFinished,
   providerId,
+  planProviderId,
 }: ContextPopoverProps) {
   const popoverRef = useRef<HTMLDivElement>(null);
   const [placement, setPlacement] = useState<PopoverPlacement | null>(null);
@@ -353,7 +357,7 @@ export function ContextPopover({
         {turnCostCopy(lastFinished?.usage?.costUsd, providerId)}
       </div>
       <div className="workspace-context-popover-plan">
-        {planSection(plan, providerId, planRecordedAt, nowMs)}
+        {planSection(plan, planProviderId, planRecordedAt, nowMs)}
       </div>
     </div>,
     document.body,
