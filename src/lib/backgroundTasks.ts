@@ -1,0 +1,62 @@
+// The app's copy of one session's background-task list: which daemon snapshot
+// is news, and which tasks changed state between two lists.
+import type { SessionTask, SessionTaskList } from "../types/ipc";
+
+export interface BackgroundTaskState {
+  /** The daemon process that published the list. Null for an attach reply, which carries none. */
+  epoch: string | null;
+  /** Counts from 1 within an epoch; 0 for an attach reply. */
+  revision: number;
+  tasks: SessionTask[];
+  omitted: number;
+}
+
+/**
+ * A `tasks_snapshot` event, applied unless it is no newer than the stored list
+ * of the same epoch. A new epoch is a daemon that restarted, so its list wins.
+ */
+export function acceptTaskSnapshot(
+  current: BackgroundTaskState | null,
+  snapshot: { epoch: string; revision: number; tasks: SessionTask[]; omitted: number },
+): BackgroundTaskState | null {
+  if (
+    current !== null &&
+    current.epoch === snapshot.epoch &&
+    snapshot.revision <= current.revision
+  ) {
+    return null;
+  }
+  return {
+    epoch: snapshot.epoch,
+    revision: snapshot.revision,
+    tasks: snapshot.tasks,
+    omitted: snapshot.omitted,
+  };
+}
+
+/**
+ * The attach reply, applied only while nothing is stored. Every snapshot event
+ * is newer than the reply, so a reply that arrives after one is dropped.
+ */
+export function acceptTaskReply(
+  current: BackgroundTaskState | null,
+  reply: SessionTaskList,
+): BackgroundTaskState | null {
+  if (current !== null) return null;
+  return { epoch: null, revision: 0, tasks: reply.tasks, omitted: reply.omitted };
+}
+
+/**
+ * The tasks of `next` whose (id, state) pair the previous list did not hold:
+ * each is a transition worth a row. A new epoch is a fresh baseline, so a
+ * restarted daemon's list shows no rows; a seeded reply is the same lifetime
+ * as the first event after it, so its tasks are known and not re-announced.
+ */
+export function taskTransitions(
+  prev: BackgroundTaskState | null,
+  next: BackgroundTaskState,
+): SessionTask[] {
+  if (prev !== null && prev.epoch !== null && prev.epoch !== next.epoch) return [];
+  const held = new Set((prev?.tasks ?? []).map((task) => `${task.id}\n${task.state}`));
+  return next.tasks.filter((task) => !held.has(`${task.id}\n${task.state}`));
+}

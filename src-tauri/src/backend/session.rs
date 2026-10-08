@@ -12,8 +12,8 @@ use tauri::State;
 use devboule_daemon::{DaemonClient, DiagnosticsReport, SessionStateHandler};
 use devboule_protocol::{
     ActiveTurnBehavior, AttachmentReference, ErrorCode, PermissionOutcome, Persistence,
-    PersistenceKind, PromptAttachment, ResumeResult, SessionResumeInfo, StoredAttachment,
-    SubscriptionId, MAX_WRITE_BYTES,
+    PersistenceKind, PromptAttachment, ResumeResult, SessionResumeInfo, SessionTask,
+    StoredAttachment, SubscriptionId, MAX_WRITE_BYTES,
 };
 use serde::Serialize;
 
@@ -658,6 +658,27 @@ pub async fn session_stop(
     require_session_id(&id)?;
     let inner = bridge.shared();
     off_main_thread(move || inner.session_stop(&id, subscription_id)).await
+}
+
+/// One session's background-task list as the daemon derives it now.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTaskList {
+    tasks: Vec<SessionTask>,
+    omitted: u32,
+}
+
+/// Read the list once, when a view attaches: the snapshot events carry it from
+/// then on, so this only fills the gap until the first change.
+#[tauri::command]
+pub async fn session_tasks(
+    bridge: State<'_, DaemonBridge>,
+    id: String,
+) -> Result<SessionTaskList, CommandError> {
+    require_session_id(&id)?;
+    let client = require_client(&bridge)?;
+    let (tasks, omitted) = off_main_thread(move || client.session_tasks(&id)).await?;
+    Ok(SessionTaskList { tasks, omitted })
 }
 
 #[tauri::command]

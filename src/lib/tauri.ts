@@ -52,6 +52,7 @@ import type {
   SessionAttachMessage,
   SessionKind,
   SessionStateSnapshot,
+  SessionTaskList,
   RetentionPatch,
 } from "../types/ipc";
 import { errorSentence } from "./errorSentence";
@@ -268,6 +269,7 @@ export type CommandArgs = {
   session_detach: { subscriptionId: SubscriptionId };
   session_close: { id: Id; subscriptionId?: SubscriptionId };
   session_stop: { id: Id; subscriptionId?: SubscriptionId };
+  session_tasks: { id: Id };
   journal_usage: undefined;
   journal_retention_get: undefined;
   journal_retention_set: RetentionPatch;
@@ -435,6 +437,7 @@ type CommandResults = {
   session_detach: void;
   session_close: void;
   session_stop: void;
+  session_tasks: SessionTaskList;
   journal_usage: JournalUsage;
   journal_retention_get: JournalRetention;
   journal_retention_set: JournalRetention;
@@ -629,6 +632,7 @@ export const COMMAND_ARG_KEYS = {
   session_detach: ["subscriptionId"],
   session_close: ["id", "subscriptionId"],
   session_stop: ["id", "subscriptionId"],
+  session_tasks: ["id"],
   journal_usage: [],
   journal_retention_get: [],
   journal_retention_set: ["maxAgeMs", "maxBytes", "maxSessions", "sessionMaxBytes"],
@@ -1229,6 +1233,8 @@ export const sessionStop = (id: Id, subscriptionId?: SubscriptionId) =>
     id,
     ...(subscriptionId === undefined ? {} : { subscriptionId }),
   });
+/** The session's background-task list now; the snapshot events carry it after this. */
+export const sessionTasks = (id: Id) => invokeTyped("session_tasks", { id });
 export const journalUsage = () => invokeTyped("journal_usage");
 export const journalRetentionGet = () => invokeTyped("journal_retention_get");
 export const journalRetentionSet = (patch: RetentionPatch) =>

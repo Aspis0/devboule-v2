@@ -9,6 +9,7 @@ import type {
   SessionEvent,
   SessionManifest,
   SessionResumeReset,
+  SessionTaskList,
   ToolLocation,
 } from "../types/ipc";
 import { recordChildFinishedHistory } from "../features/design/childFinishedHistory";
@@ -23,6 +24,7 @@ import { parseAgentPeerMessage, type AgentPeerOrigin } from "./agentPeerMessage"
 import { recordPlanUsage } from "./planUsageStore";
 import { isToolRunningStatus } from "../features/workspace/interruptedTool";
 import { hideUntrustedFrame } from "./untrustedFrame";
+import { acceptTaskReply, acceptTaskSnapshot, type BackgroundTaskState } from "./backgroundTasks";
 
 export type AgentChannel = SessionChannel;
 export type AgentStatus = "initializing" | "idle" | "running" | "error" | "closed";
@@ -210,6 +212,11 @@ export interface AgentSessionState {
    * before the field still construct a state.
    */
   goal?: string | null;
+  /**
+   * The session's background-task list: the latest snapshot the daemon sent,
+   * or the attach reply until the first one. Null or absent before either.
+   */
+  backgroundTasks?: BackgroundTaskState | null;
 }
 
 /**
@@ -480,6 +487,7 @@ export class AgentSession {
       if (!this.disposed) {
         this.setStatus("idle");
         this.deliverPendingPermissionRequests();
+        void this.askTaskList();
       }
     } catch (error) {
       const mapped = errorSentence(error);
@@ -1334,9 +1342,7 @@ export class AgentSession {
         this.deps.onQueueSnapshot?.(event);
         return;
       case "tasks_snapshot":
-        // The background-task list belongs to the Tasks tab, which lands in
-        // a later slice; the chat surface renders nothing for it. Listed so
-        // the exhaustiveness check below keeps passing.
+        this.applyTasksSnapshot(event);
         return;
       default: {
         // Every `SessionEvent` arm is a case above, so this branch is
@@ -1775,6 +1781,31 @@ export class AgentSession {
 
   private updateSubagents(subagents: AgentSubagent[]): void {
     this.update({ subagents });
+  }
+
+  private applyTasksSnapshot(event: Extract<SessionEvent, { type: "tasks_snapshot" }>): void {
+    const current = this.state.backgroundTasks ?? null;
+    const next = acceptTaskSnapshot(current, event);
+    if (next === null) return;
+    this.update({ backgroundTasks: next });
+  }
+
+  /**
+   * Fill the list until the first change: the snapshot events carry it from
+   * then on. A failed ask leaves the list empty, which is how it stood before
+   * the ask existed; the daemon refuses it when the capability is not agreed.
+   */
+  private async askTaskList(): Promise<void> {
+    try {
+      const reply = await this.deps.invoke<SessionTaskList>("session_tasks", {
+        id: this.deps.sessionId,
+      });
+      if (this.disposed) return;
+      const next = acceptTaskReply(this.state.backgroundTasks ?? null, reply);
+      if (next !== null) this.update({ backgroundTasks: next });
+    } catch {
+      // Left empty on purpose, see above.
+    }
   }
 
   private blockKey(role: MessageRole, messageId: string | null, parentToolUseId?: string): string {

@@ -1326,6 +1326,12 @@ export interface SessionTask {
   toolCallCount?: number;
 }
 
+/** The `SessionTasks` reply: the list as derived now, and the rows past the cap. */
+export interface SessionTaskList {
+  tasks: SessionTask[];
+  omitted: number;
+}
+
 export interface SessionSnapshot {
   type: "snapshot";
   asOfSeq: number;
