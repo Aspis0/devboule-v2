@@ -3,7 +3,7 @@
 //! running, and pi's own refusal of a prompt. Every run ends exactly once,
 //! whichever road takes it.
 
-use super::super::local_command_test_support::recorded_turn_end;
+use super::super::local_command_test_support::{agent_start, recorded_turn_end};
 use super::test_support::turn_end_with;
 use super::test_support::{
     attached, broker, deliver, drain, feed_line, finish, harness, is_eof_error, tool_execution_end,
@@ -20,6 +20,74 @@ use std::time::Duration;
 /// reader gets, which binds the runtime the expiry publishes through.
 fn prime(harness: &mut super::test_support::PiWatchHarness, runtime: &Arc<SessionRuntime>) {
     feed_line(harness, runtime, touch());
+}
+
+/// One `turn_end` of a pi run that asked for a tool: the iteration stops
+/// with `toolUse` and pi streams on once the tool results are back.
+fn tool_iteration_turn_end() -> serde_json::Value {
+    serde_json::json!({
+        "type": "turn_end",
+        "message": {
+            "role": "assistant",
+            "content": [
+                {"type": "toolCall", "id": "call-1", "name": "bash", "arguments": {}}
+            ],
+            "model": "pi-test",
+            "usage": {"input": 10, "output": 4, "totalTokens": 14},
+            "stopReason": "toolUse",
+        },
+        "toolResults": [
+            {"role": "toolResult", "toolCallId": "call-1", "toolName": "bash", "content": "ok"}
+        ],
+    })
+}
+
+/// A tool iteration's `turn_end` is not the run's end: pi keeps streaming
+/// the same run while the tool results go back to the model. The turn stays
+/// running, which is what admits a steer into that run, and the run's own
+/// end still finishes it once. Mutant: the iteration's end finishing the
+/// turn — a later steer is refused admission and goes out as a plain prompt
+/// pi rejects with "Agent is already processing".
+#[test]
+fn a_tool_iterations_turn_end_leaves_the_run_running() {
+    if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+        eprintln!("{reason}");
+        return;
+    }
+    let broker = broker();
+    let mut harness = harness(&broker);
+    let (runtime, conn) = attached(&broker);
+    runtime.begin_turn();
+    deliver(&mut harness, "build it");
+    prime(&mut harness, &runtime);
+    feed_line(&mut harness, &runtime, agent_start());
+    let _ = drain(&conn);
+    feed_line(&mut harness, &runtime, tool_iteration_turn_end());
+    let iteration = drain(&conn);
+    assert!(
+        !iteration.iter().any(is_any_finish),
+        "a tool iteration finishes nothing: {iteration:?}"
+    );
+    assert!(
+        runtime.is_running_turn(),
+        "the run keeps streaming after the tool iteration"
+    );
+    assert!(
+        runtime
+            .with_active_turn(runtime.turn_counter(), |_| ())
+            .is_some(),
+        "the steer road is still admitted while the run streams"
+    );
+    // The run's own end carries the model's answer, and it is the one finish.
+    feed_line(&mut harness, &runtime, recorded_turn_end());
+    let ended = drain(&conn);
+    assert_eq!(
+        ended.iter().filter(|event| is_any_finish(event)).count(),
+        1,
+        "the run's own end finishes it once: {ended:?}"
+    );
+    assert!(!runtime.is_running_turn(), "the run is over");
+    finish(&mut harness, &runtime);
 }
 
 #[test]

@@ -305,17 +305,22 @@ impl TurnArbiter {
         }
     }
 
-    /// A `turn_end`'s finish is the run's own ending — unless another road
-    /// already ended it: the watchdog's expiry (its own aborted answer is
+    /// A `turn_end`'s finish is the run's own ending — unless the run is
+    /// not over. A tool-using turn ends one loop iteration while pi streams
+    /// on with the tool results, and the run carries one finish: the end
+    /// that carries the model's answer. Also withheld are the ends another
+    /// road already ended: the watchdog's expiry (its own aborted answer is
     /// owed), the abort gate (an aborted end a delivered replacement
     /// outranks), or the run is already over. The caller journals the
     /// withheld-finish marker beside the row when this answers true.
     pub(super) fn turn_end_suppressed(&self, runtime: &SessionRuntime, value: &Value) -> bool {
-        let aborted = value
-            .get("message")
-            .and_then(|message| message.get("stopReason"))
-            .and_then(Value::as_str)
-            == Some("aborted");
+        // Tool iterations are checked first, so an iteration's end cannot
+        // consume the expiry's expectation or a refusal's owed finish: both
+        // belong to the end that really closes the run.
+        if stop_reason(value) == Some("toolUse") {
+            return true;
+        }
+        let aborted = stop_reason(value) == Some("aborted");
         // The expiry's expectation is answered only by pi's own aborted
         // end; any other end consumes it without suppressing, so a turn
         // that never answers the abort cannot eat a later genuine one.
@@ -376,6 +381,14 @@ impl TurnArbiter {
     }
 }
 
+/// The stop reason pi spells on one `turn_end`'s message.
+fn stop_reason(value: &Value) -> Option<&str> {
+    value
+        .get("message")
+        .and_then(|message| message.get("stopReason"))
+        .and_then(Value::as_str)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,6 +407,21 @@ mod tests {
         arbiter.note_interrupt();
         arbiter.note_prompt_delivered();
         assert!(arbiter.turn_end_suppressed(&SessionRuntime::new(), &frame("aborted")));
+    }
+
+    #[test]
+    fn a_tool_iteration_does_not_consume_the_interrupt_expectation() {
+        let arbiter = TurnArbiter::new(None, Arc::new(OwedTurnEnd::default()));
+        arbiter.note_prompt_delivered();
+        arbiter.note_interrupt();
+        arbiter.note_prompt_delivered();
+        let runtime = SessionRuntime::new();
+        runtime.begin_turn();
+        assert!(arbiter.turn_end_suppressed(&runtime, &frame("toolUse")));
+        assert!(
+            arbiter.turn_end_suppressed(&runtime, &frame("aborted")),
+            "the aborted end after the tool iteration is still the replacement's stale one"
+        );
     }
 
     #[test]
