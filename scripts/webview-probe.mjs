@@ -10,7 +10,8 @@
  * WebView2 speaks the Chrome DevTools Protocol when the app is started with
  * `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=<port>`. This
  * connects to it, evaluates an expression in the page, and prints the result as
- * JSON. No dependencies: Node has had a global WebSocket since 22.
+ * JSON. The connection itself lives in scripts/e2e/cdp.mjs, shared with the CI
+ * smoke that drives the same window.
  *
  * It also takes the screenshot, because what a plugin *draws* is the other
  * fact no amount of reading gives: every visual defect this milestone found —
@@ -28,14 +29,12 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
-import { setTimeout as delay } from "node:timers/promises";
+import { CdpSession, captureScreenshot, evaluate, findPageTarget } from "./e2e/cdp.mjs";
 
 // Not 9222. That port is a common default and other WebView2 applications sit
 // on it — Lenovo Vantage was already there on the development machine — so a
 // probe aimed at it reads someone else's window and believes the answer.
 const PORT = Number(process.env.WEBVIEW_DEBUG_PORT ?? 9333);
-// The debug port lists every page the browser process owns. Ours is the one
-// serving the app, so the target is matched rather than assumed to be first.
 // Two origins serve the same app: `pnpm dev` serves it from the vite server and
 // a packaged build serves it from tauri.localhost, so the default accepts both
 // — a default that only knew the dev server made every probe against a real
@@ -46,6 +45,8 @@ const TARGET_URL_MATCHES = (process.env.WEBVIEW_TARGET_MATCH ?? "tauri.localhost
   .split(",")
   .map((entry) => entry.trim())
   .filter((entry) => entry.length > 0);
+// The app takes as long as its Rust build takes, so the attach polls rather
+// than failing on the first refusal.
 const ATTACH_TIMEOUT_MS = Number(process.env.WEBVIEW_ATTACH_TIMEOUT_MS ?? 180_000);
 
 function usage(message) {
@@ -75,77 +76,6 @@ function readTask(argv) {
 }
 
 /**
- * Wait for a page target to appear. The app takes as long as its Rust build
- * takes, so this polls rather than failing on the first refusal.
- */
-async function waitForTarget() {
-  const deadline = Date.now() + ATTACH_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(`http://127.0.0.1:${PORT}/json/list`);
-      const targets = await response.json();
-      const page = targets.find(
-        (target) =>
-          // Cross-origin plugin frames surface as their own targets; depending
-          // on the WebView2 build they are typed "page" or "iframe". The URL
-          // match below is what actually picks the document.
-          (target.type === "page" || target.type === "iframe") &&
-          target.webSocketDebuggerUrl &&
-          TARGET_URL_MATCHES.some((match) => String(target.url).includes(match)),
-      );
-      if (page) return page;
-    } catch {
-      // The port is not open until the WebView is created; keep waiting.
-    }
-    await delay(1000);
-  }
-  return null;
-}
-
-function evaluate(webSocketDebuggerUrl, expression) {
-  return new Promise((resolve, reject) => {
-    const socket = new WebSocket(webSocketDebuggerUrl);
-    const timer = setTimeout(() => {
-      socket.close();
-      reject(new Error("the WebView did not answer within 30s"));
-    }, 30_000);
-
-    socket.addEventListener("open", () => {
-      socket.send(
-        JSON.stringify({
-          id: 1,
-          method: "Runtime.evaluate",
-          params: {
-            expression,
-            awaitPromise: true,
-            returnByValue: true,
-            // The probes call app code, which is not a user gesture; without
-            // this some APIs refuse in ways that look like feature absence.
-            userGesture: true,
-          },
-        }),
-      );
-    });
-    socket.addEventListener("message", (event) => {
-      const message = JSON.parse(event.data);
-      if (message.id !== 1) return;
-      clearTimeout(timer);
-      socket.close();
-      if (message.error) return reject(new Error(message.error.message));
-      const { result, exceptionDetails } = message.result;
-      if (exceptionDetails) {
-        return reject(new Error(exceptionDetails.exception?.description ?? "threw"));
-      }
-      resolve(result.value);
-    });
-    socket.addEventListener("error", () => {
-      clearTimeout(timer);
-      reject(new Error(`could not open ${webSocketDebuggerUrl}`));
-    });
-  });
-}
-
-/**
  * Replay a list of CDP steps against the window: `{ method, params }` for a
  * command, `{ wait: ms }` to let the page settle between them.
  *
@@ -156,102 +86,27 @@ function evaluate(webSocketDebuggerUrl, expression) {
  * window coordinates lands wherever the compositor says it lands, which is the
  * same thing that happens to a person.
  */
-function replay(webSocketDebuggerUrl, steps) {
-  return new Promise((resolve, reject) => {
-    const socket = new WebSocket(webSocketDebuggerUrl);
-    const replies = [];
-    let index = 0;
-    let id = 0;
-    const timer = setTimeout(() => {
-      socket.close();
-      reject(new Error("the WebView did not answer within 60s"));
-    }, 60_000);
-
-    function next() {
-      if (index >= steps.length) {
-        clearTimeout(timer);
-        socket.close();
-        resolve(replies);
-        return;
-      }
-      const step = steps[index];
-      index += 1;
-      if (typeof step.wait === "number") {
-        setTimeout(next, step.wait);
-        return;
-      }
-      id += 1;
-      socket.send(JSON.stringify({ id, method: step.method, params: step.params ?? {} }));
+async function replay(session, steps) {
+  const deadline = Date.now() + 60_000;
+  const replies = [];
+  for (const step of steps) {
+    if (typeof step.wait === "number") {
+      await new Promise((resolve) => setTimeout(resolve, step.wait));
+      continue;
     }
-
-    socket.addEventListener("open", next);
-    socket.addEventListener("message", (event) => {
-      const message = JSON.parse(event.data);
-      if (message.id !== id) return;
-      if (message.error) {
-        clearTimeout(timer);
-        socket.close();
-        reject(new Error(`${steps[index - 1].method}: ${message.error.message}`));
-        return;
-      }
-      replies.push(message.result);
-      next();
-    });
-    socket.addEventListener("error", () => {
-      clearTimeout(timer);
-      reject(new Error(`could not open ${webSocketDebuggerUrl}`));
-    });
-  });
-}
-
-/**
- * Capture the window as a PNG. Two commands in order, not one: a
- * Page.captureScreenshot on a domain that was never enabled answers with an
- * error instead of a picture, and the error looks like a broken port.
- */
-function screenshot(webSocketDebuggerUrl) {
-  return new Promise((resolve, reject) => {
-    const socket = new WebSocket(webSocketDebuggerUrl);
-    const timer = setTimeout(() => {
-      socket.close();
-      reject(new Error("the WebView did not answer within 30s"));
-    }, 30_000);
-    const fail = (error) => {
-      clearTimeout(timer);
-      socket.close();
-      reject(error);
-    };
-
-    socket.addEventListener("open", () => {
-      socket.send(JSON.stringify({ id: 1, method: "Page.enable" }));
-    });
-    socket.addEventListener("message", (event) => {
-      const message = JSON.parse(event.data);
-      if (message.id === 1) {
-        if (message.error) return fail(new Error(message.error.message));
-        socket.send(
-          JSON.stringify({
-            id: 2,
-            method: "Page.captureScreenshot",
-            params: { format: "png" },
-          }),
-        );
-        return;
-      }
-      if (message.id !== 2) return;
-      if (message.error) return fail(new Error(message.error.message));
-      clearTimeout(timer);
-      socket.close();
-      resolve(Buffer.from(message.result.data, "base64"));
-    });
-    socket.addEventListener("error", () => {
-      fail(new Error(`could not open ${webSocketDebuggerUrl}`));
-    });
-  });
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error("the WebView did not answer within 60s");
+    replies.push(await session.send(step.method, step.params ?? {}, remaining));
+  }
+  return replies;
 }
 
 const task = readTask(process.argv.slice(2));
-const target = await waitForTarget();
+const target = await findPageTarget({
+  port: PORT,
+  urlMatches: TARGET_URL_MATCHES,
+  timeoutMs: ATTACH_TIMEOUT_MS,
+});
 if (!target) {
   console.error(
     `no WebView page matching ${TARGET_URL_MATCHES.map((match) => `"${match}"`).join(" or ")} ` +
@@ -265,22 +120,27 @@ if (!target) {
 
 console.error(`attached to ${target.url}`);
 try {
-  if (task.kind === "input") {
-    const replies = await replay(target.webSocketDebuggerUrl, task.steps);
-    console.log(
-      JSON.stringify(
-        replies.filter((reply) => Object.keys(reply).length > 0),
-        null,
-        2,
-      ),
-    );
-  } else if (task.kind === "screenshot") {
-    const png = await screenshot(target.webSocketDebuggerUrl);
-    writeFileSync(task.path, png);
-    console.error(`wrote ${png.length} bytes to ${task.path}`);
-  } else {
-    const value = await evaluate(target.webSocketDebuggerUrl, task.expression);
-    console.log(JSON.stringify(value, null, 2));
+  const session = await CdpSession.open(target.webSocketDebuggerUrl);
+  try {
+    if (task.kind === "input") {
+      const replies = await replay(session, task.steps);
+      console.log(
+        JSON.stringify(
+          replies.filter((reply) => Object.keys(reply).length > 0),
+          null,
+          2,
+        ),
+      );
+    } else if (task.kind === "screenshot") {
+      const png = await captureScreenshot(session);
+      writeFileSync(task.path, png);
+      console.error(`wrote ${png.length} bytes to ${task.path}`);
+    } else {
+      const value = await evaluate(session, task.expression);
+      console.log(JSON.stringify(value, null, 2));
+    }
+  } finally {
+    session.close();
   }
 } catch (error) {
   console.error(String(error.message ?? error));

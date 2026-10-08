@@ -238,6 +238,106 @@ jobs:
             release-notes.md
           if-no-files-found: error
 
+  # End-to-end smoke of the real desktop app on the runner: start devboule.exe
+  # with an isolated runtime dir and WebView2's debug port, drive the window
+  # over CDP (scripts/e2e/smoke.mjs), and keep the screenshot whatever happens.
+  # CI has no provider accounts, so no agent turn runs here — the checks are
+  # the shell, the daemon dot, Settings, and a workspace reaching the rail.
+  #
+  # Non-blocking while it earns its place: it is the first job that starts a
+  # GUI, and a smoke that turns every push red before it has a green week
+  # trains people to ignore it. Flip `continue-on-error` off (or delete it)
+  # once this has run green for a week; until then a red run is information,
+  # not a gate.
+  #
+  # The cache steps mirror the windows job's, with one deliberate difference:
+  # `shared-key` spells that job's key prefix (`key: windows-workspace` plus
+  # its job id `windows`), so this job RESTORES the dependency cache the
+  # windows job saves. `save-if: false` keeps it from ever writing to that
+  # entry — sharing it the other way round would make the two jobs evict each
+  # other's feature set, which is what the windows job's `key` comment is
+  # about. If that prefix ever changes, this job falls back to a cold build.
+  e2e-smoke:
+    name: e2e-smoke
+    runs-on: windows-latest
+    timeout-minutes: 15
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # pnpm must be installed BEFORE setup-node: `cache: pnpm` resolves the store
+      # path by running `pnpm store path`, which fails if pnpm is not on PATH yet.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.33.2
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The app binary embeds `dist` at compile time, so the frontend is built
+      # before cargo runs, exactly as the windows job does it.
+      - name: Build frontend
+        run: pnpm exec vite build
+
+      # Same reason as every other job here: src-tauri links oracle-core, whose
+      # lance build scripts compile .proto files with prost-build.
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "31.1"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # The ort build script downloads onnxruntime from a third-party CDN and
+      # ignores cargo's offline mode; this is the same entry the other jobs
+      # share, so the fetch happens once per Cargo.lock.
+      - name: Cache the ort runtime download
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\ort.pyke.io
+          key: ort-dfbin-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ort-dfbin-${{ runner.os }}-
+
+      - name: Restore the windows job's cargo cache (dependencies only)
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-workspace-windows
+          save-if: "false"
+
+      # Debug, not release: this job does not measure the shipped artifact,
+      # and the windows job's cache holds this profile. The daemon is built
+      # beside the app because the app discovers it as a sibling — the same
+      # rule the installer's bundle follows. `tauri/custom-protocol` is what
+      # `tauri build` turns on so the app serves the embedded `dist`; without
+      # it a plain cargo build serves `devUrl` and needs the vite dev server.
+      - name: Build the app and the daemon
+        timeout-minutes: 10
+        run: |
+          cargo build -p devboule-daemon --locked
+          cargo build -p devboule --locked --features tauri/custom-protocol
+
+      - name: Run the desktop smoke
+        timeout-minutes: 8
+        run: node scripts/e2e/smoke.mjs --artifacts "${{ runner.temp }}/e2e-artifacts"
+
+      # On success AND failure: the picture is what a red run is diagnosed
+      # from, and the app's own stdout/stderr ride along in the same folder.
+      - name: Upload the smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-smoke
+          path: ${{ runner.temp }}/e2e-artifacts
+          retention-days: 14
+
   polis-plugin:
     runs-on: windows-latest
 
