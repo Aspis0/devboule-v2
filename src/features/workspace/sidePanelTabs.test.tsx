@@ -103,6 +103,7 @@ import {
 import { Workspace } from "./Workspace";
 import { SIDE_PANEL_REGISTRY } from "./sidePanelRegistry";
 import { MIN_RIGHT_WIDTH, writeStoredPanelFrame } from "./workspaceResize";
+import { PANEL_TAB_LABEL_MIN_WIDTH } from "./panel/panelTabLabels";
 import { resetSharedSessionControllerForTests } from "./workspaceSessions";
 import { resetTabMemoryForTests } from "./workspaceTabMemory";
 import { setLastSelectedWorkspaceKey } from "./lastSelectedWorkspace";
@@ -184,13 +185,7 @@ describe("the right panel's tabs", () => {
     // The stored frame is app-lifetime: a test that narrowed the panel would
     // hand its icon tabs to the next one.
     localStorage.clear();
-    // Wide enough for the four labels; the narrow cases write their own frame.
-    writeStoredPanelFrame(localStorage, {
-      left: 248,
-      right: 340,
-      leftCollapsed: false,
-      rightCollapsed: false,
-    });
+    // No frame is written: the suite runs at the panel's real default width.
     container = document.createElement("div");
     document.body.appendChild(container);
     vi.mocked(projectsList).mockResolvedValue([project]);
@@ -266,8 +261,19 @@ describe("the right panel's tabs", () => {
     return [...tablist().querySelectorAll<HTMLButtonElement>('[role="tab"]')];
   }
 
+  /** The panel at the narrowest width that still draws the four labels. */
+  function widenPanelToLabels(): void {
+    writeStoredPanelFrame(localStorage, {
+      left: 248,
+      right: PANEL_TAB_LABEL_MIN_WIDTH,
+      leftCollapsed: false,
+      rightCollapsed: false,
+    });
+  }
+
+  // A tab keeps its name as its title in both modes, so it is found by that name.
   function tabByName(name: string): HTMLButtonElement {
-    const tab = tabs().find((candidate) => candidate.textContent?.includes(name) === true);
+    const tab = tabs().find((candidate) => candidate.getAttribute("title") === name);
     if (tab === undefined) throw new Error(`side panel tab did not render: ${name}`);
     return tab;
   }
@@ -299,13 +305,14 @@ describe("the right panel's tabs", () => {
     input.dispatchEvent(new Event("input", { bubbles: true }));
   }
 
-  it("shows Files, Changes, Design and Tasks as tabs with Changes active", async () => {
+  it("shows Files, Changes, Design and Tasks as icon tabs at the default width, Changes active", async () => {
     await renderWorkspace();
 
     const list = tablist();
     expect(list.getAttribute("aria-label")).toBe("Side panel");
-    const names = tabs().map((tab) => tab.querySelector(".workspace-panel-tab-label")?.textContent);
+    const names = tabs().map((tab) => tab.getAttribute("title"));
     expect(names).toEqual(["Files", "Changes", "Design", "Tasks"]);
+    expect(container.querySelector(".workspace-panel-tab-label")).toBeNull();
     for (const tab of tabs()) {
       expect(tab.querySelector("svg")).not.toBeNull();
     }
@@ -380,6 +387,7 @@ describe("the right panel's tabs", () => {
       ".workspace-panel-tab-active",
       ".workspace-panel-tab-label",
     ]);
+    widenPanelToLabels();
     await renderWorkspace();
 
     const row = container.querySelector<HTMLElement>(
@@ -455,7 +463,7 @@ describe("the right panel's tabs", () => {
     expect(tabpanel().getAttribute("aria-labelledby")).toBe("panel-tab-design");
   });
 
-  it("never paints half a word: the tabs hold their width and the row goes icon-only", async () => {
+  it("never paints half a word: at the default width the tabs are named icons, not clipped labels", async () => {
     const { rulesFor } = assembleCssProof([
       read("src/styles/tokens.css"),
       read("src/styles/global.css"),
@@ -477,10 +485,12 @@ describe("the right panel's tabs", () => {
     // The mockup's spacer: content tabs first, the kebab pushed right.
     const spacer = container.querySelector(".workspace-panel-tabs > .workspace-panel-spacer");
     if (spacer === null) throw new Error("tab row spacer did not render");
-    // The default panel is inside the label budget, so all three are named.
+    // The default panel is below the label budget: each tab carries its name as
+    // its accessible name, and no label is drawn to be clipped.
     expect(
-      tabs().map((tab) => tab.querySelector(".workspace-panel-tab-label")?.textContent),
+      tabs().map((tab) => tab.getAttribute("aria-label") ?? tab.getAttribute("title")),
     ).toEqual(["Files", "Changes", "Design", "Tasks"]);
+    expect(container.querySelector(".workspace-panel-tab-label")).toBeNull();
   });
 
   it("paints icon tabs, each carrying its panel's name, when the panel is too narrow", async () => {
