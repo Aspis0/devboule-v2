@@ -165,6 +165,10 @@ mod provider_switches;
 mod provider_update;
 #[cfg(feature = "server")]
 mod provider_vocabulary;
+mod quota_key;
+mod quota_opencode_go;
+mod quota_poller;
+mod quota_source;
 #[cfg(feature = "server")]
 mod raster_metadata;
 #[cfg(feature = "server")]

@@ -896,8 +896,14 @@ fn pull_live_agent_replay_events(
             // empty until the provider's next live frame.
             if !replay.plan_usage_delivered {
                 replay.plan_usage_delivered = true;
+                if let Some(manifest) = pull.runtime.session_manifest() {
+                    crate::quota_poller::note_manifest(&manifest);
+                }
                 if let Some(kind) = pull.runtime.agent_kind() {
-                    if let Some(event) = crate::plan_usage_cache::cached_for_kind(kind) {
+                    let model_provider = pull.runtime.current_model_provider_id();
+                    if let Some(event) =
+                        crate::plan_usage_cache::cached_for_session(kind, model_provider.as_deref())
+                    {
                         replay
                             .pending
                             .push_back((pull.generation, replay.watermark, event));

@@ -1,0 +1,112 @@
+//! Where the daemon finds its OpenCode Go key: the `OPENCODE_API_KEY`
+//! environment variable first, then the `opencode` entry of Pi's own
+//! `auth.json`. A key is read for one request at a time and leaves this module
+//! only as the Authorization header of that request.
+
+use std::fmt;
+use std::path::{Path, PathBuf};
+
+use serde_json::Value;
+
+/// The variable Pi and OpenCode both name for the shared Zen/Go key.
+const ENV_NAME: &str = "OPENCODE_API_KEY";
+/// Pi's provider id for OpenCode inside `auth.json`.
+const AUTH_PROVIDER: &str = "opencode";
+/// Far larger than any credential file; a bigger file is not read.
+const MAX_AUTH_BYTES: u64 = 1 << 20;
+
+/// A key the daemon may put on a request. Its `Debug` says only that a key
+/// exists, so a logged value never carries the text.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct ApiKey(String);
+
+impl ApiKey {
+    /// A key from text, or none when the text is blank.
+    pub(crate) fn from_text(text: &str) -> Option<Self> {
+        let trimmed = text.trim();
+        (!trimmed.is_empty()).then(|| Self(trimmed.to_string()))
+    }
+
+    /// The Authorization header value: the one place the key text leaves here.
+    pub(crate) fn bearer(&self) -> String {
+        format!("Bearer {}", self.0)
+    }
+}
+
+impl fmt::Debug for ApiKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ApiKey(redacted)")
+    }
+}
+
+/// Where a key can come from. Production hands in the process environment and
+/// the person's home folder; tests hand in their own.
+pub(crate) struct KeySources<'a> {
+    pub(crate) env: &'a dyn Fn(&str) -> Option<String>,
+    pub(crate) home: Option<PathBuf>,
+}
+
+/// Pi's `auth.json` under a home folder.
+pub(crate) fn pi_auth_path(home: &Path) -> PathBuf {
+    home.join(".pi").join("agent").join("auth.json")
+}
+
+/// The environment variable first; a blank one falls through to the file.
+pub(crate) fn opencode_key(sources: &KeySources<'_>) -> Option<ApiKey> {
+    (sources.env)(ENV_NAME)
+        .as_deref()
+        .and_then(ApiKey::from_text)
+        .or_else(|| {
+            sources
+                .home
+                .as_deref()
+                .and_then(|home| key_from_auth_file(&pi_auth_path(home)))
+        })
+}
+
+/// The key the production sources name: this process's environment and the
+/// person's home folder.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn opencode_key_from_process() -> Option<ApiKey> {
+    let env = |name: &str| std::env::var(name).ok();
+    opencode_key(&KeySources {
+        env: &env,
+        home: home_dir(),
+    })
+}
+
+/// The home folder: `USERPROFILE` on Windows, `HOME` elsewhere.
+#[cfg_attr(test, allow(dead_code))]
+fn home_dir() -> Option<PathBuf> {
+    let name = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(name).map(PathBuf::from)
+}
+
+fn key_from_auth_file(path: &Path) -> Option<ApiKey> {
+    let metadata = std::fs::metadata(path).ok()?;
+    if metadata.len() > MAX_AUTH_BYTES {
+        return None;
+    }
+    let text = std::fs::read_to_string(path).ok()?;
+    key_from_auth_text(&text)
+}
+
+/// The key in one `auth.json` text: the `opencode` entry, when it is an
+/// `api_key` credential. A key written as `!command` needs a shell to resolve,
+/// which this daemon does not run, so it is no key here.
+fn key_from_auth_text(text: &str) -> Option<ApiKey> {
+    let value: Value = serde_json::from_str(text).ok()?;
+    let entry = value.get(AUTH_PROVIDER)?;
+    if entry.get("type")?.as_str()? != "api_key" {
+        return None;
+    }
+    let key = entry.get("key")?.as_str()?;
+    if key.starts_with('!') {
+        return None;
+    }
+    ApiKey::from_text(key)
+}
+
+#[cfg(test)]
+#[path = "quota_key_tests.rs"]
+mod tests;

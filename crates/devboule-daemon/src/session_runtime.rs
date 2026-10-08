@@ -1390,6 +1390,7 @@ impl SessionRuntime {
                 }
             }
         }
+        crate::quota_poller::note_manifest(&event);
         *stored = Some(event.clone());
         event
     }
@@ -3115,6 +3116,17 @@ impl SessionRuntime {
             .lock()
             .ok()
             .and_then(|stored| stored.clone())
+    }
+
+    /// The provider serving the stored manifest's current model, when the agent reported one.
+    pub(crate) fn current_model_provider_id(&self) -> Option<String> {
+        match self.session_manifest()? {
+            SessionEvent::SessionManifest {
+                current_model_provider_id,
+                ..
+            } => current_model_provider_id,
+            _ => None,
+        }
     }
 
     pub(crate) fn current_mode_id(&self) -> Option<String> {
