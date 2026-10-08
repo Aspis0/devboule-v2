@@ -644,6 +644,55 @@ fn a_notice_steers_a_mid_turn_creator_instead_of_a_plain_prompt() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// The steerer whose frame may have reached the provider but whose answer
+/// never came: a timeout or a lost response, never a refusal.
+struct UncertainSteerer;
+
+impl SessionSteerer for UncertainSteerer {
+    fn steer_active_turn(
+        &mut self,
+        _text: &str,
+        _turn: &mut TurnToken<'_>,
+        _origin: super::session_items::SteerOrigin,
+    ) -> Result<bool, WireError> {
+        Err(WireError::new(ErrorCode::Io, "Pi steer response timed out"))
+    }
+
+    fn clone_steerer(&self) -> Box<dyn SessionSteerer> {
+        Box::new(Self)
+    }
+}
+
+/// A steer that timed out may already be queued with the creator: the report
+/// is never sent again as a plain prompt. Only a steer the provider answered
+/// earns the fallback.
+#[test]
+fn an_uncertain_steer_is_not_repeated_as_a_plain_prompt() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-s5b06c", "process-s5b06c");
+    let written = Arc::new(Mutex::new(Vec::new()));
+    let creator = insert_live_agent_with_turn_control(
+        &registry,
+        "creator-s5b06c",
+        owner.clone(),
+        SessionKind::Acp,
+        Box::new(RecordingWriter(Arc::clone(&written))),
+        None,
+        None,
+        Box::new(NoopKiller),
+        Box::new(UncertainSteerer),
+    );
+    creator.begin_turn();
+    let delivered = registry.deliver_to_creator("creator-s5b06c", &owner, "finish report");
+    assert!(delivered.is_err(), "the send is uncertain, not refused");
+    assert!(
+        written.lock().expect("written").is_empty(),
+        "no duplicate plain prompt after an uncertain steer"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn a_childs_end_releases_its_slot_and_claims_its_report_once_whatever_path_calls_it() {
     let (_dir, registry, journal) = tmp_delete_registry();

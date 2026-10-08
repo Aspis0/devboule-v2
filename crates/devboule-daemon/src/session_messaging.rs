@@ -76,6 +76,20 @@ fn write_failed(attempted: WriteAttempt) -> SendError {
     }
 }
 
+/// One steer's own failure, classified. A provider that answered refused the
+/// text: it is not with the agent, so the caller's fallback may send it once.
+/// A timeout, a closed pipe or a lost response failed after the frame was
+/// written; the text may already be queued, so it is `Uncertain` and no
+/// fallback may repeat it. An explicit refusal is the only steerer error the
+/// providers spell `InvalidRequest` (`pi_client::PiControl::await_response`);
+/// every transport failure carries `Io`.
+fn steer_failed(error: WireError) -> SendError {
+    match error.code {
+        ErrorCode::InvalidRequest => SendError::Refused(error),
+        _ => SendError::Uncertain(error),
+    }
+}
+
 /// The references a transcript echo carries: the digests and sizes verbatim,
 /// and every uploaded file's display name sanitized, so a name a client sent
 /// reaches a chip in the same shape it reaches a prompt line.
@@ -1315,7 +1329,7 @@ impl super::SessionRegistry {
                     let mut killer = killer;
                     killer.interrupt();
                 }
-                Some(Err(error)) => return Err(error.into()),
+                Some(Err(error)) => return Err(steer_failed(error)),
                 // The turn ended between the admission and this write: the
                 // text goes as an ordinary prompt. `boundary_reached` is already
                 // set by the fired hook, and the re-key below — which looks at
