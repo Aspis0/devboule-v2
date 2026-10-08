@@ -3,7 +3,7 @@
 //! included: the derived headline telling working, blocked and idle apart while
 //! a live hook row wins, the derived state and the published hook sharing one
 //! session without fighting, the quiet notice firing once per spell and leaving
-//! the child alone, a refused notice never steering and leaving the creator's
+//! the child alone, a quiet notice steering a mid-turn creator and leaving its
 //! turn and cards alone, a failed delivery keeping the spell owed, a stranger's
 //! session refused without saying which, and a resolved card re-arming the quiet
 //! clock. Every line below is byte-identical to its text there apart from this
@@ -258,11 +258,11 @@ fn recording_writer_for(registry: &SessionRegistry, id: &str) {
 }
 
 #[test]
-fn a_quiet_notice_never_steers_and_leaves_the_creators_turn_and_cards_alone() {
+fn a_quiet_notice_steers_a_mid_turn_creator_and_leaves_its_cards_alone() {
     let (_dir, registry, journal) = tmp_delete_registry();
     let owner = test_owner("quiet-nosteer-user", "quiet-nosteer-client");
-    // Creator mid-turn with an ACP-shaped steerer (steer unavailable) and a
-    // killer with ACP's interrupt contract, plus one parked card of its own.
+    // Creator mid-turn with a steerer that takes the text, and a killer with
+    // ACP's interrupt contract, plus one parked card of its own.
     let steer_calls = Arc::new(AtomicU64::new(0));
     let interrupted = Arc::new(AtomicBool::new(false));
     let creator = insert_live_agent_with_turn_control(
@@ -275,7 +275,7 @@ fn a_quiet_notice_never_steers_and_leaves_the_creators_turn_and_cards_alone() {
         None,
         Box::new(NoopKiller),
         Box::new(ScriptedSteerer::new(
-            SteerAnswer::Unavailable,
+            SteerAnswer::Steered,
             Arc::clone(&steer_calls),
         )),
     );
@@ -311,8 +311,8 @@ fn a_quiet_notice_never_steers_and_leaves_the_creators_turn_and_cards_alone() {
     );
     assert_eq!(
         steer_calls.load(Ordering::Acquire),
-        0,
-        "steer never attempted"
+        1,
+        "the notice steered the creator's running turn"
     );
     assert!(
         !interrupted.load(Ordering::Acquire),
