@@ -170,6 +170,10 @@ pub(super) struct Attachment {
     /// `queue_snapshot`: that event is a protocol-22 variant, and a client that
     /// did not offer the capability may not be able to parse it.
     pub(super) session_queue: bool,
+    /// Whether this observer's connection negotiated `session.tasks`, copied
+    /// off the connection at attach like the queue bit above: an observer
+    /// without it is never sent a `tasks_snapshot`.
+    pub(super) session_tasks: bool,
     /// The replay seam's stored manifest. A matching live copy may have
     /// started publishing before the seam but reached this queue after it.
     pub(super) suppressed_manifest: Option<SessionEvent>,
@@ -252,6 +256,9 @@ pub(crate) struct StreamState {
     /// Transcript replay buffer. Unused by live sessions, which never
     /// replay bytes to synchronise a screen.
     pub(super) scrollback: Scrollback,
+    /// Last task-list revision sent to any observer: an overlapping derive
+    /// that arrives with an older revision is dropped, never published.
+    pub(super) tasks_published_revision: u64,
     /// Reader has seen EOF. Further publish_output is dropped.
     pub(super) output_closed: bool,
     /// Child::wait returned. Output may still be in the ConPTY buffer.

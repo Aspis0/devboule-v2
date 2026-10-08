@@ -1265,6 +1265,11 @@ impl DaemonClient {
     }
 
     pub fn session_tasks(&self, session_id: &str) -> Result<Vec<SessionTask>, DaemonError> {
+        // The capability gate is first, for the reason
+        // [`DaemonClient::require_agreed`] gives: a daemon from before
+        // protocol 28 cannot deserialize this variant, and the connection
+        // would die on a frame it had no answer for.
+        self.require_agreed(devboule_protocol::caps::SESSION_TASKS)?;
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::SessionTasksGet {
             id,

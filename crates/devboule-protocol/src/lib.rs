@@ -175,8 +175,7 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// version, so negotiating down does not produce an old-shaped payload;
 /// refusing the handshake is the only protection. The additive task and
 /// goal event tags (`agent_task_started`, `agent_task_notification`,
-/// `agent_background_tasks_changed`, `agent_tasks`, `goal_changed` — and now
-/// `tasks_snapshot` — are
+/// `agent_background_tasks_changed`, `agent_tasks`, `goal_changed`) are
 /// deliberately ungated: these output-only tags change no request shape. The
 /// additive command-row fields (`command`/`exitCode` on the tool events,
 /// `atMs` on the user echo), the per-turn usage fields
@@ -206,9 +205,9 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// `attachments.upload`, so a peer that never negotiated the name is never sent
 /// one and the floor stays put. Protocol 27 adds the stored-attachment delete
 /// (`SessionAttachmentDelete`), gated on `attachments.delete`. Protocol 28
-/// adds the background-task list (`SessionTasksGet`), gated on
-/// `session.tasks`; the `tasks_snapshot` event tag is additive output-only
-/// and needs no gate.
+/// adds the background-task list (`SessionTasksGet` and `tasks_snapshot`),
+/// both gated on `session.tasks`: the request would kill an older reader,
+/// and so would the event.
 pub const PROTOCOL_VERSION: u32 = 28;
 /// Oldest dialect this crate still accepts. Protocols 17, 18 and 20 added only
 /// optional fields, so a v16 peer still interoperates — it just shows no
@@ -303,7 +302,8 @@ pub mod caps {
     /// Its own name, like the shared queue: a client must not send the frame
     /// to a daemon that predates the variant, whose reader cannot
     /// deserialize it and would kill the connection on a request it never
-    /// knew. The event tag itself is additive output-only and needs no gate.
+    /// knew — and a client that never agreed the name is never sent the
+    /// event, which an older reader could not parse either.
     pub const SESSION_TASKS: &str = "session.tasks";
 
     /// The attach reply's resume outcome (`SessionResumeInfo`).

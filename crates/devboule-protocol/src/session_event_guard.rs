@@ -371,6 +371,7 @@ pub(crate) fn session_event_samples() -> Vec<SessionEvent> {
             }],
         },
         TasksSnapshot => SessionEvent::TasksSnapshot {
+            revision: 3,
             // One row of each kind pins the wire names: the agent row
             // carries the child link, model and count, the command row
             // leaves them absent.

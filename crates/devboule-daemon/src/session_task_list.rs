@@ -5,11 +5,16 @@
 //! that cannot see the parent is refused; the internal refresh publishes to
 //! the session's own observers, who passed its scope check at attach.
 
-use devboule_protocol::{Session, SessionEvent, SessionTask};
+use devboule_protocol::{Session, SessionEvent, SessionTask, TranscriptIntegrity};
 
 use super::*;
-use crate::session_tasks::{derive_tasks, HeldChild};
+use crate::session_tasks::{derive_tasks, HeldChild, TaskRow};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// At most one derive per session per window; a trigger inside the window
+/// schedules one trailing refresh, so the last state is always published.
+pub(crate) const TASKS_REFRESH_DEBOUNCE: Duration = Duration::from_millis(500);
 
 impl super::SessionRegistry {
     /// Answer a `SessionTasksGet`: the parent must be this owner's, then the
@@ -24,22 +29,23 @@ impl super::SessionRegistry {
             return Err(not_found());
         }
         let held = self.held_children(session_id, &sessions);
-        self.derive_with_held(session_id, held, &[])
+        let parent_end = self.parent_end_ts(session_id, &sessions);
+        self.derive_with_held(session_id, held, parent_end, &[])
     }
 
     /// Re-derive and publish the list after a change. Best effort and silent:
     /// a session with no runtime has no observers, and a journal that cannot
     /// be read leaves the last list standing until the next change repairs it.
     ///
-    /// `extra` carries the just-published rows with their publish time, which
-    /// the keyed fold applies after the replay — the journal write may not be
-    /// visible yet, and when it is, applying the row twice answers the same
-    /// list.
+    /// `extra` carries the just-published rows with their publish time. The
+    /// fold merges them by journal sequence behind the replay rows — the
+    /// journal write may not be visible yet, and when it is, applying the
+    /// row twice answers the same list.
     pub(crate) fn refresh_session_tasks(&self, session_id: &str, extra: &[(SessionEvent, u64)]) {
         // Sessions out under the lock, facts after it: the child journals
         // are disk reads, and holding the registry map across them would
         // nest two waits nobody ordered.
-        let (runtime, children): (Arc<SessionRuntime>, Vec<Session>) = {
+        let (runtime, children, parent_ended): (Arc<SessionRuntime>, Vec<Session>, bool) = {
             let Ok(map) = self.inner.lock() else {
                 return;
             };
@@ -50,18 +56,44 @@ impl super::SessionRegistry {
                 return;
             }
             let runtime = entry.runtime();
+            // The debounce lives on the runtime because it is per session:
+            // a trigger inside the window schedules one trailing refresh
+            // instead of deriving, so a burst costs a leading derive plus
+            // one trailing one.
+            if !runtime.tasks_derive_due() {
+                runtime.schedule_tasks_trailing(self.clone(), session_id.to_string());
+                return;
+            }
+            let parent_ended = !entry.to_session().state.is_live();
             let children = map
                 .values()
                 .map(|entry| entry.to_session())
                 .filter(|session| session.created_by.as_deref() == Some(session_id))
                 .collect();
-            (runtime, children)
+            (runtime, children, parent_ended)
         };
+        let parent_end = parent_ended.then(|| {
+            runtime
+                .tasks_ended_wall_ms()
+                .unwrap_or_else(crate::agent_activity::wall_now_ms)
+        });
         let held = self.held_children(session_id, &children);
-        let Ok(tasks) = self.derive_with_held(session_id, held, extra) else {
+        let revision = runtime.next_tasks_revision();
+        let Ok(tasks) = self.derive_with_held(session_id, held, parent_end, extra) else {
             return;
         };
-        runtime.publish_tasks_snapshot(tasks);
+        runtime.publish_tasks_snapshot(tasks, revision);
+    }
+
+    /// Clear a scheduled trailing refresh: the scheduled run starts now, so
+    /// a newer trigger may schedule the next one.
+    pub(crate) fn clear_tasks_trailing(&self, session_id: &str) {
+        let Ok(map) = self.inner.lock() else {
+            return;
+        };
+        if let Some(entry) = map.get(session_id) {
+            entry.runtime().clear_tasks_trailing_flag();
+        }
     }
 
     fn held_children(&self, session_id: &str, sessions: &[Session]) -> Vec<HeldChild> {
@@ -78,21 +110,56 @@ impl super::SessionRegistry {
             .clone()
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| session.title.clone());
+        // A terminal child without a recorded end is still bounded: now is
+        // the honest fallback, and the finish row corrects it when it lands.
+        let ended_at_ms = match session.state.is_live() {
+            true => None,
+            false => Some(
+                self.runtime_tasks_end(&session.id)
+                    .unwrap_or_else(crate::agent_activity::wall_now_ms),
+            ),
+        };
         let (model, tool_call_count) = self.child_facts(&session.id);
         HeldChild {
             id: session.id.clone(),
             title,
             state: session.state.clone(),
             started_at_ms: session.created_at_ms,
+            ended_at_ms,
             model,
             tool_call_count,
         }
     }
 
+    /// The wall time the session's process was observed dead, when the
+    /// runtime recorded one.
+    fn runtime_tasks_end(&self, session_id: &str) -> Option<u64> {
+        let map = self.inner.lock().ok()?;
+        let entry = map.get(session_id)?;
+        if entry.is_configuring() {
+            return None;
+        }
+        entry.runtime().tasks_ended_wall_ms()
+    }
+
+    /// The parent's end time when it has ended: the observed death, or now
+    /// when nothing recorded it (a recovered transcript never saw its own
+    /// end). Live parents have no end.
+    fn parent_end_ts(&self, session_id: &str, sessions: &[Session]) -> Option<u64> {
+        let parent = sessions.iter().find(|s| s.id == session_id)?;
+        if parent.state.is_live() {
+            return None;
+        }
+        Some(
+            self.runtime_tasks_end(session_id)
+                .unwrap_or_else(crate::agent_activity::wall_now_ms),
+        )
+    }
+
     /// The child's declared model and its counted tool calls, both read off
     /// its own journal: the last manifest names the model, every tool-call
-    /// row counts. `None` means the journal could not be read; a readable
-    /// journal answers a count, zero included.
+    /// row counts. The count is exact only for a complete replay: anything
+    /// else answers `None`, never a partial number.
     fn child_facts(&self, child_id: &str) -> (Option<String>, Option<u64>) {
         let Some(journal) = &self.journal else {
             return (None, None);
@@ -100,37 +167,50 @@ impl super::SessionRegistry {
         let Ok(replay) = journal.replay(child_id) else {
             return (None, None);
         };
-        let mut model = None;
-        let mut calls = 0u64;
-        for event in &replay.events {
-            match event {
-                SessionEvent::SessionManifest {
-                    current_model_id: Some(id),
-                    ..
-                } => model = Some(id.clone()),
-                SessionEvent::AgentToolCall { .. } => calls += 1,
-                _ => {}
-            }
-        }
-        (model, Some(calls))
+        let complete = replay.integrity == TranscriptIntegrity::Complete;
+        crate::session_tasks::summarize_child(&replay.events, complete)
     }
 
     fn derive_with_held(
         &self,
         session_id: &str,
         held: Vec<HeldChild>,
+        parent_end: Option<u64>,
         extra: &[(SessionEvent, u64)],
     ) -> Result<Vec<SessionTask>, WireError> {
-        let mut rows: Vec<(SessionEvent, Option<u64>)> = Vec::new();
+        let mut rows: Vec<TaskRow> = Vec::new();
         if let Some(journal) = &self.journal {
             let replay = journal
                 .replay(session_id)
                 .map_err(|_| internal("Session state is unavailable."))?;
-            rows.extend(replay.events.into_iter().zip(replay.event_ts_ms));
+            rows.extend(
+                replay
+                    .events
+                    .into_iter()
+                    .zip(replay.event_ts_ms)
+                    .zip(replay.event_seqs)
+                    .map(|((event, ts_ms), pos)| TaskRow {
+                        event,
+                        ts_ms,
+                        pos: Some(pos),
+                    }),
+            );
         }
-        rows.extend(extra.iter().map(|(event, ts)| (event.clone(), Some(*ts))));
-        Ok(derive_tasks(session_id, &held, &rows))
+        // The publisher never learns its row's sequence, so a trigger
+        // sorts after every positioned row: it fired after them.
+        rows.extend(extra.iter().map(|(event, ts)| TaskRow {
+            event: event.clone(),
+            ts_ms: Some(*ts),
+            pos: None,
+        }));
+        Ok(derive_tasks(session_id, &held, &rows, parent_end))
     }
+}
+
+/// Whether a refresh may derive now: outside the debounce window. Pure so
+/// tests drive it without sleeping.
+pub(crate) fn refresh_due(last: Option<Instant>, now: Instant) -> bool {
+    last.is_none_or(|at| now.duration_since(at) >= TASKS_REFRESH_DEBOUNCE)
 }
 
 #[cfg(test)]

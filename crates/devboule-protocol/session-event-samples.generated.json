@@ -341,6 +341,7 @@
     "type": "steered"
   },
   {
+    "revision": 3,
     "tasks": [
       {
         "childSessionId": "s.child.1",

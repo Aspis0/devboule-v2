@@ -748,7 +748,6 @@ impl super::SessionRegistry {
                 ),
                 None => runtime.mark_journal_degraded(),
             }
-            // The record is in the creator's journal through the runtime above;
             // a runtime that is gone by now cannot be written to, and that is
             // stated rather than hidden.
         } else {

@@ -51,11 +51,13 @@ fn the_tasks_request_round_trips_through_its_wire_shape() {
 #[test]
 fn the_tasks_snapshot_tag_is_its_snake_case_variant() {
     let event = SessionEvent::TasksSnapshot {
+        revision: 2,
         tasks: sample_tasks(),
     };
     assert_eq!(event.kind(), "tasks_snapshot");
     let json: serde_json::Value = serde_json::to_value(&event).expect("json");
     assert_eq!(json["type"], "tasks_snapshot");
+    assert_eq!(json["revision"], 2);
     let back: SessionEvent = serde_json::from_value(json).expect("deserialize");
     assert_eq!(event, back);
 }

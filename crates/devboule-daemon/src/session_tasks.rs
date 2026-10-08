@@ -12,9 +12,14 @@ use devboule_protocol::{
     SubagentTaskStatus,
 };
 
+use crate::process_argv_redact::redact_argv;
+
 /// A task row names its command; it does not print it. Cut at a char
 /// boundary with an ellipsis, so a cut flag reads as cut.
 pub const TASK_TITLE_MAX_CHARS: usize = 120;
+/// The list is a glance, not history: past this many rows the oldest
+/// finished rows leave first. Running rows are never dropped for the cap.
+pub const TASKS_MAX_ROWS: usize = 200;
 
 /// One child the registry still holds, with the display facts a task row needs.
 pub struct HeldChild {
@@ -22,25 +27,61 @@ pub struct HeldChild {
     pub title: String,
     pub state: SessionState,
     pub started_at_ms: u64,
+    /// The registry's end time for a terminal child, `None` while running.
+    pub ended_at_ms: Option<u64>,
     pub model: Option<String>,
     pub tool_call_count: Option<u64>,
 }
 
+/// One journal row in fold order: replay rows carry their journal position
+/// and sort by it, unpositioned rows (the just-published trigger, whose
+/// sequence the publisher never learns) sort after every positioned one.
+pub struct TaskRow {
+    pub event: SessionEvent,
+    pub ts_ms: Option<u64>,
+    pub pos: Option<(u64, u64)>,
+}
+
 /// The ordered task list: agents first, then commands, each block by
 /// start time with the id breaking ties.
+///
+/// `parent_end` is the parent session's end time when it has ended: every
+/// row still running becomes cancelled at it. A background command outlives
+/// a provider turn, so only the session's own end cancels it.
 pub fn derive_tasks(
     session_id: &str,
     held: &[HeldChild],
-    journal: &[(SessionEvent, Option<u64>)],
+    rows: &[TaskRow],
+    parent_end: Option<u64>,
 ) -> Vec<SessionTask> {
+    let mut ordered: Vec<&TaskRow> = rows.iter().collect();
+    ordered.sort_by_key(|row| match row.pos {
+        Some((generation, seq)) => (0, generation, seq),
+        None => (1, 0, 0),
+    });
     let mut fold = Fold::new(session_id);
     for child in held {
         fold.adopt_held(child);
     }
-    for (event, ts) in journal {
-        fold.apply(event, ts.unwrap_or(0));
+    for row in ordered {
+        fold.apply(&row.event, row.ts_ms.unwrap_or(0));
+    }
+    if let Some(end) = parent_end {
+        fold.cancel_running(end);
     }
     fold.finish()
+}
+
+/// A command line with credentials masked, then cut to a row: the redactor
+/// reads argv, so the line is split the way the process probe splits one.
+/// Shell quotes come off first — an agent quotes its headers (`-H
+/// 'Authorization: Bearer …'`), and a quote glued to either half hides the
+/// header shape from the redactor. The row is a redacted display form, not
+/// the exact line.
+pub fn command_title(line: &str) -> String {
+    let bare: String = line.replace(['\'', '"'], "");
+    let argv: Vec<String> = bare.split_whitespace().map(str::to_string).collect();
+    truncate_title(&redact_argv(&argv).join(" "))
 }
 
 pub fn truncate_title(title: &str) -> String {
@@ -50,6 +91,28 @@ pub fn truncate_title(title: &str) -> String {
     } else {
         kept
     }
+}
+
+/// A child's declared model and counted tool calls from its own journal
+/// rows. The count is exact only for a complete replay: anything else
+/// answers `None`, never a partial number.
+pub fn summarize_child(
+    events: &[SessionEvent],
+    replay_complete: bool,
+) -> (Option<String>, Option<u64>) {
+    let mut model = None;
+    let mut calls = 0u64;
+    for event in events {
+        match event {
+            SessionEvent::SessionManifest {
+                current_model_id: Some(id),
+                ..
+            } => model = Some(id.clone()),
+            SessionEvent::AgentToolCall { .. } => calls += 1,
+            _ => {}
+        }
+    }
+    (model, replay_complete.then_some(calls))
 }
 
 fn held_state(state: &SessionState) -> SessionTaskState {
@@ -80,15 +143,11 @@ fn notification_state(status: SubagentTaskStatus) -> SessionTaskState {
     }
 }
 
-fn update_state(status: Option<&str>) -> Option<SessionTaskState> {
-    match status {
-        Some("completed") => Some(SessionTaskState::Finished),
-        Some("failed") => Some(SessionTaskState::Failed),
-        Some("cancelled") | Some("canceled") | Some("interrupted") | Some("stopped") => {
-            Some(SessionTaskState::Cancelled)
-        }
-        _ => None,
-    }
+/// Whether a tool result ends a backgrounded call: only a failed launch.
+/// Success is the launch acknowledgement; the command runs on until the
+/// provider's task notification or the session's end.
+pub(crate) fn background_launch_failed(status: Option<&str>) -> bool {
+    status == Some("failed")
 }
 
 struct Fold<'a> {
@@ -112,20 +171,25 @@ impl<'a> Fold<'a> {
             agent_at: HashMap::new(),
             commands: Vec::new(),
             command_at: HashMap::new(),
-            set_vouched: std::collections::HashSet::new(),
+            set_vouched: HashSet::new(),
         }
     }
 
     fn adopt_held(&mut self, child: &HeldChild) {
+        let state = held_state(&child.state);
+        let ended_at_ms = match state {
+            SessionTaskState::Running => None,
+            _ => child.ended_at_ms,
+        };
         let entry = SessionTask {
             id: child.id.clone(),
             kind: SessionTaskKind::Agent,
             title: truncate_title(&child.title),
-            state: held_state(&child.state),
+            state,
             session_id: self.session_id.to_string(),
             child_session_id: Some(child.id.clone()),
             started_at_ms: child.started_at_ms,
-            ended_at_ms: None,
+            ended_at_ms,
             model: child.model.clone(),
             tool_call_count: child.tool_call_count,
         };
@@ -167,6 +231,21 @@ impl<'a> Fold<'a> {
             .map(|i| &mut self.commands[i])
     }
 
+    /// End one command row from the provider's task notification: the
+    /// notification names the originating tool call, the row's own id.
+    /// Terminal rows are final, except the finish verdict below.
+    fn finish_command(&mut self, id: &str, end: SessionTaskState, ts: u64) -> bool {
+        let Some(entry) = self.command_mut(id) else {
+            return false;
+        };
+        if entry.ended_at_ms.is_some() {
+            return true;
+        }
+        entry.state = end;
+        entry.ended_at_ms = Some(ts);
+        true
+    }
+
     fn apply(&mut self, event: &SessionEvent, ts: u64) {
         match event {
             SessionEvent::AgentCreated {
@@ -198,8 +277,8 @@ impl<'a> Fold<'a> {
                 state,
                 ..
             } => {
-                // The finish verdict outranks the registry's exit-code read:
-                // a stop the human asked for is cancelled, not failed.
+                // The finish verdict outranks every other terminal read: a
+                // stop the human asked for is cancelled, not failed.
                 let Some(end) = finish_state(*state) else {
                     return;
                 };
@@ -226,8 +305,15 @@ impl<'a> Fold<'a> {
                 task_id,
                 title,
                 subagent_type,
+                is_backgrounded,
                 ..
             } => {
+                // An explicit foreground task is not background work. An
+                // absent flag is legacy: rows written before the field
+                // existed read as background, the way they always did.
+                if *is_backgrounded == Some(false) {
+                    return;
+                }
                 let title = title
                     .as_deref()
                     .or(subagent_type.as_deref())
@@ -249,13 +335,31 @@ impl<'a> Fold<'a> {
                 }
             }
             SessionEvent::AgentTaskNotification {
-                task_id, status, ..
+                task_id,
+                tool_use_id,
+                status,
+                ..
             } => {
                 let end = notification_state(*status);
                 self.set_vouched.remove(task_id);
+                if let Some(id) = tool_use_id {
+                    self.set_vouched.remove(id);
+                }
                 if let Some(entry) = self.agent_mut(task_id) {
-                    entry.state = end;
-                    entry.ended_at_ms = Some(ts);
+                    if entry.ended_at_ms.is_none() {
+                        entry.state = end;
+                        entry.ended_at_ms = Some(ts);
+                    }
+                } else {
+                    // A background shell's completion names the tool call
+                    // that launched it, by tool id or by task id.
+                    let matched = tool_use_id
+                        .as_deref()
+                        .map(|id| self.finish_command(id, end, ts))
+                        .unwrap_or(false);
+                    if !matched {
+                        self.finish_command(task_id, end, ts);
+                    }
                 }
             }
             SessionEvent::AgentBackgroundTasksChanged { tasks } => {
@@ -336,7 +440,7 @@ impl<'a> Fold<'a> {
                 self.upsert_command(SessionTask {
                     id: tool_call_id.clone(),
                     kind: SessionTaskKind::Command,
-                    title: truncate_title(line),
+                    title: command_title(line),
                     state: SessionTaskState::Running,
                     session_id: self.session_id.to_string(),
                     child_session_id: None,
@@ -351,23 +455,59 @@ impl<'a> Fold<'a> {
                 status,
                 ..
             } => {
-                let Some(end) = update_state(status.as_deref()) else {
+                let Some(index) = self.command_at.get(tool_call_id).copied() else {
                     return;
                 };
-                self.set_vouched.remove(tool_call_id);
-                if let Some(entry) = self.command_mut(tool_call_id) {
-                    entry.state = end;
-                    entry.ended_at_ms = Some(ts);
+                if self.commands[index].ended_at_ms.is_some() {
+                    return;
                 }
+                // Only a failed launch ends the row here: success is the
+                // launch acknowledgement, and the command runs on.
+                if !background_launch_failed(status.as_deref()) {
+                    return;
+                }
+                self.set_vouched.remove(tool_call_id);
+                let entry = &mut self.commands[index];
+                entry.state = SessionTaskState::Failed;
+                entry.ended_at_ms = Some(ts);
             }
             _ => {}
+        }
+    }
+
+    fn cancel_running(&mut self, end: u64) {
+        for entry in self.agents.iter_mut().chain(self.commands.iter_mut()) {
+            if entry.ended_at_ms.is_none() {
+                entry.state = SessionTaskState::Cancelled;
+                entry.ended_at_ms = Some(end);
+            }
         }
     }
 
     fn finish(mut self) -> Vec<SessionTask> {
         sort(&mut self.agents);
         sort(&mut self.commands);
-        self.agents.into_iter().chain(self.commands).collect()
+        let mut rows: Vec<SessionTask> = self.agents.into_iter().chain(self.commands).collect();
+        // Running rows are never dropped for the cap: the oldest finished
+        // rows leave first, oldest across both blocks.
+        let running = rows
+            .iter()
+            .filter(|row| row.state == SessionTaskState::Running)
+            .count();
+        let keep = TASKS_MAX_ROWS.saturating_sub(running);
+        let mut aged: Vec<(u64, String)> = rows
+            .iter()
+            .filter(|row| row.state != SessionTaskState::Running)
+            .map(|row| (row.started_at_ms, row.id.clone()))
+            .collect();
+        aged.sort();
+        let drop_ids: HashSet<String> = aged
+            .iter()
+            .take(aged.len().saturating_sub(keep))
+            .map(|(_, id)| id.clone())
+            .collect();
+        rows.retain(|row| row.state == SessionTaskState::Running || !drop_ids.contains(&row.id));
+        rows
     }
 }
 

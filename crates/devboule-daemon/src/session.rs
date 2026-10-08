@@ -1701,10 +1701,11 @@ impl SessionRegistry {
         let tasks_registry = self.clone();
         let tasks_session = runtime.session_id.clone();
         runtime.set_tasks_refresh_hook(Arc::new(move |event| {
-            tasks_registry.refresh_session_tasks(
-                &tasks_session,
-                &[(event.clone(), crate::agent_activity::wall_now_ms())],
-            );
+            let extra = event
+                .map(|event| (event.clone(), crate::agent_activity::wall_now_ms()))
+                .into_iter()
+                .collect::<Vec<_>>();
+            tasks_registry.refresh_session_tasks(&tasks_session, &extra);
         }));
     }
 

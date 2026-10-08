@@ -3,11 +3,14 @@
 
 use devboule_protocol::{
     AgentBackgroundTask, AgentTaskState, SessionEvent, SessionState, SessionTaskKind,
-    SessionTaskState, SubagentTaskStatus,
+    SessionTaskState, SubagentTaskStatus, TranscriptIntegrity,
 };
 use serde_json::json;
 
-use super::{derive_tasks, truncate_title, HeldChild, TASK_TITLE_MAX_CHARS};
+use super::{
+    background_launch_failed, command_title, derive_tasks, summarize_child, truncate_title,
+    HeldChild, TaskRow, TASKS_MAX_ROWS, TASK_TITLE_MAX_CHARS,
+};
 
 fn held(id: &str, state: SessionState) -> HeldChild {
     HeldChild {
@@ -15,6 +18,7 @@ fn held(id: &str, state: SessionState) -> HeldChild {
         title: format!("{id} title"),
         state,
         started_at_ms: 10,
+        ended_at_ms: None,
         model: Some("model-x".to_string()),
         tool_call_count: Some(4),
     }
@@ -28,15 +32,64 @@ fn ended(code: Option<u32>) -> SessionState {
     SessionState::Ended {
         generation: 1,
         code,
-        integrity: devboule_protocol::TranscriptIntegrity::Complete,
+        integrity: TranscriptIntegrity::Complete,
     }
 }
 
-fn tasks_of(
-    held: &[HeldChild],
-    journal: &[(SessionEvent, Option<u64>)],
-) -> Vec<devboule_protocol::SessionTask> {
-    derive_tasks("s.parent", held, journal)
+fn row(event: SessionEvent, ts: u64) -> TaskRow {
+    TaskRow {
+        event,
+        ts_ms: Some(ts),
+        pos: None,
+    }
+}
+
+fn tasks_of(held: &[HeldChild], journal: &[TaskRow]) -> Vec<devboule_protocol::SessionTask> {
+    derive_tasks("s.parent", held, journal, None)
+}
+
+fn background_call(id: &str) -> SessionEvent {
+    SessionEvent::AgentToolCall {
+        tool_call_id: id.to_string(),
+        title: format!("run {id}"),
+        status: "pending".to_string(),
+        kind: Some("execute".to_string()),
+        locations: None,
+        subagent_type: None,
+        parent_tool_use_id: None,
+        spawn_depth: None,
+        command: Some(format!("run {id}")),
+        exit_code: None,
+        background: Some(true),
+    }
+}
+
+fn update(id: &str, status: &str) -> SessionEvent {
+    SessionEvent::AgentToolUpdate {
+        tool_call_id: id.to_string(),
+        status: Some(status.to_string()),
+        text: None,
+        title: None,
+        kind: None,
+        locations: None,
+        parent_tool_use_id: None,
+        spawn_depth: None,
+        command: None,
+        exit_code: None,
+        replace: false,
+        images: Vec::new(),
+    }
+}
+
+fn child_finished(id: &str, state: AgentTaskState) -> SessionEvent {
+    SessionEvent::ChildFinished {
+        message_id: None,
+        child_session_id: id.to_string(),
+        display_name: "child".to_string(),
+        state,
+        note: None,
+        artifacts: Vec::new(),
+    }
 }
 
 mod derive {
@@ -55,7 +108,7 @@ mod derive {
                     "s.gone",
                     SessionState::Recovered {
                         generation: 1,
-                        integrity: devboule_protocol::TranscriptIntegrity::Unverifiable {
+                        integrity: TranscriptIntegrity::Unverifiable {
                             dropped_frames: 0,
                             dropped_bytes: 0,
                             trimmed_bytes: 0,
@@ -95,25 +148,21 @@ mod derive {
     }
 
     #[test]
+    fn a_terminal_held_child_keeps_the_registry_end_time() {
+        let mut child = held("s.child", ended(Some(0)));
+        child.ended_at_ms = Some(77);
+        let tasks = tasks_of(&[child], &[]);
+        assert_eq!(tasks[0].state, SessionTaskState::Finished);
+        assert_eq!(tasks[0].ended_at_ms, Some(77));
+    }
+
+    #[test]
     fn agents_come_first_ordered_by_start_then_id() {
-        let call = SessionEvent::AgentToolCall {
-            tool_call_id: "toolu_1".to_string(),
-            title: "sleep 60".to_string(),
-            status: "pending".to_string(),
-            kind: Some("execute".to_string()),
-            locations: None,
-            subagent_type: None,
-            parent_tool_use_id: None,
-            spawn_depth: None,
-            command: Some("sleep 60".to_string()),
-            exit_code: None,
-            background: Some(true),
-        };
         let mut second = held("s.b", live(1));
         second.started_at_ms = 5;
         let mut first = held("s.a", live(1));
         first.started_at_ms = 5;
-        let tasks = tasks_of(&[second, first], &[(call, Some(1))]);
+        let tasks = tasks_of(&[second, first], &[row(background_call("toolu_1"), 1)]);
         let ids: Vec<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         assert_eq!(ids, vec!["s.a", "s.b", "toolu_1"]);
     }
@@ -130,16 +179,29 @@ mod derive {
     }
 
     #[test]
-    fn provider_task_entries_read_as_agent_rows() {
+    fn command_titles_mask_credentials_before_the_cut() {
+        let title = command_title(
+            "curl -H 'Authorization: Bearer abcdef1234567890abcdef123456' https://h.test/x",
+        );
+        assert!(
+            !title.contains("abcdef1234567890abcdef123456"),
+            "the token must not survive redaction: {title}"
+        );
+        assert!(title.contains("curl"), "{title}");
+        assert!(title.contains("[redacted]"), "{title}");
+    }
+
+    #[test]
+    fn backgrounded_provider_tasks_read_as_agent_rows() {
         let started = SessionEvent::AgentTaskStarted {
             task_id: "task-1".to_string(),
             title: Some("Find files".to_string()),
             subagent_type: Some("explorer".to_string()),
             tool_use_id: None,
-            is_backgrounded: Some(false),
+            is_backgrounded: Some(true),
             spawn_depth: Some(1),
         };
-        let tasks = tasks_of(&[], &[(started, Some(3))]);
+        let tasks = tasks_of(&[], &[row(started, 3)]);
         assert_eq!(tasks.len(), 1);
         let task = &tasks[0];
         assert_eq!(task.kind, SessionTaskKind::Agent);
@@ -147,6 +209,34 @@ mod derive {
         assert_eq!(task.state, SessionTaskState::Running);
         assert_eq!(task.child_session_id, None);
         assert_eq!(task.model, None);
+    }
+
+    #[test]
+    fn an_explicit_foreground_task_is_not_listed() {
+        let started = SessionEvent::AgentTaskStarted {
+            task_id: "task-1".to_string(),
+            title: Some("front work".to_string()),
+            subagent_type: None,
+            tool_use_id: None,
+            is_backgrounded: Some(false),
+            spawn_depth: None,
+        };
+        let tasks = tasks_of(&[], &[row(started, 1)]);
+        assert!(tasks.is_empty(), "foreground work is not a background task");
+    }
+
+    #[test]
+    fn a_legacy_task_without_a_flag_is_still_listed() {
+        let started = SessionEvent::AgentTaskStarted {
+            task_id: "task-1".to_string(),
+            title: Some("old work".to_string()),
+            subagent_type: None,
+            tool_use_id: None,
+            is_backgrounded: None,
+            spawn_depth: None,
+        };
+        let tasks = tasks_of(&[], &[row(started, 1)]);
+        assert_eq!(tasks.len(), 1);
     }
 
     #[test]
@@ -165,68 +255,179 @@ mod derive {
                 },
             ],
         };
-        let tasks = tasks_of(&[], &[(changed, Some(3))]);
+        let tasks = tasks_of(&[], &[row(changed, 3)]);
         assert_eq!(tasks.len(), 2);
         assert_eq!(tasks[0].kind, SessionTaskKind::Agent);
         assert_eq!(tasks[1].kind, SessionTaskKind::Command);
+    }
+
+    #[test]
+    fn rows_merge_by_journal_position_not_arrival() {
+        // The trigger sorts after positioned rows even when it arrives first:
+        // the fold must answer the journal's order either way.
+        let notified = SessionEvent::AgentTaskNotification {
+            task_id: "task-1".to_string(),
+            tool_use_id: None,
+            status: SubagentTaskStatus::Completed,
+            summary: None,
+        };
+        let started = SessionEvent::AgentTaskStarted {
+            task_id: "task-1".to_string(),
+            title: Some("work".to_string()),
+            subagent_type: None,
+            tool_use_id: None,
+            is_backgrounded: Some(true),
+            spawn_depth: None,
+        };
+        let trigger_first = vec![
+            TaskRow {
+                event: notified.clone(),
+                ts_ms: Some(9),
+                pos: None,
+            },
+            TaskRow {
+                event: started.clone(),
+                ts_ms: Some(1),
+                pos: Some((1, 4)),
+            },
+            TaskRow {
+                event: notified.clone(),
+                ts_ms: Some(9),
+                pos: Some((1, 9)),
+            },
+        ];
+        let journal_first = vec![
+            TaskRow {
+                event: started,
+                ts_ms: Some(1),
+                pos: Some((1, 4)),
+            },
+            TaskRow {
+                event: notified,
+                ts_ms: Some(9),
+                pos: Some((1, 9)),
+            },
+        ];
+        let left = derive_tasks("s.parent", &[], &trigger_first, None);
+        let right = derive_tasks("s.parent", &[], &journal_first, None);
+        assert_eq!(left, right);
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].state, SessionTaskState::Finished);
+    }
+
+    #[test]
+    fn the_list_is_capped_by_dropping_the_oldest_finished_first() {
+        let mut rows = vec![row(background_call("toolu_run"), 1)];
+        for index in 0..TASKS_MAX_ROWS {
+            let id = format!("toolu_old_{index:03}");
+            rows.push(row(background_call(&id), 2));
+            rows.push(row(update(&id, "failed"), 3));
+        }
+        let tasks = tasks_of(&[], &rows);
+        assert_eq!(tasks.len(), TASKS_MAX_ROWS);
+        assert!(
+            tasks.iter().any(|t| t.id == "toolu_run"),
+            "the running row is never dropped for the cap"
+        );
+        assert!(
+            tasks.iter().all(|t| t.id != "toolu_old_000"),
+            "the oldest finished row leaves first"
+        );
+        assert!(
+            tasks.iter().any(|t| t.id == "toolu_old_199"),
+            "the newest finished row stays"
+        );
+    }
+
+    #[test]
+    fn a_child_summary_counts_calls_only_for_a_complete_replay() {
+        let events = vec![
+            SessionEvent::SessionManifest {
+                provider_id: None,
+                current_model_id: Some("m".to_string()),
+                models: Vec::new(),
+                modes: None,
+            },
+            background_call("toolu_1"),
+        ];
+        let (model, complete) = summarize_child(&events, true);
+        assert_eq!(model.as_deref(), Some("m"));
+        assert_eq!(complete, Some(1));
+        let (_, partial) = summarize_child(&events, false);
+        assert_eq!(partial, None, "a partial replay is not a count");
+    }
+
+    #[test]
+    fn only_a_failed_launch_ends_a_background_row() {
+        assert!(background_launch_failed(Some("failed")));
+        assert!(!background_launch_failed(Some("completed")));
+        assert!(!background_launch_failed(None));
+        assert!(!background_launch_failed(Some("in_progress")));
     }
 }
 
 mod transitions {
     use super::*;
 
-    fn background_call(id: &str) -> SessionEvent {
-        SessionEvent::AgentToolCall {
-            tool_call_id: id.to_string(),
-            title: format!("run {id}"),
-            status: "pending".to_string(),
-            kind: Some("execute".to_string()),
-            locations: None,
-            subagent_type: None,
-            parent_tool_use_id: None,
-            spawn_depth: None,
-            command: Some(format!("run {id}")),
-            exit_code: None,
-            background: Some(true),
-        }
-    }
-
-    fn update(id: &str, status: &str) -> SessionEvent {
-        SessionEvent::AgentToolUpdate {
-            tool_call_id: id.to_string(),
-            status: Some(status.to_string()),
-            text: None,
-            title: None,
-            kind: None,
-            locations: None,
-            parent_tool_use_id: None,
-            spawn_depth: None,
-            command: None,
-            exit_code: None,
-            replace: false,
-            images: Vec::new(),
-        }
+    #[test]
+    fn a_launch_acknowledgement_leaves_the_command_running() {
+        let tasks = tasks_of(
+            &[],
+            &[
+                row(background_call("toolu_1"), 1),
+                row(update("toolu_1", "completed"), 2),
+            ],
+        );
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].state, SessionTaskState::Running);
+        assert_eq!(tasks[0].ended_at_ms, None);
     }
 
     #[test]
-    fn a_background_command_runs_then_ends_by_status() {
-        for (status, end) in [
-            ("completed", SessionTaskState::Finished),
-            ("failed", SessionTaskState::Failed),
-            ("cancelled", SessionTaskState::Cancelled),
-            ("interrupted", SessionTaskState::Cancelled),
-        ] {
-            let tasks = tasks_of(
-                &[],
-                &[
-                    (background_call("toolu_1"), Some(1)),
-                    (update("toolu_1", status), Some(2)),
-                ],
-            );
-            assert_eq!(tasks.len(), 1, "{status} must keep its row");
-            assert_eq!(tasks[0].state, end, "{status}");
-            assert_eq!(tasks[0].ended_at_ms, Some(2), "{status}");
-        }
+    fn a_failed_launch_ends_the_command_failed() {
+        let tasks = tasks_of(
+            &[],
+            &[
+                row(background_call("toolu_1"), 1),
+                row(update("toolu_1", "failed"), 2),
+            ],
+        );
+        assert_eq!(tasks[0].state, SessionTaskState::Failed);
+        assert_eq!(tasks[0].ended_at_ms, Some(2));
+    }
+
+    #[test]
+    fn a_notification_for_the_launching_tool_ends_the_command() {
+        // Claude's completion names the Bash tool call that launched it.
+        let notified = SessionEvent::AgentTaskNotification {
+            task_id: "task-77".to_string(),
+            tool_use_id: Some("toolu_1".to_string()),
+            status: SubagentTaskStatus::Completed,
+            summary: Some("done".to_string()),
+        };
+        let tasks = tasks_of(
+            &[],
+            &[
+                row(background_call("toolu_1"), 1),
+                row(update("toolu_1", "completed"), 2),
+                row(notified, 9),
+            ],
+        );
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].state, SessionTaskState::Finished);
+        assert_eq!(tasks[0].ended_at_ms, Some(9));
+    }
+
+    #[test]
+    fn a_notification_for_an_unknown_tool_changes_nothing() {
+        let notified = SessionEvent::AgentTaskNotification {
+            task_id: "task-77".to_string(),
+            tool_use_id: Some("toolu_9".to_string()),
+            status: SubagentTaskStatus::Completed,
+            summary: None,
+        };
+        let tasks = tasks_of(&[], &[row(notified, 9)]);
+        assert!(tasks.is_empty());
     }
 
     #[test]
@@ -236,13 +437,13 @@ mod transitions {
             panic!("a tool call");
         };
         *background = None;
-        let tasks = tasks_of(&[], &[(call, Some(1))]);
+        let tasks = tasks_of(&[], &[row(call, 1)]);
         assert!(tasks.is_empty());
     }
 
     #[test]
     fn an_update_for_an_unknown_call_changes_nothing() {
-        let tasks = tasks_of(&[], &[(update("toolu_9", "completed"), Some(2))]);
+        let tasks = tasks_of(&[], &[row(update("toolu_9", "completed"), 2)]);
         assert!(tasks.is_empty());
     }
 
@@ -250,15 +451,10 @@ mod transitions {
     fn a_child_finish_overrules_the_exit_code_read() {
         // The human stopped it: cancelled, not failed, and the row keeps the
         // registry's start, not the finish row's time.
-        let finished = SessionEvent::ChildFinished {
-            message_id: None,
-            child_session_id: "s.child".to_string(),
-            display_name: "child".to_string(),
-            state: AgentTaskState::Canceled,
-            note: None,
-            artifacts: Vec::new(),
-        };
-        let tasks = tasks_of(&[held("s.child", ended(Some(3)))], &[(finished, Some(99))]);
+        let tasks = tasks_of(
+            &[held("s.child", ended(Some(3)))],
+            &[row(child_finished("s.child", AgentTaskState::Canceled), 99)],
+        );
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].state, SessionTaskState::Cancelled);
         assert_eq!(tasks[0].started_at_ms, 10);
@@ -267,17 +463,15 @@ mod transitions {
 
     #[test]
     fn a_finish_row_names_a_closed_child_back_into_the_list() {
-        let finished = SessionEvent::ChildFinished {
-            message_id: None,
-            child_session_id: "s.closed".to_string(),
-            display_name: "archived work".to_string(),
-            state: AgentTaskState::Completed,
-            note: None,
-            artifacts: Vec::new(),
-        };
-        let tasks = tasks_of(&[], &[(finished, Some(50))]);
+        let tasks = tasks_of(
+            &[],
+            &[row(
+                child_finished("s.closed", AgentTaskState::Completed),
+                50,
+            )],
+        );
         assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0].title, "archived work");
+        assert_eq!(tasks[0].title, "child");
         assert_eq!(tasks[0].state, SessionTaskState::Finished);
         assert_eq!(tasks[0].child_session_id.as_deref(), Some("s.closed"));
     }
@@ -298,7 +492,7 @@ mod transitions {
             is_backgrounded: Some(true),
             spawn_depth: None,
         };
-        let tasks = tasks_of(&[], &[(started, Some(1)), (notified, Some(9))]);
+        let tasks = tasks_of(&[], &[row(started, 1), row(notified, 9)]);
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].title, "explorer");
         assert_eq!(tasks[0].state, SessionTaskState::Cancelled);
@@ -310,18 +504,11 @@ mod transitions {
         // The refresh hook folds the just-published row explicitly, because
         // the journal write may not be visible yet; when the row is there too,
         // the keyed fold must not double it.
-        let finished = SessionEvent::ChildFinished {
-            message_id: None,
-            child_session_id: "s.child".to_string(),
-            display_name: "child".to_string(),
-            state: AgentTaskState::Completed,
-            note: None,
-            artifacts: Vec::new(),
-        };
-        let once = tasks_of(&[held("s.child", live(1))], &[(finished.clone(), Some(7))]);
+        let finished = child_finished("s.child", AgentTaskState::Completed);
+        let once = tasks_of(&[held("s.child", live(1))], &[row(finished.clone(), 7)]);
         let twice = tasks_of(
             &[held("s.child", live(1))],
-            &[(finished.clone(), Some(7)), (finished, Some(7))],
+            &[row(finished.clone(), 7), row(finished, 7)],
         );
         assert_eq!(once, twice);
         assert_eq!(twice.len(), 1);
@@ -338,26 +525,91 @@ mod transitions {
             }],
         };
         let second = SessionEvent::AgentBackgroundTasksChanged { tasks: vec![] };
-        let tasks = tasks_of(&[], &[(first, Some(1)), (second, Some(2))]);
+        let tasks = tasks_of(&[], &[row(first, 1), row(second, 2)]);
         assert!(tasks.is_empty());
     }
 
     #[test]
     fn a_started_entry_survives_a_set_that_never_named_it() {
-        // Foreground Task entries are not set members: the replacement rule
-        // only drops what the set itself vouched for.
+        // A lifecycle of its own outlives the set: the replacement rule only
+        // drops what the set itself vouched for.
         let started = SessionEvent::AgentTaskStarted {
             task_id: "task-1".to_string(),
             title: Some("front work".to_string()),
             subagent_type: None,
             tool_use_id: None,
-            is_backgrounded: Some(false),
+            is_backgrounded: Some(true),
             spawn_depth: None,
         };
         let changed = SessionEvent::AgentBackgroundTasksChanged { tasks: vec![] };
-        let tasks = tasks_of(&[], &[(started, Some(1)), (changed, Some(2))]);
+        let tasks = tasks_of(&[], &[row(started, 1), row(changed, 2)]);
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].state, SessionTaskState::Running);
+    }
+
+    #[test]
+    fn a_parent_end_cancels_what_still_runs() {
+        let started = SessionEvent::AgentTaskStarted {
+            task_id: "task-1".to_string(),
+            title: Some("work".to_string()),
+            subagent_type: None,
+            tool_use_id: None,
+            is_backgrounded: Some(true),
+            spawn_depth: None,
+        };
+        let tasks = derive_tasks(
+            "s.parent",
+            &[held("s.child", live(1))],
+            &[row(background_call("toolu_1"), 1), row(started, 2)],
+            Some(60),
+        );
+        assert_eq!(tasks.len(), 3);
+        for task in &tasks {
+            assert_eq!(task.state, SessionTaskState::Cancelled);
+            assert_eq!(task.ended_at_ms, Some(60));
+        }
+    }
+
+    #[test]
+    fn a_replay_tail_marker_does_not_cancel_a_live_parent() {
+        // Every journal replay ends with a synthetic Exit/Recovered tail
+        // row: it is the replay talking, not the parent, so the fold must
+        // ignore it and only the explicit parent end cancels.
+        let exit = SessionEvent::Exit { code: Some(1) };
+        let recovered = SessionEvent::Recovered {
+            integrity: TranscriptIntegrity::Unverifiable {
+                dropped_frames: 0,
+                dropped_bytes: 0,
+                trimmed_bytes: 0,
+            },
+        };
+        let tasks = derive_tasks(
+            "s.parent",
+            &[held("s.child", live(1))],
+            &[
+                row(background_call("toolu_1"), 1),
+                row(exit, 55),
+                row(recovered, 56),
+            ],
+            None,
+        );
+        assert!(tasks.iter().all(|t| t.state == SessionTaskState::Running));
+    }
+
+    #[test]
+    fn a_late_update_does_not_revive_a_cancelled_row() {
+        let tasks = derive_tasks(
+            "s.parent",
+            &[],
+            &[
+                row(background_call("toolu_1"), 1),
+                row(update("toolu_1", "completed"), 9),
+            ],
+            Some(5),
+        );
+        // The ack arrived after the parent's end: the cancellation stands.
+        assert_eq!(tasks[0].state, SessionTaskState::Cancelled);
+        assert_eq!(tasks[0].ended_at_ms, Some(5));
     }
 
     #[test]
@@ -378,7 +630,7 @@ mod transitions {
             is_backgrounded: None,
             spawn_depth: None,
         };
-        let tasks = tasks_of(&[], &[(started, Some(1))]);
+        let tasks = tasks_of(&[], &[row(started, 1)]);
         assert_eq!(tasks[0].title, "Find the relevant files");
     }
 }

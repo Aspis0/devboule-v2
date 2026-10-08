@@ -1313,8 +1313,15 @@ pub enum SessionEvent {
     /// Transient like [`SessionEvent::QueueSnapshot`]: derived daemon-side
     /// on every change and once to a client that has just attached, never
     /// journaled, so an attach that missed an earlier state is repaired by
-    /// this event, never by a replay.
+    /// this event, never by a replay. Only attachments that negotiated
+    /// `session.tasks` are sent it.
+    ///
+    /// `revision` counts this session's task states from 1, so a client
+    /// drops a snapshot older than one it already applied: overlapping
+    /// derives can publish out of order, and the publisher drops anything
+    /// that is not newer than the last one it sent.
     TasksSnapshot {
+        revision: u64,
         tasks: Vec<SessionTask>,
     },
     /// Current screen state, delivered on attach instead of a replay of past

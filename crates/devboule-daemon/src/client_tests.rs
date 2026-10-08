@@ -1477,3 +1477,84 @@ fn the_roundtrip_trace_reports_the_deadline_it_expired_on() {
     assert_eq!(done[7].1, "timeout");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The same door, for the task list: a daemon from before protocol 28
+/// cannot deserialize a `SessionTasksGet` frame, so the helper refuses on
+/// the negotiated capability and the fake daemon below — which answers no
+/// request at all — sees nothing arrive.
+#[cfg(windows)]
+#[test]
+fn a_daemon_that_did_not_negotiate_tasks_is_never_sent_a_tasks_rpc() {
+    let dir = crate::test_dirs::test_temp_dir("devboule-client-tasks-cap");
+    let paths = crate::paths::RuntimePaths::from_dir(&dir);
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut listener = NamedPipeListener::bind(&paths, Arc::clone(&stop)).expect("bind");
+    let (release_tx, release_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let file = listener.accept().expect("accept");
+        let framed = Framed::new(file);
+        let _ = framed.recv::<ClientMessage>().expect("client hello");
+        framed
+            .send(&DaemonMessage::Hello(DaemonHello::plugin_backend(
+                "tasks-cap-test",
+                std::process::id(),
+            )))
+            .expect("hello reply");
+
+        let _ = release_rx.recv_timeout(Duration::from_secs(10));
+        // Bounded, so a pipe left open by a bug cannot hang the suite: an
+        // `Ok` here is a tasks RPC that should never have been sent.
+        let next = framed.recv_timeout::<ClientMessage>(Duration::from_millis(500));
+        assert!(
+            next.is_err(),
+            "a client must not send a tasks RPC to a daemon that did not advertise the capability, got {next:?}"
+        );
+    });
+
+    let connection_deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let connection = loop {
+        match crate::transport::connect(&paths) {
+            Ok(connection) => break connection,
+            Err(_) if std::time::Instant::now() < connection_deadline => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("connect: {error}"),
+        }
+    };
+    let client = super::handshake(
+        connection,
+        devboule_protocol::ClientHello::m3a(
+            super::test_owner("tasks-cap-test").expect("owner"),
+            "tasks-cap-test",
+        ),
+    )
+    .expect("handshake");
+    assert!(
+        !client
+            .hello()
+            .capabilities
+            .iter()
+            .any(|capability| capability.as_str() == devboule_protocol::caps::SESSION_TASKS),
+        "the fake daemon must not have offered the capability"
+    );
+
+    let error = client
+        .session_tasks("s.owner.1")
+        .expect_err("tasks must be refused");
+    let crate::DaemonError::Handshake(wire) = error else {
+        panic!("a capability refusal is a wire error, got {error:?}");
+    };
+    assert_eq!(
+        wire.code,
+        devboule_protocol::ErrorCode::CapabilityNotSupported
+    );
+    assert_eq!(
+        wire.message,
+        "capability 'session.tasks' was not negotiated"
+    );
+
+    let _ = release_tx.send(());
+    drop(client);
+    server.join().expect("server joins");
+    let _ = std::fs::remove_dir_all(&dir);
+}

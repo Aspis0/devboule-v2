@@ -244,6 +244,19 @@ pub(crate) struct SessionRuntime {
     /// A result for any other call cannot change the task list, so only
     /// these arm the refresh — every tool result does not re-derive it.
     background_tool_calls: Mutex<HashSet<String>>,
+    /// Task-list revisions handed out, counting from 1 per session life.
+    /// The publisher drops a snapshot that is not newer than the last one
+    /// it sent, so overlapping derives cannot leave a stale list behind.
+    tasks_revision: AtomicU64,
+    /// Last task-list derive, for the debounce window below.
+    tasks_last_refresh: Mutex<Option<Instant>>,
+    /// A trailing refresh is already scheduled: one per session at most, so
+    /// a burst inside the window costs one extra derive, not one per event.
+    tasks_trailing_pending: AtomicBool,
+    /// Wall time the process was observed dead, for task end times. Set
+    /// once, on the first observed death; a transcript hydrated from the
+    /// journal never saw its own end and keeps `None`.
+    tasks_ended_wall_ms: Mutex<Option<u64>>,
     /// Duplicated OS process handle. Queried by the shared sweeper; never a
     /// PID, which the OS may reuse after the child dies.
     pub(crate) os_handle: Mutex<Option<ProcessHandle>>,
@@ -321,8 +334,9 @@ type PermissionParkHook = Arc<dyn Fn(&SessionEvent) + Send + Sync>;
 /// The hook type, named once: the closure the registry installs to be told
 /// when this session's task list may have changed. The published event is
 /// passed so the refresh can fold it explicitly — the journal write may not
-/// be visible yet when the hook runs.
-type TasksRefreshHook = Arc<dyn Fn(&SessionEvent) + Send + Sync>;
+/// be visible yet when the hook runs. `None` is the session's own end, which
+/// carries no event: the derive reads the ended state itself.
+type TasksRefreshHook = Arc<dyn Fn(Option<&SessionEvent>) + Send + Sync>;
 
 struct AttentionHooks {
     suppressed: Arc<dyn Fn() -> bool + Send + Sync>,
@@ -532,6 +546,7 @@ impl SessionRuntime {
                 agent_backlog_bytes: 0,
                 agent_backlog_frames: 0,
                 scrollback: Scrollback::default(),
+                tasks_published_revision: 0,
                 output_closed: false,
                 process_exited: false,
                 exit_code: None,
@@ -596,6 +611,10 @@ impl SessionRuntime {
             permission_park_hook: Mutex::new(None),
             tasks_refresh_hook: Mutex::new(None),
             background_tool_calls: Mutex::new(HashSet::new()),
+            tasks_revision: AtomicU64::new(0),
+            tasks_last_refresh: Mutex::new(None),
+            tasks_trailing_pending: AtomicBool::new(false),
+            tasks_ended_wall_ms: Mutex::new(None),
             os_handle: Mutex::new(None),
             on_os_death: Mutex::new(None),
             os_death_started: AtomicBool::new(false),
@@ -1591,21 +1610,29 @@ impl SessionRuntime {
     }
 
     /// Publish this session's whole background-task list to every attached
-    /// subscriber.
+    /// subscriber that negotiated the task list, and nowhere else.
     ///
     /// Transient like the queue snapshot above — derived, never journaled,
-    /// never backlogged — but ungated: the tag is additive output-only, so a
-    /// connection that never agreed `session.tasks` reads it the way it
-    /// reads every other task tag it predates.
-    pub(crate) fn publish_tasks_snapshot(&self, tasks: Vec<SessionTask>) {
+    /// never backlogged — including its cap gate: a client that did not
+    /// offer `session.tasks` cannot parse the event and is never sent it.
+    /// A revision that is not newer than the last one sent is dropped, so
+    /// overlapping derives cannot leave a stale list behind.
+    pub(crate) fn publish_tasks_snapshot(&self, tasks: Vec<SessionTask>, revision: u64) {
         let Ok(mut stream) = self.lock_stream() else {
             return;
         };
         if stream.output_closed {
             return;
         }
-        let event = SessionEvent::TasksSnapshot { tasks };
+        if revision <= stream.tasks_published_revision {
+            return;
+        }
+        stream.tasks_published_revision = revision;
+        let event = SessionEvent::TasksSnapshot { revision, tasks };
         for attachment in stream.observers.values_mut() {
+            if !attachment.session_tasks {
+                continue;
+            }
             enqueue_agent_for_attachment(attachment, event.clone(), None);
         }
         notify_observers(&stream);
@@ -2137,9 +2164,10 @@ impl SessionRuntime {
     }
 
     /// Whether the just-published provider frame can change the task list.
-    /// Task frames always can; a background call arms its id, and only a
-    /// terminal update for an armed id fires — every ordinary tool result
-    /// costs one hash lookup and no re-derive.
+    /// Task frames always can; a background call arms its id. A result ends
+    /// a background row only on a failed launch — success is the launch
+    /// acknowledgement, and the notification that really ends it fires the
+    /// refresh on its own arm below.
     fn tasks_refresh_due(&self, event: &SessionEvent) -> bool {
         match event {
             SessionEvent::AgentTaskStarted { .. }
@@ -2160,18 +2188,7 @@ impl SessionRuntime {
                 status,
                 ..
             } => {
-                let terminal = matches!(
-                    status.as_deref(),
-                    Some(
-                        "completed"
-                            | "failed"
-                            | "cancelled"
-                            | "canceled"
-                            | "interrupted"
-                            | "stopped"
-                    )
-                );
-                terminal
+                crate::session_tasks::background_launch_failed(status.as_deref())
                     && self
                         .background_tool_calls
                         .lock()
@@ -2180,6 +2197,69 @@ impl SessionRuntime {
             }
             _ => false,
         }
+    }
+
+    /// Whether a task-list derive may run now: outside the debounce window.
+    /// Records the run, so the trailing scheduler cannot double-derive.
+    pub(crate) fn tasks_derive_due(&self) -> bool {
+        let now = Instant::now();
+        let Ok(mut last) = self.tasks_last_refresh.lock() else {
+            return true;
+        };
+        if super::session_task_list::refresh_due(*last, now) {
+            *last = Some(now);
+            return true;
+        }
+        false
+    }
+
+    /// Defer one trailing refresh to the window's end. At most one per
+    /// session is ever scheduled: the flag is set before spawning, and the
+    /// thread clears it by running the ordinary refresh path, so the last
+    /// state is always published exactly once.
+    pub(crate) fn schedule_tasks_trailing(
+        &self,
+        registry: super::SessionRegistry,
+        session_id: String,
+    ) {
+        if self.tasks_trailing_pending.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        std::thread::Builder::new()
+            .name("tasks-trailing-refresh".to_string())
+            .spawn(move || {
+                std::thread::sleep(super::session_task_list::TASKS_REFRESH_DEBOUNCE);
+                registry.clear_tasks_trailing(&session_id);
+                registry.refresh_session_tasks(&session_id, &[]);
+            })
+            .ok();
+    }
+
+    /// Clear a scheduled trailing refresh, called by the scheduled run as
+    /// it starts: a newer trigger may schedule the next one from here.
+    pub(crate) fn clear_tasks_trailing_flag(&self) {
+        self.tasks_trailing_pending.store(false, Ordering::SeqCst);
+    }
+
+    /// Test seam: forget the last derive and any scheduled trailing run, so
+    /// a test that asserts on the published snapshot derives deterministically
+    /// instead of waiting out the debounce window.
+    #[cfg(test)]
+    pub(crate) fn test_reset_tasks_throttle(&self) {
+        if let Ok(mut last) = self.tasks_last_refresh.lock() {
+            *last = None;
+        }
+        self.tasks_trailing_pending.store(false, Ordering::SeqCst);
+    }
+
+    /// The next task-list revision for this session, counting from 1.
+    pub(crate) fn next_tasks_revision(&self) -> u64 {
+        self.tasks_revision.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// The wall time the process was observed dead, when recorded.
+    pub(crate) fn tasks_ended_wall_ms(&self) -> Option<u64> {
+        self.tasks_ended_wall_ms.lock().ok().and_then(|wall| *wall)
     }
 
     pub(crate) fn accept_agent_report(
@@ -2796,7 +2876,21 @@ impl SessionRuntime {
             .ok()
             .and_then(|slot| slot.clone());
         if let Some(hook) = hook {
-            hook(event);
+            hook(Some(event));
+        }
+    }
+
+    /// Called when this session's process is observed dead: the task list
+    /// refresh runs against the ended state, cancelling what still ran.
+    /// Best effort and silent like the notify above.
+    fn notify_tasks_ended(&self) {
+        let hook = self
+            .tasks_refresh_hook
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone());
+        if let Some(hook) = hook {
+            hook(None);
         }
     }
 
@@ -3517,6 +3611,7 @@ impl SessionRuntime {
             outbound: Arc::clone(&conn.outbound),
             typed_permissions,
             session_queue: conn.session_queue_negotiated(),
+            session_tasks: conn.session_tasks_negotiated(),
             suppressed_manifest: None,
             pending: VecDeque::new(),
             pending_bytes: 0,
@@ -3781,6 +3876,18 @@ impl SessionRuntime {
         }
         notify_observers(&stream);
         drop(stream);
+        // The death wall time and the cleared launch set belong to the exit:
+        // a background command the session outlives is over, and its row
+        // ends here rather than on a result that will never arrive.
+        if let Ok(mut ended) = self.tasks_ended_wall_ms.lock() {
+            if ended.is_none() {
+                *ended = Some(crate::agent_activity::wall_now_ms());
+            }
+        }
+        if let Ok(mut armed) = self.background_tool_calls.lock() {
+            armed.clear();
+        }
+        self.notify_tasks_ended();
         self.fail_mcp_if_pending("The agent process exited before the MCP broker was ready.");
         // Child::wait returns before ConPTY EOFs. Record
         // that the process was observed, but do not freeze last_seq: drain
