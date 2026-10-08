@@ -367,7 +367,7 @@ mod derive {
 /// What a background command's title may show: credentials masked out of
 /// the line, everything else left readable.
 mod command_titles {
-    use super::command_title;
+    use super::{command_title, row, tasks_of, AgentBackgroundTask, SessionEvent};
 
     #[test]
     fn command_titles_mask_credentials_before_the_cut() {
@@ -441,6 +441,46 @@ mod command_titles {
     fn an_ordinary_command_line_is_left_alone() {
         // An everyday command must pass through redaction untouched.
         assert_eq!(command_title("git log --oneline"), "git log --oneline");
+    }
+
+    #[test]
+    fn a_background_set_title_is_redacted_for_both_kinds() {
+        // The description arrives from the provider and can hold the
+        // command line verbatim.
+        let changed = SessionEvent::AgentBackgroundTasksChanged {
+            tasks: vec![
+                AgentBackgroundTask {
+                    task_id: "task-1".to_string(),
+                    task_type: "shell".to_string(),
+                    title: "run --header \"Bearer abc123\"".to_string(),
+                },
+                AgentBackgroundTask {
+                    task_id: "task-2".to_string(),
+                    task_type: "local_agent".to_string(),
+                    title: "run --header \"Bearer abc123\"".to_string(),
+                },
+            ],
+        };
+        let tasks = tasks_of(&[], &[row(changed, 3)]);
+        assert_eq!(tasks.len(), 2);
+        for task in &tasks {
+            assert!(!task.title.contains("abc123"), "{}", task.title);
+            assert!(task.title.contains("[redacted]"), "{}", task.title);
+        }
+    }
+
+    #[test]
+    fn a_plain_background_set_title_is_left_readable() {
+        // One-sided: an ordinary description survives the pass verbatim.
+        let changed = SessionEvent::AgentBackgroundTasksChanged {
+            tasks: vec![AgentBackgroundTask {
+                task_id: "task-1".to_string(),
+                task_type: "local_agent".to_string(),
+                title: "Run the test suite".to_string(),
+            }],
+        };
+        let tasks = tasks_of(&[], &[row(changed, 3)]);
+        assert_eq!(tasks[0].title, "Run the test suite");
     }
 }
 

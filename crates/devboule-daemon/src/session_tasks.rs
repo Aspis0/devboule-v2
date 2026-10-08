@@ -72,7 +72,8 @@ pub fn derive_tasks(
     fold.finish()
 }
 
-/// A command line with credentials masked, then cut to a row. The
+/// A background row's title — a command line or a provider description —
+/// with credentials masked, then cut to a row. The
 /// two-word credential pass runs on the original string first — splitting
 /// would destroy the `Bearer SHORT` shape — then the line is split the way
 /// the process probe splits one, with shell quotes off, through the argv
@@ -372,7 +373,7 @@ impl<'a> Fold<'a> {
                     let entry = SessionTask {
                         id: task.task_id.clone(),
                         kind,
-                        title: truncate_title(&task.title),
+                        title: command_title(&task.title),
                         state: SessionTaskState::Running,
                         session_id: self.session_id.to_string(),
                         child_session_id: None,
