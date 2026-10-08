@@ -1560,9 +1560,17 @@ fn listener_rejects_overflow_and_admits_a_client_after_preauth_expiry() {
                 .as_bytes(),
             )
             .expect("overflow request");
-    overflow
-        .shutdown(Shutdown::Write)
-        .expect("overflow shutdown");
+    // The overflow is refused at the accept loop, which closes the server's
+    // side of the socket before this client finishes: on macOS the reset
+    // that draws can beat the shutdown, and ENOTCONN is then the refusal —
+    // the outcome under test — not a failure.
+    if let Err(error) = overflow.shutdown(Shutdown::Write) {
+        assert_eq!(
+            error.kind(),
+            io::ErrorKind::NotConnected,
+            "the write side closes unless the peer is already gone: {error:?}"
+        );
+    }
     thread::sleep(Duration::from_millis(100));
     let mut overflow_response = Vec::new();
     let overflow_result = overflow.read_to_end(&mut overflow_response);
