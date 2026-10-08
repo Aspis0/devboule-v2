@@ -157,6 +157,9 @@ const BOT_IDENTITY = [
   "-c",
   "user.email=devboule-bot@devboule.invalid",
 ];
+// Exactly what a release commit may change: staged, checked and restored as
+// one set.
+const RELEASE_PATHS = [...VERSION_SOURCES, "Cargo.lock", "CHANGELOG.md"];
 
 function git(args, options = {}) {
   return execFileSync("git", args, { cwd: repoRoot, encoding: "utf8", ...options });
@@ -263,6 +266,17 @@ function reviewDraft(draft, version) {
   return reviewed;
 }
 
+// Once the source writes have begun, a failure must not leave a half-written
+// release behind — every gate expects a clean tree — so the release paths go
+// back to HEAD (index included, since the failure can come after `git add`).
+function restoreReleasePaths(git) {
+  const dirty = git(["diff", "--name-only", "HEAD", "--", ...RELEASE_PATHS]).trim();
+  git(["checkout", "HEAD", "--", ...RELEASE_PATHS]);
+  console.error(
+    dirty === "" ? "the release paths were already unchanged" : `restored release paths:\n${dirty}`,
+  );
+}
+
 function runRelease(kind) {
   const canonical = readVersionOf(join(repoRoot, "src-tauri/tauri.conf.json"));
   const next = bumpVersion(canonical, kind);
@@ -311,38 +325,56 @@ function runRelease(kind) {
   // The reviewed block is settled before any tracked file is touched.
   const reviewed = reviewDraft(makeChangelogSection(next, utcDate(), commits), next);
 
-  for (const source of VERSION_SOURCES) {
-    writeVersionTo(join(repoRoot, source), next);
-  }
-  writeFileSync(
-    CHANGELOG_PATH,
-    insertChangelogSection(readFileSync(CHANGELOG_PATH, "utf8"), reviewed),
-  );
-
-  execFileSync("cargo", ["update", "--workspace", "--offline"], {
-    cwd: repoRoot,
-    stdio: "inherit",
-  });
-
-  const written = findVersionDrift(readSourceVersions(), next);
-  if (written.length > 0) {
-    throw new Error(`sources did not all land on ${next}: ${written.join(", ")}`);
-  }
-  const lock = parseCargoLockVersions(readFileSync(CARGO_LOCK_PATH, "utf8"));
-  const lockVersions = {};
-  for (const name of LOCK_PACKAGES) {
-    lockVersions[name] = lock[name];
-  }
-  const lockDrift = findVersionDrift(lockVersions, next);
-  if (lockDrift.length > 0) {
-    throw new Error(`Cargo.lock did not all land on ${next}: ${lockDrift.join(", ")}`);
-  }
-  git(["diff", "--check"]);
-
   const subject = `Release ${tag}`;
-  git(["add", "--", ...VERSION_SOURCES, "Cargo.lock", "CHANGELOG.md"]);
-  git([...BOT_IDENTITY, "commit", "-m", subject]);
-  git([...BOT_IDENTITY, "tag", "-a", tag, "-m", subject]);
+  try {
+    for (const source of VERSION_SOURCES) {
+      writeVersionTo(join(repoRoot, source), next);
+    }
+    writeFileSync(
+      CHANGELOG_PATH,
+      insertChangelogSection(readFileSync(CHANGELOG_PATH, "utf8"), reviewed),
+    );
+
+    execFileSync("cargo", ["update", "--workspace", "--offline"], {
+      cwd: repoRoot,
+      stdio: "inherit",
+    });
+
+    const written = findVersionDrift(readSourceVersions(), next);
+    if (written.length > 0) {
+      throw new Error(`sources did not all land on ${next}: ${written.join(", ")}`);
+    }
+    const lock = parseCargoLockVersions(readFileSync(CARGO_LOCK_PATH, "utf8"));
+    const lockVersions = {};
+    for (const name of LOCK_PACKAGES) {
+      lockVersions[name] = lock[name];
+    }
+    const lockDrift = findVersionDrift(lockVersions, next);
+    if (lockDrift.length > 0) {
+      throw new Error(`Cargo.lock did not all land on ${next}: ${lockDrift.join(", ")}`);
+    }
+    git(["diff", "--check"]);
+
+    git(["add", "--", ...RELEASE_PATHS]);
+    git([...BOT_IDENTITY, "commit", "-m", subject]);
+  } catch (error) {
+    try {
+      restoreReleasePaths(git);
+    } catch (restoreError) {
+      console.error(`restoring the release paths failed: ${restoreError.message}`);
+    }
+    throw error;
+  }
+
+  const sha = git(["rev-parse", "HEAD"]).trim();
+  try {
+    git([...BOT_IDENTITY, "tag", "-a", tag, "-m", subject]);
+  } catch (error) {
+    console.error(`the release commit ${sha} exists, but the ${tag} tag was not created.`);
+    console.error(`retry the tag:  git tag -a ${tag} -m "${subject}" ${sha}`);
+    console.error(`or drop it:     git reset --hard origin/main`);
+    throw error;
+  }
 
   // One atomic push: if main moved since the preflight, the tag must not
   // reach the remote on its own without the commit that labels.
