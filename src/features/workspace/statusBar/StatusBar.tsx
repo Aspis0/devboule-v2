@@ -16,6 +16,8 @@ export interface FocusedAgent {
   /** The attention the roster raised ("Needs your approval"), when there is one. */
   attentionWord: string | null;
   working: boolean;
+  /** A silent wire reads Quiet, the same word the session's chip shows. */
+  quiet: boolean;
 }
 
 interface StatusBarProps {
@@ -75,7 +77,8 @@ export function StatusBar({ agent, daemon, progress = null }: StatusBarProps) {
   const state =
     agent === null
       ? null
-      : (agent.attentionWord ?? (agent.working ? (reading?.task ?? "working") : "idle"));
+      : (agent.attentionWord ??
+        (agent.quiet ? "Quiet" : agent.working ? (reading?.task ?? "working") : "idle"));
   const stateTone =
     agent === null
       ? "border"

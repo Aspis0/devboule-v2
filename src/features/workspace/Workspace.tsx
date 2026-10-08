@@ -1149,7 +1149,8 @@ export function Workspace({
           sessionId: paneSession.id,
           title: sessionTitle(paneSession),
           attentionWord: sessionAttentionLabel(paneSession),
-          working: paneSession.activity === "working",
+          working: paneSession.activity === "working" && paneSession.state.type !== "silent",
+          quiet: paneSession.state.type === "silent",
         }
       : null;
   const statusProgress = sessionCreating

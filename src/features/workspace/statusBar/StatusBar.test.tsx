@@ -27,6 +27,7 @@ const AGENT = {
   title: "Tighten handoff summary",
   attentionWord: null,
   working: true,
+  quiet: false,
 };
 
 let host: HTMLDivElement | null = null;
@@ -80,6 +81,21 @@ describe("the status bar", () => {
     const bar = await render(<StatusBar agent={{ ...AGENT, working: false }} daemon={DAEMON} />);
     expect(bar.querySelector(".status-bar-who")?.textContent).toBe(
       "Tighten handoff summary — idle",
+    );
+  });
+
+  it("says Quiet for a silent wire, the word its chip shows, even while the agent is on a step", async () => {
+    await act(async () =>
+      publishAgentReading("bar-agent", {
+        usage: null,
+        manifest: null,
+        lastFinished: null,
+        task: "running tests",
+      }),
+    );
+    const bar = await render(<StatusBar agent={{ ...AGENT, quiet: true }} daemon={DAEMON} />);
+    expect(bar.querySelector(".status-bar-who")?.textContent).toBe(
+      "Tighten handoff summary — Quiet",
     );
   });
 
