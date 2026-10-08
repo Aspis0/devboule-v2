@@ -42,6 +42,7 @@ export function modeDotClass(modeId: string): string {
 interface PickerOption {
   id: string;
   name: string;
+  /** Kept off the row text: it reaches the hover title and the accessible description. */
   description?: string;
 }
 
@@ -256,6 +257,8 @@ export function PickerChip({
               key={option.id}
               aria-selected={option.id === currentId}
               data-testid={optionTestId(option.id)}
+              title={option.description || undefined}
+              aria-description={option.description || undefined}
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => {
                 onSelect(option.id);
@@ -263,9 +266,6 @@ export function PickerChip({
               }}
             >
               <span className="workspace-mode-name">{option.name}</span>
-              {option.description ? (
-                <span className="workspace-mode-description">{option.description}</span>
-              ) : null}
             </button>
           ))}
         </div>

@@ -1,10 +1,11 @@
 // The picker menu rows' look contract (SPEC-tokens type ramp): h28 rows, the
-// name at 13 px, the meta line at 12 px, the UI font — nothing below 12 px in
-// this sheet. The size cases read the real stylesheets through cssProof in
-// both themes; the render cases prove long names and descriptions reach the
-// rows they restyle, and that the menu scrolls its own box to the current row
-// on open and to the focused row on arrow keys. The menu's side and cap
-// (menuPlacement) are pinned in PickerChip.placement.test.tsx. happy-dom
+// name at 13 px, the UI font — nothing below 12 px in this sheet. The size
+// cases read the real stylesheets through cssProof in both themes. The render
+// cases prove long names reach the rows they restyle, that a description sits
+// in its row's title and accessible description and not in the visible text,
+// and that the menu scrolls its
+// own box to the current row on open and to the focused row on arrow keys. The
+// menu's side and cap (menuPlacement) are pinned in PickerChip.placement.test.tsx. happy-dom
 // does no layout, so pixel fit is not asserted here — it is listed as
 // unverified in CODER-REPORT-look-calls.md.
 // @vitest-environment happy-dom
@@ -27,10 +28,9 @@ const SHEETS = [
 const UI_FONT = 'font-family: "Inter", system-ui, sans-serif';
 
 describe("the picker menu rows' sizes", () => {
-  it.each(["light", "dark"] as const)("%s: the name is 13px, the meta line 12px", (theme) => {
+  it.each(["light", "dark"] as const)("%s: the name is 13px", (theme) => {
     const css = assembleCssProof(SHEETS, theme);
     expect(css.rulesFor(".workspace-mode-name")).toContain("font-size: 13px");
-    expect(css.rulesFor(".workspace-mode-description")).toContain("font-size: 12px");
   });
 
   it.each(["light", "dark"] as const)("%s: rows are h28 in the UI font", (theme) => {
@@ -58,8 +58,8 @@ describe("the picker menu rows' sizes", () => {
   it("lets rows keep their height so the menu scrolls instead of squashing them", () => {
     const css = assembleCssProof(SHEETS);
     // A flex column shrinks its items before it scrolls: without flex:none
-    // the rows compress toward min-height and each meta line overprints the
-    // next row's name. happy-dom does no layout, so the overprint itself is
+    // the rows compress toward min-height and a wrapped name overprints the
+    // next row. happy-dom does no layout, so the overprint itself is
     // unverified — see CODER-REPORT-look-calls.md.
     expect(css.rulesFor(".workspace-mode-option")).toContain("flex: none");
     expect(css.rulesFor(".workspace-mode-menu")).toContain("overflow-y: auto");
@@ -210,8 +210,9 @@ describe("the picker menu rows' content", () => {
     document.body.innerHTML = "";
   });
 
-  it("shows long names and descriptions in the open menu", async () => {
+  it("shows long names in the open menu and keeps descriptions in each row's title and accessible description", async () => {
     const longName = "qwen3.5-4b-instruct-2507-extra-long-variant-name-for-width";
+    const defaultDescription = "The default everyday model · 200,000 tokens";
     const container = document.createElement("div");
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -220,12 +221,10 @@ describe("the picker menu rows' content", () => {
         <PickerChip
           label="Model"
           options={[
-            {
-              id: "m1",
-              name: longName,
-              description: "The default everyday model · 200,000 tokens",
-            },
+            { id: "m1", name: longName, description: defaultDescription },
             { id: "high", name: "High", description: "Reasons longer before answering" },
+            { id: "plain", name: "Plain" },
+            { id: "blank", name: "Blank", description: "" },
           ]}
           currentId="m1"
           onSelect={() => undefined}
@@ -240,11 +239,21 @@ describe("the picker menu rows' content", () => {
 
     const menu = container.querySelector(".workspace-mode-menu");
     if (menu === null) throw new Error("picker menu did not open");
-    expect(menu.querySelector(".workspace-mode-name")?.textContent).toBe(longName);
-    expect(menu.querySelector(".workspace-mode-description")?.textContent).toContain(
-      "200,000 tokens",
+    const option = (id: string) =>
+      container.querySelector<HTMLButtonElement>(`[data-testid="model-option-${id}"]`);
+    expect(option("m1")?.textContent).toBe(longName);
+    expect(option("m1")?.title).toBe(defaultDescription);
+    expect(option("m1")?.getAttribute("aria-description")).toBe(defaultDescription);
+    expect(option("high")?.title).toBe("Reasons longer before answering");
+    expect(option("high")?.getAttribute("aria-description")).toBe(
+      "Reasons longer before answering",
     );
-    expect(menu.textContent).toContain("Reasons longer before answering");
+    for (const id of ["plain", "blank"]) {
+      expect(option(id)?.hasAttribute("title")).toBe(false);
+      expect(option(id)?.hasAttribute("aria-description")).toBe(false);
+    }
+    expect(menu.textContent).not.toContain("200,000 tokens");
+    expect(menu.textContent).not.toContain("Reasons longer before answering");
 
     await act(async () => root.unmount());
   });

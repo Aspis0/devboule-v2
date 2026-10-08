@@ -1080,7 +1080,7 @@ describe("AgentChatSurface", () => {
     expect(container.querySelector('[data-testid="mode-chip"]')).toBeNull();
   });
 
-  it("shows the current mode on the chip and lists every mode with its description", async () => {
+  it("shows the current mode on the chip and lists every mode by name, description off the text", async () => {
     root = createRoot(container);
     await act(async () => {
       root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
@@ -1103,8 +1103,14 @@ describe("AgentChatSurface", () => {
     expect(options).toHaveLength(3);
     expect(options[0].getAttribute("aria-selected")).toBe("true");
     expect(options[1].getAttribute("aria-selected")).toBe("false");
-    expect(menu?.textContent).toContain("Plan without touching files");
-    expect(menu?.textContent).toContain("Apply file edits without asking");
+    expect(menu?.textContent).toContain("Plan");
+    expect(menu?.textContent).toContain("Accept edits");
+    expect(menu?.textContent).not.toContain("Plan without touching files");
+    expect(menu?.textContent).not.toContain("Apply file edits without asking");
+    expect(options[1].getAttribute("title")).toBe("Plan without touching files");
+    expect(options[1].getAttribute("aria-description")).toBe("Plan without touching files");
+    expect(options[2].getAttribute("title")).toBe("Apply file edits without asking");
+    expect(options[2].getAttribute("aria-description")).toBe("Apply file edits without asking");
   });
 
   it("shows and switches plan mode only after the provider declares it", async () => {

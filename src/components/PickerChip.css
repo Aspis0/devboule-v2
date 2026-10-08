@@ -93,10 +93,9 @@
 .workspace-mode-option {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
   width: 100%;
   /* A flex column shrinks its rows before it scrolls: without this the rows
-     compress and each meta line overprints the next row instead of scrolling. */
+     compress and a wrapped name overprints the next row instead of scrolling. */
   flex: none;
   min-height: var(--control-default);
   padding: var(--space-6) var(--space-8);
@@ -126,10 +125,4 @@
   font-size: var(--type-small);
   /* 6 px padding top and bottom plus this 16 px line box is exactly 28. */
   line-height: 16px;
-}
-
-.workspace-mode-description {
-  color: var(--silence);
-  font-size: var(--type-meta);
-  line-height: var(--leading-dense);
 }
