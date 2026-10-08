@@ -106,7 +106,8 @@ describe("turn rail computed styles", () => {
     expect(getComputedStyle(on.aux).marginLeft).toBe("32px");
     expect(getComputedStyle(on.track).paddingLeft).toBe("20px");
     expect(getComputedStyle(on.track).maxWidth).toBe("1060px");
-    expect(getComputedStyle(on.composer).paddingLeft).toBe("52px");
+    // happy-dom keeps the calc() unresolved; a browser resolves it to 52 px.
+    expect(getComputedStyle(on.composer).paddingLeft).toBe("calc(20px + 32px)");
     on.shell.remove();
   });
 
