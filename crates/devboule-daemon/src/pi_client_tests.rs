@@ -1518,13 +1518,14 @@ fn a_frame_without_entries_is_the_text_only_frame() {
 #[test]
 fn pi_steer_frame_is_byte_exact_and_has_literal_empty_images() {
     // The frame `request` writes for a steer: the id it mints, the command,
-    // then the fields — with the literal empty `images` array Pi's own
-    // `steer(text, images)` sends, deliberately unlike `pi_prompt_frame`,
-    // which omits `images` when it carries none.
+    // then the fields. Pi's RPC `steer` case reads the text from `message`
+    // (its `command.message`), and the literal empty `images` array is what
+    // its own client sends, deliberately unlike `pi_prompt_frame`, which
+    // omits `images` when it carries none.
     assert_eq!(
         serde_json::to_vec(&pi_control_frame("c-1", "steer", pi_steer_fields("hello")))
             .expect("frame"),
-        br#"{"id":"c-1","type":"steer","text":"hello","images":[]}"#
+        br#"{"id":"c-1","type":"steer","message":"hello","images":[]}"#
     );
     assert!(pi_prompt_frame("p-test", "hello", &[])
         .get("images")
@@ -1594,6 +1595,33 @@ process.stdin.on("data", (chunk) => {
         received: line,
       }) + "\n"
     );
+  }
+});
+"#;
+
+/// A Pi that takes a steer the way its RPC handler does: the command's
+/// `message` field is the text, and its first read is a string method. A
+/// frame that names the text anything else throws the TypeError pi answers
+/// in place of a steer response.
+const FAKE_PI_STEER_LIKE_REAL: &str = r#"
+let buffered = "";
+process.stdin.on("data", (chunk) => {
+  buffered += chunk;
+  let index;
+  while ((index = buffered.indexOf("\n")) >= 0) {
+    const line = buffered.slice(0, index);
+    buffered = buffered.slice(index + 1);
+    const frame = JSON.parse(line);
+    let answer;
+    try {
+      frame.message.startsWith("/");
+      answer = { id: frame.id, type: "response", command: "steer", success: true,
+                 data: { disposition: "queued" }, received: line };
+    } catch (error) {
+      answer = { id: frame.id, type: "response", command: "steer", success: false,
+                 error: error.message, received: line };
+    }
+    process.stdout.write(JSON.stringify(answer) + "\n");
   }
 });
 "#;
@@ -1853,8 +1881,30 @@ fn a_pi_that_takes_the_steer_is_steered_with_the_frame_the_round_trip_wrote() {
     // id that correlates the answer, and the steer's own fields follow it.
     assert_eq!(
         answers[0]["received"].as_str(),
-        Some(r#"{"id":"c-1","type":"steer","text":"hello","images":[]}"#)
+        Some(r#"{"id":"c-1","type":"steer","message":"hello","images":[]}"#)
     );
+}
+
+#[test]
+fn a_steer_frame_carries_the_message_field_pi_s_handler_reads() {
+    if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+        eprintln!("{reason}");
+        return;
+    }
+    let pi = fake_pi_answering(FAKE_PI_STEER_LIKE_REAL);
+    let mut steerer = PiSteerer {
+        control: Arc::clone(&pi.control),
+    };
+    assert!(
+        matches!(
+            steer_through_the_turn(&mut steerer, "hello"),
+            Some(Ok(true))
+        ),
+        "pi's own steer handler must take the frame"
+    );
+    let answers = pi.answers();
+    assert_eq!(answers.len(), 1);
+    assert_eq!(answers[0]["success"], serde_json::json!(true));
 }
 
 #[test]
