@@ -147,7 +147,12 @@ export async function launchApp({
     cwd: runtimeDir,
     env: {
       ...process.env,
-      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}`,
+      // An `e2e-cdp` build reads this and hands the port to WebView2 as the
+      // window's own browser arguments. The environment variable WebView2 is
+      // supposed to read instead was measured NOT reaching the browser on the
+      // CI runner (0 of 6 processes carried the flag), while the explicit
+      // argument does.
+      DEVBOULE_E2E_CDP_PORT: String(port),
       // The browser's user data folder, outside the runtime dir: another
       // Devboule running on the machine must not share the browser process, and
       // this path is also what proves ownership at teardown.
@@ -236,7 +241,10 @@ export async function stopApp({ appPid, runtimeDir, webviewDir }) {
   for (const [name, pid] of targets) {
     if (await waitForDeath(pid, 20_000)) continue;
     killTree(pid);
-    if (!(await waitForDeath(pid, 20_000))) stubborn.push(`${name} ${pid}`);
+    // The second wait is longer than the first: a WebView2 process under load
+    // was measured outliving a 20 s second wait, and this is the run's last
+    // chance to leave the machine as it found it.
+    if (!(await waitForDeath(pid, 30_000))) stubborn.push(`${name} ${pid}`);
   }
   return { gone: stubborn.length === 0, daemonPid, browserPids, stubborn };
 }

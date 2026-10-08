@@ -205,7 +205,15 @@ async function shutdown() {
   // The CDP socket is a live handle: left open, it holds the process after the
   // last check and a CI step waits out its whole timeout on a finished run.
   state.session?.close();
-  if (!keep) rmSync(workRoot, { recursive: true, force: true });
+  if (!keep) {
+    try {
+      rmSync(workRoot, { recursive: true, force: true });
+    } catch (error) {
+      // A browser process still holding the profile can refuse the removal;
+      // that is a note, not a reason for the run to die after its report.
+      console.log(`note: the run's temp dir was left behind (${String(error?.message ?? error)})`);
+    }
+  }
   return state.stopped;
 }
 

@@ -15,6 +15,13 @@ crate-type = ["lib", "cdylib", "staticlib"]
 name = "devboule"
 path = "src/main.rs"
 
+[features]
+# The e2e smoke's CDP port: when the feature is on AND DEVBOULE_E2E_CDP_PORT
+# names a port at launch, `e2e_cdp` appends --remote-debugging-port to every
+# window's browser arguments. Serves nothing else and is off in release,
+# installer and every other build.
+e2e-cdp = []
+
 [build-dependencies]
 tauri-build = { version = "=2.6.3", features = ["config-json5"] }
 

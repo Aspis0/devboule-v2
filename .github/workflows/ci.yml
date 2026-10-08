@@ -326,12 +326,16 @@ jobs:
       # and the windows job's cache holds this profile. `tauri/custom-protocol`
       # is what `tauri build` turns on so the app serves the embedded `dist`;
       # without it a plain cargo build serves `devUrl` and needs the vite dev
-      # server. The daemon is built beside the app because the app discovers it
+      # server. `devboule/e2e-cdp` is the app crate's own off-by-default
+      # feature: it only adds the window's CDP arguments (the environment
+      # variable WebView2 is supposed to read never reached the browser on this
+      # runner), it touches no other crate, and the restored fingerprints stay
+      # valid. The daemon is built beside the app because the app discovers it
       # as a sibling — the same rule the installer's bundle follows.
       # `--workspace`, not `-p`: see the job comment above.
       - name: Build the app and the daemon
         timeout-minutes: 20
-        run: cargo build --workspace --locked --features tauri/custom-protocol
+        run: cargo build --workspace --locked --features tauri/custom-protocol,devboule/e2e-cdp
 
       - name: Run the desktop smoke
         timeout-minutes: 8

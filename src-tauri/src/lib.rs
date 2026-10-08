@@ -5,6 +5,8 @@ mod browser;
 mod client;
 mod close_flow;
 mod close_prompt;
+#[cfg(feature = "e2e-cdp")]
+mod e2e_cdp;
 #[cfg(test)]
 mod nsis_template_pin;
 mod oracle;
@@ -28,6 +30,12 @@ fn app_identity(app: tauri::AppHandle) -> String {
 }
 
 pub fn run() {
+    // The smoke's CDP port, when this is an `e2e-cdp` build and the launch
+    // named one; every other build reaches the builder with the config as it
+    // was written (`e2e_cdp`).
+    let mut context = tauri::generate_context!();
+    #[cfg(feature = "e2e-cdp")]
+    e2e_cdp::declare_cdp_port(&mut context);
     let builder = plugins::assets::register(tauri::Builder::default());
     builder
         .manage(client::DaemonBridge::start())
@@ -248,7 +256,7 @@ pub fn run() {
                 close_flow::on_close_requested(window, api);
             }
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building Devboule")
         .run(|app_handle, event| match event {
             tauri::RunEvent::Exit => {

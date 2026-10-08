@@ -180,6 +180,15 @@ export async function typeInto(session, selector, text, timeoutMs = 10_000) {
  * pointer path does it: the sliver opens the band, the band's point switches
  * the surface, and the surface root is the assertion that the click landed.
  */
+/**
+ * Open the crescent navigation and pick a surface, the way the app's own
+ * pointer path does it: the sliver opens the band, the band's point switches
+ * the surface, and the surface root is the assertion that the click landed.
+ *
+ * The band shifts the page while it opens, so a point read mid-animation is a
+ * point the pointer no longer lands on — the click is retried once, against the
+ * surface it is supposed to produce rather than against the coordinates.
+ */
 export async function selectSurface(session, key, surfaceSelector) {
   await click(session, ".crescent-sliver");
   await requireSelector(
@@ -188,6 +197,18 @@ export async function selectSurface(session, key, surfaceSelector) {
     15_000,
     "the surface navigation did not open",
   );
-  await click(session, `[data-surface-key="${key}"]`);
-  await requireSelector(session, surfaceSelector, 20_000, `the ${key} surface did not render`);
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    await click(session, `[data-surface-key="${key}"]`);
+    if (await selectorPresent(session, surfaceSelector, attempt === 1 ? 10_000 : 20_000)) return;
+    if (attempt === 1 && !(await selectorPresent(session, ".crescent-nav-open", 1_000))) {
+      await click(session, ".crescent-sliver");
+      await requireSelector(
+        session,
+        ".crescent-nav-open",
+        15_000,
+        "the surface navigation did not open",
+      );
+    }
+  }
+  throw new Error(`the ${key} surface did not render`);
 }
