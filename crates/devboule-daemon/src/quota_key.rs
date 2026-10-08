@@ -4,6 +4,7 @@
 //! only as the Authorization header of that request.
 
 use std::fmt;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -82,12 +83,37 @@ fn home_dir() -> Option<PathBuf> {
     std::env::var_os(name).map(PathBuf::from)
 }
 
+/// The key in Pi's `auth.json`, read only from a plain file that fits the cap.
+///
+/// `symlink_metadata` asks what the name is, not what it points at: a link, a
+/// folder, or a dangling name is refused before a byte is read, so a
+/// credential planted at the name never travels as this daemon's own. The
+/// Windows attribute covers the reparse tags `FileType` does not call a
+/// symlink, a junction among them.
+///
+/// The read stops one byte past the cap: an oversized file is refused whole,
+/// never truncated into a shorter document that could still parse.
 fn key_from_auth_file(path: &Path) -> Option<ApiKey> {
-    let metadata = std::fs::metadata(path).ok()?;
-    if metadata.len() > MAX_AUTH_BYTES {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.file_type().is_file() {
         return None;
     }
-    let text = std::fs::read_to_string(path).ok()?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // FILE_ATTRIBUTE_REPARSE_POINT: the attribute every Windows link
+        // carries, including the junction tag `FileType` has no name for.
+        if meta.file_attributes() & 0x400 != 0 {
+            return None;
+        }
+    }
+    let file = std::fs::File::open(path).ok()?;
+    let mut text = String::new();
+    let mut capped = file.take(MAX_AUTH_BYTES + 1);
+    let read = capped.read_to_string(&mut text).ok()?;
+    if read as u64 > MAX_AUTH_BYTES {
+        return None;
+    }
     key_from_auth_text(&text)
 }
 

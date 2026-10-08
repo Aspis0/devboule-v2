@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use super::{opencode_key, pi_auth_path, ApiKey, KeySources};
+use super::{opencode_key, pi_auth_path, ApiKey, KeySources, MAX_AUTH_BYTES};
 
 /// A fresh home folder under the temp dir, holding a fixture `auth.json` when
 /// the test gives one.
@@ -47,6 +47,15 @@ fn sources<'a>(env: &'a dyn Fn(&str) -> Option<String>, home: Option<&Home>) -> 
 
 fn text(key: &ApiKey) -> String {
     key.bearer().trim_start_matches("Bearer ").to_string()
+}
+
+/// A valid `auth.json` body padded with spaces to exactly `total` bytes, for
+/// a fixture that sits on either side of the read cap.
+fn padded_auth(prefix: &str, total: usize) -> String {
+    let mut body = prefix.to_string();
+    assert!(body.len() <= total, "the prefix outgrows the fixture");
+    body.push_str(&" ".repeat(total - body.len()));
+    body
 }
 
 #[test]
@@ -125,4 +134,50 @@ fn a_key_never_shows_its_text_in_debug_output() {
     let shown = format!("{key:?}");
     assert_eq!(shown, "ApiKey(redacted)");
     assert!(!shown.contains("secret-text-value"));
+}
+
+#[test]
+fn oversized_auth_file_is_refused() {
+    let body = padded_auth(
+        r#"{"opencode":{"type":"api_key","key":"file-key"}}"#,
+        (MAX_AUTH_BYTES + 1) as usize,
+    );
+    let home = Home::new("oversized", Some(body.as_str()));
+    assert!(opencode_key(&sources(&no_env, Some(&home))).is_none());
+}
+
+#[test]
+fn a_file_just_under_the_cap_still_yields_the_key() {
+    let body = padded_auth(
+        r#"{"opencode":{"type":"api_key","key":"file-key"}}"#,
+        (MAX_AUTH_BYTES - 64) as usize,
+    );
+    let home = Home::new("under-cap", Some(body.as_str()));
+    let key = opencode_key(&sources(&no_env, Some(&home))).expect("a key");
+    assert_eq!(text(&key), "file-key");
+}
+
+#[test]
+fn symlink_auth_file_is_refused() {
+    let home = Home::new("symlink", None);
+    let link = pi_auth_path(&home.0);
+    fs::create_dir_all(link.parent().expect("a parent")).expect("fixture dir");
+    let body = r#"{"opencode":{"type":"api_key","key":"file-key"}}"#;
+    let target = home.0.join("real-auth.json");
+    fs::write(&target, body).expect("fixture target");
+    #[cfg(unix)]
+    {
+        if let Err(error) = std::os::unix::fs::symlink(&target, &link) {
+            eprintln!("skipped: this machine would not make the link ({error})");
+            return;
+        }
+    }
+    #[cfg(windows)]
+    {
+        if let Err(error) = std::os::windows::fs::symlink_file(&target, &link) {
+            eprintln!("skipped: this machine would not make the link ({error})");
+            return;
+        }
+    }
+    assert!(opencode_key(&sources(&no_env, Some(&home))).is_none());
 }
