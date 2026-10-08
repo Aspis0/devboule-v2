@@ -34,7 +34,7 @@ function tool(id: string, output: string): AgentChatItem {
 }
 
 function assistant(id: string, text: string): AgentChatItem {
-  return { id, role: "assistant", text };
+  return { id, role: "assistant", text, messageId: null };
 }
 
 function Transcript({ items }: { items: AgentChatItem[] }) {
