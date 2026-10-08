@@ -26,8 +26,8 @@ const FINISHED: AgentFinished = {
 let container: HTMLDivElement;
 let root: Root;
 
-async function render(finished: AgentFinished | null): Promise<void> {
-  await act(async () => root.render(<TurnFooter finished={finished} />));
+async function render(finished: AgentFinished | null, providerId?: string): Promise<void> {
+  await act(async () => root.render(<TurnFooter finished={finished} providerId={providerId} />));
 }
 
 function disclosure(): HTMLDetailsElement | null {
@@ -50,22 +50,23 @@ afterEach(async () => {
 });
 
 describe("the turn footer's short line", () => {
-  it("takes no row at all for a normally finished turn", async () => {
-    await render({ ...FINISHED, stopReason: "end_turn" });
-    expect(container.textContent).toBe("");
+  it("names no stop reason for a normally finished turn", async () => {
+    for (const stopReason of ["end_turn", "completed", "stop"]) {
+      await render({ ...FINISHED, stopReason });
+      expect(container.querySelector(".turn-footer-line")).toBeNull();
+    }
+  });
 
-    await render({ ...FINISHED, stopReason: "completed" });
+  it("takes no row at all for a normal end without usage", async () => {
+    await render({ stopReason: "stop" });
     expect(container.textContent).toBe("");
   });
 
-  it("names the stop reason and the cost, and not the model the composer already shows", async () => {
+  it("names only the stop reason for an abnormal end, and not the cost", async () => {
     await render(FINISHED);
 
-    expect(container.querySelector(".turn-footer-line")?.textContent).toBe(
-      "stopped: error · $0.0055",
-    );
-    // The accounting sits in the disclosure, not in the line at a glance.
-    expect(container.querySelector(".turn-footer-line")?.textContent).not.toContain("20,753");
+    expect(container.querySelector(".turn-footer-line")?.textContent).toBe("stopped: error");
+    expect(container.querySelector(".turn-footer-line")?.textContent).not.toContain("$");
   });
 
   it("keeps a cancelled or maxed-out turn's row", async () => {
@@ -103,7 +104,7 @@ describe("the turn footer's token disclosure", () => {
     expect(disclosure()?.querySelector(".turn-footer-detail-copy")).not.toBeNull();
   });
 
-  it("lists every token and cache figure once opened", async () => {
+  it("lists every token and cache figure, then the cost, once opened", async () => {
     await render(FINISHED);
 
     const details = disclosure();
@@ -113,8 +114,16 @@ describe("the turn footer's token disclosure", () => {
     });
 
     expect(details.querySelector(".turn-footer-detail-copy")?.textContent).toBe(
-      "in 20,753 · out 30 · cached 6,016 · cache-wrote 0 · total 20,783 tokens",
+      "in 20,753 · out 30 · cached 6,016 · cache-wrote 0 · total 20,783 tokens · $0.0055",
     );
+  });
+
+  it("opens on a normally finished turn with the cost inside and no line", async () => {
+    await render({ stopReason: "stop", usage: { costUsd: 0.00220194 } });
+
+    expect(container.querySelector(".turn-footer-line")).toBeNull();
+    expect(disclosure()?.open).toBe(false);
+    expect(disclosure()?.querySelector(".turn-footer-detail-copy")?.textContent).toBe("$0.0022");
   });
 
   it("is reachable and operable from the keyboard alone", async () => {
@@ -130,6 +139,20 @@ describe("the turn footer's token disclosure", () => {
     expect(document.activeElement).toBe(summary);
     // The control names what it opens, so the collapsed line is not a dead end.
     expect(summary.getAttribute("aria-label")).toBe("Turn token detail");
+  });
+
+  it("shows no cost for a pi message, whose figure is pi's own estimate", async () => {
+    await render(FINISHED, "pi");
+
+    expect(disclosure()?.querySelector(".turn-footer-detail-copy")?.textContent).toBe(
+      "in 20,753 · out 30 · cached 6,016 · cache-wrote 0 · total 20,783 tokens",
+    );
+  });
+
+  it("offers no disclosure for a pi message whose only figure is the cost", async () => {
+    await render({ stopReason: "stop", usage: { costUsd: 0.00220194 } }, "pi");
+
+    expect(container.textContent).toBe("");
   });
 
   it("offers no disclosure when the daemon sent no usage", async () => {

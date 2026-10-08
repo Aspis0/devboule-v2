@@ -857,7 +857,9 @@ export const AgentChatSurface = memo(function AgentChatSurface({
             streamingThoughtId={streamingThoughtId}
           />
           {turnRunning ? <WorkingLine startedAtMs={state.turnStartedAtMs ?? null} /> : null}
-          {state.lastFinished !== null ? <TurnFooter finished={state.lastFinished} /> : null}
+          {state.lastFinished !== null ? (
+            <TurnFooter finished={state.lastFinished} providerId={manifest?.providerId} />
+          ) : null}
         </div>
         <div className="workspace-pending-cards">{auxiliary}</div>
       </div>

@@ -449,7 +449,7 @@ describe("AgentChatSurface", () => {
     expect(sessionDetach).not.toHaveBeenCalled();
   });
 
-  it("shows the turn cost on the short line and the cache figures behind it, and neither when absent", async () => {
+  it("shows the turn cost and the cache figures behind the disclosure, and neither on the line", async () => {
     root = createRoot(container);
     await act(async () => {
       root.render(<AgentChatSurface daemonState="connected" sessionId="agent-cost" />);
@@ -479,7 +479,8 @@ describe("AgentChatSurface", () => {
     );
     // 0.00555254 truncates at four decimals — the copy never bills more
     // than the provider did.
-    expect(container.querySelector(".turn-footer-line")?.textContent).toContain("$0.0055");
+    expect(container.querySelector(".turn-footer-detail-copy")?.textContent).toContain("$0.0055");
+    expect(container.querySelector(".turn-footer-line")?.textContent).not.toContain("$");
 
     await act(async () => {
       channelHarness.emit?.({
@@ -508,6 +509,31 @@ describe("AgentChatSurface", () => {
 
     await act(async () => root?.unmount());
     expect(sessionDetach).not.toHaveBeenCalled();
+  });
+
+  it("shows no cost in a pi session's turn details, and keeps the token counts", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-pi-cost" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.emit?.({ type: "session_manifest", providerId: "pi", models: [] });
+      channelHarness.emit?.({
+        type: "agent_finished",
+        stopReason: "stop",
+        modelId: "free-model",
+        usage: { inputTokens: 20753, totalTokens: 20783, costUsd: 0.00220194 },
+      });
+    });
+
+    expect(container.querySelector(".turn-footer-line")).toBeNull();
+    expect(container.querySelector(".turn-footer-detail-copy")?.textContent).toBe(
+      "in 20,753 · total 20,783 tokens",
+    );
+
+    await act(async () => root?.unmount());
   });
 
   it("keeps its session across StrictMode cleanup and can send after a remount", async () => {
