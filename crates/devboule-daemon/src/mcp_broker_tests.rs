@@ -1562,8 +1562,8 @@ fn listener_rejects_overflow_and_admits_a_client_after_preauth_expiry() {
             .expect("overflow request");
     // The overflow is refused at the accept loop, which closes the server's
     // side of the socket before this client finishes: on macOS the reset
-    // that draws can beat the shutdown, and ENOTCONN is then the refusal —
-    // the outcome under test — not a failure.
+    // that draws can beat the shutdown. ENOTCONN only says the peer's side
+    // is already gone; the refusal itself is the empty close asserted below.
     if let Err(error) = overflow.shutdown(Shutdown::Write) {
         assert_eq!(
             error.kind(),
@@ -1578,9 +1578,7 @@ fn listener_rejects_overflow_and_admits_a_client_after_preauth_expiry() {
         Ok(_) => true,
         Err(error) => matches!(
             error.kind(),
-            io::ErrorKind::ConnectionAborted
-                | io::ErrorKind::ConnectionReset
-                | io::ErrorKind::TimedOut
+            io::ErrorKind::ConnectionAborted | io::ErrorKind::ConnectionReset
         ),
     };
     assert!(
