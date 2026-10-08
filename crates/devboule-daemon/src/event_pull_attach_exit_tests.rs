@@ -172,12 +172,19 @@ fn journal_keeps_every_frame_for_recovery() {
         runtime.publish_output(&payload);
     }
     runtime.finish(Some(0));
-    // The durable boundary, not a bounded control RPC: a burst can outlast
-    // `flush`'s ten-second wait on a loaded runner, and the boundary waits
-    // for every frame queued ahead of it however long the drain takes.
-    journal
-        .mark_ended_blocking("s.recover.1", 1, Some(0))
-        .expect("the durable end drains every queued frame");
+    // The durable boundary drains every queued frame, however long a loaded
+    // runner takes; the outer bound only keeps a stuck writer a failed test
+    // instead of a hung CI job.
+    let (finished, waiting) = std::sync::mpsc::channel();
+    let draining = Arc::clone(&journal);
+    std::thread::spawn(move || {
+        let _ = finished.send(draining.mark_ended_blocking("s.recover.1", 1, Some(0)));
+    });
+    match waiting.recv_timeout(std::time::Duration::from_secs(120)) {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => panic!("the durable end failed: {error}"),
+        Err(_) => panic!("the durable end did not drain within 120 s; the writer is stuck"),
+    }
 
     let replay = journal.replay("s.recover.1").unwrap();
     let seqs: Vec<u64> = replay
