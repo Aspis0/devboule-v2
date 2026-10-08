@@ -213,6 +213,61 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: pnpm build:installer
 
+      # A green build must mean the payload is IN the installer: assert the
+      # generated install script carries the six File entries and that the
+      # staged binaries still hash to packaging/windows/conpty.json, before
+      # anything is copied or uploaded. All values are literals read from the
+      # checkout — no context expression reaches this run block.
+      - name: Assert the installer payload and staged hashes (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $nsi = 'target/release/nsis/x64/installer.nsi'
+          if (-not (Test-Path -LiteralPath $nsi -PathType Leaf)) {
+            throw "generated installer script not found: $nsi"
+          }
+          $installScript = Get-Content -LiteralPath $nsi -Raw
+          $expectedEntries = @(
+            'oname=devboule-daemon.exe'
+            'oname=conpty\conpty.dll'
+            'oname=conpty\x64\OpenConsole.exe'
+            'oname=conpty\arm64\OpenConsole.exe'
+            'oname=THIRD-PARTY-NOTICES\Microsoft.Windows.Console.ConPTY-LICENSE.txt'
+            'oname=THIRD-PARTY-NOTICES\Microsoft.Windows.Console.ConPTY-NOTICE.md'
+          )
+          foreach ($entry in $expectedEntries) {
+            if (-not $installScript.Contains($entry)) {
+              throw "installer.nsi is missing the File entry: $entry"
+            }
+          }
+          $manifest = Get-Content -LiteralPath 'packaging/windows/conpty.json' -Raw | ConvertFrom-Json
+          $members = [System.Collections.Generic.List[object]]::new()
+          function Find-PinnedMembers($node) {
+            if ($null -eq $node) { return }
+            if ($node -is [System.Array]) { foreach ($item in $node) { Find-PinnedMembers $item }; return }
+            if ($node -is [System.Management.Automation.PSCustomObject]) {
+              $properties = $node.PSObject.Properties
+              if ($properties['destination'] -and $properties['sha256']) { $members.Add($node); return }
+              foreach ($property in $properties) { Find-PinnedMembers $property.Value }
+            }
+          }
+          Find-PinnedMembers $manifest
+          if ($members.Count -eq 0) {
+            throw 'packaging/windows/conpty.json yielded no pinned members'
+          }
+          foreach ($member in $members) {
+            $staged = 'target/release/' + $member.destination
+            if (-not (Test-Path -LiteralPath $staged -PathType Leaf)) {
+              throw "staged file missing: $staged"
+            }
+            $actual = (Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash.ToLowerInvariant()
+            $expected = $member.sha256.ToLowerInvariant()
+            if ($actual -ne $expected) {
+              throw "SHA-256 mismatch for $($member.destination): expected $expected, got $actual"
+            }
+          }
+          Write-Host "installer.nsi carries all $($expectedEntries.Count) payload File entries; $($members.Count) staged binaries match conpty.json"
+
       - name: Assert exactly one NSIS installer and stage it under its release name (tags only)
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
