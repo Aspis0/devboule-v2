@@ -1627,7 +1627,10 @@ impl SessionRuntime {
     }
 
     /// Publish this session's whole background-task list to every attached
-    /// subscriber that negotiated the task list, and nowhere else.
+    /// subscriber that negotiated the task list, and nowhere else. True
+    /// when the enqueue ran — even with no observers, which is itself the
+    /// proof there is nothing to send; false only when the stream is gone
+    /// or closed output refused the frame.
     ///
     /// Transient like the queue snapshot above — derived, never journaled,
     /// never backlogged — including its cap gate: a client that did not
@@ -1635,18 +1638,24 @@ impl SessionRuntime {
     /// A snapshot that is not newer than the last one sent — same epoch and
     /// an older or equal revision — is dropped, so overlapping derives
     /// cannot leave a stale list behind. A new epoch restarts the gate.
+    ///
+    /// `bypass_closed` is exit-only: the closed flag guards output bytes,
+    /// and a transient snapshot is not output — its subscribers are still
+    /// attached, and the reader-EOF road closes output before the exit
+    /// thread derives.
     pub(crate) fn publish_tasks_snapshot(
         &self,
         epoch: String,
         tasks: Vec<SessionTask>,
         revision: u64,
         omitted: u32,
-    ) {
+        bypass_closed: bool,
+    ) -> bool {
         let Ok(mut stream) = self.lock_stream() else {
-            return;
+            return false;
         };
-        if stream.output_closed {
-            return;
+        if stream.output_closed && !bypass_closed {
+            return false;
         }
         let stale = stream
             .tasks_published
@@ -1655,7 +1664,7 @@ impl SessionRuntime {
                 *last_epoch == epoch && revision <= *last_revision
             });
         if stale {
-            return;
+            return false;
         }
         stream.tasks_published = Some((epoch.clone(), revision));
         let event = SessionEvent::TasksSnapshot {
@@ -1671,6 +1680,7 @@ impl SessionRuntime {
             enqueue_agent_for_attachment(attachment, event.clone(), None);
         }
         notify_observers(&stream);
+        true
     }
 
     /// Sends one live plan-usage reading to the attached observers whose
@@ -3020,13 +3030,20 @@ impl SessionRuntime {
     /// where it installs the park hook: one place, at birth. Installing
     /// arms the exit wait: from here on the pull holds Exit for the exit
     /// publish, so a runtime without a hook keeps the default `true` and
-    /// never waits.
+    /// never waits. The arm applies only when the hook is actually stored:
+    /// a poisoned slot stores nothing, so it must not arm a wait nothing
+    /// can satisfy.
     pub(crate) fn set_tasks_refresh_hook(&self, hook: TasksRefreshHook) {
-        if let Ok(mut slot) = self.tasks_refresh_hook.lock() {
+        let stored = if let Ok(mut slot) = self.tasks_refresh_hook.lock() {
             *slot = Some(hook);
-        }
-        if let Ok(mut stream) = self.lock_stream() {
-            stream.tasks_exit_published = false;
+            true
+        } else {
+            false
+        };
+        if stored {
+            if let Ok(mut stream) = self.lock_stream() {
+                stream.tasks_exit_published = false;
+            }
         }
     }
 

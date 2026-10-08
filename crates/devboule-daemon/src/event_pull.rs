@@ -508,7 +508,10 @@ impl ConnHandle {
 
     /// Return the next one-shot wake needed to emit an exit after its drain
     /// window. Ordinary live sessions return `None`, so the connection writer
-    /// remains asleep until a request or PTY notification arrives.
+    /// remains asleep until a request or PTY notification arrives. A death
+    /// held for its exit task publish wakes at the 2 s backstop instead of
+    /// spinning: the publish marks its completion first, so the remaining
+    /// time is the only wait left.
     pub fn next_exit_wake(&self) -> Option<Duration> {
         let map = self
             .attached
@@ -526,9 +529,19 @@ impl ConnHandle {
                     return Some(Duration::ZERO);
                 };
                 if SessionRuntime::ready_for_exit(&stream) {
-                    // Drain elapsed (or EOF) since the last pull. There is no
-                    // notify at that instant; a zero timeout makes the writer
-                    // loop instead of waiting forever.
+                    // Drain elapsed (or EOF) since the last pull — but Exit
+                    // itself may still be held for the exit task publish, in
+                    // which case the 2 s backstop is the deadline, not now.
+                    if !stream.tasks_exit_published {
+                        let remaining = stream
+                            .exit_at
+                            .map(|at| EXIT_TASKS_FALLBACK.saturating_sub(at.elapsed()));
+                        // No recorded death: behave as before, the hold cannot
+                        // apply to a death nobody timed.
+                        return Some(remaining.unwrap_or(Duration::ZERO));
+                    }
+                    // There is no notify at that instant; a zero timeout makes
+                    // the writer loop instead of waiting forever.
                     return Some(Duration::ZERO);
                 }
                 if !stream.process_exited {
@@ -1195,11 +1208,19 @@ fn pull_live_events(session_id: &str, pull: &mut PullState, events: &mut Vec<Pen
         };
         // Exit waits for the exit task publish first: an observer that
         // detaches on Exit must not miss the cancellations addressed to
-        // it. Two seconds past the recorded death is the backstop for a
-        // publish that never lands, so a stuck thread cannot hold Exit.
+        // it. An observer that never agreed `session.tasks` gets no
+        // snapshot, so it waits for nothing. Two seconds past the recorded
+        // death is the backstop for a publish that never lands, so a stuck
+        // thread cannot hold Exit.
         // Read before the attachment borrow below starts: both are stream
         // reads, and the borrow checker will not overlap them.
-        let tasks_settled = stream.tasks_exit_published
+        let wants_tasks = stream
+            .observers
+            .get(&pull.attachment_key)
+            .map(|attachment| attachment.session_tasks)
+            .unwrap_or(false);
+        let tasks_settled = !wants_tasks
+            || stream.tasks_exit_published
             || stream
                 .exit_at
                 .is_none_or(|at| at.elapsed() >= EXIT_TASKS_FALLBACK);

@@ -529,10 +529,99 @@ fn a_hooked_death_is_reported_without_the_fallback_wait() {
         stream.last_publish = Some(recent);
     }
     // The exit thread publishes and marks alongside; poll for the report
-    // rather than assuming the thread already ran.
+    // rather than assuming the thread already ran. Well under the 2 s
+    // fallback: with the mark deleted this takes the full backstop.
+    let started = std::time::Instant::now();
     super::super::session_queue_fixtures::eventually("hooked death reported", || {
         drain()
             .into_iter()
             .any(|event| matches!(event, SessionEvent::Exit { .. }))
     });
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "the publish road reports in {:?}, not at the fallback",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn an_exit_publish_survives_its_own_entry_removal() {
+    // The reader-EOF ordering: the registry entry is gone before the exit
+    // thread looks it up, but the children are separate entries and still
+    // present — the cancelled list must still reach the attached observer.
+    let (_dir, registry, _journal) = tmp_delete_registry();
+    let owner = test_owner("tasks-gone-user", "tasks-gone-client");
+    let parent = "s.tasks.gone.parent";
+    linked_creator(&registry, parent, &owner);
+    linked_child(&registry, "s.tasks.gone.child", &owner, parent);
+    let runtime = registry
+        .live_runtime(parent, &owner)
+        .expect("parent runtime");
+    registry.configure_runtime_attention(&runtime, &owner);
+
+    let conn = attached_without_queue_capability(&registry, parent, 47, &owner);
+    let drain = || {
+        let mut events = Vec::new();
+        loop {
+            let batch = conn.pull_events();
+            if batch.is_empty() {
+                return events;
+            }
+            events.extend(batch.into_iter().map(|pending| pending.envelope.event));
+        }
+    };
+    assert_eq!(task_lists(&drain()).len(), 1);
+    runtime.mark_exited(Some(1));
+    registry.inner.lock().expect("registry").remove(parent);
+    // The thread road carries the runtime instead of looking it up: the
+    // entry is gone, the Arc is not.
+    registry.publish_session_exit_tasks(&runtime, parent);
+
+    assert!(
+        task_lists(&drain())
+            .into_iter()
+            .flat_map(|tasks| tasks.iter())
+            .any(|task| task.state == SessionTaskState::Cancelled),
+        "entry or no entry, the exit publish reaches its observer"
+    );
+}
+
+#[test]
+fn an_exit_publish_survives_closed_output() {
+    // The reader hits EOF and closes output before the exit thread derives:
+    // a transient snapshot is not output bytes, so the closed flag must not
+    // swallow the cancellations.
+    let (_dir, registry, _journal) = tmp_delete_registry();
+    let owner = test_owner("tasks-closed-user", "tasks-closed-client");
+    let parent = "s.tasks.closed.parent";
+    linked_creator(&registry, parent, &owner);
+    linked_child(&registry, "s.tasks.closed.child", &owner, parent);
+    let runtime = registry
+        .live_runtime(parent, &owner)
+        .expect("parent runtime");
+    registry.configure_runtime_attention(&runtime, &owner);
+
+    let conn = attached_without_queue_capability(&registry, parent, 48, &owner);
+    let drain = || {
+        let mut events = Vec::new();
+        loop {
+            let batch = conn.pull_events();
+            if batch.is_empty() {
+                return events;
+            }
+            events.extend(batch.into_iter().map(|pending| pending.envelope.event));
+        }
+    };
+    assert_eq!(task_lists(&drain()).len(), 1);
+    runtime.mark_exited(Some(1));
+    runtime.close_output();
+    registry.refresh_session_tasks_urgent(parent);
+
+    assert!(
+        task_lists(&drain())
+            .into_iter()
+            .flat_map(|tasks| tasks.iter())
+            .any(|task| task.state == SessionTaskState::Cancelled),
+        "closed output must not swallow the exit snapshot"
+    );
 }

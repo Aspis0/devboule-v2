@@ -1705,11 +1705,14 @@ impl SessionRegistry {
         // explicitly because the journal write may not be visible yet.
         let tasks_registry = self.clone();
         let tasks_session = runtime.session_id.clone();
+        let tasks_weak = std::sync::Arc::downgrade(runtime);
         runtime.set_tasks_refresh_hook(Arc::new(move |event| {
             // `None` is the session's own end: it publishes urgently, past
             // the debounce, so the cancellations land with the death — on
             // its own thread, because the dying thread may hold the
             // registry lock (a reaper under it deadlocks on a re-lock).
+            // The thread carries the runtime, never a map lookup: the
+            // reader-EOF road removes the entry first.
             match event {
                 Some(event) => {
                     let extra = [(event.clone(), crate::agent_activity::wall_now_ms())];
@@ -1718,9 +1721,19 @@ impl SessionRegistry {
                 None => {
                     let registry = tasks_registry.clone();
                     let session = tasks_session.clone();
-                    let _ = std::thread::Builder::new()
+                    let weak = std::sync::Weak::clone(&tasks_weak);
+                    match std::thread::Builder::new()
                         .name("tasks-exit-refresh".to_string())
-                        .spawn(move || registry.refresh_session_tasks_urgent(&session));
+                        .spawn(move || {
+                            if let Some(runtime) = weak.upgrade() {
+                                registry.publish_session_exit_tasks(&runtime, &session);
+                            }
+                        }) {
+                        Ok(_) => {}
+                        // No thread will ever mark: say so now, so the death
+                        // does not wait out the backstop for it.
+                        Err(_) => tasks_registry.mark_tasks_exit(&tasks_session),
+                    }
                 }
             }
         }));

@@ -83,23 +83,12 @@ impl super::SessionRegistry {
     }
 
     /// The same derive-and-publish without the debounce: a session's own
-    /// end publishes its cancellations now, not at the window's end. The
-    /// exit mark runs on every exit from this function — lock poisoned,
-    /// entry gone, still configuring — so no death waits out the fallback
-    /// for a list that was never going to be built.
+    /// end publishes its cancellations now, not at the window's end.
+    /// Test-only: the exit thread below carries its runtime instead of
+    /// looking it up, so a removed entry cannot stop it.
+    #[cfg(test)]
     pub(crate) fn refresh_session_tasks_urgent(&self, session_id: &str) {
-        struct MarkSettled {
-            runtime: Option<Arc<SessionRuntime>>,
-        }
-        impl Drop for MarkSettled {
-            fn drop(&mut self) {
-                if let Some(runtime) = &self.runtime {
-                    runtime.mark_tasks_exit_published();
-                }
-            }
-        }
-        let mut settled = MarkSettled { runtime: None };
-        let (runtime, children, parent_ended): (Arc<SessionRuntime>, Vec<Session>, bool) = {
+        let runtime: Option<Arc<SessionRuntime>> = {
             let Ok(map) = self.inner.lock() else {
                 return;
             };
@@ -109,18 +98,50 @@ impl super::SessionRegistry {
             if entry.is_configuring() {
                 return;
             }
-            let runtime = entry.runtime();
-            settled.runtime = Some(Arc::clone(&runtime));
-            runtime.mark_tasks_derived();
-            let parent_ended = !entry.to_session().state.is_live();
-            let children = map
-                .values()
+            Some(entry.runtime())
+        };
+        if let Some(runtime) = runtime {
+            self.publish_session_exit_tasks(&runtime, session_id);
+        }
+    }
+
+    /// The exit road with the runtime in hand: the map is never consulted
+    /// for it, so a reader-EOF removal between the death and this call
+    /// changes nothing. Children are separate entries read under one map
+    /// lock — one atomic snapshot, the same guarantee as any roster read —
+    /// and the parent counts as ended by definition on this road. Marks the
+    /// exit wait only when the snapshot went out, never on a failed derive.
+    pub(crate) fn publish_session_exit_tasks(
+        &self,
+        runtime: &Arc<SessionRuntime>,
+        session_id: &str,
+    ) {
+        runtime.mark_tasks_derived();
+        let children: Vec<Session> = {
+            let Ok(map) = self.inner.lock() else {
+                return;
+            };
+            map.values()
                 .map(|entry| entry.to_session())
                 .filter(|session| session.created_by.as_deref() == Some(session_id))
-                .collect();
-            (runtime, children, parent_ended)
+                .collect()
         };
-        self.publish_session_tasks(&runtime, session_id, &children, parent_ended, &[]);
+        let held = self.held_children(session_id, &children);
+        let parent_end = Some(
+            runtime
+                .tasks_ended_wall_ms()
+                .unwrap_or_else(crate::agent_activity::wall_now_ms),
+        );
+        let revision = runtime.next_tasks_revision();
+        let stashed = runtime.take_tasks_pending();
+        let Ok(tasks) = self.derive_with_held(session_id, held, parent_end, &stashed) else {
+            return;
+        };
+        let (tasks, omitted) = crate::session_tasks::cap_published(tasks);
+        if runtime.publish_tasks_snapshot(self.tasks_epoch.clone(), tasks, revision, omitted, true)
+        {
+            runtime.mark_tasks_exit_published();
+        }
     }
 
     /// Derive with the stashed triggering rows drained in, cap for the
@@ -146,7 +167,19 @@ impl super::SessionRegistry {
             return;
         };
         let (tasks, omitted) = crate::session_tasks::cap_published(tasks);
-        runtime.publish_tasks_snapshot(self.tasks_epoch.clone(), tasks, revision, omitted);
+        runtime.publish_tasks_snapshot(self.tasks_epoch.clone(), tasks, revision, omitted, false);
+    }
+
+    /// Mark one session's exit wait settled without deriving: the exit
+    /// thread could not be spawned, so nothing will ever publish for it.
+    /// Best effort under a try-lock — this runs on the dying thread, which
+    /// may hold the map itself, and the 2 s fallback covers the miss.
+    pub(crate) fn mark_tasks_exit(&self, session_id: &str) {
+        if let Ok(map) = self.inner.try_lock() {
+            if let Some(entry) = map.get(session_id) {
+                entry.runtime().mark_tasks_exit_published();
+            }
+        }
     }
 
     /// Clear a scheduled trailing refresh: the scheduled run starts now, so
