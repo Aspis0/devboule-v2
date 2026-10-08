@@ -48,6 +48,10 @@ impl Chain {
         }
     }
 
+    /// Whether any hop read untrusted data. No sentence reads this since
+    /// agent text stopped carrying the taint line; the ingress, restore
+    /// and relay machinery that sets it is untouched.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn is_tainted(&self) -> bool {
         self.tainted
     }

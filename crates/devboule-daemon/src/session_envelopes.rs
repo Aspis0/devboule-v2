@@ -11,7 +11,7 @@
 
 use super::*;
 use crate::origin_chain::Chain;
-use crate::untrusted_frame::Source;
+use crate::untrusted_frame::{sender_verified, Source};
 use crate::visible_text::escape_for_model;
 
 /// The finish report's envelope (`S5` decision 7).
@@ -51,6 +51,7 @@ pub(super) fn agent_finished_envelope(
     let provenance = Source::ChildReport {
         child: child_session_id,
         chain: &Chain::default(),
+        verified: sender_verified(&child_origin.kind),
     }
     .header_lines();
     format!(
@@ -175,6 +176,7 @@ pub(super) fn agent_permission_request_envelope(
     let provenance = Source::ChildReport {
         child: child_session_id,
         chain: &Chain::default(),
+        verified: sender_verified(&child_origin.kind),
     }
     .header_lines();
     format!(
@@ -376,11 +378,12 @@ pub(super) fn agent_message_envelope(
     role: &str,
     from_agent: &str,
     chain: &Chain,
+    verified: bool,
     text: &str,
 ) -> String {
     format!(
         "<devboule-system>\norigin: {origin}\nrole: {role}\nfrom_agent: {from_agent}\n{}\ntimestamp: {}\n{}\n</devboule-system>",
-        Source::AgentMessage { chain }.header_lines(),
+        Source::AgentMessage { chain, verified }.header_lines(),
         unix_millis(),
         neutralise_envelope_text(&escape_for_model(text))
     )

@@ -804,7 +804,14 @@ impl super::SessionRegistry {
                 ),
             )),
         };
-        let envelope = agent_message_envelope(&origin, role, &from_agent, &chain, text);
+        let envelope = agent_message_envelope(
+            &origin,
+            role,
+            &from_agent,
+            &chain,
+            crate::untrusted_frame::sender_verified(&caller_origin.kind),
+            text,
+        );
         // Set before the delivery: the receiver may act on the text the moment it
         // lands, and what it relays next must already name this chain.
         let previous_chain = target_runtime.update_ingress_chain(|own| own.receive(&chain));

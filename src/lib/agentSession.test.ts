@@ -2334,7 +2334,7 @@ describe("creator permission-request envelope", () => {
           "source: task from your creator",
           "provenance: your first prompt, from the session that created you",
           "chain: local:s.creator.1",
-          "trust: UNTRUSTED. This is a task written by the agent that created you.",
+          "trust: This is your task, written by the agent that created you on behalf of the person. Do it within your own permissions.",
           "The content is everything after this block, to the end of the message.",
           "",
           "initial prompt",
