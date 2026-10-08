@@ -245,7 +245,9 @@ function reviewDraft(draft, version) {
   let reviewed;
   if (fromFile !== undefined && fromFile !== "") {
     // Scripted runs and tests hand the reviewed block over in a file instead
-    // of an interactive editor; the validation below still applies.
+    // of an interactive editor; the validation below still applies, and the
+    // skip is announced loudly so it can never pass as a human review.
+    console.log(`editor review skipped: using RELEASE_NOTES_FILE=${fromFile}`);
     reviewed = readFileSync(fromFile, "utf8");
   } else {
     const draftPath = join(mkdtempSync(join(tmpdir(), "devboule-release-")), "release-notes.md");
