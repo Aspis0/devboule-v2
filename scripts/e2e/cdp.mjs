@@ -22,8 +22,13 @@
 export async function findPageTarget({ port, urlMatches, timeoutMs }) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    // Each attempt is bounded: a listener that accepts and then stalls must not
+    // push the call past the deadline it advertises.
+    const attemptMs = Math.min(2_000, deadline - Date.now());
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), attemptMs);
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/json/list`);
+      const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: abort.signal });
       const targets = await response.json();
       const page = targets.find(
         (target) =>
@@ -34,8 +39,12 @@ export async function findPageTarget({ port, urlMatches, timeoutMs }) {
       if (page) return page;
     } catch {
       // The port is not open until the WebView is created; keep waiting.
+    } finally {
+      clearTimeout(timer);
     }
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(1_000, Math.max(0, deadline - Date.now()))),
+    );
   }
   return null;
 }
@@ -57,16 +66,34 @@ export class CdpSession {
     socket.addEventListener("error", () => this.#abandon("the WebView connection failed"));
   }
 
-  static open(webSocketDebuggerUrl) {
+  static open(webSocketDebuggerUrl, timeoutMs = 30_000) {
     return new Promise((resolve, reject) => {
       const socket = new WebSocket(webSocketDebuggerUrl);
-      socket.addEventListener("open", () => resolve(new CdpSession(socket)), { once: true });
+      // A stale target can accept the TCP connection and never finish the
+      // handshake; without this timer the run sits there until the step dies.
+      const timer = setTimeout(() => {
+        socket.close();
+        reject(
+          new Error(
+            `the WebView did not complete the handshake within ${Math.round(timeoutMs / 1000)}s`,
+          ),
+        );
+      }, timeoutMs);
+      socket.addEventListener(
+        "open",
+        () => {
+          clearTimeout(timer);
+          resolve(new CdpSession(socket));
+        },
+        { once: true },
+      );
       socket.addEventListener(
         "error",
-        () => reject(new Error(`could not open ${webSocketDebuggerUrl}`)),
-        {
-          once: true,
+        () => {
+          clearTimeout(timer);
+          reject(new Error(`could not open ${webSocketDebuggerUrl}`));
         },
+        { once: true },
       );
     });
   }
@@ -78,13 +105,39 @@ export class CdpSession {
     this.#listeners.set(method, handlers);
   }
 
-  /** Send one command and resolve with its result. */
+  /** Resolve with the next event of one method, or reject at the deadline. */
+  once(method, timeoutMs = 30_000) {
+    return new Promise((resolve, reject) => {
+      let handler = () => {};
+      const timer = setTimeout(() => {
+        this.#listeners.get(method)?.delete(handler);
+        reject(
+          new Error(`the WebView did not report ${method} within ${Math.round(timeoutMs / 1000)}s`),
+        );
+      }, timeoutMs);
+      handler = (params) => {
+        clearTimeout(timer);
+        this.#listeners.get(method)?.delete(handler);
+        resolve(params);
+      };
+      this.on(method, handler);
+    });
+  }
+
+  /** Send one command and resolve with its result. A missed deadline closes
+   * the session: a half-answered connection is not something a later call can
+   * trust, and the run fails on the sentence instead of hanging. */
   send(method, params = {}, timeoutMs = 30_000) {
     return new Promise((resolve, reject) => {
       const id = this.#nextId++;
       const timer = setTimeout(() => {
         this.#pending.delete(id);
-        reject(new Error(`the WebView did not answer within ${Math.round(timeoutMs / 1000)}s`));
+        reject(
+          new Error(
+            `${method}: the WebView did not answer within ${Math.round(timeoutMs / 1000)}s`,
+          ),
+        );
+        this.close();
       }, timeoutMs);
       this.#pending.set(id, { resolve, reject, timer, method });
       this.#socket.send(JSON.stringify({ id, method, params }));

@@ -1,7 +1,8 @@
 /**
- * The window checks the smoke asserts: the surface renders, the daemon connects,
- * Settings opens and closes, a project's workspace reaches the rail, and the
- * console stayed clean. Each throws the sentence the report prints on failure.
+ * The window checks the smoke asserts: the surface renders, the daemon connects
+ * inside its budget, Settings opens and closes, a project's workspace reaches
+ * the rail, and the console stayed clean. Each throws the sentence the report
+ * prints on failure.
  */
 import { evaluate } from "./cdp.mjs";
 import { click, requireSelector, selectSurface, typeInto, waitFor } from "./drive.mjs";
@@ -15,8 +16,8 @@ const RAIL_MS = 20_000;
 
 /**
  * Collect what the page reports as an uncaught failure: exceptions the runtime
- * threw, and everything the browser logged at error level — a refused module
- * load or a broken promise a check would otherwise not see.
+ * threw, console API calls at error level, and everything the browser logged at
+ * error level — a refused module load a check would otherwise not see.
  */
 export function collectConsoleErrors(session) {
   const errors = [];
@@ -24,6 +25,14 @@ export function collectConsoleErrors(session) {
     errors.push(
       exceptionDetails?.exception?.description ?? exceptionDetails?.text ?? "uncaught exception",
     );
+  });
+  session.on("Runtime.consoleAPICalled", ({ type, args }) => {
+    if (type !== "error") return;
+    const text = args
+      .map((arg) => arg.value ?? arg.description ?? arg.type ?? "")
+      .filter((part) => part !== "")
+      .join(" ");
+    errors.push(`console.error: ${text}`);
   });
   session.on("Log.entryAdded", ({ entry }) => {
     // The browser asks every page for its icon; the app ships none, and a
@@ -45,24 +54,23 @@ export async function windowLoads(session) {
   if (!ready) throw new Error("the Workspace surface did not render");
 }
 
-/** The status bar's dot reaches the connected tone inside the launch budget. */
-export async function daemonConnected(session, launchedAt) {
-  // The budget counts from the launch, but the dot cannot be read before the
-  // window renders; when the render already spent it, the state is what is
-  // checked, not the clock.
-  const remaining = Math.max(10_000, DAEMON_CONNECTED_MS - (Date.now() - launchedAt));
+/**
+ * The status bar's dot reaches the connected tone before the launch budget
+ * expires. The deadline is absolute, not "however long the window took plus a
+ * grace period": a page that only becomes observable after the budget is a
+ * failed timing assertion, not a late pass.
+ */
+export async function daemonConnected(session, deadline) {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) {
+    throw new Error("the window was not observable before the 60s daemon budget ran out");
+  }
   const connected = await waitFor(
     session,
     `document.querySelector(".workspace-status-bar .workspace-status-dot.workspace-dot-green") !== null`,
     remaining,
   );
   if (!connected) throw new Error("the daemon dot did not reach the connected tone");
-}
-
-/** The daemon's PID, as the app's own status command answers it. */
-export async function readDaemonPid(session) {
-  const status = await evaluate(session, `window.__TAURI_INTERNALS__.invoke("daemon_status")`);
-  return typeof status?.pid === "number" ? status.pid : null;
 }
 
 export async function settingsOpensAndCloses(session) {
@@ -92,6 +100,15 @@ export async function workspaceOnTempRepo(session, { repoDir, repoName }) {
   );
   await typeInto(session, "#workspace-project-input", repoDir);
   await click(session, '.workspace-project-dialog-actions button[type="submit"]');
+  if (
+    !(await waitFor(
+      session,
+      `document.querySelector("#workspace-project-input") === null`,
+      DIALOG_MS,
+    ))
+  ) {
+    throw new Error("the Add project dialog stayed open after Add project was clicked");
+  }
 
   const projectListed = `[...document.querySelectorAll(".workspace-project-name")].some((element) => element.textContent === ${JSON.stringify(repoName)})`;
   if (!(await waitFor(session, projectListed, RAIL_MS))) {

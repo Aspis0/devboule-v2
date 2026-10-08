@@ -1,13 +1,13 @@
 /**
  * The desktop app as a test fixture: start it with an isolated runtime dir and
- * a fixed WebView2 debug port, and take it and its daemon down by PID.
+ * a fixed WebView2 debug port, and take down only what this run started.
  *
  * Windows-only, like the CI job that owns the smoke: the teardown is
  * `taskkill`, and the app's own discovery of the daemon beside its executable
  * is the path under test.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, existsSync, openSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** 9333 belongs to another WebView2 app on the development machine, and 9334
@@ -25,9 +25,111 @@ export function resolveBinaries(repoRoot) {
 }
 
 /**
+ * Refuse to start when the debug port is already held. A second client on a
+ * contended port attaches to the first app's page and drives it, so the run
+ * stops here instead of borrowing someone else's window — and nothing is ever
+ * killed merely because it listens on the port.
+ */
+export function assertPortFree(port) {
+  if (pidListeningOnPort(port) !== null) {
+    throw new Error(
+      `port ${port} is already in use (pid ${pidListeningOnPort(port)}); ` +
+        `another Devboule or WebView2 app owns it — close it or set DEVBOULE_E2E_PORT`,
+    );
+  }
+}
+
+/** The PID listening on a port, or null. Used to refuse a contended port. */
+export function pidListeningOnPort(port) {
+  const { stdout } = spawnSync("netstat", ["-ano"], { encoding: "utf8", windowsHide: true });
+  for (const line of (stdout ?? "").split(/\r?\n/)) {
+    const fields = line.trim().split(/\s+/);
+    if (fields.length >= 5 && fields[1].endsWith(`:${port}`) && fields[3] === "LISTENING") {
+      return Number(fields[4]);
+    }
+  }
+  return null;
+}
+
+/** Every process, one PowerShell call: pid, parent pid, image name, command line. */
+function listProcesses() {
+  const script =
+    "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress";
+  const { stdout } = spawnSync("powershell", ["-NoProfile", "-Command", script], {
+    encoding: "utf8",
+    windowsHide: true,
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  const raw = (stdout ?? "").trim();
+  if (raw === "") return [];
+  const parsed = JSON.parse(raw);
+  const rows = Array.isArray(parsed) ? parsed : [parsed];
+  return rows.map((row) => ({
+    pid: row.ProcessId,
+    parentPid: row.ParentProcessId,
+    name: row.Name ?? "",
+    commandLine: row.CommandLine ?? "",
+  }));
+}
+
+/** The pids below one root, breadth first, from a process snapshot. */
+function descendants(processes, rootPid) {
+  const found = [];
+  let frontier = [rootPid];
+  while (frontier.length > 0) {
+    const next = [];
+    for (const process of processes) {
+      if (frontier.includes(process.parentPid) && !found.includes(process.pid)) {
+        found.push(process.pid);
+        next.push(process.pid);
+      }
+    }
+    frontier = next;
+  }
+  return found;
+}
+
+/**
+ * The daemon this run owns, as the daemon itself recorded it: `pid=` in the
+ * runtime dir's lock file. Falls back to the app's own child tree, which still
+ * names an orphaned daemon because Windows keeps the parent pid after the
+ * parent dies.
+ */
+export function ownedDaemonPid({ appPid, runtimeDir, processes = listProcesses() }) {
+  try {
+    const body = readFileSync(join(runtimeDir, "daemon.lock"), "utf8");
+    const match = /^pid=(\d+)$/m.exec(body);
+    if (match) return Number(match[1]);
+  } catch {
+    // No lock file yet: the daemon may never have started.
+  }
+  if (appPid === null) return null;
+  const tree = descendants(processes, appPid);
+  const daemon = processes.find(
+    (process) => tree.includes(process.pid) && process.name.toLowerCase() === "devboule-daemon.exe",
+  );
+  return daemon?.pid ?? null;
+}
+
+/**
+ * The WebView2 browser processes this run owns, proven by this run's unique
+ * user-data folder in their command line — the browser is not a child of the
+ * app, so ancestry alone cannot name it.
+ */
+export function ownedBrowserPids({ webviewDir, processes = listProcesses() }) {
+  return processes
+    .filter(
+      (process) =>
+        process.name.toLowerCase() === "msedgewebview2.exe" &&
+        process.commandLine.includes(webviewDir),
+    )
+    .map((process) => process.pid);
+}
+
+/**
  * Start the app and resolve once the process exists, so a failed spawn is an
  * error here rather than a missing PID later. Its output goes to two files in
- * `logDir`: the app's stderr is where its own setup failures are written.
+ * `logDir`, truncated per run so a failure never shows the previous run's tail.
  */
 export async function launchApp({
   binary,
@@ -37,8 +139,8 @@ export async function launchApp({
   logDir,
   port = DEFAULT_DEBUG_PORT,
 }) {
-  const stdout = openSync(join(logDir, "app.stdout.log"), "a");
-  const stderr = openSync(join(logDir, "app.stderr.log"), "a");
+  const stdout = openSync(join(logDir, "app.stdout.log"), "w");
+  const stderr = openSync(join(logDir, "app.stderr.log"), "w");
   const child = spawn(binary, [], {
     cwd: runtimeDir,
     env: {
@@ -46,7 +148,7 @@ export async function launchApp({
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}`,
       // The browser's user data folder, outside the runtime dir: another
       // Devboule running on the machine must not share the browser process, and
-      // a stale browser on the debug port would answer a probe instead of ours.
+      // this path is also what proves ownership at teardown.
       WEBVIEW2_USER_DATA_FOLDER: webviewDir,
       // Tauri's own data root (the asset scope for the daemon's staged
       // previews resolves under %LOCALAPPDATA%): the runtime dir sits inside
@@ -73,7 +175,7 @@ export async function launchApp({
 
 /**
  * Kill a process and everything it spawned. `/T` walks the tree, which is what
- * reaches the daemon the app started; `/F` because a GUI process ignores a
+ * reaches a daemon the app started; `/F` because a GUI process ignores a
  * polite request.
  */
 export function killTree(pid) {
@@ -105,42 +207,28 @@ export async function waitForDeath(pid, timeoutMs) {
 }
 
 /**
- * The PID listening on our debug port. WebView2's browser process outlives the
- * app process that started it — measured here, `taskkill /T` on the app left it
- * listening — and the port is what names it without touching any other
- * Devboule's processes.
- */
-export function pidListeningOnPort(port) {
-  const { stdout } = spawnSync("netstat", ["-ano"], { encoding: "utf8", windowsHide: true });
-  for (const line of (stdout ?? "").split(/\r?\n/)) {
-    const fields = line.trim().split(/\s+/);
-    if (fields.length >= 5 && fields[1].endsWith(`:${port}`) && fields[3] === "LISTENING") {
-      return Number(fields[4]);
-    }
-  }
-  return null;
-}
-
-/**
- * The whole teardown, by PID only: the app tree first (its daemon is inside
- * it), then the daemon the app named, then the WebView2 browser process this
- * run's debug port belongs to — it outlives the app, so it is not inside the
- * tree.
+ * The whole teardown, and only over processes this run started: the app pid it
+ * spawned, the daemon pid the run's own runtime dir recorded, and the browser
+ * pids whose command line carries the run's own user-data folder. A pid that
+ * merely listens on our port is never a target — it belongs to someone else.
  *
  * Each wait gets a second pass: measured on this machine, the same app binary
  * ends in 1.3 s on one run and outlasts a 20 s wait on another (the loaded
  * machine, not the code), so a single deadline would report a leak that is not
  * one.
  */
-export async function stopApp({ appPid, daemonPid, port }) {
-  const browserPid = port === undefined ? null : pidListeningOnPort(port);
+export async function stopApp({ appPid, runtimeDir, webviewDir }) {
+  const processes = listProcesses();
+  const daemonPid = ownedDaemonPid({ appPid, runtimeDir, processes });
+  const browserPids = ownedBrowserPids({ webviewDir, processes });
   if (appPid !== null) killTree(appPid);
   if (daemonPid !== null) killOne(daemonPid);
-  if (browserPid !== null) killTree(browserPid);
+  for (const pid of browserPids) killTree(pid);
+
   const targets = [
     ["app", appPid],
     ["daemon", daemonPid],
-    ["WebView2", browserPid],
+    ...browserPids.map((pid) => ["WebView2", pid]),
   ].filter(([, pid]) => pid !== null);
   const stubborn = [];
   for (const [name, pid] of targets) {
@@ -148,5 +236,5 @@ export async function stopApp({ appPid, daemonPid, port }) {
     killTree(pid);
     if (!(await waitForDeath(pid, 20_000))) stubborn.push(`${name} ${pid}`);
   }
-  return { gone: stubborn.length === 0, browserPid, stubborn };
+  return { gone: stubborn.length === 0, daemonPid, browserPids, stubborn };
 }

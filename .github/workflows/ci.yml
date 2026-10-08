@@ -257,10 +257,20 @@ jobs:
   # entry — sharing it the other way round would make the two jobs evict each
   # other's feature set, which is what the windows job's `key` comment is
   # about. If that prefix ever changes, this job falls back to a cold build.
+  #
+  # The build must also select what that cache was built for. Measured on the
+  # first run of this job (run 37711046392): the restore was a full match
+  # (`v0-rust-windows-workspace-windows-Windows_NT-x64-25adbecc-14eba68d`) and
+  # the windows job's own `cargo build --workspace --locked` took 2m51s from
+  # it, while `-p devboule-daemon -p devboule` recompiled from `syn` upward and
+  # hit the step timeout — the two selections unify dependency features
+  # differently, so every fingerprint misses. `--workspace` with
+  # `tauri/custom-protocol` on top keeps that unification and recompiles only
+  # the tauri subtree plus this app.
   e2e-smoke:
     name: e2e-smoke
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     continue-on-error: true
 
     steps:
@@ -313,19 +323,22 @@ jobs:
           save-if: "false"
 
       # Debug, not release: this job does not measure the shipped artifact,
-      # and the windows job's cache holds this profile. The daemon is built
-      # beside the app because the app discovers it as a sibling — the same
-      # rule the installer's bundle follows. `tauri/custom-protocol` is what
-      # `tauri build` turns on so the app serves the embedded `dist`; without
-      # it a plain cargo build serves `devUrl` and needs the vite dev server.
+      # and the windows job's cache holds this profile. `tauri/custom-protocol`
+      # is what `tauri build` turns on so the app serves the embedded `dist`;
+      # without it a plain cargo build serves `devUrl` and needs the vite dev
+      # server. The daemon is built beside the app because the app discovers it
+      # as a sibling — the same rule the installer's bundle follows.
+      # `--workspace`, not `-p`: see the job comment above.
       - name: Build the app and the daemon
-        timeout-minutes: 10
-        run: |
-          cargo build -p devboule-daemon --locked
-          cargo build -p devboule --locked --features tauri/custom-protocol
+        timeout-minutes: 20
+        run: cargo build --workspace --locked --features tauri/custom-protocol
 
       - name: Run the desktop smoke
         timeout-minutes: 8
+        env:
+          # Explicitly empty: the live agent turn is local-only, and the script
+          # refuses to run it when CI is set.
+          DEVBOULE_E2E_LIVE_PROVIDER: ""
         run: node scripts/e2e/smoke.mjs --artifacts "${{ runner.temp }}/e2e-artifacts"
 
       # On success AND failure: the picture is what a red run is diagnosed
