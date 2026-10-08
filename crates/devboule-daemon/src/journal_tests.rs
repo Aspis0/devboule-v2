@@ -601,6 +601,51 @@ fn enqueue_drops_count_the_exact_payload_sizes() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A writer-side failure of an output row is billed: one frame of its exact
+/// payload size into the session's drop ledger, and one onto the
+/// process-wide failed-frame counter. The queue filler no longer exercises
+/// this (an exit row bills nothing), so the ledger's own arm is pinned here.
+#[test]
+fn a_writer_failed_output_is_counted_in_the_drop_ledger() {
+    let (dir, path) = tmp_journal();
+    let journal = Journal::open(&path).expect("open");
+    journal
+        .upsert_blocking(sample_session("s.failed-append").clone())
+        .expect("upsert");
+    journal
+        .append_blocking(output_record("s.failed-append", 1, 1, b"first"))
+        .expect("first row");
+    let baseline = journal
+        .degraded_sessions
+        .lock()
+        .expect("degradation baseline")
+        .get("s.failed-append")
+        .copied()
+        .unwrap_or_default();
+    let failed_before = journal.stats().failed_frames;
+    // The same (session, generation, seq) again: the writer's INSERT hits the
+    // UNIQUE key, and the flush behind it proves the failure was processed.
+    journal
+        .append_blocking(output_record("s.failed-append", 1, 1, b"duplicate"))
+        .expect("the flush after the failed append answers");
+    let after = journal
+        .degraded_sessions
+        .lock()
+        .expect("degradation counters")
+        .get("s.failed-append")
+        .copied()
+        .expect("the failed session's ledger");
+    assert_eq!(after.frames - baseline.frames, 1);
+    assert_eq!(after.bytes - baseline.bytes, b"duplicate".len() as u64);
+    assert_eq!(
+        journal.stats().failed_frames - failed_before,
+        1,
+        "the process-wide failed-frame counter moves with the ledger"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn permission_decision_is_written_with_outcome_timestamp_and_payload() {
     let (dir, path) = tmp_journal();
