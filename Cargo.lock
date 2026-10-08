@@ -2752,6 +2752,7 @@ dependencies = [
  "agent-client-protocol",
  "alacritty_terminal",
  "base64 0.23.1",
+ "chrono",
  "curve25519-dalek",
  "devboule-daemon",
  "devboule-protocol",

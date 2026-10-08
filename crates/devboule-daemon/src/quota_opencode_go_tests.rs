@@ -4,7 +4,7 @@
 use devboule_protocol::PlanWindow;
 use serde_json::json;
 
-use super::{days_from_civil, windows_from_body, OpencodeGo, HOST};
+use super::{windows_from_body, OpencodeGo, HOST};
 use crate::egress_client::Method;
 use crate::quota_key::ApiKey;
 use crate::quota_source::{QuotaError, QuotaSource};
@@ -90,10 +90,10 @@ fn a_window_with_neither_percent_nor_reset_is_left_out() {
 }
 
 #[test]
-fn reset_times_read_as_seconds_milliseconds_digit_strings_and_rfc3339() {
+fn reset_times_read_as_seconds_digit_strings_and_rfc3339() {
     let windows = parse(json!({
         "usage": {
-            "rolling": { "percent": 1, "resetsAt": OCT_7_18H * 1000 },
+            "rolling": { "percent": 1, "resetsAt": OCT_7_18H },
             "weekly": { "percent": 2, "resetsAt": "2026-10-07T18:00:00Z" }
         }
     }))
@@ -110,6 +110,61 @@ fn reset_times_read_as_seconds_milliseconds_digit_strings_and_rfc3339() {
     .expect("windows");
     assert_eq!(text[0].resets_at, Some(OCT_7_18H));
     assert_eq!(text[1].resets_at, Some(OCT_7_18H));
+}
+
+#[test]
+fn a_millisecond_number_is_no_reset_rather_than_a_guess() {
+    let windows = parse(json!({
+        "usage": {
+            "rolling": { "percent": 1, "resetsAt": OCT_7_18H * 1000 },
+            "weekly": { "percent": 2, "resetsAt": -OCT_7_18H }
+        }
+    }))
+    .expect("windows");
+    assert_eq!(windows[0].resets_at, None);
+    assert_eq!(windows[0].used_percent, Some(1));
+    assert_eq!(windows[1].resets_at, None);
+}
+
+#[test]
+fn numbers_outside_the_plausible_seconds_band_are_no_reset() {
+    for resets_at in [
+        json!(u64::MAX),
+        json!(i64::MAX),
+        json!(1e30),
+        json!(-1e12),
+        json!(1790000000.75),
+    ] {
+        let windows = parse(json!({
+            "usage": { "rolling": { "percent": 1, "resetsAt": resets_at } }
+        }))
+        .expect("windows");
+        let expected = (resets_at == json!(1790000000.75)).then_some(1_790_000_000);
+        assert_eq!(windows[0].resets_at, expected, "{resets_at}");
+    }
+}
+
+#[test]
+fn impossible_calendar_dates_are_refused_and_leap_days_accepted() {
+    for text in [
+        "2026-02-30T00:00:00Z",
+        "2026-04-31T00:00:00Z",
+        "2026-02-29T00:00:00Z",
+        "2026-13-01T00:00:00Z",
+        "999999999999-12-31T23:59:59Z",
+        "2026-10-07T20:00:00+0000",
+    ] {
+        let windows = parse(json!({
+            "usage": { "rolling": { "percent": 1, "resetsAt": text } }
+        }))
+        .expect("windows");
+        assert_eq!(windows[0].resets_at, None, "{text}");
+    }
+    let leap = parse(json!({
+        "usage": { "rolling": { "percent": 1, "resetsAt": "2024-02-29T00:00:00Z" } }
+    }))
+    .expect("windows");
+    assert_eq!(leap[0].resets_at, Some(1_709_164_800));
 }
 
 #[test]
@@ -168,9 +223,3 @@ fn the_one_declared_host_is_opencode_and_the_identity_is_the_go_plan() {
     assert_eq!(OpencodeGo.plan_label(), "OpenCode Go");
 }
 
-#[test]
-fn days_since_the_epoch_match_the_calendar() {
-    assert_eq!(days_from_civil(1970, 1, 1), 0);
-    assert_eq!(days_from_civil(2000, 3, 1), 11_017);
-    assert_eq!(days_from_civil(1969, 12, 31), -1);
-}

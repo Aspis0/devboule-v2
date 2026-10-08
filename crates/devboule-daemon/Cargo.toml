@@ -62,6 +62,9 @@ oracle-core = { path = "../oracle-core", default-features = false, features = ["
 # owns the ACP transport, so this is a new direct dependency of this crate.
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
+# Reads OpenCode's reset timestamps. The calendar check (Feb 30, month 13) is
+# the library's job, not a hand-rolled one; 0.4.45 is already in the lock.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 # Codex `CODEX_HOME` carrier (broker S6): the `config.toml` this daemon writes
 # for a Codex child is a wire contract with codex-cli, so the pin is exact.
 # Landed at 0.8.2 because that was already resolved in the workspace — the
