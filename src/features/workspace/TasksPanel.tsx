@@ -132,12 +132,13 @@ interface TaskRowProps {
 
 const TaskRow = memo(function TaskRow({ task, now, stopping, onOpen, onStop }: TaskRowProps) {
   const childSessionId = task.kind === "agent" ? task.childSessionId : undefined;
-  const duration =
+  const span =
     now !== null
-      ? formatTaskDuration(now - task.startedAtMs)
+      ? now - task.startedAtMs
       : task.endedAtMs === undefined
         ? null
-        : formatTaskDuration(task.endedAtMs - task.startedAtMs);
+        : task.endedAtMs - task.startedAtMs;
+  const duration = span === null ? null : formatTaskDuration(span);
   const details = [
     task.model,
     task.toolCallCount === undefined ? undefined : toolCountText(task.toolCallCount),

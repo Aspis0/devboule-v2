@@ -26,6 +26,18 @@ describe("the duration in a finished row", () => {
   });
 });
 
+describe("a span that ran backwards", () => {
+  it("has no duration, so no 0s stands in for it", () => {
+    expect(formatTaskDuration(-1)).toBeNull();
+  });
+
+  it("leaves the took-clause out of the row", () => {
+    expect(taskRowText(task({ state: "finished", startedAtMs: 9_000, endedAtMs: 1_000 }))).toBe(
+      "Background agent finished · Explore auth",
+    );
+  });
+});
+
 describe("the transcript row for a task", () => {
   it("names a running agent with its model and tool count", () => {
     expect(taskRowText(task({ model: "test-model", toolCallCount: 4 }))).toBe(

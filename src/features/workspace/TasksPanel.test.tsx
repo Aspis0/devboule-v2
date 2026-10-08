@@ -293,6 +293,12 @@ describe("the duration clock", () => {
     expect(rowFor("Explore auth").textContent).toContain("1m 6s");
   });
 
+  it("shows no duration for a settled row that ended before it started", async () => {
+    await render(context([task({ state: "finished", startedAtMs: 9_000, endedAtMs: 1_000 })]));
+
+    expect(rowFor("Explore auth").querySelector(".tasks-panel-meta")).toBeNull();
+  });
+
   it("shows a settled row's duration once, from its own start and end", async () => {
     await render(context([task({ state: "finished", startedAtMs: 1_000, endedAtMs: 89_000 })]));
 

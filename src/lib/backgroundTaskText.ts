@@ -2,9 +2,14 @@
 // are fixed at the moment the row is written: a row is a record of a change.
 import type { SessionTask } from "../types/ipc";
 
-/** `Ns` under a minute, `Nm Ns` under an hour, `Nh Nm` after that. */
-export function formatTaskDuration(milliseconds: number): string {
-  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+/**
+ * `Ns` under a minute, `Nm Ns` under an hour, `Nh Nm` after that. A span that
+ * ran backwards (clock skew, or a daemon bug) has no honest duration, so it is
+ * null and the caller shows none, rather than a 0s that reads as an instant task.
+ */
+export function formatTaskDuration(milliseconds: number): string | null {
+  if (milliseconds < 0) return null;
+  const seconds = Math.floor(milliseconds / 1000);
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
@@ -34,7 +39,8 @@ export function taskRowText(task: SessionTask): string {
   const noun = task.kind === "agent" ? "agent" : "command";
   const parts = [`Background ${noun} ${SETTLED_WORD[task.state]}`, task.title];
   if (task.endedAtMs !== undefined) {
-    parts.push(`took ${formatTaskDuration(task.endedAtMs - task.startedAtMs)}`);
+    const took = formatTaskDuration(task.endedAtMs - task.startedAtMs);
+    if (took !== null) parts.push(`took ${took}`);
   }
   return parts.join(" · ");
 }
