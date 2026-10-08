@@ -60,16 +60,19 @@ export function acceptTaskReply(
 
 /**
  * The tasks of `next` whose (id, state) pair the previous list did not hold:
- * each is a transition worth a row. A new epoch is a fresh baseline, so a
- * restarted daemon's list shows no rows; a seeded reply is the same lifetime
- * as the first event after it, so its tasks are known and not re-announced.
+ * each is a transition worth a row. With no previous list the first one is a
+ * baseline and shows nothing: a task already running when the view attached is
+ * not a change seen live. A new epoch is also a baseline, since a restarted
+ * daemon's list is not news. A seeded reply is the same lifetime as the first
+ * event after it, so its tasks are known and not re-announced.
  */
 export function taskTransitions(
   prev: BackgroundTaskState | null,
   next: BackgroundTaskState,
 ): SessionTask[] {
-  if (prev !== null && prev.epoch !== null && prev.epoch !== next.epoch) return [];
-  const held = new Set((prev?.tasks ?? []).map((task) => `${task.id}\n${task.state}`));
+  if (prev === null) return [];
+  if (prev.epoch !== null && prev.epoch !== next.epoch) return [];
+  const held = new Set(prev.tasks.map((task) => `${task.id}\n${task.state}`));
   return next.tasks.filter((task) => !held.has(`${task.id}\n${task.state}`));
 }
 

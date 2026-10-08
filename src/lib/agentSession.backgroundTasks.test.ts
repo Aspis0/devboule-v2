@@ -58,6 +58,7 @@ describe("the session's background-task list", () => {
     const { session, emit, answerAsk } = taskHarness();
     await session.start();
     answerAsk({ tasks: [], omitted: 0 });
+    await flush();
 
     emit(snapshot("e1", 2, [agentTask()]));
     emit(snapshot("e1", 1, []));
@@ -70,6 +71,7 @@ describe("the session's background-task list", () => {
     const { session, emit, answerAsk } = taskHarness();
     await session.start();
     answerAsk({ tasks: [], omitted: 0 });
+    await flush();
 
     emit(snapshot("e1", 9, [agentTask()]));
     emit(snapshot("e2", 1, []));
@@ -129,6 +131,7 @@ describe("the transcript rows a task change leaves", () => {
     const { session, emit, answerAsk } = taskHarness();
     await session.start();
     answerAsk({ tasks: [], omitted: 0 });
+    await flush();
 
     emit(snapshot("e1", 1, [agentTask({ model: "test-model", toolCallCount: 2 })]));
     emit(snapshot("e1", 2, [agentTask({ state: "finished", endedAtMs: 89_000 })]));
@@ -143,11 +146,25 @@ describe("the transcript rows a task change leaves", () => {
     const { session, emit, answerAsk } = taskHarness();
     await session.start();
     answerAsk({ tasks: [], omitted: 0 });
+    await flush();
 
     emit(snapshot("e1", 1, [agentTask()]));
     emit(snapshot("e1", 2, [agentTask()]));
 
     expect(rowTexts(session)).toEqual(["Running agent Explore auth"]);
+  });
+
+  it("takes the first snapshot after a failed ask as a baseline, not as news", async () => {
+    const { session, emit, answerAsk } = taskHarness();
+    await session.start();
+    answerAsk(new Error("capability not agreed"));
+    await flush();
+
+    emit(snapshot("e1", 1, [agentTask()]));
+    expect(rowTexts(session)).toEqual([]);
+
+    emit(snapshot("e1", 2, [agentTask({ state: "finished", endedAtMs: 9_000 })]));
+    expect(rowTexts(session)).toEqual(["Background agent finished · Explore auth · took 8s"]);
   });
 
   it("writes no row for the attach reply, which is history and not a change", async () => {
@@ -163,6 +180,7 @@ describe("the transcript rows a task change leaves", () => {
     const { session, emit, answerAsk } = taskHarness();
     await session.start();
     answerAsk({ tasks: [], omitted: 0 });
+    await flush();
 
     emit(snapshot("e1", 1, [agentTask()]));
     emit({ type: "agent_message", messageId: "m-1", text: "Still looking." });

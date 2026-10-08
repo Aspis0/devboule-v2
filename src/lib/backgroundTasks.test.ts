@@ -90,9 +90,9 @@ describe("accepting the attach reply", () => {
 });
 
 describe("the transitions a snapshot carries", () => {
-  it("announces every task of a first live snapshot", () => {
+  it("takes a first list with no previous one as a baseline, announcing nothing", () => {
     const next = stored("e1", 1, [agentTask()]);
-    expect(taskTransitions(null, next)).toEqual([agentTask()]);
+    expect(taskTransitions(null, next)).toEqual([]);
   });
 
   it("announces a task only when its state changes", () => {
