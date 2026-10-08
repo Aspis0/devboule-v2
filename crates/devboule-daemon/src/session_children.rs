@@ -1256,10 +1256,6 @@ impl super::SessionRegistry {
     /// may spend on its peers, and this is the daemon's own report, raised by a
     /// child's end rather than by a caller. It is one delivery per finish.
     ///
-    /// A peer's creator is never steered: the steer's refusal fallback is an
-    /// interrupt, and interrupting a turn is `SessionInterrupt`'s act, which no
-    /// capability opens to a peer (S4-01). A peer's report is a plain prompt.
-    ///
     /// The answer is the transcript id the delivered text got (`S5-04`): the
     /// caller correlates an event to the message that is actually there, rather
     /// than reading a "last message" that may belong to somebody else. `None`
@@ -1270,41 +1266,14 @@ impl super::SessionRegistry {
         owner: &OwnerId,
         text: &str,
     ) -> Result<Option<String>, WireError> {
-        let local = self.creator_is_local(creator);
-        // A refused steer must not take the report with it (audit S5B-06): the
-        // steer is the preferred shape (it lands in the creator's turn instead
-        // of queueing behind it), and when it is refused the same envelope goes
-        // out once as a plain prompt. Only if that fails too does the caller
-        // see an Err. An uncertain steer takes no fallback: its bytes may
-        // already be in the turn, and a repeat could say them twice.
-        let steer = self.send_to_creator(
-            creator,
-            owner,
-            text,
-            true,
-            crate::mcp_broker::ready_timeout(),
-        );
-        match steer {
-            Ok(outcome) => Ok(outcome),
-            Err(crate::session::SendError::Uncertain(error)) => Err(error),
-            Err(crate::session::SendError::Refused(error)) if !local => Err(error),
-            Err(crate::session::SendError::Refused(_)) => self
-                .send_to_creator(
-                    creator,
-                    owner,
-                    text,
-                    false,
-                    crate::mcp_broker::ready_timeout(),
-                )
-                .map_err(WireError::from),
-        }
+        self.deliver_steered_or_prompt(creator, owner, text, crate::mcp_broker::ready_timeout())
+            .map_err(WireError::from)
     }
 
-    /// One daemon notice a creator is owed without urgency: it queues behind
-    /// the creator's running turn as a plain prompt and can never steer. A
-    /// separate function rather than a flag, so the urgent steer-or-prompt
-    /// path above keeps its shape and no routine notice can pass the wrong
-    /// boolean and interrupt a turn it only meant to inform.
+    /// One daemon notice a creator is owed without urgency: the same
+    /// steer-or-prompt road as the finish report, so a notice to a streaming
+    /// creator joins the running turn instead of being refused as a plain
+    /// prompt.
     ///
     /// `mcp_timeout` is the caller's own budget for a creator whose broker
     /// has not come up yet: the idle sweep passes zero, because that thread
@@ -1317,27 +1286,47 @@ impl super::SessionRegistry {
         text: &str,
         mcp_timeout: Duration,
     ) -> Result<Option<String>, WireError> {
-        self.send_to_creator(creator, owner, text, false, mcp_timeout)
+        self.deliver_steered_or_prompt(creator, owner, text, mcp_timeout)
             .map_err(WireError::from)
     }
 
     /// One daemon notice for a live session that is not a child's creator —
-    /// the CI watch's verdict. The same road as [`Self::deliver_notice_to_creator`]:
-    /// it queues behind the session's running turn as a plain prompt and can
-    /// never steer or interrupt it.
+    /// the CI watch's verdict. The same road as
+    /// [`Self::deliver_notice_to_creator`].
     pub(crate) fn deliver_daemon_notice(
         &self,
         session_id: &str,
         owner: &OwnerId,
         text: &str,
     ) -> Result<Option<String>, crate::session::SendError> {
-        self.send_to_creator(
-            session_id,
-            owner,
-            text,
-            false,
-            crate::mcp_broker::ready_timeout(),
-        )
+        self.deliver_steered_or_prompt(session_id, owner, text, crate::mcp_broker::ready_timeout())
+    }
+
+    /// The daemon's own message to a creator, one road for the finish report
+    /// and the notices alike: steer it into the running turn when there is
+    /// one, else write it as a plain prompt. A refused steer must not take
+    /// the message with it (audit S5B-06), so a local creator gets the plain
+    /// prompt once; an uncertain steer takes no fallback, because its bytes
+    /// may already be with the creator and a repeat could say them twice. A
+    /// peer creator gets no fallback: interrupting its turn is
+    /// `SessionInterrupt`'s act, which no capability opens to a peer
+    /// (`S4-01`).
+    fn deliver_steered_or_prompt(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        text: &str,
+        mcp_timeout: Duration,
+    ) -> Result<Option<String>, crate::session::SendError> {
+        let local = self.creator_is_local(session_id);
+        match self.send_to_creator(session_id, owner, text, true, mcp_timeout) {
+            Ok(outcome) => Ok(outcome),
+            Err(error @ crate::session::SendError::Uncertain(_)) => Err(error),
+            Err(error @ crate::session::SendError::Refused(_)) if !local => Err(error),
+            Err(crate::session::SendError::Refused(_)) => {
+                self.send_to_creator(session_id, owner, text, false, mcp_timeout)
+            }
+        }
     }
 
     fn send_to_creator(

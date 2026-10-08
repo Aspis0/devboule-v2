@@ -581,6 +581,69 @@ fn a_report_survives_a_steerer_that_errors_and_lands_as_a_prompt() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// The steerer the notice road needs: it records the text it took, so a test
+/// can tell a steer from a prompt fallback.
+struct RecordingSteerer(Arc<Mutex<Vec<String>>>);
+
+impl SessionSteerer for RecordingSteerer {
+    fn steer_active_turn(
+        &mut self,
+        text: &str,
+        _turn: &mut TurnToken<'_>,
+        _origin: super::session_items::SteerOrigin,
+    ) -> Result<bool, WireError> {
+        self.0.lock().expect("steer log").push(text.to_string());
+        Ok(true)
+    }
+
+    fn clone_steerer(&self) -> Box<dyn SessionSteerer> {
+        Box::new(Self(Arc::clone(&self.0)))
+    }
+}
+
+/// A routine notice takes the finish report's road: steered into the running
+/// turn when there is one. A notice written as a plain prompt to a streaming
+/// pi creator is refused with "Agent is already processing"; steered, it
+/// joins the turn the creator is already running.
+#[test]
+fn a_notice_steers_a_mid_turn_creator_instead_of_a_plain_prompt() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-s5b06b", "process-s5b06b");
+    let written = Arc::new(Mutex::new(Vec::new()));
+    let steered = Arc::new(Mutex::new(Vec::new()));
+    let creator = insert_live_agent_with_turn_control(
+        &registry,
+        "creator-s5b06b",
+        owner.clone(),
+        SessionKind::Acp,
+        Box::new(RecordingWriter(Arc::clone(&written))),
+        None,
+        None,
+        Box::new(NoopKiller),
+        Box::new(RecordingSteerer(Arc::clone(&steered))),
+    );
+    creator.begin_turn();
+    let delivered = registry
+        .deliver_notice_to_creator(
+            "creator-s5b06b",
+            &owner,
+            "child went quiet",
+            Duration::from_secs(1),
+        )
+        .expect("a mid-turn notice steers");
+    assert!(delivered.is_some(), "the steer left a transcript message");
+    assert_eq!(
+        steered.lock().expect("steer log").as_slice(),
+        ["child went quiet"]
+    );
+    assert!(
+        written.lock().expect("written").is_empty(),
+        "the notice never became a plain prompt"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn a_childs_end_releases_its_slot_and_claims_its_report_once_whatever_path_calls_it() {
     let (_dir, registry, journal) = tmp_delete_registry();
