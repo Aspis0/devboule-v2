@@ -518,6 +518,27 @@ mod command_titles {
     }
 
     #[test]
+    fn a_scheme_glued_to_its_header_masks_the_credential_word() {
+        assert_eq!(
+            command_title("Authorization:Bearer x9"),
+            "Authorization: [redacted] [redacted]"
+        );
+    }
+
+    #[test]
+    fn a_scheme_glued_to_a_colon_masks_the_credential_word() {
+        assert_eq!(command_title("-H Bearer:x9"), "-H Bearer:[redacted]");
+    }
+
+    #[test]
+    fn a_scheme_glued_to_its_flag_masks_the_credential_word() {
+        assert_eq!(
+            command_title("--header=\"Bearer abc123\""),
+            "--header=Bearer [redacted]"
+        );
+    }
+
+    #[test]
     fn a_started_row_keeps_its_redacted_title_when_the_set_arrives_later() {
         // The started frame writes the row first and the set never
         // overwrites it, so the event itself has to carry the redaction.

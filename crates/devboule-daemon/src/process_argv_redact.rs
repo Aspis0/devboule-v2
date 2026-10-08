@@ -65,13 +65,12 @@ const SECRET_NAME_SUFFIXES: &[&str] = &[
 /// any splitting: splitting destroys the two-word shape the argv redactor's
 /// single-arg guard needs, and a short token falls under every length check
 /// after it. The word after a scheme word — `bearer`, `basic` or `token`,
-/// in any case, with or without a trailing colon — is masked only when it
-/// reads as a credential: a digit, one of `- _ . = + /`, or sixteen
+/// in any case, standing free or glued behind a `:`/`=` — is masked only
+/// when it reads as a credential: a digit, one of `- _ . = + /`, or sixteen
 /// characters, so `Bearer of bad news` survives while `Bearer abc123`
 /// does not. With nothing after it, the scheme word is an ordinary word.
 /// The value span is replaced whole, quotes included.
 pub(crate) fn mask_scheme_credentials(line: &str) -> String {
-    const SCHEMES: [&str; 3] = ["bearer", "basic", "token"];
     let mut spans: Vec<(usize, usize)> = Vec::new();
     let mut start: Option<usize> = None;
     for (index, cell) in line.char_indices() {
@@ -88,26 +87,34 @@ pub(crate) fn mask_scheme_credentials(line: &str) -> String {
     }
     let mut masked: Vec<(usize, usize)> = Vec::new();
     for (position, &(from, to)) in spans.iter().enumerate() {
-        let word = line[from..to].trim_matches(['\'', '"']);
-        let scheme = word.strip_suffix(':').unwrap_or(word);
-        if !SCHEMES.contains(&scheme.to_ascii_lowercase().as_str()) {
+        let Some(scheme_end) = scheme_word_end(line, from, to) else {
             continue;
+        };
+        let mut value_start = scheme_end;
+        while value_start < to && matches!(line.as_bytes()[value_start], b':' | b'=') {
+            value_start += 1;
         }
-        if let Some(&value) = spans.get(position + 1) {
-            if looks_like_credential(&line[value.0..value.1]) {
-                masked.push(value);
+        let value = if value_start < to {
+            (value_start, to)
+        } else {
+            match spans.get(position + 1) {
+                Some(&next) => next,
+                None => continue,
             }
+        };
+        if looks_like_credential(&line[value.0..value.1]) {
+            masked.push(value);
         }
     }
+    masked.sort_unstable();
     let mut out = String::with_capacity(line.len());
     let mut cursor = 0;
-    for &(from, to) in &spans {
-        out.push_str(&line[cursor..from]);
-        if masked.contains(&(from, to)) {
-            out.push_str("[redacted]");
-        } else {
-            out.push_str(&line[from..to]);
+    for (from, to) in masked {
+        if from < cursor {
+            continue;
         }
+        out.push_str(&line[cursor..from]);
+        out.push_str("[redacted]");
         cursor = to;
     }
     out.push_str(&line[cursor..]);
@@ -122,6 +129,24 @@ fn looks_like_credential(value: &str) -> bool {
         .chars()
         .any(|cell| cell.is_ascii_digit() || "-_.=+/".contains(cell))
         || value.chars().count() >= 16
+}
+
+/// Where a scheme word ends inside one whitespace-delimited token: `:`
+/// and `=` split it, so `Authorization:Bearer` and `--header="Bearer"`
+/// still show the scheme word whole. `None` when the token holds none.
+fn scheme_word_end(line: &str, from: usize, to: usize) -> Option<usize> {
+    const SCHEMES: [&str; 3] = ["bearer", "basic", "token"];
+    let mut part_start = from;
+    for index in from..=to {
+        if index == to || matches!(line.as_bytes()[index], b':' | b'=') {
+            let word = line[part_start..index].trim_matches(['\'', '"']);
+            if SCHEMES.contains(&word.to_ascii_lowercase().as_str()) {
+                return Some(index);
+            }
+            part_start = index + 1;
+        }
+    }
+    None
 }
 
 /// One free-text line with credentials masked: the scheme pass runs on the
