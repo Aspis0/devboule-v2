@@ -184,6 +184,13 @@ describe("the right panel's tabs", () => {
     // The stored frame is app-lifetime: a test that narrowed the panel would
     // hand its icon tabs to the next one.
     localStorage.clear();
+    // Wide enough for the four labels; the narrow cases write their own frame.
+    writeStoredPanelFrame(localStorage, {
+      left: 248,
+      right: 340,
+      leftCollapsed: false,
+      rightCollapsed: false,
+    });
     container = document.createElement("div");
     document.body.appendChild(container);
     vi.mocked(projectsList).mockResolvedValue([project]);

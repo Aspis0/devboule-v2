@@ -3,9 +3,9 @@ import { INITIAL_RIGHT_WIDTH, MAX_RIGHT_WIDTH, MIN_RIGHT_WIDTH } from "../worksp
 import { PANEL_TAB_LABEL_MIN_WIDTH, panelTabsShowLabels } from "./panelTabLabels";
 
 describe("the side panel's tab row label budget", () => {
-  it("shows the labels at the panel's default width, where they fit", () => {
-    expect(panelTabsShowLabels(INITIAL_RIGHT_WIDTH)).toBe(true);
-    expect(PANEL_TAB_LABEL_MIN_WIDTH).toBeLessThan(INITIAL_RIGHT_WIDTH);
+  it("goes icon-only at the default width, where the four labels do not fit", () => {
+    expect(panelTabsShowLabels(INITIAL_RIGHT_WIDTH)).toBe(false);
+    expect(PANEL_TAB_LABEL_MIN_WIDTH).toBeGreaterThan(INITIAL_RIGHT_WIDTH);
   });
 
   it("goes icon-only at the panel's own minimum, where they cannot fit", () => {
@@ -19,15 +19,13 @@ describe("the side panel's tab row label budget", () => {
     expect(panelTabsShowLabels(MAX_RIGHT_WIDTH)).toBe(true);
   });
 
-  it("sits above the width the three spec labels measure", () => {
-    // The labels and the row chrome around them: 27.45 + 52.05 + 40.47 px of
-    // 13px Inter text, three tabs' 30px of padding, icon and gap, the
-    // tablist's and the row's gaps and padding, and the 24px kebab. Measured
-    // in a browser against these sheets; the constant is that sum rounded up,
-    // so a panel name that grows fails here instead of clipping a tab.
-    const labels = 27.45 + 52.05 + 40.47;
-    const perTab = 12 + 14 + 4;
-    const rowChrome = 8 * 2 + 2 * 2 + 24;
-    expect(Math.ceil(labels + perTab * 3 + 2 * 2 + rowChrome)).toBe(PANEL_TAB_LABEL_MIN_WIDTH);
+  it("sits at the width the four labelled tabs measure in the app", () => {
+    // Tab widths measured live, the three gaps between four tabs, the kebab,
+    // and the row's padding and gaps: 283 + 6 + 24 + 20.
+    const tabs = 59 + 85 + 73 + 66;
+    const gaps = 3 * 2;
+    const kebab = 24;
+    const rowChrome = 8 * 2 + 2 * 2;
+    expect(tabs + gaps + kebab + rowChrome).toBe(PANEL_TAB_LABEL_MIN_WIDTH);
   });
 });

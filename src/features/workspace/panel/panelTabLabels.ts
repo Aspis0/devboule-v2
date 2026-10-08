@@ -5,13 +5,11 @@
  */
 
 /**
- * The row's budget, measured from the real sheets at 13px Inter: the three spec
- * labels (Files 27.45px, Changes 52.05px, Design 40.47px), each tab's 12px
- * padding, 14px icon and 4px gap, the tablist's two 2px gaps, the row's 8px
- * padding a side, its own two 2px gaps and its 24px kebab. A fourth or longer
- * label raises it — the constant and this measurement move together.
+ * The width the four labelled tabs need, measured live: Files 59px, Changes 85px,
+ * Design 73px, Tasks 66px, their three 2px gaps, the 24px kebab and the row's
+ * 20px of padding and gaps. A label that grows raises it.
  */
-export const PANEL_TAB_LABEL_MIN_WIDTH = 258;
+export const PANEL_TAB_LABEL_MIN_WIDTH = 333;
 
 /**
  * At the panel's default width the three labels and the kebab fit with room to
