@@ -1200,10 +1200,11 @@ pub enum ClientMessage {
     },
     /// Read the permission-delegation switch: whether an agent that created a
     /// child may answer that child's permission cards. The reply carries
-    /// `source` beside `enabled`, because "off" is three different facts the
-    /// app renders differently — the human turned it off (`file`), nobody ever
-    /// configured it (`default`), or the settings file was damaged and the
-    /// daemon is reading off until it is repaired (`quarantined`).
+    /// `source` beside `enabled`, because the same boolean is three different
+    /// facts the app renders differently — the human wrote it (`file`), nobody
+    /// has written it and the built-in on applies (`default`), or the settings
+    /// file was damaged and the daemon is reading off until it is repaired
+    /// (`quarantined`).
     ///
     /// The profile store's companion, read: the switch decides what
     /// this machine's agents may answer on their children's behalf, so a
@@ -2808,10 +2809,10 @@ pub enum VocabularySource {
 
 /// Where a delegation-switch answer came from. Three values on purpose and
 /// never collapsed: `file` — the human wrote the switch; `default` — no file
-/// exists, which reads off but is "never configured", not "turned off";
-/// `quarantined` — the file existed and was damaged, so the daemon reads off
-/// while holding neither of the other two facts. The missing file reading as
-/// off is the safe direction — it withholds power and invents no knowledge —
+/// exists, which reads on as the built-in value, not as a choice the human
+/// made; `quarantined` — the file existed and was damaged, so the daemon reads
+/// off while holding neither of the other two facts. The damaged file reading
+/// as off is the safe direction — it withholds power and invents no knowledge —
 /// and the three answers stay distinct so the app can name which one it got.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

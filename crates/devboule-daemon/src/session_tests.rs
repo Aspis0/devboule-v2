@@ -1039,6 +1039,7 @@ fn the_snapshot_carries_delegation_facts_per_child() {
     let unattended = compose_session_id(&owner.session_token(), "chu").expect("id");
     let bystander = compose_session_id(&owner.session_token(), "bye").expect("id");
     let store = Arc::new(crate::delegation_store::DelegationStore::load(&dir));
+    store.set(false).expect("set off");
     registry.attach_delegation(Arc::clone(&store));
     insert_child(&registry, &child, owner.clone(), &creator);
     insert_live_agent(&registry, &bystander, owner.clone());

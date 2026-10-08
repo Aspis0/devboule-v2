@@ -241,7 +241,7 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
     (
         MCP_CREATE_AGENT_TOOL,
-        "Creates a new Devboule agent session from a profile the human enabled for agents, and sends it an initial prompt. The human is asked to authorize the first creation from this session when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses). The result is the new session's id, its A2A task and context, and its display name. With notifyOnFinish false the child is also exempt from the idle (quiet) notice.",
+        "Creates a new Devboule agent session from a profile the human enabled for agents, and sends it an initial prompt. The human is asked to authorize each creation from this session when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses). Only the human answers that card: a parent agent never allows a creation, even when permission delegation is on. The result is the new session's id, its A2A task and context, and its display name. With notifyOnFinish false the child is also exempt from the idle (quiet) notice.",
     ),
     (
         MCP_SET_AGENT_PROFILE_TOOL,
@@ -249,7 +249,7 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
     (
         MCP_ANSWER_PERMISSION_TOOL,
-        "Answers one pending permission card of one of your own live children, when the human has turned permission delegation on. The card reaches you as an agent_permission_request notice naming its cardId. outcome is allow_once or deny - never anything durable, and never a card that is not your child's. The human still sees the card either way.",
+        "Answers one pending permission card of one of your own live children. Permission delegation is on by default, and the human can turn it off in Settings. The card reaches you as an agent_permission_request notice naming its cardId. outcome is allow_once or deny - never anything durable, and never a card that is not your child's. Ordinary cards are yours to answer; agent-creation cards, plans, questions and the always-ask cards (a paired-device command, a saved-login fill) are answered only by the human and stay pending. The human still sees the card either way.",
     ),
     (
         MCP_ACTIVITY_TOOL,

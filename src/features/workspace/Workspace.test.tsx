@@ -94,7 +94,7 @@ vi.mock("../../lib/tauri", () => ({
   // The delegation pair: the shared controller binds them at module load, so
   // the mock must name them even though the tests below inject their own
   // controller.
-  delegationGet: vi.fn(async () => ({ enabled: false, source: "default" })),
+  delegationGet: vi.fn(async () => ({ enabled: true, source: "default" })),
   delegationSet: vi.fn(async () => undefined),
   // The session badge's name map: one read per daemon connection. Individual
   // tests override the reply; the default has one paired device to name.

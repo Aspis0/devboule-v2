@@ -112,6 +112,7 @@ fn an_ambiguous_card_is_ambiguous_even_with_the_switch_off() {
     let child_a = compose_session_id(&owner.session_token(), "cha").expect("id");
     let child_b = compose_session_id(&owner.session_token(), "chb").expect("id");
     let store = Arc::new(crate::delegation_store::DelegationStore::load(&dir));
+    store.set(false).expect("set off");
     registry.attach_delegation(Arc::clone(&store));
     insert_live_agent(&registry, &creator, owner.clone());
     let runtime_a = insert_child(&registry, &child_a, owner.clone(), &creator);

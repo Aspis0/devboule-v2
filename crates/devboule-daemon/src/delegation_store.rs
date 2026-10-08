@@ -17,15 +17,16 @@
 //! a setting that decides what an agent may answer on its child's behalf is
 //! never briefly readable by another user.
 //!
-//! **What this file failing means.** A document that cannot be read, parsed,
-//! or admitted — over a cap, not a delegation document, or carrying a field
-//! the switch does not hold — is quarantined exactly as a corrupt
+//! **What this file failing means.** A file that is present but cannot be
+//! read, parsed, or admitted — blank, over a cap, not a delegation document,
+//! or carrying a field the switch does not hold — is quarantined exactly as a corrupt
 //! tool-policy file is, and the store then reads **off** and says
 //! `quarantined`. The failure has to mean "the human's answer is not on
 //! disk", because the alternative is delegation running under a value nobody
 //! wrote. The quarantine is logged, which is what keeps it from being silent;
-//! the repair is re-reading the file, not trusting a last good value the
-//! daemon was never given.
+//! while the file is missing and its quarantined copy remains, every start
+//! reads off the same way, until a person writes the switch. The repair is
+//! that write, not trusting a last good value the daemon was never given.
 //!
 //! **Read cadence — the rule every consumer inherits.** Read the switch
 //! through [`DelegationStore::get`] **at the moment the decision is made**,
@@ -113,14 +114,20 @@ impl DelegationStore {
     /// Read `runtime_dir/delegation.json`.
     ///
     /// A missing file is the normal first run and is not an error: the switch
-    /// reads off and `DelegationGet` says `default`, so the app can render
-    /// "never configured" instead of "the human turned it off". A file that
-    /// cannot be read, parsed, or admitted is quarantined — moved aside first,
-    /// best effort, never overwritten — and the store reads off and says
-    /// `quarantined`, with one log line naming the file and the reason. A
-    /// daemon that refused to start over a malformed settings file would lock
-    /// the user out of the app that could fix it; a daemon that overwrote the
-    /// file would erase the evidence of what it refused.
+    /// reads on and `DelegationGet` says `default`, so the app can render it
+    /// as the built-in value instead of as a choice the human made. A file that
+    /// is present but blank, unreadable, unparsable, or unadmitted is
+    /// quarantined — moved aside first, best effort, never overwritten — and
+    /// the store reads off and says `quarantined`, with one log line naming the
+    /// file and the reason. A daemon that refused to start over a malformed
+    /// settings file would lock the user out of the app that could fix it; a
+    /// daemon that overwrote the file would erase the evidence of what it
+    /// refused.
+    ///
+    /// The damage outlives the run that moved the file aside: while the file
+    /// is missing and a quarantined copy sits beside it, the store reads off as
+    /// `quarantined` again. The first explicit `set` writes the file, and the
+    /// file wins from then on.
     pub(crate) fn load(runtime_dir: &Path) -> Self {
         let path = runtime_dir.join(DELEGATION_FILE);
         let switch = match read_switch(&path) {
@@ -128,10 +135,20 @@ impl DelegationStore {
                 enabled,
                 source: DelegationSource::File,
             },
-            // No file yet is the first run, not damage: read off, and say
-            // `default` so the app can render "never configured".
+            Ok(None) if has_quarantined_copy(&path) => {
+                eprintln!(
+                    "delegation: {} is missing but a quarantined copy sits beside it; starting with the switch off until it is set",
+                    path.display()
+                );
+                Switch {
+                    enabled: false,
+                    source: DelegationSource::Quarantined,
+                }
+            }
+            // No file yet is the first run, not damage: read on, and say
+            // `default` so the app can tell it from a value the human wrote.
             Ok(None) => Switch {
-                enabled: false,
+                enabled: true,
                 source: DelegationSource::Default,
             },
             Err(reason) => {
@@ -217,10 +234,11 @@ fn read_document(path: &Path) -> Result<DelegationDocument, String> {
     let bytes = match crate::config_read::read_config_file(path, MAX_DELEGATION_FILE_BYTES)
         .map_err(|error| error.to_string())?
     {
-        // Absent and blank are both "never configured": a blank switch file
-        // holds nothing to destroy, so it reads as the first run, not damage.
-        crate::config_read::ConfigFile::Absent | crate::config_read::ConfigFile::Blank => {
-            return Err(MISSING_FILE.to_string());
+        crate::config_read::ConfigFile::Absent => return Err(MISSING_FILE.to_string()),
+        // A file that exists with no JSON in it is damage, not a first run: a
+        // switch truncated or emptied on disk must not read as never set.
+        crate::config_read::ConfigFile::Blank => {
+            return Err(format!("{} holds no JSON", path.display()));
         }
         crate::config_read::ConfigFile::Present(bytes) => bytes,
     };
@@ -230,6 +248,29 @@ fn read_document(path: &Path) -> Result<DelegationDocument, String> {
             path = path.display()
         )
     })
+}
+
+/// The name every quarantined copy starts with, so a later load can tell that
+/// one was kept. Spelled out, because a `const` cannot build it from
+/// `DELEGATION_FILE`.
+const QUARANTINE_PREFIX: &str = "delegation.json.corrupt-";
+
+/// Whether a quarantined copy sits beside `path`. A directory that cannot be
+/// listed counts as one, so a store it cannot inspect reads off rather than on;
+/// a directory that does not exist has nothing beside it.
+fn has_quarantined_copy(path: &Path) -> bool {
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    match std::fs::read_dir(parent) {
+        Ok(entries) => entries.filter_map(Result::ok).any(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(QUARANTINE_PREFIX))
+        }),
+        Err(error) => error.kind() != io::ErrorKind::NotFound,
+    }
 }
 
 /// The most quarantine destinations one failed load tries before it gives up
@@ -269,7 +310,7 @@ fn quarantine_at(path: &Path, millis: u128) -> Option<PathBuf> {
 /// The name one quarantine attempt keeps `path` under: `path`'s own
 /// directory, the millisecond, and this process's nonce for that attempt.
 fn quarantine_name(path: &Path, millis: u128, nonce: u64) -> PathBuf {
-    path.with_file_name(format!("{DELEGATION_FILE}.corrupt-{millis}-{nonce:08x}"))
+    path.with_file_name(format!("{QUARANTINE_PREFIX}{millis}-{nonce:08x}"))
 }
 
 /// Unix time in milliseconds, or 0 before the epoch: the timestamp in a
@@ -338,17 +379,17 @@ mod tests {
             .filter(|path| {
                 path.file_name()
                     .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with(&format!("{DELEGATION_FILE}.corrupt-")))
+                    .is_some_and(|name| name.starts_with(QUARANTINE_PREFIX))
             })
             .collect()
     }
 
     #[test]
-    fn a_missing_file_reads_off_and_says_default() {
+    fn a_missing_file_reads_on_and_says_default() {
         let dir = store_dir("missing");
         std::fs::create_dir_all(&dir).expect("mkdir");
         let store = DelegationStore::load(&dir);
-        assert_eq!(store.get(), (false, DelegationSource::Default));
+        assert_eq!(store.get(), (true, DelegationSource::Default));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -385,8 +426,11 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// A present file with no JSON in it is damage, not a first run: it is
+    /// quarantined and the switch reads off, so an emptied file cannot pass for
+    /// a switch nobody ever set.
     #[test]
-    fn an_empty_or_whitespace_switch_counts_as_never_configured() {
+    fn a_blank_switch_file_is_quarantined_and_reads_off() {
         for (tag, bytes) in [
             ("empty", b"".as_slice()),
             ("whitespace", b"  \n ".as_slice()),
@@ -397,11 +441,14 @@ mod tests {
             std::fs::write(dir.join(DELEGATION_FILE), bytes).expect("seed");
             assert_eq!(
                 DelegationStore::load(&dir).get(),
-                (false, DelegationSource::Default),
-                "{tag} is a first run, not damage"
+                (false, DelegationSource::Quarantined),
+                "{tag} is damage, not a first run"
             );
-            assert!(dir.join(DELEGATION_FILE).is_file(), "{tag} is left alone");
-            assert!(quarantined(&dir).is_empty());
+            assert!(
+                !dir.join(DELEGATION_FILE).exists(),
+                "{tag} must not stay at its own name"
+            );
+            assert_eq!(quarantined(&dir).len(), 1, "{tag} is kept as evidence");
             std::fs::remove_dir_all(&dir).ok();
         }
     }
@@ -427,6 +474,37 @@ mod tests {
             std::fs::read(&kept[0]).expect("quarantined bytes"),
             b"{ this is not json",
             "the quarantine keeps the bytes it refused"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The damage outlives the run that quarantined it: the file is gone, but
+    /// its quarantined copy stays, so the next start still reads off. Only an
+    /// explicit write brings the file back, and from then on the file wins.
+    #[test]
+    fn a_quarantine_keeps_the_switch_off_across_a_restart_until_a_person_sets_it() {
+        let dir = store_dir("durable-quarantine");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(dir.join(DELEGATION_FILE), "{ this is not json").expect("seed");
+
+        let first = DelegationStore::load(&dir);
+        assert_eq!(first.get(), (false, DelegationSource::Quarantined));
+        drop(first);
+
+        let restarted = DelegationStore::load(&dir);
+        assert_eq!(
+            restarted.get(),
+            (false, DelegationSource::Quarantined),
+            "the next start reads off, not the first-run on"
+        );
+        restarted.set(true).expect("set on");
+        assert_eq!(restarted.get(), (true, DelegationSource::File));
+
+        let reopened = DelegationStore::load(&dir);
+        assert_eq!(
+            reopened.get(),
+            (true, DelegationSource::File),
+            "the written file wins from now on"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

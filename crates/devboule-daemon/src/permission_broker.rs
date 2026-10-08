@@ -173,6 +173,7 @@ pub(super) enum DelegatedPeek {
         options: Vec<PermissionOption>,
         is_question: bool,
         is_plan: bool,
+        is_creation: bool,
     },
     Absent,
 }
@@ -633,19 +634,26 @@ impl PermissionBroker {
         };
         match table.entries.get(tool_call_id) {
             Some(pending) => {
-                let (options, is_question, is_plan) = match &pending.request {
-                    SessionEvent::PermissionRequest { options, kind, .. } => (
+                let (options, is_question, is_plan, is_creation) = match &pending.request {
+                    SessionEvent::PermissionRequest {
+                        options,
+                        kind,
+                        create_agent,
+                        ..
+                    } => (
                         options.clone(),
                         matches!(kind, Some(PermissionRequestKind::Question)),
                         matches!(kind, Some(PermissionRequestKind::Plan)),
+                        create_agent.is_some(),
                     ),
-                    _ => (Vec::new(), false, false),
+                    _ => (Vec::new(), false, false, false),
                 };
                 DelegatedPeek::Found {
                     pending: Arc::clone(pending),
                     options,
                     is_question,
                     is_plan,
+                    is_creation,
                 }
             }
             None => DelegatedPeek::Absent,
@@ -751,6 +759,7 @@ impl PermissionBroker {
                 options,
                 is_question,
                 is_plan,
+                is_creation,
                 ..
             } => {
                 if *is_plan {
@@ -765,6 +774,15 @@ impl PermissionBroker {
                 if *is_question {
                     return Err(format!(
                         "permission card {tool_call_id} is a question; only a person answers it, so it stays pending"
+                    ));
+                }
+                // An allow on a creation card opens the creator's session-wide
+                // gate for more agents, so the person alone gives it, whatever
+                // the switch says. The payload marks the card, not its id: an
+                // id is a naming convention a future minter could drop.
+                if *is_creation {
+                    return Err(format!(
+                        "permission card {tool_call_id} creates an agent; only a person can allow agent creation, so it stays pending"
                     ));
                 }
                 // A chooser has no answer this door can give: the MCP tool
@@ -4124,6 +4142,60 @@ mod question_tests {
         assert!(error.contains("is a plan"), "{error}");
         assert_eq!(broker.pending_len(), 1);
         assert!(sent.lock().expect("sent lock").is_empty());
+    }
+
+    /// A creation card offers the same plain allow/deny pair an ordinary card
+    /// does, so the shape checks pass it. Its allow opens the creator's gate
+    /// for more agents, which only the person may do: the parent's allow is
+    /// refused and the card stays pending.
+    #[test]
+    fn delegation_refuses_a_creation_card() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        broker
+            .register(218, permission_creation("create:delegated"), &runtime)
+            .expect("register");
+        let error = broker
+            .answer_delegated(
+                "create:delegated",
+                PermissionOutcome::AllowOnce,
+                &|| true,
+                &|_| false,
+                &|_| Ok(()),
+                &|_| Ok(()),
+                "s.creator",
+            )
+            .expect_err("a creation card stays with the person");
+        assert!(error.contains("creates an agent"), "{error}");
+        assert_eq!(broker.pending_len(), 1, "the card stays pending");
+        assert!(sent.lock().expect("sent lock").is_empty());
+    }
+
+    fn permission_creation(tool_call_id: &str) -> SessionEvent {
+        let mut request = super::permission_with_kinds(
+            tool_call_id,
+            &[("allow", "allow_once"), ("deny", "reject_once")],
+        );
+        if let SessionEvent::PermissionRequest { create_agent, .. } = &mut request {
+            *create_agent = Some(Box::new(devboule_protocol::CreateAgentCard {
+                creator_session_id: "s.creator".to_string(),
+                provider: "claude".to_string(),
+                profile: "design".to_string(),
+                title: "Poster".to_string(),
+                tools: "unverified".to_string(),
+                caps: devboule_protocol::CreateAgentCaps {
+                    live_children: 0,
+                    max_live_children: 3,
+                    creations_this_hour: 0,
+                    max_creations_per_hour: 20,
+                    depth: 0,
+                    max_depth: 3,
+                    live_agent_sessions: 1,
+                    max_live_agent_sessions: 8,
+                },
+            }));
+        }
+        request
     }
 
     #[test]

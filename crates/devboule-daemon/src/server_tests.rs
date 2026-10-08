@@ -1592,7 +1592,7 @@ fn delegation_get_and_set_round_trip_and_push_the_stored_value() {
         panic!("DelegationGet must reply with DelegationState, got {reply:?}");
     };
     assert_eq!(id, 31);
-    assert!(!enabled);
+    assert!(enabled, "a first run reads the built-in on");
     assert_eq!(source, devboule_protocol::DelegationSource::Default);
 
     // The set: the reply is what the daemon stored, the durable copy

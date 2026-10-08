@@ -80,32 +80,33 @@ const DELEGATION_UNAVAILABLE_TEXT =
   "This daemon is older than this app: it does not advertise the permission_delegation capability, so it cannot keep the switch this section is for. Nothing was sent to it.";
 
 /**
- * The sentence for a reply that disagrees with itself: `enabled: true` beside
- * a source that can only read off. The daemon's vocabulary has no such pair,
- * so this renders a fact the app cannot smooth over — the reply said both.
+ * The sentence for a reply that disagrees with itself: a source beside a
+ * switch value it cannot hold. The daemon's vocabulary has no such pair, so
+ * this renders a fact the app cannot smooth over — the reply said both.
  */
 const DELEGATION_CONTRADICTION_LABEL =
-  "The daemon's answer contradicts itself — the switch reads on, from a source that can only be off";
+  "The daemon's answer contradicts itself — this source cannot hold this switch value";
 
 /**
  * The sentences the stored answer's `source` renders as, one row per value and
  * an arm for each switch reading: `off` is the sentence when the daemon's
  * answer agrees with an off switch, `on` the one beside an on switch. They are
  * pairwise distinct on purpose: `default` is "never configured" — a human said
- * nothing yet; `quarantined` is neither that nor "off" — a human DID
- * configure, and the file came back damaged; `file` is the deliberate case.
- * Collapsing any two is the absent-into-none defect wearing a settings label
- * (cross-check §2, the eighth catch). The `on` arms of `default` and
- * `quarantined` are the contradiction sentence (re-audit F11): an inconsistent
- * reply is reported as inconsistent, never dressed up as a coherent sentence
- * that contradicts the checked switch beside it.
+ * nothing yet, so the built-in on applies; `quarantined` is neither that nor
+ * "off" — a human DID configure, and the file came back damaged; `file` is the
+ * deliberate case. Collapsing any two is the absent-into-none defect wearing a
+ * settings label. `default` with an off switch is what a daemon from before
+ * the built-in on returns for a missing file: it reads as never configured, not
+ * as a contradiction. The `on` arm of `quarantined` is the contradiction
+ * sentence: an inconsistent reply is reported as inconsistent, never dressed up
+ * as a coherent sentence that contradicts the checked switch beside it.
  */
 export const DELEGATION_SOURCE_LABELS: Record<
   DelegationReply["source"],
   { off: string; on: string }
 > = {
   file: { off: "Off", on: "On" },
-  default: { off: "Never configured", on: DELEGATION_CONTRADICTION_LABEL },
+  default: { off: "Off (never configured)", on: "Never configured — on by default" },
   quarantined: {
     off: "Settings file was damaged — delegation reads off",
     on: DELEGATION_CONTRADICTION_LABEL,

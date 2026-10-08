@@ -140,7 +140,7 @@ describe("DelegationSetting - the switch beside the profiles", () => {
     vi.mocked(delegationSet).mockResolvedValue(undefined);
     // Reset the app's shared controller between tests: the last test's
     // answer must not be this test's starting point.
-    vi.mocked(delegationGet).mockResolvedValue({ enabled: false, source: "default" });
+    vi.mocked(delegationGet).mockResolvedValue({ enabled: true, source: "default" });
   });
 
   afterEach(async () => {
@@ -167,16 +167,16 @@ describe("DelegationSetting - the switch beside the profiles", () => {
   });
 
   it("fetches on mount when the handshake advertised the capability", async () => {
-    vi.mocked(delegationGet).mockResolvedValue({ enabled: false, source: "default" });
+    vi.mocked(delegationGet).mockResolvedValue({ enabled: true, source: "default" });
     mountDelegation(DELEGATION_DAEMON);
     await settle();
 
     expect(delegationGet).toHaveBeenCalledTimes(1);
-    expect(theSwitch().checked).toBe(false);
+    expect(theSwitch().checked).toBe(true);
     expect(theSwitch().disabled).toBe(false);
-    // `default` is "never configured", not "off": no human said anything yet.
+    // `default` is the built-in on: no human wrote the switch yet.
     expect(container.querySelector(".agent-delegation-source")?.textContent).toBe(
-      "Never configured",
+      "Never configured — on by default",
     );
   });
 
@@ -241,7 +241,7 @@ describe("DelegationSetting - the switch beside the profiles", () => {
   });
 
   it("states the blast radius and the global scope - the copy without which there is no consent", async () => {
-    vi.mocked(delegationGet).mockResolvedValue({ enabled: false, source: "default" });
+    vi.mocked(delegationGet).mockResolvedValue({ enabled: true, source: "default" });
     mountDelegation(DELEGATION_DAEMON);
     await settle();
 
@@ -334,15 +334,17 @@ describe("DelegationSetting - the switch beside the profiles", () => {
     expect(status).not.toContain("reads off");
   });
 
-  it("reports the contradiction for never-configured beside an on switch too", async () => {
-    vi.mocked(delegationGet).mockResolvedValue({ enabled: true, source: "default" });
+  it("renders a capable older daemon's never-configured off without a contradiction", async () => {
+    // A daemon from before the built-in on answers `default` with off for a
+    // missing file; the app reads that as the state it is, not as an error.
+    vi.mocked(delegationGet).mockResolvedValue({ enabled: false, source: "default" });
     mountDelegation(DELEGATION_DAEMON);
     await settle();
 
-    expect(theSwitch().checked).toBe(true);
+    expect(theSwitch().checked).toBe(false);
     const status = container.querySelector(".agent-delegation-source")?.textContent ?? "";
-    expect(status).toContain("contradicts itself");
-    expect(status).not.toBe("Never configured");
+    expect(status).toBe("Off (never configured)");
+    expect(status).not.toContain("contradicts itself");
   });
 
   it("the source sentence follows a successful write instead of contradicting the switch", async () => {
@@ -379,19 +381,19 @@ describe("DelegationSetting - the switch beside the profiles", () => {
     let releaseReread!: () => void;
     const reread = new Promise<{ enabled: boolean; source: "file" | "default" | "quarantined" }>(
       (resolve) => {
-        releaseReread = () => resolve({ enabled: false, source: "default" });
+        releaseReread = () => resolve({ enabled: true, source: "default" });
       },
     );
     vi.mocked(delegationGet)
-      .mockResolvedValueOnce({ enabled: false, source: "default" })
+      .mockResolvedValueOnce({ enabled: true, source: "default" })
       .mockImplementationOnce(() => reread);
     mountDelegation(DELEGATION_DAEMON);
     await settle();
     vi.mocked(delegationSet).mockRejectedValueOnce(new Error("the store refused the write"));
 
     await act(async () => theSwitch().click());
-    expect(delegationSet).toHaveBeenCalledWith(true);
-    expect(theSwitch().checked).toBe(false);
+    expect(delegationSet).toHaveBeenCalledWith(false);
+    expect(theSwitch().checked).toBe(true);
     expect(container.querySelector(".device-error")?.textContent).toBe(
       "the store refused the write",
     );
@@ -401,9 +403,9 @@ describe("DelegationSetting - the switch beside the profiles", () => {
     releaseReread();
     await settle();
     expect(container.querySelector(".device-error")).toBeNull();
-    expect(theSwitch().checked).toBe(false);
+    expect(theSwitch().checked).toBe(true);
     expect(container.querySelector(".agent-delegation-source")?.textContent).toBe(
-      "Never configured",
+      "Never configured — on by default",
     );
   });
 

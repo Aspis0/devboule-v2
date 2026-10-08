@@ -49,7 +49,7 @@ vi.mock("../../lib/tauri", () => ({
   createSessionStateChannel: vi.fn(() => ({ onSnapshot: () => undefined })),
   sessionsWatch: vi.fn(async () => undefined),
   sessionsUnwatch: vi.fn(async () => undefined),
-  delegationGet: vi.fn(async () => ({ enabled: false, source: "default" })),
+  delegationGet: vi.fn(async () => ({ enabled: true, source: "default" })),
   delegationSet: vi.fn(async () => undefined),
   devicesList: vi.fn(async () => ({ selfInfo: undefined, peers: [], pending: [] })),
 }));

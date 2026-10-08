@@ -792,7 +792,7 @@ export default function (pi) {
   pi.registerTool({
     name: "devboule_create_agent",
     label: "Create Devboule agent",
-    description: `Creates a new Devboule agent session from a profile the human enabled for agents, and sends it an initial prompt. The human is asked to authorize the first creation from this session when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses). The result is the new session's id, its A2A task and context, and its display name. With notifyOnFinish false the child is also exempt from the idle (quiet) notice.`,
+    description: `Creates a new Devboule agent session from a profile the human enabled for agents, and sends it an initial prompt. The human is asked to authorize each creation from this session when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses). Only the human answers that card: a parent agent never allows a creation, even when permission delegation is on. The result is the new session's id, its A2A task and context, and its display name. With notifyOnFinish false the child is also exempt from the idle (quiet) notice.`,
     parameters: Type.Object(
       {
         profile: Type.String({ description: "Name of a profile the human enabled for agents; see devboule_list_profiles." }),
@@ -833,7 +833,7 @@ export default function (pi) {
   pi.registerTool({
     name: "devboule_answer_permission",
     label: "Answer Devboule permission",
-    description: `Answers one pending permission card of one of your own live children, when the human has turned permission delegation on. The card reaches you as an agent_permission_request notice naming its cardId. outcome is allow_once or deny - never anything durable, and never a card that is not your child's. The human still sees the card either way.`,
+    description: `Answers one pending permission card of one of your own live children. Permission delegation is on by default, and the human can turn it off in Settings. The card reaches you as an agent_permission_request notice naming its cardId. outcome is allow_once or deny - never anything durable, and never a card that is not your child's. Ordinary cards are yours to answer; agent-creation cards, plans, questions and the always-ask cards (a paired-device command, a saved-login fill) are answered only by the human and stay pending. The human still sees the card either way.`,
     parameters: Type.Object(
       {
         cardId: Type.String(),

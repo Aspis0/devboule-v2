@@ -561,7 +561,7 @@ describe("Settings menu shell", () => {
       capabilities: [...connectedDaemon().capabilities, "permission_delegation"],
     };
     vi.mocked(daemonStatus).mockResolvedValue(capable);
-    vi.mocked(delegationGet).mockResolvedValue({ enabled: false, source: "default" });
+    vi.mocked(delegationGet).mockResolvedValue({ enabled: true, source: "default" });
     vi.useFakeTimers();
     try {
       root = createRoot(container);

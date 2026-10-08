@@ -30,10 +30,10 @@ describe("delegation controller", () => {
     expect(controller.getState().enabled).toBeNull();
     expect(controller.getState().error).toEqual({ sentence: "the daemon refused", detail: null });
     // A later successful load recovers the panel.
-    get.mockResolvedValue({ enabled: false, source: "default" });
+    get.mockResolvedValue({ enabled: true, source: "default" });
     await controller.load();
     expect(controller.getState().loadFailed).toBe(false);
-    expect(controller.getState().enabled).toBe(false);
+    expect(controller.getState().enabled).toBe(true);
   });
 
   it("an optimistic write keeps its value when it confirms", async () => {
@@ -103,7 +103,7 @@ describe("delegation controller", () => {
   it("a fetch that overlapped a write adopts nothing — the write's settle is the record", async () => {
     let releaseGet!: () => void;
     const gate = new Promise<DelegationReply>((resolve) => {
-      releaseGet = () => resolve({ enabled: false, source: "default" });
+      releaseGet = () => resolve({ enabled: false, source: "file" });
     });
     // The first read answers at once so the panel holds a value (a write
     // never starts from a guess); the refresh overlaps a write.
@@ -125,7 +125,7 @@ describe("delegation controller", () => {
   it("a fetch started before a write adopts nothing when the write lands mid-flight", async () => {
     let releaseGet!: () => void;
     const gate = new Promise<DelegationReply>((resolve) => {
-      releaseGet = () => resolve({ enabled: false, source: "default" });
+      releaseGet = () => resolve({ enabled: false, source: "file" });
     });
     let call = 0;
     const controller = createDelegationController({
@@ -139,12 +139,9 @@ describe("delegation controller", () => {
     // (the write bumped it while the fetch flew).
     releaseGet();
     await Promise.all([fetch, write]);
-    expect(controller.getState().enabled).toBe(true);
-    // The racer's reply never adopted: the standing reply's source is the
-    // write's own minted "file", not the racer's "default". (Source alone
-    // cannot tell the first load's reply from the write's mint — both are
-    // "file"; the enabled assertion above is what pins whose reply stands.)
-    expect(controller.getState().reply?.source).toBe("file");
+    // The racer's explicit off never adopted: the standing reply is the
+    // write's own minted on, the whole pair and not only its value.
+    expect(controller.getState().reply).toEqual({ enabled: true, source: "file" });
   });
 
   it("a fetch that started while a write was in flight adopts nothing, sequence untouched", async () => {
@@ -155,7 +152,7 @@ describe("delegation controller", () => {
     // unknowable. Only the in-flight half can refuse this reply.
     let releaseGet!: () => void;
     const gate = new Promise<DelegationReply>((resolve) => {
-      releaseGet = () => resolve({ enabled: false, source: "default" });
+      releaseGet = () => resolve({ enabled: false, source: "file" });
     });
     let call = 0;
     const controller = createDelegationController({

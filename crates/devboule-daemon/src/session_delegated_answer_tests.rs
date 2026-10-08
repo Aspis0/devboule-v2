@@ -21,11 +21,12 @@ fn the_delegated_answer_reads_the_switch_at_the_moment_it_lands() {
     let creator = compose_session_id(&owner.session_token(), "cr1").expect("id");
     let child = compose_session_id(&owner.session_token(), "ch1").expect("id");
     let store = Arc::new(crate::delegation_store::DelegationStore::load(&dir));
+    store.set(false).expect("set off");
     registry.attach_delegation(Arc::clone(&store));
     insert_live_agent(&registry, &creator, owner.clone());
     let child_runtime = insert_child(&registry, &child, owner.clone(), &creator);
 
-    // C1: the switch was never turned on — refused, card pending.
+    // C1: the switch is off — refused, card pending.
     park_card(&registry, &child_runtime, "card-1");
     let error = answer(
         &registry,
