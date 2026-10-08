@@ -172,7 +172,12 @@ fn journal_keeps_every_frame_for_recovery() {
         runtime.publish_output(&payload);
     }
     runtime.finish(Some(0));
-    journal.flush().unwrap();
+    // The durable boundary, not a bounded control RPC: a burst can outlast
+    // `flush`'s ten-second wait on a loaded runner, and the boundary waits
+    // for every frame queued ahead of it however long the drain takes.
+    journal
+        .mark_ended_blocking("s.recover.1", 1, Some(0))
+        .expect("the durable end drains every queued frame");
 
     let replay = journal.replay("s.recover.1").unwrap();
     let seqs: Vec<u64> = replay
