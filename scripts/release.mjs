@@ -12,7 +12,6 @@ import { fileURLToPath } from "node:url";
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const RELEASE_TAG = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const JSON_VERSION_LINE = /^( {2}"version": ")([^"]*)(")/m;
-const TOML_VERSION_LINE = /^(version = ")([^"]*)(")/m;
 
 function versionComponents(text, pattern, label) {
   const match = pattern.exec(text);
@@ -63,13 +62,50 @@ export function makeChangelogSection(version, date, commits) {
   return [`## [${version}] - ${date}`, "", "### Changes", ...bullets].join("\n");
 }
 
+// Cargo manifests are TOML: the package version lives inside the [package]
+// table, which is not necessarily the first table — a dependency table with
+// its own `version =` key must never be read or rewritten as the package
+// version. The working tree is LF (`.gitattributes`), as everywhere here.
+function packageVersionMatch(text, fullPath) {
+  const headers = [...text.matchAll(/^\[package\][ \t]*$/gm)];
+  if (headers.length !== 1) {
+    throw new Error(`${fullPath}: expected exactly one [package] table, found ${headers.length}`);
+  }
+  const bodyStart = headers[0].index + headers[0][0].length;
+  const body = text.slice(bodyStart);
+  const nextTable = /^\[[^\]\r\n]+\]/m.exec(body);
+  const span = nextTable === null ? body : body.slice(0, nextTable.index);
+  const versions = [...span.matchAll(/^version = "([^"]*)"/gm)];
+  if (versions.length !== 1) {
+    throw new Error(
+      `${fullPath}: expected exactly one version in [package], found ${versions.length}`,
+    );
+  }
+  return {
+    index: bodyStart + versions[0].index,
+    length: versions[0][0].length,
+    value: versions[0][1],
+  };
+}
+
 export function extractChangelogSection(changelog, version) {
-  const heading = `## [${version}]`;
   const lines = changelog.split(/\r?\n/);
-  const start = lines.findIndex((line) => line === heading || line.startsWith(`${heading} `));
-  if (start === -1) {
+  const pattern = sectionHeadingPattern(version);
+  const starts = [];
+  lines.forEach((line, index) => {
+    if (pattern.test(line)) {
+      starts.push(index);
+    }
+  });
+  if (starts.length > 1) {
+    throw new Error(
+      `CHANGELOG carries ${starts.length} sections for ${version}, expected exactly one`,
+    );
+  }
+  if (starts.length === 0) {
     return null;
   }
+  const start = starts[0];
   let end = lines.length;
   for (let index = start + 1; index < lines.length; index += 1) {
     if (lines[index].startsWith("## ")) {
@@ -78,6 +114,31 @@ export function extractChangelogSection(changelog, version) {
     }
   }
   return lines.slice(start, end).join("\n").replace(/\s+$/, "");
+}
+
+// One release section, exactly as the brief defines it: the dated heading,
+// a blank line, `### Changes`, and nothing but `- ` bullets below.
+export function assertValidSection(section, version) {
+  const lines = section.split(/\r?\n/);
+  if (lines[0] === undefined || !sectionHeadingPattern(version).test(lines[0])) {
+    throw new Error(`section heading must be exactly "## [${version}] - YYYY-MM-DD"`);
+  }
+  if (lines[1] !== "" || lines[2] !== "### Changes") {
+    throw new Error(`section must put a blank line and "### Changes" under its heading`);
+  }
+  const body = lines.slice(3).filter((line) => line !== "");
+  if (body.length === 0) {
+    throw new Error(`section for ${version} has no changes to release`);
+  }
+  const notBullet = body.find((line) => !line.startsWith("- "));
+  if (notBullet !== undefined) {
+    throw new Error(`section body may only hold "- " bullets, found: ${JSON.stringify(notBullet)}`);
+  }
+}
+
+function sectionHeadingPattern(version) {
+  const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^## \\[${escaped}\\] - \\d{4}-\\d{2}-\\d{2}$`);
 }
 
 // The tag the changelog range stops at: the highest vX.Y.Z among the tags
@@ -188,11 +249,14 @@ function git(args, options = {}) {
 
 function readVersionOf(fullPath) {
   const text = readFileSync(fullPath, "utf8");
-  const match = (fullPath.endsWith(".json") ? JSON_VERSION_LINE : TOML_VERSION_LINE).exec(text);
-  if (match === null) {
-    throw new Error(`${fullPath}: no version line`);
+  if (fullPath.endsWith(".json")) {
+    const match = JSON_VERSION_LINE.exec(text);
+    if (match === null) {
+      throw new Error(`${fullPath}: no version line`);
+    }
+    return match[2];
   }
-  return match[2];
+  return packageVersionMatch(text, fullPath).value;
 }
 
 // Narrow line replacement: tauri.conf.json is JSON-with-comments and the
@@ -200,11 +264,18 @@ function readVersionOf(fullPath) {
 // the whole file.
 function writeVersionTo(fullPath, version) {
   const text = readFileSync(fullPath, "utf8");
-  const pattern = fullPath.endsWith(".json") ? JSON_VERSION_LINE : TOML_VERSION_LINE;
-  if (pattern.exec(text) === null) {
-    throw new Error(`${fullPath}: no version line`);
+  if (fullPath.endsWith(".json")) {
+    if (JSON_VERSION_LINE.exec(text) === null) {
+      throw new Error(`${fullPath}: no version line`);
+    }
+    writeFileSync(fullPath, text.replace(JSON_VERSION_LINE, `$1${version}$3`));
+    return;
   }
-  writeFileSync(fullPath, text.replace(pattern, `$1${version}$3`));
+  const found = packageVersionMatch(text, fullPath);
+  writeFileSync(
+    fullPath,
+    `${text.slice(0, found.index)}version = "${version}"${text.slice(found.index + found.length)}`,
+  );
 }
 
 function readSourceVersions() {
@@ -235,12 +306,9 @@ function insertChangelogSection(changelog, section) {
 function assertReviewed(reviewed, version) {
   const section = extractChangelogSection(reviewed, version);
   if (section === null) {
-    throw new Error(`the reviewed notes carry no ## [${version}] heading`);
+    throw new Error(`the reviewed notes carry no "## [${version}] - YYYY-MM-DD" heading`);
   }
-  const bodyStart = section.indexOf("\n");
-  if (bodyStart === -1 || section.slice(bodyStart + 1).trim() === "") {
-    throw new Error(`the reviewed notes for v${version} are empty under the heading`);
-  }
+  assertValidSection(section, version);
 }
 
 function reviewEditor() {
@@ -405,10 +473,12 @@ function runRelease(kind) {
 }
 
 function runNotes(tag, outputPath) {
-  const section = extractChangelogSection(readFileSync(CHANGELOG_PATH, "utf8"), tag.slice(1));
+  const version = tag.slice(1);
+  const section = extractChangelogSection(readFileSync(CHANGELOG_PATH, "utf8"), version);
   if (section === null) {
     throw new Error(`CHANGELOG.md has no section for ${tag}`);
   }
+  assertValidSection(section, version);
   writeFileSync(outputPath, `${section}\n`);
 }
 
@@ -425,6 +495,7 @@ function runCheckTag(tag) {
   if (section === null) {
     throw new Error(`CHANGELOG.md has no section for ${tag}`);
   }
+  assertValidSection(section, canonical);
 }
 
 if (import.meta.main) {

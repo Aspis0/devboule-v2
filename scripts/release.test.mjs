@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  assertValidSection,
   bumpVersion,
   extractChangelogSection,
   findVersionDrift,
@@ -152,6 +153,79 @@ describe("extractChangelogSection", () => {
 
   it("returns null when the version is absent", () => {
     expect(extractChangelogSection(changelog, "9.9.9")).toBeNull();
+  });
+
+  it("returns null for headings that are not the exact dated form", () => {
+    expect(
+      extractChangelogSection("## [0.1.1]\n\n### Changes\n- x (abc1234)\n", "0.1.1"),
+    ).toBeNull();
+    expect(
+      extractChangelogSection("## [0.1.1] misc\n\n### Changes\n- x (abc1234)\n", "0.1.1"),
+    ).toBeNull();
+    expect(
+      extractChangelogSection("## [0.1.1] - 2026-10-7\n\n### Changes\n- x (abc1234)\n", "0.1.1"),
+    ).toBeNull();
+  });
+
+  it("refuses a changelog holding two sections for one version", () => {
+    const duplicate = [
+      "## [Unreleased]",
+      "",
+      "## [0.2.0] - 2026-10-07",
+      "",
+      "### Changes",
+      "- once (aaaaaaa)",
+      "",
+      "## [0.2.0] - 2026-10-08",
+      "",
+      "### Changes",
+      "- twice (bbbbbbb)",
+      "",
+    ].join("\n");
+    expect(() => extractChangelogSection(duplicate, "0.2.0")).toThrow(/exactly one/);
+  });
+});
+
+describe("assertValidSection", () => {
+  const valid = makeChangelogSection("0.1.1", "2026-10-07", [
+    { hash: "abcdef12345", subject: "Ship it" },
+  ]);
+
+  it("accepts what makeChangelogSection produces", () => {
+    expect(() => assertValidSection(valid, "0.1.1")).not.toThrow();
+  });
+
+  it("refuses a heading that is not the exact dated form for this version", () => {
+    expect(() => assertValidSection(valid.replace(" - 2026-10-07", " misc"), "0.1.1")).toThrow(
+      /heading must be exactly/,
+    );
+    expect(() => assertValidSection(valid, "0.1.2")).toThrow(/heading must be exactly/);
+    expect(() => assertValidSection(valid.replace("2026-10-07", "2026-10-7"), "0.1.1")).toThrow(
+      /heading must be exactly/,
+    );
+  });
+
+  it("refuses a body without ### Changes", () => {
+    expect(() => assertValidSection(valid.replace("### Changes", "Random prose"), "0.1.1")).toThrow(
+      /blank line and "### Changes"/,
+    );
+  });
+
+  it("refuses a body without a bullet", () => {
+    const empty = ["## [0.1.1] - 2026-10-07", "", "### Changes"].join("\n");
+    expect(() => assertValidSection(empty, "0.1.1")).toThrow(/no changes/);
+  });
+
+  it("refuses prose mixed into the bullet list", () => {
+    const prose = [
+      "## [0.1.1] - 2026-10-07",
+      "",
+      "### Changes",
+      "- a (aaa)",
+      "",
+      "just prose",
+    ].join("\n");
+    expect(() => assertValidSection(prose, "0.1.1")).toThrow(/only hold/);
   });
 });
 
