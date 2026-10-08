@@ -196,6 +196,10 @@ mod tests;
 mod ends_tests;
 
 #[cfg(test)]
+#[path = "pi_turn_tool_iteration_tests.rs"]
+mod tool_iteration_tests;
+
+#[cfg(test)]
 #[path = "pi_turn_rejection_tests.rs"]
 mod rejection_tests;
 

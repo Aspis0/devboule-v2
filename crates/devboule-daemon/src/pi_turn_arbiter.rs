@@ -7,7 +7,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use devboule_protocol::SessionEvent;
+use devboule_protocol::{SessionEvent, TurnUsage};
 use serde_json::Value;
 
 use crate::session::permission_broker::PermissionBroker;
@@ -75,6 +75,39 @@ impl AbortGate {
     }
 }
 
+/// What a run's withheld tool iterations leave owed: their finishing usage
+/// sums here for the end that closes the run, and `open` says pi still owes
+/// that end — no closing `turn_end` has come since the last iteration.
+#[derive(Default)]
+struct ToolIterations {
+    open: bool,
+    usage: Option<TurnUsage>,
+}
+
+impl ToolIterations {
+    /// One iteration's end was withheld: the run's end is open again, and
+    /// the iteration's usage joins the sum.
+    fn note(&mut self, value: &Value) {
+        self.open = true;
+        self.usage = crate::pi_view::add_usage(
+            self.usage.take(),
+            value
+                .get("message")
+                .and_then(|message| message.get("usage"))
+                .and_then(crate::pi_view::usage_from_pi),
+        );
+    }
+
+    /// The summed usage, once, if an iteration left the run's end open.
+    fn take(&mut self) -> Option<Option<TurnUsage>> {
+        if !self.open {
+            return None;
+        }
+        self.open = false;
+        Some(self.usage.take())
+    }
+}
+
 /// What a frame means for the run's finish, decided from the shared watch,
 /// the expiry's expectation, the abort gate, pi's own turn bounds, and the
 /// open tool set — the reader holds none of it.
@@ -99,6 +132,10 @@ pub(super) struct TurnArbiter {
     /// the close in. At most one — two refusals deferred in one run share
     /// the one finish, both errors shown.
     pending_refusal: AtomicBool,
+    /// The run's withheld tool iterations: their finishes were suppressed,
+    /// so the end that closes the run owes their usage — and, when no
+    /// closing `turn_end` follows, pi's own close owes the turn.
+    tool_iterations: Mutex<ToolIterations>,
     /// The live-context poller, when the spawn wired one: the run's open
     /// and close are its poll window, an interrupt stops it, the session's
     /// end closes it. `None` on the bare arbiter the tests hold.
@@ -115,6 +152,7 @@ impl TurnArbiter {
             failure: Mutex::new(PendingFailure::default()),
             pi_turn_open: AtomicBool::new(false),
             pending_refusal: AtomicBool::new(false),
+            tool_iterations: Mutex::new(ToolIterations::default()),
             usage: None,
         }
     }
@@ -254,6 +292,54 @@ impl TurnArbiter {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    fn tool_iterations(&self) -> MutexGuard<'_, ToolIterations> {
+        self.tool_iterations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The withheld iterations' summed usage, once, when one left the run's
+    /// end open.
+    fn take_tool_iterations(&self) -> Option<Option<TurnUsage>> {
+        self.tool_iterations().take()
+    }
+
+    /// The withheld tool iterations' usage, folded onto the finish the
+    /// closing `turn_end` carries, so the run's one finish reports all of
+    /// it. A row that derives no finish — or an end another road suppresses
+    /// — leaves the sum in hand for the end that does.
+    pub(super) fn fold_withheld_usage(&self, events: &mut [SessionEvent]) {
+        let Some(finish) = events.iter_mut().find_map(|event| match event {
+            SessionEvent::AgentFinished { usage, .. } => Some(usage),
+            _ => None,
+        }) else {
+            return;
+        };
+        let Some(withheld) = self.take_tool_iterations() else {
+            return;
+        };
+        *finish = crate::pi_view::add_usage(finish.take(), withheld);
+    }
+
+    /// pi settled with no closing `turn_end` — the last end was a withheld
+    /// tool iteration: the still-open turn ends here, once, reported `stop`
+    /// (pi's own close carries no stop reason), with the iterations' summed
+    /// usage. A closing `turn_end` that landed already ended the turn and
+    /// took the sum, so this is silent then.
+    pub(super) fn note_run_closed(&self, runtime: &SessionRuntime) {
+        let Some(usage) = self.take_tool_iterations() else {
+            return;
+        };
+        if !runtime.is_running_turn() || !self.owns_finish() {
+            return;
+        }
+        let _ = runtime.publish_journaled_finish(SessionEvent::AgentFinished {
+            stop_reason: "stop".to_string(),
+            model_id: None,
+            usage,
+        });
+    }
+
     /// A durable `turn_end` context reading just published: the live
     /// poll's dedup key forgets what it published before it, so the key
     /// tracks what the client last saw.
@@ -284,24 +370,27 @@ impl TurnArbiter {
     /// exactly once, on the journaled road. `is_running_turn` is the guard
     /// that gives every earlier finish (pi's own end, the watchdog, EOF)
     /// the win, because each of them ends the turn; the mark is spent
-    /// either way.
-    pub(super) fn note_agent_end(&self, runtime: &SessionRuntime) {
+    /// either way. A run pi is not retrying closes its still-open turn here
+    /// too: the last end was a withheld tool iteration, so no closing
+    /// `turn_end` is coming.
+    pub(super) fn note_agent_end(&self, runtime: &SessionRuntime, value: &Value) {
         if let Some(usage) = &self.usage {
             usage.run_closed();
         }
         self.pi_turn_open.store(false, Ordering::Release);
-        if !self.pending_refusal.swap(false, Ordering::AcqRel) {
-            return;
-        }
-        if !runtime.is_running_turn() {
-            return;
-        }
-        if self.owns_finish() {
+        if self.pending_refusal.swap(false, Ordering::AcqRel)
+            && runtime.is_running_turn()
+            && self.owns_finish()
+        {
             let _ = runtime.publish_journaled_finish(SessionEvent::AgentFinished {
                 stop_reason: "error".to_string(),
                 model_id: None,
-                usage: None,
+                usage: self.take_tool_iterations().flatten(),
             });
+        }
+        // A retry reopens the same run; anything else leaves it over.
+        if value.get("willRetry").and_then(Value::as_bool) != Some(true) {
+            self.note_run_closed(runtime);
         }
     }
 
@@ -314,20 +403,24 @@ impl TurnArbiter {
     /// outranks), or the run is already over. The caller journals the
     /// withheld-finish marker beside the row when this answers true.
     pub(super) fn turn_end_suppressed(&self, runtime: &SessionRuntime, value: &Value) -> bool {
-        // Tool iterations are checked first, so an iteration's end cannot
-        // consume the expiry's expectation or a refusal's owed finish: both
-        // belong to the end that really closes the run.
-        if stop_reason(value) == Some("toolUse") {
-            return true;
-        }
         let aborted = stop_reason(value) == Some("aborted");
-        // The expiry's expectation is answered only by pi's own aborted
-        // end; any other end consumes it without suppressing, so a turn
-        // that never answers the abort cannot eat a later genuine one.
+        // The first end of any kind consumes both armed expectations — the
+        // expiry's owed aborted answer and the abort gate's stale one — so
+        // an end pi never followed with the answer cannot leave either
+        // armed against a later genuine end.
         if self.expiry_owed.take() && aborted {
             return true;
         }
         if self.gate.settle(aborted) {
+            return true;
+        }
+        // A tool iteration's end is not the run's end: pi streams on with
+        // the tool results, so the turn stays open and the iteration's usage
+        // is owed to the end that closes the run.
+        if stop_reason(value) == Some("toolUse") {
+            if runtime.is_running_turn() {
+                self.tool_iterations().note(value);
+            }
             return true;
         }
         let ours = self.owns_finish();
@@ -410,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tool_iteration_does_not_consume_the_interrupt_expectation() {
+    fn a_tool_iteration_consumes_the_armed_interrupt_expectation() {
         let arbiter = TurnArbiter::new(None, Arc::new(OwedTurnEnd::default()));
         arbiter.note_prompt_delivered();
         arbiter.note_interrupt();
@@ -419,8 +512,24 @@ mod tests {
         runtime.begin_turn();
         assert!(arbiter.turn_end_suppressed(&runtime, &frame("toolUse")));
         assert!(
-            arbiter.turn_end_suppressed(&runtime, &frame("aborted")),
-            "the aborted end after the tool iteration is still the replacement's stale one"
+            !arbiter.turn_end_suppressed(&runtime, &frame("aborted")),
+            "the first end of any kind spent the expectation, so the end after it is not the stale one"
+        );
+    }
+
+    #[test]
+    fn a_tool_iteration_consumes_an_owed_expiry() {
+        let owed = Arc::new(OwedTurnEnd::default());
+        let arbiter = TurnArbiter::new(None, Arc::clone(&owed));
+        arbiter.note_prompt_delivered();
+        owed.owe();
+        let runtime = SessionRuntime::new();
+        runtime.begin_turn();
+        assert!(arbiter.turn_end_suppressed(&runtime, &frame("toolUse")));
+        assert!(!owed.take(), "the first end of any kind spent the mark");
+        assert!(
+            !arbiter.turn_end_suppressed(&runtime, &frame("aborted")),
+            "the next run's aborted end is no longer the expired run's stale one"
         );
     }
 

@@ -3826,7 +3826,7 @@ impl PiReader {
         }
         if value.get("type").and_then(Value::as_str) == Some("agent_end") {
             self.arbiter.hold_failure(&value);
-            self.arbiter.note_agent_end(runtime);
+            self.arbiter.note_agent_end(runtime, &value);
         }
         // A `turn_end`'s finish is the run's own ending — unless another
         // road already ended it: the watchdog's expiry, the abort gate, or
@@ -3864,6 +3864,9 @@ impl PiReader {
                 .map_err(|error| format!("Pi UI request failed: {error}"));
         }
         if value.get("type").and_then(Value::as_str) == Some("agent_settled") {
+            // Before the failure row: a finish this close publishes has to
+            // precede it, or the strip would end at the finish.
+            self.arbiter.note_run_closed(runtime);
             self.settle_failure(runtime);
         }
         // Every event derived from one row carries that row's journal seq —
@@ -3877,6 +3880,10 @@ impl PiReader {
         let mut events = crate::pi_view::events_from_line(&value);
         if suppress_finish {
             events = crate::pi_view::suppress_withheld_finish(events);
+        } else {
+            // The run's one finish reports the whole run: the usage of every
+            // iteration whose end was withheld rides it.
+            self.arbiter.fold_withheld_usage(&mut events);
         }
         for event in events {
             // A durable `turn_end` reading is the meter's new last word:

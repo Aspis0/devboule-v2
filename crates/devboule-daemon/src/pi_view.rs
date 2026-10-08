@@ -420,7 +420,7 @@ fn turn_end(value: &Value) -> Vec<SessionEvent> {
     events
 }
 
-fn usage_from_pi(value: &Value) -> Option<TurnUsage> {
+pub(crate) fn usage_from_pi(value: &Value) -> Option<TurnUsage> {
     let usage = TurnUsage {
         input_tokens: value.get("input").and_then(Value::as_u64),
         output_tokens: value.get("output").and_then(Value::as_u64),
@@ -447,6 +447,36 @@ fn usage_from_pi(value: &Value) -> Option<TurnUsage> {
         || usage.cache_write_tokens.is_some()
         || usage.cost_usd.is_some())
     .then_some(usage)
+}
+
+/// The sum of two usages: a counter adds where both sides reported one and
+/// keeps the single value where only one did; `None` where neither did. A
+/// suppressed tool iteration's usage joins the closing end's so the run's
+/// finish reports the whole run.
+pub(crate) fn add_usage(left: Option<TurnUsage>, right: Option<TurnUsage>) -> Option<TurnUsage> {
+    fn add(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+        match (left, right) {
+            (Some(left), Some(right)) => Some(left.saturating_add(right)),
+            (Some(value), None) | (None, Some(value)) => Some(value),
+            (None, None) => None,
+        }
+    }
+    match (left, right) {
+        (None, other) | (other, None) => other,
+        (Some(left), Some(right)) => Some(TurnUsage {
+            input_tokens: add(left.input_tokens, right.input_tokens),
+            output_tokens: add(left.output_tokens, right.output_tokens),
+            total_tokens: add(left.total_tokens, right.total_tokens),
+            thought_tokens: add(left.thought_tokens, right.thought_tokens),
+            cache_read_tokens: add(left.cache_read_tokens, right.cache_read_tokens),
+            cache_write_tokens: add(left.cache_write_tokens, right.cache_write_tokens),
+            cost_usd: match (left.cost_usd, right.cost_usd) {
+                (Some(left), Some(right)) => Some(left + right),
+                (Some(value), None) | (None, Some(value)) => Some(value),
+                (None, None) => None,
+            },
+        }),
+    }
 }
 
 /// One classified `get_session_stats` reply body: what pi actually said.
