@@ -8,6 +8,19 @@ import type { SessionTask } from "../../types/ipc";
 import type { AgentTasksContext } from "./sidePanelRegistry";
 
 const confirm = vi.hoisted(() => ({ answer: true }));
+const clock = vi.hoisted(() => ({ reads: 0 }));
+
+// Counts the duration reads a render makes; the formatter itself is unchanged.
+vi.mock("../../lib/backgroundTaskText", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/backgroundTaskText")>();
+  return {
+    ...actual,
+    formatTaskDuration: (milliseconds: number) => {
+      clock.reads += 1;
+      return actual.formatTaskDuration(milliseconds);
+    },
+  };
+});
 const askConfirm = vi.hoisted(() => vi.fn(async () => confirm.answer));
 
 vi.mock("../../components/ConfirmHost", () => ({
@@ -243,6 +256,30 @@ describe("what a row offers", () => {
 });
 
 describe("the duration clock", () => {
+  it("reads the clock for the running row alone on each tick", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(66_000));
+    await render(
+      context([
+        task({ startedAtMs: 1_000 }),
+        task({
+          id: "done",
+          title: "Done",
+          state: "finished",
+          startedAtMs: 1_000,
+          endedAtMs: 5_000,
+        }),
+      ]),
+    );
+    clock.reads = 0;
+
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+    });
+
+    expect(clock.reads).toBe(1);
+  });
+
   it("counts a running row up once a second", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(66_000));
