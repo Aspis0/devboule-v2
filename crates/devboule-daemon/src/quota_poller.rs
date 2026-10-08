@@ -106,7 +106,10 @@ pub(crate) fn shutdown() {
         .unwrap_or_else(|error| error.into_inner())
         .stopping = true;
     WAKE.changed.notify_all();
-    let exited = EXITED.lock().unwrap_or_else(|error| error.into_inner()).take();
+    let exited = EXITED
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .take();
     if let Some(exited) = exited {
         // The thread drops its sender as it returns, so this ends at once when
         // the thread is done, and at the deadline when it is not.
@@ -158,7 +161,9 @@ pub(crate) enum Attempt {
     /// The key was refused (401 or 403).
     Refused,
     /// The provider asked for less traffic (429), with its delay when it named one.
-    Throttled { retry_after_secs: Option<u64> },
+    Throttled {
+        retry_after_secs: Option<u64>,
+    },
     /// The network, a timeout, or a server error: the usual kind of failure.
     Transient,
     /// The reply held no usable reading, or was refused as a whole.
@@ -274,7 +279,8 @@ impl Schedule {
     /// poll is due, and never longer than [`POLL_INTERVAL`], so a changed key
     /// source is noticed within a minute.
     pub(crate) fn sleep_for(&self, now_ms: i64) -> Duration {
-        let until = Duration::from_millis(u64::try_from((self.next_ms - now_ms).max(0)).unwrap_or(0));
+        let until =
+            Duration::from_millis(u64::try_from((self.next_ms - now_ms).max(0)).unwrap_or(0));
         until.clamp(Duration::from_secs(1), POLL_INTERVAL)
     }
 }

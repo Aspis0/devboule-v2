@@ -105,8 +105,7 @@ fn reset_seconds(value: &Value) -> Option<i64> {
                 .as_f64()
                 .filter(|seconds| {
                     seconds.is_finite()
-                        && (EPOCH_SECONDS_FROM as f64..EPOCH_SECONDS_BELOW as f64)
-                            .contains(seconds)
+                        && (EPOCH_SECONDS_FROM as f64..EPOCH_SECONDS_BELOW as f64).contains(seconds)
                 })
                 .map(|seconds| seconds.floor() as i64),
         },

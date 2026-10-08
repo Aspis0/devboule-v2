@@ -222,4 +222,3 @@ fn the_one_declared_host_is_opencode_and_the_identity_is_the_go_plan() {
     assert_eq!(OpencodeGo.provider_id(), "opencode-go");
     assert_eq!(OpencodeGo.plan_label(), "OpenCode Go");
 }
-

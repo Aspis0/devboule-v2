@@ -93,7 +93,9 @@ fn outbound_failures_map_to_the_transient_or_malformed_kind() {
         Attempt::Malformed
     );
     assert_eq!(
-        Attempt::from(QuotaError::Outbound(OutboundError::Refused("policy".into()))),
+        Attempt::from(QuotaError::Outbound(OutboundError::Refused(
+            "policy".into()
+        ))),
         Attempt::Malformed
     );
 }
@@ -155,7 +157,11 @@ fn a_named_retry_after_is_honoured_within_the_bounds() {
         0,
         FINGERPRINT,
     );
-    assert_eq!(unnamed.next_ms, 2 * MINUTE, "an unnamed 429 starts the backoff");
+    assert_eq!(
+        unnamed.next_ms,
+        2 * MINUTE,
+        "an unnamed 429 starts the backoff"
+    );
 }
 
 #[test]
