@@ -12,6 +12,11 @@ on:
   # daemon's session code, instead of waiting up to a week.
   workflow_dispatch:
 
+# Read-only by default: the release job is the only one that asks for more
+# (contents: write, in its own block); every other job only reads.
+permissions:
+  contents: read
+
 jobs:
   windows:
     runs-on: windows-latest
