@@ -91,9 +91,9 @@ describe("the tab context menu", () => {
   it("Shift+F10 opens the menu from the keyboard and focuses its first entry", async () => {
     await renderWorkspace();
 
-    await shiftF10("session-2");
+    await shiftF10("agent-one");
 
-    expect(menuLabels()).toHaveLength(6);
+    expect(menuLabels()).toHaveLength(8);
     // The branch row loads after the menu opens: focus follows it to the top.
     expect(document.activeElement?.textContent).toBe("Copy branch name");
     expect(document.activeElement?.getAttribute("role")).toBe("menuitem");
@@ -104,7 +104,7 @@ describe("the tab context menu", () => {
 
     await contextMenuKey("session-2");
 
-    expect(menuLabels()).toHaveLength(6);
+    expect(menuLabels()).toHaveLength(7);
     expect(document.activeElement?.getAttribute("role")).toBe("menuitem");
   });
 
@@ -121,7 +121,7 @@ describe("the tab context menu", () => {
       chip.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
     });
 
-    expect(menuLabels()).toHaveLength(6);
+    expect(menuLabels()).toHaveLength(7);
   });
 
   it("Close removes an agent tab without stopping its session", async () => {
@@ -272,7 +272,7 @@ describe("the tab context menu", () => {
   it("the menu closes when its anchor's generation changes, and focus returns to the anchor", async () => {
     await renderWorkspace();
     await rightClick("session-2");
-    expect(menuLabels()).toHaveLength(6);
+    expect(menuLabels()).toHaveLength(7);
 
     await pushSnapshots([
       liveSnapshot("agent-one", "Agent one", "acp"),

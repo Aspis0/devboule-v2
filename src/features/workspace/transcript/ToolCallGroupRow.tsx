@@ -1,4 +1,4 @@
-import { useCallback, useState, type SyntheticEvent } from "react";
+import { useCallback, useMemo, useState, type SyntheticEvent } from "react";
 import type { ToolCallGroup } from "../../../lib/toolCallGroups";
 import {
   INTERRUPTED_TOOL_CLASS,
@@ -20,17 +20,33 @@ export function ToolCallGroupRow({
   // A failed call mounts twice, inside the open group and outside the closed
   // one, so each call's "show all" state lives here where both mounts see it.
   const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(() => new Set());
-  const expansionFor = (id: string): OutputExpansion => ({
-    expanded: expandedIds.has(id),
-    setExpanded: (expanded) =>
-      setExpandedIds((current) => {
-        if (current.has(id) === expanded) return current;
-        const next = new Set(current);
-        if (expanded) next.add(id);
-        else next.delete(id);
-        return next;
-      }),
-  });
+  // A call keeps one expansion object for as long as its flag holds, so a
+  // re-render of the group hands unchanged rows the same prop and their memo hits.
+  const [expansionCache] = useState(() => new Map<string, OutputExpansion>());
+  const expansions = useMemo(() => {
+    const next = new Map<string, OutputExpansion>();
+    for (const item of group.items) {
+      const expanded = expandedIds.has(item.id);
+      const cached = expansionCache.get(item.id);
+      const expansion =
+        cached !== undefined && cached.expanded === expanded
+          ? cached
+          : {
+              expanded,
+              setExpanded: (value: boolean) =>
+                setExpandedIds((current) => {
+                  if (current.has(item.id) === value) return current;
+                  const updated = new Set(current);
+                  if (value) updated.add(item.id);
+                  else updated.delete(item.id);
+                  return updated;
+                }),
+            };
+      expansionCache.set(item.id, expansion);
+      next.set(item.id, expansion);
+    }
+    return next;
+  }, [group.items, expandedIds, expansionCache]);
   const onToggle = useCallback((event: SyntheticEvent<HTMLDetailsElement>) => {
     setOpen(event.currentTarget.open);
   }, []);
@@ -72,7 +88,7 @@ export function ToolCallGroupRow({
               key={item.id}
               item={item}
               transcriptEnded={transcriptEnded}
-              expansion={expansionFor(item.id)}
+              expansion={expansions.get(item.id)}
             />
           ))}
         </div>
@@ -86,7 +102,7 @@ export function ToolCallGroupRow({
               key={item.id}
               item={item}
               transcriptEnded={transcriptEnded}
-              expansion={expansionFor(item.id)}
+              expansion={expansions.get(item.id)}
             />
           ))}
         </div>

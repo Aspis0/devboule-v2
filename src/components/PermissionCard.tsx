@@ -394,6 +394,10 @@ export interface PermissionAnswer {
 }
 
 /** A real ACP permission prompt; it is inert unless the handshake negotiated typed_permissions. */
+// A card can be unmounted and mounted again (a group toggle, a subscription
+// rotation); the set keeps its one focus claim from repeating on each mount.
+const focusTakenBy = new Set<string>();
+
 export function PermissionCard({
   sessionId,
   subscriptionId,
@@ -452,16 +456,22 @@ export function PermissionCard({
     setPickedOptions(new Map());
     setOtherTexts(new Map());
   }, [sessionId, request.toolCallId, subscriptionId]);
-  // The card takes focus only from a person typing in the transcript or the
-  // composer, so the decision is one Tab away. Its approve control is never
-  // focused: Deny stays the first stop.
+  // The card takes focus once, on its first appearance, and only while it is
+  // still pending and the person is typing in the transcript or the composer
+  // (not in another card's answer field). Its approve control is never focused:
+  // Deny stays the first stop.
   const cardRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
+    const cardKey = `${sessionId}:${request.toolCallId}`;
+    if (focusTakenBy.has(cardKey)) return;
+    focusTakenBy.add(cardKey);
+    if (resolution !== null || incomingStale) return;
     const active = document.activeElement;
-    if (active?.closest(".workspace-conversation, .workspace-composer") != null) {
-      cardRef.current?.focus();
-    }
-  }, []);
+    const inOwnFlow =
+      active?.closest(".workspace-conversation, .workspace-composer") != null &&
+      active.closest(".permission-card") === null;
+    if (inOwnFlow) cardRef.current?.focus();
+  }, [sessionId, request.toolCallId, resolution, incomingStale]);
 
   if (!capabilities.includes("typed_permissions") && daemonState === "connected") return null;
 

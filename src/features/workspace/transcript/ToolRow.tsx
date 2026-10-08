@@ -73,9 +73,10 @@ export const ToolRow = memo(function ToolRow({
     bodyLines.length > 0 ||
     (isPlan && item.output.length > 0) ||
     hasImages;
-  // Rows start open and only the person's toggle changes that, so a re-render
-  // cannot reopen a row they closed.
-  const [open, setOpen] = useState(true);
+  // Rows start open, so a row the person never touched is open when its images
+  // arrive; only the person's own close shuts one, and nothing reopens it.
+  const [closedByPerson, setClosedByPerson] = useState(false);
+  const open = !closedByPerson;
   const toolClassName = `${className}${isPlan ? " is-plan" : ""}${running ? " is-running" : ""}${failed ? " is-failed" : ""}${cancelled ? " is-cancelled" : ""}${interrupted ? ` ${INTERRUPTED_TOOL_CLASS}` : ""}`;
   const line: ReactNode = (
     <>
@@ -127,7 +128,7 @@ export const ToolRow = memo(function ToolRow({
         <details
           className="workspace-chat-tool-details"
           open={open}
-          onToggle={(event) => setOpen(event.currentTarget.open)}
+          onToggle={(event) => setClosedByPerson(!event.currentTarget.open)}
         >
           <summary className="workspace-chat-tool-summary">{line}</summary>
           <div className="workspace-chat-tool-body">

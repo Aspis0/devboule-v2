@@ -639,7 +639,12 @@ describe("focus when a card appears", () => {
     document.body.replaceChildren();
   });
 
-  async function mountCard(): Promise<{ container: HTMLElement; root: Root }> {
+  // Each case mounts its own tool call: the focus claim is kept per card for
+  // the whole module, so a shared id would carry one case's claim into the next.
+  async function mountCard(
+    toolCallId: string,
+    resolution: Parameters<typeof PermissionCard>[0]["resolution"] = null,
+  ): Promise<{ container: HTMLElement; root: Root }> {
     const container = document.createElement("div");
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -648,8 +653,9 @@ describe("focus when a card appears", () => {
         <PermissionCard
           sessionId="session-1"
           subscriptionId={41}
-          request={request}
+          request={{ ...request, toolCallId }}
           capabilities={["typed_permissions"]}
+          resolution={resolution}
         />,
       );
     });
@@ -664,7 +670,7 @@ describe("focus when a card appears", () => {
     document.body.append(composer);
     input.focus();
 
-    const { container, root } = await mountCard();
+    const { container, root } = await mountCard("call-first");
 
     expect(document.activeElement).toBe(container.querySelector(".permission-card"));
     expect(container.querySelector("[autofocus]")).toBeNull();
@@ -676,10 +682,63 @@ describe("focus when a card appears", () => {
     document.body.append(outside);
     outside.focus();
 
-    const { root } = await mountCard();
+    const { root } = await mountCard("call-outside");
 
     expect(document.activeElement).toBe(outside);
     await act(async () => root.unmount());
+  });
+
+  it("leaves an already answered card out of the focus", async () => {
+    const composer = document.createElement("div");
+    composer.className = "workspace-composer";
+    const input = document.createElement("textarea");
+    composer.append(input);
+    document.body.append(composer);
+    input.focus();
+
+    const { root } = await mountCard("call-answered", {
+      outcome: "allowed",
+      answeredBy: "creator",
+    });
+
+    expect(document.activeElement).toBe(input);
+    await act(async () => root.unmount());
+  });
+
+  it("does not take focus from a person answering another card", async () => {
+    const conversation = document.createElement("div");
+    conversation.className = "workspace-conversation";
+    const otherCard = document.createElement("div");
+    otherCard.className = "permission-card";
+    const otherAnswer = document.createElement("input");
+    otherCard.append(otherAnswer);
+    conversation.append(otherCard);
+    document.body.append(conversation);
+    otherAnswer.focus();
+
+    const { root } = await mountCard("call-next-to-answer");
+
+    expect(document.activeElement).toBe(otherAnswer);
+    await act(async () => root.unmount());
+  });
+
+  it("claims focus once: a card mounted again leaves focus where the person put it", async () => {
+    const composer = document.createElement("div");
+    composer.className = "workspace-composer";
+    const input = document.createElement("textarea");
+    composer.append(input);
+    document.body.append(composer);
+    input.focus();
+
+    const first = await mountCard("call-remount");
+    expect(document.activeElement).toBe(first.container.querySelector(".permission-card"));
+    await act(async () => first.root.unmount());
+
+    input.focus();
+    const again = await mountCard("call-remount");
+
+    expect(document.activeElement).toBe(input);
+    await act(async () => again.root.unmount());
   });
 });
 

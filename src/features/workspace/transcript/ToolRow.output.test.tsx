@@ -7,8 +7,22 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AttachmentReference } from "../../../lib/tauri";
 import type { ToolChatItem } from "../../../lib/toolCallGroups";
 import { ToolRow } from "./ToolRow";
+
+// The thumbnails read their bytes through the bridge; these cases only need
+// the row to hold the images, so the read never resolves.
+vi.mock("../../../lib/tauri", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../lib/tauri")>()),
+  sessionAttachmentRead: vi.fn(() => new Promise(() => undefined)),
+}));
+
+const IMAGE: AttachmentReference = {
+  sessionId: "s.owner.chat1",
+  digest: "c".repeat(64),
+  storedBytes: 12,
+};
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -146,6 +160,33 @@ describe("ToolRow output", () => {
     const details = container.querySelector("details");
     if (details === null) throw new Error("the row had nothing to open");
     expect(details.open).toBe(true);
+  });
+
+  it("shows the images of a row the person never closed, when they arrive late", async () => {
+    const item = tool({ kind: "search", title: "q", output: lines(10) });
+    const container = await renderRow(item);
+
+    await act(async () =>
+      root?.render(<ToolRow item={{ ...item, images: [IMAGE] }} transcriptEnded={false} />),
+    );
+
+    expect(container.querySelector("details")?.open).toBe(true);
+    expect(container.querySelector(".workspace-chat-images")).not.toBeNull();
+  });
+
+  it("keeps a row the person closed closed when its images arrive", async () => {
+    const item = tool({ kind: "search", title: "q", output: lines(10) });
+    const container = await renderRow(item);
+    const details = container.querySelector("details");
+    if (details === null) throw new Error("the row had nothing to open");
+    details.open = false;
+    details.dispatchEvent(new Event("toggle"));
+
+    await act(async () =>
+      root?.render(<ToolRow item={{ ...item, images: [IMAGE] }} transcriptEnded={false} />),
+    );
+
+    expect(container.querySelector("details")?.open).toBe(false);
   });
 
   it("keeps a row the person closed closed when the row re-renders", async () => {

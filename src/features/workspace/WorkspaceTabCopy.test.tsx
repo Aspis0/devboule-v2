@@ -90,10 +90,10 @@ describe("tab menu copy actions", () => {
     expect(writeText).toHaveBeenCalledExactlyOnceWith("agent-one");
   });
 
-  it("offers no session ID on a terminal tab", async () => {
+  it("offers the session ID first on a terminal tab, which has no Archive to sit beside", async () => {
     await renderWorkspace();
     await rightClick("session-2");
-    expect(menuLabels()).not.toContain("Copy session ID");
+    expect(menuLabels()[0]).toBe("Copy session ID");
   });
 
   it.each([

@@ -99,4 +99,19 @@ describe("transcript row renders", () => {
 
     expect(rendersOf("tool-1")).toBeGreaterThan(before);
   });
+
+  it("leaves a grouped row alone when another call joins its group", async () => {
+    // Two consecutive calls form a group; the second is counted, since the
+    // group itself reads the first call's frame.
+    const first = tool("tool-1", "one");
+    const second = tool("tool-2", "two");
+    await show([first, second]);
+    const before = rendersOf("tool-2");
+    expect(before).toBeGreaterThan(0);
+
+    await show([first, second, tool("tool-3", "three")]);
+
+    expect(host.textContent).toContain("three");
+    expect(rendersOf("tool-2")).toBe(before);
+  });
 });

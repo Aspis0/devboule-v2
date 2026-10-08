@@ -1,6 +1,7 @@
 import { usableBranch } from "../changesStatusCache";
 import { displayPath } from "../../../lib/displayPath";
 import type { TabMenuEntry } from "./tabCloseMenu";
+import { isAgentKind } from "../../../types/ipc";
 import { toolTabSubject, type StripTab } from "./toolTabs";
 
 export type TabCopyAction = "copy-session-id" | "copy-path" | "copy-address" | "copy-branch-name";
@@ -46,6 +47,10 @@ export function buildTabCopyEntries(
   resolveBrowserAddress?: (browserId: string) => string | null,
 ): TabMenuEntry[] {
   const entries: TabMenuEntry[] = [];
+  // An agent offers its ID beside Archive in the close group; a terminal has no Archive, so its ID leads here.
+  if (tab.type === "session" && !isAgentKind(tab.session.kind)) {
+    entries.push({ key: "copy-session-id", label: "Copy session ID", disabled: false });
+  }
   const address = browserAddress(tab, resolveBrowserAddress);
   if (address !== null) {
     entries.push({ key: "copy-address", label: "Copy address", disabled: false });
