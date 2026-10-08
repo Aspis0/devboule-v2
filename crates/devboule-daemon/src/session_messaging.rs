@@ -809,7 +809,7 @@ impl super::SessionRegistry {
             role,
             &from_agent,
             &chain,
-            crate::untrusted_frame::sender_verified(&caller_origin.kind),
+            crate::untrusted_frame::sender_verified(&caller_origin),
             text,
         );
         // Set before the delivery: the receiver may act on the text the moment it

@@ -408,9 +408,9 @@ fn child_prompt_names_creator() {
     fixture.finish();
 }
 
-/// A creator that read a terminal passes that on with the task: the child's
-/// header names the source and says to treat that part as data, and the child
-/// itself starts out tainted for what it relays.
+/// A creator that read a terminal names that on the task's chain line:
+/// the verified task itself stays plain work, and the child itself starts
+/// out tainted for what it relays.
 #[test]
 fn a_creator_that_read_data_hands_the_taint_to_its_child() {
     let _env = AcpEnv::stub(&[]);

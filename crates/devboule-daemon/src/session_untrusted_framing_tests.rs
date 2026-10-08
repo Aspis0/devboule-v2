@@ -196,10 +196,9 @@ fn an_agent_message_body_cannot_close_or_extend_the_envelope() {
     assert!(!envelope.contains('\u{202e}') && !envelope.contains('\u{e0041}'));
 }
 
-/// An agent that read a page and relays it is still passing data on: the
-/// receiver's frame names the page's host and says to treat that part as data,
-/// a later message from another agent does not wash it off, and the person's
-/// next words to the agent do.
+/// An agent that read a page and relays it names the page's host on the
+/// chain; the verified receiver treats the relay as work, and the person's
+/// next words to the agent clear the taint.
 #[test]
 fn a_page_read_by_one_agent_stays_data_when_it_relays_until_the_person_types() {
     let (dir, registry, journal) = tmp_delete_registry();

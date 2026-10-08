@@ -1187,7 +1187,12 @@ fn main() -> io::Result<()> {
                     )?;
                     continue;
                 }
-                if prompt_text.contains("permission") {
+                // Whole word: the daemon's own framing now says "permissions"
+                // in every child prompt, and that must not read as asking.
+                if prompt_text
+                    .split(|cell: char| !cell.is_alphanumeric())
+                    .any(|word| word == "permission")
+                {
                     if let Some(delay_ms) = std::env::var("DEVBOULE_ACP_STUB_PERMISSION_DELAY_MS")
                         .ok()
                         .and_then(|value| value.parse::<u64>().ok())

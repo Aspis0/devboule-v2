@@ -51,7 +51,7 @@ pub(super) fn agent_finished_envelope(
     let provenance = Source::ChildReport {
         child: child_session_id,
         chain: &Chain::default(),
-        verified: sender_verified(&child_origin.kind),
+        verified: sender_verified(child_origin),
     }
     .header_lines();
     format!(
@@ -176,7 +176,7 @@ pub(super) fn agent_permission_request_envelope(
     let provenance = Source::ChildReport {
         child: child_session_id,
         chain: &Chain::default(),
-        verified: sender_verified(&child_origin.kind),
+        verified: sender_verified(child_origin),
     }
     .header_lines();
     format!(

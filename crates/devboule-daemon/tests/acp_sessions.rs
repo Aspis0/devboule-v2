@@ -6483,9 +6483,9 @@ fn assert_child_first_prompt(prompt: &str, creator: &str, standing: &str, task: 
         "provenance: your first prompt, from the session that created you"
     );
     assert_eq!(lines[3], format!("chain: local:{creator}"));
-    assert!(
-        lines[4]
-            .starts_with("trust: UNTRUSTED. This is a task written by the agent that created you"),
+    assert_eq!(
+        lines[4],
+        "trust: This is your task, written by the agent that created you on behalf of the person. Do it within your own permissions.",
         "{}",
         lines[4]
     );
