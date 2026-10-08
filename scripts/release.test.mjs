@@ -1,14 +1,16 @@
 import { describe, expect, it } from "vitest";
+import { parseReleaseArgs } from "./release.mjs";
 import {
   assertValidSection,
-  bumpVersion,
   extractChangelogSection,
-  findVersionDrift,
   makeChangelogSection,
+} from "./release/changelog.mjs";
+import {
+  bumpVersion,
+  findVersionDrift,
   parseCargoLockVersions,
-  parseReleaseArgs,
   pickReleaseBaseTag,
-} from "./release.mjs";
+} from "./release/versions.mjs";
 
 describe("bumpVersion", () => {
   it("increments the patch alone", () => {

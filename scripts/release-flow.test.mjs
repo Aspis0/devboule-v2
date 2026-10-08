@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { runCheckTag, runRelease } from "./release.mjs";
+import { runCheckTag, runRelease } from "./release/flow.mjs";
 
 // Directory in the fixture repo → package name. src-tauri comes first and
 // carries a dependency table with its own `version =` line *before*
