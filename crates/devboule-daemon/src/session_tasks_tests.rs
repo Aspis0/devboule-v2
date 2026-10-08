@@ -179,6 +179,13 @@ mod derive {
     }
 
     #[test]
+    fn the_cut_never_splits_a_mask() {
+        let prefix = "x".repeat(TASK_TITLE_MAX_CHARS - 2);
+        let long = format!("{prefix}[redacted] tail");
+        assert_eq!(truncate_title(&long), format!("{prefix}…"));
+    }
+
+    #[test]
     fn backgrounded_provider_tasks_read_as_agent_rows() {
         let started = SessionEvent::AgentTaskStarted {
             task_id: "task-1".to_string(),

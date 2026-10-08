@@ -81,11 +81,18 @@ pub fn command_title(line: &str) -> String {
 
 pub fn truncate_title(title: &str) -> String {
     let kept: String = title.chars().take(TASK_TITLE_MAX_CHARS).collect();
-    if kept.len() < title.len() {
-        format!("{kept}…")
-    } else {
-        kept
+    if kept.len() >= title.len() {
+        return kept;
     }
+    // A half mask reads as neither text nor mask: cut before it instead.
+    let cut = kept
+        .rfind('[')
+        .filter(|&open| {
+            let tail = &kept[open..];
+            tail != "[redacted]" && "[redacted]".starts_with(tail)
+        })
+        .unwrap_or(kept.len());
+    format!("{}…", &kept[..cut])
 }
 
 /// A child's declared model and counted tool calls from its own journal
