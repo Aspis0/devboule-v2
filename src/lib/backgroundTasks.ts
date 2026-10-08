@@ -2,6 +2,18 @@
 // is news, and which tasks changed state between two lists.
 import type { SessionTask, SessionTaskList } from "../types/ipc";
 
+const KNOWN_KINDS: ReadonlySet<string> = new Set(["agent", "command"]);
+const KNOWN_STATES: ReadonlySet<string> = new Set(["running", "finished", "failed", "cancelled"]);
+
+/**
+ * The tasks this build can name. A newer daemon may send a kind or a state this
+ * build has no word for; such a task is dropped here, so it gets neither a row
+ * nor a state word that would read "undefined".
+ */
+function knownTasks(tasks: readonly SessionTask[]): SessionTask[] {
+  return tasks.filter((task) => KNOWN_KINDS.has(task.kind) && KNOWN_STATES.has(task.state));
+}
+
 export interface BackgroundTaskState {
   /** The daemon process that published the list. Null for an attach reply, which carries none. */
   epoch: string | null;
@@ -29,7 +41,7 @@ export function acceptTaskSnapshot(
   return {
     epoch: snapshot.epoch,
     revision: snapshot.revision,
-    tasks: snapshot.tasks,
+    tasks: knownTasks(snapshot.tasks),
     omitted: snapshot.omitted,
   };
 }
@@ -43,7 +55,7 @@ export function acceptTaskReply(
   reply: SessionTaskList,
 ): BackgroundTaskState | null {
   if (current !== null) return null;
-  return { epoch: null, revision: 0, tasks: reply.tasks, omitted: reply.omitted };
+  return { epoch: null, revision: 0, tasks: knownTasks(reply.tasks), omitted: reply.omitted };
 }
 
 /**

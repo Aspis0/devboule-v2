@@ -57,6 +57,26 @@ describe("accepting a snapshot", () => {
   });
 });
 
+describe("a task this build cannot name", () => {
+  const unknownState = agentTask({ id: "new-state", state: "paused" as SessionTask["state"] });
+  const unknownKind = agentTask({ id: "new-kind", kind: "worker" as SessionTask["kind"] });
+
+  it("is dropped from a snapshot, with the rest of the list kept", () => {
+    const next = acceptTaskSnapshot(null, {
+      epoch: "e1",
+      revision: 1,
+      tasks: [unknownState, agentTask(), unknownKind],
+      omitted: 0,
+    });
+    expect(next?.tasks).toEqual([agentTask()]);
+  });
+
+  it("is dropped from the attach reply too", () => {
+    const next = acceptTaskReply(null, { tasks: [unknownKind], omitted: 0 });
+    expect(next?.tasks).toEqual([]);
+  });
+});
+
 describe("accepting the attach reply", () => {
   it("fills an empty list with the reply's rows and cap count", () => {
     const next = acceptTaskReply(null, { tasks: [agentTask()], omitted: 3 });
