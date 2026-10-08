@@ -386,7 +386,9 @@ describe("closing a session and its permission cards", () => {
       if (button === null) throw new Error("Overview trigger did not render");
       return button;
     };
-    expect(trigger().getAttribute("aria-label")).toBe("Show all sessions");
+    expect(trigger().getAttribute("aria-label")).toBe(
+      "Show all sessions — 1 open, 1 needs approval",
+    );
     expect(trigger().querySelector(".strip-dot-attention")).not.toBeNull();
     await act(async () => trigger().click());
     const options = [...document.querySelectorAll<HTMLElement>("[data-overview-option]")];
@@ -405,10 +407,12 @@ describe("closing a session and its permission cards", () => {
       undefined,
     );
     await act(async () => sharedSessionController().closeTabs([child.id]));
-    expect(trigger().getAttribute("aria-label")).toBe("Show all sessions");
+    expect(trigger().getAttribute("aria-label")).toBe(
+      "Show all sessions — 1 open, 1 needs approval",
+    );
     expect(trigger().querySelector(".strip-dot-attention")).not.toBeNull();
     await pushSnapshots([snapshotOf(parent), snapshotOf(child)]);
-    expect(trigger().getAttribute("aria-label")).not.toContain("your approval");
+    expect(trigger().getAttribute("aria-label")).toBe("Show all sessions — 1 open");
     expect(trigger().querySelector(".strip-dot-attention")).toBeNull();
     expect(container.querySelector(".sidebar-row-dot-attention")).toBeNull();
   });

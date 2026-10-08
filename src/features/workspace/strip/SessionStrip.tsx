@@ -122,6 +122,13 @@ export function SessionStrip({
       ).length,
     [overviewSessions, openIds],
   );
+  // The label is the only text a screen reader gets from this trigger: the
+  // attention dot is aria-hidden, so the pending-approval count lives here.
+  const overviewLabel =
+    `Show all sessions — ${sessions.length} open` +
+    (unopenedAttentionCount === 0
+      ? ""
+      : `, ${unopenedAttentionCount} ${unopenedAttentionCount === 1 ? "needs" : "need"} approval`);
   const toolTabs = useMemo(
     () => tabs.flatMap((tab) => (tab.type === "tool" ? [tab.tool] : [])),
     [tabs],
@@ -428,7 +435,7 @@ export function SessionStrip({
         className="workspace-rate"
         aria-haspopup="listbox"
         aria-expanded={overviewOpen}
-        aria-label="Show all sessions"
+        aria-label={overviewLabel}
         onClick={() => {
           if (!overviewOpen) openOverview("press");
           else if (overviewSourceRef.current === "hover") overviewSourceRef.current = "press";

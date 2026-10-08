@@ -406,12 +406,12 @@ describe("SessionOverviewMenu", () => {
 });
 
 describe("SessionStrip overview trigger", () => {
-  it("is a button named Show all sessions, with no text of its own", () => {
+  it("is a button named by its open count, with no text of its own", () => {
     const rendered = renderStrip([session("b")], ROSTER);
     const trigger = rendered.trigger();
     expect(trigger.tagName).toBe("BUTTON");
     expect(trigger.textContent).toBe("");
-    expect(trigger.getAttribute("aria-label")).toBe("Show all sessions");
+    expect(trigger.getAttribute("aria-label")).toBe("Show all sessions — 1 open");
   });
 
   it("pins a hover-opened list on click instead of dismissing it", () => {

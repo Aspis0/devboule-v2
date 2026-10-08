@@ -58,7 +58,7 @@ function selectionStub() {
   };
 }
 
-function propsOf(sessions: Session[], activeTabId: string | null) {
+function propsOf(sessions: Session[], activeTabId: string | null, overview = sessions) {
   return {
     tabs: composeStripTabs(sessions, []),
     activeTabId,
@@ -81,7 +81,7 @@ function propsOf(sessions: Session[], activeTabId: string | null) {
     resolveCreator: () => null as string | null,
     takeBackAvailable: false,
     onTakeBack: vi.fn(),
-    overviewSessions: sessions,
+    overviewSessions: overview,
     workspaceName: "workspace one",
     onOpenSession: vi.fn(),
     selectedSessionId: sessions[0]?.id ?? null,
@@ -91,11 +91,11 @@ function propsOf(sessions: Session[], activeTabId: string | null) {
 let root: ReturnType<typeof createRoot> | null = null;
 let container: HTMLDivElement | null = null;
 
-function renderStrip(sessions: Session[], selected: string | null) {
+function renderStrip(sessions: Session[], selected: string | null, overview = sessions) {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
-  const props = propsOf(sessions, selected);
+  const props = propsOf(sessions, selected, overview);
   act(() => {
     root!.render(<SessionStrip {...props} />);
   });
@@ -221,12 +221,38 @@ describe("SessionStrip", () => {
     expect(tab.getAttribute("title")).toContain("created by planner");
   });
 
-  it("draws no session count: the overview trigger is a glyph named Show all sessions", () => {
+  it("draws no session count: the overview trigger is a glyph, its count lives in the label", () => {
     renderStrip([session("a", "agent a"), session("b", "agent b")], "a");
     const trigger = container!.querySelector<HTMLButtonElement>(".workspace-rate")!;
-    expect(trigger.getAttribute("aria-label")).toBe("Show all sessions");
+    expect(trigger.getAttribute("aria-label")).toBe("Show all sessions — 2 open");
     expect(trigger.textContent).toBe("");
     expect(container!.textContent).not.toMatch(/open session|d+ sessions?/);
+  });
+
+  it("names the sessions waiting on approval in the trigger label", () => {
+    const open = session("a", "agent a");
+    const waiting = [
+      session("b", "agent b", { attention: { reason: "permission", atMs: 0 } }),
+      session("c", "agent c", { attention: { reason: "permission", atMs: 0 } }),
+    ];
+    renderStrip([open], "a", [open, ...waiting]);
+    const trigger = container!.querySelector<HTMLButtonElement>(".workspace-rate")!;
+    expect(trigger.getAttribute("aria-label")).toBe("Show all sessions — 1 open, 2 need approval");
+  });
+
+  it("singularises the approval count", () => {
+    const open = session("a", "agent a");
+    const waiting = session("b", "agent b", { attention: { reason: "permission", atMs: 0 } });
+    renderStrip([open], "a", [open, waiting]);
+    const trigger = container!.querySelector<HTMLButtonElement>(".workspace-rate")!;
+    expect(trigger.getAttribute("aria-label")).toBe("Show all sessions — 1 open, 1 needs approval");
+  });
+
+  it("leaves approval out of the label when the waiting session already has a tab", () => {
+    const waiting = session("a", "agent a", { attention: { reason: "permission", atMs: 0 } });
+    renderStrip([waiting], "a");
+    const trigger = container!.querySelector<HTMLButtonElement>(".workspace-rate")!;
+    expect(trigger.getAttribute("aria-label")).toBe("Show all sessions — 1 open");
   });
 
   it("keeps the add button outside the box that scrolls", () => {
