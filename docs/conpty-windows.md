@@ -39,9 +39,10 @@ Two reasons to prefer an app-local `conpty.dll` over the inbox one:
 
 ## How to run
 
-`scripts/stage-conpty.ps1` stages the pinned Microsoft package. It is manual
-tooling — the build and the gate never run it — and its only network access is
-the one pinned download:
+`scripts/stage-conpty.ps1` stages the pinned Microsoft package.
+`pnpm build:installer` runs it as part of the installer build (staging into
+`target\release`); ordinary dev builds and the gate never run it, and the
+script's only network access is the one pinned download:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\stage-conpty.ps1
@@ -75,6 +76,12 @@ The staged tree sits **beside `devboule-daemon.exe`**: `conpty\conpty.dll`,
 `…-NOTICE.md` — the layout herdr's installer deploys and verifies
 (`herdr-src/distribution/install.ps1`). The daemon executable's directory is
 the loader's only lookup, and the daemon, not the GUI, owns the
-pseudoconsoles. The NSIS installer (`src-tauri/tauri.installer.conf.json`) ships the
-daemon without this tree, so an installed app runs the inbox ConPTY unless the
-tree is staged beside the installed `devboule-daemon.exe` by hand.
+pseudoconsoles. The NSIS installer (`src-tauri/tauri.installer.conf.json`) ships this tree
+with the daemon: `pnpm build:installer` stages the pinned pair and both notice
+files into `target\release`, and the installer's `bundle.resources` places
+`conpty\` and `THIRD-PARTY-NOTICES\` in the install root beside
+`devboule-daemon.exe`, where the loader looks for them. An installed app on
+x64 therefore starts on the pinned app-local host (its `daemon.log` says so).
+A run from an ordinary dev build still gets the inbox ConPTY unless the tree
+is staged beside `target\debug\devboule-daemon.exe` by hand — the manual
+recipe above.
