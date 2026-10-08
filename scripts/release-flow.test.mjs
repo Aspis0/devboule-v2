@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { runRelease } from "./release.mjs";
+import { runCheckTag, runRelease } from "./release.mjs";
 
 // Directory in the fixture repo → package name. src-tauri comes first and
 // carries a dependency table with its own `version =` line *before*
@@ -180,6 +180,43 @@ describe("release flow in a throwaway repository", () => {
   it("refuses a release version whose tag already exists", () => {
     git(root, ["tag", "v0.1.1"]);
     expect(release).toThrow(/already exists/);
+  });
+
+  it("check-tag passes when the whole version inventory matches the tag", () => {
+    writeFileSync(
+      join(root, "CHANGELOG.md"),
+      [
+        "# Changelog",
+        "",
+        "## [Unreleased]",
+        "",
+        "## [0.1.0] - 2026-10-07",
+        "",
+        "### Changes",
+        "- Fixture baseline (deadbee)",
+        "",
+      ].join("\n"),
+    );
+    expect(() => runCheckTag("v0.1.0", { root })).not.toThrow();
+  });
+
+  it("check-tag names every file that disagrees with the tag version", () => {
+    const pkg = join(root, "package.json");
+    writeFileSync(
+      pkg,
+      readFileSync(pkg, "utf8").replace('"version": "0.1.0"', '"version": "0.9.0"'),
+    );
+    const lockPath = join(root, "Cargo.lock");
+    writeFileSync(
+      lockPath,
+      readFileSync(lockPath, "utf8").replace(
+        'name = "oracle-core"\nversion = "0.1.0"',
+        'name = "oracle-core"\nversion = "0.9.0"',
+      ),
+    );
+    expect(() => runCheckTag("v0.1.0", { root })).toThrow(
+      /version drift from v0\.1\.0: package\.json, Cargo\.lock \(oracle-core\)/,
+    );
   });
 
   it("releases with a bot commit, an annotated tag, the release paths and the atomic push line", () => {

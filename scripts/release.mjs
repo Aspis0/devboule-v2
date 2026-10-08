@@ -123,6 +123,19 @@ export function assertValidSection(section, version) {
   if (lines[0] === undefined || !sectionHeadingPattern(version).test(lines[0])) {
     throw new Error(`section heading must be exactly "## [${version}] - YYYY-MM-DD"`);
   }
+  const date = /\d{4}-\d{2}-\d{2}$/.exec(lines[0])[0];
+  const [year, month, day] = date.split("-").map(Number);
+  const probe = new Date(Date.UTC(year, month - 1, day));
+  // Date.UTC maps years 0-99 into 1900-1999, so the round-trip must compare
+  // against the year it actually built, not the year written on the heading.
+  const builtYear = year < 100 ? 1900 + year : year;
+  if (
+    probe.getUTCFullYear() !== builtYear ||
+    probe.getUTCMonth() !== month - 1 ||
+    probe.getUTCDate() !== day
+  ) {
+    throw new Error(`section date is not a real calendar date: ${date}`);
+  }
   if (lines[1] !== "" || lines[2] !== "### Changes") {
     throw new Error(`section must put a blank line and "### Changes" under its heading`);
   }
@@ -467,8 +480,9 @@ export function runRelease(kind, options = {}) {
     git([...BOT_IDENTITY, "tag", "-a", tag, "-m", subject]);
   } catch (error) {
     console.error(`the release commit ${sha} exists, but the ${tag} tag was not created.`);
+    console.error(`first check that git rev-parse HEAD still equals ${sha}`);
     console.error(`retry the tag:  git tag -a ${tag} -m "${subject}" ${sha}`);
-    console.error(`or drop it:     git reset --hard origin/main`);
+    console.error(`or drop the release commit: git reset --keep ${sha}^`);
     throw error;
   }
 
@@ -487,16 +501,30 @@ function runNotes(tag, outputPath) {
   writeFileSync(outputPath, `${section}\n`);
 }
 
-// CI's admission check: the pushed tag must be the app version and must have
-// a changelog section to publish, so a tag cannot label another build.
-function runCheckTag(tag) {
-  const canonical = readVersionOf(join(repoRoot, "src-tauri/tauri.conf.json"));
+// CI's admission check: the tag must name the app version, every version
+// source and workspace lock entry must equal it, and a changelog section must
+// exist to publish — a tag cannot label another build.
+export function runCheckTag(tag, options = {}) {
+  const root = options.root ?? repoRoot;
+  const canonical = readVersionOf(join(root, "src-tauri/tauri.conf.json"));
   if (tag !== `v${canonical}`) {
     throw new Error(
       `${tag} does not match the app version v${canonical} in src-tauri/tauri.conf.json`,
     );
   }
-  const section = extractChangelogSection(readFileSync(CHANGELOG_PATH, "utf8"), canonical);
+  const inventory = readSourceVersions(root);
+  const lock = parseCargoLockVersions(readFileSync(join(root, "Cargo.lock"), "utf8"));
+  for (const name of LOCK_PACKAGES) {
+    inventory[`Cargo.lock (${name})`] = lock[name];
+  }
+  const drift = findVersionDrift(inventory, canonical);
+  if (drift.length > 0) {
+    throw new Error(`version drift from ${tag}: ${drift.join(", ")}`);
+  }
+  const section = extractChangelogSection(
+    readFileSync(join(root, "CHANGELOG.md"), "utf8"),
+    canonical,
+  );
   if (section === null) {
     throw new Error(`CHANGELOG.md has no section for ${tag}`);
   }

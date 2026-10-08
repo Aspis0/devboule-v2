@@ -205,6 +205,15 @@ describe("assertValidSection", () => {
     );
   });
 
+  it("refuses an impossible calendar date", () => {
+    for (const date of ["2026-99-99", "2026-02-30"]) {
+      const section = makeChangelogSection("0.1.1", date, [
+        { hash: "abcdef12345", subject: "Ship it" },
+      ]);
+      expect(() => assertValidSection(section, "0.1.1")).toThrow(/not a real calendar date/);
+    }
+  });
+
   it("refuses a body without ### Changes", () => {
     expect(() => assertValidSection(valid.replace("### Changes", "Random prose"), "0.1.1")).toThrow(
       /blank line and "### Changes"/,
