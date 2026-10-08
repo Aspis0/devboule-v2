@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionTask } from "../types/ipc";
-import { formatTaskDuration, taskRowText } from "./backgroundTaskText";
+import { formatTaskDuration, taskRowText, taskStateWord } from "./backgroundTaskText";
 
 function task(overrides: Partial<SessionTask> = {}): SessionTask {
   return {
@@ -63,5 +63,16 @@ describe("the transcript row for a task", () => {
 
   it("drops the duration when the task has no end time", () => {
     expect(taskRowText(task({ state: "failed" }))).toBe("Background agent failed · Explore auth");
+  });
+});
+
+describe("the state word a row carries", () => {
+  it.each([
+    ["running", "Running"],
+    ["finished", "Finished"],
+    ["failed", "Failed"],
+    ["cancelled", "Stopped"],
+  ] as const)("names %s as %s", (state, word) => {
+    expect(taskStateWord(state)).toBe(word);
   });
 });

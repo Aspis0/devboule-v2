@@ -2,9 +2,22 @@ import type { ReactNode } from "react";
 import { DesignPanel, PullRequestSurface } from "./sidePanels";
 import { ChangesSurface } from "./ChangesSurface";
 import { FilesSurface } from "./FilesSurface";
+import { TasksPanel } from "./TasksPanel";
 import type { PanelIconName } from "./panel/PanelIcon";
 import type { WorkspaceKey } from "./hosts/hostIdentity";
 import type { FileToolTabKind } from "./strip/toolTabs";
+import type { BackgroundTaskState } from "../../lib/backgroundTasks";
+
+/** The selected agent session's background tasks, as the Tasks tab shows them. */
+export interface AgentTasksContext {
+  sessionId: string;
+  /** Null until the session's list arrives. */
+  list: BackgroundTaskState | null;
+  /** Opens the child's transcript in the main pane. */
+  onOpenAgent: (childSessionId: string) => void;
+  /** Stops a running child. Resolves to a sentence for the user when it did not stop. */
+  onStopAgent: (childSessionId: string) => Promise<string | null>;
+}
 
 /** Where the tab row offers a panel: a visible tab, or the kebab menu. The
  * three spec tabs stay tabs; mock and future panels must not crowd them. */
@@ -28,6 +41,8 @@ export interface SidePanelContext {
    * its own kind, so the kind travels only this far.
    */
   onOpenFile?: (workspaceKey: WorkspaceKey, path: string, kind: FileToolTabKind) => void;
+  /** The front pane's agent session and its tasks; null when the pane shows no agent. */
+  agentTasks?: AgentTasksContext | null;
 }
 
 export interface SidePanelEntry {
@@ -82,6 +97,13 @@ export const SIDE_PANEL_REGISTRY: readonly SidePanelEntry[] = [
     placement: "tab",
     icon: "design",
     render: () => <DesignPanel />,
+  },
+  {
+    id: "tasks",
+    name: "Tasks",
+    placement: "tab",
+    icon: "tasks",
+    render: ({ agentTasks }) => <TasksPanel tasks={agentTasks ?? null} />,
   },
   {
     id: "pr",

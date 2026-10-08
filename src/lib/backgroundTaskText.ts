@@ -17,15 +17,18 @@ const SETTLED_WORD: Record<Exclude<SessionTask["state"], "running">, string> = {
   cancelled: "stopped",
 };
 
+/** `1 tool`, `4 tools`: the count a running agent row names. */
+export function toolCountText(count: number): string {
+  return `${count} ${count === 1 ? "tool" : "tools"}`;
+}
+
 /** One transcript row for a task's state. The details a task lacks are left out, not blanked. */
 export function taskRowText(task: SessionTask): string {
   if (task.state === "running") {
     if (task.kind === "command") return `Running ${task.title}`;
     const details: string[] = [];
     if (task.model !== undefined) details.push(task.model);
-    if (task.toolCallCount !== undefined) {
-      details.push(`${task.toolCallCount} ${task.toolCallCount === 1 ? "tool" : "tools"}`);
-    }
+    if (task.toolCallCount !== undefined) details.push(toolCountText(task.toolCallCount));
     return [`Running agent ${task.title}`, ...details].join(" · ");
   }
   const noun = task.kind === "agent" ? "agent" : "command";
@@ -34,4 +37,18 @@ export function taskRowText(task: SessionTask): string {
     parts.push(`took ${formatTaskDuration(task.endedAtMs - task.startedAtMs)}`);
   }
   return parts.join(" · ");
+}
+
+/** The word a task's row carries beside its title. */
+export function taskStateWord(state: SessionTask["state"]): string {
+  switch (state) {
+    case "running":
+      return "Running";
+    case "finished":
+      return "Finished";
+    case "failed":
+      return "Failed";
+    case "cancelled":
+      return "Stopped";
+  }
 }

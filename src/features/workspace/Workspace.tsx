@@ -15,7 +15,13 @@ import { ErrorText } from "../../components/ErrorText";
 import { ConfirmProvider } from "../../components/ConfirmHost";
 import { SurfaceErrorBoundary } from "../../app/SurfaceErrorBoundary";
 import { NewProjectDialog } from "../../components/NewProjectDialog";
-import { SIDE_PANEL_REGISTRY, type SidePanelEntry } from "./sidePanelRegistry";
+import {
+  SIDE_PANEL_REGISTRY,
+  type AgentTasksContext,
+  type SidePanelEntry,
+} from "./sidePanelRegistry";
+import { childRow } from "./subagentRows";
+import type { BackgroundTaskState } from "../../lib/backgroundTasks";
 import { SIDE_PANEL_BODY_ID, SidePanelTabs, sidePanelTabId } from "./panel/SidePanelTabs";
 import { useMenuOpen } from "../../lib/menuOpen";
 import { TerminalSurface } from "../terminal/TerminalSurface";
@@ -295,6 +301,12 @@ export function Workspace({
     handleResizeKey,
   } = useWorkspacePanelResize();
   const [activeSidePanel, setActiveSidePanel] = useState<ActiveSidePanel>("changes");
+  // The front pane's background-task list, as its surface last reported it. The
+  // Tasks tab reads it only while the pane still shows that session.
+  const [paneTasks, setPaneTasks] = useState<{
+    sessionId: string;
+    list: BackgroundTaskState | null;
+  } | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
   const [permissionQueue, setPermissionQueue] = useState<QueuedPermission[]>([]);
@@ -1310,6 +1322,43 @@ export function Workspace({
     },
     [sessions, handleReopenSession, refreshSessions],
   );
+  const reportPaneTasks = useCallback(
+    (sessionId: string, list: BackgroundTaskState | null) => setPaneTasks({ sessionId, list }),
+    [],
+  );
+  // Stop keeps the child's session and transcript (the strip's stop road). The
+  // roster is read first, so a child that settled meanwhile is not stopped.
+  const stopAgent = useCallback(
+    async (childSessionId: string): Promise<string | null> => {
+      const row = sessions.find((session) => session.id === childSessionId);
+      if (row === undefined || childRow(row).status !== "running") {
+        return "It is no longer running, so nothing was stopped.";
+      }
+      try {
+        await sessionStop(childSessionId);
+        return null;
+      } catch (cause) {
+        return errorSentence(cause).sentence;
+      }
+    },
+    [sessions],
+  );
+  const openTasksTab = useCallback(() => {
+    setActiveSidePanel("tasks");
+    setRightCollapsed(false);
+  }, [setRightCollapsed]);
+  const agentTasks = useMemo<AgentTasksContext | null>(
+    () =>
+      paneSession !== null && paneTasks?.sessionId === paneSession.id
+        ? {
+            sessionId: paneSession.id,
+            list: paneTasks.list,
+            onOpenAgent: handleOpenSubagent,
+            onStopAgent: stopAgent,
+          }
+        : null,
+    [paneSession, paneTasks, handleOpenSubagent, stopAgent],
+  );
   // A failed resume leaves the row's verdict changed on the daemon side; the
   // bar must not keep its offer on the roster data this surface already held.
   const handleResumeFailed = useCallback(() => {
@@ -2220,6 +2269,8 @@ export function Workspace({
                     onOpenSubagent={handleOpenSubagent}
                     subagentAttention={subagentAttention}
                     onRefreshSubagents={refreshSessions}
+                    onOpenTasks={openTasksTab}
+                    onTasksChange={reportPaneTasks}
                     deviceNames={peerNames}
                     hasPendingPermission={hasPendingPermission}
                     pendingPlanToolCallId={pendingPlanToolCallId}
@@ -2406,6 +2457,7 @@ export function Workspace({
                       // The hand-off the pencils call: a diff tab from
                       // Changes, a file tab from Files (bound in the registry).
                       onOpenFile: openToolTab,
+                      agentTasks,
                     })}
                   </ConfirmProvider>
                 </SurfaceErrorBoundary>

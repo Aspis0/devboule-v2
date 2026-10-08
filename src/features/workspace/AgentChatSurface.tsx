@@ -55,7 +55,7 @@ import { useFileAttachments } from "./useFileAttachments";
 import type { FileUploader } from "./fileUpload";
 import { SubagentMenu, type SubagentArchiveTarget } from "./SubagentMenu";
 import { BackgroundTasksPill } from "./BackgroundTasksPill";
-import { runningTaskCount } from "../../lib/backgroundTasks";
+import { runningTaskCount, type BackgroundTaskState } from "../../lib/backgroundTasks";
 import { childRow, deriveSubagentRows, isArchivable } from "./subagentRows";
 import { AgentReadingPublisher } from "./statusBar/AgentReadingPublisher";
 import { journalLossCopy } from "./journalLoss";
@@ -150,6 +150,8 @@ interface AgentChatSurfaceProps {
   onRefreshSubagents?: () => Promise<void>;
   /** Opens the side panel on its Tasks tab. Absent: the running-task pill is not drawn. */
   onOpenTasks?: () => void;
+  /** The session's background-task list whenever it changes; the Tasks tab reads it from the workspace. */
+  onTasksChange?: (sessionId: string, list: BackgroundTaskState | null) => void;
   /**
    * Workspace context that renders agent-written file paths as links into
    * the tab opener, exactly the Files panel's open action. Null (or absent)
@@ -356,6 +358,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   subagentAttention,
   onRefreshSubagents,
   onOpenTasks,
+  onTasksChange,
   fileLinks = null,
   activity,
   observedState = null,
@@ -577,6 +580,11 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     sessionId,
     observedState?.generation,
   ]);
+
+  // The workspace owns the Tasks tab, so the list leaves this surface here.
+  useEffect(() => {
+    onTasksChange?.(sessionId, state.backgroundTasks ?? null);
+  }, [onTasksChange, sessionId, state.backgroundTasks]);
 
   // The freshest roster handed down: the archive act reads this per close, so
   // a push that landed while the ask was open counts at the moment it matters.

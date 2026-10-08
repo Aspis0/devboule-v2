@@ -9,6 +9,7 @@ export type PanelIconName =
   | "design"
   | "app"
   | "pr"
+  | "tasks"
   | "panel"
   | "kebab"
   | "chevron-right";
@@ -45,6 +46,17 @@ function paths(name: PanelIconName): ReactNode {
           <circle cx="6" cy="18" r="3" />
           <path d="M13 6h3a2 2 0 0 1 2 2v7" />
           <path d="M6 9v12" />
+        </>
+      );
+    case "tasks":
+      return (
+        <>
+          <path d="M9 6h12" />
+          <path d="M9 12h12" />
+          <path d="M9 18h12" />
+          <path d="M4 6h.01" />
+          <path d="M4 12h.01" />
+          <path d="M4 18h.01" />
         </>
       );
     case "panel":
