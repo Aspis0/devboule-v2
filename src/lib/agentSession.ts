@@ -24,7 +24,13 @@ import { parseAgentPeerMessage, type AgentPeerOrigin } from "./agentPeerMessage"
 import { recordPlanUsage } from "./planUsageStore";
 import { isToolRunningStatus } from "../features/workspace/interruptedTool";
 import { hideUntrustedFrame } from "./untrustedFrame";
-import { acceptTaskReply, acceptTaskSnapshot, type BackgroundTaskState } from "./backgroundTasks";
+import {
+  acceptTaskReply,
+  acceptTaskSnapshot,
+  taskTransitions,
+  type BackgroundTaskState,
+} from "./backgroundTasks";
+import { taskRowText } from "./backgroundTaskText";
 
 export type AgentChannel = SessionChannel;
 export type AgentStatus = "initializing" | "idle" | "running" | "error" | "closed";
@@ -1788,6 +1794,9 @@ export class AgentSession {
     const next = acceptTaskSnapshot(current, event);
     if (next === null) return;
     this.update({ backgroundTasks: next });
+    for (const task of taskTransitions(current, next)) {
+      this.appendSystemMessage(taskRowText(task));
+    }
   }
 
   /**
