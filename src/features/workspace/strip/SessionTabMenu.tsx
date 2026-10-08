@@ -39,13 +39,21 @@ export function SessionTabMenu({
   useMenuOpen(open, onClose);
 
   // Disabled rows cannot take focus, so opening skips to an enabled action.
+  // The first enabled entry can change while the menu is up (a branch row
+  // arrives late), so focus follows it until the person presses a key.
+  const firstEnabledKey = entries.find((entry) => !entry.disabled)?.key ?? null;
+  const keyPressed = useRef(false);
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      keyPressed.current = false;
+      return;
+    }
+    if (keyPressed.current) return;
     const first = [...(rootRef.current?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find(
       (button) => !button.disabled,
     );
     first?.focus({ preventScroll: true });
-  }, [open]);
+  }, [open, firstEnabledKey]);
 
   // Outside press closes, and the anchor counts as outside here: the tab's
   // own click should clear the selection and select, not keep a menu open.
@@ -78,6 +86,7 @@ export function SessionTabMenu({
   if (!open) return null;
 
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    keyPressed.current = true;
     if (event.key === "Escape") {
       anchorRef.current?.focus({ preventScroll: true });
       onClose();

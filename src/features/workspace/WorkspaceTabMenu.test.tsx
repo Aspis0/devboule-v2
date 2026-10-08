@@ -94,6 +94,8 @@ describe("the tab context menu", () => {
     await shiftF10("session-2");
 
     expect(menuLabels()).toHaveLength(6);
+    // The branch row loads after the menu opens: focus follows it to the top.
+    expect(document.activeElement?.textContent).toBe("Copy branch name");
     expect(document.activeElement?.getAttribute("role")).toBe("menuitem");
   });
 
