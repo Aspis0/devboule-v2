@@ -230,6 +230,11 @@ fn an_exit_publishes_immediately_past_the_debounce() {
 
     // The observer attaches before the death: the exit's publish must reach
     // the already-attached channel without waiting out the window below.
+    // The drain never feeds a synthesized terminal event back into
+    // `event_sent`: the pull path synthesizes Exit once the death is older
+    // than EXIT_DRAIN, and `event_sent` detaches on it — the observer the
+    // exit publish is addressed to would be gone before the publish lands,
+    // which is the race this test is about, not its subject.
     let conn = attached_without_queue_capability(&registry, parent, 44, &owner);
     let drain_conn = |conn: &Arc<ConnHandle>| {
         let mut events = Vec::new();
@@ -239,6 +244,12 @@ fn an_exit_publishes_immediately_past_the_debounce() {
                 return events;
             }
             for event in &batch {
+                if matches!(
+                    &event.envelope.event,
+                    SessionEvent::Exit { .. } | SessionEvent::Recovered { .. }
+                ) {
+                    continue;
+                }
                 conn.event_sent(event);
             }
             events.extend(batch.into_iter().map(|pending| pending.envelope.event));
@@ -356,5 +367,74 @@ fn the_debounce_opens_after_its_window() {
     assert!(
         refresh_due(Some(now), now + TASKS_REFRESH_DEBOUNCE),
         "the window's end derives again"
+    );
+}
+
+#[test]
+fn a_detached_observer_recovers_the_list_on_reattach() {
+    // The forced losing order from the CI failure, kept as the regression
+    // document: the death is in, the synthesized Exit is consumed first
+    // (detaching this observer through the live protocol), and only then
+    // does the urgent publish run — to zero observers. The list is not
+    // lost: a fresh subscription reattaches onto the ended session and
+    // reads the cancelled list as its attach snapshot.
+    let (_dir, registry, _journal) = tmp_delete_registry();
+    let owner = test_owner("tasks-race-user", "tasks-race-client");
+    let parent = "s.tasks.race.parent";
+    linked_creator(&registry, parent, &owner);
+    linked_child(&registry, "s.tasks.race.child", &owner, parent);
+    let runtime = registry
+        .live_runtime(parent, &owner)
+        .expect("parent runtime");
+
+    let conn = attached_without_queue_capability(&registry, parent, 45, &owner);
+    let drain = || {
+        let mut events = Vec::new();
+        loop {
+            let batch = conn.pull_events();
+            if batch.is_empty() {
+                return events;
+            }
+            for event in &batch {
+                conn.event_sent(event);
+            }
+            events.extend(batch.into_iter().map(|pending| pending.envelope.event));
+        }
+    };
+    assert_eq!(task_lists(&drain()).len(), 1, "the attach snapshot arrives");
+
+    runtime.mark_exited(Some(1));
+    if let Ok(mut stream) = runtime.lock_stream() {
+        stream.last_publish =
+            Some(std::time::Instant::now() - super::super::session_items::EXIT_DRAIN);
+    }
+    assert!(
+        drain()
+            .into_iter()
+            .any(|event| matches!(event, SessionEvent::Exit { .. })),
+        "the pull synthesizes the Exit once the death outlasts the drain"
+    );
+    registry.refresh_session_tasks_urgent(parent);
+    assert!(
+        task_lists(&drain()).is_empty(),
+        "the detached observer sees no exit publish"
+    );
+
+    runtime.test_reset_tasks_throttle();
+    let conn = attached_without_queue_capability(&registry, parent, 46, &owner);
+    let mut events = Vec::new();
+    loop {
+        let batch = conn.pull_events();
+        if batch.is_empty() {
+            break;
+        }
+        events.extend(batch.into_iter().map(|pending| pending.envelope.event));
+    }
+    assert!(
+        task_lists(&events)
+            .into_iter()
+            .flat_map(|tasks| tasks.iter())
+            .any(|task| task.state == SessionTaskState::Cancelled),
+        "a fresh subscription reads the cancelled list on attach"
     );
 }
