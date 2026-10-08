@@ -24,6 +24,7 @@ src-tauri/gen/
 /*.md
 !/README.md
 !/THIRD_PARTY.md
+!/CHANGELOG.md
 # Vouched for on 2026-09-13: a reading of the code as it is built, with the
 # file — and, since 2026-09-21, the symbol inside it — behind every structural
 # claim, and no reference to any document
