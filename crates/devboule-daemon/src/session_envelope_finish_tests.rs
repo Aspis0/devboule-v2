@@ -430,6 +430,34 @@ fn a_new_turn_clears_the_previous_turns_stop_reason() {
     );
 }
 
+/// A normal turn followed by an unclean exit is still finished, but the
+/// creator sees the code: the stop reason describes the turn, not the
+/// process that died after it.
+#[test]
+fn a_child_that_exited_uncleanly_after_its_turn_names_the_code() {
+    let runtime = SessionRuntime::new();
+    runtime.publish_agent_event(
+        SessionEvent::AgentFinished {
+            stop_reason: "stop".to_string(),
+            model_id: None,
+            usage: None,
+        },
+        None,
+    );
+    let mut record = ended_record("child-1", "alex");
+    record.exit_code = Some(1);
+    let (state, note) = child_finish_state(&record.to_session(), &runtime);
+    assert_eq!(state, AgentTaskState::Completed);
+    let note = note.expect("the creator must see the exit code");
+    assert!(note.contains("code 1"), "{note}");
+    // A clean exit after the turn carries no note.
+    let mut clean = ended_record("child-1", "alex");
+    clean.exit_code = Some(0);
+    let (state, note) = child_finish_state(&clean.to_session(), &runtime);
+    assert_eq!(state, AgentTaskState::Completed);
+    assert_eq!(note, None);
+}
+
 /// Origin inheritance (`S5` decision 3, and the §5 checklist): a child
 /// carries its creator's **stored** origin — same device, same role — and a
 /// local creator stays local. Nothing here reads a connection, because the

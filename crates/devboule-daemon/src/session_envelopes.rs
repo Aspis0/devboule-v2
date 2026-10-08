@@ -252,26 +252,40 @@ pub(super) fn summary_of(message: Option<&str>) -> String {
 
 /// How a child ended, in the vocabulary the finish report uses (`S5` §3).
 ///
-/// A stop reason is the provider's own word for why the turn ended. Only
-/// `end_turn` is a completed run: `max_tokens`, `max_turn_requests` and
-/// `refusal` all mean the agent stopped short of doing what it was asked, and
-/// saying `completed` there would be a claim the provider contradicts. A
-/// session that never reported one is judged by its exit: a clean end is
-/// `completed`, an unclean one `failed`, and a session the human closed (or one
-/// whose daemon died) is `canceled` — it did not report and nothing says it
-/// failed.
+/// A stop reason is the provider's own word for why the turn ended. Either
+/// `end_turn` or pi's `stop` is a completed run: `max_tokens`,
+/// `max_turn_requests` and `refusal` all mean the agent stopped short of
+/// doing what it was asked, and saying `completed` there would be a claim the
+/// provider contradicts. A completed turn followed by an unclean exit is
+/// still completed, and the note names the code: the turn's word cannot
+/// speak for the process. A session that never reported one is judged by its
+/// exit: a clean end is `completed`, an unclean one `failed`, and a session
+/// the human closed (or one whose daemon died) is `canceled` — it did not
+/// report and nothing says it failed.
 pub(super) fn child_finish_state(
     session: &Session,
     runtime: &SessionRuntime,
 ) -> (AgentTaskState, Option<String>) {
     if let Some(stop_reason) = runtime.agent_stop_reason() {
         let state = stop_reason_state(&stop_reason);
-        let note = (state != AgentTaskState::Completed).then(|| {
+        let mut note = (state != AgentTaskState::Completed).then(|| {
             format!(
                 "The agent stopped with stop reason '{}'.",
                 excerpt(&stop_reason, MAX_STOP_REASON_IN_NOTE)
             )
         });
+        if state == AgentTaskState::Completed {
+            if let SessionState::Ended {
+                code: Some(code), ..
+            } = &session.state
+            {
+                if *code != 0 {
+                    note = Some(format!(
+                        "The agent process exited with code {code} after its last turn."
+                    ));
+                }
+            }
+        }
         return (state, note);
     }
     match &session.state {
