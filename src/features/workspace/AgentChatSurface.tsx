@@ -19,6 +19,7 @@ import {
   sessionSetFeature,
   sessionSetMode,
   sessionSetModel,
+  sessionTasks,
   sessionAttachmentDelete,
   sessionUploadAbort,
   sessionUploadBegin,
@@ -289,6 +290,7 @@ function invokeAgentCommand<T>(command: string, args?: Record<string, unknown>):
     return sessionInterrupt(id, args?.subscriptionId as SubscriptionId) as Promise<T>;
   if (command === "session_detach")
     return sessionDetach(args?.subscriptionId as SubscriptionId) as Promise<T>;
+  if (command === "session_tasks") return sessionTasks(id) as Promise<T>;
   return Promise.reject(new Error(`Unsupported agent command: ${command}`));
 }
 
