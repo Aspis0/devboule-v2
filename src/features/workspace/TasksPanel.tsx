@@ -7,6 +7,7 @@ import { formatTaskDuration, taskStateWord, toolCountText } from "../../lib/back
 import type { SessionTask } from "../../types/ipc";
 import { groupTasks } from "./backgroundTaskGroups";
 import type { AgentTasksContext } from "./sidePanelRegistry";
+import { useBackgroundTaskState } from "./useBackgroundTaskState";
 import { useTaskClock } from "./useTaskClock";
 import "./TasksPanel.css";
 
@@ -22,7 +23,7 @@ export function TasksPanel({ tasks }: TasksPanelProps) {
   // The ref refuses a second press before React has drawn the disabled state.
   const stoppingRef = useRef(new Set<string>());
   const [stopping, setStopping] = useState<ReadonlySet<string>>(new Set());
-  const list = tasks?.list ?? null;
+  const list = useBackgroundTaskState(tasks?.source ?? null);
   const groups = groupTasks(list?.tasks ?? []);
   const now = useTaskClock(groups.running.length > 0);
   const omitted = list?.omitted ?? 0;

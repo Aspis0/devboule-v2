@@ -190,3 +190,36 @@ describe("the transcript rows a task change leaves", () => {
     expect(roles).toEqual(["system", "assistant", "system"]);
   });
 });
+
+describe("the task lane and the transcript are woken apart", () => {
+  it("wakes only the task listeners when a snapshot writes no row", async () => {
+    const { session, emit, answerAsk } = taskHarness();
+    await session.start();
+    answerAsk({ tasks: [], omitted: 0 });
+    await flush();
+    emit(snapshot("e1", 1, [agentTask()]));
+    const transcript = vi.fn();
+    const tasks = vi.fn();
+    session.subscribe(transcript);
+    session.subscribeTasks(tasks);
+
+    emit(snapshot("e1", 2, [agentTask({ toolCallCount: 3 })]));
+
+    expect(tasks).toHaveBeenCalledTimes(1);
+    expect(transcript).not.toHaveBeenCalled();
+    expect(session.getTaskState()?.revision).toBe(2);
+  });
+
+  it("wakes the transcript too when a snapshot writes a row", async () => {
+    const { session, emit, answerAsk } = taskHarness();
+    await session.start();
+    answerAsk({ tasks: [], omitted: 0 });
+    await flush();
+    const transcript = vi.fn();
+    session.subscribe(transcript);
+
+    emit(snapshot("e1", 1, [agentTask()]));
+
+    expect(transcript).toHaveBeenCalled();
+  });
+});

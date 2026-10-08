@@ -403,6 +403,8 @@ export class AgentSession {
   private readonly listeners = new Set<() => void>();
   /** Context readings have their own lane (see `subscribeUsage`). */
   private readonly usageListeners = new Set<() => void>();
+  /** The background-task list has its own lane (see `subscribeTasks`). */
+  private readonly taskListeners = new Set<() => void>();
   private readonly blocks = new Map<string, number>();
   /**
    * The newest row of each tool id, whatever turn it opened in. An update
@@ -471,6 +473,22 @@ export class AgentSession {
 
   getContextUsage(): ContextUsage | null {
     return this.state.contextUsage;
+  }
+
+  /**
+   * Subscribe to the background-task list only. A list change that writes no
+   * transcript row wakes these listeners and not the transcript's, so only the
+   * consumers of the list re-render.
+   */
+  subscribeTasks(listener: () => void): () => void {
+    this.taskListeners.add(listener);
+    return () => {
+      this.taskListeners.delete(listener);
+    };
+  }
+
+  getTaskState(): BackgroundTaskState | null {
+    return this.state.backgroundTasks ?? null;
   }
 
   async start(): Promise<void> {
@@ -1793,10 +1811,17 @@ export class AgentSession {
     const current = this.state.backgroundTasks ?? null;
     const next = acceptTaskSnapshot(current, event);
     if (next === null) return;
-    this.update({ backgroundTasks: next });
-    for (const task of taskTransitions(current, next)) {
+    const rows = taskTransitions(current, next);
+    this.writeTaskState(next);
+    for (const task of rows) {
       this.appendSystemMessage(taskRowText(task));
     }
+  }
+
+  /** The one writer of `state.backgroundTasks`: it wakes the task lane and not the transcript. */
+  private writeTaskState(next: BackgroundTaskState): void {
+    this.state = { ...this.state, backgroundTasks: next };
+    for (const listener of [...this.taskListeners]) listener();
   }
 
   /**
@@ -1811,7 +1836,7 @@ export class AgentSession {
       });
       if (this.disposed) return;
       const next = acceptTaskReply(this.state.backgroundTasks ?? null, reply);
-      if (next !== null) this.update({ backgroundTasks: next });
+      if (next !== null) this.writeTaskState(next);
     } catch {
       // Left empty on purpose, see above.
     }

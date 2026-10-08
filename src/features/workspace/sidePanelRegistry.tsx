@@ -6,13 +6,13 @@ import { TasksPanel } from "./TasksPanel";
 import type { PanelIconName } from "./panel/PanelIcon";
 import type { WorkspaceKey } from "./hosts/hostIdentity";
 import type { FileToolTabKind } from "./strip/toolTabs";
-import type { BackgroundTaskState } from "../../lib/backgroundTasks";
+import type { BackgroundTaskSource } from "./useBackgroundTaskState";
 
 /** The selected agent session's background tasks, as the Tasks tab shows them. */
 export interface AgentTasksContext {
   sessionId: string;
-  /** Null until the session's list arrives. */
-  list: BackgroundTaskState | null;
+  /** The session's task lane: the tab reads the list from it and re-renders on its changes. */
+  source: BackgroundTaskSource;
   /** Opens the child's transcript in the main pane. */
   onOpenAgent: (childSessionId: string) => void;
   /** Stops a running child. Resolves to a sentence for the user when it did not stop. */

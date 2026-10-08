@@ -9,10 +9,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DaemonStatus, Session, SessionTask, WorkspaceGitStatus } from "../../types/ipc";
 import type { Project, Workspace as IpcWorkspace } from "../../types/ipc";
 import type { BackgroundTaskState } from "../../lib/backgroundTasks";
+import { fakeTaskSource } from "./backgroundTaskSourceHarness";
+import type { BackgroundTaskSource } from "./useBackgroundTaskState";
 
 const surface = vi.hoisted(() => ({
   openTasks: null as (() => void) | null,
-  reportTasks: null as ((sessionId: string, list: BackgroundTaskState | null) => void) | null,
+  reportAgent: null as ((sessionId: string, agent: BackgroundTaskSource | null) => void) | null,
 }));
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
@@ -62,14 +64,14 @@ vi.mock("./AgentChatSurface", () => ({
   AgentChatSurface: ({
     sessionId,
     onOpenTasks,
-    onTasksChange,
+    onAgentChange,
   }: {
     sessionId: string;
     onOpenTasks?: () => void;
-    onTasksChange?: (sessionId: string, list: BackgroundTaskState | null) => void;
+    onAgentChange?: (sessionId: string, agent: BackgroundTaskSource | null) => void;
   }) => {
     surface.openTasks = onOpenTasks ?? null;
-    surface.reportTasks = onTasksChange ?? null;
+    surface.reportAgent = onAgentChange ?? null;
     return (
       <div data-testid="agent-chat-surface" data-session={sessionId}>
         <button type="button" data-testid="stub-open-tasks" onClick={() => onOpenTasks?.()} />
@@ -166,7 +168,7 @@ afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
   surface.openTasks = null;
-  surface.reportTasks = null;
+  surface.reportAgent = null;
   vi.clearAllMocks();
 });
 
@@ -203,7 +205,8 @@ describe("the workspace's Tasks tab", () => {
       tasks: [runningAgent("agent-a")],
       omitted: 0,
     };
-    await act(async () => surface.reportTasks?.("agent-a", list));
+    const source = fakeTaskSource(list);
+    await act(async () => surface.reportAgent?.("agent-a", source));
 
     await act(async () => tab("tasks").click());
 
@@ -220,7 +223,7 @@ describe("the workspace's Tasks tab", () => {
       tasks: [runningAgent("agent-z")],
       omitted: 0,
     };
-    await act(async () => surface.reportTasks?.("agent-z", list));
+    await act(async () => surface.reportAgent?.("agent-z", fakeTaskSource(list)));
 
     await act(async () => tab("tasks").click());
 
@@ -243,8 +246,9 @@ describe("the workspace's Tasks tab", () => {
       tasks: [{ ...runningAgent("agent-a"), state: "finished", endedAtMs: 4_000 }],
       omitted: 0,
     };
-    await act(async () => surface.reportTasks?.("agent-a", running));
-    await act(async () => surface.reportTasks?.("agent-a", finished));
+    const source = fakeTaskSource(running);
+    await act(async () => surface.reportAgent?.("agent-a", source));
+    await act(async () => source.set(finished));
     expect(tab("tasks").querySelector(".workspace-panel-tab-dot")).not.toBeNull();
 
     await act(async () => tab("tasks").click());

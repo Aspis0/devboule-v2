@@ -14,6 +14,7 @@ vi.mock("../../components/ConfirmHost", () => ({
   useConfirmAsk: () => askConfirm,
 }));
 
+import { fakeTaskSource } from "./backgroundTaskSourceHarness";
 import { TasksPanel } from "./TasksPanel";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -42,7 +43,7 @@ function context(
 ): AgentTasksContext {
   return {
     sessionId: "parent-1",
-    list: { epoch: "e1", revision: 1, tasks, omitted },
+    source: fakeTaskSource({ epoch: "e1", revision: 1, tasks, omitted }),
     onOpenAgent,
     onStopAgent,
   };

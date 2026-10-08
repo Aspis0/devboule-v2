@@ -55,7 +55,6 @@ import { useFileAttachments } from "./useFileAttachments";
 import type { FileUploader } from "./fileUpload";
 import { SubagentMenu, type SubagentArchiveTarget } from "./SubagentMenu";
 import { BackgroundTasksPill } from "./BackgroundTasksPill";
-import { runningTaskCount, type BackgroundTaskState } from "../../lib/backgroundTasks";
 import { childRow, deriveSubagentRows, isArchivable } from "./subagentRows";
 import { AgentReadingPublisher } from "./statusBar/AgentReadingPublisher";
 import { journalLossCopy } from "./journalLoss";
@@ -150,8 +149,8 @@ interface AgentChatSurfaceProps {
   onRefreshSubagents?: () => Promise<void>;
   /** Opens the side panel on its Tasks tab. Absent: the running-task pill is not drawn. */
   onOpenTasks?: () => void;
-  /** The session's background-task list whenever it changes; the Tasks tab reads it from the workspace. */
-  onTasksChange?: (sessionId: string, list: BackgroundTaskState | null) => void;
+  /** The session's controller once it exists: the Tasks tab reads its task lane through the workspace. */
+  onAgentChange?: (sessionId: string, agent: AgentSession | null) => void;
   /**
    * Workspace context that renders agent-written file paths as links into
    * the tab opener, exactly the Files panel's open action. Null (or absent)
@@ -358,7 +357,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   subagentAttention,
   onRefreshSubagents,
   onOpenTasks,
-  onTasksChange,
+  onAgentChange,
   fileLinks = null,
   activity,
   observedState = null,
@@ -377,6 +376,8 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   // Undefined until a goal_changed frame arrives; then the last frame, even a clear.
   const goalFrameRef = useRef<string | null | undefined>(undefined);
   const sessionRef = useRef<AgentSession | null>(null);
+  // The controller as state, so the pill and the workspace can read its task lane.
+  const [agent, setAgent] = useState<AgentSession | null>(null);
   const [state, setState] = useState<AgentSessionState>({
     items: [],
     status: "initializing",
@@ -562,6 +563,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         : undefined,
     });
     sessionRef.current = session;
+    setAgent(session);
     // `start()` is async: seed the new controller now so the old controller's
     // latched error cannot render until the first notification.
     setState(session.getState());
@@ -581,10 +583,10 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     observedState?.generation,
   ]);
 
-  // The workspace owns the Tasks tab, so the list leaves this surface here.
+  // The workspace owns the Tasks tab, so the controller leaves this surface here.
   useEffect(() => {
-    onTasksChange?.(sessionId, state.backgroundTasks ?? null);
-  }, [onTasksChange, sessionId, state.backgroundTasks]);
+    if (agent !== null) onAgentChange?.(sessionId, agent);
+  }, [agent, onAgentChange, sessionId]);
 
   // The freshest roster handed down: the archive act reads this per close, so
   // a push that landed while the ask was open counts at the moment it matters.
@@ -762,13 +764,12 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     () => <AgentTaskPill items={state.agentTasks ?? []} />,
     [state.agentTasks],
   );
-  const runningTasks = runningTaskCount(state.backgroundTasks ?? null);
   const backgroundPill = useMemo(
     () =>
       onOpenTasks === undefined ? null : (
-        <BackgroundTasksPill runningCount={runningTasks} onOpen={onOpenTasks} />
+        <BackgroundTasksPill source={agent} onOpen={onOpenTasks} />
       ),
-    [onOpenTasks, runningTasks],
+    [agent, onOpenTasks],
   );
   // `/goal` rides to the daemon as plain text, which intercepts it: the app
   // only makes it discoverable, for a live agent session alone.

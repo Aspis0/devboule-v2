@@ -21,8 +21,8 @@ import {
   type SidePanelEntry,
 } from "./sidePanelRegistry";
 import { childRow } from "./subagentRows";
-import { useTasksAttention, type PaneTasks } from "./useTasksAttention";
-import type { BackgroundTaskState } from "../../lib/backgroundTasks";
+import { useTasksAttention } from "./useTasksAttention";
+import type { BackgroundTaskSource } from "./useBackgroundTaskState";
 import { SIDE_PANEL_BODY_ID, SidePanelTabs, sidePanelTabId } from "./panel/SidePanelTabs";
 import { useMenuOpen } from "../../lib/menuOpen";
 import { TerminalSurface } from "../terminal/TerminalSurface";
@@ -302,11 +302,14 @@ export function Workspace({
     handleResizeKey,
   } = useWorkspacePanelResize();
   const [activeSidePanel, setActiveSidePanel] = useState<ActiveSidePanel>("changes");
-  // The front pane's background-task list, as its surface last reported it. The
-  // Tasks tab reads it only while the pane still shows that session.
-  const [paneTasks, setPaneTasks] = useState<PaneTasks | null>(null);
+  // The front pane's session controller, as its surface reported it. The Tasks
+  // tab reads its task lane only while the pane still shows that session.
+  const [paneAgent, setPaneAgent] = useState<{
+    sessionId: string;
+    source: BackgroundTaskSource;
+  } | null>(null);
   const tasksVisible = activeSidePanel === "tasks" && !rightCollapsed;
-  const tasksUnseen = useTasksAttention(paneTasks, tasksVisible);
+  const tasksUnseen = useTasksAttention(paneAgent?.source ?? null, tasksVisible);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
   const [permissionQueue, setPermissionQueue] = useState<QueuedPermission[]>([]);
@@ -1322,8 +1325,9 @@ export function Workspace({
     },
     [sessions, handleReopenSession, refreshSessions],
   );
-  const reportPaneTasks = useCallback(
-    (sessionId: string, list: BackgroundTaskState | null) => setPaneTasks({ sessionId, list }),
+  const reportPaneAgent = useCallback(
+    (sessionId: string, agent: BackgroundTaskSource | null) =>
+      setPaneAgent(agent === null ? null : { sessionId, source: agent }),
     [],
   );
   // Stop keeps the child's session and transcript (the strip's stop road). The
@@ -1349,15 +1353,15 @@ export function Workspace({
   }, [setRightCollapsed]);
   const agentTasks = useMemo<AgentTasksContext | null>(
     () =>
-      paneSession !== null && paneTasks?.sessionId === paneSession.id
+      paneSession !== null && paneAgent?.sessionId === paneSession.id
         ? {
             sessionId: paneSession.id,
-            list: paneTasks.list,
+            source: paneAgent.source,
             onOpenAgent: handleOpenSubagent,
             onStopAgent: stopAgent,
           }
         : null,
-    [paneSession, paneTasks, handleOpenSubagent, stopAgent],
+    [paneSession, paneAgent, handleOpenSubagent, stopAgent],
   );
   // A failed resume leaves the row's verdict changed on the daemon side; the
   // bar must not keep its offer on the roster data this surface already held.
@@ -2270,7 +2274,7 @@ export function Workspace({
                     subagentAttention={subagentAttention}
                     onRefreshSubagents={refreshSessions}
                     onOpenTasks={openTasksTab}
-                    onTasksChange={reportPaneTasks}
+                    onAgentChange={reportPaneAgent}
                     deviceNames={peerNames}
                     hasPendingPermission={hasPendingPermission}
                     pendingPlanToolCallId={pendingPlanToolCallId}
