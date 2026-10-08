@@ -80,7 +80,8 @@ with the daemon: `pnpm build:installer` stages the pinned pair and both notice
 files into `target\release`, and the installer's `bundle.resources` places
 `conpty\` and `THIRD-PARTY-NOTICES\` in the install root beside
 `devboule-daemon.exe`, where the loader looks for them. An installed app on
-x64 therefore starts on the pinned app-local host (its `daemon.log` says so).
+x64 is laid out to start on the pinned app-local host — `daemon.log` is the
+arbiter, and an inbox line there is a failed install even when a shell opens.
 A run from an ordinary dev build still gets the inbox ConPTY unless the tree
 is staged beside `target\debug\devboule-daemon.exe` by hand — the manual
 recipe above.
