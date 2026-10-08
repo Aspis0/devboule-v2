@@ -2,6 +2,7 @@
 // a tool-result image both render as thumbnails from the stored bytes.
 // @vitest-environment happy-dom
 
+import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -119,3 +120,5 @@ describe("agent-produced images", () => {
     expect(harness.sessionAttachmentRead).toHaveBeenCalledWith(REF);
   });
 });
+
+afterEach(() => resetRegistry());

@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 // An agent message naming a workspace path renders it as a file link, and
 // clicking the link hands the relative path to the surface's callback.
+import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -79,3 +80,5 @@ describe("file links in the agent transcript", () => {
     expect(open).toHaveBeenLastCalledWith("src/lib/util.ts");
   });
 });
+
+afterEach(() => resetRegistry());

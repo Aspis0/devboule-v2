@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import { resetRegistry } from "../../../lib/agentSessionRegistry";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -135,3 +136,5 @@ describe("the turn rail through the surface", () => {
     expect(dot.querySelector(".turn-rail-preview-time")?.textContent).toBe(expected);
   });
 });
+
+afterEach(() => resetRegistry());

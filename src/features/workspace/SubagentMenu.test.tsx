@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { StrictMode, act, type ReactNode, type RefObject } from "react";
@@ -659,3 +660,5 @@ describe("the subagent sheet", () => {
     expect(dot).toContain("border-radius: var(--radius-full);");
   });
 });
+
+afterEach(() => resetRegistry());

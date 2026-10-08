@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { StrictMode, act } from "react";
@@ -397,7 +398,7 @@ describe("AgentChatSurface", () => {
     expect(heldAssistantTextFor("agent-1")).toBeUndefined();
   });
 
-  it("attaches, sends from the composer, renders streamed events, and detaches", async () => {
+  it("attaches, sends from the composer, renders streamed events, and stays attached after unmount", async () => {
     root = createRoot(container);
     await act(async () => {
       root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
@@ -445,7 +446,7 @@ describe("AgentChatSurface", () => {
     expect(container.textContent).toContain("total 3 tokens");
 
     await act(async () => root?.unmount());
-    expect(sessionDetach).toHaveBeenCalledWith(41);
+    expect(sessionDetach).not.toHaveBeenCalled();
   });
 
   it("shows the turn cost on the short line and the cache figures behind it, and neither when absent", async () => {
@@ -506,10 +507,10 @@ describe("AgentChatSurface", () => {
     expect(container.querySelector(".turn-footer-line")?.textContent).not.toContain("$");
 
     await act(async () => root?.unmount());
-    expect(sessionDetach).toHaveBeenCalledWith(41);
+    expect(sessionDetach).not.toHaveBeenCalled();
   });
 
-  it("recreates its session across StrictMode cleanup and can send after a remount", async () => {
+  it("keeps its session across StrictMode cleanup and can send after a remount", async () => {
     const renderSurface = () => (
       <StrictMode>
         <AgentChatSurface
@@ -546,7 +547,9 @@ describe("AgentChatSurface", () => {
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
     await act(async () => send.click());
 
-    expect(sessionSend).toHaveBeenCalledWith("strict-agent", 44, "After remount");
+    expect(sessionSend).toHaveBeenCalledWith("strict-agent", 41, "After remount");
+    expect(sessionAttach).toHaveBeenCalledTimes(1);
+    expect(sessionDetach).not.toHaveBeenCalled();
   });
 
   it("keeps the subscription id on permission requests", async () => {
@@ -3025,7 +3028,7 @@ describe("AgentChatSurface", () => {
     expect(stop).not.toBeNull();
     expect(stop?.getAttribute("type")).toBe("button");
     await act(async () => stop?.click());
-    expect(sessionInterrupt).toHaveBeenCalledWith("stop-agent", 42);
+    expect(sessionInterrupt).toHaveBeenCalledWith("stop-agent", 41);
 
     await act(async () => {
       channelHarness.active?.({ type: "agent_finished", stopReason: "cancelled" });
@@ -5036,3 +5039,5 @@ describe("agent-to-agent message cards", () => {
     );
   });
 });
+
+afterEach(() => resetRegistry());

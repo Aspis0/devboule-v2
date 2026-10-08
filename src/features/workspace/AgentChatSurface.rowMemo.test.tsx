@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
@@ -148,3 +149,5 @@ it("renders stable historical rows once while the last assistant streams", async
     Array.from(container.querySelectorAll(".workspace-chat-assistant")).at(-1)?.textContent,
   ).toContain("Streaming token");
 });
+
+afterEach(() => resetRegistry());

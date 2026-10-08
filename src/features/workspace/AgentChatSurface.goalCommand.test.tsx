@@ -4,6 +4,7 @@
 // `goal` (Codex), and never offered to a dead row. Terminals never mount
 // this surface at all: they render no composer and no slash menu.
 // @vitest-environment happy-dom
+import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -225,3 +226,5 @@ describe("the /goal entry and terminals", () => {
     expect(container.querySelector('[aria-label="Available commands"]')).toBeNull();
   });
 });
+
+afterEach(() => resetRegistry());

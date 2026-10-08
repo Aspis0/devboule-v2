@@ -43,6 +43,7 @@ import type {
   SessionModel,
   SessionState,
 } from "../../types/ipc";
+import { acquire, release, peek } from "../../lib/agentSessionRegistry";
 import { AgentSession, lastAssistantMessage, normalizeGoal } from "../../lib/agentSession";
 import type { AgentSessionState, AgentStatus } from "../../lib/agentSession";
 import { errorSentence } from "../../lib/errorSentence";
@@ -377,26 +378,27 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   onPermissionRequest,
   onPermissionResolved,
 }: AgentChatSurfaceProps) {
-  // Undefined until a goal_changed frame arrives; then the last frame, even a clear.
-  const goalFrameRef = useRef<string | null | undefined>(undefined);
   const sessionRef = useRef<AgentSession | null>(null);
   // The controller as state, so the pill and the workspace can read its task lane.
   const [agent, setAgent] = useState<AgentSession | null>(null);
-  const [state, setState] = useState<AgentSessionState>({
-    items: [],
-    status: "initializing",
-    streaming: false,
-    availableCommands: [],
-    subagents: [],
-    lastFinished: null,
-    contextUsage: null,
-    manifest: null,
-    pendingSwitch: null,
-    pendingModeId: null,
-    journalLoss: null,
-    agentTasks: [],
-    goal: normalizeGoal(initialGoal),
-  });
+  const [state, setState] = useState<AgentSessionState>(
+    () =>
+      peek(sessionId, observedState?.generation ?? null)?.session.getState() ?? {
+        items: [],
+        status: "initializing",
+        streaming: false,
+        availableCommands: [],
+        subagents: [],
+        lastFinished: null,
+        contextUsage: null,
+        manifest: null,
+        pendingSwitch: null,
+        pendingModeId: null,
+        journalLoss: null,
+        agentTasks: [],
+        goal: normalizeGoal(initialGoal),
+      },
+  );
   const { conversationRef, contentRef, onScroll } = useConversationScrollStick(
     state.items,
     auxiliary,
@@ -534,11 +536,12 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     [composerQueue],
   );
 
-  // The roster goal the workspace keeps current. The controller reads it at
-  // construction, so this refresh must stay above the controller effect: a
-  // same-commit roster move and generation bump must seed the new goal.
+  const callbacksRef = useRef({ composerQueue, onPermissionRequest, onPermissionResolved });
+  useLayoutEffect(() => {
+    callbacksRef.current = { composerQueue, onPermissionRequest, onPermissionResolved };
+  });
   const latestInitialGoalRef = useRef(initialGoal);
-  useEffect(() => {
+  useLayoutEffect(() => {
     latestInitialGoalRef.current = initialGoal;
   });
   const daemonInstanceRef = useRef(daemonInstanceId);
@@ -546,55 +549,40 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     daemonInstanceRef.current = daemonInstanceId;
   }, [daemonInstanceId]);
 
-  // An attachment is valid for exactly one `(sessionId, generation)` pair.
-  // Resume keeps the id but increments the generation, so this is the signal
-  // that the surface's attachment is dead and must be rebuilt. Generation
-  // moves only on resume, so this cannot remount under someone mid-turn.
   useEffect(() => {
-    const session = new AgentSession({
-      sessionId,
-      initialGoal:
-        goalFrameRef.current !== undefined ? goalFrameRef.current : latestInitialGoalRef.current,
-      invoke: invokeAgentCommand,
-      createChannel: createSessionChannel,
-      onTurnStarted: () => forgetCreatedSession(sessionId),
-      onTurnFinished: composerQueue.onTurnFinished,
-      onQueueSnapshot: composerQueue.onSnapshot,
-      daemonEpoch: () => daemonInstanceRef.current,
-      onGoalChanged: (goal) => {
-        goalFrameRef.current = goal;
+    const entry = acquire(
+      {
+        sessionId,
+        initialGoal: latestInitialGoalRef.current,
+        invoke: invokeAgentCommand,
+        createChannel: createSessionChannel,
+        onTurnStarted: () => forgetCreatedSession(sessionId),
+        onTurnFinished: () => callbacksRef.current.composerQueue.onTurnFinished(),
+        onQueueSnapshot: (snapshot) => callbacksRef.current.composerQueue.onSnapshot(snapshot),
+        onPermissionRequest: (request, subscriptionId) =>
+          callbacksRef.current.onPermissionRequest?.(sessionId, subscriptionId, request),
+        onPermissionResolved: (resolution) =>
+          callbacksRef.current.onPermissionResolved?.(sessionId, resolution),
+        daemonEpoch: () => daemonInstanceRef.current,
       },
-      onPermissionRequest: onPermissionRequest
-        ? (request, subscriptionId) => onPermissionRequest(sessionId, subscriptionId, request)
-        : undefined,
-      onPermissionResolved: onPermissionResolved
-        ? (resolution) => onPermissionResolved(sessionId, resolution)
-        : undefined,
-    });
+      observedState?.generation ?? null,
+    );
+    const session = entry.session;
     sessionRef.current = session;
     setAgent(session);
-    // `start()` is async: seed the new controller now so the old controller's
-    // latched error cannot render until the first notification.
     setState(session.getState());
+    if (entry.queueSnapshot) callbacksRef.current.composerQueue.onSnapshot(entry.queueSnapshot);
     const unsubscribe = session.subscribe(() => setState(session.getState()));
-    void session.start();
     return () => {
       unsubscribe();
       if (sessionRef.current === session) sessionRef.current = null;
-      session.dispose();
+      release(entry);
     };
-  }, [
-    composerQueue.onSnapshot,
-    composerQueue.onTurnFinished,
-    onPermissionRequest,
-    onPermissionResolved,
-    sessionId,
-    observedState?.generation,
-  ]);
+  }, [sessionId, observedState?.generation]);
 
   // The workspace owns the Tasks tab. The layout effect reports before paint, and
   // the cleanup clears the report when this surface goes away, so the workspace
-  // never holds a controller that is gone.
+  // reads tasks only from the chat currently in the pane.
   useLayoutEffect(() => {
     if (agent === null) return undefined;
     onAgentChange?.(sessionId, agent);

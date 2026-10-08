@@ -3,6 +3,7 @@
 // The rows' own actions are pinned in `AgentChatSurface.queueRows.test.tsx`,
 // the hook's rules in `useMessageQueue.test.tsx`.
 // @vitest-environment happy-dom
+import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -336,3 +337,5 @@ describe("AgentChatSurface queue keys", () => {
     expect(action?.getAttribute("aria-label")).toBe(QUEUE_UNSUPPORTED);
   });
 });
+
+afterEach(() => resetRegistry());

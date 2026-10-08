@@ -68,6 +68,7 @@ import {
   workspaceGitStatus,
   workspacesList,
 } from "../../lib/tauri";
+import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { Workspace } from "./Workspace";
 import { openListedSessionsForTest } from "./workspaceSessionTestSetup";
 import { resetSharedSessionControllerForTests } from "./workspaceSessions";
@@ -139,8 +140,11 @@ let root: Root;
 
 beforeEach(() => {
   localStorage.removeItem("devboule.openSessionTabs");
+  resetRegistry();
   resetSharedSessionControllerForTests();
   resetTabMemoryForTests();
+  // A once-queued reply a test never reached must not answer the next test's attach.
+  vi.mocked(sessionTasks).mockReset();
   setLastSelectedWorkspaceKey(null);
   channelHarness.emit = null;
   channelHarness.active = null;
@@ -279,34 +283,47 @@ describe("the Tasks tab's dot on the real road", () => {
 });
 
 describe("the Tasks tab's dot across a switch that unmounts the chat", () => {
+  // The chat's session stays attached while the chat is unmounted, so the finish
+  // reaches it on its own channel: the harness's `active` is the sibling's now.
   it("lights on return when the child finished while the chat was away", async () => {
     vi.mocked(sessionTasks).mockResolvedValueOnce({ tasks: [childTask()], omitted: 0 });
     await renderWorkspace();
     pushSnapshot(EPOCH, 1, [childTask()]);
-    const creatorSubscription = channelHarness.activeSubscriptionId;
+    const creatorEmit = channelHarness.active;
     await switchTo("agent-b");
-    vi.mocked(sessionTasks).mockResolvedValueOnce({
-      tasks: [childTask({ state: "finished", endedAtMs: 4_000 })],
-      omitted: 0,
+    await act(async () => {
+      creatorEmit?.({
+        type: "tasks_snapshot",
+        epoch: EPOCH,
+        revision: 2,
+        tasks: [childTask({ state: "finished", endedAtMs: 4_000 })],
+        omitted: 0,
+      });
     });
 
     await switchTo("agent-a");
 
-    expect(channelHarness.activeSubscriptionId).not.toBe(creatorSubscription);
     expect(tab("changes").getAttribute("aria-selected")).toBe("true");
     expect(dot()).not.toBeNull();
   });
 
-  it("lights on return when the first snapshot after the remount is the finish", async () => {
+  it("lights on return when the first snapshot the remounted chat sees is the finish", async () => {
     vi.mocked(sessionTasks).mockResolvedValueOnce({ tasks: [childTask()], omitted: 0 });
     await renderWorkspace();
     pushSnapshot(EPOCH, 1, [childTask()]);
+    const creatorEmit = channelHarness.active;
     await switchTo("agent-b");
-    const ask = pendingAsk();
 
     await switchTo("agent-a");
-    pushSnapshot(EPOCH, 2, [childTask({ state: "finished", endedAtMs: 4_000 })]);
-    await act(async () => ask.answer({ tasks: [childTask()], omitted: 0 }));
+    await act(async () => {
+      creatorEmit?.({
+        type: "tasks_snapshot",
+        epoch: EPOCH,
+        revision: 2,
+        tasks: [childTask({ state: "finished", endedAtMs: 4_000 })],
+        omitted: 0,
+      });
+    });
 
     expect(dot()).not.toBeNull();
   });
@@ -315,11 +332,17 @@ describe("the Tasks tab's dot across a switch that unmounts the chat", () => {
     vi.mocked(sessionTasks).mockResolvedValueOnce({ tasks: [childTask()], omitted: 0 });
     await renderWorkspace();
     pushSnapshot(EPOCH, 1, [childTask()]);
+    const creatorEmit = channelHarness.active;
     await act(async () => tab("tasks").click());
     await switchTo("agent-b");
-    vi.mocked(sessionTasks).mockResolvedValueOnce({
-      tasks: [childTask({ state: "finished", endedAtMs: 4_000 })],
-      omitted: 0,
+    await act(async () => {
+      creatorEmit?.({
+        type: "tasks_snapshot",
+        epoch: EPOCH,
+        revision: 2,
+        tasks: [childTask({ state: "finished", endedAtMs: 4_000 })],
+        omitted: 0,
+      });
     });
 
     await switchTo("agent-a");

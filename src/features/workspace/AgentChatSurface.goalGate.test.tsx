@@ -1,6 +1,7 @@
 // The shipped /goal gate: the commands the composer receives for ended,
 // recovered and live sessions.
 // @vitest-environment happy-dom
+import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -117,3 +118,5 @@ describe("the shipped /goal gate", () => {
     expect(commands().split(",").filter(Boolean)).not.toContain("goal");
   });
 });
+
+afterEach(() => resetRegistry());

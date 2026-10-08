@@ -2,6 +2,7 @@
 // the transcript, seeded from the roster snapshot so a stopped session
 // shows it, driven live by `goal_changed` afterwards, and gone with no goal.
 // @vitest-environment happy-dom
+import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -249,3 +250,5 @@ describe("the goal row on the agent surface", () => {
     }
   });
 });
+
+afterEach(() => resetRegistry());

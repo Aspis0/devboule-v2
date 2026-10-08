@@ -1,6 +1,7 @@
 // Escape in the agent pane stops the turn that is running — once, never on a
 // held key, and never when a card is waiting or something else owns the key.
 // @vitest-environment happy-dom
+import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -226,3 +227,5 @@ describe("a session that was already running when this view attached", () => {
     expect(vi.mocked(sessionInterrupt)).not.toHaveBeenCalled();
   });
 });
+
+afterEach(() => resetRegistry());

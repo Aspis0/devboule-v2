@@ -2,6 +2,7 @@
 // reaches the daemon through the surface's own command table, and a snapshot
 // changes the running-task pill and the transcript.
 // @vitest-environment happy-dom
+import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -179,3 +180,5 @@ describe("AgentChatSurface background tasks", () => {
     expect(pill()).toBeNull();
   });
 });
+
+afterEach(() => resetRegistry());

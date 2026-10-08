@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -251,3 +252,5 @@ describe("the subagent menu's archive ask and its guard", () => {
     expect(document.activeElement).not.toBe(document.body);
   });
 });
+
+afterEach(() => resetRegistry());

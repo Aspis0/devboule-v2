@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 // A running-status tool replayed into a read-only transcript is cut off.
+import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -177,3 +178,5 @@ describe("interrupted tool row", () => {
     expect(group.classList.contains("is-interrupted")).toBe(true);
   });
 });
+
+afterEach(() => resetRegistry());

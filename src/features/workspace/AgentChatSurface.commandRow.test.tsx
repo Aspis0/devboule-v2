@@ -3,6 +3,7 @@
 // commandExecution pair (the wire in codex_view.rs's
 // command_execution_rows_carry_the_command_line_and_the_exit_code test):
 // chip, exit dot, exit sentence, and the rows that must stay untouched.
+import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -420,3 +421,5 @@ describe("command tool row", () => {
     expect(textBlock.querySelector(".workspace-chat-tool-summary-text")).toBeNull();
   });
 });
+
+afterEach(() => resetRegistry());

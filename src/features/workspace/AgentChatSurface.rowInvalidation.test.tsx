@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { act, type ComponentProps } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -261,3 +262,5 @@ it("updates only thoughts whose streaming flag moves", async () => {
   ]);
   expect(container.querySelectorAll(".workspace-chat-thought-status")).toHaveLength(1);
 });
+
+afterEach(() => resetRegistry());

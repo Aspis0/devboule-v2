@@ -1,4 +1,10 @@
 import {
+  dropPermissionRequest,
+  syncOpenTabs,
+  pendingPermissionRequests,
+  subscribePermissions,
+} from "../../lib/agentSessionRegistry";
+import {
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -312,7 +318,8 @@ export function Workspace({
   const tasksUnseen = useTasksAttention(paneAgent, tasksVisible);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
-  const [permissionQueue, setPermissionQueue] = useState<QueuedPermission[]>([]);
+  const [permissionQueue, setPermissionQueue] =
+    useState<QueuedPermission[]>(pendingPermissionRequests);
   // Drop one session's cards. The close acts call this on success and on a
   // moot close, and the roster absence rule below calls it when the row is
   // gone: a failed close while the session still exists keeps them.
@@ -350,6 +357,9 @@ export function Workspace({
     closeTabs: closeSessionTabsIn,
     dismissError: dismissSessionsError,
   } = useWorkspaceSessions(selectedWorkspaceId);
+  useEffect(() => {
+    syncOpenTabs(openSessions.map((session) => session.id));
+  }, [openSessions]);
   // Every road that takes a session's tab out of the strip lands here, so a
   // closed id leaves every workspace's memory — an unscoped session's tab
   // belongs to all of them, and an entry left behind elsewhere would restore
@@ -1774,9 +1784,8 @@ export function Workspace({
           (item) => item.sessionId === sessionId && item.request.toolCallId === request.toolCallId,
         );
         if (index === -1) return [...queue, { sessionId, subscriptionId, request }];
-        // A remounted surface re-attaches with a fresh subscription id; the
-        // queued card must adopt it or its response reaches the daemon with
-        // a dead id. Staleness rides along: the item is replaced, not reset.
+        // A generation change or an eviction replaces the attachment. The card
+        // must adopt its subscription id so an answer reaches the live observer.
         if (queue[index].subscriptionId === subscriptionId) return queue;
         const next = [...queue];
         next[index] = { ...next[index], subscriptionId };
@@ -1788,6 +1797,7 @@ export function Workspace({
   // A card the human answered through this app's own card: it leaves the
   // queue, exactly as it always did.
   const dismissResolvedPermission = useCallback((sessionId: string, toolCallId: string) => {
+    dropPermissionRequest(sessionId, toolCallId);
     setPermissionQueue((queue) =>
       queue.filter(
         (item) => !(item.sessionId === sessionId && item.request.toolCallId === toolCallId),
@@ -1796,7 +1806,9 @@ export function Workspace({
   }, []);
   // A card whose answer the daemon refused terminally: the item records it,
   // so every remount starts terminal instead of offering the answer again.
+  // The registry lets go too, or a remount would re-seed the request fresh.
   const markPermissionStale = useCallback((sessionId: string, toolCallId: string) => {
+    dropPermissionRequest(sessionId, toolCallId);
     setPermissionQueue((queue) => {
       const index = queue.findIndex(
         (item) =>
@@ -1837,6 +1849,18 @@ export function Workspace({
     },
     [],
   );
+  useEffect(() => {
+    const unsubscribe = subscribePermissions(
+      ({ sessionId, subscriptionId, request }) =>
+        handlePermissionRequest(sessionId, subscriptionId, request),
+      handlePermissionResolved,
+    );
+    for (const { sessionId, subscriptionId, request } of pendingPermissionRequests()) {
+      handlePermissionRequest(sessionId, subscriptionId, request);
+    }
+    return unsubscribe;
+  }, [handlePermissionRequest, handlePermissionResolved]);
+
   // The take-back and the child rows read the one switch. Fetched here — not
   // only in Settings — so the roster's control is right even if Settings was
   // never opened. Capability-gated like every delegation RPC: a daemon that

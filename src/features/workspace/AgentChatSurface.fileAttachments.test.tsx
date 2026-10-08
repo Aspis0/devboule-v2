@@ -3,6 +3,7 @@
 // chip, a success clears it, and removing a ready chip releases the bytes.
 // @vitest-environment happy-dom
 
+import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -249,3 +250,5 @@ describe("chat surface files", () => {
     expect(container.querySelector('[data-testid="composer-file-chip"]')).toBeNull();
   });
 });
+
+afterEach(() => resetRegistry());

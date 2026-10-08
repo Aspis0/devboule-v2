@@ -3,6 +3,7 @@
 // holds, and delete hands focus back to the composer. The keyboard and the
 // permission rule are pinned in `AgentChatSurface.queue.test.tsx`.
 // @vitest-environment happy-dom
+import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -258,3 +259,5 @@ describe("AgentChatSurface queue rows", () => {
     expect(sessionSend).not.toHaveBeenCalled();
   });
 });
+
+afterEach(() => resetRegistry());

@@ -2,6 +2,7 @@
 // on the track above the queued follow-ups, and the count it shows is the
 // frame's.
 // @vitest-environment happy-dom
+import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -106,3 +107,5 @@ describe("the checklist pill in the composer track", () => {
     expect(head.textContent).toContain("next: Write the report");
   });
 });
+
+afterEach(() => resetRegistry());

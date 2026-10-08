@@ -530,6 +530,10 @@ export class AgentSession {
     if (this.disposed && this.subscriptionId !== null) await this.detach();
   }
 
+  isDisposed(): boolean {
+    return this.disposed;
+  }
+
   getSubscriptionId(): number | null {
     return this.subscriptionId;
   }

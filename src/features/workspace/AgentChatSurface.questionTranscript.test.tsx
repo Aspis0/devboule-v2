@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -298,3 +299,5 @@ describe("AgentChatSurface question transcript", () => {
     expect(toolRows[0]?.textContent).toContain("Barn red");
   });
 });
+
+afterEach(() => resetRegistry());

@@ -2,6 +2,7 @@
 // it above the transcript, in the extras wrapper that holds no row of its own
 // when there is nothing to show.
 // @vitest-environment happy-dom
+import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -75,3 +76,5 @@ it("draws no title, state or kebab: the surface draws no header controls", async
   expect(host.querySelector(".workspace-agent-title, .workspace-agent-status")).toBeNull();
   expect(host.querySelector(".pane-header-kebab")).toBeNull();
 });
+
+afterEach(() => resetRegistry());

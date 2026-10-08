@@ -2,6 +2,7 @@
 // While a plan card waits, the timeline must not show a second copy of the
 // plan; when the card resolves, the row returns to its original place. The
 // tests drive the production derivation, not a re-implementation of it.
+import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -299,3 +300,5 @@ describe("pending plan row suppression", () => {
     expect(planRowCount(container)).toBe(1);
   });
 });
+
+afterEach(() => resetRegistry());

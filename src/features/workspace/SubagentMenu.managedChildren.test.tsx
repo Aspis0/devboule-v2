@@ -2,6 +2,7 @@
 
 // Children the parent created reach the pill from the roster alone: no task
 // event fires in any test but the mixed list's, because none fires for them.
+import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -179,3 +180,5 @@ describe("the list that mixes created children and provider tasks", () => {
     expect(archiveAction()).toBeNull();
   });
 });
+
+afterEach(() => resetRegistry());

@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -231,3 +232,5 @@ describe("the subagent menu's archive outcome", () => {
     expect(document.activeElement).toBe(container.querySelector('[data-testid="subagent-pill"]'));
   });
 });
+
+afterEach(() => resetRegistry());
