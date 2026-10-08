@@ -52,7 +52,7 @@ function context(
   tasks: SessionTask[],
   omitted = 0,
   onStopAgent: AgentTasksContext["onStopAgent"] = async () => null,
-  onOpenAgent: AgentTasksContext["onOpenAgent"] = () => undefined,
+  onOpenAgent: AgentTasksContext["onOpenAgent"] = () => null,
 ): AgentTasksContext {
   return {
     sessionId: "parent-1",
@@ -178,6 +178,15 @@ describe("what a row offers", () => {
     rowFor("Explore auth").querySelector<HTMLButtonElement>("button.tasks-panel-title")?.click();
 
     expect(onOpenAgent).toHaveBeenCalledWith("child-1");
+  });
+
+  it("says why a child cannot be opened, in the alert line", async () => {
+    await render(context([task()], 0, undefined, () => "This agent was archived."));
+
+    rowFor("Explore auth").querySelector<HTMLButtonElement>("button.tasks-panel-title")?.click();
+    await act(async () => undefined);
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("This agent was archived.");
   });
 
   it("gives a command no link", async () => {

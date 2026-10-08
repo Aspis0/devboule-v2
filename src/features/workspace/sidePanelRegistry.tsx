@@ -14,7 +14,8 @@ export interface AgentTasksContext {
   /** The session's task lane: the tab reads the list from it and re-renders on its changes. */
   source: BackgroundTaskSource;
   /** Opens the child's transcript in the main pane. */
-  onOpenAgent: (childSessionId: string) => void;
+  /** Returns a sentence for the user when the child cannot be opened. */
+  onOpenAgent: (childSessionId: string) => string | null;
   /** Stops a running child. Resolves to a sentence for the user when it did not stop. */
   onStopAgent: (childSessionId: string) => Promise<string | null>;
 }

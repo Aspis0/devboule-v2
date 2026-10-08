@@ -19,7 +19,7 @@ interface TasksPanelProps {
 
 export function TasksPanel({ tasks }: TasksPanelProps) {
   const askConfirm = useConfirmAsk();
-  const [stopSentence, setStopSentence] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   // The ref refuses a second press before React has drawn the disabled state.
   const stoppingRef = useRef(new Set<string>());
   const [stopping, setStopping] = useState<ReadonlySet<string>>(new Set());
@@ -28,8 +28,9 @@ export function TasksPanel({ tasks }: TasksPanelProps) {
   const now = useTaskClock(groups.running.length > 0);
   const omitted = list?.omitted ?? 0;
 
+  // A child that cannot be opened says why, in the same line a stop reports through.
   const openAgent = useCallback(
-    (childSessionId: string) => tasks?.onOpenAgent(childSessionId),
+    (childSessionId: string) => setNotice(tasks?.onOpenAgent(childSessionId) ?? null),
     [tasks],
   );
 
@@ -48,8 +49,8 @@ export function TasksPanel({ tasks }: TasksPanelProps) {
           cancelLabel: "Keep it running",
         });
         if (!confirmed) return;
-        setStopSentence(null);
-        setStopSentence(await tasks.onStopAgent(childSessionId));
+        setNotice(null);
+        setNotice(await tasks.onStopAgent(childSessionId));
       } finally {
         stoppingRef.current.delete(childSessionId);
         setStopping(new Set(stoppingRef.current));
@@ -83,9 +84,9 @@ export function TasksPanel({ tasks }: TasksPanelProps) {
         />
       ) : null}
       {omitted > 0 ? <p className="tasks-panel-more">+{omitted} more</p> : null}
-      {stopSentence === null ? null : (
+      {notice === null ? null : (
         <p className="tasks-panel-error" role="alert">
-          {stopSentence}
+          {notice}
         </p>
       )}
     </div>

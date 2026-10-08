@@ -256,6 +256,22 @@ describe("the workspace's Tasks tab", () => {
     expect(tab("tasks").querySelector(".workspace-panel-tab-dot")).toBeNull();
   });
 
+  it("says an archived child is archived when its title is pressed", async () => {
+    await renderWorkspace();
+    const source = fakeTaskSource({
+      epoch: "e1",
+      revision: 1,
+      tasks: [runningAgent("agent-a")],
+      omitted: 0,
+    });
+    await act(async () => surface.reportAgent?.("agent-a", source));
+    await act(async () => tab("tasks").click());
+
+    await act(async () => container.querySelector<HTMLButtonElement>(".tasks-panel-open")?.click());
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("This agent was archived.");
+  });
+
   it("opens on the Tasks tab when the pill's press asks for it", async () => {
     await renderWorkspace();
 

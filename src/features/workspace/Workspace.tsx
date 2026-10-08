@@ -1325,6 +1325,20 @@ export function Workspace({
     },
     [sessions, handleReopenSession, refreshSessions],
   );
+  // The Tasks tab's open road: the subagent pill's road, except that a child the
+  // roster does not list says so rather than doing nothing.
+  const openTaskAgent = useCallback(
+    (sessionId: string): string | null => {
+      const session = sessions.find((row) => row.id === sessionId);
+      if (session === undefined) {
+        void refreshSessions();
+        return "This agent was archived.";
+      }
+      handleReopenSession(session);
+      return null;
+    },
+    [sessions, handleReopenSession, refreshSessions],
+  );
   const reportPaneAgent = useCallback(
     (sessionId: string, agent: BackgroundTaskSource | null) =>
       setPaneAgent(agent === null ? null : { sessionId, source: agent }),
@@ -1357,11 +1371,11 @@ export function Workspace({
         ? {
             sessionId: paneSession.id,
             source: paneAgent.source,
-            onOpenAgent: handleOpenSubagent,
+            onOpenAgent: openTaskAgent,
             onStopAgent: stopAgent,
           }
         : null,
-    [paneSession, paneAgent, handleOpenSubagent, stopAgent],
+    [paneSession, paneAgent, openTaskAgent, stopAgent],
   );
   // A failed resume leaves the row's verdict changed on the daemon side; the
   // bar must not keep its offer on the roster data this surface already held.
