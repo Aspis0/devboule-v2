@@ -165,10 +165,18 @@ mod provider_switches;
 mod provider_update;
 #[cfg(feature = "server")]
 mod provider_vocabulary;
+// The OpenCode Go meter reads the guarded egress client and the Pi session
+// registry, which only the server build links; the client-only build has no
+// poller and no live meter, so none of these modules is compiled there.
+#[cfg(feature = "server")]
 mod quota_key;
+#[cfg(feature = "server")]
 mod quota_live;
+#[cfg(feature = "server")]
 mod quota_opencode_go;
+#[cfg(feature = "server")]
 mod quota_poller;
+#[cfg(feature = "server")]
 mod quota_source;
 #[cfg(feature = "server")]
 mod raster_metadata;
