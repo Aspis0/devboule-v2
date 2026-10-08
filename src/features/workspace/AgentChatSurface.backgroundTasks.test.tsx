@@ -149,6 +149,28 @@ describe("AgentChatSurface background tasks", () => {
     expect(onAgentChange).toHaveBeenLastCalledWith("agent-1", null);
   });
 
+  it("keeps the pill's count across a resume-tail reset, and the next snapshot moves it", async () => {
+    await renderSurface(() => undefined);
+    pushSnapshot(1, [agentTask()]);
+    expect(pill()?.textContent).toBe("1 running task");
+
+    // A bounded-tail reset replaces the transcript and nothing else about the list.
+    act(() => {
+      harness.emit?.({
+        outcome: "reset",
+        reason: "epoch_changed",
+        tail: { cursor: { generation: 1, seq: 9 }, events: [], tail_complete: true },
+        oldest_seq: 0,
+        head: 9,
+      } as unknown as SessionEvent);
+    });
+    expect(pill()?.textContent).toBe("1 running task");
+
+    pushSnapshot(2, [agentTask({ state: "finished", endedAtMs: 4_000 })]);
+
+    expect(pill()).toBeNull();
+  });
+
   it("draws no pill when the surface has no Tasks tab to open", async () => {
     await renderSurface();
 

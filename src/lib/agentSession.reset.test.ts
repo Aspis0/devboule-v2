@@ -244,3 +244,44 @@ describe("attach reset", () => {
     ]);
   });
 });
+
+describe("attach reset and the task list", () => {
+  const running = {
+    id: "child-1",
+    kind: "agent" as const,
+    title: "Explore auth",
+    state: "running" as const,
+    sessionId: "agent-1",
+    childSessionId: "child-1",
+    startedAtMs: 1_000,
+  };
+
+  it("keeps the task list across a reset, and the next snapshot wakes the task lane", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    harness.emit({
+      type: "tasks_snapshot",
+      epoch: "e1",
+      revision: 1,
+      tasks: [running],
+      omitted: 0,
+    });
+
+    harness.emit(resetMessage([], true));
+
+    expect(harness.session.getTaskState()?.tasks).toEqual([running]);
+
+    const lane = vi.fn();
+    harness.session.subscribeTasks(lane);
+    harness.emit({
+      type: "tasks_snapshot",
+      epoch: "e1",
+      revision: 2,
+      tasks: [{ ...running, state: "finished", endedAtMs: 4_000 }],
+      omitted: 0,
+    });
+
+    expect(lane).toHaveBeenCalledTimes(1);
+    expect(harness.session.getTaskState()?.revision).toBe(2);
+  });
+});

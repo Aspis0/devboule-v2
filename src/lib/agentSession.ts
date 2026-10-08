@@ -1025,6 +1025,7 @@ export class AgentSession {
       pendingModeId: this.state.pendingModeId,
       journalLoss: this.state.journalLoss,
       agentTasks: this.state.agentTasks,
+      backgroundTasks: this.state.backgroundTasks,
       goal: this.state.goal,
     };
     this.blocks.clear();
