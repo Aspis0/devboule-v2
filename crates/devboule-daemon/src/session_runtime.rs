@@ -489,6 +489,21 @@ fn replace_claude_catalog(previous: &SessionEvent, incoming: SessionEvent) -> Se
     }
 }
 
+/// How a task-list snapshot is published: a refresh brings the revision it took
+/// before deriving, the exit takes its own under the stream lock.
+pub(crate) enum TasksPublish {
+    /// `exit_sent_at_capture` is `tasks_exit_sent()` read before the refresh
+    /// captured the parent and its children.
+    Refresh {
+        revision: u64,
+        exit_sent_at_capture: bool,
+    },
+    /// Taken under the lock, the exit revision follows every revision already
+    /// published, so it always passes the stale gate; a refresh that took its
+    /// revision before the exit and publishes after it is dropped as stale.
+    Exit,
+}
+
 /// One-shot callback registered on a runtime for the end of one of its turns.
 struct TurnEndHook {
     id: u64,
@@ -559,6 +574,7 @@ impl SessionRuntime {
                 scrollback: Scrollback::default(),
                 tasks_published: None,
                 tasks_exit_published: true,
+                tasks_exit_sent: false,
                 output_closed: false,
                 process_exited: false,
                 exit_code: None,
@@ -1629,8 +1645,10 @@ impl SessionRuntime {
     /// Publish this session's whole background-task list to every attached
     /// subscriber that negotiated the task list, and nowhere else. True
     /// when the enqueue ran — even with no observers, which is itself the
-    /// proof there is nothing to send; false only when the stream is gone
-    /// or closed output refused the frame.
+    /// proof there is nothing to send. False when the stream lock is
+    /// poisoned, when a refresh meets closed output, when a refresh captured
+    /// its state before the exit went out and the exit is already sent, or
+    /// when a refresh is stale (see below).
     ///
     /// Transient like the queue snapshot above — derived, never journaled,
     /// never backlogged — including its cap gate: a client that did not
@@ -1639,22 +1657,35 @@ impl SessionRuntime {
     /// an older or equal revision — is dropped, so overlapping derives
     /// cannot leave a stale list behind. A new epoch restarts the gate.
     ///
-    /// `bypass_closed` is exit-only: the closed flag guards output bytes,
-    /// and a transient snapshot is not output — its subscribers are still
+    /// The exit skips the closed flag: it guards output bytes, and a
+    /// transient snapshot is not output — its subscribers are still
     /// attached, and the reader-EOF road closes output before the exit
     /// thread derives.
     pub(crate) fn publish_tasks_snapshot(
         &self,
         epoch: String,
         tasks: Vec<SessionTask>,
-        revision: u64,
+        publish: TasksPublish,
         omitted: u32,
-        bypass_closed: bool,
     ) -> bool {
         let Ok(mut stream) = self.lock_stream() else {
             return false;
         };
-        if stream.output_closed && !bypass_closed {
+        let (revision, is_exit) = match publish {
+            TasksPublish::Refresh {
+                revision,
+                exit_sent_at_capture,
+            } => {
+                // A derive that captured the parent before the exit went out
+                // may still see it live, so it must not land after the exit.
+                if stream.tasks_exit_sent && !exit_sent_at_capture {
+                    return false;
+                }
+                (revision, false)
+            }
+            TasksPublish::Exit => (self.next_tasks_revision(), true),
+        };
+        if stream.output_closed && !is_exit {
             return false;
         }
         let stale = stream
@@ -1667,6 +1698,9 @@ impl SessionRuntime {
             return false;
         }
         stream.tasks_published = Some((epoch.clone(), revision));
+        if is_exit {
+            stream.tasks_exit_sent = true;
+        }
         let event = SessionEvent::TasksSnapshot {
             epoch,
             revision,
@@ -2426,6 +2460,13 @@ impl SessionRuntime {
         if let Ok(mut stream) = self.lock_stream() {
             stream.tasks_exit_published = true;
         }
+    }
+
+    /// Whether the exit task snapshot is already accepted by the stream.
+    pub(crate) fn tasks_exit_sent(&self) -> bool {
+        self.lock_stream()
+            .map(|stream| stream.tasks_exit_sent)
+            .unwrap_or(false)
     }
 
     /// The next task-list revision for this session, counting from 1.

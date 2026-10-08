@@ -271,6 +271,10 @@ pub(crate) struct StreamState {
     /// hook installation arms it. Set only on the exit road, never by
     /// ordinary publishes.
     pub(super) tasks_exit_published: bool,
+    /// The exit task snapshot was accepted by the stream. Set in the same
+    /// critical section as that publish, and never cleared: a refresh that
+    /// captured the parent before this was set may not publish after it.
+    pub(super) tasks_exit_sent: bool,
     /// Reader has seen EOF. Further publish_output is dropped.
     pub(super) output_closed: bool,
     /// Child::wait returned. Output may still be in the ConPTY buffer.

@@ -7,6 +7,7 @@
 
 use devboule_protocol::{Session, SessionEvent, SessionTask, TranscriptIntegrity};
 
+use super::session_runtime::TasksPublish;
 use super::*;
 use crate::session_tasks::{derive_tasks, HeldChild, TaskRow};
 use std::sync::Arc;
@@ -50,7 +51,12 @@ impl super::SessionRegistry {
         // Sessions out under the lock, facts after it: the child journals
         // are disk reads, and holding the registry map across them would
         // nest two waits nobody ordered.
-        let (runtime, children, parent_ended): (Arc<SessionRuntime>, Vec<Session>, bool) = {
+        let (runtime, children, parent_ended, exit_sent_at_capture): (
+            Arc<SessionRuntime>,
+            Vec<Session>,
+            bool,
+            bool,
+        ) = {
             let Ok(map) = self.inner.lock() else {
                 return;
             };
@@ -71,15 +77,25 @@ impl super::SessionRegistry {
                 runtime.schedule_tasks_trailing(self.clone(), session_id.to_string());
                 return;
             }
+            // Read before the capture below: a stamp taken after it could say
+            // the exit went out while the capture still saw the parent live.
+            let exit_sent_at_capture = runtime.tasks_exit_sent();
             let parent_ended = !entry.to_session().state.is_live();
             let children = map
                 .values()
                 .map(|entry| entry.to_session())
                 .filter(|session| session.created_by.as_deref() == Some(session_id))
                 .collect();
-            (runtime, children, parent_ended)
+            (runtime, children, parent_ended, exit_sent_at_capture)
         };
-        self.publish_session_tasks(&runtime, session_id, &children, parent_ended, extra);
+        self.publish_session_tasks(
+            &runtime,
+            session_id,
+            &children,
+            parent_ended,
+            exit_sent_at_capture,
+            extra,
+        );
     }
 
     /// The same derive-and-publish without the debounce: a session's own
@@ -132,26 +148,31 @@ impl super::SessionRegistry {
                 .tasks_ended_wall_ms()
                 .unwrap_or_else(crate::agent_activity::wall_now_ms),
         );
-        let revision = runtime.next_tasks_revision();
         let stashed = runtime.take_tasks_pending();
         let Ok(tasks) = self.derive_with_held(session_id, held, parent_end, &stashed) else {
             return;
         };
         let (tasks, omitted) = crate::session_tasks::cap_published(tasks);
-        if runtime.publish_tasks_snapshot(self.tasks_epoch.clone(), tasks, revision, omitted, true)
-        {
+        if runtime.publish_tasks_snapshot(
+            self.tasks_epoch.clone(),
+            tasks,
+            TasksPublish::Exit,
+            omitted,
+        ) {
             runtime.mark_tasks_exit_published();
         }
     }
 
     /// Derive with the stashed triggering rows drained in, cap for the
     /// frame, and publish when the revision is newer than the last send.
+    /// A refresh that does not land puts its rows back for the next derive.
     fn publish_session_tasks(
         &self,
         runtime: &Arc<SessionRuntime>,
         session_id: &str,
         children: &[Session],
         parent_ended: bool,
+        exit_sent_at_capture: bool,
         extra: &[(SessionEvent, u64)],
     ) {
         let parent_end = parent_ended.then(|| {
@@ -163,11 +184,24 @@ impl super::SessionRegistry {
         let revision = runtime.next_tasks_revision();
         let mut stashed = runtime.take_tasks_pending();
         stashed.extend(extra.iter().cloned());
-        let Ok(tasks) = self.derive_with_held(session_id, held, parent_end, &stashed) else {
-            return;
+        let published = match self.derive_with_held(session_id, held, parent_end, &stashed) {
+            Ok(tasks) => {
+                let (tasks, omitted) = crate::session_tasks::cap_published(tasks);
+                runtime.publish_tasks_snapshot(
+                    self.tasks_epoch.clone(),
+                    tasks,
+                    TasksPublish::Refresh {
+                        revision,
+                        exit_sent_at_capture,
+                    },
+                    omitted,
+                )
+            }
+            Err(_) => false,
         };
-        let (tasks, omitted) = crate::session_tasks::cap_published(tasks);
-        runtime.publish_tasks_snapshot(self.tasks_epoch.clone(), tasks, revision, omitted, false);
+        if !published {
+            runtime.stash_tasks_extra(&stashed);
+        }
     }
 
     /// Mark one session's exit wait settled without deriving: the exit
@@ -310,6 +344,9 @@ pub(crate) fn refresh_due(last: Option<Instant>, now: Instant) -> bool {
     last.is_none_or(|at| now.duration_since(at) >= TASKS_REFRESH_DEBOUNCE)
 }
 
+#[cfg(test)]
+#[path = "session_task_gate_tests.rs"]
+mod gate_tests;
 #[cfg(test)]
 #[path = "session_task_list_tests.rs"]
 mod tests;
