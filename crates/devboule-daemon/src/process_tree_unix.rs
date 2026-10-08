@@ -128,7 +128,28 @@ impl JobObject {
     fn group(&self) -> MutexGuard<'_, Option<i32>> {
         self.group.lock().unwrap_or_else(PoisonError::into_inner)
     }
+
+    /// Unix has no per-process capture: the group is the tree, so there is
+    /// nothing to read before the root dies.
+    #[cfg(feature = "server")]
+    pub fn capture_tree(&self) -> CapturedTree {
+        CapturedTree
+    }
+
+    #[cfg(feature = "server")]
+    pub fn kill_tree(&self, _tree: &CapturedTree) -> io::Result<()> {
+        self.terminate()
+    }
+
+    #[cfg(feature = "server")]
+    pub fn terminate_tree_and_wait(&self, _tree: &CapturedTree, grace: Duration) -> io::Result<()> {
+        self.terminate_and_wait(grace)
+    }
 }
+
+#[cfg(feature = "server")]
+#[derive(Debug, Default)]
+pub struct CapturedTree;
 
 /// The leader still reserves the group id: `kill(pid, 0)` succeeds only
 /// while the pid is allocated — the child alive or a zombie — and the group

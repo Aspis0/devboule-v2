@@ -111,7 +111,7 @@ pub(crate) fn membership(job: &JobObject, pid: u32) -> Membership {
     }
 }
 
-fn read_creation_time(handle: HANDLE) -> Option<u64> {
+pub(crate) fn read_creation_time(handle: HANDLE) -> Option<u64> {
     let mut creation = unsafe { mem::zeroed::<FILETIME>() };
     let mut exit = unsafe { mem::zeroed::<FILETIME>() };
     let mut kernel = unsafe { mem::zeroed::<FILETIME>() };
@@ -134,7 +134,7 @@ fn read_exe(handle: HANDLE) -> Option<String> {
 /// One Toolhelp walk for the whole refresh: every pid's parent, so the
 /// agent chain is walkable and a member's root is identifiable without a
 /// machine-wide snapshot per member.
-fn process_parents() -> Option<HashMap<u32, u32>> {
+pub(crate) fn process_parents() -> Option<HashMap<u32, u32>> {
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
         return None;

@@ -1194,7 +1194,17 @@ fn open_pty_session(
     // restating this.
     #[cfg(windows)]
     let (process_job, os_handle) = {
-        let process_job = match JobObject::new() {
+        // The terminal's job records membership but kills nothing on close: a
+        // process the shell detached must outlive the terminal. A stop kills
+        // the tree still attached to this root instead.
+        let Some(root_pid) = child.process_id() else {
+            super::terminate_spawned_child(pair, child);
+            return Err(WireError::new(
+                ErrorCode::Io,
+                "The terminal process has no pid.",
+            ));
+        };
+        let process_job = match JobObject::attached(root_pid) {
             Ok(process_job) => process_job,
             Err(error) => {
                 super::terminate_spawned_child(pair, child);

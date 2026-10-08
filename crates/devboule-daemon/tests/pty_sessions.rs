@@ -33,7 +33,7 @@ use devboule_protocol::{
     TranscriptIntegrity, WorkspaceIsolation,
 };
 use portable_pty::{CommandBuilder, PtySize};
-use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_TIMEOUT};
 use windows_sys::Win32::System::JobObjects::{
     IsProcessInJob, JobObjectExtendedLimitInformation, QueryInformationJobObject,
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
@@ -1683,6 +1683,156 @@ fn closing_one_session_does_not_kill_the_other_session_tree() {
     println!(
         "JOB_TREE isolation first_pid={first_pid} second_pid={second_pid} first_dead=true second_alive_after_first_close=true"
     );
+}
+
+/// Terminates a test-spawned process when the test ends, including on a failed
+/// assertion. The handle is opened when the PID is learned, so the kill cannot
+/// reach a PID the OS reused later. It never asserts: a panic inside `Drop`
+/// during an unwind aborts.
+struct PidGuard(Option<HANDLE>);
+
+impl PidGuard {
+    fn of(pid: u32) -> Self {
+        let handle = unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid) };
+        Self((!handle.is_null()).then_some(handle))
+    }
+}
+
+impl Drop for PidGuard {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0 {
+            unsafe {
+                TerminateProcess(handle, 137);
+                WaitForSingleObject(handle, 5_000);
+                CloseHandle(handle);
+            }
+        }
+    }
+}
+
+/// Writes a PowerShell file that starts a long-lived PING and exits at once, so
+/// PING's parent is gone: it is detached, and its pid goes to `pid_file`.
+fn write_detaching_launcher(dir: &Path, pid_file: &Path) -> PathBuf {
+    let script_path = dir.join("detaching-launcher.ps1");
+    let pid_file = pid_file.display().to_string().replace('\'', "''");
+    let script = format!(
+        "$psi = New-Object System.Diagnostics.ProcessStartInfo\n\
+         $psi.FileName = Join-Path $env:SystemRoot 'System32\\PING.EXE'\n\
+         $psi.Arguments = '-t 127.0.0.1'\n\
+         $psi.UseShellExecute = $false\n\
+         $psi.CreateNoWindow = $true\n\
+         $detached = [System.Diagnostics.Process]::Start($psi)\n\
+         Set-Content -LiteralPath '{pid_file}' -Value $detached.Id\n"
+    );
+    std::fs::write(&script_path, script).expect("write detaching launcher");
+    script_path
+}
+
+/// A shell that keeps one PING attached, then starts `launcher`, waits for it to
+/// exit, and reports `DETACHED_READY`. The launcher's PING outlives its parent.
+fn cmd_keep_attached_and_detach_child(attached_pid_file: &Path, launcher: &Path) -> PtyCommand {
+    let attached_pid_file = attached_pid_file.display().to_string().replace('\'', "''");
+    let launcher = launcher.display().to_string().replace('\'', "''");
+    let script = format!(
+        "$psi = New-Object System.Diagnostics.ProcessStartInfo; \
+         $psi.FileName = Join-Path $env:SystemRoot 'System32\\PING.EXE'; \
+         $psi.Arguments = '-t 127.0.0.1'; $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true; \
+         $attached = [System.Diagnostics.Process]::Start($psi); \
+         Set-Content -LiteralPath '{attached_pid_file}' -Value $attached.Id; \
+         $launch = New-Object System.Diagnostics.ProcessStartInfo; \
+         $launch.FileName = Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe'; \
+         $launch.Arguments = '-NoLogo -NoProfile -NonInteractive -File ' + [char]34 + '{launcher}' + [char]34; \
+         $launch.UseShellExecute = $false; $launch.CreateNoWindow = $true; \
+         $launcher = [System.Diagnostics.Process]::Start($launch); \
+         $launcher.WaitForExit(); \
+         Write-Output 'DETACHED_READY'; \
+         while ($true) {{ Start-Sleep -Milliseconds 100 }}"
+    );
+    powershell_command(script)
+}
+
+#[test]
+#[ignore = "spawns a real Windows ConPTY and real child processes; run locally with --ignored"]
+fn stopping_terminal_leaves_a_child_its_shell_detached() {
+    let harness = Harness::spawn();
+    const READY: &str = "DETACHED_READY";
+    let attached_pid_file = harness.dir.join("stop-attached.pid");
+    let detached_pid_file = harness.dir.join("stop-detached.pid");
+    let launcher = write_detaching_launcher(&harness.dir, &detached_pid_file);
+    queue_command(
+        &harness.paths,
+        cmd_keep_attached_and_detach_child(&attached_pid_file, &launcher),
+    );
+    let client = harness.client("tree-stop-detached");
+    let session = client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("create detach session");
+    let received = Arc::new(Mutex::new(Vec::new()));
+    client
+        .session_attach(&session.id, None, collect_handler(Arc::clone(&received)))
+        .expect("attach detach session");
+    assert!(
+        wait_for_marker(&received, READY, Duration::from_secs(15)),
+        "the shell never reported that its launcher exited"
+    );
+    let attached = wait_for_pid_file(&attached_pid_file, Duration::from_secs(10));
+    let detached = wait_for_pid_file(&detached_pid_file, Duration::from_secs(10));
+    let _attached_guard = PidGuard::of(attached);
+    let _detached_guard = PidGuard::of(detached);
+    assert!(
+        process_is_alive(attached),
+        "attached child {attached} is not live"
+    );
+    assert!(
+        process_is_alive(detached),
+        "detached child {detached} is not live"
+    );
+
+    client
+        .session_stop(&session.id)
+        .expect("stop detach session");
+    // The attached child dies in the same kill pass as the shell, so its exit
+    // marks the point where a stop has finished; the detached child is judged then.
+    wait_for_process_exit(attached, Duration::from_secs(5));
+    assert!(
+        process_is_alive(detached),
+        "stopping the terminal killed {detached}, a child its shell had already detached"
+    );
+    println!(
+        "JOB_TREE stop_detached attached_pid={attached} detached_pid={detached} attached_dead=true detached_alive=true"
+    );
+}
+
+#[test]
+#[ignore = "spawns a real Windows ConPTY and a real child process; run locally with --ignored"]
+fn stopping_terminal_kills_its_attached_child() {
+    let harness = Harness::spawn();
+    const MARKER: &str = "DEVBOULE_STOP_TREE_PID=";
+    let pid_file = harness.dir.join("stop-attached-only.pid");
+    queue_command(
+        &harness.paths,
+        cmd_spawn_long_lived_child_with_pid_file(MARKER, &pid_file),
+    );
+    let client = harness.client("tree-stop-attached");
+    let session = client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("create attached session");
+    let _received = Arc::new(Mutex::new(Vec::new()));
+    client
+        .session_attach(&session.id, None, collect_handler(Arc::clone(&_received)))
+        .expect("attach attached session");
+    let pid = wait_for_pid_file(&pid_file, Duration::from_secs(10));
+    let _guard = PidGuard::of(pid);
+    assert!(
+        process_is_alive(pid),
+        "attached child {pid} never became live"
+    );
+
+    client
+        .session_stop(&session.id)
+        .expect("stop attached session");
+    wait_for_process_exit(pid, Duration::from_secs(5));
+    println!("JOB_TREE stop_attached attached_pid={pid} os_alive=false");
 }
 
 #[test]

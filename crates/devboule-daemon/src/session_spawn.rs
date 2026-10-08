@@ -985,6 +985,9 @@ fn teardown_session_inner(session: PtySession, finish_runtime: bool) {
     // have an in-flight request, but the closed session must already be
     // unauthorized by the time teardown starts.
     drop(mcp_session);
+    // Read before the root dies: afterwards a terminal's children are detached
+    // and indistinguishable from the ones it detached earlier.
+    let tree = process_job.capture_tree();
     // 1) Kill first. The killer is separate so this cannot race with wait().
     killer.kill();
     drop(killer);
@@ -995,7 +998,7 @@ fn teardown_session_inner(session: PtySession, finish_runtime: bool) {
     //    command-side Arc clones remain.
     drop(writer);
     drop(master);
-    // The job must end before the bounded joins, and by terminate rather
+    // The tree must end before the bounded joins, and by terminate rather
     // than by handle close: an agent's on_os_death callback owns another
     // Arc to this job inside the runtime, so a reader that outlives its
     // join budget keeps the job — and any grandchild still holding the
@@ -1004,9 +1007,9 @@ fn teardown_session_inner(session: PtySession, finish_runtime: bool) {
     // joins" true: the wait budget is the same one the joins get. If the
     // wait fails, that other Arc is what would keep the fallback below
     // from ever running, so the callback is released next.
-    if let Err(error) = process_job.terminate_and_wait(READER_JOIN_BUDGET) {
+    if let Err(error) = process_job.terminate_tree_and_wait(&tree, READER_JOIN_BUDGET) {
         eprintln!(
-            "session {} could not terminate its job before teardown joins: {error}",
+            "session {} could not terminate its process tree before teardown joins: {error}",
             runtime.session_id
         );
         release_after_failed_wait(&runtime);

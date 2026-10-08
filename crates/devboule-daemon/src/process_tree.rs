@@ -4,6 +4,10 @@
 //! process creation, but its Windows `Child` exposes the native process
 //! handle, which is all the Job Object API needs.
 
+#[cfg(all(windows, feature = "server"))]
+#[path = "process_tree_attached.rs"]
+mod attached;
+
 #[cfg(windows)]
 mod platform {
     use std::io;
@@ -12,6 +16,9 @@ mod platform {
     use std::ptr;
     use std::thread;
     use std::time::{Duration, Instant};
+
+    #[cfg(feature = "server")]
+    use super::attached::{self, CapturedTree};
 
     // `CloseHandle` and `HANDLE` serve `JobObject` in every build. The
     // remaining names are used only by `ProcessHandle`, which is behind
@@ -35,14 +42,25 @@ mod platform {
         GetCurrentProcess, GetExitCodeProcess, WaitForSingleObject,
     };
 
-    /// An owned Job Object configured to kill its members when this handle is
-    /// closed. Every job is created empty for exactly one child tree, and the
-    /// handle is intentionally not duplicated: its owner is the code that
-    /// spawned that tree (the live session, the git probe, the npm install,
-    /// the version probe, the ACP terminal).
+    /// Which processes a kill through a job reaches. A whole-job scope owns
+    /// everything its provider starts. An attached scope is a terminal's shell:
+    /// only the tree still attached to that root is a kill target, because a
+    /// process the shell detached is outside the terminal's life.
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    #[derive(Debug)]
+    enum Scope {
+        Whole,
+        Attached { root: u32 },
+    }
+
+    /// An owned Job Object. Every job is created empty for exactly one child
+    /// tree, and the handle is intentionally not duplicated: its owner is the
+    /// code that spawned that tree (the live session, the git probe, the npm
+    /// install, the version probe, the ACP terminal).
     #[derive(Debug)]
     pub struct JobObject {
         handle: HANDLE,
+        scope: Scope,
     }
 
     // A Job Object handle is a process-wide kernel capability. Assigning
@@ -53,13 +71,25 @@ mod platform {
 
     impl JobObject {
         pub fn new() -> io::Result<Self> {
+            Self::create(Scope::Whole)
+        }
+
+        /// A job for a terminal's shell. It records membership and kills nothing
+        /// on close, so a process the shell detached outlives the terminal.
+        pub fn attached(root: u32) -> io::Result<Self> {
+            Self::create(Scope::Attached { root })
+        }
+
+        fn create(scope: Scope) -> io::Result<Self> {
             let handle = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
             if handle.is_null() {
                 return Err(io::Error::last_os_error());
             }
 
             let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { mem::zeroed() };
-            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if matches!(scope, Scope::Whole) {
+                limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            }
             let result = unsafe {
                 SetInformationJobObject(
                     handle,
@@ -74,7 +104,7 @@ mod platform {
                 return Err(error);
             }
 
-            Ok(Self { handle })
+            Ok(Self { handle, scope })
         }
 
         pub fn assign(&self, process: RawHandle) -> io::Result<()> {
@@ -127,6 +157,54 @@ mod platform {
                     ));
                 }
                 thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        /// The tree a stop must end, read while the root still lives. A child that
+        /// outlives its parent is detached and drops out of the tree, so a capture
+        /// taken after the root exits would miss what was still attached.
+        #[cfg(feature = "server")]
+        pub fn capture_tree(&self) -> CapturedTree {
+            match self.scope {
+                Scope::Whole => CapturedTree::default(),
+                Scope::Attached { root } => match self.pids() {
+                    Ok(members) => attached::capture(root, &members),
+                    Err(error) => {
+                        eprintln!(
+                            "could not read the terminal's processes, so only its shell is stopped: {error}"
+                        );
+                        CapturedTree::default()
+                    }
+                },
+            }
+        }
+
+        /// Ends the captured tree without waiting. A whole-job scope ends through
+        /// the job, the kill its owner has always made.
+        #[cfg(feature = "server")]
+        pub fn kill_tree(&self, tree: &CapturedTree) -> io::Result<()> {
+            match self.scope {
+                Scope::Whole => self.terminate(),
+                Scope::Attached { .. } => {
+                    tree.terminate();
+                    Ok(())
+                }
+            }
+        }
+
+        /// `kill_tree`, then a bounded wait until the captured processes exit.
+        #[cfg(feature = "server")]
+        pub fn terminate_tree_and_wait(
+            &self,
+            tree: &CapturedTree,
+            timeout: Duration,
+        ) -> io::Result<()> {
+            match self.scope {
+                Scope::Whole => self.terminate_and_wait(timeout),
+                Scope::Attached { .. } => {
+                    tree.terminate();
+                    tree.wait(Instant::now() + timeout)
+                }
             }
         }
 
@@ -311,7 +389,30 @@ mod platform {
         pub fn terminate_and_wait(&self, _timeout: std::time::Duration) -> io::Result<()> {
             Ok(())
         }
+
+        #[cfg(feature = "server")]
+        pub fn capture_tree(&self) -> CapturedTree {
+            CapturedTree
+        }
+
+        #[cfg(feature = "server")]
+        pub fn kill_tree(&self, _tree: &CapturedTree) -> io::Result<()> {
+            self.terminate()
+        }
+
+        #[cfg(feature = "server")]
+        pub fn terminate_tree_and_wait(
+            &self,
+            _tree: &CapturedTree,
+            timeout: std::time::Duration,
+        ) -> io::Result<()> {
+            self.terminate_and_wait(timeout)
+        }
     }
+
+    #[cfg(feature = "server")]
+    #[derive(Debug, Default)]
+    pub struct CapturedTree;
 
     /// Unix keeps the type so session code can store `Option<ProcessHandle>`
     /// without a cfg at each use site. It exists under `server`, the only
@@ -369,6 +470,10 @@ pub fn contain_spawned(pid: u32) -> std::io::Result<JobObject> {
 pub use platform::JobObject;
 #[cfg(feature = "server")]
 pub use platform::ProcessHandle;
+
+#[cfg(all(test, windows, feature = "server"))]
+#[path = "process_tree_tree_tests.rs"]
+mod tree_tests;
 
 #[cfg(all(test, windows, feature = "server"))]
 mod tests {

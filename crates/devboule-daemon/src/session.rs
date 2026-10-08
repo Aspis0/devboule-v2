@@ -3277,11 +3277,11 @@ impl SessionRegistry {
         // writer. One drain write that passed its fence check before this goes
         // out once, into the process the kill follows.
         self.fence_and_clear_queue(session_id, Some(&runtime));
+        let tree = job.capture_tree();
         killer.kill();
-        // The session is preserved, so its job stays open: the kill above
-        // stops only the root. Terminate the tree too, or the agent's
-        // descendants outlive the stop. Mirrors the on-OS-death handler.
-        let _ = job.terminate();
+        // The kill above stops only the root. The captured tree is what a stop
+        // owns; once the root exits, its children are detached and not in it.
+        let _ = job.kill_tree(&tree);
         Ok(())
     }
 
@@ -3368,10 +3368,10 @@ impl SessionRegistry {
                 }
             }
         }
+        let tree = job.capture_tree();
         killer.kill();
-        // Same ownership as `stop`: the session is preserved, so its job
-        // stays open and the kill above stops only the root.
-        let _ = job.terminate();
+        // Same ownership as `stop`: the kill above stops only the root.
+        let _ = job.kill_tree(&tree);
         Ok(())
     }
 

@@ -113,6 +113,9 @@ impl ProcessProbe for SystemProbe {
 #[path = "process_probe_windows.rs"]
 mod platform;
 
+#[cfg(windows)]
+pub(crate) use platform::{process_parents, read_creation_time};
+
 #[cfg(target_os = "macos")]
 #[path = "process_probe_macos.rs"]
 mod platform;
