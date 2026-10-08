@@ -8,8 +8,9 @@
 # conpty.dll and both architecture OpenConsole.exe hosts, plus the
 # THIRD-PARTY-NOTICES\ directory, replacing any previous bundle by renaming
 # it aside and deleting the renamed copy only once the new tree is in place.
-# The download is the only network access this script performs. It is not run
-# by the build or the gate; see docs/conpty-windows.md.
+# The download is the only network access this script performs. The Windows
+# installer build (pnpm build:installer) runs it; dev builds and the gate do
+# not — see docs/conpty-windows.md.
 #
 # The pin values and the verify-then-stage order are taken from herdr's
 # packaging scripts (see NOTICE).

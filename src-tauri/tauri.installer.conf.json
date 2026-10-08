@@ -6,8 +6,16 @@
   // that never built the release daemon would not compile.
   // The installer build is also the one build that stages the pinned ConPTY
   // payload and notices, before Tauri validates the resources below.
+  // The stage call resets PSModulePath to the Machine value first: a
+  // PowerShell 7 parent (pwsh, CI runners) rewrites PSModulePath for its
+  // children, and the nested Windows PowerShell would then be missing
+  // Get-FileHash (empty Machine/User values fall back to the PS 5.1 defaults).
+  // Tauri runs this chain through `cmd /S /C`, so the -Command payload must
+  // hold neither double quotes (Rust argv escapes them to \"-pairs, which make
+  // PowerShell treat the payload as a string literal instead of code) nor an
+  // unquoted `&` (a cmd separator); a bare script path needs no call operator.
   "build": {
-    "beforeBuildCommand": "cargo build --release -p devboule-daemon && powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\stage-conpty.ps1 -TargetDir target\\release && pnpm build"
+    "beforeBuildCommand": "cargo build --release -p devboule-daemon && powershell -NoProfile -ExecutionPolicy Bypass -Command $env:PSModulePath=[Environment]::GetEnvironmentVariable('PSModulePath','Machine'); .\\scripts\\stage-conpty.ps1 -TargetDir target\\release && pnpm build"
   },
   "bundle": {
     "active": true,
