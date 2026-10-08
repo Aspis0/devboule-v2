@@ -88,13 +88,13 @@ describe("turn rail computed styles", () => {
       return { shell, aux, track, composer };
     };
 
-    // Rail off: no sibling takes an inset; the composer keeps the lane's
-    // 20 px and the track shares the lane rule, so it keeps the composer's box.
+    // Rail off: no sibling takes an inset; the track keeps the lane's 20 px,
+    // and the field keeps its own 14 px inside its border.
     const off = build(false);
     expect(getComputedStyle(off.aux).marginLeft).toBe("");
     expect(getComputedStyle(off.track).paddingLeft).toBe("20px");
     expect(getComputedStyle(off.track).maxWidth).toBe("1060px");
-    expect(getComputedStyle(off.composer).paddingLeft).toBe("20px");
+    expect(getComputedStyle(off.composer).paddingLeft).toBe("14px");
     off.shell.remove();
 
     // The card takes the gutter as margin, the composer meets transcript

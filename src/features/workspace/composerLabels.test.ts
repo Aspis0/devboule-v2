@@ -100,12 +100,10 @@ describe("the restyled labels speak the UI font at 12px or above", () => {
     expect(rules).toContain("font-size: 13px");
   });
 
-  it("the composer text is the spec's 14/1.45 on the transcript column", () => {
+  it("the composer text is the spec's 14/1.45 inside the field", () => {
     const css = assembleCssProof(OWNED_SHEETS);
     const rules = css.rulesFor(".workspace-composer");
-    expect(rules).toContain("padding-top: 10px;");
-    expect(rules).toContain("padding-bottom: 10px;");
-    // The sides belong to the lane rule: the composer shares the rows' axis.
+    expect(rules).toContain("padding: 14px 14px 10px;");
     expect(rules).not.toContain("padding-left: 12px;");
     expect(css.rulesFor(".workspace-composer textarea")).toContain("font-size: 14px");
     expect(css.rulesFor(".workspace-composer textarea")).toContain("line-height: 1.45");
@@ -124,10 +122,10 @@ describe("the restyled labels speak the UI font at 12px or above", () => {
 });
 
 describe("the composer chrome's pinned values", () => {
-  it("takes the accent on the top rule at focus, with no ring", () => {
+  it("takes the focus ring on the field's edge at focus, with no shadow", () => {
     const css = assembleCssProof(OWNED_SHEETS);
-    const rules = css.rulesFor(".workspace-composer-wrap:focus-within");
-    expect(rules).toContain(`border-top-color: ${css.token("--accent")}`);
+    const rules = css.rulesFor(".workspace-composer:focus-within");
+    expect(rules).toContain(`border-color: ${css.token("--accent")}`);
     expect(rules).not.toContain("box-shadow");
   });
 

@@ -1239,12 +1239,7 @@
 .workspace-composer-wrap {
   position: relative;
   flex: none;
-  /* The rule spans the pane: the box inside is capped at the reading width,
-     so only the wrap can carry a full-width edge. */
-  border-top: 1px solid var(--line);
-  /* No side padding: the lane rule insets the box and the track, so a
-     second inset here would drift them off the transcript's edges. */
-  padding: var(--space-4) 0 var(--space-12);
+  padding: var(--space-8) var(--space-24) var(--space-14);
 }
 
 .workspace-command-menu {
@@ -1252,10 +1247,9 @@
   bottom: calc(100% - 1px);
   left: 50%;
   z-index: 2;
-  /* An absolute element's 100% is the wrap's padding box — the pane, now
-     that the wrap carries no side padding — so the lane's own width and
-     cap put the menu's edges exactly on the composer's. */
-  width: 100%;
+  /* An absolute element's 100% is the wrap's padding box, so the wrap's side
+     padding is taken off here to put the menu's edges on the field's. */
+  width: calc(100% - 2 * var(--space-24));
   max-width: 1060px;
   transform: translateX(-50%);
   display: flex;
@@ -1333,17 +1327,14 @@
 }
 
 .workspace-composer {
-  /* Sized by the shared lane rule above. */
-  /* One line of text plus the control row, and no more until the textarea
-     grows: the box must not read as an empty panel. */
-  min-height: calc(
-    var(--space-10) + (var(--type-interface) * var(--leading-body)) + var(--space-6) +
-      var(--control-default) + var(--space-10)
-  );
-  /* Block padding only: the lane rule's 20 px sides are what the composer
-     shares with the transcript, so its text lands on the rows' axis. */
-  padding-top: var(--space-10);
-  padding-bottom: var(--space-10);
+  /* One rounded field: the text on top, the control bar pinned to its foot. */
+  display: flex;
+  flex-direction: column;
+  min-height: 96px;
+  padding: var(--space-14) var(--space-14) var(--space-10);
+  background: var(--composer-fill);
+  border: 1px solid var(--composer-line);
+  border-radius: var(--radius-12);
 }
 
 .workspace-agent-shell.has-turn-rail .workspace-composer {
@@ -1352,15 +1343,24 @@
   padding-left: calc(var(--lane-inset) + 32px);
 }
 
-.workspace-composer-wrap:focus-within {
-  border-top-color: var(--accent);
+.workspace-composer:focus-within {
+  border-color: var(--ring);
+}
+
+/* Forced colours drop the custom edge, so focus takes the system highlight. */
+@media (forced-colors: active) {
+  .workspace-composer:focus-within {
+    border-color: Highlight;
+  }
 }
 
 .workspace-composer textarea {
   /* block: an inline-block textarea sits on a line box, and the strut's
      descender left 5.3px of dead height under the only line of text. */
   display: block;
+  flex: 1 1 auto;
   width: 100%;
+  min-height: 32px;
   max-height: 160px;
   padding: 0;
   color: var(--ink);
@@ -1378,13 +1378,14 @@
   opacity: 1;
 }
 
-/* Control bar below the textarea: pickers on the left, send/stop on the
+/* Control bar at the field's foot: pickers on the left, send/stop on the
    right, with room before the actions for a context ring. */
 .workspace-composer-bar {
   display: flex;
   align-items: center;
   gap: var(--space-6);
-  margin-top: var(--space-6);
+  margin-top: auto;
+  padding-top: var(--space-10);
 }
 
 .workspace-composer-controls {

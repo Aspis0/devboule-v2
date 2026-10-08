@@ -32,6 +32,8 @@ const COLOUR_TOKENS = [
   "line",
   "line-strong",
   "region-edge",
+  "composer-fill",
+  "composer-line",
   "accent",
   "accent-text",
   "accent-contrast",

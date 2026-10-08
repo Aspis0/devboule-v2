@@ -321,14 +321,13 @@ describe("a pane too small to read at full size", () => {
       /gap:\s*var\(--space-6\)/,
     );
     const composer = bodyOf(query, ".workspace-split-pane .workspace-composer");
-    expect(composer).toMatch(/padding:\s*var\(--space-6\) var\(--space-10\)/);
-    expect(composer).toMatch(/min-height:\s*calc\(/);
-    expect(composer).toMatch(/--control-dense/);
+    expect(composer).toMatch(/padding:\s*var\(--space-10\) var\(--space-10\) var\(--space-6\)/);
+    expect(composer).not.toMatch(/min-height/);
     expect(bodyOf(query, ".workspace-split-pane .workspace-composer textarea")).toMatch(
       /font-size:\s*var\(--type-small\)/,
     );
     expect(bodyOf(query, ".workspace-split-pane .workspace-composer-wrap")).toMatch(
-      /padding:\s*var\(--space-4\) 0 var\(--space-8\)/,
+      /padding:\s*var\(--space-4\) var\(--space-24\) var\(--space-8\)/,
     );
   });
 

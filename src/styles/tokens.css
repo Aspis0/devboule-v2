@@ -60,6 +60,10 @@
   --line: #d4d2cc;
   --line-strong: #bcbab3;
   --region-edge: var(--line);
+  /* The composer field's fill and edge: no fill or line token sits at these
+     values in both themes, so the field owns its pair. */
+  --composer-fill: #ffffff;
+  --composer-line: rgba(0, 0, 0, 0.16);
 
   /* the one accent: ochre. Five uses and no others — the thin selection
      marker, the active tab marker, the focus ring, the attention dot and the
@@ -282,6 +286,8 @@
   --line: #3a3a36;
   --line-strong: #50504a;
   --region-edge: var(--line);
+  --composer-fill: rgba(255, 255, 255, 0.045);
+  --composer-line: rgba(255, 255, 255, 0.18);
 
   --accent: #e0b45d;
   --accent-text: #e0b45d;

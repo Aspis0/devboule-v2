@@ -77,23 +77,23 @@ afterEach(async () => {
 });
 
 describe("the composer's box", () => {
-  it("floors itself at one line plus the control row", async () => {
-    // The floor names a height: 10 of top padding, one 14px line at 1.45, the
-    // bar's 6px gap and its 28px height, and 10 of bottom padding.
-    const floor = workspaceCss.rulesFor(".workspace-composer");
-    expect(floor).toContain("min-height: calc(");
-    expect(floor).toContain("(14px * 1.45)");
-    expect(floor).toContain("28px + 10px");
-    expect(floor).not.toContain("border: 1px");
-    expect(floor).not.toContain("border-radius");
+  it("is one rounded field, 96px at least, with the control bar pinned to its foot", () => {
+    const field = workspaceCss.rulesFor(".workspace-composer");
+    expect(field).toContain("display: flex;");
+    expect(field).toContain("flex-direction: column;");
+    expect(field).toContain("min-height: 96px;");
+    expect(field).toContain("border-radius: 12px;");
+    expect(field).toContain(`border: 1px solid ${workspaceCss.token("--composer-line")}`);
+    expect(field).toContain(`background: ${workspaceCss.token("--composer-fill")}`);
+    expect(workspaceCss.rulesFor(".workspace-composer-bar")).toContain("margin-top: auto;");
   });
 
-  it("draws one full-width top rule on the wrap, and takes accent on focus", () => {
-    const wrap = workspaceCss.rulesFor(".workspace-composer-wrap");
-    expect(wrap).toContain("border-top: 1px solid");
-    expect(workspaceCss.rulesFor(".workspace-composer-wrap:focus-within")).toContain(
-      "border-top-color:",
+  it("has no rule on the wrap's top edge, and the field takes the ring on focus", () => {
+    expect(workspaceCss.rulesFor(".workspace-composer-wrap")).not.toContain("border-top");
+    expect(workspaceCss.rulesFor(".workspace-composer:focus-within")).toContain(
+      `border-color: ${workspaceCss.token("--accent")}`,
     );
+    expect(workspaceCss.rulesFor(".workspace-composer:focus-within")).not.toContain("box-shadow");
   });
 
   it("draws no box round the textarea on focus; the wrap's top rule is the focus cue", () => {
