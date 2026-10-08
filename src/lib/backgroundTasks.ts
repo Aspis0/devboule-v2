@@ -60,3 +60,8 @@ export function taskTransitions(
   const held = new Set((prev?.tasks ?? []).map((task) => `${task.id}\n${task.state}`));
   return next.tasks.filter((task) => !held.has(`${task.id}\n${task.state}`));
 }
+
+/** The shown rows in the running state; rows past the publish cap are not known here. */
+export function runningTaskCount(list: BackgroundTaskState | null): number {
+  return list?.tasks.filter((task) => task.state === "running").length ?? 0;
+}

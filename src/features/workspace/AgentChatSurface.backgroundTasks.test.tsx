@@ -55,12 +55,18 @@ function pushSnapshot(revision: number, tasks: SessionTask[]): void {
   });
 }
 
-async function renderSurface(): Promise<void> {
+async function renderSurface(onOpenTasks?: () => void): Promise<void> {
   root = createRoot(container);
   await act(async () => {
-    root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
+    root.render(
+      <AgentChatSurface daemonState="connected" sessionId="agent-1" onOpenTasks={onOpenTasks} />,
+    );
   });
   await act(async () => undefined);
+}
+
+function pill(): HTMLButtonElement | null {
+  return container.querySelector<HTMLButtonElement>('[data-testid="background-tasks-pill"]');
 }
 
 beforeEach(() => {
@@ -89,5 +95,45 @@ describe("AgentChatSurface background tasks", () => {
     pushSnapshot(1, [agentTask()]);
 
     expect(container.textContent).toContain("Running agent Explore auth");
+  });
+
+  it("counts the running tasks in the pill and opens the Tasks tab when it is pressed", async () => {
+    const onOpenTasks = vi.fn();
+    await renderSurface(onOpenTasks);
+
+    pushSnapshot(1, [
+      agentTask(),
+      agentTask({ id: "child-2", kind: "command", title: "npm test" }),
+    ]);
+    expect(pill()?.textContent).toBe("2 running tasks");
+
+    act(() => pill()?.click());
+    expect(onOpenTasks).toHaveBeenCalledTimes(1);
+  });
+
+  it("says the singular for one running task", async () => {
+    await renderSurface(() => undefined);
+
+    pushSnapshot(1, [agentTask()]);
+
+    expect(pill()?.textContent).toBe("1 running task");
+  });
+
+  it("takes the pill away when nothing is running any more", async () => {
+    await renderSurface(() => undefined);
+    pushSnapshot(1, [agentTask()]);
+    expect(pill()).not.toBeNull();
+
+    pushSnapshot(2, [agentTask({ state: "finished", endedAtMs: 4_000 })]);
+
+    expect(pill()).toBeNull();
+  });
+
+  it("draws no pill when the surface has no Tasks tab to open", async () => {
+    await renderSurface();
+
+    pushSnapshot(1, [agentTask()]);
+
+    expect(pill()).toBeNull();
   });
 });

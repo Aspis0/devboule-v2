@@ -54,6 +54,8 @@ import { sendChatImagesByReference } from "./chatImageTransport";
 import { useFileAttachments } from "./useFileAttachments";
 import type { FileUploader } from "./fileUpload";
 import { SubagentMenu, type SubagentArchiveTarget } from "./SubagentMenu";
+import { BackgroundTasksPill } from "./BackgroundTasksPill";
+import { runningTaskCount } from "../../lib/backgroundTasks";
 import { childRow, deriveSubagentRows, isArchivable } from "./subagentRows";
 import { AgentReadingPublisher } from "./statusBar/AgentReadingPublisher";
 import { journalLossCopy } from "./journalLoss";
@@ -146,6 +148,8 @@ interface AgentChatSurfaceProps {
   onOpenSubagent?: (sessionId: string) => void;
   subagentAttention?: ReadonlyMap<string, string>;
   onRefreshSubagents?: () => Promise<void>;
+  /** Opens the side panel on its Tasks tab. Absent: the running-task pill is not drawn. */
+  onOpenTasks?: () => void;
   /**
    * Workspace context that renders agent-written file paths as links into
    * the tab opener, exactly the Files panel's open action. Null (or absent)
@@ -351,6 +355,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   onOpenSubagent,
   subagentAttention,
   onRefreshSubagents,
+  onOpenTasks,
   fileLinks = null,
   activity,
   observedState = null,
@@ -749,6 +754,14 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     () => <AgentTaskPill items={state.agentTasks ?? []} />,
     [state.agentTasks],
   );
+  const runningTasks = runningTaskCount(state.backgroundTasks ?? null);
+  const backgroundPill = useMemo(
+    () =>
+      onOpenTasks === undefined ? null : (
+        <BackgroundTasksPill runningCount={runningTasks} onOpen={onOpenTasks} />
+      ),
+    [onOpenTasks, runningTasks],
+  );
   // `/goal` rides to the daemon as plain text, which intercepts it: the app
   // only makes it discoverable, for a live agent session alone.
   const composerCommands = useMemo(
@@ -870,6 +883,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         disabledReason={recoveredAttach ? null : disabledReason}
         availableCommands={composerCommands}
         taskPill={taskPill}
+        backgroundPill={backgroundPill}
         queuedTrack={queuedTrack}
         restoreDraft={restoreDraft}
         onQueue={queueSupported ? composerQueue.queueMessage : undefined}

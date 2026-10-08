@@ -3,6 +3,7 @@ import type { SessionTask } from "../types/ipc";
 import {
   acceptTaskReply,
   acceptTaskSnapshot,
+  runningTaskCount,
   taskTransitions,
   type BackgroundTaskState,
 } from "./backgroundTasks";
@@ -96,5 +97,20 @@ describe("the transitions a snapshot carries", () => {
     };
     const next = stored("e1", 1, [agentTask()]);
     expect(taskTransitions(seeded, next)).toEqual([]);
+  });
+});
+
+describe("counting the running tasks", () => {
+  it("counts the shown rows in the running state", () => {
+    const list = stored("e1", 3, [
+      agentTask(),
+      agentTask({ id: "child-2", kind: "command", title: "npm test" }),
+      agentTask({ id: "child-3", state: "finished", endedAtMs: 2_000 }),
+    ]);
+    expect(runningTaskCount(list)).toBe(2);
+  });
+
+  it("is zero with no list", () => {
+    expect(runningTaskCount(null)).toBe(0);
   });
 });

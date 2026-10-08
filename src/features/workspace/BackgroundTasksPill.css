@@ -1,0 +1,24 @@
+/* The running-task count above the composer: one line of text that opens the
+ * Tasks tab. No frame and no fill, so it reads as a status and not a control
+ * that needs a box around it. */
+
+.background-tasks-pill {
+  align-self: flex-start;
+  margin-bottom: var(--space-6);
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--type-interface);
+}
+
+.background-tasks-pill:hover {
+  color: var(--ink);
+}
+
+.background-tasks-pill:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
