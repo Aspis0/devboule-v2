@@ -173,3 +173,58 @@ describe("a window that has reset", () => {
     expect(meter?.parts).toEqual([{ label: "wk", percent: 60 }]);
   });
 });
+
+describe("how old a reading may be and still show", () => {
+  // The OpenCode Go plan: two windows that the frame's own reset times keep current,
+  // so only the reading's age decides between fresh, stale, and gone.
+  const windows: PlanUsage["windows"] = [
+    { durationMins: 300, usedPercent: 58, resetsAt: LATER },
+    { durationMins: 10_080, usedPercent: 41, resetsAt: LATER },
+  ];
+
+  it("shows a fresh reading with no suffix and no stale class", () => {
+    const meter = providerMeter(plan("opencode-go", windows), NOW - 2 * 60_000, NOW);
+    expect(meter?.parts).toHaveLength(2);
+    expect(meter?.ageSuffix).toBeNull();
+    expect(meter?.stale).toBe(false);
+  });
+
+  it("goes stale exactly at ten minutes, saying so in the label", () => {
+    const meter = providerMeter(plan("opencode-go", windows), NOW - 10 * 60_000, NOW);
+    expect(meter).not.toBeNull();
+    expect(meter?.ageSuffix).toBe(" · 10 min ago");
+    expect(meter?.stale).toBe(true);
+  });
+
+  it("counts whole minutes as the reading ages", () => {
+    const meter = providerMeter(plan("opencode-go", windows), NOW - 25 * 60_000, NOW);
+    expect(meter?.ageSuffix).toBe(" · 25 min ago");
+    expect(meter?.stale).toBe(true);
+  });
+
+  it("still shows a reading a second under the hour, with its age", () => {
+    const meter = providerMeter(plan("opencode-go", windows), NOW - (60 * 60_000 - 1000), NOW);
+    expect(meter).not.toBeNull();
+    expect(meter?.ageSuffix).toBe(" · 59 min ago");
+    expect(meter?.stale).toBe(true);
+  });
+
+  it("drops the meter once the reading is past the hour, even with a reset time still ahead", () => {
+    expect(providerMeter(plan("opencode-go", windows), NOW - 61 * 60_000, NOW)).toBeNull();
+  });
+
+  it("shows an unknown-age meter as before: no suffix, no stale class", () => {
+    // No observation time and no store stamp: only the frame's reset times prove it current.
+    const meter = providerMeter(plan("opencode-go", windows), null, NOW);
+    expect(meter).not.toBeNull();
+    expect(meter?.ageSuffix).toBeNull();
+    expect(meter?.stale).toBe(false);
+  });
+
+  it("ages from the frame's observation time when it carries one, not the store's stamp", () => {
+    const frame = { ...plan("opencode-go", windows), observedAtMs: NOW - 25 * 60_000 };
+    const meter = providerMeter(frame, NOW - 60_000, NOW);
+    expect(meter?.ageSuffix).toBe(" · 25 min ago");
+    expect(meter?.stale).toBe(true);
+  });
+});

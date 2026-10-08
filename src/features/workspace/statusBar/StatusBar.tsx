@@ -63,11 +63,16 @@ function ProviderUsage({ plan, nowMs }: { plan: PlanUsage; nowMs: number }) {
   const recordedAt = usePlanRecordedAt(plan.providerId);
   const meter = providerMeter(plan, recordedAt, nowMs);
   if (meter === null) return null;
+  // A reading ten minutes to an hour old stays in the bar, dimmed, with its age in the label.
+  const label =
+    `${meter.name} ${meter.parts.map((part) => `${part.percent}% ${part.label}`).join(" · ")}` +
+    (meter.ageSuffix ?? "");
   return (
-    <span className="status-bar-provider" title={meter.title}>
-      <span>
-        {`${meter.name} ${meter.parts.map((part) => `${part.percent}% ${part.label}`).join(" · ")}`}
-      </span>
+    <span
+      className={meter.stale ? "status-bar-provider status-meter--stale" : "status-bar-provider"}
+      title={meter.title}
+    >
+      <span>{label}</span>
       <MeterBar percent={meter.barPercent} />
     </span>
   );

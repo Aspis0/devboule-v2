@@ -72,6 +72,11 @@
   background: var(--accent);
 }
 
+/* A reading ten minutes to an hour old: still shown, but dimmed so its age reads at a glance. */
+.status-meter--stale {
+  opacity: 0.55;
+}
+
 .status-bar-daemon .workspace-status-dot {
   width: 6px;
   height: 6px;
