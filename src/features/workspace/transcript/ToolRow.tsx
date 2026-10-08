@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { memo, useMemo, useState, type ReactNode } from "react";
 import type { ToolChatItem } from "../../../lib/toolCallGroups";
 import { hideUntrustedFrame } from "../../../lib/untrustedFrame";
 import { ExternalLink } from "../../../components/ExternalLink";
@@ -54,9 +54,6 @@ export const ToolRow = memo(function ToolRow({
   // output waits in the body.
   const excerpt = useMemo(() => (failed ? failureExcerpt(lines) : []), [failed, lines]);
   const bodyLines = failed || isPlan ? [] : lines;
-  // An image inside a collapsed body is an image nobody sees: the row opens
-  // itself the first time it carries one, and then stays where the person put
-  // it — the element owns its state, so no re-render drags it back open.
   const hasImages = item.images !== undefined && item.images.length > 0;
   const locations = (item.locations ?? []).filter(
     (location) => location.path !== model.summary || location.line !== undefined,
@@ -67,13 +64,9 @@ export const ToolRow = memo(function ToolRow({
     bodyLines.length > 0 ||
     (isPlan && item.output.length > 0) ||
     hasImages;
-  const details = useRef<HTMLDetailsElement | null>(null);
-  const collapsedByUser = useRef(false);
-  useEffect(() => {
-    if (hasImages && !collapsedByUser.current && details.current !== null) {
-      details.current.open = true;
-    }
-  }, [hasImages]);
+  // Rows start open and only the person's toggle changes that, so a re-render
+  // cannot reopen a row they closed.
+  const [open, setOpen] = useState(true);
   const toolClassName = `${className}${isPlan ? " is-plan" : ""}${running ? " is-running" : ""}${failed ? " is-failed" : ""}${cancelled ? " is-cancelled" : ""}${interrupted ? ` ${INTERRUPTED_TOOL_CLASS}` : ""}`;
   const line: ReactNode = (
     <>
@@ -123,12 +116,9 @@ export const ToolRow = memo(function ToolRow({
     <div className={toolClassName} style={style}>
       {hasBody ? (
         <details
-          ref={details}
           className="workspace-chat-tool-details"
-          open
-          onToggle={() => {
-            collapsedByUser.current = hasImages && details.current?.open === false;
-          }}
+          open={open}
+          onToggle={(event) => setOpen(event.currentTarget.open)}
         >
           <summary className="workspace-chat-tool-summary">{line}</summary>
           <div className="workspace-chat-tool-body">

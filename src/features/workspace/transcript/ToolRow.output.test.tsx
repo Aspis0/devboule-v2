@@ -148,6 +148,21 @@ describe("ToolRow output", () => {
     expect(details.open).toBe(true);
   });
 
+  it("keeps a row the person closed closed when the row re-renders", async () => {
+    const item = tool({ kind: "search", title: "q", output: lines(10) });
+    const container = await renderRow(item);
+    const details = container.querySelector("details");
+    if (details === null) throw new Error("the row had nothing to open");
+    details.open = false;
+    details.dispatchEvent(new Event("toggle"));
+
+    await act(async () =>
+      root?.render(<ToolRow item={{ ...item, output: lines(11) }} transcriptEnded={false} />),
+    );
+
+    expect(container.querySelector("details")?.open).toBe(false);
+  });
+
   it("says a single hidden line in the singular", async () => {
     const container = await renderRow(tool({ kind: "search", title: "q", output: lines(3) }));
     expect(container.querySelector(".workspace-chat-tool-more")?.textContent).toContain("+1 line");
