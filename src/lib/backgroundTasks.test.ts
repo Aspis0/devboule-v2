@@ -72,20 +72,25 @@ describe("a task this build cannot name", () => {
   });
 
   it("is dropped from the attach reply too", () => {
-    const next = acceptTaskReply(null, { tasks: [unknownKind], omitted: 0 });
+    const next = acceptTaskReply(null, { tasks: [unknownKind], omitted: 0 }, null);
     expect(next?.tasks).toEqual([]);
   });
 });
 
 describe("accepting the attach reply", () => {
   it("fills an empty list with the reply's rows and cap count", () => {
-    const next = acceptTaskReply(null, { tasks: [agentTask()], omitted: 3 });
+    const next = acceptTaskReply(null, { tasks: [agentTask()], omitted: 3 }, null);
     expect(next).toEqual({ epoch: null, revision: 0, tasks: [agentTask()], omitted: 3 });
+  });
+
+  it("carries the epoch it was given, so it can be compared with a known one", () => {
+    const next = acceptTaskReply(null, { tasks: [agentTask()], omitted: 0 }, "e1");
+    expect(next).toEqual({ epoch: "e1", revision: 0, tasks: [agentTask()], omitted: 0 });
   });
 
   it("never overwrites a list that a snapshot already set", () => {
     const current = stored("e1", 2, [agentTask({ state: "finished", endedAtMs: 9_000 })]);
-    expect(acceptTaskReply(current, { tasks: [], omitted: 0 })).toBeNull();
+    expect(acceptTaskReply(current, { tasks: [], omitted: 0 }, "e1")).toBeNull();
   });
 });
 
@@ -106,6 +111,12 @@ describe("the transitions a snapshot carries", () => {
     const prev = stored("e1", 7, [agentTask()]);
     const next = stored("e2", 1, [agentTask({ state: "finished", endedAtMs: 2_000 })]);
     expect(taskTransitions(prev, next)).toEqual([]);
+  });
+
+  it("does not take a list with an unknown epoch as the same daemon's", () => {
+    const remembered = stored("e1", 3, [agentTask()]);
+    const reply = stored(null, 0, [agentTask({ state: "finished", endedAtMs: 2_000 })]);
+    expect(taskTransitions(remembered, reply)).toEqual([]);
   });
 
   it("does not re-announce a task the attach reply already showed", () => {

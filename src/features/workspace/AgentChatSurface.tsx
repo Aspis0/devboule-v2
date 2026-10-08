@@ -168,6 +168,8 @@ interface AgentChatSurfaceProps {
   initialGoal?: string | null;
   /** The daemon connection's state; input is disabled while it cannot carry sends. Required so an omission is compile-visible. */
   daemonState: DaemonConnectionState;
+  /** The daemon's instance id as last polled: the epoch its task lists carry. */
+  daemonInstanceId?: string | null;
   /**
    * The roster rows the agent-to-agent card resolves a relay's sender against,
    * the subagent pill lists this session's created children from, and the
@@ -364,6 +366,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   observedState = null,
   initialGoal = null,
   daemonState,
+  daemonInstanceId = null,
   sessionRoster,
   deviceNames,
   hasPendingPermission = false,
@@ -538,6 +541,10 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   useEffect(() => {
     latestInitialGoalRef.current = initialGoal;
   });
+  const daemonInstanceRef = useRef(daemonInstanceId);
+  useEffect(() => {
+    daemonInstanceRef.current = daemonInstanceId;
+  }, [daemonInstanceId]);
 
   // An attachment is valid for exactly one `(sessionId, generation)` pair.
   // Resume keeps the id but increments the generation, so this is the signal
@@ -553,6 +560,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
       onTurnStarted: () => forgetCreatedSession(sessionId),
       onTurnFinished: composerQueue.onTurnFinished,
       onQueueSnapshot: composerQueue.onSnapshot,
+      daemonEpoch: () => daemonInstanceRef.current,
       onGoalChanged: (goal) => {
         goalFrameRef.current = goal;
       },

@@ -6,7 +6,7 @@ import { AgentSession, type AgentChannel, type AgentSessionDeps } from "./agentS
  * The attach-time ask is a deferred the test answers, so "the reply arrived
  * late" is a statement about the order the test chose, not about timers.
  */
-function taskHarness() {
+function taskHarness(daemonEpoch?: () => string | null) {
   let emit: (event: SessionEvent) => void = () => undefined;
   let answer: (value: SessionTaskList | Error) => void = () => undefined;
   const invoke = vi.fn((command: string) => {
@@ -23,6 +23,7 @@ function taskHarness() {
       emit = onEvent;
       return {} as AgentChannel;
     },
+    daemonEpoch,
   });
   return {
     session,
@@ -96,6 +97,31 @@ describe("the session's background-task list", () => {
       tasks: [agentTask()],
       omitted: 1,
     });
+  });
+
+  it("tags the reply with the daemon epoch it is read under, and leaves it open when unknown", async () => {
+    const known = taskHarness(() => "e1");
+    await known.session.start();
+    known.answerAsk({ tasks: [agentTask()], omitted: 0 });
+    await flush();
+    const unknown = taskHarness(() => null);
+    await unknown.session.start();
+    unknown.answerAsk({ tasks: [agentTask()], omitted: 0 });
+    await flush();
+
+    expect(known.session.getState().backgroundTasks?.epoch).toBe("e1");
+    expect(unknown.session.getState().backgroundTasks?.epoch).toBeNull();
+  });
+
+  it("leaves the reply epochless when the daemon id changed while the request was in flight", async () => {
+    let instance = "e1";
+    const { session, answerAsk } = taskHarness(() => instance);
+    await session.start();
+    instance = "e2";
+    answerAsk({ tasks: [agentTask()], omitted: 0 });
+    await flush();
+
+    expect(session.getState().backgroundTasks?.epoch).toBeNull();
   });
 
   it("does not let a reply that arrives after a snapshot overwrite it", async () => {

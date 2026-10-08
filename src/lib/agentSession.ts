@@ -278,6 +278,12 @@ export interface AgentSessionDeps {
   onQueueSnapshot?: (event: Extract<SessionEvent, { type: "queue_snapshot" }>) => void;
   /** A `goal_changed` frame arrived, carrying the live goal (null on a clear). */
   onGoalChanged?: (goal: string | null) => void;
+  /**
+   * The daemon epoch an attach reply belongs to. The reply carries none on the
+   * wire, but the daemon's list epoch is its instance id, which the app polls;
+   * read when the reply lands, so a restart since the poll shows as a mismatch.
+   */
+  daemonEpoch?: () => string | null;
 }
 
 /** The plan with no step in progress: a step the turn left running is waiting again. */
@@ -1831,12 +1837,17 @@ export class AgentSession {
    * the ask existed; the daemon refuses it when the capability is not agreed.
    */
   private async askTaskList(): Promise<void> {
+    const askedUnder = this.deps.daemonEpoch?.() ?? null;
     try {
       const reply = await this.deps.invoke<SessionTaskList>("session_tasks", {
         id: this.deps.sessionId,
       });
       if (this.disposed) return;
-      const next = acceptTaskReply(this.state.backgroundTasks ?? null, reply);
+      // A daemon that changed while the request was in flight answered it, so
+      // the reply belongs to neither id with certainty: it stays epochless.
+      const landedUnder = this.deps.daemonEpoch?.() ?? null;
+      const epoch = askedUnder !== null && askedUnder === landedUnder ? askedUnder : null;
+      const next = acceptTaskReply(this.state.backgroundTasks ?? null, reply, epoch);
       if (next !== null) this.writeTaskState(next);
     } catch {
       // Left empty on purpose, see above.

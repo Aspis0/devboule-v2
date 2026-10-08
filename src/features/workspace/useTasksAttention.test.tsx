@@ -8,20 +8,36 @@ import type { SessionTask } from "../../types/ipc";
 import type { BackgroundTaskState } from "../../lib/backgroundTasks";
 import { fakeTaskSource, type FakeTaskSource } from "./backgroundTaskSourceHarness";
 import type { BackgroundTaskSource } from "./useBackgroundTaskState";
+import { resetTaskStateMemoryForTests } from "./taskStateMemory";
 import { useTasksAttention } from "./useTasksAttention";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+const SESSION = "parent-1";
+
 let container: HTMLDivElement;
 let root: Root;
 
-function Probe({ source, visible }: { source: BackgroundTaskSource | null; visible: boolean }) {
-  return <span data-testid="unseen">{String(useTasksAttention(source, visible))}</span>;
+function Probe({
+  source,
+  visible,
+  sessionId,
+}: {
+  source: BackgroundTaskSource | null;
+  visible: boolean;
+  sessionId: string;
+}) {
+  const pane = source === null ? null : { sessionId, source };
+  return <span data-testid="unseen">{String(useTasksAttention(pane, visible))}</span>;
 }
 
-async function show(source: FakeTaskSource | null, visible: boolean): Promise<void> {
+async function show(
+  source: FakeTaskSource | null,
+  visible: boolean,
+  sessionId: string = SESSION,
+): Promise<void> {
   await act(async () => {
-    root.render(<Probe source={source} visible={visible} />);
+    root.render(<Probe source={source} visible={visible} sessionId={sessionId} />);
   });
 }
 
@@ -53,6 +69,7 @@ function list(revision: number, tasks: SessionTask[]): BackgroundTaskState {
 }
 
 beforeEach(() => {
+  resetTaskStateMemoryForTests();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -118,12 +135,51 @@ describe("the Tasks tab's attention dot", () => {
     expect(unseen()).toBe(false);
   });
 
+  it("lights when a fresh source's first list finishes a task the session last showed running", async () => {
+    const first = fakeTaskSource(list(1, [task("a")]));
+    await show(first, false);
+    await show(null, false);
+    const second = fakeTaskSource(null);
+    await show(second, false);
+
+    await land(second, list(1, [task("a", { state: "finished", endedAtMs: 4_000 })]));
+
+    expect(unseen()).toBe(true);
+  });
+
+  it("lights when a fresh source already holds the finish at mount", async () => {
+    const first = fakeTaskSource(list(1, [task("a")]));
+    await show(first, false);
+    await show(null, false);
+    const second = fakeTaskSource(list(2, [task("a", { state: "finished", endedAtMs: 4_000 })]));
+
+    await show(second, false);
+
+    expect(unseen()).toBe(true);
+  });
+
+  it("stays dark when the fresh source's finish has no epoch to tell it from a restart", async () => {
+    const first = fakeTaskSource(list(1, [task("a")]));
+    await show(first, false);
+    await show(null, false);
+    const reply = fakeTaskSource({
+      epoch: null,
+      revision: 0,
+      tasks: [task("a", { state: "finished", endedAtMs: 4_000 })],
+      omitted: 0,
+    });
+
+    await show(reply, false);
+
+    expect(unseen()).toBe(false);
+  });
+
   it("does not compare a source with another source's list", async () => {
     const first = fakeTaskSource(list(1, [task("a")]));
     await show(first, false);
     const second = fakeTaskSource(list(2, [task("a", { state: "finished", endedAtMs: 4_000 })]));
 
-    await show(second, false);
+    await show(second, false, "other-session");
 
     expect(unseen()).toBe(false);
   });

@@ -53,9 +53,10 @@ export function acceptTaskSnapshot(
 export function acceptTaskReply(
   current: BackgroundTaskState | null,
   reply: SessionTaskList,
+  epoch: string | null,
 ): BackgroundTaskState | null {
   if (current !== null) return null;
-  return { epoch: null, revision: 0, tasks: knownTasks(reply.tasks), omitted: reply.omitted };
+  return { epoch, revision: 0, tasks: knownTasks(reply.tasks), omitted: reply.omitted };
 }
 
 /**
@@ -63,8 +64,8 @@ export function acceptTaskReply(
  * each is a transition worth a row. With no previous list the first one is a
  * baseline and shows nothing: a task already running when the view attached is
  * not a change seen live. A new epoch is also a baseline, since a restarted
- * daemon's list is not news. A seeded reply is the same lifetime as the first
- * event after it, so its tasks are known and not re-announced.
+ * daemon's list is not news, and so is a list whose epoch is unknown when the
+ * previous one had a known epoch: that cannot be told apart from a restart.
  */
 export function taskTransitions(
   prev: BackgroundTaskState | null,

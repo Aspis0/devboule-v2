@@ -309,7 +309,7 @@ export function Workspace({
     source: BackgroundTaskSource;
   } | null>(null);
   const tasksVisible = activeSidePanel === "tasks" && !rightCollapsed;
-  const tasksUnseen = useTasksAttention(paneAgent?.source ?? null, tasksVisible);
+  const tasksUnseen = useTasksAttention(paneAgent, tasksVisible);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
   const [permissionQueue, setPermissionQueue] = useState<QueuedPermission[]>([]);
@@ -2283,6 +2283,7 @@ export function Workspace({
                     initialGoal={paneSession.goal}
                     activity={paneSession.activity}
                     daemonState={daemon.state}
+                    daemonInstanceId={daemon.instanceId}
                     sessionRoster={sessions}
                     onOpenSubagent={handleOpenSubagent}
                     subagentAttention={subagentAttention}
