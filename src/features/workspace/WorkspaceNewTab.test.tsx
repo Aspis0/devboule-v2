@@ -1574,6 +1574,24 @@ describe("the + new-tab menu", () => {
     expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "acp", "codex-acp");
   });
 
+  it("names the creation in the status bar while the session is starting", async () => {
+    vi.mocked(providersList).mockResolvedValue({ providers: [npxProvider], unreadableDirs: 0 });
+    vi.mocked(sessionCreate).mockImplementationOnce(() => new Promise<never>(() => undefined));
+    ({ container, unmount } = await renderWorkspace());
+
+    await openMenu(container);
+    await act(async () => menuItem(container, "Agent").click());
+    await act(async () => undefined);
+    const confirm = document.querySelector<HTMLButtonElement>(".workspace-primary-action");
+    if (confirm === null) throw new Error("Confirm button did not render");
+    await act(async () => confirm.click());
+    await act(async () => undefined);
+
+    const bar = container.querySelector(".workspace-status-bar");
+    expect(bar?.querySelector(".status-bar-state")?.textContent).toBe("Starting…");
+    expect(bar?.querySelector('[role="status"]')?.textContent).toBe("Starting…");
+  });
+
   it("returns focus to the + button when the single-npx consent is cancelled", async () => {
     // With one npx provider no picker opens, so the consent card is the only
     // stop between the menu's Agent entry and Escape; cancelling must hand

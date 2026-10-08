@@ -1152,6 +1152,11 @@ export function Workspace({
           working: paneSession.activity === "working",
         }
       : null;
+  const statusProgress = sessionCreating
+    ? "Starting…"
+    : sessionsLoading && sessions.length === 0
+      ? "Loading…"
+      : null;
   // Primitive dependencies keep fileLinks stable across roster pushes so
   // unchanged messages retain their Markdown memo.
   // The pane's workspace, as the UI names it: the header menu reads it for the
@@ -2410,7 +2415,7 @@ export function Workspace({
           )}
         </aside>
       </div>
-      <StatusBar agent={focusedAgent} daemon={daemon} />
+      <StatusBar agent={focusedAgent} daemon={daemon} progress={statusProgress} />
 
       <NewProjectDialog
         open={projectDialogOpen}

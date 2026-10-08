@@ -21,6 +21,8 @@ export interface FocusedAgent {
 interface StatusBarProps {
   agent: FocusedAgent | null;
   daemon: DaemonStatus;
+  /** What the app waits on ("Starting…", "Loading…"); it takes the title's place. */
+  progress?: string | null;
 }
 
 /** The time, moved on each minute: the tooltips count resets and ages in minutes. */
@@ -65,7 +67,7 @@ function FocusedAgentContext({ sessionId }: { sessionId: string }) {
  * only what the app holds — a provider that has sent no usage, or none with a
  * percent in it, simply has no meter.
  */
-export function StatusBar({ agent, daemon }: StatusBarProps) {
+export function StatusBar({ agent, daemon, progress = null }: StatusBarProps) {
   const frames = useAllPlanUsage();
   const nowMs = useMinuteClock();
   const reading = useAgentReading(agent?.sessionId ?? null);
@@ -85,7 +87,17 @@ export function StatusBar({ agent, daemon }: StatusBarProps) {
   const tooltip = daemonLabel(daemon);
   return (
     <div className="workspace-status-bar" role="group" aria-label="Status">
-      {agent === null ? null : (
+      {/* Always mounted, so the words that arrive in it are announced. */}
+      <span className="sr-only" role="status">
+        {progress}
+      </span>
+      {progress !== null ? (
+        <span className="status-bar-who">
+          <span className="status-bar-state" aria-hidden="true">
+            {progress}
+          </span>
+        </span>
+      ) : agent === null ? null : (
         <span className="status-bar-who">
           <span className={`workspace-status-dot workspace-dot-${stateTone}`} />
           <span className="status-bar-state">

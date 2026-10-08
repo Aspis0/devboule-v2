@@ -83,6 +83,26 @@ describe("the status bar", () => {
     );
   });
 
+  it("says what the app waits on in place of the title while a session starts", async () => {
+    const bar = await render(<StatusBar agent={AGENT} daemon={DAEMON} progress="Starting…" />);
+    expect(bar.querySelector(".status-bar-state")?.textContent).toBe("Starting…");
+    expect(bar.querySelector(".status-bar-title")).toBeNull();
+  });
+
+  it("mounts its live region before the progress word arrives, so the word is announced", async () => {
+    const bar = await render(<StatusBar agent={null} daemon={DAEMON} />);
+    const region = bar.querySelector('[role="status"]');
+    expect(region?.textContent).toBe("");
+
+    await act(async () =>
+      root?.render(<StatusBar agent={null} daemon={DAEMON} progress="Loading…" />),
+    );
+
+    expect(bar.querySelector('[role="status"]')).toBe(region);
+    expect(region?.textContent).toBe("Loading…");
+    expect(bar.querySelector(".status-bar-state")?.textContent).toBe("Loading…");
+  });
+
   it("puts an approval the agent waits on ahead of its task", async () => {
     const bar = await render(
       <StatusBar agent={{ ...AGENT, attentionWord: "Needs your approval" }} daemon={DAEMON} />,
@@ -174,9 +194,10 @@ describe("the status bar", () => {
     );
     const bar = await render(<StatusBar agent={AGENT} daemon={DAEMON} />);
 
-    const order = Array.from(bar.querySelector(".workspace-status-bar")?.children ?? []).map(
-      (child) => child.className,
-    );
+    // The live region draws nothing, so it is not one of the bar's items.
+    const order = Array.from(bar.querySelector(".workspace-status-bar")?.children ?? [])
+      .filter((child) => child.getAttribute("role") !== "status")
+      .map((child) => child.className);
     // Usage meters come from the shared store, so earlier cases may leave more
     // than one provider: the order is what this case pins.
     const providers = order.filter((name) => name === "status-bar-provider").length;
