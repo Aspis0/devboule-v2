@@ -1856,10 +1856,17 @@ impl SessionRuntime {
     /// Start a turn before the provider write, so a steer's admission cannot
     /// observe "a turn is running" before the provider has the prompt that
     /// starts it.
+    ///
+    /// The previous turn's stop reason dies here: it describes the turn that
+    /// ended, not the run, and a kill mid-turn with no further end must not
+    /// read as that turn's own verdict (`child_finish_state`).
     pub(crate) fn begin_turn(&self) {
         let push = {
             let _hold = self.lock_turn_hold();
             self.turn_active.store(true, Ordering::Release);
+            if let Ok(mut slot) = self.agent_stop_reason.lock() {
+                *slot = None;
+            }
             self.mark_activity_changed()
                 .then(|| self.prepare_roster_transition())
                 .flatten()

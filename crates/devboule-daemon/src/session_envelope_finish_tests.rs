@@ -387,6 +387,49 @@ fn a_pi_child_that_stopped_normally_reaches_its_creator_finished() {
     );
 }
 
+/// A turn's stop reason is not the run's: when the next turn starts, the
+/// previous turn's word no longer describes how the child ended. A child
+/// killed mid-turn with no further end is judged by its own end.
+#[test]
+fn a_new_turn_clears_the_previous_turns_stop_reason() {
+    let runtime = SessionRuntime::new();
+    let mut live = ended_record("child-1", "alex").to_session();
+    live.state = SessionState::Live { generation: 1 };
+    runtime.publish_agent_event(
+        SessionEvent::AgentFinished {
+            stop_reason: "stop".to_string(),
+            model_id: None,
+            usage: None,
+        },
+        None,
+    );
+    // While no next turn has started, the recorded word still answers.
+    assert_eq!(
+        child_finish_state(&live, &runtime).0,
+        AgentTaskState::Completed
+    );
+    runtime.begin_turn();
+    assert_eq!(
+        runtime.agent_stop_reason(),
+        None,
+        "a new turn is not the previous turn's end"
+    );
+    // A person's Stop mid-turn: the session's own state decides, and a live
+    // session is cancelled, never completed.
+    assert_eq!(
+        child_finish_state(&live, &runtime).0,
+        AgentTaskState::Canceled
+    );
+    // A kill or crash the daemon only sees as an unclean exit is failed.
+    let mut record = ended_record("child-1", "alex");
+    record.exit_code = Some(1);
+    let crashed = record.to_session();
+    assert_eq!(
+        child_finish_state(&crashed, &runtime).0,
+        AgentTaskState::Failed
+    );
+}
+
 /// Origin inheritance (`S5` decision 3, and the §5 checklist): a child
 /// carries its creator's **stored** origin — same device, same role — and a
 /// local creator stays local. Nothing here reads a connection, because the
