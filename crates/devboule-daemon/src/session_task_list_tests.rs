@@ -395,6 +395,9 @@ fn the_pull_holds_exit_for_the_exit_publish_then_releases_it() {
     if let Ok(mut stream) = runtime.lock_stream() {
         stream.last_publish =
             Some(std::time::Instant::now() - super::super::session_items::EXIT_DRAIN);
+        // No hook is installed, so nothing will publish: hold the bit down
+        // by hand to stand in for the pending exit publish.
+        stream.tasks_exit_published = false;
     }
     assert!(
         drain().is_empty(),
@@ -447,6 +450,9 @@ fn the_pull_reports_a_death_its_publish_never_reached() {
         let past = std::time::Instant::now() - std::time::Duration::from_secs(3);
         stream.last_publish = Some(past);
         stream.exit_at = Some(past);
+        // No hook is installed, so nothing will publish: hold the bit down
+        // by hand, so only the 2 s fallback can report this death.
+        stream.tasks_exit_published = false;
     }
     assert!(
         drain()
@@ -454,4 +460,79 @@ fn the_pull_reports_a_death_its_publish_never_reached() {
             .any(|event| matches!(event, SessionEvent::Exit { .. })),
         "the 2 s fallback reports the death without any publish"
     );
+}
+
+#[test]
+fn installing_the_tasks_hook_arms_the_exit_wait() {
+    // A runtime straight out of the constructor carries no hook: nothing
+    // will ever publish exit tasks for it, so the pull must not wait.
+    // (Inserted and spawned sessions all get the hook at dress time; only
+    // raw runtimes take this default.)
+    let journal_dir = crate::test_dirs::test_temp_dir("devboule-tasks-hook-bit");
+    let journal = std::sync::Arc::new(
+        crate::journal::Journal::open(&journal_dir.join("journal.db")).expect("journal"),
+    );
+    let runtime = std::sync::Arc::new(SessionRuntime::with_journal(
+        "s.hook.bit".to_string(),
+        Some(journal),
+    ));
+    let bit = || {
+        runtime
+            .lock_stream()
+            .map(|stream| stream.tasks_exit_published)
+            .unwrap_or(false)
+    };
+    assert!(bit(), "no hook installed: nothing to wait for");
+    let owner = test_owner("tasks-hook-user", "tasks-hook-client");
+    let registry = SessionRegistry::new(
+        crate::paths::RuntimePaths::from_dir(&journal_dir),
+        None,
+        "hook-bit-epoch".to_string(),
+    );
+    registry.configure_runtime_attention(&runtime, &owner);
+    assert!(!bit(), "hook installed: the exit publish is awaited");
+    let _ = std::fs::remove_dir_all(&journal_dir);
+}
+
+#[test]
+fn a_hooked_death_is_reported_without_the_fallback_wait() {
+    // The sessions the insert and spawn roads build all carry the hook, so
+    // their deaths take the publish road, not the fallback: Exit follows
+    // EXIT_DRAIN even though the 2 s clock has barely started. (The exit
+    // thread publishes and marks alongside; either road reports it.)
+    let (_dir, registry, _journal) = tmp_delete_registry();
+    let owner = test_owner("tasks-nohook-user", "tasks-nohook-client");
+    let parent = "s.tasks.nohook.parent";
+    linked_creator(&registry, parent, &owner);
+    linked_child(&registry, "s.tasks.nohook.child", &owner, parent);
+    let runtime = registry
+        .live_runtime(parent, &owner)
+        .expect("parent runtime");
+    registry.configure_runtime_attention(&runtime, &owner);
+
+    let conn = attached_without_queue_capability(&registry, parent, 47, &owner);
+    let drain = || {
+        let mut events = Vec::new();
+        loop {
+            let batch = conn.pull_events();
+            if batch.is_empty() {
+                return events;
+            }
+            events.extend(batch.into_iter().map(|pending| pending.envelope.event));
+        }
+    };
+    let _ = drain();
+
+    runtime.mark_exited(Some(1));
+    if let Ok(mut stream) = runtime.lock_stream() {
+        let recent = std::time::Instant::now() - super::super::session_items::EXIT_DRAIN;
+        stream.last_publish = Some(recent);
+    }
+    // The exit thread publishes and marks alongside; poll for the report
+    // rather than assuming the thread already ran.
+    super::super::session_queue_fixtures::eventually("hooked death reported", || {
+        drain()
+            .into_iter()
+            .any(|event| matches!(event, SessionEvent::Exit { .. }))
+    });
 }

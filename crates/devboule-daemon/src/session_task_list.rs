@@ -83,10 +83,22 @@ impl super::SessionRegistry {
     }
 
     /// The same derive-and-publish without the debounce: a session's own
-    /// end publishes its cancellations now, not at the window's end. Marks
-    /// the exit publish settled whatever the derive answered, so the death
-    /// is never held for a list that cannot be built.
+    /// end publishes its cancellations now, not at the window's end. The
+    /// exit mark runs on every exit from this function — lock poisoned,
+    /// entry gone, still configuring — so no death waits out the fallback
+    /// for a list that was never going to be built.
     pub(crate) fn refresh_session_tasks_urgent(&self, session_id: &str) {
+        struct MarkSettled {
+            runtime: Option<Arc<SessionRuntime>>,
+        }
+        impl Drop for MarkSettled {
+            fn drop(&mut self) {
+                if let Some(runtime) = &self.runtime {
+                    runtime.mark_tasks_exit_published();
+                }
+            }
+        }
+        let mut settled = MarkSettled { runtime: None };
         let (runtime, children, parent_ended): (Arc<SessionRuntime>, Vec<Session>, bool) = {
             let Ok(map) = self.inner.lock() else {
                 return;
@@ -98,6 +110,7 @@ impl super::SessionRegistry {
                 return;
             }
             let runtime = entry.runtime();
+            settled.runtime = Some(Arc::clone(&runtime));
             runtime.mark_tasks_derived();
             let parent_ended = !entry.to_session().state.is_live();
             let children = map
@@ -108,7 +121,6 @@ impl super::SessionRegistry {
             (runtime, children, parent_ended)
         };
         self.publish_session_tasks(&runtime, session_id, &children, parent_ended, &[]);
-        runtime.mark_tasks_exit_published();
     }
 
     /// Derive with the stashed triggering rows drained in, cap for the

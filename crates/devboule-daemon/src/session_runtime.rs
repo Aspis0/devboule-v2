@@ -558,7 +558,7 @@ impl SessionRuntime {
                 agent_backlog_frames: 0,
                 scrollback: Scrollback::default(),
                 tasks_published: None,
-                tasks_exit_published: false,
+                tasks_exit_published: true,
                 output_closed: false,
                 process_exited: false,
                 exit_code: None,
@@ -3017,10 +3017,16 @@ impl SessionRuntime {
     }
 
     /// Install the task-list refresh observer. The registry installs it
-    /// where it installs the park hook: one place, at birth.
+    /// where it installs the park hook: one place, at birth. Installing
+    /// arms the exit wait: from here on the pull holds Exit for the exit
+    /// publish, so a runtime without a hook keeps the default `true` and
+    /// never waits.
     pub(crate) fn set_tasks_refresh_hook(&self, hook: TasksRefreshHook) {
         if let Ok(mut slot) = self.tasks_refresh_hook.lock() {
             *slot = Some(hook);
+        }
+        if let Ok(mut stream) = self.lock_stream() {
+            stream.tasks_exit_published = false;
         }
     }
 
