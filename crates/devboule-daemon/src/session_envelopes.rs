@@ -308,23 +308,32 @@ pub(super) fn child_finish_state(
 /// The A2A state one provider's stop reason means (`S5` decision 8, audit
 /// S5-07).
 ///
-/// The words the providers actually use, measured in this tree:
+/// The words the providers actually use, with the producer in this tree:
 ///
-/// * `end_turn` — ACP's normal stop, carried through from the agent's prompt
-///   response (`acp_view.rs`), and the Claude stream's own `stop_reason`,
-///   defaulted when it names none (`claude_view_result.rs:32`);
-/// * `stop` — pi's normal `turn_end` (`pi_view::turn_end` carries the
-///   message's own `stopReason`);
-/// * `completed` — codex's turn status (`codex_view.rs:1674`);
-/// * `interrupted` — codex's interrupted turn (`codex_view.rs:1682`);
-/// * `aborted` — pi's interrupted turn: the person's Stop, or an
-///   interrupt-and-replace that superseded the run;
-/// * `cancelled` / `canceled` — the daemon's own cancel path and ACP's
-///   `cancelled`;
-/// * anything else — `max_tokens`, `max_turn_requests`, `refusal`, pi's
-///   `unknown` default (`pi_view.rs:369`), a reason from a provider version
-///   this daemon has never seen — is `failed`. Failing closed is the point: a
-///   creator that reads `completed` will believe work happened.
+/// * `end_turn` — ACP's normal stop (`acp_view.rs:369`) and Claude's default
+///   when its result names none (`claude_view_result.rs:32`);
+/// * `stop` — pi's normal `turn_end` (`pi_view.rs:401`), and the daemon's own
+///   backstop for a run pi closes after a withheld tool iteration
+///   (`pi_turn_arbiter.rs:337`);
+/// * `completed` — codex's completed turn (`codex_view.rs:1704`) and the
+///   daemon's locally handled pi command (`pi_client.rs:3707`);
+/// * `interrupted` — codex's interrupted turn (`codex_view.rs:1712`) and
+///   Claude's error result marked interrupted (`claude_view_result.rs:22`);
+/// * `aborted` — pi's interrupted turn (`pi_view.rs:401`): the person's Stop,
+///   or an interrupt-and-replace that superseded the run;
+/// * `cancelled` / `canceled` — ACP's cancelled prompt response
+///   (`acp_view.rs:369`) and the daemon's own cancel path;
+/// * `failed` — codex's failed turn (`codex_view.rs:1733`) and the failures
+///   the daemon publishes itself (`pi_client.rs:4191`,
+///   `pi_turn_arbiter.rs:239`, `claude_client.rs:143`);
+/// * anything else is `failed`, the fail-closed direction: a truncated turn
+///   (pi's `length`, Claude's `max_tokens`), `max_turn_requests`, `refusal`,
+///   Claude's `tool_use` / `stop_sequence` / `pause_turn`, pi's `unknown`
+///   default when its `turn_end` names none (`pi_view.rs:404`), pi's
+///   `toolUse` iteration end (withheld live, `pi_turn_arbiter.rs:420`; a
+///   replay without its withheld marker would read `failed`), and the pi
+///   message states `pending` / `deferred`, which are not ends. A creator
+///   that reads `completed` will believe work happened.
 pub(super) fn stop_reason_state(stop_reason: &str) -> AgentTaskState {
     match stop_reason {
         "end_turn" | "completed" | "stop" => AgentTaskState::Completed,
