@@ -13,7 +13,7 @@ import {
 } from "../interruptedTool";
 import { entryFrame } from "./entryFrame";
 import { ChatImageThumbnails } from "./ChatImageThumbnails";
-import { ToolOutput } from "./ToolOutput";
+import { ToolOutput, type OutputExpansion } from "./ToolOutput";
 import {
   DIFF_PREVIEW_LINES,
   OUTPUT_PREVIEW_LINES,
@@ -25,9 +25,11 @@ import {
 export const ToolRow = memo(function ToolRow({
   item,
   transcriptEnded,
+  expansion,
 }: {
   item: ToolChatItem;
   transcriptEnded: boolean;
+  expansion?: OutputExpansion;
 }) {
   const { className, style } = entryFrame(item);
   const interrupted = isInterruptedToolStatus(item.status, transcriptEnded);
@@ -154,6 +156,7 @@ export const ToolRow = memo(function ToolRow({
                 lines={bodyLines}
                 collapsed={collapsed}
                 tone={stats === null ? "plain" : "diff"}
+                expansion={expansion}
               />
             ) : null}
             {isPlan && item.output.length > 0 ? (
@@ -169,7 +172,9 @@ export const ToolRow = memo(function ToolRow({
       ) : (
         <div className="workspace-chat-tool-summary">{line}</div>
       )}
-      {excerpt.length > 0 ? <ToolOutput lines={lines} collapsed={excerpt} tone="failure" /> : null}
+      {excerpt.length > 0 ? (
+        <ToolOutput lines={lines} collapsed={excerpt} tone="failure" expansion={expansion} />
+      ) : null}
     </div>
   );
 });

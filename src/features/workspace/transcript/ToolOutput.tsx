@@ -2,6 +2,12 @@ import { useId, useState } from "react";
 import { useCopyFeedback } from "../../../lib/useCopyFeedback";
 import { OUTPUT_RENDER_CAP, copyText, outputLineKind } from "./toolOutputView";
 
+/** The "show all" state of an output whose row a group may remount. */
+export interface OutputExpansion {
+  expanded: boolean;
+  setExpanded: (expanded: boolean) => void;
+}
+
 interface ToolOutputProps {
   /** The whole output. */
   lines: readonly string[];
@@ -9,11 +15,18 @@ interface ToolOutputProps {
   collapsed: readonly string[];
   /** `diff` colours added and removed lines; `failure` is the boxed excerpt. */
   tone: "plain" | "diff" | "failure";
+  /** Absent, the output keeps its own state. */
+  expansion?: OutputExpansion;
 }
 
 /** A tool's output clipped to a few lines, with a button that opens the rest. */
-export function ToolOutput({ lines, collapsed, tone }: ToolOutputProps) {
-  const [all, setAll] = useState(false);
+export function ToolOutput({ lines, collapsed, tone, expansion }: ToolOutputProps) {
+  const [ownAll, setOwnAll] = useState(false);
+  const all = expansion === undefined ? ownAll : expansion.expanded;
+  const toggleAll = () => {
+    if (expansion === undefined) setOwnAll((open) => !open);
+    else expansion.setExpanded(!expansion.expanded);
+  };
   const linesId = useId();
   const copy = useCopyFeedback({ resetAfterMs: 1500 });
   const [copyTruncated, setCopyTruncated] = useState(false);
@@ -71,7 +84,7 @@ export function ToolOutput({ lines, collapsed, tone }: ToolOutputProps) {
           className="workspace-chat-tool-more"
           aria-expanded={all}
           aria-controls={linesId}
-          onClick={() => setAll((open) => !open)}
+          onClick={toggleAll}
         >
           {all ? (
             "Show less"

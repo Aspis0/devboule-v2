@@ -6,6 +6,7 @@ import {
   isToolRunningStatus,
 } from "../interruptedTool";
 import { entryFrame } from "./entryFrame";
+import type { OutputExpansion } from "./ToolOutput";
 import { ToolRow } from "./ToolRow";
 
 export function ToolCallGroupRow({
@@ -16,6 +17,20 @@ export function ToolCallGroupRow({
   transcriptEnded: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  // A failed call mounts twice, inside the open group and outside the closed
+  // one, so each call's "show all" state lives here where both mounts see it.
+  const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(() => new Set());
+  const expansionFor = (id: string): OutputExpansion => ({
+    expanded: expandedIds.has(id),
+    setExpanded: (expanded) =>
+      setExpandedIds((current) => {
+        if (current.has(id) === expanded) return current;
+        const next = new Set(current);
+        if (expanded) next.add(id);
+        else next.delete(id);
+        return next;
+      }),
+  });
   const onToggle = useCallback((event: SyntheticEvent<HTMLDetailsElement>) => {
     setOpen(event.currentTarget.open);
   }, []);
@@ -53,7 +68,12 @@ export function ToolCallGroupRow({
         </summary>
         <div className="workspace-chat-tool-group-body">
           {bodyItems.map((item) => (
-            <ToolRow key={item.id} item={item} transcriptEnded={transcriptEnded} />
+            <ToolRow
+              key={item.id}
+              item={item}
+              transcriptEnded={transcriptEnded}
+              expansion={expansionFor(item.id)}
+            />
           ))}
         </div>
       </details>
@@ -62,7 +82,12 @@ export function ToolCallGroupRow({
       {open || !failed ? null : (
         <div className="workspace-chat-tool-group-failures">
           {failures.map((item) => (
-            <ToolRow key={item.id} item={item} transcriptEnded={transcriptEnded} />
+            <ToolRow
+              key={item.id}
+              item={item}
+              transcriptEnded={transcriptEnded}
+              expansion={expansionFor(item.id)}
+            />
           ))}
         </div>
       )}

@@ -116,6 +116,33 @@ describe("a group that holds a failure", () => {
     expect(container.querySelectorAll(".workspace-chat-tool-output.is-failure")).toHaveLength(1);
   });
 
+  it("keeps a failure's expanded output when the group opens and closes", async () => {
+    const container = await renderGroup(turn());
+    const failureLines = () =>
+      container.querySelectorAll(
+        ".workspace-chat-tool-output.is-failure .workspace-chat-tool-output-line",
+      );
+    const group = container.querySelector<HTMLDetailsElement>("details.workspace-chat-tool-group");
+    const summary = group?.querySelector("summary");
+    const expand = container.querySelector<HTMLButtonElement>(
+      ".workspace-chat-tool-output.is-failure .workspace-chat-tool-more",
+    );
+    if (group === null || summary === null || summary === undefined || expand === null) {
+      throw new Error("the group or its failure excerpt did not render");
+    }
+    expect(failureLines()).toHaveLength(3);
+    await act(async () => expand.click());
+    expect(failureLines()).toHaveLength(5);
+
+    await act(async () => summary.click());
+    expect(group.open).toBe(true);
+    expect(failureLines()).toHaveLength(5);
+
+    await act(async () => summary.click());
+    expect(group.open).toBe(false);
+    expect(failureLines()).toHaveLength(5);
+  });
+
   it("leaves a group with no failure as one closed line", async () => {
     const grouped = groupToolCalls([
       tool("a", { kind: "read", title: "a.ts" }),
