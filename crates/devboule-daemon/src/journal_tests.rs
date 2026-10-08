@@ -562,7 +562,19 @@ fn enqueue_drops_count_the_exact_payload_sizes() {
     while journal.queued.load(Ordering::Acquire)
         < JOURNAL_QUEUE_CAP.saturating_sub(CONTROL_RESERVE) as u64
     {
-        assert!(journal.try_append(output_record("s.drop", 1, 1, b"fill")));
+        // The fills exist only to occupy the queue: the writer is stuck on
+        // the held lock, and its failures for them must not move the ledger
+        // this test measures. An exit row carries no frame/byte ledger
+        // (output and envelope rows do), so the delta below is exactly the
+        // two refused enqueues.
+        assert!(journal.try_append(EventRecord {
+            session_id: "s.drop".to_string(),
+            generation: 1,
+            seq: 1,
+            kind: EventKind::Exit,
+            ts_ms: now_ms(),
+            payload: b"fill".to_vec(),
+        }));
     }
     let baseline = journal
         .degraded_sessions
