@@ -1577,7 +1577,10 @@ process.stdin.on("data", (chunk) => {
 });
 "#;
 
-/// A Pi that takes the steer, and echoes the frame it took.
+/// A Pi that takes a steer the way its RPC handler does first: the frame's
+/// `type` must be `steer`, and the text must be a `message` string. Anything
+/// else answers a refusal, and every answer echoes the frame it read so a
+/// test can assert the bytes.
 const FAKE_PI_STEERS: &str = r#"
 let buffered = "";
 process.stdin.on("data", (chunk) => {
@@ -1587,14 +1590,19 @@ process.stdin.on("data", (chunk) => {
     const line = buffered.slice(0, index);
     buffered = buffered.slice(index + 1);
     const frame = JSON.parse(line);
-    process.stdout.write(
-      JSON.stringify({
-        id: frame.id,
-        type: "response",
-        success: true,
-        received: line,
-      }) + "\n"
-    );
+    let answer;
+    if (frame.type !== "steer") {
+      answer = { id: frame.id, type: "response", success: false,
+                 error: `Unknown command: ${frame.type}`, received: line };
+    } else if (typeof frame.message !== "string") {
+      answer = { id: frame.id, type: "response", success: false,
+                 error: "Cannot read properties of undefined (reading 'startsWith')",
+                 received: line };
+    } else {
+      answer = { id: frame.id, type: "response", success: true,
+                 data: { disposition: "queued" }, received: line };
+    }
+    process.stdout.write(JSON.stringify(answer) + "\n");
   }
 });
 "#;

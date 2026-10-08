@@ -2635,11 +2635,12 @@ fn pi_prompt_frame(id: &str, text: &str, images: &[super::AcpImageBlock]) -> ser
     frame
 }
 
-/// The fields of one Pi steer frame: the text under the name Pi's RPC `steer`
-/// case reads it, and the literal empty `images` array. Deliberately unlike
-/// `pi_prompt_frame`, which omits `images` when it carries none. The `id` and
-/// the `type` come from [`pi_control_frame`], built with the id the round-trip
-/// registered.
+/// The fields of one Pi steer frame: the text under the `message` name Pi's
+/// RPC `steer` case reads it, and a literal empty `images` array the daemon
+/// always sends (pi's own client omits the key for a text-only steer; pi
+/// tolerates both). Deliberately unlike `pi_prompt_frame`, which omits
+/// `images` when it carries none. The `id` and the `type` come from
+/// [`pi_control_frame`], built with the id the round-trip registered.
 fn pi_steer_fields(text: &str) -> serde_json::Value {
     serde_json::json!({"message": text, "images": []})
 }
