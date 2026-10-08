@@ -458,12 +458,13 @@
 .workspace-conversation,
 .workspace-composer-track,
 .workspace-composer {
+  --lane-inset: 20px;
   width: 100%;
   max-width: 1060px;
   margin-left: auto;
   margin-right: auto;
-  padding-left: 20px;
-  padding-right: 20px;
+  padding-left: var(--lane-inset);
+  padding-right: var(--lane-inset);
   box-sizing: border-box;
 }
 
@@ -473,9 +474,9 @@
   min-height: 0;
   flex-direction: column;
   gap: var(--space-8);
-  /* The lane's 20 px sides are restated here because this block comes after
-     the shared lane rule and would otherwise reset them. */
-  padding: var(--space-4) 20px 0;
+  /* The lane's side inset is restated here because this block comes after
+     the shared lane rule and would otherwise reset it. */
+  padding: var(--space-4) var(--lane-inset) 0;
   overflow-y: auto;
   overflow-anchor: none;
 }
@@ -1326,9 +1327,9 @@
 }
 
 .workspace-agent-shell.has-turn-rail .workspace-composer {
-  /* The rail's gutter reserves 32 px inside the content box, which the lane
-     already inset 20 px; 52 px meets transcript text at the same axis. */
-  padding-left: 52px;
+  /* The rail's 32 px gutter sits inside the lane's inset, so the composer
+     text meets the transcript text on the same axis. */
+  padding-left: calc(var(--lane-inset) + 32px);
 }
 
 .workspace-composer-wrap:focus-within {

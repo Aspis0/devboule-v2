@@ -32,8 +32,11 @@ describe("PermissionCard computed styles", () => {
     expect(style.padding).toBe("10px 12px");
     // The hairline: the rule source carries the resolved token.
     expect(cardCss.rulesFor(".permission-card")).toContain("border: 1px solid #d4d2cc");
-    // The card caps at 640 px so two pending cards can sit side by side when wide.
+    // Two pending cards share a row when the lane is wide, and wrap to two rows
+    // when it is not: each takes a 280 px basis, caps at 640 px, and may shrink.
+    expect(cardCss.rulesFor(".permission-card")).toContain("flex: 1 1 280px");
     expect(cardCss.rulesFor(".permission-card")).toContain("max-width: 640px");
+    expect(cardCss.rulesFor(".permission-card")).toContain("min-width: 0");
     // The design surface's notice box shares the sheet and the ramp's floor.
     expect(cardCss.rulesFor(".permission-card-notice")).toContain("font-size: 12px");
     card.remove();

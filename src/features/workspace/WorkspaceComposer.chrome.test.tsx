@@ -102,6 +102,13 @@ describe("the composer's box", () => {
     expect(ring).toContain("outline-offset: -2px");
   });
 
+  it("insets its text by the lane inset plus the rail's gutter, on the transcript's axis", () => {
+    expect(workspaceCss.rulesFor(".workspace-composer")).toContain("--lane-inset: 20px");
+    expect(
+      workspaceCss.rulesFor(".workspace-agent-shell.has-turn-rail .workspace-composer"),
+    ).toContain("padding-left: calc(var(--lane-inset) + 32px)");
+  });
+
   it("outlines the composer in dashed accent while a file is dragged over it, and clears it on leave", async () => {
     expect(workspaceCss.rulesFor(".workspace-composer.is-drop-target")).toContain(
       `outline: 1px dashed ${workspaceCss.token("--accent")}`,

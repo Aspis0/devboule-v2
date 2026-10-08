@@ -2,8 +2,9 @@
    10/12 padding. Every size in this file is a token off the 12/14 ramp, so
    the card reads the same in both themes and at every host scale. */
 .permission-card {
-  flex: none;
+  flex: 1 1 280px;
   max-width: 640px;
+  min-width: 0;
   overflow: hidden;
   padding: var(--space-10) var(--space-12);
   background: var(--panel-card);
