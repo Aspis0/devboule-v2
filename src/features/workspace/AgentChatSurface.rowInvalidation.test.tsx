@@ -228,7 +228,9 @@ it("updates only tool rows when the transcript ends", async () => {
   await renderSurface({
     observedState: { type: "ended", generation: 1, code: 0, integrity: { kind: "complete" } },
   });
-  expect(counts()).toEqual({ ...unchanged, read: 1, execute: 1, group: 1 });
+  // A completed read's display does not depend on the transcript ending, so
+  // it is not parsed again.
+  expect(counts()).toEqual({ ...unchanged, read: 0, execute: 1, group: 1 });
   expect(container.querySelector(".workspace-chat-tool-group.is-interrupted")).not.toBeNull();
   expect(container.querySelector(".workspace-chat-tool-group.is-running")).toBeNull();
 });
