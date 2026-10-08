@@ -173,6 +173,38 @@ jobs:
       - name: Audit npm dependencies (High and above are blocking)
         run: pnpm audit --audit-level high
 
+      # Tag-only tail, deliberately last: branch pushes stop at the npm audit
+      # above, so an everyday push never pays a release build. The existing
+      # unfiltered `push:` trigger is what admits tags to this workflow.
+      - name: Build the NSIS installer (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: pnpm build:installer
+
+      - name: Assert exactly one NSIS installer and stage it under its release name (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem "target/release/bundle/nsis/*.exe")
+          if ($installers.Count -ne 1) {
+            throw "expected exactly one NSIS installer, found $($installers.Count)"
+          }
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          Copy-Item $installers[0].FullName "Devboule-Setup-$version-x64.exe"
+
+      - name: Extract this tag's release notes from the changelog (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: node scripts/release.mjs notes ${{ github.ref_name }} release-notes.md
+
+      - name: Upload the Windows release inputs (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: |
+            Devboule-Setup-*-x64.exe
+            release-notes.md
+          if-no-files-found: error
+
   polis-plugin:
     runs-on: windows-latest
 
@@ -639,3 +671,38 @@ jobs:
           name: Devboule-mac-arm64
           path: Devboule-mac-arm64.zip
           retention-days: 14
+
+  # Draft Release for a pushed vX.Y.Z tag. needs lists exactly the blocking
+  # jobs: the informational ignored tests and macos-app are excluded on
+  # purpose. The Release stays a draft for owner review and carries only the
+  # Windows installer; the Mac bundle joins a later slice.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, polis-plugin, oracle-core-check, macos, macos-cft]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download the Windows release inputs
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-release
+          path: artifact
+
+      - name: Require the installer and the notes before any release exists
+        run: |
+          set -euo pipefail
+          test -s artifact/release-notes.md
+          compgen -G "artifact/Devboule-Setup-*-x64.exe" > /dev/null
+
+      # Third-party action: full commit SHA with the released version in the
+      # comment, per the supply-chain pinning rule (v2.6.2).
+      - name: Create the draft release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          draft: true
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body_path: artifact/release-notes.md
+          files: artifact/Devboule-Setup-*-x64.exe
