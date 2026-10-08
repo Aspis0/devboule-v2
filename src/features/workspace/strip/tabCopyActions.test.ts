@@ -10,10 +10,7 @@ describe("single-tab copy actions", () => {
   it.each(["acp", "terminal"] as const)("copies the stable ID and display cwd for %s", (kind) => {
     const session = makeSession(kind);
     const [tab] = composeStripTabs([{ ...session, cwd: String.raw`\\?\C:\my project` }], []);
-    expect(buildTabCopyEntries(tab).map((entry) => entry.label)).toEqual([
-      "Copy session ID",
-      "Copy path",
-    ]);
+    expect(buildTabCopyEntries(tab).map((entry) => entry.label)).toEqual(["Copy path"]);
     expect(tabCopyValue(tab, "copy-session-id")).toBe(session.id);
     expect(tabCopyValue(tab, "copy-path")).toBe(String.raw`C:\my project`);
     expect(buildTabCopyEntries(tab).at(-1)?.separatorAfter).toBe(true);
@@ -21,7 +18,7 @@ describe("single-tab copy actions", () => {
 
   it.each([undefined, ""])("omits Copy path with cwd %s", (cwd) => {
     const [tab] = composeStripTabs([{ ...makeSession("acp"), cwd }], []);
-    expect(buildTabCopyEntries(tab).map((entry) => entry.key)).toEqual(["copy-session-id"]);
+    expect(buildTabCopyEntries(tab)).toEqual([]);
     expect(tabCopyValue(tab, "copy-path")).toBeNull();
   });
 
@@ -37,7 +34,6 @@ describe("single-tab copy actions", () => {
   it("adds Copy branch name only to session tabs with an eligible branch", () => {
     const [tab] = composeStripTabs([makeSession("acp")], []);
     expect(buildTabCopyEntries(tab, "feature/work").map((entry) => entry.key)).toEqual([
-      "copy-session-id",
       "copy-branch-name",
     ]);
     expect(buildTabCopyEntries(tab, "feature/work").at(-1)?.separatorAfter).toBe(true);

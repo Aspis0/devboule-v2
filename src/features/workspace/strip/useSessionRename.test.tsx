@@ -101,13 +101,13 @@ describe("the tab menu's rename entry", () => {
     await act(async () => flow.flow().openMenu("agent-one"));
     const entries = flow.flow().menu?.entries ?? [];
     expect(entries.map((entry) => entry.label)).toEqual([
-      "Copy session ID",
       "Copy branch name",
       "Rename",
       "Close to the left",
       "Close to the right",
       "Close other tabs",
       "Close",
+      "Copy session ID",
       "Archive",
       "Delete",
     ]);

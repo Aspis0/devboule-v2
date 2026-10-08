@@ -32,25 +32,22 @@ afterEach(async () => {
 });
 
 describe("tab menu copy actions", () => {
-  it.each(["agent-one", "session-2"])(
-    "copies %s without closing its tab or session",
-    async (id) => {
-      await renderWorkspace();
-      await rightClick(id);
-      await clickMenuEntry("Copy session ID");
-      expect(writeText).toHaveBeenCalledExactlyOnceWith(id);
-      expect(menuLabels()).toContain("Copied");
-      const status = menu().parentElement?.querySelector('[role="status"]');
-      expect(status?.textContent).toBe("Session ID copied");
-      expect(status?.previousElementSibling).toBe(menu());
-      expect(status?.closest('[role="menu"]')).toBeNull();
-      expect(sessionClose).not.toHaveBeenCalled();
-      expect(sessionStop).not.toHaveBeenCalled();
-      expect(tabElement(id)).not.toBeNull();
-      await act(async () => vi.advanceTimersByTimeAsync(1500));
-      expect(menuLabels()).toContain("Copy session ID");
-    },
-  );
+  it.each(["agent-one"])("copies %s without closing its tab or session", async (id) => {
+    await renderWorkspace();
+    await rightClick(id);
+    await clickMenuEntry("Copy session ID");
+    expect(writeText).toHaveBeenCalledExactlyOnceWith(id);
+    expect(menuLabels()).toContain("Copied");
+    const status = menu().parentElement?.querySelector('[role="status"]');
+    expect(status?.textContent).toBe("Session ID copied");
+    expect(status?.previousElementSibling).toBe(menu());
+    expect(status?.closest('[role="menu"]')).toBeNull();
+    expect(sessionClose).not.toHaveBeenCalled();
+    expect(sessionStop).not.toHaveBeenCalled();
+    expect(tabElement(id)).not.toBeNull();
+    await act(async () => vi.advanceTimersByTimeAsync(1500));
+    expect(menuLabels()).toContain("Copy session ID");
+  });
 
   it.each([
     [String.raw`\\?\C:\my project\working directory`, String.raw`C:\my project\working directory`],
@@ -59,10 +56,9 @@ describe("tab menu copy actions", () => {
     vi.mocked(sessionsList).mockResolvedValue(defaultSessions().map((row) => ({ ...row, cwd })));
     await renderWorkspace();
     await rightClick("agent-one");
-    expect(menuLabels().slice(0, 2)).toEqual(["Copy session ID", "Copy path"]);
+    expect(menuLabels().slice(0, 2)).toEqual(["Copy path", "Copy branch name"]);
     const rows = [...menu().querySelectorAll('[role="menuitem"]')];
-    expect(rows[2].textContent).toBe("Copy branch name");
-    expect(rows[2].nextElementSibling?.getAttribute("role")).toBe("separator");
+    expect(rows[1].nextElementSibling?.getAttribute("role")).toBe("separator");
     await clickMenuEntry("Copy path");
     expect(writeText).toHaveBeenCalledExactlyOnceWith(expected);
     expect(menuLabels()).toContain("Copy session ID");
@@ -77,24 +73,27 @@ describe("tab menu copy actions", () => {
     expect(menuLabels()).toContain("Copy branch name");
   });
 
-  it.each([shiftF10, contextMenuKey])("opens copy actions from the keyboard", async (open) => {
+  it.each([shiftF10, contextMenuKey])("copies the session ID from the keyboard", async (open) => {
     await renderWorkspace();
-    await open("session-2");
+    await open("agent-one");
+    // Arrow keys skip the disabled entries, so step until the target has focus.
+    for (let step = 0; step < 12; step += 1) {
+      if (document.activeElement?.textContent === "Copy session ID") break;
+      await act(async () =>
+        document.activeElement?.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
+        ),
+      );
+    }
     expect(document.activeElement?.textContent).toBe("Copy session ID");
     await act(async () => (document.activeElement as HTMLButtonElement).click());
-    expect(writeText).toHaveBeenCalledExactlyOnceWith("session-2");
-    await act(async () =>
-      document.activeElement?.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
-      ),
-    );
-    expect(document.activeElement?.textContent).toBe("Copy branch name");
-    await act(async () =>
-      document.activeElement?.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
-      ),
-    );
-    expect(document.activeElement).toBe(tabElement("session-2"));
+    expect(writeText).toHaveBeenCalledExactlyOnceWith("agent-one");
+  });
+
+  it("offers no session ID on a terminal tab", async () => {
+    await renderWorkspace();
+    await rightClick("session-2");
+    expect(menuLabels()).not.toContain("Copy session ID");
   });
 
   it.each([
@@ -109,7 +108,7 @@ describe("tab menu copy actions", () => {
       defaultSessions().map((row) => ({ ...row, cwd: "C:/project" })),
     );
     await renderWorkspace();
-    await rightClick("session-2");
+    await rightClick("agent-one");
     await clickMenuEntry(label);
     expect(menuLabels()).toContain("Copy failed");
     expect(menu().parentElement?.querySelector('[role="status"]')?.textContent).toBe(announcement);
@@ -138,7 +137,6 @@ describe("tab menu copy actions", () => {
     await rightClick("agent-one");
     await clickMenuEntry("Copy session ID");
     await rightClick("session-2");
-    expect(menuLabels()).toContain("Copy session ID");
     expect(menuLabels()).not.toContain("Copied");
   });
 });

@@ -36,7 +36,12 @@ export function buildTabCloseEntries(
     { key: "right", label: "Close to the right", disabled: index === tabCount - 1 },
     { key: "others", label: "Close other tabs", disabled: tabCount <= 1 },
     { key: "close", label: "Close", disabled: false },
-    ...(archivable ? [{ key: "archive" as const, label: "Archive", disabled: false }] : []),
+    ...(archivable
+      ? [
+          { key: "copy-session-id" as const, label: "Copy session ID", disabled: false },
+          { key: "archive" as const, label: "Archive", disabled: false },
+        ]
+      : []),
     { key: "delete", label: "Delete", disabled: false, destructive: true },
   ];
 }

@@ -46,9 +46,6 @@ export function buildTabCopyEntries(
   resolveBrowserAddress?: (browserId: string) => string | null,
 ): TabMenuEntry[] {
   const entries: TabMenuEntry[] = [];
-  if (tab.type === "session") {
-    entries.push({ key: "copy-session-id", label: "Copy session ID", disabled: false });
-  }
   const address = browserAddress(tab, resolveBrowserAddress);
   if (address !== null) {
     entries.push({ key: "copy-address", label: "Copy address", disabled: false });

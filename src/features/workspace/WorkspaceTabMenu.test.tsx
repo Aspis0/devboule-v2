@@ -55,12 +55,12 @@ describe("the tab context menu", () => {
     await rightClick("agent-one");
 
     expect(menuLabels()).toEqual([
-      "Copy session ID",
       "Copy branch name",
       "Close to the left",
       "Close to the right",
       "Close other tabs",
       "Close",
+      "Copy session ID",
       "Archive",
       "Delete",
     ]);
@@ -70,8 +70,8 @@ describe("the tab context menu", () => {
     expect(deleteEntry?.className).toContain("workspace-menu-option-destructive");
     expect([...menu().children].map((row) => row.getAttribute("role"))).toEqual([
       "menuitem",
-      "menuitem",
       "separator",
+      "menuitem",
       "menuitem",
       "menuitem",
       "menuitem",
@@ -92,8 +92,7 @@ describe("the tab context menu", () => {
 
     await shiftF10("session-2");
 
-    expect(menuLabels()).toHaveLength(7);
-    expect(document.activeElement?.textContent).toBe("Copy session ID");
+    expect(menuLabels()).toHaveLength(6);
     expect(document.activeElement?.getAttribute("role")).toBe("menuitem");
   });
 
@@ -102,7 +101,7 @@ describe("the tab context menu", () => {
 
     await contextMenuKey("session-2");
 
-    expect(menuLabels()).toHaveLength(7);
+    expect(menuLabels()).toHaveLength(6);
     expect(document.activeElement?.getAttribute("role")).toBe("menuitem");
   });
 
@@ -119,7 +118,7 @@ describe("the tab context menu", () => {
       chip.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
     });
 
-    expect(menuLabels()).toHaveLength(7);
+    expect(menuLabels()).toHaveLength(6);
   });
 
   it("Close removes an agent tab without stopping its session", async () => {
@@ -147,7 +146,7 @@ describe("the tab context menu", () => {
     await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
 
     await rightClick("agent-one");
-    expect(menuLabels().slice(-3)).toEqual(["Close", "Archive", "Delete"]);
+    expect(menuLabels().slice(-4)).toEqual(["Close", "Copy session ID", "Archive", "Delete"]);
   });
 
   it("Archive on a running agent asks the archive question and stops nothing until confirmed", async () => {
@@ -234,7 +233,7 @@ describe("the tab context menu", () => {
   it("the menu closes when its anchor's generation changes, and focus returns to the anchor", async () => {
     await renderWorkspace();
     await rightClick("session-2");
-    expect(menuLabels()).toHaveLength(7);
+    expect(menuLabels()).toHaveLength(6);
 
     await pushSnapshots([
       liveSnapshot("agent-one", "Agent one", "acp"),
@@ -310,13 +309,13 @@ describe("the tab menu rename", () => {
     await rightClick("agent-one");
 
     expect(menuLabels()).toEqual([
-      "Copy session ID",
       "Copy branch name",
       "Rename",
       "Close to the left",
       "Close to the right",
       "Close other tabs",
       "Close",
+      "Copy session ID",
       "Archive",
       "Delete",
     ]);
@@ -325,7 +324,6 @@ describe("the tab menu rename", () => {
         row.getAttribute("role") === "separator" ? "separator" : row.textContent,
       ),
     ).toEqual([
-      "Copy session ID",
       "Copy branch name",
       "separator",
       "Rename",
@@ -334,6 +332,7 @@ describe("the tab menu rename", () => {
       "Close to the right",
       "Close other tabs",
       "Close",
+      "Copy session ID",
       "Archive",
       "separator",
       "Delete",
