@@ -207,7 +207,6 @@ export function parseCargoLockVersions(text) {
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CHANGELOG_PATH = join(repoRoot, "CHANGELOG.md");
-const CARGO_LOCK_PATH = join(repoRoot, "Cargo.lock");
 
 // tauri.conf.json is canonical because Tauri takes the shipped app version
 // from it; the other eight files must equal it or one release would carry
@@ -243,10 +242,6 @@ const BOT_IDENTITY = [
 // one set.
 const RELEASE_PATHS = [...VERSION_SOURCES, "Cargo.lock", "CHANGELOG.md"];
 
-function git(args, options = {}) {
-  return execFileSync("git", args, { cwd: repoRoot, encoding: "utf8", ...options });
-}
-
 function readVersionOf(fullPath) {
   const text = readFileSync(fullPath, "utf8");
   if (fullPath.endsWith(".json")) {
@@ -278,10 +273,10 @@ function writeVersionTo(fullPath, version) {
   );
 }
 
-function readSourceVersions() {
+function readSourceVersions(root) {
   const versions = {};
   for (const source of VERSION_SOURCES) {
-    versions[source] = readVersionOf(join(repoRoot, source));
+    versions[source] = readVersionOf(join(root, source));
   }
   return versions;
 }
@@ -311,10 +306,10 @@ function assertReviewed(reviewed, version) {
   assertValidSection(section, version);
 }
 
-function reviewEditor() {
+function reviewEditor(root) {
   let editor;
   try {
-    editor = git(["var", "GIT_EDITOR"]).trim();
+    editor = execFileSync("git", ["var", "GIT_EDITOR"], { cwd: root, encoding: "utf8" }).trim();
   } catch {
     editor = "";
   }
@@ -329,7 +324,7 @@ function reviewEditor() {
   return editor;
 }
 
-function reviewDraft(draft, version) {
+function reviewDraft(draft, version, root) {
   const fromFile = process.env.RELEASE_NOTES_FILE;
   let reviewed;
   if (fromFile !== undefined && fromFile !== "") {
@@ -341,10 +336,10 @@ function reviewDraft(draft, version) {
   } else {
     const draftPath = join(mkdtempSync(join(tmpdir(), "devboule-release-")), "release-notes.md");
     writeFileSync(draftPath, draft);
-    const result = spawnSync(`${reviewEditor()} "${draftPath}"`, {
+    const result = spawnSync(`${reviewEditor(root)} "${draftPath}"`, {
       shell: true,
       stdio: "inherit",
-      cwd: repoRoot,
+      cwd: root,
     });
     if (result.status !== 0) {
       throw new Error(
@@ -368,8 +363,18 @@ function restoreReleasePaths(git) {
   );
 }
 
-function runRelease(kind) {
-  const canonical = readVersionOf(join(repoRoot, "src-tauri/tauri.conf.json"));
+// options.root and options.runner are the seam the committed test fixture
+// uses: the flow runs against a temp repository with cargo stubbed, so no
+// test can ever reach the real repo or the real lockfile.
+export function runRelease(kind, options = {}) {
+  const root = options.root ?? repoRoot;
+  const runner = options.runner ?? execFileSync;
+  const git = (args, gitOptions = {}) =>
+    runner("git", args, { cwd: root, encoding: "utf8", ...gitOptions });
+  const changelogPath = join(root, "CHANGELOG.md");
+  const cargoLockPath = join(root, "Cargo.lock");
+
+  const canonical = readVersionOf(join(root, "src-tauri/tauri.conf.json"));
   const next = bumpVersion(canonical, kind);
 
   const branch = git(["rev-parse", "--abbrev-ref", "HEAD"]).trim();
@@ -388,7 +393,7 @@ function runRelease(kind) {
     throw new Error(`HEAD ${head} is not origin/main ${originMain}`);
   }
 
-  const drift = findVersionDrift(readSourceVersions(), canonical);
+  const drift = findVersionDrift(readSourceVersions(root), canonical);
   if (drift.length > 0) {
     throw new Error(`version drift from the canonical ${canonical}: ${drift.join(", ")}`);
   }
@@ -414,28 +419,28 @@ function runRelease(kind) {
   });
 
   // The reviewed block is settled before any tracked file is touched.
-  const reviewed = reviewDraft(makeChangelogSection(next, utcDate(), commits), next);
+  const reviewed = reviewDraft(makeChangelogSection(next, utcDate(), commits), next, root);
 
   const subject = `Release ${tag}`;
   try {
     for (const source of VERSION_SOURCES) {
-      writeVersionTo(join(repoRoot, source), next);
+      writeVersionTo(join(root, source), next);
     }
     writeFileSync(
-      CHANGELOG_PATH,
-      insertChangelogSection(readFileSync(CHANGELOG_PATH, "utf8"), reviewed),
+      changelogPath,
+      insertChangelogSection(readFileSync(changelogPath, "utf8"), reviewed),
     );
 
-    execFileSync("cargo", ["update", "--workspace", "--offline"], {
-      cwd: repoRoot,
+    runner("cargo", ["update", "--workspace", "--offline"], {
+      cwd: root,
       stdio: "inherit",
     });
 
-    const written = findVersionDrift(readSourceVersions(), next);
+    const written = findVersionDrift(readSourceVersions(root), next);
     if (written.length > 0) {
       throw new Error(`sources did not all land on ${next}: ${written.join(", ")}`);
     }
-    const lock = parseCargoLockVersions(readFileSync(CARGO_LOCK_PATH, "utf8"));
+    const lock = parseCargoLockVersions(readFileSync(cargoLockPath, "utf8"));
     const lockVersions = {};
     for (const name of LOCK_PACKAGES) {
       lockVersions[name] = lock[name];
