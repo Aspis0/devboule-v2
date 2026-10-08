@@ -33,6 +33,8 @@ fn a_stop_reason_maps_to_the_a2a_word_or_fails_closed() {
             "the daemon's own cancel",
         ),
         ("canceled", AgentTaskState::Canceled, "the app's spelling"),
+        ("stop", AgentTaskState::Completed, "pi's normal stop"),
+        ("aborted", AgentTaskState::Canceled, "pi's interrupted turn"),
         ("refusal", AgentTaskState::Failed, "ACP's refusal"),
         ("max_tokens", AgentTaskState::Failed, "a truncated turn"),
         (
@@ -348,6 +350,39 @@ fn the_finish_state_follows_the_providers_own_stop_reason() {
     let quiet = SessionRuntime::new();
     assert_eq!(
         child_finish_state(&session, &quiet).0,
+        AgentTaskState::Canceled
+    );
+}
+
+/// A pi child whose last end is its normal `stop` reaches its creator
+/// finished, not failed; a person's Stop (`aborted`) is cancelled. An
+/// `error` end stays a failure.
+#[test]
+fn a_pi_child_that_stopped_normally_reaches_its_creator_finished() {
+    let runtime = SessionRuntime::new();
+    let session = ended_record("child-1", "alex").to_session();
+    let stopped = |reason: &str| {
+        runtime.publish_agent_event(
+            SessionEvent::AgentFinished {
+                stop_reason: reason.to_string(),
+                model_id: None,
+                usage: None,
+            },
+            None,
+        );
+    };
+    stopped("stop");
+    let (state, note) = child_finish_state(&session, &runtime);
+    assert_eq!(state, AgentTaskState::Completed);
+    assert_eq!(note, None, "a normal stop needs no note");
+    stopped("error");
+    assert_eq!(
+        child_finish_state(&session, &runtime).0,
+        AgentTaskState::Failed
+    );
+    stopped("aborted");
+    assert_eq!(
+        child_finish_state(&session, &runtime).0,
         AgentTaskState::Canceled
     );
 }

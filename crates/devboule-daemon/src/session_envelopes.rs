@@ -299,8 +299,12 @@ pub(super) fn child_finish_state(
 /// * `end_turn` — ACP's normal stop, carried through from the agent's prompt
 ///   response (`acp_view.rs`), and the Claude stream's own `stop_reason`,
 ///   defaulted when it names none (`claude_view_result.rs:32`);
+/// * `stop` — pi's normal `turn_end` (`pi_view::turn_end` carries the
+///   message's own `stopReason`);
 /// * `completed` — codex's turn status (`codex_view.rs:1674`);
 /// * `interrupted` — codex's interrupted turn (`codex_view.rs:1682`);
+/// * `aborted` — pi's interrupted turn: the person's Stop, or an
+///   interrupt-and-replace that superseded the run;
 /// * `cancelled` / `canceled` — the daemon's own cancel path and ACP's
 ///   `cancelled`;
 /// * anything else — `max_tokens`, `max_turn_requests`, `refusal`, pi's
@@ -309,8 +313,8 @@ pub(super) fn child_finish_state(
 ///   creator that reads `completed` will believe work happened.
 pub(super) fn stop_reason_state(stop_reason: &str) -> AgentTaskState {
     match stop_reason {
-        "end_turn" | "completed" => AgentTaskState::Completed,
-        "interrupted" | "cancelled" | "canceled" => AgentTaskState::Canceled,
+        "end_turn" | "completed" | "stop" => AgentTaskState::Completed,
+        "interrupted" | "cancelled" | "canceled" | "aborted" => AgentTaskState::Canceled,
         _ => AgentTaskState::Failed,
     }
 }
