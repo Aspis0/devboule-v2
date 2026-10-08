@@ -11,16 +11,9 @@ import {
 } from "../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import { ErrorText } from "../../components/ErrorText";
-import type {
-  Cap,
-  DevicesReply,
-  PairingCode,
-  PeerRole,
-  PeerRow,
-  PendingPairing,
-  RemoteState,
-} from "../../types/ipc";
+import type { Cap, DevicesReply, PeerRole, PeerRow, RemoteState } from "../../types/ipc";
 import { nextCaps } from "./peerCaps";
+import { readPairingSession, updatePairingSession, usePairingSession } from "./pairingSession";
 import { DeviceGlyph } from "./devices/DeviceGlyph";
 import { DeviceKebab } from "./devices/DeviceKebab";
 import "./devices.css";
@@ -392,6 +385,20 @@ function PeerCard({
   );
 }
 
+/** Every device the panel lists now: the baseline a newly shown code is measured against. */
+function listedDeviceIds(reply: DevicesReply | null): string[] {
+  if (reply === null) return [];
+  return [...reply.peers, ...reply.pending].map((entry) => entry.deviceId);
+}
+
+/**
+ * The daemon spends a code on the first pairing it parks or writes, so a device
+ * that was not listed when the code appeared arrived through that code.
+ */
+function codeWasSpent(baseline: readonly string[], reply: DevicesReply): boolean {
+  return [...reply.peers, ...reply.pending].some((entry) => !baseline.includes(entry.deviceId));
+}
+
 export function DevicesPanel() {
   const [reply, setReply] = useState<DevicesReply | null>(null);
   const [listError, setListError] = useState<ErrorSentence | null>(null);
@@ -404,17 +411,14 @@ export function DevicesPanel() {
   const [refreshSeq, setRefreshSeq] = useState(0);
 
   const [showRole, setShowRole] = useState<PeerRole>("client");
-  const [code, setCode] = useState<PairingCode | null>(null);
   const [codeError, setCodeError] = useState<ErrorSentence | null>(null);
-  const [starting, setStarting] = useState(false);
+  // The code, the waiting card and the enter draft outlive this panel: a page
+  // switch unmounts it, and the shown code must come back when it is mounted again.
+  const { code, starting, enterOpen, enterAddress, enterCode, enterBusy, waiting } =
+    usePairingSession();
 
-  const [enterOpen, setEnterOpen] = useState(false);
-  const [enterAddress, setEnterAddress] = useState("");
-  const [enterCode, setEnterCode] = useState("");
   const [enterRole, setEnterRole] = useState<PeerRole>("client");
-  const [enterBusy, setEnterBusy] = useState(false);
   const [enterError, setEnterError] = useState<ErrorSentence | null>(null);
-  const [waiting, setWaiting] = useState<PendingPairing | null>(null);
   const [pairedNotice, setPairedNotice] = useState<PeerRow | null>(null);
 
   const [confirmBusy, setConfirmBusy] = useState<string | null>(null);
@@ -443,10 +447,6 @@ export function DevicesPanel() {
   // state. The poll keeps its own `cancelled` flag on top of this because it
   // also has a timer to stop.
   const mountedRef = useRef(true);
-
-  // Mirror of `waiting` for the poll callback, which is created once per effect
-  // run and would otherwise close over a stale value.
-  const waitingRef = useRef<PendingPairing | null>(null);
 
   // Where the post-commit effect should move focus, if anywhere.
   const focusTargetRef = useRef<"pending" | "paired" | null>(null);
@@ -495,7 +495,15 @@ export function DevicesPanel() {
           // (`epoch`). Either way what is on screen is the newer truth, and
           // this reply must not overwrite it.
           if (cancelled || epoch !== epochRef.current) return;
-          const awaited = waitingRef.current;
+          const session = readPairingSession();
+          if (
+            session.code !== null &&
+            session.code.expiresAt > Date.now() &&
+            codeWasSpent(session.codeBaseline, fresh)
+          ) {
+            updatePairingSession({ code: null, codeBaseline: [] });
+          }
+          const awaited = session.waiting;
           const confirmed =
             awaited === null
               ? undefined
@@ -505,7 +513,7 @@ export function DevicesPanel() {
           if (confirmed !== undefined) {
             // The far side accepted. The waiting card has done its job, and the
             // row the daemon wrote is what the user should be looking at.
-            setWaiting(null);
+            updatePairingSession({ waiting: null });
             setPairedNotice(confirmed);
           }
           setReply(fresh);
@@ -545,10 +553,6 @@ export function DevicesPanel() {
       mountedRef.current = false;
     };
   }, []);
-
-  useEffect(() => {
-    waitingRef.current = waiting;
-  }, [waiting]);
 
   // No dependency array: this has to run after every commit, because the whole
   // point is to observe the DOM the commit produced.
@@ -593,23 +597,25 @@ export function DevicesPanel() {
 
   async function showCode() {
     if (starting) return;
-    setStarting(true);
+    const baseline = listedDeviceIds(reply);
+    updatePairingSession({ starting: true });
     setCodeError(null);
     try {
       const fresh = await pairingStart(showRole);
-      if (!mountedRef.current) return;
-      setCode(fresh);
-      setNow(Date.now());
+      // The daemon has already replaced any earlier code, so the answer is kept
+      // even when the panel has unmounted in the meantime.
+      updatePairingSession({ code: fresh, codeBaseline: baseline });
+      if (mountedRef.current) setNow(Date.now());
     } catch (cause) {
       if (!mountedRef.current) return;
       setCodeError(errorSentence(cause));
     } finally {
-      if (mountedRef.current) setStarting(false);
+      updatePairingSession({ starting: false });
     }
   }
 
   function cancelCode() {
-    setCode(null);
+    updatePairingSession({ code: null, codeBaseline: [] });
     setCodeError(null);
   }
 
@@ -623,28 +629,28 @@ export function DevicesPanel() {
       setEnterError({ sentence: ADDRESS_ERROR, detail: null });
       return;
     }
-    setEnterBusy(true);
+    updatePairingSession({ enterBusy: true });
     setEnterError(null);
     setPairedNotice(null);
     try {
       const outcome = await pairingComplete(enterAddress.trim(), enterCode, enterRole);
-      if (!mountedRef.current) return;
+      // Written to the store even when the panel has unmounted: the far side has
+      // already parked or accepted the pairing, and the waiting card must say so.
       if (outcome.type === "pairing_pending") {
-        setWaiting(outcome.peer);
-        setNow(Date.now());
+        updatePairingSession({ waiting: outcome.peer });
+        if (mountedRef.current) setNow(Date.now());
       } else {
-        setPairedNotice(outcome.peer);
-        setEnterCode("");
-        setEnterOpen(false);
+        if (mountedRef.current) setPairedNotice(outcome.peer);
+        updatePairingSession({ enterCode: "", enterOpen: false });
       }
-      refresh();
+      if (mountedRef.current) refresh();
     } catch (cause) {
       // The daemon's pairing errors are already sentences meant for a person
       // (a wrong code says so), so they are shown as they arrive.
       if (!mountedRef.current) return;
       setEnterError(errorSentence(cause));
     } finally {
-      if (mountedRef.current) setEnterBusy(false);
+      updatePairingSession({ enterBusy: false });
     }
   }
 
@@ -837,7 +843,7 @@ export function DevicesPanel() {
             type="button"
             className="settings-device-action"
             disabled={showBusy}
-            onClick={() => setEnterOpen((open) => !open)}
+            onClick={() => updatePairingSession({ enterOpen: !enterOpen })}
           >
             Enter a code
           </button>
@@ -883,7 +889,7 @@ export function DevicesPanel() {
                 placeholder={`100.64.0.1:${DEFAULT_PEER_PORT}`}
                 autoComplete="off"
                 spellCheck={false}
-                onChange={(event) => setEnterAddress(event.target.value)}
+                onChange={(event) => updatePairingSession({ enterAddress: event.target.value })}
               />
               <span className="device-field-hint">
                 host:port — an IPv6 address goes in brackets, like [fd7a:115c:a1e0::1]:
@@ -903,7 +909,9 @@ export function DevicesPanel() {
                 spellCheck={false}
                 inputMode="text"
                 maxLength={CODE_LENGTH}
-                onChange={(event) => setEnterCode(sanitizePairingCode(event.target.value))}
+                onChange={(event) =>
+                  updatePairingSession({ enterCode: sanitizePairingCode(event.target.value) })
+                }
               />
             </label>
             <RoleChoice
@@ -921,7 +929,7 @@ export function DevicesPanel() {
                 className="settings-device-action"
                 disabled={enterBusyFlow}
                 onClick={() => {
-                  setEnterOpen(false);
+                  updatePairingSession({ enterOpen: false });
                   setEnterError(null);
                 }}
               >
@@ -946,7 +954,7 @@ export function DevicesPanel() {
             <button
               type="button"
               className="settings-device-action"
-              onClick={() => setWaiting(null)}
+              onClick={() => updatePairingSession({ waiting: null })}
             >
               {waitingExpired ? "Dismiss" : "Cancel"}
             </button>

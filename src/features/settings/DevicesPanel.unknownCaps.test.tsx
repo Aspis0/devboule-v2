@@ -20,6 +20,7 @@ vi.mock("../../lib/tauri", async (importOriginal) => {
 import { devicesList, peerSetCaps } from "../../lib/tauri";
 import type { DevicesReply, PeerRow, SelfInfo } from "../../types/ipc";
 import { DevicesPanel } from "./DevicesPanel";
+import { resetPairingSession } from "./pairingSession";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -89,6 +90,7 @@ describe("unknown capability round trip", () => {
 
   afterEach(async () => {
     if (root !== null) await act(async () => root?.unmount());
+    resetPairingSession();
     root = null;
     container.remove();
     vi.clearAllMocks();

@@ -45,6 +45,7 @@ import {
   remoteLabel,
   sanitizePairingCode,
 } from "./DevicesPanel";
+import { resetPairingSession } from "./pairingSession";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -268,6 +269,7 @@ describe("devices panel", () => {
 
   afterEach(async () => {
     await unmountPanel();
+    resetPairingSession();
     container.remove();
     vi.useRealTimers();
     vi.clearAllMocks();
