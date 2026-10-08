@@ -20,7 +20,7 @@ impl ClaudeView {
             title: envelope
                 .get("description")
                 .and_then(Value::as_str)
-                .map(|text| redact_line(text)),
+                .map(redact_line),
             subagent_type: envelope
                 .get("subagent_type")
                 .and_then(Value::as_str)
