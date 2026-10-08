@@ -344,7 +344,9 @@ function runRelease(kind) {
   git([...BOT_IDENTITY, "commit", "-m", subject]);
   git([...BOT_IDENTITY, "tag", "-a", tag, "-m", subject]);
 
-  console.log(`git push origin main ${tag}`);
+  // One atomic push: if main moved since the preflight, the tag must not
+  // reach the remote on its own without the commit that labels.
+  console.log(`git push --atomic origin main ${tag}`);
 }
 
 function runNotes(tag, outputPath) {
