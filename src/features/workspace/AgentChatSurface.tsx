@@ -1,6 +1,7 @@
 import {
   memo,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -583,9 +584,13 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     observedState?.generation,
   ]);
 
-  // The workspace owns the Tasks tab, so the controller leaves this surface here.
-  useEffect(() => {
-    if (agent !== null) onAgentChange?.(sessionId, agent);
+  // The workspace owns the Tasks tab. The layout effect reports before paint, and
+  // the cleanup clears the report when this surface goes away, so the workspace
+  // never holds a controller that is gone.
+  useLayoutEffect(() => {
+    if (agent === null) return undefined;
+    onAgentChange?.(sessionId, agent);
+    return () => onAgentChange?.(sessionId, null);
   }, [agent, onAgentChange, sessionId]);
 
   // The freshest roster handed down: the archive act reads this per close, so

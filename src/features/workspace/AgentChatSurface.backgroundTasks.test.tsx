@@ -129,6 +129,26 @@ describe("AgentChatSurface background tasks", () => {
     expect(pill()).toBeNull();
   });
 
+  it("reports its controller on mount and clears the report when it unmounts", async () => {
+    const onAgentChange = vi.fn();
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="agent-1"
+          onAgentChange={onAgentChange}
+        />,
+      );
+    });
+    await act(async () => undefined);
+
+    expect(onAgentChange).toHaveBeenLastCalledWith("agent-1", expect.anything());
+    await act(async () => root.unmount());
+
+    expect(onAgentChange).toHaveBeenLastCalledWith("agent-1", null);
+  });
+
   it("draws no pill when the surface has no Tasks tab to open", async () => {
     await renderSurface();
 
