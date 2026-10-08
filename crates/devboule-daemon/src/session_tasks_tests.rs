@@ -8,8 +8,8 @@ use devboule_protocol::{
 use serde_json::json;
 
 use super::{
-    background_launch_failed, command_title, derive_tasks, summarize_child, truncate_title,
-    HeldChild, TaskRow, TASKS_MAX_ROWS, TASK_TITLE_MAX_CHARS,
+    background_launch_failed, cap_published, command_title, derive_tasks, summarize_child,
+    truncate_title, HeldChild, TaskRow, TASKS_MAX_ROWS, TASK_TITLE_MAX_CHARS,
 };
 
 fn held(id: &str, state: SessionState) -> HeldChild {
@@ -192,6 +192,26 @@ mod derive {
     }
 
     #[test]
+    fn a_short_bearer_token_is_masked_by_its_header_context() {
+        // Five characters fall under every length check: only the
+        // `Header: Bearer` shape names it a credential. The header masks
+        // its value word, so the scheme word itself goes with it.
+        let title = command_title("curl -H 'Authorization: Bearer SHORT' https://h.test/x");
+        assert!(!title.contains("SHORT"), "{title}");
+        assert!(title.contains("[redacted]"), "{title}");
+        assert!(title.contains("https://h.test/x"), "{title}");
+    }
+
+    #[test]
+    fn a_bare_scheme_word_without_a_header_is_left_alone() {
+        // No `Header:` context, no length shape: the pre-pass must not eat
+        // ordinary words. (The argv pass may still mask after `token` — its
+        // own one-sided heuristic, pinned in its own file.)
+        let masked = crate::process_argv_redact::mask_scheme_credentials("echo bearer bad news");
+        assert_eq!(masked, "echo bearer bad news", "{masked}");
+    }
+
+    #[test]
     fn backgrounded_provider_tasks_read_as_agent_rows() {
         let started = SessionEvent::AgentTaskStarted {
             task_id: "task-1".to_string(),
@@ -316,27 +336,37 @@ mod derive {
     }
 
     #[test]
-    fn the_list_is_capped_by_dropping_the_oldest_finished_first() {
+    fn the_publish_cap_keeps_running_newest_first_and_counts_the_rest() {
         let mut rows = vec![row(background_call("toolu_run"), 1)];
         for index in 0..TASKS_MAX_ROWS {
             let id = format!("toolu_old_{index:03}");
             rows.push(row(background_call(&id), 2));
             rows.push(row(update(&id, "failed"), 3));
         }
-        let tasks = tasks_of(&[], &rows);
-        assert_eq!(tasks.len(), TASKS_MAX_ROWS);
+        let derived = tasks_of(&[], &rows);
+        assert_eq!(
+            derived.len(),
+            TASKS_MAX_ROWS + 1,
+            "the derive keeps everything; the cap is a publish concern"
+        );
+        let (kept, omitted) = cap_published(derived);
+        assert_eq!(kept.len(), TASKS_MAX_ROWS);
+        assert_eq!(omitted, 1);
         assert!(
-            tasks.iter().any(|t| t.id == "toolu_run"),
-            "the running row is never dropped for the cap"
+            kept.iter().any(|t| t.id == "toolu_run"),
+            "running rows sort first and are never the omitted one"
         );
         assert!(
-            tasks.iter().all(|t| t.id != "toolu_old_000"),
+            kept.iter().all(|t| t.id != "toolu_old_000"),
             "the oldest finished row leaves first"
         );
         assert!(
-            tasks.iter().any(|t| t.id == "toolu_old_199"),
+            kept.iter().any(|t| t.id == "toolu_old_199"),
             "the newest finished row stays"
         );
+        let (kept, omitted) = cap_published(vec![]);
+        assert!(kept.is_empty());
+        assert_eq!(omitted, 0);
     }
 
     #[test]

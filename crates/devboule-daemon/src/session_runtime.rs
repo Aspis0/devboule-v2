@@ -240,10 +240,16 @@ pub(crate) struct SessionRuntime {
     /// can change this session's task list, at the moment it publishes.
     /// Installed by the registry at birth, beside the park hook.
     tasks_refresh_hook: Mutex<Option<TasksRefreshHook>>,
-    /// Background tool calls still owed a terminal update, by tool call id.
+    /// Background tool calls still owed a terminal update, oldest first.
     /// A result for any other call cannot change the task list, so only
     /// these arm the refresh — every tool result does not re-derive it.
-    background_tool_calls: Mutex<HashSet<String>>,
+    /// Bounded like the published list: the oldest launch leaves first.
+    background_tool_calls: Mutex<VecDeque<String>>,
+    /// Triggering rows deferred by the debounce, oldest first: the trailing
+    /// run merges them into its derive, so a trigger inside the window is
+    /// never lost to a journal that has not landed it yet. Bounded — the
+    /// journal is the primary source, this covers the commit gap.
+    tasks_pending_extra: Mutex<Vec<(SessionEvent, u64)>>,
     /// Task-list revisions handed out, counting from 1 per session life.
     /// The publisher drops a snapshot that is not newer than the last one
     /// it sent, so overlapping derives cannot leave a stale list behind.
@@ -546,7 +552,7 @@ impl SessionRuntime {
                 agent_backlog_bytes: 0,
                 agent_backlog_frames: 0,
                 scrollback: Scrollback::default(),
-                tasks_published_revision: 0,
+                tasks_published: None,
                 output_closed: false,
                 process_exited: false,
                 exit_code: None,
@@ -610,7 +616,8 @@ impl SessionRuntime {
             attention_hooks: Mutex::new(None),
             permission_park_hook: Mutex::new(None),
             tasks_refresh_hook: Mutex::new(None),
-            background_tool_calls: Mutex::new(HashSet::new()),
+            background_tool_calls: Mutex::new(VecDeque::new()),
+            tasks_pending_extra: Mutex::new(Vec::new()),
             tasks_revision: AtomicU64::new(0),
             tasks_last_refresh: Mutex::new(None),
             tasks_trailing_pending: AtomicBool::new(false),
@@ -1615,20 +1622,38 @@ impl SessionRuntime {
     /// Transient like the queue snapshot above — derived, never journaled,
     /// never backlogged — including its cap gate: a client that did not
     /// offer `session.tasks` cannot parse the event and is never sent it.
-    /// A revision that is not newer than the last one sent is dropped, so
-    /// overlapping derives cannot leave a stale list behind.
-    pub(crate) fn publish_tasks_snapshot(&self, tasks: Vec<SessionTask>, revision: u64) {
+    /// A snapshot that is not newer than the last one sent — same epoch and
+    /// an older or equal revision — is dropped, so overlapping derives
+    /// cannot leave a stale list behind. A new epoch restarts the gate.
+    pub(crate) fn publish_tasks_snapshot(
+        &self,
+        epoch: String,
+        tasks: Vec<SessionTask>,
+        revision: u64,
+        omitted: u32,
+    ) {
         let Ok(mut stream) = self.lock_stream() else {
             return;
         };
         if stream.output_closed {
             return;
         }
-        if revision <= stream.tasks_published_revision {
+        let stale = stream
+            .tasks_published
+            .as_ref()
+            .is_some_and(|(last_epoch, last_revision)| {
+                *last_epoch == epoch && revision <= *last_revision
+            });
+        if stale {
             return;
         }
-        stream.tasks_published_revision = revision;
-        let event = SessionEvent::TasksSnapshot { revision, tasks };
+        stream.tasks_published = Some((epoch.clone(), revision));
+        let event = SessionEvent::TasksSnapshot {
+            epoch,
+            revision,
+            tasks,
+            omitted,
+        };
         for attachment in stream.observers.values_mut() {
             if !attachment.session_tasks {
                 continue;
@@ -2171,16 +2196,24 @@ impl SessionRuntime {
     fn tasks_refresh_due(&self, event: &SessionEvent) -> bool {
         match event {
             SessionEvent::AgentTaskStarted { .. }
-            | SessionEvent::AgentTaskNotification { .. }
             | SessionEvent::AgentBackgroundTasksChanged { .. } => true,
+            SessionEvent::AgentTaskNotification {
+                task_id,
+                tool_use_id,
+                ..
+            } => {
+                self.disarm_background(task_id);
+                if let Some(id) = tool_use_id {
+                    self.disarm_background(id);
+                }
+                true
+            }
             SessionEvent::AgentToolCall {
                 tool_call_id,
                 background: Some(true),
                 ..
             } => {
-                if let Ok(mut armed) = self.background_tool_calls.lock() {
-                    armed.insert(tool_call_id.clone());
-                }
+                self.arm_background(tool_call_id);
                 true
             }
             SessionEvent::AgentToolUpdate {
@@ -2188,15 +2221,43 @@ impl SessionRuntime {
                 status,
                 ..
             } => {
-                crate::session_tasks::background_launch_failed(status.as_deref())
-                    && self
-                        .background_tool_calls
-                        .lock()
-                        .map(|mut armed| armed.remove(tool_call_id))
-                        .unwrap_or(false)
+                if !crate::session_tasks::background_launch_failed(status.as_deref()) {
+                    return false;
+                }
+                self.disarm_background(tool_call_id)
             }
             _ => false,
         }
+    }
+
+    /// Arm one background launch, oldest first and bounded: past the cap
+    /// the oldest launch leaves, its row already ended or the next trigger
+    /// re-arms it.
+    fn arm_background(&self, tool_call_id: &str) {
+        if let Ok(mut armed) = self.background_tool_calls.lock() {
+            if !armed.contains(&tool_call_id.to_string()) {
+                armed.push_back(tool_call_id.to_string());
+            }
+            while armed.len() > crate::session_tasks::TASKS_MAX_ROWS {
+                armed.pop_front();
+            }
+        }
+    }
+
+    /// Disarm one background launch: its task ended, by notification or by
+    /// failed launch. True when the id was armed — the refresh fires only
+    /// for a launch this runtime saw start.
+    fn disarm_background(&self, tool_call_id: &str) -> bool {
+        self.background_tool_calls
+            .lock()
+            .map(|mut armed| {
+                armed
+                    .iter()
+                    .position(|id| id == tool_call_id)
+                    .map(|index| armed.remove(index).is_some())
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false)
     }
 
     /// Whether a task-list derive may run now: outside the debounce window.
@@ -2250,6 +2311,55 @@ impl SessionRuntime {
             *last = None;
         }
         self.tasks_trailing_pending.store(false, Ordering::SeqCst);
+    }
+
+    /// Test seam: the armed background launches, oldest first.
+    #[cfg(test)]
+    pub(crate) fn test_armed_background_calls(&self) -> Vec<String> {
+        self.background_tool_calls
+            .lock()
+            .map(|armed| armed.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Test seam: rows stashed for the trailing run.
+    #[cfg(test)]
+    pub(crate) fn test_pending_tasks_extra(&self) -> Vec<(SessionEvent, u64)> {
+        self.tasks_pending_extra
+            .lock()
+            .map(|pending| pending.clone())
+            .unwrap_or_default()
+    }
+
+    /// Stash triggering rows for the scheduled trailing run: the journal
+    /// may not have landed them yet when it derives. Bounded — the journal
+    /// is the primary source, this covers the commit gap.
+    pub(crate) fn stash_tasks_extra(&self, extra: &[(SessionEvent, u64)]) {
+        if extra.is_empty() {
+            return;
+        }
+        if let Ok(mut pending) = self.tasks_pending_extra.lock() {
+            pending.extend(extra.iter().cloned());
+            while pending.len() > super::session_task_list::TASKS_PENDING_EXTRA_MAX {
+                pending.remove(0);
+            }
+        }
+    }
+
+    /// Drain the stashed triggering rows for one derive.
+    pub(crate) fn take_tasks_pending(&self) -> Vec<(SessionEvent, u64)> {
+        self.tasks_pending_extra
+            .lock()
+            .map(|mut pending| std::mem::take(&mut *pending))
+            .unwrap_or_default()
+    }
+
+    /// Record a derive that bypassed the debounce gate (the urgent exit
+    /// path), so the window stays coherent after it.
+    pub(crate) fn mark_tasks_derived(&self) {
+        if let Ok(mut last) = self.tasks_last_refresh.lock() {
+            *last = Some(Instant::now());
+        }
     }
 
     /// The next task-list revision for this session, counting from 1.

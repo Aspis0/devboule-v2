@@ -72,14 +72,14 @@ pub fn derive_tasks(
     fold.finish()
 }
 
-/// A command line with credentials masked, then cut to a row: the redactor
-/// reads argv, so the line is split the way the process probe splits one.
-/// Shell quotes come off first — an agent quotes its headers (`-H
-/// 'Authorization: Bearer …'`), and a quote glued to either half hides the
-/// header shape from the redactor. The row is a redacted display form, not
-/// the exact line.
+/// A command line with credentials masked, then cut to a row. The
+/// two-word credential pass runs on the original string first — splitting
+/// would destroy the `Bearer SHORT` shape — then the line is split the way
+/// the process probe splits one, with shell quotes off, through the argv
+/// redactor. The row is a redacted display form, not the exact line.
 pub fn command_title(line: &str) -> String {
-    let bare: String = line.replace(['\'', '"'], "");
+    let masked = crate::process_argv_redact::mask_scheme_credentials(line);
+    let bare: String = masked.replace(['\'', '"'], "");
     let argv: Vec<String> = bare.split_whitespace().map(str::to_string).collect();
     truncate_title(&redact_argv(&argv).join(" "))
 }
@@ -487,28 +487,23 @@ impl<'a> Fold<'a> {
     fn finish(mut self) -> Vec<SessionTask> {
         sort(&mut self.agents);
         sort(&mut self.commands);
-        let mut rows: Vec<SessionTask> = self.agents.into_iter().chain(self.commands).collect();
-        // Running rows are never dropped for the cap: the oldest finished
-        // rows leave first, oldest across both blocks.
-        let running = rows
-            .iter()
-            .filter(|row| row.state == SessionTaskState::Running)
-            .count();
-        let keep = TASKS_MAX_ROWS.saturating_sub(running);
-        let mut aged: Vec<(u64, String)> = rows
-            .iter()
-            .filter(|row| row.state != SessionTaskState::Running)
-            .map(|row| (row.started_at_ms, row.id.clone()))
-            .collect();
-        aged.sort();
-        let drop_ids: HashSet<String> = aged
-            .iter()
-            .take(aged.len().saturating_sub(keep))
-            .map(|(_, id)| id.clone())
-            .collect();
-        rows.retain(|row| row.state == SessionTaskState::Running || !drop_ids.contains(&row.id));
-        rows
+        self.agents.into_iter().chain(self.commands).collect()
     }
+}
+
+/// Cap rows for one publish: running first, newest first, the rest counted.
+/// Newest is by start time with the id breaking ties, so the choice is
+/// deterministic.
+pub fn cap_published(mut rows: Vec<SessionTask>) -> (Vec<SessionTask>, u32) {
+    rows.sort_by(|a, b| {
+        let live =
+            (a.state == SessionTaskState::Running).cmp(&(b.state == SessionTaskState::Running));
+        live.reverse()
+            .then_with(|| (b.started_at_ms, &b.id).cmp(&(a.started_at_ms, &a.id)))
+    });
+    let omitted = rows.len().saturating_sub(TASKS_MAX_ROWS) as u32;
+    rows.truncate(TASKS_MAX_ROWS);
+    (rows, omitted)
 }
 
 fn reindex(tasks: &[SessionTask]) -> HashMap<String, usize> {

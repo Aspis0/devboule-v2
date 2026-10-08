@@ -1904,11 +1904,13 @@ pub enum DaemonMessage {
         sessions: Vec<Session>,
     },
     /// The reply to [`ClientMessage::SessionTasksGet`]: the session's
-    /// background-task list as derived at the moment of the request.
+    /// background-task list as derived at the moment of the request,
+    /// capped for the frame like the event, with the rows left out counted.
     SessionTasks {
         id: u64,
         session_id: String,
         tasks: Vec<crate::SessionTask>,
+        omitted: u32,
     },
     Projects {
         id: u64,

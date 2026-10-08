@@ -1264,7 +1264,7 @@ impl DaemonClient {
         }
     }
 
-    pub fn session_tasks(&self, session_id: &str) -> Result<Vec<SessionTask>, DaemonError> {
+    pub fn session_tasks(&self, session_id: &str) -> Result<(Vec<SessionTask>, u32), DaemonError> {
         // The capability gate is first, for the reason
         // [`DaemonClient::require_agreed`] gives: a daemon from before
         // protocol 28 cannot deserialize this variant, and the connection
@@ -1275,7 +1275,7 @@ impl DaemonClient {
             id,
             session_id: session_id.to_string(),
         })? {
-            DaemonMessage::SessionTasks { tasks, .. } => Ok(tasks),
+            DaemonMessage::SessionTasks { tasks, omitted, .. } => Ok((tasks, omitted)),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
         }

@@ -42,6 +42,7 @@ fn the_tasks_request_round_trips_through_its_wire_shape() {
         id: 3,
         session_id: "s.1".to_string(),
         tasks: sample_tasks(),
+        omitted: 0,
     };
     let json = serde_json::to_value(&reply).expect("json");
     let back: DaemonMessage = serde_json::from_value(json).expect("deserialize");
@@ -51,8 +52,10 @@ fn the_tasks_request_round_trips_through_its_wire_shape() {
 #[test]
 fn the_tasks_snapshot_tag_is_its_snake_case_variant() {
     let event = SessionEvent::TasksSnapshot {
+        epoch: "epoch-1".to_string(),
         revision: 2,
         tasks: sample_tasks(),
+        omitted: 0,
     };
     assert_eq!(event.kind(), "tasks_snapshot");
     let json: serde_json::Value = serde_json::to_value(&event).expect("json");

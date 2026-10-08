@@ -1630,9 +1630,13 @@ export type SessionEvent =
    */
   | {
       type: "tasks_snapshot";
+      /** The daemon process; a changed epoch restarts the revision gate. */
+      epoch: string;
       /** Counts this session's task states from 1; drop one not newer than applied. */
       revision: number;
       tasks: SessionTask[];
+      /** Rows past the publish cap the snapshot left out. */
+      omitted: number;
     }
   /** The session's whole follow-up queue; `revision` drops an older one. */
   | {

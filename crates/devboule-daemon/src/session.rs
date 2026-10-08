@@ -829,6 +829,10 @@ pub struct SessionRegistry {
     /// One follow-up queue per live session, in memory only: a restart starts
     /// every session with an empty queue and nothing is ever journaled.
     queues: Arc<session_queue::SessionQueues>,
+    /// This daemon process's instance id, shared with the queue epoch: task
+    /// revisions count per process, so the epoch tells a client when the
+    /// counter restarted.
+    tasks_epoch: String,
     paths: RuntimePaths,
     journal: Option<Arc<Journal>>,
     /// The bytes of prompt attachments, on disk under the runtime dir. Files
@@ -998,7 +1002,8 @@ impl SessionRegistry {
     pub fn new(paths: RuntimePaths, journal: Option<Arc<Journal>>, epoch: String) -> Self {
         let registry = Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
-            queues: session_queue::SessionQueues::new(epoch),
+            queues: session_queue::SessionQueues::new(epoch.clone()),
+            tasks_epoch: epoch,
             attachments: AttachmentStore::new(&paths.dir),
             uploads: crate::attachment_upload::AttachmentUploads::default(),
             paths,
@@ -1701,11 +1706,23 @@ impl SessionRegistry {
         let tasks_registry = self.clone();
         let tasks_session = runtime.session_id.clone();
         runtime.set_tasks_refresh_hook(Arc::new(move |event| {
-            let extra = event
-                .map(|event| (event.clone(), crate::agent_activity::wall_now_ms()))
-                .into_iter()
-                .collect::<Vec<_>>();
-            tasks_registry.refresh_session_tasks(&tasks_session, &extra);
+            // `None` is the session's own end: it publishes urgently, past
+            // the debounce, so the cancellations land with the death — on
+            // its own thread, because the dying thread may hold the
+            // registry lock (a reaper under it deadlocks on a re-lock).
+            match event {
+                Some(event) => {
+                    let extra = [(event.clone(), crate::agent_activity::wall_now_ms())];
+                    tasks_registry.refresh_session_tasks(&tasks_session, &extra);
+                }
+                None => {
+                    let registry = tasks_registry.clone();
+                    let session = tasks_session.clone();
+                    let _ = std::thread::Builder::new()
+                        .name("tasks-exit-refresh".to_string())
+                        .spawn(move || registry.refresh_session_tasks_urgent(&session));
+                }
+            }
         }));
     }
 

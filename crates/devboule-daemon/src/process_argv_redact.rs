@@ -59,7 +59,59 @@ const SECRET_NAME_SUFFIXES: &[&str] = &[
     "credentials",
 ];
 
-/// Mask secret-looking argv: the value after a secret flag (any dash count,
+/// Mask two-word credentials (`Bearer SHORT`) in a raw command line, before
+/// any splitting: splitting destroys the two-word shape the argv redactor's
+/// single-arg guard needs, and a short token falls under every length check
+/// after it. Only a scheme word standing after a `Header:` word is masked —
+/// a bare `token` elsewhere is an ordinary word, and masking it would eat
+/// innocent titles. The value span is replaced whole, quotes included.
+pub(crate) fn mask_scheme_credentials(line: &str) -> String {
+    const SCHEMES: [&str; 3] = ["bearer", "basic", "token"];
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut start: Option<usize> = None;
+    for (index, cell) in line.char_indices() {
+        if cell.is_whitespace() {
+            if let Some(open) = start.take() {
+                spans.push((open, index));
+            }
+        } else if start.is_none() {
+            start = Some(index);
+        }
+    }
+    if let Some(open) = start {
+        spans.push((open, line.len()));
+    }
+    let mut masked: Vec<(usize, usize)> = Vec::new();
+    for (position, &(from, to)) in spans.iter().enumerate() {
+        let word = line[from..to].trim_matches(['\'', '"']);
+        if !SCHEMES.contains(&word.to_ascii_lowercase().as_str()) {
+            continue;
+        }
+        let header = position
+            .checked_sub(1)
+            .is_some_and(|before| line[spans[before].0..spans[before].1].ends_with(':'));
+        if !header {
+            continue;
+        }
+        if let Some(&span) = spans.get(position + 1) {
+            masked.push(span);
+        }
+    }
+    let mut out = String::with_capacity(line.len());
+    let mut cursor = 0;
+    for &(from, to) in &spans {
+        out.push_str(&line[cursor..from]);
+        if masked.contains(&(from, to)) {
+            out.push_str("[redacted]");
+        } else {
+            out.push_str(&line[from..to]);
+        }
+        cursor = to;
+    }
+    out.push_str(&line[cursor..]);
+    out
+}
+
 /// any case), a glued `-pVALUE`, a `user:password` pair after `-u`/`--user`,
 /// the value half of a credential-shaped `name=value`, the value of
 /// a credential header (`Authorization: Bearer …`, a cookie, an API-key

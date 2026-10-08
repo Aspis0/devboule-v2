@@ -15,22 +15,27 @@ use std::time::{Duration, Instant};
 /// At most one derive per session per window; a trigger inside the window
 /// schedules one trailing refresh, so the last state is always published.
 pub(crate) const TASKS_REFRESH_DEBOUNCE: Duration = Duration::from_millis(500);
+/// Triggering rows stashed for the trailing run, at most: the journal is
+/// the primary source, this covers the commit gap.
+pub(crate) const TASKS_PENDING_EXTRA_MAX: usize = 64;
 
 impl super::SessionRegistry {
     /// Answer a `SessionTasksGet`: the parent must be this owner's, then the
-    /// list is derived fresh from the roster and the journals.
+    /// list is derived fresh from the roster and the journals, capped for
+    /// the frame like the event.
     pub(crate) fn session_tasks(
         &self,
         session_id: &str,
         owner: &OwnerId,
-    ) -> Result<Vec<SessionTask>, WireError> {
+    ) -> Result<(Vec<SessionTask>, u32), WireError> {
         let sessions = self.list(owner)?;
         if !sessions.iter().any(|session| session.id == session_id) {
             return Err(not_found());
         }
         let held = self.held_children(session_id, &sessions);
         let parent_end = self.parent_end_ts(session_id, &sessions);
-        self.derive_with_held(session_id, held, parent_end, &[])
+        let tasks = self.derive_with_held(session_id, held, parent_end, &[])?;
+        Ok(crate::session_tasks::cap_published(tasks))
     }
 
     /// Re-derive and publish the list after a change. Best effort and silent:
@@ -57,10 +62,12 @@ impl super::SessionRegistry {
             }
             let runtime = entry.runtime();
             // The debounce lives on the runtime because it is per session:
-            // a trigger inside the window schedules one trailing refresh
-            // instead of deriving, so a burst costs a leading derive plus
-            // one trailing one.
+            // a trigger inside the window stashes its rows and schedules
+            // one trailing refresh instead of deriving, so a burst costs a
+            // leading derive plus one trailing one — and the triggering row
+            // is never lost to a journal that has not landed it yet.
             if !runtime.tasks_derive_due() {
+                runtime.stash_tasks_extra(extra);
                 runtime.schedule_tasks_trailing(self.clone(), session_id.to_string());
                 return;
             }
@@ -72,17 +79,59 @@ impl super::SessionRegistry {
                 .collect();
             (runtime, children, parent_ended)
         };
+        self.publish_session_tasks(&runtime, session_id, &children, parent_ended, extra);
+    }
+
+    /// The same derive-and-publish without the debounce: a session's own
+    /// end publishes its cancellations now, not at the window's end.
+    pub(crate) fn refresh_session_tasks_urgent(&self, session_id: &str) {
+        let (runtime, children, parent_ended): (Arc<SessionRuntime>, Vec<Session>, bool) = {
+            let Ok(map) = self.inner.lock() else {
+                return;
+            };
+            let Some(entry) = map.get(session_id) else {
+                return;
+            };
+            if entry.is_configuring() {
+                return;
+            }
+            let runtime = entry.runtime();
+            runtime.mark_tasks_derived();
+            let parent_ended = !entry.to_session().state.is_live();
+            let children = map
+                .values()
+                .map(|entry| entry.to_session())
+                .filter(|session| session.created_by.as_deref() == Some(session_id))
+                .collect();
+            (runtime, children, parent_ended)
+        };
+        self.publish_session_tasks(&runtime, session_id, &children, parent_ended, &[]);
+    }
+
+    /// Derive with the stashed triggering rows drained in, cap for the
+    /// frame, and publish when the revision is newer than the last send.
+    fn publish_session_tasks(
+        &self,
+        runtime: &Arc<SessionRuntime>,
+        session_id: &str,
+        children: &[Session],
+        parent_ended: bool,
+        extra: &[(SessionEvent, u64)],
+    ) {
         let parent_end = parent_ended.then(|| {
             runtime
                 .tasks_ended_wall_ms()
                 .unwrap_or_else(crate::agent_activity::wall_now_ms)
         });
-        let held = self.held_children(session_id, &children);
+        let held = self.held_children(session_id, children);
         let revision = runtime.next_tasks_revision();
-        let Ok(tasks) = self.derive_with_held(session_id, held, parent_end, extra) else {
+        let mut stashed = runtime.take_tasks_pending();
+        stashed.extend(extra.iter().cloned());
+        let Ok(tasks) = self.derive_with_held(session_id, held, parent_end, &stashed) else {
             return;
         };
-        runtime.publish_tasks_snapshot(tasks, revision);
+        let (tasks, omitted) = crate::session_tasks::cap_published(tasks);
+        runtime.publish_tasks_snapshot(self.tasks_epoch.clone(), tasks, revision, omitted);
     }
 
     /// Clear a scheduled trailing refresh: the scheduled run starts now, so

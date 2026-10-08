@@ -381,10 +381,11 @@ pub(super) fn dispatch_session(
         // The capability gate ran in dispatch; the owner scope is inside.
         ClientMessage::SessionTasksGet { id, session_id } => {
             match state.sessions.session_tasks(&session_id, owner) {
-                Ok(tasks) => DaemonMessage::SessionTasks {
+                Ok((tasks, omitted)) => DaemonMessage::SessionTasks {
                     id,
                     session_id,
                     tasks,
+                    omitted,
                 },
                 Err(error) => DaemonMessage::Error(error.with_id(id)),
             }

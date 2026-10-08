@@ -1319,10 +1319,16 @@ pub enum SessionEvent {
     /// `revision` counts this session's task states from 1, so a client
     /// drops a snapshot older than one it already applied: overlapping
     /// derives can publish out of order, and the publisher drops anything
-    /// that is not newer than the last one it sent.
+    /// that is not newer than the last one it sent. `epoch` names the daemon
+    /// process the revision belongs to — a restart resets the counter, so a
+    /// client that sees a new epoch drops its recorded revision rather than
+    /// comparing across two counters. `omitted` counts rows past the publish
+    /// cap the snapshot left out; the daemon's own state keeps them.
     TasksSnapshot {
+        epoch: String,
         revision: u64,
         tasks: Vec<SessionTask>,
+        omitted: u32,
     },
     /// Current screen state, delivered on attach instead of a replay of past
     /// frames. The daemon holds a headless terminal emulator,
