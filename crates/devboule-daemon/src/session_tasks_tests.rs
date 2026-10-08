@@ -483,6 +483,41 @@ mod command_titles {
     }
 
     #[test]
+    fn ordinary_words_after_a_scheme_word_survive_redaction() {
+        for (line, expected) in [
+            ("Fix the token parser", "Fix the token parser"),
+            ("Bearer of bad news", "Bearer of bad news"),
+            ("Basic usage guide", "Basic usage guide"),
+            ("ls token dir", "ls token dir"),
+            ("echo bearer bad news", "echo bearer bad news"),
+            (
+                "git commit -m \"Fix token parsing\"",
+                "git commit -m Fix token parsing",
+            ),
+        ] {
+            assert_eq!(command_title(line), expected, "{line}");
+        }
+    }
+
+    #[test]
+    fn the_accepted_redaction_costs_stay_as_they_are() {
+        // The token floor, quote stripping and the -u pair mask are
+        // one-sided by design; the pin keeps them from drifting.
+        for (line, expected) in [
+            ("RefactorAuthTokenValidatorForStaging", "[redacted]"),
+            ("He said \"hello\"", "He said hello"),
+            ("deploy -u https://staging", "deploy -u [redacted]"),
+        ] {
+            assert_eq!(command_title(line), expected, "{line}");
+        }
+    }
+
+    #[test]
+    fn a_scheme_value_with_a_separator_masks() {
+        assert_eq!(command_title("token sk-live_x"), "token [redacted]");
+    }
+
+    #[test]
     fn a_started_row_keeps_its_redacted_title_when_the_set_arrives_later() {
         // The started frame writes the row first and the set never
         // overwrites it, so the event itself has to carry the redaction.

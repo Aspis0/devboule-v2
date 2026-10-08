@@ -61,14 +61,15 @@ const SECRET_NAME_SUFFIXES: &[&str] = &[
     "credentials",
 ];
 
-/// Mask two-word credentials (`Bearer SHORT`) in a raw command line, before
+/// Mask two-word credentials (`Bearer abc123`) in a raw command line, before
 /// any splitting: splitting destroys the two-word shape the argv redactor's
 /// single-arg guard needs, and a short token falls under every length check
 /// after it. The word after a scheme word — `bearer`, `basic` or `token`,
-/// in any case, with or without a trailing colon — is the credential
-/// wherever that scheme word stands; with nothing after it, the scheme
-/// word is an ordinary word. The value span is replaced whole, quotes
-/// included.
+/// in any case, with or without a trailing colon — is masked only when it
+/// reads as a credential: a digit, one of `- _ . = + /`, or sixteen
+/// characters, so `Bearer of bad news` survives while `Bearer abc123`
+/// does not. With nothing after it, the scheme word is an ordinary word.
+/// The value span is replaced whole, quotes included.
 pub(crate) fn mask_scheme_credentials(line: &str) -> String {
     const SCHEMES: [&str; 3] = ["bearer", "basic", "token"];
     let mut spans: Vec<(usize, usize)> = Vec::new();
@@ -92,8 +93,10 @@ pub(crate) fn mask_scheme_credentials(line: &str) -> String {
         if !SCHEMES.contains(&scheme.to_ascii_lowercase().as_str()) {
             continue;
         }
-        if let Some(&span) = spans.get(position + 1) {
-            masked.push(span);
+        if let Some(&value) = spans.get(position + 1) {
+            if looks_like_credential(&line[value.0..value.1]) {
+                masked.push(value);
+            }
         }
     }
     let mut out = String::with_capacity(line.len());
@@ -109,6 +112,16 @@ pub(crate) fn mask_scheme_credentials(line: &str) -> String {
     }
     out.push_str(&line[cursor..]);
     out
+}
+
+/// A value that can carry a credential rather than be ordinary prose: it
+/// holds a digit or a credential separator, or it is long enough to be a
+/// token.
+fn looks_like_credential(value: &str) -> bool {
+    value
+        .chars()
+        .any(|cell| cell.is_ascii_digit() || "-_.=+/".contains(cell))
+        || value.chars().count() >= 16
 }
 
 /// One free-text line with credentials masked: the scheme pass runs on the
