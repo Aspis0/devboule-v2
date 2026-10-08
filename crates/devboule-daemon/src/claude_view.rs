@@ -306,6 +306,7 @@ impl ClaudeView {
             current_model_id: model,
             models,
             modes: self.mode_state(),
+            current_model_provider_id: None,
         }];
         if let Some(commands) = Self::slash_commands_from(envelope) {
             let merged = self.merge_with_published(commands);
@@ -371,6 +372,7 @@ impl ClaudeView {
             current_model_id: model,
             models,
             modes: self.mode_state(),
+            current_model_provider_id: None,
         }]
     }
 

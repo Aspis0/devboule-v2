@@ -79,6 +79,7 @@ mod plan_tests {
                 current_mode_id: "bypassPermissions".to_string(),
                 available_modes: Vec::new(),
             }),
+            current_model_provider_id: None,
         });
         assert_eq!(runtime.mode_before_plan_id(), None);
 
@@ -531,6 +532,7 @@ fn set_runtime_mode(runtime: &super::SessionRuntime, mode: &str) {
             current_mode_id: mode.to_string(),
             available_modes: Vec::new(),
         }),
+        current_model_provider_id: None,
     });
     runtime
         .record_claude_mode_report(mode)

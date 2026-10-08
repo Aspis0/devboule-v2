@@ -45,6 +45,7 @@ pub(super) fn reader_for(
             current_model_id: None,
             models: Vec::new(),
             modes: None,
+            current_model_provider_id: None,
         },
         PermissionBroker::for_test(Arc::new(|_, _| Ok(()))),
         Arc::new(Mutex::new(std::collections::HashMap::new())),

@@ -49,6 +49,7 @@ fn the_measured_rate_limit_shapes_map_to_their_plan_windows() {
                 plan_label,
                 windows,
                 credits,
+                observed_at_ms: None,
             }] => {
                 assert_eq!(provider_id, "claude");
                 assert_eq!(plan_label, &None);

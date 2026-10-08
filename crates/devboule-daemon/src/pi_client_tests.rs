@@ -296,6 +296,7 @@ fn pi_auto_answer_failure_still_denies_the_extension_confirm() {
                 current_mode_id: "bypass".to_string(),
                 available_modes: Vec::new(),
             }),
+            current_model_provider_id: None,
         },
         Arc::clone(&broker),
         Arc::new(Mutex::new(HashMap::new())),
@@ -970,6 +971,7 @@ fn rows_across_a_fresh_attach(session_id: &str, rows: &[serde_json::Value]) -> V
             current_model_id: None,
             models: Vec::new(),
             modes: None,
+            current_model_provider_id: None,
         },
         Arc::clone(&broker),
         Arc::new(Mutex::new(HashMap::new())),
@@ -1666,6 +1668,7 @@ fn reader_with_control(control: Arc<PiControl>) -> PiReader {
             current_model_id: None,
             models: Vec::new(),
             modes: None,
+            current_model_provider_id: None,
         },
         super::PermissionBroker::for_test(Arc::new(|_, _| Ok(()))),
         Arc::new(Mutex::new(HashMap::new())),
@@ -2718,6 +2721,7 @@ mod lifecycle_tests {
                 current_model_id: None,
                 models: Vec::new(),
                 modes: None,
+                current_model_provider_id: None,
             },
             Arc::clone(&permission_broker),
             Arc::new(Mutex::new(HashMap::new())),
@@ -3917,6 +3921,7 @@ process.stdin.on("data", (chunk) => {
                 current_model_id: None,
                 models: Vec::new(),
                 modes: None,
+                current_model_provider_id: None,
             },
             Arc::clone(&broker),
             Arc::new(Mutex::new(HashMap::new())),
@@ -4045,4 +4050,33 @@ fn an_empty_incomplete_tail_still_says_so() {
         "emptiness does not read as completeness: {}",
         marked.message
     );
+}
+
+#[test]
+fn the_manifest_names_the_provider_that_serves_the_current_model_and_follows_a_switch() {
+    let mut catalog = PiCatalog {
+        current_provider: Some("opencode".to_string()),
+        ..PiCatalog::default()
+    };
+    let manifest = super::manifest_from_catalog(&catalog, "default");
+    let devboule_protocol::SessionEvent::SessionManifest {
+        provider_id,
+        current_model_provider_id,
+        ..
+    } = manifest
+    else {
+        panic!("a session manifest");
+    };
+    assert_eq!(provider_id.as_deref(), Some("pi"));
+    assert_eq!(current_model_provider_id.as_deref(), Some("opencode"));
+
+    catalog.current_provider = Some("anthropic".to_string());
+    let devboule_protocol::SessionEvent::SessionManifest {
+        current_model_provider_id,
+        ..
+    } = super::manifest_from_catalog(&catalog, "default")
+    else {
+        panic!("a session manifest");
+    };
+    assert_eq!(current_model_provider_id.as_deref(), Some("anthropic"));
 }

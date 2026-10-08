@@ -371,6 +371,7 @@ fn poisoned_manifest_lock_preserves_the_prior_model_catalog() {
             },
         ],
         modes: None,
+        current_model_provider_id: None,
     });
     let poisoned = Arc::clone(&transport);
     let panic = thread::spawn(move || {
@@ -880,6 +881,7 @@ fn reattach_reemits_the_stored_session_manifest() {
         current_model_id: Some("grok-4.6".to_string()),
         models: Vec::new(),
         modes: None,
+        current_model_provider_id: None,
     });
 
     let first = ConnHandle::new(1);

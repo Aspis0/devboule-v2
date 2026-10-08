@@ -27,6 +27,7 @@ pub(super) fn rate_limit_plan_usage(envelope: &Value) -> Option<SessionEvent> {
         plan_label: None,
         windows,
         credits: None,
+        observed_at_ms: None,
     })
 }
 

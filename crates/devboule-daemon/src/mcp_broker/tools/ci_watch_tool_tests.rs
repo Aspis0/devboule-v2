@@ -240,6 +240,7 @@ fn set_mode(fixture: &Fixture, session: &str, mode: &str) {
                 current_mode_id: mode.to_string(),
                 available_modes: Vec::new(),
             }),
+            current_model_provider_id: None,
         });
 }
 

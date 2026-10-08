@@ -253,6 +253,7 @@ pub(crate) fn manifest_with_current(
         current_model_id,
         models,
         modes: None,
+        current_model_provider_id: None,
     }
 }
 
@@ -279,6 +280,7 @@ pub(crate) fn initial_manifest_with_mode(models: Vec<SessionModel>, mode_id: &st
         current_model_id,
         models,
         modes: Some(crate::claude_view::mode_state(mode_id)),
+        current_model_provider_id: None,
     }
 }
 
@@ -1010,6 +1012,7 @@ mod tests {
                 },
             ],
             modes: None,
+            current_model_provider_id: None,
         };
         runtime.store_session_manifest(initial);
         let reconciled = runtime.store_session_manifest(SessionEvent::SessionManifest {
@@ -1024,6 +1027,7 @@ mod tests {
                 efforts: None,
             }],
             modes: None,
+            current_model_provider_id: None,
         });
         let SessionEvent::SessionManifest { models, .. } = reconciled else {
             panic!("reconciled event must be a manifest");
@@ -1049,6 +1053,7 @@ mod tests {
                 efforts: None,
             }],
             modes: None,
+            current_model_provider_id: None,
         });
         let stored = runtime.store_claude_catalog(manifest_with_current(
             vec![SessionModel {
@@ -1092,6 +1097,7 @@ mod tests {
             current_model_id: Some("claude-opus-4-6".to_string()),
             models: Vec::new(),
             modes: None,
+            current_model_provider_id: None,
         });
         let stored = runtime.store_claude_catalog(manifest_with_current(
             vec![SessionModel {

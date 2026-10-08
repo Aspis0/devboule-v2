@@ -25,6 +25,7 @@ fn manifest_arrived_is_false_until_the_runtime_holds_a_manifest() {
         current_model_id: Some("model-a".to_string()),
         models: Vec::new(),
         modes: None,
+        current_model_provider_id: None,
     });
     assert!(manifest_arrived(&runtime), "the manifest arrived");
 }
@@ -39,6 +40,7 @@ fn model_ask_needed_asks_when_the_model_differs_or_thinking_is_set() {
         current_model_id: Some("model-a".to_string()),
         models: Vec::new(),
         modes: None,
+        current_model_provider_id: None,
     };
     assert!(
         model_ask_needed(Some(&manifest), &facts("bypass", "model-b", "p-1")),

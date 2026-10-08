@@ -75,6 +75,7 @@ fn a_reset_attach_still_emits_the_stored_manifest_once() {
         current_model_id: Some("model-x".into()),
         models: Vec::new(),
         modes: None,
+        current_model_provider_id: None,
     };
     f.runtime.store_session_manifest(manifest.clone());
     let conn = f.conn(8, true);

@@ -169,7 +169,7 @@ pub(crate) fn session_event_samples() -> Vec<SessionEvent> {
             credits: Some(crate::PlanCredits {
                 balance: Some("0".to_string()),
                 unlimited: Some(false),
-            }),
+            }), observed_at_ms: None,
         },
         AgentCreated => SessionEvent::AgentCreated {
             message_id: Some("agent-created-1".to_string()),
@@ -314,7 +314,7 @@ pub(crate) fn session_event_samples() -> Vec<SessionEvent> {
             provider_id: None,
             current_model_id: None,
             models: Vec::new(),
-            modes: None,
+            modes: None, current_model_provider_id: None,
         },
         SessionFeatureState => SessionEvent::SessionFeatureState {
             feature_id: "planMode".to_string(),

@@ -96,6 +96,7 @@ fn cached_plan_usage(percent: u64) -> SessionEvent {
             resets_at: Some(1_790_700_000),
         }],
         credits: None,
+        observed_at_ms: None,
     }
 }
 

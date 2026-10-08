@@ -748,6 +748,7 @@ fn manifest_from_catalog(catalog: &CodexCatalog, mode_id: &str) -> SessionEvent 
                 })
                 .collect(),
         }),
+        current_model_provider_id: None,
     }
 }
 
@@ -1371,6 +1372,7 @@ fn plan_usage(limits: Option<&Value>) -> Option<SessionEvent> {
             .map(str::to_string),
         windows,
         credits,
+        observed_at_ms: None,
     })
 }
 
@@ -1789,6 +1791,7 @@ mod tests {
             current_model_id,
             models,
             modes: Some(modes),
+            ..
         } = state.manifest()
         else {
             panic!("Codex manifest");
@@ -2125,6 +2128,7 @@ mod tests {
                     balance: Some("0".to_string()),
                     unlimited: Some(false),
                 }),
+                observed_at_ms: None,
             }]
         );
     }

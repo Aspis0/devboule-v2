@@ -348,6 +348,7 @@ fn measured_set_mode_control_responses_resolve_success_and_error() {
             current_mode_id: "plan".to_string(),
             available_modes: Vec::new(),
         }),
+        current_model_provider_id: None,
     });
     let mut lines = CLAUDE_MODE_CAPTURE.lines();
     let success = lines.next().expect("measured success response");
@@ -1666,6 +1667,7 @@ fn claude_bypass_auto_answers_can_use_tool_without_client_prompt() {
             current_mode_id: "bypassPermissions".to_string(),
             available_modes: Vec::new(),
         }),
+        current_model_provider_id: None,
     });
     let line = serde_json::json!({
         "type": "control_request",
@@ -1702,6 +1704,7 @@ fn claude_bypass_auto_answers_can_use_tool_without_client_prompt() {
             current_mode_id: "default".to_string(),
             available_modes: Vec::new(),
         }),
+        current_model_provider_id: None,
     });
     reader
         .feed(format!("{line}\n").as_bytes(), &runtime)

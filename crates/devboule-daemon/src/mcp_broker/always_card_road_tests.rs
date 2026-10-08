@@ -57,6 +57,7 @@ pub(super) fn live_session(
             current_mode_id: mode.to_string(),
             available_modes: Vec::new(),
         }),
+        current_model_provider_id: None,
     });
     runtime
 }

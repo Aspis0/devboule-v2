@@ -217,6 +217,7 @@ fn harness_on(
             current_model_id: None,
             models: Vec::new(),
             modes: None,
+            current_model_provider_id: None,
         },
         Arc::clone(broker),
         Arc::new(Mutex::new(HashMap::new())),

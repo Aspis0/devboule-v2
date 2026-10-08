@@ -25,6 +25,7 @@ fn entering_plan_remembers_the_mode_to_resume() {
                 current_mode_id: mode.to_string(),
                 available_modes: Vec::new(),
             }),
+            current_model_provider_id: None,
         });
         runtime
             .record_claude_mode_report(mode)
@@ -42,6 +43,7 @@ fn entering_plan_remembers_the_mode_to_resume() {
             current_mode_id: "acceptEdits".to_string(),
             available_modes: Vec::new(),
         }),
+        current_model_provider_id: None,
     });
     runtime
         .record_claude_mode_report("acceptEdits")
@@ -119,6 +121,7 @@ fn store_session_manifest_preserves_thin_updates() {
         current_model_id: Some("grok-4.6".to_string()),
         models: vec![model("grok-4.4"), model("grok-4.5"), model("grok-4.6")],
         modes: Some(modes.clone()),
+        current_model_provider_id: None,
     });
 
     let returned = runtime.store_session_manifest(SessionEvent::SessionManifest {
@@ -126,6 +129,7 @@ fn store_session_manifest_preserves_thin_updates() {
         current_model_id: None,
         models: Vec::new(),
         modes: None,
+        current_model_provider_id: None,
     });
     let SessionEvent::SessionManifest {
         current_model_id,
@@ -189,6 +193,7 @@ fn mode_update_reports_a_closed_stream() {
             current_mode_id: "default".to_string(),
             available_modes: Vec::new(),
         }),
+        current_model_provider_id: None,
     });
     runtime
         .set_current_mode_id("bypassPermissions")

@@ -2550,6 +2550,7 @@ fn manifest_from_catalog(catalog: &PiCatalog, mode_id: &str) -> SessionEvent {
     SessionEvent::SessionManifest {
         provider_id: Some("pi".to_string()),
         current_model_id: catalog.current_model_id.clone(),
+        current_model_provider_id: catalog.current_provider.clone(),
         models,
         modes: Some(SessionModeStateView {
             current_mode_id: mode_id.to_string(),

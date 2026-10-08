@@ -980,6 +980,11 @@ pub enum SessionEvent {
         windows: Vec<PlanWindow>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         credits: Option<PlanCredits>,
+        /// When the daemon observed this reading, in Unix milliseconds. Set by
+        /// a poll that fetched the reading itself; a provider frame carries no
+        /// observation time of its own, so the app keeps its own stamp for it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        observed_at_ms: Option<i64>,
     },
     /// An agent asked for, and got, a child session.
     ///
@@ -1210,6 +1215,10 @@ pub enum SessionEvent {
         provider_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         current_model_id: Option<String>,
+        /// The provider that serves the current model, when the agent reports
+        /// one (Pi's `model.provider`). Agent identity stays `provider_id`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        current_model_provider_id: Option<String>,
         models: Vec<SessionModel>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         modes: Option<SessionModeStateView>,

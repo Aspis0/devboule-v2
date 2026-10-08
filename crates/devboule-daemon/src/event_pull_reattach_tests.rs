@@ -161,6 +161,7 @@ fn live_agent_replay_uses_stored_manifest_state() {
             efforts: None,
         }],
         modes: None,
+        current_model_provider_id: None,
     });
     {
         let mut stream = runtime.stream.lock().unwrap();

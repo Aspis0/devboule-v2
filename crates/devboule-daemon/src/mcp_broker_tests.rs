@@ -6210,6 +6210,7 @@ fn agent_status_reads_a_live_child() {
                 },
             ],
         }),
+        current_model_provider_id: None,
     });
     runtime.publish_agent_event(manifest, None);
     // The child's own registration carries its depth — the same fact the

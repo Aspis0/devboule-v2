@@ -314,6 +314,7 @@ fn set_automatic_mode(panel: &Panel, tag: &str) {
             current_mode_id: "bypassPermissions".to_string(),
             available_modes: Vec::new(),
         }),
+        current_model_provider_id: None,
     });
 }
 

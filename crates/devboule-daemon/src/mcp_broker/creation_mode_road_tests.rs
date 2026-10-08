@@ -102,6 +102,7 @@ fn set_mode(runtime: &Arc<crate::session::SessionRuntime>, mode: &str) {
             current_mode_id: mode.to_string(),
             available_modes: Vec::new(),
         }),
+        current_model_provider_id: None,
     });
 }
 

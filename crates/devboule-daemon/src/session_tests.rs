@@ -222,6 +222,7 @@ pub(super) fn insert_move_child(
                     })
                     .collect(),
             }),
+            current_model_provider_id: None,
         });
     }
     let mode_calls = Arc::new(AtomicU64::new(0));
@@ -989,6 +990,7 @@ fn an_auto_answered_card_carries_no_session_attribution() {
             current_mode_id: "bypass".to_string(),
             available_modes: Vec::new(),
         }),
+        current_model_provider_id: None,
     });
     park_card(&registry, &runtime, "card-auto-mode");
     assert!(
@@ -2096,6 +2098,7 @@ fn invalid_claude_effort_is_rejected_before_switcher() {
             }]),
         }],
         modes: None,
+        current_model_provider_id: None,
     });
 
     let error = registry
@@ -2146,6 +2149,7 @@ fn invalid_session_mode_is_rejected_without_changing_the_manifest() {
                 description: None,
             }],
         }),
+        current_model_provider_id: None,
     });
     let calls = Arc::new(AtomicU64::new(0));
     let metadata = Session {
@@ -3179,6 +3183,7 @@ fn a_session_advertising_a_prompt_skipping_mode_is_reported_by_the_guard() {
             current_mode_id: "bypassPermissions".to_string(),
             available_modes: Vec::new(),
         }),
+        current_model_provider_id: None,
     });
     assert_eq!(
         registry.session_mode_guard(&id),

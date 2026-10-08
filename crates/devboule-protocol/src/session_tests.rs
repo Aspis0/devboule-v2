@@ -905,6 +905,7 @@ fn session_manifest_round_trips_with_camel_case_wire_names() {
                 description: Some("Ask before every tool call.".to_string()),
             }],
         }),
+        current_model_provider_id: None,
     };
     let encoded = serde_json::to_value(&event).expect("json");
     assert_eq!(encoded["type"], "session_manifest");

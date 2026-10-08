@@ -61,6 +61,7 @@ fn a_third_device_target_is_refused_like_an_unknown_id_before_mode_lookup() {
             current_mode_id: "bypassPermissions".to_string(),
             available_modes: Vec::new(),
         }),
+        current_model_provider_id: None,
     });
     state.sessions.set_test_origin(
         "s.third.target",

@@ -125,6 +125,7 @@ fn set_mode(state: &Arc<ServerState>, id: &str, mode: &str) {
                 current_mode_id: mode.to_string(),
                 available_modes: Vec::new(),
             }),
+            current_model_provider_id: None,
         });
 }
 

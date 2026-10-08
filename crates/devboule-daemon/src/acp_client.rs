@@ -1523,6 +1523,7 @@ impl AcpTransport {
             current_model_id,
             models,
             modes: Some(mut modes),
+            current_model_provider_id: None,
         }) = self.last_manifest()
         else {
             return;
@@ -1533,6 +1534,7 @@ impl AcpTransport {
             current_model_id,
             models,
             modes: Some(modes),
+            current_model_provider_id: None,
         });
     }
 
@@ -1571,6 +1573,7 @@ impl AcpTransport {
             current_model_id: Some(model_id),
             models,
             modes,
+            current_model_provider_id: None,
         });
     }
 
@@ -1583,6 +1586,7 @@ impl AcpTransport {
             current_model_id: Some(current_model_id),
             models,
             modes,
+            ..
         } = event
         else {
             return event;
@@ -1601,6 +1605,7 @@ impl AcpTransport {
             current_model_id: Some(current_model_id),
             models,
             modes,
+            current_model_provider_id: None,
         }
     }
 
@@ -3188,11 +3193,13 @@ impl AcpReader {
                 current_model_id,
                 models,
                 modes,
+                ..
             } => SessionEvent::SessionManifest {
                 provider_id: provider_id.or_else(|| self.provider_id.clone()),
                 current_model_id,
                 models,
                 modes,
+                current_model_provider_id: None,
             },
             other => other,
         }
@@ -3504,6 +3511,7 @@ impl AcpReader {
             current_model_id,
             models,
             modes: Some(mut modes),
+            current_model_provider_id: None,
         }) = transport
             .last_manifest()
             .or_else(|| runtime.session_manifest())
@@ -3518,6 +3526,7 @@ impl AcpReader {
                 current_model_id,
                 models,
                 modes: Some(modes),
+                current_model_provider_id: None,
             }),
             event_seq,
         );
@@ -3563,6 +3572,7 @@ impl AcpReader {
             current_model_id,
             models,
             modes,
+            current_model_provider_id: None,
         }) = transport.last_manifest()
         else {
             return;
@@ -3574,6 +3584,7 @@ impl AcpReader {
                 current_model_id: model_id.or(current_model_id),
                 models,
                 modes,
+                current_model_provider_id: None,
             },
             event_seq,
         );
@@ -3742,6 +3753,7 @@ impl AcpReader {
                     current_model_id: Some(model_id.clone()),
                     models,
                     modes,
+                    current_model_provider_id: None,
                 }
             }
             _ => SessionEvent::SessionManifest {
@@ -3749,6 +3761,7 @@ impl AcpReader {
                 current_model_id: Some(model_id.clone()),
                 models: Vec::new(),
                 modes: None,
+                current_model_provider_id: None,
             },
         };
         self.publish_at_seq(runtime, manifest, event_seq);
@@ -3830,12 +3843,14 @@ impl AcpReader {
                 current_model_id: None,
                 models: Vec::new(),
                 modes: modes.clone(),
+                current_model_provider_id: None,
             });
         let SessionEvent::SessionManifest {
             provider_id: manifest_provider,
             mut current_model_id,
             mut models,
             modes: manifest_modes,
+            ..
         } = manifest
         else {
             return;
@@ -3890,6 +3905,7 @@ impl AcpReader {
                 current_model_id,
                 models,
                 modes: manifest_modes,
+                current_model_provider_id: None,
             },
             event_seq,
         );

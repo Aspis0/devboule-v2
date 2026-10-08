@@ -64,6 +64,7 @@ impl ClaudeView {
                         efforts: None,
                     }],
                     modes: self.mode_state(),
+                    current_model_provider_id: None,
                 });
             }
         }

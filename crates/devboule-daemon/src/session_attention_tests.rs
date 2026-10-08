@@ -729,6 +729,7 @@ fn auto_answer_grants_without_raising_attention() {
             current_mode_id: "auto_accept".to_string(),
             available_modes: Vec::new(),
         }),
+        current_model_provider_id: None,
     });
     let conn = ConnHandle::new(16);
     registry

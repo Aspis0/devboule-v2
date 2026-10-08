@@ -2517,6 +2517,7 @@ mod tests {
                 current_mode_id: "bypass".to_string(),
                 available_modes: Vec::new(),
             }),
+            current_model_provider_id: None,
         });
         broker
             .register(53, permission("pi-bypass"), &runtime)
@@ -2542,6 +2543,7 @@ mod tests {
                 current_mode_id: "bypass".to_string(),
                 available_modes: Vec::new(),
             }),
+            current_model_provider_id: None,
         });
         broker
             .register(
@@ -2577,6 +2579,7 @@ mod tests {
                 current_mode_id: "bypass".to_string(),
                 available_modes: Vec::new(),
             }),
+            current_model_provider_id: None,
         });
         broker
             .register(
@@ -2613,6 +2616,7 @@ mod tests {
                 current_mode_id: "bypass".to_string(),
                 available_modes: Vec::new(),
             }),
+            current_model_provider_id: None,
         });
         broker
             .register(
@@ -2650,6 +2654,7 @@ mod tests {
                 current_mode_id: "bypass".to_string(),
                 available_modes: Vec::new(),
             }),
+            current_model_provider_id: None,
         });
         broker
             .register(
@@ -2759,6 +2764,7 @@ mod tests {
                 current_mode_id: "auto_accept".to_string(),
                 available_modes: Vec::new(),
             }),
+            current_model_provider_id: None,
         });
         broker
             .register(
@@ -2793,6 +2799,7 @@ mod tests {
                     current_mode_id: mode.to_string(),
                     available_modes: Vec::new(),
                 }),
+                current_model_provider_id: None,
             });
             let id = format!("plan-{mode}");
             broker
@@ -3008,6 +3015,7 @@ mod tests {
                     current_mode_id: "full-access".to_string(),
                     available_modes: Vec::new(),
                 }),
+                current_model_provider_id: None,
             });
             let card = format!("card-full-access-{provider}");
             broker
@@ -3039,6 +3047,7 @@ mod tests {
                 current_mode_id: "ask".to_string(),
                 available_modes: Vec::new(),
             }),
+            current_model_provider_id: None,
         });
         broker
             .register(
@@ -3075,6 +3084,7 @@ mod tests {
                 current_mode_id: "full-access".to_string(),
                 available_modes: Vec::new(),
             }),
+            current_model_provider_id: None,
         });
         // The road parks without asking the broker: register only, the way
         // the Codex approval dispatch holds the card for the person.
@@ -3123,6 +3133,7 @@ mod tests {
                 current_mode_id: "auto_accept".to_string(),
                 available_modes: Vec::new(),
             }),
+            current_model_provider_id: None,
         });
         broker
             .register(
@@ -3365,6 +3376,7 @@ mod tests {
                 current_mode_id: "bypass".to_string(),
                 available_modes: Vec::new(),
             }),
+            current_model_provider_id: None,
         });
         broker
             .register(58, permission("send-failure"), &runtime)
@@ -3391,6 +3403,7 @@ mod tests {
                 current_mode_id: "ask".to_string(),
                 available_modes: Vec::new(),
             }),
+            current_model_provider_id: None,
         });
         broker
             .register(54, permission("ask"), &runtime)
@@ -3413,6 +3426,7 @@ mod tests {
                 current_mode_id: "auto_accept".to_string(),
                 available_modes: Vec::new(),
             }),
+            current_model_provider_id: None,
         });
         broker
             .register(
@@ -3932,6 +3946,7 @@ mod question_tests {
                 current_mode_id: mode_id.to_string(),
                 available_modes: Vec::new(),
             }),
+            current_model_provider_id: None,
         });
     }
 

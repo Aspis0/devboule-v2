@@ -58,6 +58,7 @@ fn live_claude_replay_derives_journaled_views() {
             efforts: None,
         }],
         modes: None,
+        current_model_provider_id: None,
     });
     {
         let mut stream = runtime.stream.lock().unwrap();

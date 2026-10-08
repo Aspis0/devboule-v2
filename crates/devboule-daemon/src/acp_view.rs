@@ -595,6 +595,7 @@ pub(crate) fn session_manifest_from_new_session(
         current_model_id: None,
         models: Vec::new(),
         modes: Some(modes),
+        current_model_provider_id: None,
     })
 }
 
@@ -942,6 +943,7 @@ pub(crate) fn merge_handshake_manifest(
                 current_model_id: None,
                 models: Vec::new(),
                 modes: Some(modes),
+                current_model_provider_id: None,
             })
         }),
         shape: shape.has_any_surface().then_some(shape),
@@ -1193,6 +1195,7 @@ fn vendor_catalog_from_models(
             current_model_id,
             models,
             modes,
+            current_model_provider_id: None,
         },
         model_values,
         effort_values_by_model,
@@ -1366,6 +1369,7 @@ pub(crate) fn catalog_from_config_options(
             current_model_id,
             models,
             modes,
+            current_model_provider_id: None,
         },
         model_option_id: model_surface.id,
         effort_option_id: effort_surface.as_ref().map(|option| option.id.clone()),
@@ -2428,6 +2432,7 @@ mod tests {
             current_model_id,
             models,
             modes,
+            ..
         } = merge_manifest_event(&serde_json::Value::Null, &result, Some("grok"))
         else {
             panic!("expected SessionManifest");
@@ -2611,6 +2616,7 @@ mod tests {
                 current_model_id,
                 models,
                 modes,
+                ..
             } => (provider_id, current_model_id, models, modes),
             other => panic!("expected SessionManifest, got {other:?}"),
         };

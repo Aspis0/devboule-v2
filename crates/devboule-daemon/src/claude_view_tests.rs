@@ -87,6 +87,7 @@ fn system_init_becomes_session_manifest_and_stores_session_id() {
             current_model_id,
             models,
             modes,
+            current_model_provider_id: None,
         }] => {
             assert_eq!(provider_id.as_deref(), Some("claude"));
             assert_eq!(current_model_id.as_deref(), Some("claude-opus-5[1m]"));

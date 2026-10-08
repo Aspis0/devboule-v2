@@ -382,6 +382,7 @@ fn merge_claude_manifest(previous: &SessionEvent, incoming: SessionEvent) -> Ses
         current_model_id: previous_current,
         models: previous_models,
         modes: previous_modes,
+        ..
     } = previous
     else {
         return incoming;
@@ -392,6 +393,7 @@ fn merge_claude_manifest(previous: &SessionEvent, incoming: SessionEvent) -> Ses
             current_model_id,
             models,
             modes,
+            ..
         } => (provider_id, current_model_id, models, modes),
         other => return other,
     };
@@ -429,6 +431,7 @@ fn merge_claude_manifest(previous: &SessionEvent, incoming: SessionEvent) -> Ses
         current_model_id: current_model_id.or_else(|| previous_current.clone()),
         models: merged_models,
         modes: modes.or_else(|| previous_modes.clone()),
+        current_model_provider_id: None,
     }
 }
 
@@ -448,6 +451,7 @@ fn replace_claude_catalog(previous: &SessionEvent, incoming: SessionEvent) -> Se
             current_model_id,
             models,
             modes,
+            ..
         } => (provider_id, current_model_id, models, modes),
         other => return other,
     };
@@ -481,6 +485,7 @@ fn replace_claude_catalog(previous: &SessionEvent, incoming: SessionEvent) -> Se
         current_model_id,
         models: merged_models,
         modes: modes.or_else(|| previous_modes.clone()),
+        current_model_provider_id: None,
     }
 }
 
@@ -1309,6 +1314,8 @@ impl SessionRuntime {
                 current_model_id,
                 models,
                 modes,
+                current_model_provider_id,
+                ..
             } => {
                 let (current_model_id, models) = if models.is_empty() {
                     let previous_manifest = previous.and_then(|previous| match previous {
@@ -1343,6 +1350,7 @@ impl SessionRuntime {
                     current_model_id,
                     models,
                     modes,
+                    current_model_provider_id,
                 };
                 if matches!(
                     &event,
