@@ -4,7 +4,8 @@ import { act, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { recordPlanUsage } from "../../../lib/planUsageStore";
-import type { DaemonStatus } from "../../../types/ipc";
+import type { DaemonStatus, Session } from "../../../types/ipc";
+import { chipDisplay } from "../strip/stripDisplay";
 import { publishAgentReading, retireAgentReading } from "./agentReadingStore";
 import { StatusBar } from "./StatusBar";
 
@@ -115,6 +116,22 @@ describe("the status bar", () => {
     const bar = await render(<StatusBar agent={{ ...AGENT, title: "" }} daemon={DAEMON} />);
     expect(bar.querySelector(".status-bar-state")?.textContent).toBe("working");
     expect(bar.querySelector(".status-bar-sep")).toBeNull();
+  });
+
+  it("names a silent session with the word its chip carries", async () => {
+    const session: Session = {
+      id: "bar-agent",
+      workspaceId: "workspace-1",
+      kind: "acp",
+      title: "Tighten handoff summary",
+      state: { type: "silent", generation: 1 },
+      elapsedMs: 90_000,
+    };
+    expect(chipDisplay(session).stateLine.startsWith("Quiet")).toBe(true);
+
+    const bar = await render(<StatusBar agent={{ ...AGENT, quiet: true }} daemon={DAEMON} />);
+
+    expect(bar.querySelector(".status-bar-state")?.textContent).toContain("Quiet");
   });
 
   it("says what the app waits on in place of the title while a session starts", async () => {
