@@ -9,15 +9,13 @@ use super::{
     KeySources, MAX_AUTH_BYTES,
 };
 
-/// A fresh home folder under the temp dir, holding a fixture `auth.json` when
+/// A fresh home folder under the test temp root, holding a fixture `auth.json` when
 /// the test gives one.
 struct Home(PathBuf);
 
 impl Home {
     fn new(name: &str, auth: Option<&str>) -> Self {
-        let root =
-            std::env::temp_dir().join(format!("devboule-quota-key-{}-{name}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
+        let root = crate::test_dirs::test_temp_dir(&format!("devboule-quota-key-{name}"));
         if let Some(text) = auth {
             let path = pi_auth_path(&root);
             fs::create_dir_all(path.parent().expect("a parent")).expect("fixture dir");
