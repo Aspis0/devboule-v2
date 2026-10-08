@@ -661,3 +661,32 @@ fn an_agent_stops_its_own_child_and_the_job_ends_the_tree() {
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A child that ended before the stop arrived keeps the verdict its end
+/// earned. This clean exit names no turn end, so the reason slot is empty:
+/// the creator's stop must be refused, not read as the cause of the end.
+#[test]
+fn a_stop_on_an_ended_child_leaves_its_verdict_alone() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("stop-ended-user", "stop-ended-client");
+    let caller = compose_session_id(&owner.session_token(), "ended-cal").expect("id");
+    let child = compose_session_id(&owner.session_token(), "ended-chi").expect("id");
+    insert_live_agent(&registry, &caller, owner.clone());
+    let runtime = insert_child(&registry, &child, owner.clone(), &caller);
+    runtime.finish(Some(0));
+
+    registry
+        .stop_agent_child(&caller, &child)
+        .expect_err("an ended child is not stopped");
+    assert!(
+        !runtime.stop_requested(),
+        "a refused stop records no request"
+    );
+    let (session, runtime, _) = registry.child_view(&child).expect("the row stays");
+    assert_eq!(
+        child_finish_state(&session, &runtime).0,
+        AgentTaskState::Completed
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}

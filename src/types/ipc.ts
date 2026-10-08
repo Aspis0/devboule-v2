@@ -1519,6 +1519,15 @@ export type SessionEvent =
       profile: string;
     }
   /**
+   * A created child was resumed (protocol `SessionEvent::AgentResumed`). No view
+   * renders it: the task list reads it to put the child back to running.
+   */
+  | {
+      type: "agent_resumed";
+      childSessionId: Id;
+      displayName: string;
+    }
+  /**
    * A created child finished (protocol `SessionEvent::ChildFinished`). The
    * structured twin of the `<devboule-system>` text message the daemon sends the
    * creator: same facts, same `messageId`, and the app reads THIS one — it has

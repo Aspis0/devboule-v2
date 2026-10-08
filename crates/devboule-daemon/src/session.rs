@@ -2582,6 +2582,12 @@ impl SessionRegistry {
         ) {
             Ok(()) => {
                 state.record_provider_health(&health_provider, Ok(()));
+                self.publish_child_resumed(
+                    session_id,
+                    record.display_name.as_deref().unwrap_or(&record.title),
+                    resumed_child.as_deref(),
+                    owner,
+                );
                 // The provider honoured this exact handle: a refusal recorded
                 // against it is stale — the one fact that can prove a mark
                 // wrong — and it is recorded on the same road as the health
@@ -3132,15 +3138,16 @@ impl SessionRegistry {
     }
 
     /// Resolve `target` (exact id or display name) among the caller's own
-    /// live children — the scope gate for `stop_agent_child` and
+    /// children — the scope gate for `stop_agent_child` and
     /// `close_agent_child`.
     ///
     /// Scope is the caller's own children and nothing else: a session the
-    /// caller did not create, a dead one, and an invented id all get the
-    /// same refusal, so the answer never says whether an id exists. The
-    /// caller itself is refused before the scan: a session is not its own
-    /// child, and the process waiting for this reply would be the one torn
-    /// down.
+    /// caller did not create and an invented id get the same refusal, so the
+    /// answer never says whether an id exists. A finished child is in scope,
+    /// because its status and its close are read off it; the stop road refuses
+    /// a finished child in `stop`. The caller itself is refused before the
+    /// scan: a session is not its own child, and the process waiting for this
+    /// reply would be the one torn down.
     fn resolve_own_child(
         &self,
         creator_session_id: &str,
@@ -3249,7 +3256,16 @@ impl SessionRegistry {
                 .map_err(|_| internal("Session state is unavailable."))?;
             let entry = peer_entry_mut(&mut map, session_id, owner, &None)?;
             let session = entry.as_peer_visible_mut().ok_or_else(process_gone)?;
+            if !live_session_view(session).state.is_live() {
+                return Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    "This session has already ended.",
+                ));
+            }
             session.preserve_on_exit.store(true, Ordering::SeqCst);
+            // Checked and recorded under the one registry lock, so a session
+            // already marked ended is never given a stop it did not receive.
+            session.runtime.request_stop();
             (
                 session.killer.clone_killer(),
                 Arc::clone(&session.process_job),
@@ -3347,6 +3363,9 @@ impl SessionRegistry {
                 .and_then(RegistryEntry::as_peer_visible_mut)
             {
                 session.preserve_on_exit.store(true, Ordering::SeqCst);
+                if live_session_view(session).state.is_live() {
+                    session.runtime.request_stop();
+                }
             }
         }
         killer.kill();

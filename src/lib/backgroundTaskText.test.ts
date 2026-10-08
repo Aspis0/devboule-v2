@@ -73,6 +73,11 @@ describe("the transcript row for a task", () => {
     );
   });
 
+  it("says a stopped agent was stopped, not failed", () => {
+    const stopped = task({ state: "cancelled", startedAtMs: 1_000, endedAtMs: 89_000 });
+    expect(taskRowText(stopped)).toBe("Background agent stopped · Explore auth · took 1m 28s");
+  });
+
   it("drops the duration when the task has no end time", () => {
     expect(taskRowText(task({ state: "failed" }))).toBe("Background agent failed · Explore auth");
   });

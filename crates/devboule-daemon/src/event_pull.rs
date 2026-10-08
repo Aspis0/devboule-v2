@@ -229,6 +229,9 @@ pub struct ConnHandle {
     /// publisher reads it there, so a client that did not offer the name never
     /// receives a reading it may not parse.
     plan_usage_live: AtomicBool,
+    /// Whether this connection's hello agreed `session.agent_resumed`. Off by
+    /// default: a connection that never said so is never sent the event.
+    agent_resumed: AtomicBool,
     /// Async create workers for this connection must not race on its retry key.
     pub(crate) session_create_lock: Mutex<()>,
     attached: Mutex<HashMap<u64, PullState>>,
@@ -327,6 +330,17 @@ impl ConnHandle {
         self.plan_usage_live.load(Ordering::SeqCst)
     }
 
+    /// Record what this connection's hello agreed for `session.agent_resumed`.
+    /// Called once, by the serve loop, before this connection reads a request.
+    pub fn set_agent_resumed_negotiated(&self, negotiated: bool) {
+        self.agent_resumed.store(negotiated, Ordering::SeqCst);
+    }
+
+    /// Whether `session.agent_resumed` was agreed on this connection.
+    pub fn agent_resumed_negotiated(&self) -> bool {
+        self.agent_resumed.load(Ordering::SeqCst)
+    }
+
     pub fn with_peer(id: u64, peer: Option<PeerIdentity>) -> Arc<Self> {
         Self::with_conn_peer(id, peer, None)
     }
@@ -362,6 +376,7 @@ impl ConnHandle {
             remote_hosts: AtomicBool::new(false),
             browser_host: AtomicBool::new(false),
             plan_usage_live: AtomicBool::new(false),
+            agent_resumed: AtomicBool::new(false),
             session_create_lock: Mutex::new(()),
             attached: Mutex::new(HashMap::new()),
             state_events: Mutex::new(VecDeque::new()),
@@ -656,6 +671,7 @@ impl ConnHandle {
                 | SessionEvent::SessionFeatureState { .. }
                 | SessionEvent::SessionNotice { .. }
                 | SessionEvent::AgentCreated { .. }
+                | SessionEvent::AgentResumed { .. }
                 | SessionEvent::ChildFinished { .. }
                 | SessionEvent::TasksSnapshot { .. } => {
                     if let (Some(cursor), Some(seq)) = (
@@ -735,6 +751,12 @@ impl ConnHandle {
                 }
             }
             asked = self.pull_round(Some(&resumed), &mut events);
+        }
+        // Live and replayed rows leave here alike. Nothing stands in for a
+        // skipped row: a reader that cannot decode the kind gets no trace of it.
+        if !self.agent_resumed_negotiated() {
+            events
+                .retain(|event| !matches!(event.envelope.event, SessionEvent::AgentResumed { .. }));
         }
         events
     }
@@ -1523,3 +1545,8 @@ mod replay_cwd_tests;
 #[cfg(test)]
 #[path = "event_pull_plan_usage_tests.rs"]
 mod plan_usage_tests;
+
+/// The resumed-child event goes only to readers that agreed its name.
+#[cfg(test)]
+#[path = "event_pull_agent_resumed_tests.rs"]
+mod agent_resumed_tests;

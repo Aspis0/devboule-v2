@@ -113,6 +113,11 @@ fn a_refused_subscription_leaves_the_live_row_unpreserved() {
         .stop_with_subscription(&session_id, 8, &owner, &conn)
         .expect_err("a subscription that does not observe the row is refused");
     assert_eq!(error.code, ErrorCode::InvalidRequest);
+    let runtime = registry.runtime(&session_id).expect("the live runtime");
+    assert!(
+        !runtime.stop_requested(),
+        "a refused stop must not record a stop request"
+    );
 
     let map = registry.inner.lock().expect("registry");
     let live = map
@@ -124,6 +129,55 @@ fn a_refused_subscription_leaves_the_live_row_unpreserved() {
         "a refused stop must not mark the live row preserved"
     );
     drop(map);
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The request is on the runtime before the provider is signalled, so the
+/// end the kill produces reads as a stop, whatever the provider says.
+#[test]
+fn a_stop_records_the_request_on_the_live_runtime() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-stop-records", "process-stop-records");
+    let session_id = compose_session_id(&owner.session_token(), "stoprec").expect("id");
+    insert_live(&registry, &session_id, owner.clone());
+    let conn = ConnHandle::new(12);
+    registry
+        .attach_with_subscription(&session_id, 17, None, &conn, &owner, false)
+        .expect("the live row attaches");
+    let runtime = registry.runtime(&session_id).expect("the live runtime");
+    assert!(!runtime.stop_requested());
+
+    registry
+        .stop_with_subscription(&session_id, 17, &owner, &conn)
+        .expect("the stop lands");
+    assert!(runtime.stop_requested());
+
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_stop_of_an_ended_row_records_no_request() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-stop-ended", "process-stop-ended");
+    let session_id = compose_session_id(&owner.session_token(), "stopend").expect("id");
+    insert_live(&registry, &session_id, owner.clone());
+    let conn = ConnHandle::new(13);
+    registry
+        .attach_with_subscription(&session_id, 19, None, &conn, &owner, false)
+        .expect("the live row attaches");
+    let runtime = registry.runtime(&session_id).expect("the live runtime");
+    runtime.finish(Some(0));
+
+    registry
+        .stop_with_subscription(&session_id, 19, &owner, &conn)
+        .expect("a stop of a row that already ended is not an error");
+    assert!(
+        !runtime.stop_requested(),
+        "a stop of an ended row must not be recorded as the cause of its end"
+    );
+
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);
 }

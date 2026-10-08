@@ -31,6 +31,8 @@ pub struct HeldChild {
     pub ended_at_ms: Option<u64>,
     pub model: Option<String>,
     pub tool_call_count: Option<u64>,
+    /// A stop reached the run, so however it ended reads as cancelled.
+    pub stop_requested: bool,
 }
 
 /// One journal row in fold order: replay rows carry their journal position
@@ -117,9 +119,10 @@ pub fn summarize_child(
     (model, replay_complete.then_some(calls))
 }
 
-fn held_state(state: &SessionState) -> SessionTaskState {
+fn held_state(state: &SessionState, stop_requested: bool) -> SessionTaskState {
     match state {
         SessionState::Live { .. } | SessionState::Silent { .. } => SessionTaskState::Running,
+        SessionState::Ended { .. } if stop_requested => SessionTaskState::Cancelled,
         SessionState::Ended { code: Some(0), .. } => SessionTaskState::Finished,
         SessionState::Ended { .. } => SessionTaskState::Failed,
         // The roster reads a lost transcript the same way: it never
@@ -178,7 +181,7 @@ impl<'a> Fold<'a> {
     }
 
     fn adopt_held(&mut self, child: &HeldChild) {
-        let state = held_state(&child.state);
+        let state = held_state(&child.state, child.stop_requested);
         let ended_at_ms = match state {
             SessionTaskState::Running => None,
             _ => child.ended_at_ms,
@@ -472,6 +475,32 @@ impl<'a> Fold<'a> {
                 let entry = &mut self.commands[index];
                 entry.state = SessionTaskState::Failed;
                 entry.ended_at_ms = Some(ts);
+            }
+            SessionEvent::AgentResumed {
+                child_session_id,
+                display_name,
+            } => {
+                // A new run of a child the creator already knows. The end the
+                // journal holds for it belongs to the run before, so the row
+                // reads running again; its start stays the first run's.
+                if let Some(entry) = self.agent_mut(child_session_id) {
+                    entry.state = SessionTaskState::Running;
+                    entry.ended_at_ms = None;
+                } else {
+                    self.upsert_agent(SessionTask {
+                        id: child_session_id.clone(),
+                        kind: SessionTaskKind::Agent,
+                        title: truncate_title(display_name),
+                        state: SessionTaskState::Running,
+                        session_id: self.session_id.to_string(),
+                        child_session_id: Some(child_session_id.clone()),
+                        started_at_ms: ts,
+                        ended_at_ms: None,
+                        model: None,
+                        tool_call_count: None,
+                    });
+                }
+                self.set_vouched.remove(child_session_id);
             }
             _ => {}
         }

@@ -49,6 +49,11 @@
     "type": "agent_reported"
   },
   {
+    "childSessionId": "s.1.2",
+    "displayName": "worker",
+    "type": "agent_resumed"
+  },
+  {
     "data": "",
     "type": "agent_stderr"
   },

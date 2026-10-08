@@ -1016,6 +1016,14 @@ pub enum SessionEvent {
         #[serde(alias = "preset")]
         profile: String,
     },
+    /// A created child was resumed and is running again. Its earlier finish, if
+    /// any, belongs to a run that is over: the task list reads the last fact
+    /// the creator's journal holds for the child, so this one puts it back to
+    /// running. Nothing is shown for it in the transcript.
+    AgentResumed {
+        child_session_id: String,
+        display_name: String,
+    },
     /// A created child finished, in structured form, published on the creator
     /// beside the `<devboule-system>` text message that carries the same facts
     ///
@@ -1415,6 +1423,7 @@ impl SessionEvent {
             Self::ContextUsage { .. } => "context_usage",
             Self::PlanUsage { .. } => "plan_usage",
             Self::AgentCreated { .. } => "agent_created",
+            Self::AgentResumed { .. } => "agent_resumed",
             Self::ChildFinished { .. } => "child_finished",
             Self::AgentTaskStarted { .. } => "agent_task_started",
             Self::AgentTaskNotification { .. } => "agent_task_notification",

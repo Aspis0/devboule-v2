@@ -187,6 +187,12 @@ pub(crate) fn handle_client(
             .iter()
             .any(|capability| capability.as_str() == caps::SESSION_TASKS),
     );
+    conn.set_agent_resumed_negotiated(
+        agreed
+            .capabilities
+            .iter()
+            .any(|capability| capability.as_str() == caps::AGENT_RESUMED),
+    );
     let resume_outcomes_ok = agreed
         .capabilities
         .iter()
@@ -613,6 +619,7 @@ fn send_pending_event(
             SessionEvent::SessionNotice { .. } => " session_notice".to_string(),
             SessionEvent::AgentReported { .. } => " agent_reported".to_string(),
             SessionEvent::AgentCreated { .. } => " agent_created".to_string(),
+            SessionEvent::AgentResumed { .. } => " agent_resumed".to_string(),
             SessionEvent::ChildFinished { .. } => " child_finished".to_string(),
             SessionEvent::Detached => " detached".to_string(),
             SessionEvent::QueueSnapshot { .. } => " queue_snapshot".to_string(),

@@ -277,6 +277,44 @@ fn a_successful_resume_keeps_its_slot_and_clears_the_mark_it_honoured() {
     fixture.finish();
 }
 
+/// A created child that resumes successfully is announced on its live creator's
+/// journal, so the creator's task list reads the new run last. Mutant: the
+/// `publish_child_resumed` call dropped from the Ok arm.
+#[test]
+fn a_successful_child_resume_journals_the_resumed_row_on_its_creator() {
+    let fixture = ResumeFixture::new("resumed-child");
+    let creator = fixture.id("creator");
+    let child = fixture.id("child");
+    fixture.write_row(new_session_record(
+        &creator,
+        fixture.owner.user.clone(),
+        None,
+        SessionKind::Acp,
+        "Creator",
+    ));
+    let mut row = acp_row(&child, &fixture.owner, "stub-session");
+    row.created_by = Some(creator.clone());
+    fixture.write_row(row);
+    insert_live_agent(fixture.registry(), &creator, fixture.owner.clone());
+    let _env = AcpEnv::stub(&[]);
+    take_bystander_slot(&fixture.state);
+
+    fixture
+        .resume(&child, &fixture.conn())
+        .expect("the stub honours the load");
+    let _ = fixture.journal().flush();
+    let events = fixture.journal().replay(&creator).expect("replay").events;
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            SessionEvent::AgentResumed { child_session_id, .. } if child_session_id == &child
+        )),
+        "the creator's journal names the resumed child: {events:?}"
+    );
+    let _ = fixture.registry().close(&child, &fixture.owner, &None);
+    fixture.finish();
+}
+
 #[test]
 fn a_resumed_session_seeds_its_goal_from_the_row() {
     let fixture = ResumeFixture::new("goal-resume");

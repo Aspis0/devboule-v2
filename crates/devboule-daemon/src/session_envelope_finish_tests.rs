@@ -458,6 +458,148 @@ fn a_child_that_exited_uncleanly_after_its_turn_names_the_code() {
     assert_eq!(note, None);
 }
 
+/// A stop the person asked for ends the child as cancelled, whatever the
+/// provider reports while the killed process dies: pi reads a killed turn as
+/// `error`, and that word must not reach the creator as a failure.
+#[test]
+fn a_stopped_child_that_dies_reporting_an_error_is_cancelled() {
+    let runtime = SessionRuntime::new();
+    runtime.request_stop();
+    runtime.publish_agent_event(
+        SessionEvent::AgentFinished {
+            stop_reason: "error".to_string(),
+            model_id: None,
+            usage: None,
+        },
+        None,
+    );
+    let mut record = ended_record("child-1", "alex");
+    record.exit_code = Some(1);
+    let (state, note) = child_finish_state(&record.to_session(), &runtime);
+    assert_eq!(state, AgentTaskState::Canceled);
+    assert_eq!(note.as_deref(), Some("The agent was stopped by request."));
+}
+
+#[test]
+fn a_stopped_child_that_exits_uncleanly_with_no_reason_is_cancelled() {
+    let runtime = SessionRuntime::new();
+    runtime.request_stop();
+    let mut record = ended_record("child-1", "alex");
+    record.exit_code = Some(137);
+    assert_eq!(
+        child_finish_state(&record.to_session(), &runtime).0,
+        AgentTaskState::Canceled
+    );
+}
+
+#[test]
+fn a_stopped_child_reads_canceled_in_the_roster() {
+    let runtime = SessionRuntime::new();
+    runtime.request_stop();
+    let mut record = ended_record("child-1", "alex");
+    record.exit_code = Some(1);
+    assert_eq!(
+        roster_task_state(&record.to_session(), &runtime),
+        AgentTaskState::Canceled
+    );
+}
+
+/// The first of a finish and a stop decides: a verdict recorded before the
+/// stop stands, because the stop came after the child had already reported.
+#[test]
+fn a_finish_recorded_before_the_stop_keeps_its_verdict() {
+    let mut record = ended_record("child-1", "alex");
+    record.exit_code = Some(137);
+    let session = record.to_session();
+    let completed = SessionRuntime::new();
+    completed.publish_agent_event(
+        SessionEvent::AgentFinished {
+            stop_reason: "stop".to_string(),
+            model_id: None,
+            usage: None,
+        },
+        None,
+    );
+    completed.request_stop();
+    assert_eq!(
+        child_finish_state(&session, &completed).0,
+        AgentTaskState::Completed
+    );
+    let failed = SessionRuntime::new();
+    failed.publish_agent_event(
+        SessionEvent::AgentFinished {
+            stop_reason: "error".to_string(),
+            model_id: None,
+            usage: None,
+        },
+        None,
+    );
+    failed.request_stop();
+    assert_eq!(
+        child_finish_state(&session, &failed).0,
+        AgentTaskState::Failed
+    );
+}
+
+#[test]
+fn a_child_that_errors_without_a_stop_request_stays_failed() {
+    let runtime = SessionRuntime::new();
+    runtime.publish_agent_event(
+        SessionEvent::AgentFinished {
+            stop_reason: "error".to_string(),
+            model_id: None,
+            usage: None,
+        },
+        None,
+    );
+    let mut record = ended_record("child-1", "alex");
+    record.exit_code = Some(1);
+    assert_eq!(
+        child_finish_state(&record.to_session(), &runtime).0,
+        AgentTaskState::Failed
+    );
+}
+
+/// A Stop sent between two turns: the first turn had already finished, so the
+/// stop decides nothing about it. The next turn starts before the kill lands,
+/// and the kill is that turn's end, so its error is cancelled, not failed.
+#[test]
+fn a_stop_sent_between_turns_is_read_against_the_next_turn() {
+    let runtime = SessionRuntime::new();
+    runtime.publish_agent_event(
+        SessionEvent::AgentFinished {
+            stop_reason: "end_turn".to_string(),
+            model_id: None,
+            usage: None,
+        },
+        None,
+    );
+    runtime.request_stop();
+    assert!(
+        !runtime.stop_requested(),
+        "a turn that finished first keeps its verdict"
+    );
+    runtime.begin_turn();
+    assert!(
+        runtime.stop_requested(),
+        "the turn that starts before the kill is the stopped one"
+    );
+    runtime.publish_agent_event(
+        SessionEvent::AgentFinished {
+            stop_reason: "error".to_string(),
+            model_id: None,
+            usage: None,
+        },
+        None,
+    );
+    let mut record = ended_record("child-1", "alex");
+    record.exit_code = Some(1);
+    assert_eq!(
+        child_finish_state(&record.to_session(), &runtime).0,
+        AgentTaskState::Canceled
+    );
+}
+
 /// Origin inheritance (`S5` decision 3, and the §5 checklist): a child
 /// carries its creator's **stored** origin — same device, same role — and a
 /// local creator stays local. Nothing here reads a connection, because the

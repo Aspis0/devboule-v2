@@ -261,11 +261,19 @@ pub(super) fn summary_of(message: Option<&str>) -> String {
 /// speak for the process. A session that never reported one is judged by its
 /// exit: a clean end is `completed`, an unclean one `failed`, and a session
 /// the human closed (or one whose daemon died) is `canceled` — it did not
-/// report and nothing says it failed.
+/// report and nothing says it failed. A stop someone asked for is `canceled`
+/// before any of that: a killed pi turn reports `error`, and that is not a
+/// failure of the work.
 pub(super) fn child_finish_state(
     session: &Session,
     runtime: &SessionRuntime,
 ) -> (AgentTaskState, Option<String>) {
+    if runtime.stop_requested() {
+        return (
+            AgentTaskState::Canceled,
+            Some("The agent was stopped by request.".to_string()),
+        );
+    }
     if let Some(stop_reason) = runtime.agent_stop_reason() {
         let state = stop_reason_state(&stop_reason);
         let mut note = (state != AgentTaskState::Completed).then(|| {

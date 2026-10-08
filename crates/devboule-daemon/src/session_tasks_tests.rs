@@ -21,6 +21,7 @@ fn held(id: &str, state: SessionState) -> HeldChild {
         ended_at_ms: None,
         model: Some("model-x".to_string()),
         tool_call_count: Some(4),
+        stop_requested: false,
     }
 }
 
@@ -131,6 +132,45 @@ mod derive {
         assert_eq!(state("s.bad"), SessionTaskState::Failed);
         assert_eq!(state("s.nocode"), SessionTaskState::Failed);
         assert_eq!(state("s.gone"), SessionTaskState::Cancelled);
+    }
+
+    #[test]
+    fn a_stopped_held_child_reads_cancelled_whatever_it_exited_with() {
+        let mut unclean = held("s.bad", ended(Some(1)));
+        unclean.stop_requested = true;
+        let mut silent = held("s.nocode", ended(None));
+        silent.stop_requested = true;
+        let tasks = tasks_of(&[unclean, silent], &[]);
+        let state = |id: &str| {
+            tasks
+                .iter()
+                .find(|t| t.id == id)
+                .unwrap_or_else(|| panic!("no task for {id}"))
+                .state
+        };
+        assert_eq!(state("s.bad"), SessionTaskState::Cancelled);
+        assert_eq!(state("s.nocode"), SessionTaskState::Cancelled);
+    }
+
+    #[test]
+    fn a_resumed_child_reads_running_after_its_stopped_finish() {
+        let stopped_finish = row(child_finished("s.child", AgentTaskState::Canceled), 50);
+        let resumed = row(
+            SessionEvent::AgentResumed {
+                child_session_id: "s.child".to_string(),
+                display_name: "s.child title".to_string(),
+            },
+            60,
+        );
+        let without_resume = tasks_of(
+            &[held("s.child", live(2))],
+            std::slice::from_ref(&stopped_finish),
+        );
+        assert_eq!(without_resume[0].state, SessionTaskState::Cancelled);
+        let tasks = tasks_of(&[held("s.child", live(2))], &[stopped_finish, resumed]);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].state, SessionTaskState::Running);
+        assert_eq!(tasks[0].ended_at_ms, None);
     }
 
     #[test]

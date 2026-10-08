@@ -259,7 +259,18 @@ impl super::SessionRegistry {
             ended_at_ms,
             model,
             tool_call_count,
+            stop_requested: self.runtime_stop_requested(&session.id),
         }
+    }
+
+    /// Whether a stop reached the session's current run. A configuring entry
+    /// is the resume that replaced the stopped run, so it answers no.
+    fn runtime_stop_requested(&self, session_id: &str) -> bool {
+        let Ok(map) = self.inner.lock() else {
+            return false;
+        };
+        map.get(session_id)
+            .is_some_and(|entry| !entry.is_configuring() && entry.runtime().stop_requested())
     }
 
     /// The wall time the session's process was observed dead, when the

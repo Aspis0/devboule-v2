@@ -107,6 +107,7 @@ pub fn event_kind(event: &SessionEvent) -> &'static str {
         SessionEvent::ContextUsage { .. } => "context_usage",
         SessionEvent::PlanUsage { .. } => "plan_usage",
         SessionEvent::AgentCreated { .. } => "agent_created",
+        SessionEvent::AgentResumed { .. } => "agent_resumed",
         SessionEvent::ChildFinished { .. } => "child_finished",
         SessionEvent::AgentTaskStarted { .. } => "agent_task_started",
         SessionEvent::AgentTaskNotification { .. } => "agent_task_notification",

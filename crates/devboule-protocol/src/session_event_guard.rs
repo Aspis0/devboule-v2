@@ -178,6 +178,10 @@ pub(crate) fn session_event_samples() -> Vec<SessionEvent> {
             provider: "claude".to_string(),
             profile: "worker".to_string(),
         },
+        AgentResumed => SessionEvent::AgentResumed {
+            child_session_id: "s.1.2".to_string(),
+            display_name: "worker".to_string(),
+        },
         ChildFinished => SessionEvent::ChildFinished {
             message_id: Some("child-finished-1".to_string()),
             child_session_id: "s.1.2".to_string(),

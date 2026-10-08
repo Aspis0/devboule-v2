@@ -95,12 +95,16 @@ fn agent_queue_extent(queue: &VecDeque<PendingItem>) -> (usize, u64) {
 /// must give is the one fact a creator most needs to see, and it is the state
 /// [`crate::session::SessionRegistry::notify_child_input_required`] reports in
 /// words. A terminal row keeps its terminal word — a leftover card on a dead
-/// session is not `input_required`.
+/// session is not `input_required` — and a run a stop ended reads `canceled`
+/// whatever the process exited with.
 pub(crate) fn roster_task_state(
     session: &Session,
     runtime: &SessionRuntime,
 ) -> devboule_protocol::AgentTaskState {
     if !session.state.is_live() {
+        if runtime.stop_requested() {
+            return devboule_protocol::AgentTaskState::Canceled;
+        }
         return session.state.task_state(false);
     }
     let waiting = runtime
@@ -208,6 +212,13 @@ pub(crate) struct SessionRuntime {
     /// The last `AgentFinished` stop reason this session reported, which is
     /// what decides `completed | failed | canceled` in the finish report.
     agent_stop_reason: Mutex<Option<String>>,
+    /// Set once, when a stop reaches this run before any turn end was recorded,
+    /// and never cleared: the run then reads as cancelled whatever the provider
+    /// reports while the killed process dies.
+    stop_requested: AtomicBool,
+    /// A stop was sent to the process, whatever the turn state was then. A turn
+    /// that begins after it is the one the kill ends, so it takes the request.
+    stop_signalled: AtomicBool,
     /// The wait thread and the post-create race check can observe the same
     /// exit. Only one of them may publish the exit transition.
     pub(crate) exit_transition_sent: AtomicBool,
@@ -620,6 +631,8 @@ impl SessionRuntime {
             claude_reported_mode: Mutex::new(None),
             agent_message: Mutex::new(None),
             agent_stop_reason: Mutex::new(None),
+            stop_requested: AtomicBool::new(false),
+            stop_signalled: AtomicBool::new(false),
             mcp_bearer: Mutex::new(None),
             mcp_url: Mutex::new(None),
             mcp_readiness: Mutex::new(McpReadiness {
@@ -1015,6 +1028,7 @@ impl SessionRuntime {
                 | SessionEvent::SessionManifest { .. }
                 | SessionEvent::SessionFeatureState { .. }
                 | SessionEvent::AgentCreated { .. }
+                | SessionEvent::AgentResumed { .. }
                 | SessionEvent::ChildFinished { .. }
                 | SessionEvent::ContextUsage { .. }
                 | SessionEvent::PlanUsage { .. } => {
@@ -1900,6 +1914,10 @@ impl SessionRuntime {
             self.turn_active.store(true, Ordering::Release);
             if let Ok(mut slot) = self.agent_stop_reason.lock() {
                 *slot = None;
+                // A stop sent before this turn began is the kill that ends it.
+                if self.stop_signalled.load(Ordering::Acquire) {
+                    self.stop_requested.store(true, Ordering::Release);
+                }
             }
             self.mark_activity_changed()
                 .then(|| self.prepare_roster_transition())
@@ -2630,6 +2648,22 @@ impl SessionRuntime {
             .and_then(|slot| slot.clone())
     }
 
+    /// Record a stop before the process is signalled. Decided under the stop
+    /// reason's lock, which `begin_turn` also takes, so a turn end recorded
+    /// first keeps its verdict and a turn starting after this is still judged.
+    pub(crate) fn request_stop(&self) {
+        if let Ok(slot) = self.agent_stop_reason.lock() {
+            self.stop_signalled.store(true, Ordering::Release);
+            if slot.is_none() {
+                self.stop_requested.store(true, Ordering::Release);
+            }
+        }
+    }
+
+    pub(crate) fn stop_requested(&self) -> bool {
+        self.stop_requested.load(Ordering::Acquire)
+    }
+
     /// Remember what the finish hook needs from the event stream (`S5`
     /// decisions 7 and 10).
     ///
@@ -2695,6 +2729,19 @@ impl SessionRuntime {
             display_name: display_name.to_string(),
             provider: provider.to_string(),
             profile: profile.to_string(),
+        })
+    }
+
+    /// Publish that a created child is running again (`AgentResumed`), on the
+    /// creator's journal. Returns the event for the caller to fold.
+    pub(crate) fn publish_child_resumed(
+        &self,
+        child_session_id: &str,
+        display_name: &str,
+    ) -> Option<SessionEvent> {
+        self.publish_journaled_agent_event(|_, _, _| SessionEvent::AgentResumed {
+            child_session_id: child_session_id.to_string(),
+            display_name: display_name.to_string(),
         })
     }
 
@@ -3657,6 +3704,7 @@ impl SessionRuntime {
                 | SessionEvent::SessionManifest { .. }
                 | SessionEvent::SessionFeatureState { .. }
                 | SessionEvent::AgentCreated { .. }
+                | SessionEvent::AgentResumed { .. }
                 | SessionEvent::ChildFinished { .. }
                 | SessionEvent::AgentReported { .. }
                 | SessionEvent::ContextUsage { .. }

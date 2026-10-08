@@ -306,6 +306,14 @@ pub mod caps {
     /// event, which an older reader could not parse either.
     pub const SESSION_TASKS: &str = "session.tasks";
 
+    /// The `agent_resumed` event: a created child running again, journaled on
+    /// its creator.
+    ///
+    /// Gated because it is journaled, so a reader that did not agree the name
+    /// is skipped on replay as well as live: its decoder has no arm for the
+    /// kind, and a decode failure ends the connection.
+    pub const AGENT_RESUMED: &str = "session.agent_resumed";
+
     /// The attach reply's resume outcome (`SessionResumeInfo`).
     ///
     /// Output-only, like the queue snapshot above, but named because it
@@ -884,6 +892,9 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     // list and the app asks for it, so both ends must offer the name before
     // a `SessionTasksGet` frame can be sent — or refused on the way out.
     capabilities.push(Capability::new(caps::SESSION_TASKS));
+    // The resumed-child event: the daemon sends it only to a reader that
+    // agreed the name, so both ends must offer it for the app to receive it.
+    capabilities.push(Capability::new(caps::AGENT_RESUMED));
     // the app asks for the rows, so both ends must offer the name before a
     // `RemoteHost*` frame can be sent — or refused on the way out.
     capabilities.push(Capability::new(caps::REMOTE_HOSTS));
@@ -983,6 +994,9 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // intersection keeps it, and read before a `SessionTasksGet` frame
     // leaves for an older daemon.
     capabilities.push(Capability::new(caps::SESSION_TASKS));
+    // Offered so the intersection keeps the resumed-child event; the app
+    // reads no frame for it, but a daemon sends it only when this is agreed.
+    capabilities.push(Capability::new(caps::AGENT_RESUMED));
     // keeps it, and read before a `RemoteHost*` frame leaves for an older
     // daemon.
     capabilities.push(Capability::new(caps::REMOTE_HOSTS));

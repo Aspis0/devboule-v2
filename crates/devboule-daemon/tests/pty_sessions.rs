@@ -366,6 +366,7 @@ fn event_carries_marker(event: &SessionEvent, marker: &str) -> bool {
         | SessionEvent::SessionFeatureState { .. }
         | SessionEvent::SessionNotice { .. }
         | SessionEvent::AgentCreated { .. }
+        | SessionEvent::AgentResumed { .. }
         | SessionEvent::ChildFinished { .. }
         | SessionEvent::AgentReported { .. } => false,
     }
@@ -822,6 +823,7 @@ fn reattach_with_a_cursor_synchronises_screen_state() {
             | SessionEvent::SessionFeatureState { .. }
             | SessionEvent::SessionNotice { .. }
             | SessionEvent::AgentCreated { .. }
+            | SessionEvent::AgentResumed { .. }
             | SessionEvent::ChildFinished { .. }
             | SessionEvent::AgentReported { .. } => None,
         })
@@ -1192,6 +1194,7 @@ fn shutdown_drain_never_delivers_a_pending_sequence_twice() {
             | SessionEvent::SessionFeatureState { .. }
             | SessionEvent::SessionNotice { .. }
             | SessionEvent::AgentCreated { .. }
+            | SessionEvent::AgentResumed { .. }
             | SessionEvent::ChildFinished { .. }
             | SessionEvent::AgentReported { .. } => None,
         })
@@ -1929,6 +1932,7 @@ fn real_pty_channel_flood_correctness() {
         | SessionEvent::SessionFeatureState { .. }
         | SessionEvent::SessionNotice { .. }
         | SessionEvent::AgentCreated { .. }
+        | SessionEvent::AgentResumed { .. }
         | SessionEvent::ChildFinished { .. }
         | SessionEvent::AgentReported { .. } => {}
     });
@@ -2339,6 +2343,7 @@ fn real_pty_channel_file_transport_ab_benchmark() {
         | SessionEvent::SessionFeatureState { .. }
         | SessionEvent::SessionNotice { .. }
         | SessionEvent::AgentCreated { .. }
+        | SessionEvent::AgentResumed { .. }
         | SessionEvent::ChildFinished { .. }
         | SessionEvent::AgentReported { .. } => {}
     });
@@ -2732,6 +2737,7 @@ fn journal_outlives_the_256kib_ring() {
             | SessionEvent::SessionFeatureState { .. }
             | SessionEvent::SessionNotice { .. }
             | SessionEvent::AgentCreated { .. }
+            | SessionEvent::AgentResumed { .. }
             | SessionEvent::ChildFinished { .. }
             | SessionEvent::AgentReported { .. } => {}
         }
@@ -3010,6 +3016,7 @@ fn journal_growth_after_13mb_flood() {
             | SessionEvent::SessionFeatureState { .. }
             | SessionEvent::SessionNotice { .. }
             | SessionEvent::AgentCreated { .. }
+            | SessionEvent::AgentResumed { .. }
             | SessionEvent::ChildFinished { .. }
             | SessionEvent::AgentReported { .. } => {}
         }
@@ -3322,6 +3329,7 @@ fn attach_during_flood_delivers_every_sequence_once() {
             | SessionEvent::SessionFeatureState { .. }
             | SessionEvent::SessionNotice { .. }
             | SessionEvent::AgentCreated { .. }
+            | SessionEvent::AgentResumed { .. }
             | SessionEvent::ChildFinished { .. }
             | SessionEvent::AgentReported { .. } => {}
         }

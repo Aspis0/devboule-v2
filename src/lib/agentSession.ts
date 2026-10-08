@@ -1329,6 +1329,10 @@ export class AgentSession {
         // label) and its `createdBy` (the badge naming this session). The one
         // event this pipeline acts on is the finish below.
         return;
+      case "agent_resumed":
+        // A created child running again. Like `agent_created` it is a fact for
+        // the task list, which the daemon derives; no view renders it.
+        return;
       case "child_finished":
         // One created child's finish, on the creator's transcript. The app's
         // only use of it is a Design history entry pointing at the child: the

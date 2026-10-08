@@ -725,6 +725,31 @@ impl super::SessionRegistry {
         true
     }
 
+    /// Tell a live creator that one of its children runs again. The finish the
+    /// stopped run left in the creator's journal is the child's last word until
+    /// this lands, and the task list reads the last word.
+    pub(super) fn publish_child_resumed(
+        &self,
+        child: &str,
+        display_name: &str,
+        creator: Option<&str>,
+        owner: &OwnerId,
+    ) {
+        let Some(creator) = creator else {
+            return;
+        };
+        let Some(runtime) = self.live_runtime(creator, owner) else {
+            return;
+        };
+        match runtime.publish_child_resumed(child, display_name) {
+            Some(event) => self.refresh_session_tasks(
+                &runtime.session_id,
+                &[(event, crate::agent_activity::wall_now_ms())],
+            ),
+            None => runtime.mark_journal_degraded(),
+        }
+    }
+
     /// Record the new child on its creator, **then** pay off an end that arrived
     /// before the creation committed (audit-3 §3).
     ///

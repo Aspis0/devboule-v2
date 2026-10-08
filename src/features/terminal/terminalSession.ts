@@ -511,6 +511,7 @@ export class TerminalSession {
       case "session_notice":
       case "agent_reported":
       case "agent_created":
+      case "agent_resumed":
       case "child_finished":
       case "agent_user_message":
       case "agent_thought":
