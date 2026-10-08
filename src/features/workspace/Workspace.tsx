@@ -113,12 +113,12 @@ import {
   resolutionOutcome,
 } from "../../components/PermissionCard";
 import {
-  chatCapableProviders,
   peerDeviceNames,
   requiresConsent,
   sessionCreateFromProvider,
   sessionCreatorTooltip,
   sessionTitle,
+  workspacePickerProviders,
   isRecoveredSession,
   sharedSessionController,
   useWorkspaceSessions,
@@ -1420,7 +1420,7 @@ export function Workspace({
   }, []);
   const loadChatProviders = useCallback(async (): Promise<ProviderInfo[]> => {
     const catalog = await providersList();
-    return chatCapableProviders(catalog.providers);
+    return workspacePickerProviders(catalog.providers);
   }, []);
   const startAgentSession = useCallback(
     (provider: ProviderInfo | undefined, workspaceId: string | null) => {

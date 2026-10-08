@@ -9,7 +9,11 @@ import { errorSentence, type ErrorSentence } from "../../../lib/errorSentence";
 import { ErrorText } from "../../../components/ErrorText";
 import { useAppStore } from "../../../store/appStore";
 import { providerEmptySentence } from "../../../lib/providerEmptySentence";
-import { sharedSessionController } from "../../workspace/workspaceSessions";
+import {
+  isInstalled,
+  isRunOnDemand,
+  sharedSessionController,
+} from "../../workspace/workspaceSessions";
 import { hasTerminalInput, requestTerminalInput } from "../../terminal/pendingTerminalInput";
 import { useSettingsDaemon } from "../settingsDaemon";
 import {
@@ -246,23 +250,17 @@ export function ProvidersPanel() {
   const vocabularySupported = daemon.capabilities.includes(PROVIDER_VOCABULARY_CAPABILITY);
 
   const providers = useMemo(() => catalog?.providers ?? null, [catalog]);
-  const installed = useMemo(
-    () => (providers ?? []).filter((provider) => provider.installed !== false),
-    [providers],
-  );
+  const installed = useMemo(() => (providers ?? []).filter(isInstalled), [providers]);
   // Registry agents run on demand through npx (the old "available via npx"):
   // no local executable, so they get their own group and must not crowd
   // the real CLIs under "Installed".
   const localProviders = useMemo(
-    () => installed.filter((provider) => provider.origin !== "npx-wrapper"),
+    () => installed.filter((provider) => !isRunOnDemand(provider)),
     [installed],
   );
-  const npxProviders = useMemo(
-    () => installed.filter((provider) => provider.origin === "npx-wrapper"),
-    [installed],
-  );
+  const npxProviders = useMemo(() => installed.filter(isRunOnDemand), [installed]);
   const available = useMemo(
-    () => (providers ?? []).filter((provider) => provider.installed === false),
+    () => (providers ?? []).filter((provider) => !isInstalled(provider)),
     [providers],
   );
   const trimmedQuery = query.trim().toLowerCase();

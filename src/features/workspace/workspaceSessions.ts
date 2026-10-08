@@ -919,9 +919,32 @@ export function chatCapableProviders(providers: ProviderInfo[]): ProviderInfo[] 
   );
 }
 
+/** Registry agents that start through npx on demand: nothing is installed for them here. */
+export function isRunOnDemand(provider: ProviderInfo): boolean {
+  return provider.origin === "npx-wrapper";
+}
+
+/** Settings > Providers' "Installed" test: the daemon sends `installed: false` only on synthetic rows. */
+export function isInstalled(provider: ProviderInfo): boolean {
+  return provider.installed !== false;
+}
+
+/**
+ * The workspace picker's list: installed CLIs, plus run-on-demand providers
+ * that started OK. The full catalog stays in Settings > Providers.
+ */
+export function workspacePickerProviders(providers: ProviderInfo[]): ProviderInfo[] {
+  // The daemon keeps only the latest start's result, so "ok" means the last
+  // start completed, not that it ever did.
+  return chatCapableProviders(providers).filter(
+    (provider) =>
+      isInstalled(provider) && (!isRunOnDemand(provider) || provider.authentication === "ok"),
+  );
+}
+
 /** True when the provider spawns via npx and downloads third-party code on first run. */
 export function requiresConsent(provider: ProviderInfo): boolean {
-  return provider.origin === "npx-wrapper";
+  return isRunOnDemand(provider);
 }
 
 export function sessionCreateFromProvider(provider: ProviderInfo | undefined): {

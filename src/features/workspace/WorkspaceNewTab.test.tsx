@@ -267,6 +267,8 @@ const npxProvider = {
   origin: "npx-wrapper" as const,
   launchArgs: ["--registry=https://evil"],
 };
+// Run-on-demand, and started OK on this machine: the only kind the picker keeps.
+const startedNpxProvider = { ...npxProvider, authentication: "ok" };
 
 /** A DOMRect at a chosen left edge and width: happy-dom computes no layout. */
 function stubRect(left: number, width: number): DOMRect {
@@ -821,7 +823,10 @@ describe("the + new-tab menu", () => {
 
     // The consent card over the same flow closes too, and the focus rule
     // takes back the focus its unmount dropped.
-    vi.mocked(providersList).mockResolvedValue({ providers: [npxProvider], unreadableDirs: 0 });
+    vi.mocked(providersList).mockResolvedValue({
+      providers: [startedNpxProvider],
+      unreadableDirs: 0,
+    });
     await openMenu(container);
     await act(async () => menuItem(container, "Agent").click());
     await act(async () => undefined);
@@ -1521,7 +1526,7 @@ describe("the + new-tab menu", () => {
     expect(workspaceCreate).not.toHaveBeenCalled();
   });
 
-  it("splits the provider picker into installed and available-to-install groups", async () => {
+  it("lists only installed providers in the picker; run-on-demand ones stay in Settings", async () => {
     vi.mocked(providersList).mockResolvedValue({
       providers: [npxProvider, claudeProvider, grokProvider],
       unreadableDirs: 0,
@@ -1534,29 +1539,18 @@ describe("the + new-tab menu", () => {
 
     const menu = document.querySelector('[aria-label="Choose agent"]');
     if (menu === null) throw new Error("provider popover did not render");
-    const groups = menu.querySelectorAll(".workspace-provider-group");
-    expect(groups).toHaveLength(2);
-    expect(groups[0].textContent).toContain("Installed");
-    expect(groups[0].textContent).toContain("grok");
-    expect(groups[0].textContent).toContain("claude");
-    expect(groups[0].textContent).not.toContain("codex-acp");
-    expect(groups[1].textContent).toContain("Available to install");
-    expect(groups[1].textContent).toContain("codex-acp");
-
-    // Choosing a registry agent still routes through the consent flow.
-    const npxOption = Array.from(groups[1].querySelectorAll("button")).find(
-      (button) => button.textContent === "codex-acp",
-    );
-    if (npxOption === undefined) throw new Error("npx option did not render");
-    await act(async () => npxOption.click());
-    await act(async () => undefined);
-
+    const options = Array.from(menu.querySelectorAll("button")).map((button) => button.textContent);
+    expect(options).toEqual(["claude", "grok"]);
+    expect(menu.textContent).not.toContain("Available to install");
+    expect(menu.textContent).not.toContain("codex-acp");
     expect(sessionCreate).not.toHaveBeenCalled();
-    expect(document.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
   });
 
   it("runs the npx consent flow before creating a session from Agent", async () => {
-    vi.mocked(providersList).mockResolvedValue({ providers: [npxProvider], unreadableDirs: 0 });
+    vi.mocked(providersList).mockResolvedValue({
+      providers: [startedNpxProvider],
+      unreadableDirs: 0,
+    });
     ({ container, unmount } = await renderWorkspace());
 
     await openMenu(container);
@@ -1575,7 +1569,10 @@ describe("the + new-tab menu", () => {
   });
 
   it("names the creation in the status bar while the session is starting", async () => {
-    vi.mocked(providersList).mockResolvedValue({ providers: [npxProvider], unreadableDirs: 0 });
+    vi.mocked(providersList).mockResolvedValue({
+      providers: [startedNpxProvider],
+      unreadableDirs: 0,
+    });
     vi.mocked(sessionCreate).mockImplementationOnce(() => new Promise<never>(() => undefined));
     ({ container, unmount } = await renderWorkspace());
 
@@ -1596,7 +1593,10 @@ describe("the + new-tab menu", () => {
     // With one npx provider no picker opens, so the consent card is the only
     // stop between the menu's Agent entry and Escape; cancelling must hand
     // focus back to the + button rather than dropping it on the body.
-    vi.mocked(providersList).mockResolvedValue({ providers: [npxProvider], unreadableDirs: 0 });
+    vi.mocked(providersList).mockResolvedValue({
+      providers: [startedNpxProvider],
+      unreadableDirs: 0,
+    });
     ({ container, unmount } = await renderWorkspace());
 
     await openMenu(container);

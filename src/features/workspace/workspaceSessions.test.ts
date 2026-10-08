@@ -25,6 +25,7 @@ import {
   sessionOriginBadge,
   sessionOriginUnknown,
   sessionTitle,
+  workspacePickerProviders,
 } from "./workspaceSessions";
 import { fireAttentionToast, forgetAttentionFor, type ToastContent } from "./attentionNotice";
 import { workspaceView } from "./workspaceProjects";
@@ -157,6 +158,34 @@ describe("workspace session controller", () => {
     expect(requiresConsent(providers[0])).toBe(true);
     expect(requiresConsent(providers[1])).toBe(false);
     expect(requiresConsent(providers[2])).toBe(false);
+  });
+
+  it("workspace picker shows installed CLIs and run-on-demand providers only once started OK", () => {
+    const installed = {
+      id: "grok",
+      executable: "grok.exe",
+      acpAvailable: true,
+      authentication: "unknown" as const,
+      protocol: "acp" as const,
+      origin: "user-binary" as const,
+    };
+    const neverStarted = {
+      id: "codex-acp",
+      executable: "@agentclientprotocol/codex-acp@1.10.0",
+      acpAvailable: true,
+      authentication: "unknown" as const,
+      protocol: "acp" as const,
+      origin: "npx-wrapper" as const,
+    };
+    const startedOk = { ...neverStarted, id: "gemini-acp", authentication: "ok" };
+    const failedStart = { ...neverStarted, id: "qwen-acp", authentication: "failed: exit 1" };
+    const notInstalled = { ...installed, id: "claude-remote", installed: false };
+
+    expect(
+      workspacePickerProviders([installed, neverStarted, startedOk, failedStart, notInstalled]).map(
+        (provider) => provider.id,
+      ),
+    ).toEqual(["grok", "gemini-acp"]);
   });
 
   it("hides switched-off providers from the new-session picker", () => {

@@ -1536,11 +1536,12 @@ describe("Workspace sessions", () => {
     authentication: "unknown" as const,
     protocol: "stream-json",
   };
+  // Started OK on this machine: the only run-on-demand kind the picker keeps.
   const npxProvider = {
     id: "codex-acp",
     executable: "@agentclientprotocol/codex-acp@1.10.0",
     acpAvailable: true,
-    authentication: "unknown" as const,
+    authentication: "ok" as const,
     protocol: "acp" as const,
     origin: "npx-wrapper" as const,
     launchArgs: ["--registry=https://evil"],
