@@ -15,6 +15,11 @@ on:
 jobs:
   windows:
     runs-on: windows-latest
+    # The tag name reaches every step as environment data only; it is never
+    # spliced into `run:` source, where $() and quotes would be evaluated as
+    # PowerShell by whoever created the tag.
+    env:
+      TAG_NAME: ${{ github.ref_name }}
 
     steps:
       - name: Checkout
@@ -176,6 +181,14 @@ jobs:
       # Tag-only tail, deliberately last: branch pushes stop at the npm audit
       # above, so an everyday push never pays a release build. The existing
       # unfiltered `push:` trigger is what admits tags to this workflow.
+      - name: Validate the tag name (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          if ($env:TAG_NAME -notmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
+            throw "tag name is not a strict vX.Y.Z: $env:TAG_NAME"
+          }
+
       - name: Build the NSIS installer (tags only)
         if: startsWith(github.ref, 'refs/tags/v')
         run: pnpm build:installer
@@ -188,12 +201,12 @@ jobs:
           if ($installers.Count -ne 1) {
             throw "expected exactly one NSIS installer, found $($installers.Count)"
           }
-          $version = "${{ github.ref_name }}" -replace '^v', ''
+          $version = $env:TAG_NAME -replace '^v', ''
           Copy-Item $installers[0].FullName "Devboule-Setup-$version-x64.exe"
 
       - name: Extract this tag's release notes from the changelog (tags only)
         if: startsWith(github.ref, 'refs/tags/v')
-        run: node scripts/release.mjs notes ${{ github.ref_name }} release-notes.md
+        run: node scripts/release.mjs notes $env:TAG_NAME release-notes.md
 
       - name: Upload the Windows release inputs (tags only)
         if: startsWith(github.ref, 'refs/tags/v')
