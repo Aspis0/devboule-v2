@@ -452,6 +452,16 @@ export function PermissionCard({
     setPickedOptions(new Map());
     setOtherTexts(new Map());
   }, [sessionId, request.toolCallId, subscriptionId]);
+  // The card takes focus only from a person typing in the transcript or the
+  // composer, so the decision is one Tab away. Its approve control is never
+  // focused: Deny stays the first stop.
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const active = document.activeElement;
+    if (active?.closest(".workspace-conversation, .workspace-composer") != null) {
+      cardRef.current?.focus();
+    }
+  }, []);
 
   if (!capabilities.includes("typed_permissions") && daemonState === "connected") return null;
 
@@ -669,7 +679,7 @@ export function PermissionCard({
   };
 
   return (
-    <div className="permission-card" aria-live="polite">
+    <div ref={cardRef} className="permission-card" aria-live="polite" tabIndex={-1}>
       {/* The provenance line is the card's first child and its own element
           (A14): the request's text renders below it, so a remote turn cannot
           print something that reads as it. */}

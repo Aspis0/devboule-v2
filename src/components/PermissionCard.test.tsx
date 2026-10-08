@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { act } from "react";
-import { createRoot } from "react-dom/client";
+import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PermissionRequest, SessionOriginKind } from "../types/ipc";
 
@@ -631,6 +631,55 @@ describe("PermissionCard", () => {
       await pending.promise;
     });
     expect(onResolved).not.toHaveBeenCalled();
+  });
+});
+
+describe("focus when a card appears", () => {
+  afterEach(() => {
+    document.body.replaceChildren();
+  });
+
+  async function mountCard(): Promise<{ container: HTMLElement; root: Root }> {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <PermissionCard
+          sessionId="session-1"
+          subscriptionId={41}
+          request={request}
+          capabilities={["typed_permissions"]}
+        />,
+      );
+    });
+    return { container, root };
+  }
+
+  it("takes focus when the person was typing in the composer, and never focuses an approve control", async () => {
+    const composer = document.createElement("div");
+    composer.className = "workspace-composer";
+    const input = document.createElement("textarea");
+    composer.append(input);
+    document.body.append(composer);
+    input.focus();
+
+    const { container, root } = await mountCard();
+
+    expect(document.activeElement).toBe(container.querySelector(".permission-card"));
+    expect(container.querySelector("[autofocus]")).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("leaves focus where it was when the person was outside the transcript and composer", async () => {
+    const outside = document.createElement("button");
+    document.body.append(outside);
+    outside.focus();
+
+    const { root } = await mountCard();
+
+    expect(document.activeElement).toBe(outside);
+    await act(async () => root.unmount());
   });
 });
 
