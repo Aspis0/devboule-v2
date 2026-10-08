@@ -4,7 +4,10 @@
 use std::fs;
 use std::path::PathBuf;
 
-use super::{opencode_key, pi_auth_path, ApiKey, KeySources, MAX_AUTH_BYTES};
+use super::{
+    opencode_key, opencode_key_and_source, pi_auth_path, ApiKey, KeySource, KeySources,
+    MAX_AUTH_BYTES,
+};
 
 /// A fresh home folder under the temp dir, holding a fixture `auth.json` when
 /// the test gives one.
@@ -180,4 +183,38 @@ fn symlink_auth_file_is_refused() {
         }
     }
     assert!(opencode_key(&sources(&no_env, Some(&home))).is_none());
+}
+
+#[test]
+fn the_source_that_won_is_named_and_no_log_line_carries_the_key() {
+    let home = Home::new(
+        "source-env",
+        Some(r#"{"opencode":{"type":"api_key","key":"file-secret"}}"#),
+    );
+    let env = env_key("env-secret-value");
+    let (key, source) = opencode_key_and_source(&sources(&env, Some(&home)));
+    assert!(key.is_some());
+    assert_eq!(source, KeySource::Environment);
+    let line = source.log_line();
+    assert!(line.contains("OPENCODE_API_KEY"), "{line}");
+    assert!(!line.contains("env-secret-value"), "{line}");
+    assert!(!line.contains("file-secret"), "{line}");
+}
+
+#[test]
+fn the_file_and_no_key_sources_are_named_too() {
+    let home = Home::new(
+        "source-file",
+        Some(r#"{"opencode":{"type":"api_key","key":"file-secret"}}"#),
+    );
+    let (key, source) = opencode_key_and_source(&sources(&no_env, Some(&home)));
+    assert!(key.is_some());
+    assert_eq!(source, KeySource::PiAuthFile);
+    assert!(!source.log_line().contains("file-secret"));
+
+    let missing = Home::new("source-none", None);
+    let (key, source) = opencode_key_and_source(&sources(&no_env, Some(&missing)));
+    assert!(key.is_none());
+    assert_eq!(source, KeySource::Nothing);
+    assert!(source.log_line().contains("no key"));
 }

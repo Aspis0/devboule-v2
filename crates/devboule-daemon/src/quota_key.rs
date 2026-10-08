@@ -52,25 +52,58 @@ pub(crate) fn pi_auth_path(home: &Path) -> PathBuf {
     home.join(".pi").join("agent").join("auth.json")
 }
 
-/// The environment variable first; a blank one falls through to the file.
-pub(crate) fn opencode_key(sources: &KeySources<'_>) -> Option<ApiKey> {
-    (sources.env)(ENV_NAME)
-        .as_deref()
-        .and_then(ApiKey::from_text)
-        .or_else(|| {
-            sources
-                .home
-                .as_deref()
-                .and_then(|home| key_from_auth_file(&pi_auth_path(home)))
-        })
+/// Which source supplied the key. It names the source for the log and carries
+/// no key text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeySource {
+    Environment,
+    PiAuthFile,
+    Nothing,
 }
 
-/// The key the production sources name: this process's environment and the
-/// person's home folder.
+impl KeySource {
+    /// The INFO line written when the source changes. It names the source only,
+    /// so no log line can carry the key.
+    pub(crate) fn log_line(self) -> String {
+        let source = match self {
+            Self::Environment => "the OPENCODE_API_KEY environment variable",
+            Self::PiAuthFile => "the opencode entry of Pi's auth.json",
+            Self::Nothing => "no key",
+        };
+        format!("INFO opencode-go quota: key source is {source}")
+    }
+}
+
+/// The environment variable first; a blank one falls through to the file.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn opencode_key(sources: &KeySources<'_>) -> Option<ApiKey> {
+    opencode_key_and_source(sources).0
+}
+
+/// The key and the source that supplied it, or none and [`KeySource::Nothing`].
+pub(crate) fn opencode_key_and_source(sources: &KeySources<'_>) -> (Option<ApiKey>, KeySource) {
+    if let Some(key) = (sources.env)(ENV_NAME)
+        .as_deref()
+        .and_then(ApiKey::from_text)
+    {
+        return (Some(key), KeySource::Environment);
+    }
+    match sources
+        .home
+        .as_deref()
+        .and_then(|home| key_from_auth_file(&pi_auth_path(home)))
+    {
+        Some(key) => (Some(key), KeySource::PiAuthFile),
+        None => (None, KeySource::Nothing),
+    }
+}
+
+/// The key and source the production sources name: this process's environment
+/// and the person's home folder.
 #[cfg_attr(test, allow(dead_code))]
-pub(crate) fn opencode_key_from_process() -> Option<ApiKey> {
+pub(crate) fn opencode_key_from_process() -> (Option<ApiKey>, KeySource) {
     let env = |name: &str| std::env::var(name).ok();
-    opencode_key(&KeySources {
+    opencode_key_and_source(&KeySources {
         env: &env,
         home: home_dir(),
     })

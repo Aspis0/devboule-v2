@@ -74,10 +74,18 @@ pub(crate) fn note_manifest(manifest: &SessionEvent) {
 
 #[cfg_attr(test, allow(dead_code))]
 fn run(wake: Receiver<()>) {
+    let mut last_source = None;
     loop {
         if now_ms() <= DEMAND_UNTIL_MS.load(Ordering::SeqCst) {
+            let (key, source) = opencode_key_from_process();
+            // One line per change of source, so the log says which source is in
+            // use without a line per poll.
+            if last_source != Some(source) {
+                eprintln!("{}", source.log_line());
+                last_source = Some(source);
+            }
             let frame = reading_for(
-                opencode_key_from_process().as_ref(),
+                key.as_ref(),
                 now_ms(),
                 |key, observed_at_ms| fetch(&OpencodeGo, key, observed_at_ms),
             );
