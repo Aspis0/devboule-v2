@@ -79,7 +79,6 @@ describe("user-opened workspace tabs", () => {
     await renderWorkspace(false);
     expect(tabTitles()).toEqual([]);
     expect(document.body.textContent).toContain("No tabs yet");
-    expect(document.body.textContent).toContain("0 open sessions");
   });
 
   it("opens an agent-created child by clicking its pill row", async () => {
@@ -111,7 +110,6 @@ describe("user-opened workspace tabs", () => {
     expect(tabElement("child").getAttribute("aria-selected")).toBe("true");
     expect(document.querySelector(".workspace-subagent-list")).toBeNull();
     expect(document.getElementById("workspace-session-tab-recovered")).toBeNull();
-    expect(document.body.textContent).toContain("2 open sessions");
     expect(JSON.parse(localStorage.getItem("devboule.openSessionTabs")!).selected?.id).toBe(
       "child",
     );

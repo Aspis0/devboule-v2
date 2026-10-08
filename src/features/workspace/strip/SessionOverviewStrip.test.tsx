@@ -105,7 +105,6 @@ function renderStrip(tabs: StripTab[], overview: readonly Session[], activeTabId
         resolveCreator={() => null as string | null}
         takeBackAvailable={false}
         onTakeBack={vi.fn()}
-        statusText="1 sessions"
         overviewSessions={overview}
         workspaceName="atelier"
         onOpenSession={onOpenSession}
@@ -137,20 +136,6 @@ describe("the overview through the strip", () => {
     expect(rendered.selectTab).toHaveBeenCalledWith(FILE.id);
     expect(rendered.onOpenSession).not.toHaveBeenCalled();
     expect(rendered.listbox()).toBeNull();
-  });
-
-  it("counts tabs and further sessions honestly in the trigger name", () => {
-    const tabs = composeStripTabs([session("b")], [FILE]);
-    const rendered = renderStrip(tabs, ROSTER, "b");
-    expect(rendered.trigger().getAttribute("aria-label")).toBe(
-      "1 sessions — show all 2 tabs and 2 more sessions",
-    );
-  });
-
-  it("names a lone tab without the recovered clause", () => {
-    const tabs = composeStripTabs([session("b")], []);
-    const rendered = renderStrip(tabs, [session("b")], "b");
-    expect(rendered.trigger().getAttribute("aria-label")).toBe("1 sessions — show all 1 tab");
   });
 
   it("closes on Escape with focus back on the trigger", () => {

@@ -91,7 +91,6 @@ function renderOpenStrip() {
         resolveCreator={() => null as string | null}
         takeBackAvailable={false}
         onTakeBack={vi.fn()}
-        statusText="1 sessions"
         overviewSessions={roster}
         workspaceName="atelier"
         onOpenSession={vi.fn()}

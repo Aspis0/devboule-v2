@@ -1843,14 +1843,6 @@ export function Workspace({
     (session: Session) => sessionCreatorTooltip(session, creatorById),
     [creatorById],
   );
-  // The strip's status slot carries progress and the count, never an error
-  // text: a failure has its own one line (the spec's inline error line), so
-  // the slot never becomes its second, third and fourth surface.
-  const sessionStatusText = sessionCreating
-    ? "Starting session…"
-    : sessionsLoading && sessions.length === 0
-      ? "Loading sessions…"
-      : `${visibleSessions.length} open session${visibleSessions.length === 1 ? "" : "s"}`;
 
   // One instance of the provider choice UI, anchored where the flow was
   // opened. It renders only the choice and consent; what happens afterwards
@@ -2035,7 +2027,6 @@ export function Workspace({
             resolveCreator={resolveCreator}
             takeBackAvailable={takeBackAvailable}
             onTakeBack={takeBack}
-            statusText={sessionStatusText}
             overviewSessions={overviewSessions}
             workspaceName={workspaceName}
             onOpenSession={handleOpenOverviewSession}

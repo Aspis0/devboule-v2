@@ -296,15 +296,23 @@
   white-space: nowrap;
 }
 
-/* The count is the all-sessions trigger: a ghost control. The accent arrives
+/* The all-sessions trigger is a ghost control. The accent arrives
    with the pointer or the keyboard, never at rest, or a status line wears
    the one action colour all day. */
 button.workspace-rate {
+  min-width: 24px;
+  min-height: 24px;
   padding: var(--space-2) var(--space-6);
+  justify-content: center;
   border: 1px solid transparent;
   border-radius: var(--radius-6);
   background: transparent;
   cursor: pointer;
+}
+
+/* The glyph is the chevron-right of the panel set, turned to point down. */
+button.workspace-rate .workspace-panel-icon {
+  transform: rotate(90deg);
 }
 
 button.workspace-rate:hover,

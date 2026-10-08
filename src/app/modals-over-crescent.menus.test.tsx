@@ -323,7 +323,6 @@ describe("walking every menu the source finds — the band's open is the outside
           resolveCreator={() => null}
           takeBackAvailable={false}
           onTakeBack={() => undefined}
-          statusText="0 sessions"
           overviewSessions={[]}
           workspaceName={null}
           onOpenSession={() => undefined}

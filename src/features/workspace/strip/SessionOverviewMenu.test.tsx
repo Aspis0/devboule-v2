@@ -212,7 +212,6 @@ function renderStrip(
           resolveCreator={() => null as string | null}
           takeBackAvailable={false}
           onTakeBack={vi.fn()}
-          statusText={`${strip.length} sessions`}
           overviewSessions={sessions}
           workspaceName="atelier"
           onOpenSession={onOpenSession}
@@ -407,16 +406,12 @@ describe("SessionOverviewMenu", () => {
 });
 
 describe("SessionStrip overview trigger", () => {
-  it("is a button named with the list's count", () => {
+  it("is a button named Show all sessions, with no text of its own", () => {
     const rendered = renderStrip([session("b")], ROSTER);
     const trigger = rendered.trigger();
     expect(trigger.tagName).toBe("BUTTON");
-    // The visible text stays the strip's count; the name starts with it
-    // and counts the list after it.
-    expect(trigger.textContent).toBe("1 sessions");
-    expect(trigger.getAttribute("aria-label")).toBe(
-      "1 sessions — show all 1 tab and 3 more sessions",
-    );
+    expect(trigger.textContent).toBe("");
+    expect(trigger.getAttribute("aria-label")).toBe("Show all sessions");
   });
 
   it("pins a hover-opened list on click instead of dismissing it", () => {

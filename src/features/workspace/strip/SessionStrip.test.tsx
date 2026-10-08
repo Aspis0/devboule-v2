@@ -81,7 +81,6 @@ function propsOf(sessions: Session[], activeTabId: string | null) {
     resolveCreator: () => null as string | null,
     takeBackAvailable: false,
     onTakeBack: vi.fn(),
-    statusText: `${sessions.length} sessions`,
     overviewSessions: sessions,
     workspaceName: "workspace one",
     onOpenSession: vi.fn(),
@@ -220,6 +219,14 @@ describe("SessionStrip", () => {
     const tab = container!.querySelector<HTMLElement>(".workspace-session-tab")!;
     expect(tab.getAttribute("title")).toContain("from pixel");
     expect(tab.getAttribute("title")).toContain("created by planner");
+  });
+
+  it("draws no session count: the overview trigger is a glyph named Show all sessions", () => {
+    renderStrip([session("a", "agent a"), session("b", "agent b")], "a");
+    const trigger = container!.querySelector<HTMLButtonElement>(".workspace-rate")!;
+    expect(trigger.getAttribute("aria-label")).toBe("Show all sessions");
+    expect(trigger.textContent).toBe("");
+    expect(container!.textContent).not.toMatch(/open session|d+ sessions?/);
   });
 
   it("keeps the add button outside the box that scrolls", () => {

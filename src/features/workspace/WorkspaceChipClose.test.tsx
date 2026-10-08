@@ -233,20 +233,3 @@ describe("the close chip", () => {
     expect(tabElement("session-2")).not.toBeNull();
   });
 });
-
-describe("the strip's session count", () => {
-  it("reads the strip, not the roster: a closed tab stops counting at once", async () => {
-    await renderWorkspace();
-    const countText = () => document.body.textContent ?? "";
-
-    expect(countText()).toContain("3 open sessions");
-    expect(countText()).not.toContain("2 open sessions");
-
-    await chipClick("session-2");
-    await settleCloseActs();
-
-    // Removing the tab changes the count while the roster still has the session.
-    expect(countText()).toContain("2 open sessions");
-    expect(countText()).not.toContain("3 open sessions");
-  });
-});

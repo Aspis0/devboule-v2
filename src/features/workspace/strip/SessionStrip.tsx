@@ -29,6 +29,7 @@ import type { StripTab } from "./toolTabs";
 import { browserLayoutSnapshot, subscribeBrowserLayout } from "../browserTabs";
 import { browserPagesSnapshot, subscribeBrowserPages } from "../browserPages";
 import { browserTabLabel } from "../browserUrl";
+import { PanelIcon } from "../panel/PanelIcon";
 import "./strip.css";
 
 /** Chips re-render only when their own props change: every other prop the
@@ -67,7 +68,6 @@ export interface SessionStripProps {
   resolveCreator: (session: Session) => string | null;
   takeBackAvailable: boolean;
   onTakeBack: () => void;
-  statusText: string;
   /** Every roster session of the selected workspace: the strip shows a
    * subset, the end-of-strip overview lists all of it. */
   overviewSessions: readonly Session[];
@@ -103,7 +103,6 @@ export function SessionStrip({
   resolveCreator,
   takeBackAvailable,
   onTakeBack,
-  statusText,
   overviewSessions,
   workspaceName,
   onOpenSession,
@@ -123,10 +122,6 @@ export function SessionStrip({
       ).length,
     [overviewSessions, openIds],
   );
-  const attentionSummary =
-    unopenedAttentionCount === 0
-      ? ""
-      : ` — ${unopenedAttentionCount} session${unopenedAttentionCount === 1 ? " needs" : "s need"} your approval`;
   const toolTabs = useMemo(
     () => tabs.flatMap((tab) => (tab.type === "tool" ? [tab.tool] : [])),
     [tabs],
@@ -242,14 +237,6 @@ export function SessionStrip({
     () => tabs.flatMap((tab) => (tab.type === "session" ? [tab.session.id] : [])),
     [tabs],
   );
-  // The list's own count: open tabs first, then the sessions with no tab,
-  // named as sessions so the count never mislabels either side.
-  const overviewUnopenedCount = useMemo(
-    () => overviewSessions.filter((session) => !openIds.has(session.id)).length,
-    [overviewSessions, openIds],
-  );
-  const overviewTabsWord = tabs.length === 1 ? "tab" : "tabs";
-  const overviewSessionWord = overviewUnopenedCount === 1 ? "session" : "sessions";
   const handleOverviewOpen = useCallback(
     (sessionId: string) => {
       closeOverview();
@@ -441,7 +428,7 @@ export function SessionStrip({
         className="workspace-rate"
         aria-haspopup="listbox"
         aria-expanded={overviewOpen}
-        aria-label={`${statusText} — show all ${tabs.length} ${overviewTabsWord}${overviewUnopenedCount === 0 ? "" : ` and ${overviewUnopenedCount} more ${overviewSessionWord}`}${attentionSummary}`}
+        aria-label="Show all sessions"
         onClick={() => {
           if (!overviewOpen) openOverview("press");
           else if (overviewSourceRef.current === "hover") overviewSourceRef.current = "press";
@@ -453,7 +440,7 @@ export function SessionStrip({
         {unopenedAttentionCount > 0 ? (
           <span className="workspace-status-dot strip-dot-attention" aria-hidden="true" />
         ) : null}
-        {statusText}
+        <PanelIcon name="chevron-right" size={14} />
       </button>
       <SessionOverviewMenu
         key={overviewEpoch}
