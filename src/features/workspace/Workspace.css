@@ -1335,6 +1335,13 @@
   border-top-color: var(--accent);
 }
 
+/* The textarea's own outline is off for the flat look, so keyboard focus
+   gets its ring here instead. */
+.workspace-composer textarea:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
 .workspace-composer textarea {
   /* block: an inline-block textarea sits on a line box, and the strut's
      descender left 5.3px of dead height under the only line of text. */
@@ -2152,9 +2159,11 @@
   cursor: not-allowed;
 }
 
-/* A file dragged over the composer would be attached here. */
+/* A file dragged over the composer would be attached here. The tint alone
+   sits too close to the pane edge to read as a target. */
 .workspace-composer.is-drop-target {
   background: var(--fill-hover);
+  outline: 1px dashed var(--accent);
 }
 
 /* Composer images mid-send: picks stay visible but wait for the answer. */

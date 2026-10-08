@@ -121,6 +121,11 @@ export const DIRECT_RING_GROUNDS: readonly DirectRingGround[] = [
     ground: composer,
   },
   {
+    file: "src/features/workspace/Workspace.css",
+    match: ".workspace-composer.is-drop-target",
+    ground: centre,
+  },
+  {
     file: "src/features/workspace/paneHeader/GoalLine.css",
     match: ".goal-line-chevron:focus-visible",
     ground: centre,

@@ -49,6 +49,16 @@ async function renderComposer(
   });
 }
 
+// A drag that carries files, the way the browser reports one: the composer
+// only reacts when `types` lists "Files".
+async function dispatchFileDrag(target: Element, type: "dragenter" | "dragleave"): Promise<void> {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "dataTransfer", { value: { types: ["Files"] } });
+  await act(async () => {
+    target.dispatchEvent(event);
+  });
+}
+
 beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -84,6 +94,25 @@ describe("the composer's box", () => {
     expect(workspaceCss.rulesFor(".workspace-composer-wrap:focus-within")).toContain(
       "border-top-color:",
     );
+  });
+
+  it("gives the textarea a focus ring, since the textarea's own outline is off", () => {
+    const ring = workspaceCss.rulesFor(".workspace-composer textarea:focus-visible");
+    expect(ring).toContain(`outline: 2px solid ${workspaceCss.token("--accent")}`);
+    expect(ring).toContain("outline-offset: -2px");
+  });
+
+  it("outlines the composer in dashed accent while a file is dragged over it, and clears it on leave", async () => {
+    expect(workspaceCss.rulesFor(".workspace-composer.is-drop-target")).toContain(
+      `outline: 1px dashed ${workspaceCss.token("--accent")}`,
+    );
+    await renderComposer();
+    const composer = container.querySelector(".workspace-composer");
+    if (composer === null) throw new Error("composer did not render");
+    await dispatchFileDrag(composer, "dragenter");
+    expect(composer.classList.contains("is-drop-target")).toBe(true);
+    await dispatchFileDrag(composer, "dragleave");
+    expect(composer.classList.contains("is-drop-target")).toBe(false);
   });
 
   it("renders the textarea as a block, so no strut sits under its line", async () => {
