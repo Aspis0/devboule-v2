@@ -6,8 +6,9 @@
 # is staged into a temporary directory inside the target and placed only
 # after every check has passed — as the conpty\ subdirectory holding
 # conpty.dll and both architecture OpenConsole.exe hosts, plus the
-# THIRD-PARTY-NOTICES\ directory, replacing any previous bundle by renaming
-# it aside and deleting the renamed copy only once the new tree is in place.
+# THIRD-PARTY-NOTICES\ directory. The target's previous conpty\ and
+# THIRD-PARTY-NOTICES\ are removed before the download begins, so a run that
+# fails or is skipped leaves no stale bundle for a later build to ship.
 # The download is the only network access this script performs. The Windows
 # installer build (pnpm build:installer) runs it; dev builds and the gate do
 # not — see docs/conpty-windows.md.
@@ -74,6 +75,21 @@ if ($targetItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
 }
 if ($targetItem.FullName -eq [IO.Path]::GetPathRoot($targetItem.FullName)) {
     throw "refusing to stage into a drive root: $TargetDir"
+}
+# Delete-first: the previous bundle is removed before the download or any
+# verification starts, so every later failure leaves the target without a
+# conpty\ or THIRD-PARTY-NOTICES\ tree and the next bundle step fails on the
+# missing resource instead of shipping stale files. A destination that is a
+# reparse point is refused, not followed — deleting through one could take a
+# link target's contents with it.
+foreach ($name in @("conpty", "THIRD-PARTY-NOTICES")) {
+    $destination = Join-Path $TargetDir $name
+    if (Test-Path -LiteralPath $destination) {
+        if ((Get-Item -LiteralPath $destination -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "destination is a reparse point: $destination"
+        }
+        Remove-Item -LiteralPath $destination -Recurse -Force
+    }
 }
 # The staging directory lives under the target so the final placement is a
 # real move on one volume; the download may live on the system temp.
@@ -168,81 +184,23 @@ try {
     }
 
     New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null
-    # Re-staging replaces the previous bundle without destroying anything it
-    # could not replace: the old directories are renamed aside first — a
-    # rename of a held bundle (a daemon running from the target) fails
-    # atomically, leaving the old bundle intact — the new tree is placed, and
-    # only then are the renamed copies deleted. Any failure in between puts
-    # the renamed copies back, so the target is exactly as it was. The order
-    # of the rename loop is irrelevant; the order of the two moves below is
-    # the safety property: the only possible partial placement is notices
-    # without binaries, which is inert — the loader stays on the inbox —
-    # never a working bundle without its licence.
-    $aside = @()
-    try {
-        foreach ($name in @("THIRD-PARTY-NOTICES", "conpty")) {
-            $destination = Join-Path $TargetDir $name
-            if (Test-Path -LiteralPath $destination -PathType Container) {
-                if ((Get-Item -LiteralPath $destination -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
-                    throw "destination is a reparse point: $destination"
-                }
-                $asidePath = Join-Path $TargetDir (".conpty-old-" + [Guid]::NewGuid().ToString("N"))
-                try {
-                    Move-Item -LiteralPath $destination -Destination $asidePath
-                }
-                catch {
-                    # The failed rename can leave its destination directory behind.
-                    if (Test-Path -LiteralPath $asidePath) {
-                        try {
-                            Remove-Item -Recurse -Force $asidePath
-                        }
-                        catch {
-                            Write-Warning "could not clean up $($asidePath): $($_.Exception.Message)"
-                        }
-                    }
-                    throw "could not move the old $name aside; is a daemon running from $TargetDir and holding its files? $($_.Exception.Message)"
-                }
-                $aside += [pscustomobject]@{ Aside = $asidePath; Original = $destination }
+    # Placement order is the safety property: the only possible partial
+    # placement is notices without binaries, which is inert — the loader
+    # stays on the inbox — never a working bundle without its licence. A
+    # destination that exists again here (recreated since the delete-first
+    # above) is a race or a plant: refuse it rather than move into it, and
+    # refuse a reparse point rather than follow it.
+    foreach ($name in @("THIRD-PARTY-NOTICES", "conpty")) {
+        $destination = Join-Path $TargetDir $name
+        if (Test-Path -LiteralPath $destination) {
+            if ((Get-Item -LiteralPath $destination -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                throw "destination is a reparse point: $destination"
             }
-        }
-        Move-Item $notices (Join-Path $TargetDir "THIRD-PARTY-NOTICES")
-        Move-Item (Join-Path $staging "conpty") (Join-Path $TargetDir "conpty")
-    }
-    catch {
-        # Put the old bundle back, newest rename first. A placement that got
-        # as far as creating a new directory at an original path is removed
-        # first — restoring onto it would nest the old copy inside the new —
-        # so after the restore the target is exactly as it was.
-        for ($i = $aside.Count - 1; $i -ge 0; $i--) {
-            if (Test-Path -LiteralPath $aside[$i].Original) {
-                Remove-Item -Recurse -Force $aside[$i].Original
-            }
-            if (Test-Path -LiteralPath $aside[$i].Aside) {
-                try {
-                    Move-Item -LiteralPath $aside[$i].Aside -Destination $aside[$i].Original -Force
-                }
-                catch {
-                    Write-Warning "could not restore $($aside[$i].Aside): $($_.Exception.Message)"
-                }
-                # A failed rename can leave its empty destination directory behind.
-                if ((Test-Path -LiteralPath $aside[$i].Aside) -and
-                    (@(Get-ChildItem -LiteralPath $aside[$i].Aside -Recurse -Force).Count -eq 0)) {
-                    Remove-Item -Recurse -Force $aside[$i].Aside
-                }
-            }
-        }
-        throw
-    }
-    # The new tree is complete and in place; the renamed copies are now only
-    # garbage. A failure here still leaves a working, licensed bundle.
-    foreach ($entry in $aside) {
-        try {
-            Remove-Item -Recurse -Force $entry.Aside
-        }
-        catch {
-            Write-Warning "staged, but could not delete the previous bundle copy at $($entry.Aside)"
+            throw "destination reappeared after delete-first: $destination"
         }
     }
+    Move-Item $notices (Join-Path $TargetDir "THIRD-PARTY-NOTICES")
+    Move-Item (Join-Path $staging "conpty") (Join-Path $TargetDir "conpty")
     Write-Host ("Staged conpty\conpty.dll, conpty\{0}\OpenConsole.exe, and THIRD-PARTY-NOTICES into {1}" -f $hostArch, $TargetDir)
 }
 finally {

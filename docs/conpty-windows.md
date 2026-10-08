@@ -54,19 +54,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\stage-conpty.ps1 -Pa
 It verifies the package SHA-256 against `packaging/windows/conpty.json`,
 extracts only the pinned members, checks each file's SHA-256, PE machine type
 and Microsoft Authenticode signature, and stages everything into a temporary
-directory inside the target first. Only when every check has passed does it
-replace the target's previous bundle — and it never destroys a bundle it
-could not replace: the old `conpty\` and `THIRD-PARTY-NOTICES\` are renamed
-aside first (renaming a held bundle — a daemon running from the target —
-fails without touching it, and the script reports that), the new tree is
-placed, and only then are the renamed copies deleted. Between that rename and
-the placement there is a window where the target has neither bundle nor
-notices; the loader then stays on the inbox until staging completes, and the
-success line prints only after the new tree is fully in place. The script
-refuses a target or destination that is a reparse point and refuses a drive
-root, and a staged `target\debug` survives `cargo clean`. The pin values are
-taken from herdr's packaging (see NOTICE); the licence and notice texts
-shipped with the binaries come from `packaging/windows/licenses/`.
+directory inside the target first. The target's previous `conpty\` and
+`THIRD-PARTY-NOTICES\` are deleted before the download begins, so any failure
+after that point — a failed download, a hash or signature mismatch, an
+interrupted run — leaves no stale bundle for a later installer build to ship:
+the loader stays on the inbox, and the next bundle step fails loudly on the
+missing resource rather than packaging old files. The success line prints
+only after the verified tree is fully in place. The script refuses a target
+or a destination that is a reparse point — checked before the deletion, which
+must not follow a link — and refuses a drive root, and a staged
+`target\debug` survives `cargo clean`. The pin values are taken from herdr's
+packaging (see NOTICE); the licence and notice texts shipped with the
+binaries come from `packaging/windows/licenses/`.
 
 ## Where the files must sit
 
