@@ -208,6 +208,26 @@ describe("what a row offers", () => {
     expect(onStopAgent).toHaveBeenCalledWith("child-1");
   });
 
+  it("does not stop a child twice while the first stop is still pending", async () => {
+    let finish: (sentence: string | null) => void = () => undefined;
+    const onStopAgent = vi.fn(() => new Promise<string | null>((resolve) => (finish = resolve)));
+    await render(context([task()], 0, onStopAgent));
+    const stop = () => rowFor("Explore auth").querySelector<HTMLButtonElement>(".tasks-panel-stop");
+
+    // Both presses land before React draws the disabled button.
+    await act(async () => {
+      stop()?.click();
+      stop()?.click();
+    });
+    await act(async () => undefined);
+
+    expect(onStopAgent).toHaveBeenCalledTimes(1);
+    expect(stop()?.disabled).toBe(true);
+
+    await act(async () => finish(null));
+    expect(stop()?.disabled).toBe(false);
+  });
+
   it("shows the sentence the stop came back with, when it did not stop", async () => {
     const onStopAgent = vi.fn(async () => "It is no longer running, so nothing was stopped.");
     await render(context([task()], 0, onStopAgent));

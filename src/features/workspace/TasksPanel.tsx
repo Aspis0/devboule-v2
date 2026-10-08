@@ -1,7 +1,7 @@
 // The Tasks tab: the selected agent session's background tasks, one line each.
 // It shows what the daemon's list says and acts only through the callbacks the
 // workspace hands it.
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useConfirmAsk } from "../../components/ConfirmHost";
 import { formatTaskDuration, taskStateWord, toolCountText } from "../../lib/backgroundTaskText";
 import type { SessionTask } from "../../types/ipc";
@@ -19,22 +19,34 @@ interface TasksPanelProps {
 export function TasksPanel({ tasks }: TasksPanelProps) {
   const askConfirm = useConfirmAsk();
   const [stopSentence, setStopSentence] = useState<string | null>(null);
+  // The ref refuses a second press before React has drawn the disabled state.
+  const stoppingRef = useRef(new Set<string>());
+  const [stopping, setStopping] = useState<ReadonlySet<string>>(new Set());
   const list = tasks?.list ?? null;
   const groups = groupTasks(list?.tasks ?? []);
   const now = useTaskClock(groups.running.length > 0);
   const omitted = list?.omitted ?? 0;
 
   async function stop(task: SessionTask): Promise<void> {
-    if (tasks === null || task.childSessionId === undefined) return;
-    const confirmed = await askConfirm({
-      title: `Stop ${task.title}?`,
-      message: STOP_MESSAGE,
-      confirmLabel: "Stop",
-      cancelLabel: "Keep it running",
-    });
-    if (!confirmed) return;
-    setStopSentence(null);
-    setStopSentence(await tasks.onStopAgent(task.childSessionId));
+    const childSessionId = task.childSessionId;
+    if (tasks === null || childSessionId === undefined) return;
+    if (stoppingRef.current.has(childSessionId)) return;
+    stoppingRef.current.add(childSessionId);
+    setStopping(new Set(stoppingRef.current));
+    try {
+      const confirmed = await askConfirm({
+        title: `Stop ${task.title}?`,
+        message: STOP_MESSAGE,
+        confirmLabel: "Stop",
+        cancelLabel: "Keep it running",
+      });
+      if (!confirmed) return;
+      setStopSentence(null);
+      setStopSentence(await tasks.onStopAgent(childSessionId));
+    } finally {
+      stoppingRef.current.delete(childSessionId);
+      setStopping(new Set(stoppingRef.current));
+    }
   }
 
   const empty = groups.running.length === 0 && groups.finished.length === 0;
@@ -46,6 +58,7 @@ export function TasksPanel({ tasks }: TasksPanelProps) {
           label="Running"
           tasks={groups.running}
           now={now}
+          stopping={stopping}
           onOpen={(childSessionId) => tasks?.onOpenAgent(childSessionId)}
           onStop={stop}
         />
@@ -55,6 +68,7 @@ export function TasksPanel({ tasks }: TasksPanelProps) {
           label="Finished"
           tasks={groups.finished}
           now={now}
+          stopping={stopping}
           onOpen={(childSessionId) => tasks?.onOpenAgent(childSessionId)}
           onStop={stop}
         />
@@ -73,17 +87,25 @@ interface TaskGroupProps {
   label: string;
   tasks: SessionTask[];
   now: number;
+  stopping: ReadonlySet<string>;
   onOpen: (childSessionId: string) => void;
   onStop: (task: SessionTask) => Promise<void>;
 }
 
-function TaskGroup({ label, tasks, now, onOpen, onStop }: TaskGroupProps) {
+function TaskGroup({ label, tasks, now, stopping, onOpen, onStop }: TaskGroupProps) {
   return (
     <section className="tasks-panel-group" aria-label={label}>
       <h3 className="tasks-panel-heading">{label}</h3>
       <ul className="tasks-panel-list">
         {tasks.map((task) => (
-          <TaskRow key={task.id} task={task} now={now} onOpen={onOpen} onStop={onStop} />
+          <TaskRow
+            key={task.id}
+            task={task}
+            now={now}
+            stopping={task.childSessionId !== undefined && stopping.has(task.childSessionId)}
+            onOpen={onOpen}
+            onStop={onStop}
+          />
         ))}
       </ul>
     </section>
@@ -93,11 +115,12 @@ function TaskGroup({ label, tasks, now, onOpen, onStop }: TaskGroupProps) {
 interface TaskRowProps {
   task: SessionTask;
   now: number;
+  stopping: boolean;
   onOpen: (childSessionId: string) => void;
   onStop: (task: SessionTask) => Promise<void>;
 }
 
-function TaskRow({ task, now, onOpen, onStop }: TaskRowProps) {
+function TaskRow({ task, now, stopping, onOpen, onStop }: TaskRowProps) {
   const childSessionId = task.kind === "agent" ? task.childSessionId : undefined;
   const duration =
     task.state === "running"
@@ -134,6 +157,7 @@ function TaskRow({ task, now, onOpen, onStop }: TaskRowProps) {
           type="button"
           className="tasks-panel-stop"
           aria-label={`Stop ${task.title}`}
+          disabled={stopping}
           onClick={() => void onStop(task)}
         >
           Stop
