@@ -438,6 +438,17 @@ pub enum ClientMessage {
         subscription_id: SubscriptionId,
         item_id: String,
     },
+    /// Read this session's background-task list as the daemon derives it
+    /// right now: child agents first, then the provider's own background
+    /// entries (protocol [`crate::SessionEvent::TasksSnapshot`], carried
+    /// whole). A read, so it is not state-changing and carries no
+    /// idempotency key; the reply is [`DaemonMessage::SessionTasks`].
+    /// Refused without the `session.tasks` capability, like the queue
+    /// frames without `session.queue`.
+    SessionTasksGet {
+        id: u64,
+        session_id: String,
+    },
     /// Take a lease on one remote host: the daemon opens (or shares) one
     /// authenticated link to that paired device and keeps it while this
     /// connection holds the lease.
@@ -1398,6 +1409,7 @@ impl ClientMessage {
             | Self::SessionQueueRemove { id, .. }
             | Self::SessionQueueMove { id, .. }
             | Self::SessionQueueSendNow { id, .. }
+            | Self::SessionTasksGet { id, .. }
             | Self::RemoteHostWatch { id, .. }
             | Self::RemoteHostUnwatch { id, .. }
             | Self::RemoteHostList { id, .. }
@@ -1543,6 +1555,7 @@ impl ClientMessage {
             | Self::SessionQueueRemove { .. }
             | Self::SessionQueueMove { .. }
             | Self::SessionQueueSendNow { .. }
+            | Self::SessionTasksGet { .. }
             | Self::RemoteHostWatch { .. }
             | Self::RemoteHostUnwatch { .. }
             | Self::RemoteHostList { .. }
@@ -1620,6 +1633,7 @@ impl ClientMessage {
             Self::SessionQueueRemove { .. } => "SessionQueueRemove",
             Self::SessionQueueMove { .. } => "SessionQueueMove",
             Self::SessionQueueSendNow { .. } => "SessionQueueSendNow",
+            Self::SessionTasksGet { .. } => "SessionTasksGet",
             Self::RemoteHostWatch { .. } => "RemoteHostWatch",
             Self::RemoteHostUnwatch { .. } => "RemoteHostUnwatch",
             Self::RemoteHostList { .. } => "RemoteHostList",
@@ -1710,6 +1724,7 @@ impl ClientMessage {
             | Self::Status { .. }
             | Self::DaemonDiagnostics { .. }
             | Self::SessionsList { .. }
+            | Self::SessionTasksGet { .. }
             | Self::SessionsWatch { .. }
             | Self::JournalUsage { .. }
             | Self::JournalRetentionGet { .. }
@@ -1887,6 +1902,13 @@ pub enum DaemonMessage {
     Sessions {
         id: u64,
         sessions: Vec<Session>,
+    },
+    /// The reply to [`ClientMessage::SessionTasksGet`]: the session's
+    /// background-task list as derived at the moment of the request.
+    SessionTasks {
+        id: u64,
+        session_id: String,
+        tasks: Vec<crate::SessionTask>,
     },
     Projects {
         id: u64,

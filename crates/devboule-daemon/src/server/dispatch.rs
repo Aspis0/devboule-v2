@@ -333,6 +333,12 @@ pub(super) fn dispatch_immediate(
         | ClientMessage::SessionQueueSendNow { .. } if !conn.session_queue_negotiated() => {
             capability_not_supported(request.request_id(), caps::SESSION_QUEUE)
         }
+        // The task list rides its own name the same way: a client that did
+        // not agree `session.tasks` cannot parse the reply, so it must not
+        // send the request either.
+        ClientMessage::SessionTasksGet { .. } if !conn.session_tasks_negotiated() => {
+            capability_not_supported(request.request_id(), caps::SESSION_TASKS)
+        }
         ClientMessage::Ping { id } => DaemonMessage::Pong {
             id,
             ts_ms: unix_millis(),
@@ -433,6 +439,7 @@ pub(super) fn dispatch_immediate(
         | ClientMessage::SessionQueueRemove { .. }
         | ClientMessage::SessionQueueMove { .. }
         | ClientMessage::SessionQueueSendNow { .. }
+        | ClientMessage::SessionTasksGet { .. }
         | ClientMessage::AgentMessageSend { .. }
         | ClientMessage::SessionDeposit { .. }
         | ClientMessage::SessionAttachmentRead { .. }

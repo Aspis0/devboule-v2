@@ -188,6 +188,10 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         // origin scope; `AgentMessageSend` uses the pairing user's local
         // target scope, because its sender may live on the far device.
         ClientMessage::SessionAttach { .. } => with_capability(caps, CAP_VIEW),
+        // The task list is a read of one session's surface — what its agents
+        // and background commands are doing — so it rides `view` like the
+        // roster and the attach that observes the same session.
+        ClientMessage::SessionTasksGet { .. } => with_capability(caps, CAP_VIEW),
         ClientMessage::SessionCreate { .. } => with_capability(caps, CAP_CREATE_SESSIONS),
         ClientMessage::SessionSend { .. } => with_capability(caps, CAP_SEND),
         // The shared queue is a send deferred, so it takes the capability a
@@ -1765,10 +1769,11 @@ pub(crate) mod tests {
     /// does. Spelled as wire names so the walk above can prove it covers every
     /// *other* variant — with `VARIANT_COUNT` that is a closed statement, not a
     /// guess.
-    const ALWAYS_ALLOWED_VARIANTS: [&str; 25] = [
+    const ALWAYS_ALLOWED_VARIANTS: [&str; 26] = [
         "Hello",
         "Ping",
         "SessionsList",
+        "SessionTasksGet",
         "DevicesList",
         "PeerAgentsList",
         "SessionAttach",
@@ -2643,6 +2648,10 @@ pub(crate) mod tests {
             ClientMessage::SessionsList { .. } | ClientMessage::DevicesList { .. } => {
                 under(CAP_VIEW)
             }
+            // A task list is one session's surface, observed: `view`, like
+            // the roster read above it is not — the list names no other
+            // session than the one asked for.
+            ClientMessage::SessionTasksGet { .. } => under(CAP_VIEW),
             // The peer roster is a read, but a disclosure of its own: it
             // rides the roster capability, not `view` — `view` is the weakest
             // grant a pairing can carry, and the roster is the pairing user's
@@ -2760,7 +2769,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 90;
+    pub(crate) const VARIANT_COUNT: usize = 91;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -2803,6 +2812,7 @@ pub(crate) mod tests {
             ClientMessage::SessionPermissionRespond { .. } => "SessionPermissionRespond",
             ClientMessage::SessionReportAgent { .. } => "SessionReportAgent",
             ClientMessage::SessionsList { .. } => "SessionsList",
+            ClientMessage::SessionTasksGet { .. } => "SessionTasksGet",
             ClientMessage::SessionsWatch { .. } => "SessionsWatch",
             ClientMessage::SessionsUnwatch { .. } => "SessionsUnwatch",
             ClientMessage::SessionsPresence { .. } => "SessionsPresence",
@@ -3072,6 +3082,10 @@ pub(crate) mod tests {
                 session_start_source: None,
             },
             ClientMessage::SessionsList { id: 1 },
+            ClientMessage::SessionTasksGet {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+            },
             ClientMessage::SessionsWatch { id: 1 },
             ClientMessage::SessionsUnwatch { id: 1 },
             ClientMessage::SessionsPresence {

@@ -376,6 +376,19 @@ pub(super) fn dispatch_session(
             Ok(sessions) => DaemonMessage::Sessions { id, sessions },
             Err(error) => DaemonMessage::Error(error.with_id(id)),
         },
+        // One session's background-task list, derived fresh: the roster
+        // answers which sessions exist, this answers what one of them runs.
+        // The capability gate ran in dispatch; the owner scope is inside.
+        ClientMessage::SessionTasksGet { id, session_id } => {
+            match state.sessions.session_tasks(&session_id, owner) {
+                Ok(tasks) => DaemonMessage::SessionTasks {
+                    id,
+                    session_id,
+                    tasks,
+                },
+                Err(error) => DaemonMessage::Error(error.with_id(id)),
+            }
+        }
         // The live roster a peer dials for. Scope is the connection's pairing
         // user, decided inside `peer_agents_reply` — a `Daemon`-role
         // connection's own `SessionsList` projection answers "what did you

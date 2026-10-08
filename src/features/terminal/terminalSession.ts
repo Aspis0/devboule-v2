@@ -545,6 +545,11 @@ export class TerminalSession {
         // terminal; the chat surface reads it off its own attach channel.
         // Listed so a leak is ignored rather than reported as unknown.
         break;
+      case "tasks_snapshot":
+        // The background-task list belongs to the Tasks tab, which lands in
+        // a later slice; the terminal view renders nothing for it. Listed
+        // so a leak is ignored rather than reported as unknown.
+        break;
       case "permission_request":
         // The channel is live before session_attach confirms, so a request
         // can arrive while the subscription id is still unknown; hold it and

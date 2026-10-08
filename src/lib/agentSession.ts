@@ -1333,6 +1333,11 @@ export class AgentSession {
         // that asked for it decides whether this snapshot is news.
         this.deps.onQueueSnapshot?.(event);
         return;
+      case "tasks_snapshot":
+        // The background-task list belongs to the Tasks tab, which lands in
+        // a later slice; the chat surface renders nothing for it. Listed so
+        // the exhaustiveness check below keeps passing.
+        return;
       default: {
         // Every `SessionEvent` arm is a case above, so this branch is
         // unreachable for the protocol as typed: the `never` assignment is a

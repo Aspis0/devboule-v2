@@ -107,6 +107,7 @@ pub(crate) fn session_event_samples() -> Vec<SessionEvent> {
             // `command`/`exitCode` unexercised by it.
             command: Some("cargo test".to_string()),
             exit_code: Some(0),
+            background: None,
         },
         AgentToolUpdate => SessionEvent::AgentToolUpdate {
             tool_call_id: "toolu_plan".to_string(),
@@ -368,6 +369,37 @@ pub(crate) fn session_event_samples() -> Vec<SessionEvent> {
                 item_id: "queue-2".to_string(),
                 reason: crate::DroppedReason::DeliveryUnknown,
             }],
+        },
+        TasksSnapshot => SessionEvent::TasksSnapshot {
+            // One row of each kind pins the wire names: the agent row
+            // carries the child link, model and count, the command row
+            // leaves them absent.
+            tasks: vec![
+                crate::SessionTask {
+                    id: "s.child.1".to_string(),
+                    kind: crate::SessionTaskKind::Agent,
+                    title: "child".to_string(),
+                    state: crate::SessionTaskState::Running,
+                    session_id: "s.1".to_string(),
+                    child_session_id: Some("s.child.1".to_string()),
+                    started_at_ms: 1,
+                    ended_at_ms: None,
+                    model: Some("model".to_string()),
+                    tool_call_count: Some(2),
+                },
+                crate::SessionTask {
+                    id: "toolu_1".to_string(),
+                    kind: crate::SessionTaskKind::Command,
+                    title: "sleep 60".to_string(),
+                    state: crate::SessionTaskState::Finished,
+                    session_id: "s.1".to_string(),
+                    child_session_id: None,
+                    started_at_ms: 1,
+                    ended_at_ms: Some(2),
+                    model: None,
+                    tool_call_count: None,
+                },
+            ],
         },
         Snapshot => SessionEvent::Snapshot {
             as_of_seq: 0,

@@ -1202,6 +1202,7 @@ impl PermissionBroker {
                     spawn_depth: None,
                     command: None,
                     exit_code: None,
+                    background: None,
                 };
                 let update = SessionEvent::AgentToolUpdate {
                     tool_call_id: pending.tool_call_id.clone(),

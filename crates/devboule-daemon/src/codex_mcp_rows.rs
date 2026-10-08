@@ -135,6 +135,7 @@ pub(super) fn mcp_tool_events(id: &str, item: &Value, completed: bool) -> Vec<Se
             // own arguments, never a command an agent ran.
             command: None,
             exit_code: None,
+            background: None,
         }]
     }
 }

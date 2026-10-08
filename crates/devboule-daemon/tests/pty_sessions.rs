@@ -341,6 +341,7 @@ fn event_carries_marker(event: &SessionEvent, marker: &str) -> bool {
         | SessionEvent::JournalDegraded { .. }
         | SessionEvent::SessionsSnapshot { .. }
         | SessionEvent::QueueSnapshot { .. }
+        | SessionEvent::TasksSnapshot { .. }
         | SessionEvent::AgentMessage { .. }
         | SessionEvent::AgentUserMessage { .. }
         | SessionEvent::Steered { .. }
@@ -795,6 +796,7 @@ fn reattach_with_a_cursor_synchronises_screen_state() {
             | SessionEvent::JournalDegraded { .. }
             | SessionEvent::SessionsSnapshot { .. }
             | SessionEvent::QueueSnapshot { .. }
+            | SessionEvent::TasksSnapshot { .. }
             | SessionEvent::Snapshot { .. }
             | SessionEvent::AgentMessage { .. }
             | SessionEvent::AgentUserMessage { .. }
@@ -1164,6 +1166,7 @@ fn shutdown_drain_never_delivers_a_pending_sequence_twice() {
             | SessionEvent::JournalDegraded { .. }
             | SessionEvent::SessionsSnapshot { .. }
             | SessionEvent::QueueSnapshot { .. }
+            | SessionEvent::TasksSnapshot { .. }
             | SessionEvent::Snapshot { .. }
             | SessionEvent::AgentMessage { .. }
             | SessionEvent::AgentUserMessage { .. }
@@ -1901,6 +1904,7 @@ fn real_pty_channel_flood_correctness() {
         | SessionEvent::JournalDegraded { .. }
         | SessionEvent::SessionsSnapshot { .. }
         | SessionEvent::QueueSnapshot { .. }
+        | SessionEvent::TasksSnapshot { .. }
         | SessionEvent::AgentMessage { .. }
         | SessionEvent::AgentUserMessage { .. }
         | SessionEvent::Steered { .. }
@@ -2309,6 +2313,7 @@ fn real_pty_channel_file_transport_ab_benchmark() {
         | SessionEvent::JournalDegraded { .. }
         | SessionEvent::SessionsSnapshot { .. }
         | SessionEvent::QueueSnapshot { .. }
+        | SessionEvent::TasksSnapshot { .. }
         | SessionEvent::Snapshot { .. }
         | SessionEvent::AgentMessage { .. }
         | SessionEvent::AgentUserMessage { .. }
@@ -2701,6 +2706,7 @@ fn journal_outlives_the_256kib_ring() {
             | SessionEvent::JournalDegraded { .. }
             | SessionEvent::SessionsSnapshot { .. }
             | SessionEvent::QueueSnapshot { .. }
+            | SessionEvent::TasksSnapshot { .. }
             | SessionEvent::Snapshot { .. }
             | SessionEvent::AgentMessage { .. }
             | SessionEvent::AgentUserMessage { .. }
@@ -2978,6 +2984,7 @@ fn journal_growth_after_13mb_flood() {
             SessionEvent::JournalDegraded { .. } => {}
             SessionEvent::SessionsSnapshot { .. } => {}
             SessionEvent::QueueSnapshot { .. } => {}
+            SessionEvent::TasksSnapshot { .. } => {}
             SessionEvent::Snapshot { .. } => {}
             SessionEvent::AgentMessage { .. }
             | SessionEvent::AgentUserMessage { .. }
@@ -3290,6 +3297,7 @@ fn attach_during_flood_delivers_every_sequence_once() {
             | SessionEvent::JournalDegraded { .. }
             | SessionEvent::SessionsSnapshot { .. }
             | SessionEvent::QueueSnapshot { .. }
+            | SessionEvent::TasksSnapshot { .. }
             | SessionEvent::AgentMessage { .. }
             | SessionEvent::AgentUserMessage { .. }
             | SessionEvent::Steered { .. }

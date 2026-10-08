@@ -226,6 +226,7 @@ fn view_from_session_update(
                 spawn_depth: None,
                 command,
                 exit_code,
+                background: None,
             })
         }
         Some("tool_call_update") => {

@@ -161,6 +161,7 @@ pub(super) fn failed_generation_events(id: &str, item: &Value) -> Vec<SessionEve
             spawn_depth: None,
             command: None,
             exit_code: None,
+            background: None,
         },
         SessionEvent::AgentToolUpdate {
             tool_call_id: id.to_string(),

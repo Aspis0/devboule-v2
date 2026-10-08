@@ -254,6 +254,7 @@ fn message_update_events(value: &Value) -> Vec<SessionEvent> {
                     spawn_depth: None,
                     command: None,
                     exit_code: None,
+                    background: None,
                 }]
             })
             .unwrap_or_default(),

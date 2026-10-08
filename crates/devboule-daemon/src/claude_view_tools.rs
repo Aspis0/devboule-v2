@@ -114,6 +114,11 @@ pub(super) fn tool_call_from_block(
         spawn_depth,
         command: tool_command(name, input),
         exit_code: None,
+        // Only Bash carries the flag, and only `true` is kept: an absent
+        // or false flag reads back as `None`, never as foreground-proof.
+        background: (name == "Bash"
+            && input.get("run_in_background").and_then(Value::as_bool) == Some(true))
+        .then_some(true),
     })
 }
 

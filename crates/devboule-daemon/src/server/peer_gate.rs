@@ -289,7 +289,9 @@ pub(super) fn peer_mode_refusal_for_conn(
             prompt_into_session_refusal(state, to_session)
         }
         ClientMessage::AgentMessageSend { .. } => None,
-        // Every other frame carries no mode, so this gate has no verdict for it
+        // A task-list read prompts nothing and switches nothing: no mode to
+        // vet, like the attachment read below it.
+        ClientMessage::SessionTasksGet { .. } => None,
         // — one arm per variant and no `_` arm, because a new `ClientMessage`
         // variant is a decision here. A frame that names a session but no mode
         // is the registry's business, not this gate's.
@@ -573,6 +575,7 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::SessionQueueRemove { session_id, .. }
         | ClientMessage::SessionQueueMove { session_id, .. }
         | ClientMessage::SessionQueueSendNow { session_id, .. }
+        | ClientMessage::SessionTasksGet { session_id, .. }
         | ClientMessage::SessionDeposit { session_id, .. }
         | ClientMessage::SessionUploadBegin { session_id, .. }
         | ClientMessage::SessionUploadStatus { session_id, .. }

@@ -741,8 +741,12 @@ impl super::SessionRegistry {
         deferred: Option<DeferredChildEnd>,
     ) {
         if let Some(runtime) = creator_runtime {
-            if !runtime.publish_child_created(child, display_name, provider, preset) {
-                runtime.mark_journal_degraded();
+            match runtime.publish_child_created(child, display_name, provider, preset) {
+                Some(event) => self.refresh_session_tasks(
+                    &runtime.session_id,
+                    &[(event, crate::agent_activity::wall_now_ms())],
+                ),
+                None => runtime.mark_journal_degraded(),
             }
             // The record is in the creator's journal through the runtime above;
             // a runtime that is gone by now cannot be written to, and that is
@@ -1232,7 +1236,7 @@ impl super::SessionRegistry {
                 }),
             ),
         };
-        if !creator_runtime.publish_child_finished(
+        match creator_runtime.publish_child_finished(
             message_id,
             &session.id,
             &display_name,
@@ -1240,7 +1244,9 @@ impl super::SessionRegistry {
             note,
             artifacts,
         ) {
-            creator_runtime.mark_journal_degraded();
+            Some(event) => self
+                .refresh_session_tasks(&creator, &[(event, crate::agent_activity::wall_now_ms())]),
+            None => creator_runtime.mark_journal_degraded(),
         }
     }
 

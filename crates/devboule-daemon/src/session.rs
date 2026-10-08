@@ -239,6 +239,11 @@ mod session_idle_close_profile_tests;
 #[cfg(test)]
 #[path = "session_idle_close_tests.rs"]
 mod session_idle_close_tests;
+/// Derive and publish one session's background-task list, in its own file:
+/// the roster and journals are read, nothing is stored — one phrase for the
+/// file, the task list and nothing else.
+#[path = "session_task_list.rs"]
+mod session_task_list;
 /// The registry side of the broker's five terminal tools, kept out of
 /// `session.rs` beside the child reads they rhyme with: one phrase for
 /// the file — which terminals an owner may reach inside one workspace, one
@@ -1690,6 +1695,17 @@ impl SessionRegistry {
         runtime.set_permission_park_hook(Arc::new(move |request| {
             registry.notify_creator_of_parked_card(&child, request);
         }));
+        // The task-list refresh, installed in the same place: the hook
+        // carries the just-published frame, and the registry folds it
+        // explicitly because the journal write may not be visible yet.
+        let tasks_registry = self.clone();
+        let tasks_session = runtime.session_id.clone();
+        runtime.set_tasks_refresh_hook(Arc::new(move |event| {
+            tasks_registry.refresh_session_tasks(
+                &tasks_session,
+                &[(event.clone(), crate::agent_activity::wall_now_ms())],
+            );
+        }));
     }
 
     /// One parked card, surfaced to its creator under the delegation switch
@@ -2357,6 +2373,9 @@ impl SessionRegistry {
         // this one — never between a read and the registration that was meant
         // to deliver it. A terminal has no queue, so it gets no snapshot.
         self.publish_queue_attach_snapshot(&runtime, session_id);
+        // The task list the same way: the subscriber reads it as it stands,
+        // empty included, and every later change reaches it as a live event.
+        self.refresh_session_tasks(session_id, &[]);
         Ok(outcome.resume)
     }
 

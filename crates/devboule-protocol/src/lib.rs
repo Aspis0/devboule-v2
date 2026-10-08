@@ -99,6 +99,8 @@ mod queue_frames_tests;
 mod remote_host_tests;
 #[cfg(test)]
 mod resume_tests;
+#[cfg(test)]
+mod tasks_frames_tests;
 
 pub use address_ranges::{
     address_blocked, is_localhost, literal_address, looks_numeric, normalise_host,
@@ -153,8 +155,9 @@ pub use session::{
     Persistence, PersistenceKind, PlanCredits, PlanWindow, QueuedMessage, ResumeResult,
     ScreenCursor, Session, SessionEvent, SessionKind, SessionModeStateView, SessionModeView,
     SessionModel, SessionModelEffort, SessionOrigin, SessionOriginKind, SessionState,
-    SessionStateSnapshot, SubagentTaskStatus, SubscriptionId, ToolLocation, TranscriptIntegrity,
-    TurnUsage, UnattendedState, UserMessageAuthor, UserMessageKind, NOTHING_OWED_CURSOR,
+    SessionStateSnapshot, SessionTask, SessionTaskKind, SessionTaskState, SubagentTaskStatus,
+    SubscriptionId, ToolLocation, TranscriptIntegrity, TurnUsage, UnattendedState,
+    UserMessageAuthor, UserMessageKind, NOTHING_OWED_CURSOR,
 };
 pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_character};
 
@@ -172,7 +175,8 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// version, so negotiating down does not produce an old-shaped payload;
 /// refusing the handshake is the only protection. The additive task and
 /// goal event tags (`agent_task_started`, `agent_task_notification`,
-/// `agent_background_tasks_changed`, `agent_tasks`, `goal_changed`) are
+/// `agent_background_tasks_changed`, `agent_tasks`, `goal_changed` — and now
+/// `tasks_snapshot` — are
 /// deliberately ungated: these output-only tags change no request shape. The
 /// additive command-row fields (`command`/`exitCode` on the tool events,
 /// `atMs` on the user echo), the per-turn usage fields
@@ -201,8 +205,11 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// `Abort` and the `SessionUploadProgress` reply), all gated on
 /// `attachments.upload`, so a peer that never negotiated the name is never sent
 /// one and the floor stays put. Protocol 27 adds the stored-attachment delete
-/// (`SessionAttachmentDelete`), gated on `attachments.delete`.
-pub const PROTOCOL_VERSION: u32 = 27;
+/// (`SessionAttachmentDelete`), gated on `attachments.delete`. Protocol 28
+/// adds the background-task list (`SessionTasksGet`), gated on
+/// `session.tasks`; the `tasks_snapshot` event tag is additive output-only
+/// and needs no gate.
+pub const PROTOCOL_VERSION: u32 = 28;
 /// Oldest dialect this crate still accepts. Protocols 17, 18 and 20 added only
 /// optional fields, so a v16 peer still interoperates — it just shows no
 /// command chip, turn time, cache, cost or chat-image thumbnails until
@@ -289,6 +296,15 @@ pub mod caps {
     /// `queue_snapshot` off one — the name is how a client tells a daemon that
     /// owns a shared queue from one that leaves the list in the app.
     pub const SESSION_QUEUE: &str = "session.queue";
+
+    /// The background-task list (`SessionTasksGet` and the `tasks_snapshot`
+    /// event).
+    ///
+    /// Its own name, like the shared queue: a client must not send the frame
+    /// to a daemon that predates the variant, whose reader cannot
+    /// deserialize it and would kill the connection on a request it never
+    /// knew. The event tag itself is additive output-only and needs no gate.
+    pub const SESSION_TASKS: &str = "session.tasks";
 
     /// The attach reply's resume outcome (`SessionResumeInfo`).
     ///
@@ -854,7 +870,10 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     // must be offered or the handshake negotiates it away and a client could
     // not tell a shared-queue daemon from one that leaves the list in the app.
     capabilities.push(Capability::new(caps::SESSION_QUEUE));
-    // The held host link, paired the same way: the daemon owns the links and
+    // The background-task list, paired the same way: the daemon derives the
+    // list and the app asks for it, so both ends must offer the name before
+    // a `SessionTasksGet` frame can be sent — or refused on the way out.
+    capabilities.push(Capability::new(caps::SESSION_TASKS));
     // the app asks for the rows, so both ends must offer the name before a
     // `RemoteHost*` frame can be sent — or refused on the way out.
     capabilities.push(Capability::new(caps::REMOTE_HOSTS));
@@ -947,7 +966,10 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // keeps it, and read before a `SessionQueue*` frame leaves for an older
     // daemon.
     capabilities.push(Capability::new(caps::SESSION_QUEUE));
-    // The held host link, paired the same way: offered so the intersection
+    // The background-task list, paired the same way: offered so the
+    // intersection keeps it, and read before a `SessionTasksGet` frame
+    // leaves for an older daemon.
+    capabilities.push(Capability::new(caps::SESSION_TASKS));
     // keeps it, and read before a `RemoteHost*` frame leaves for an older
     // daemon.
     capabilities.push(Capability::new(caps::REMOTE_HOSTS));

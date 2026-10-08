@@ -888,6 +888,12 @@ pub enum SessionEvent {
         /// boolean outcome, and for rows written before the field existed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         exit_code: Option<i32>,
+        /// The agent asked for this call to run in the background (Claude's
+        /// `run_in_background` on a Bash tool call). `Some(true)` only: no
+        /// other provider reports a background flag today, and `None` is a
+        /// foreground call or a row written before the field existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        background: Option<bool>,
     },
     /// An agent tool-call status update. The optional text is the textual part
     /// of any content the agent supplied with the update.
@@ -1300,6 +1306,17 @@ pub enum SessionEvent {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         dropped: Vec<DroppedQueuedMessage>,
     },
+    /// This session's whole background-task list, in a stable order, as the
+    /// daemon derives it: daemon children of this session first, then the
+    /// provider's own background entries.
+    ///
+    /// Transient like [`SessionEvent::QueueSnapshot`]: derived daemon-side
+    /// on every change and once to a client that has just attached, never
+    /// journaled, so an attach that missed an earlier state is repaired by
+    /// this event, never by a replay.
+    TasksSnapshot {
+        tasks: Vec<SessionTask>,
+    },
     /// Current screen state, delivered on attach instead of a replay of past
     /// frames. The daemon holds a headless terminal emulator,
     /// applies every output chunk to it in sequence order, and renders the
@@ -1397,6 +1414,7 @@ impl SessionEvent {
             Self::JournalDegraded { .. } => "journal_degraded",
             Self::SessionsSnapshot { .. } => "sessions_snapshot",
             Self::QueueSnapshot { .. } => "queue_snapshot",
+            Self::TasksSnapshot { .. } => "tasks_snapshot",
             Self::Snapshot { .. } => "snapshot",
         }
     }
@@ -1651,6 +1669,56 @@ pub struct AgentBackgroundTask {
     pub task_id: String,
     pub task_type: String,
     pub title: String,
+}
+
+/// What a [`SessionTask`] is: a daemon child agent or a background command
+/// the session's provider runs.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionTaskKind {
+    Agent,
+    Command,
+}
+
+/// Where a [`SessionTask`] stands. `cancelled` is a stop the human asked
+/// for (or a transcript the daemon lost, which never completed either); a
+/// nonzero exit is `failed`, never `cancelled`.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionTaskState {
+    Running,
+    Finished,
+    Failed,
+    Cancelled,
+}
+
+/// One row of a session's background-task list: a child agent the session
+/// created, or a background command its provider runs.
+///
+/// `id` is the child session id for an agent task and the provider's tool
+/// call id for a command task. `session_id` is the parent that owns the
+/// list; `child_session_id` names the child session again for agent tasks
+/// so a surface can open it without parsing the id. Times are Unix
+/// milliseconds; `ended_at_ms` is absent while running. `model` and
+/// `tool_call_count` are agent-only, best effort: `None` when the child's
+/// journal never declared them.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTask {
+    pub id: String,
+    pub kind: SessionTaskKind,
+    pub title: String,
+    pub state: SessionTaskState,
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_session_id: Option<String>,
+    pub started_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_count: Option<u64>,
 }
 
 /// Token usage attached to a prompt turn, when the agent supplied it.

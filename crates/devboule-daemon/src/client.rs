@@ -17,10 +17,10 @@ use devboule_protocol::{
     JournalRetention, JournalUsage, OwnerId, PairingSecret, PeerRole, PeerRow, PermissionOutcome,
     Persistence, Project, PromptAttachment, ProviderInfo, RemoteHostList, RemoteHostListBody,
     RemoteHostStatus, ResumeResult, RetentionPatch, Session, SessionEvent, SessionEventEnvelope,
-    SessionKind, SessionResumeInfo, SessionResumeOutcome, SessionStateSnapshot, StoredAttachment,
-    SubscriptionId, WireError, Workspace, WorkspaceDirectory, WorkspaceFileContent,
-    WorkspaceFileMutation, WorkspaceFilePreview, WorkspaceGitFileDiff, WorkspaceGitLog,
-    WorkspaceGitStatus, WorkspaceIsolation,
+    SessionKind, SessionResumeInfo, SessionResumeOutcome, SessionStateSnapshot, SessionTask,
+    StoredAttachment, SubscriptionId, WireError, Workspace, WorkspaceDirectory,
+    WorkspaceFileContent, WorkspaceFileMutation, WorkspaceFilePreview, WorkspaceGitFileDiff,
+    WorkspaceGitLog, WorkspaceGitStatus, WorkspaceIsolation,
 };
 
 use crate::diagnostics::DiagnosticsReport;
@@ -1259,6 +1259,18 @@ impl DaemonClient {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::SessionsList { id })? {
             DaemonMessage::Sessions { sessions, .. } => Ok(sessions),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    pub fn session_tasks(&self, session_id: &str) -> Result<Vec<SessionTask>, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionTasksGet {
+            id,
+            session_id: session_id.to_string(),
+        })? {
+            DaemonMessage::SessionTasks { tasks, .. } => Ok(tasks),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
         }
@@ -3019,6 +3031,7 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::Shutdown { id, .. }
         | DaemonMessage::Session { id, .. }
         | DaemonMessage::Sessions { id, .. }
+        | DaemonMessage::SessionTasks { id, .. }
         | DaemonMessage::Projects { id, .. }
         | DaemonMessage::Project { id, .. }
         | DaemonMessage::Workspaces { id, .. }

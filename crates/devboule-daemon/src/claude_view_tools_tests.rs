@@ -534,3 +534,41 @@ fn unknown_tool_falls_back_to_the_bare_tool_name() {
         }
     }
 }
+
+#[test]
+fn only_a_backgrounded_bash_call_marks_itself_background() {
+    for (name, input, expected) in [
+        (
+            "Bash",
+            serde_json::json!({"command": "sleep 60", "run_in_background": true}),
+            Some(true),
+        ),
+        (
+            "Bash",
+            serde_json::json!({"command": "sleep 60", "run_in_background": false}),
+            None,
+        ),
+        ("Bash", serde_json::json!({"command": "sleep 60"}), None),
+        (
+            "Agent",
+            serde_json::json!({"description": "work", "run_in_background": true}),
+            None,
+        ),
+    ] {
+        let mut mapper = view();
+        let events = mapper.ingest(&json!({
+            "type": "assistant",
+            "message": {
+                "id": "m",
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "t", "name": name, "input": input}]
+            }
+        }));
+        match events.as_slice() {
+            [SessionEvent::AgentToolCall { background, .. }] => {
+                assert_eq!(*background, expected, "{name} {input}");
+            }
+            other => panic!("expected a tool call, got {other:?}"),
+        }
+    }
+}

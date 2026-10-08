@@ -193,6 +193,13 @@ pub struct ConnHandle {
     /// events; the only real clients all come through the serve loop, which
     /// overwrites this with what they actually agreed.
     session_queue: AtomicBool,
+    /// Whether this connection's hello negotiated `session.tasks`.
+    ///
+    /// Same default-true rule as the queue above: a self-built connection
+    /// never attaches and never reads events, and every real client comes
+    /// through the serve loop, which overwrites this with what they
+    /// actually agreed.
+    session_tasks: AtomicBool,
     /// Whether this connection's hello agreed `session.resume_outcomes`,
     /// which is what decides whether the attach reply carries a resume
     /// outcome at all.
@@ -239,6 +246,19 @@ impl ConnHandle {
     /// snapshot and send a queue frame.
     pub fn session_queue_negotiated(&self) -> bool {
         self.session_queue.load(Ordering::SeqCst)
+    }
+
+    /// Record what this connection's hello agreed on for the task list.
+    /// Called once, by the serve loop, before this connection reads a request.
+    pub fn set_session_tasks_negotiated(&self, negotiated: bool) {
+        self.session_tasks.store(negotiated, Ordering::SeqCst);
+    }
+
+    /// Whether this connection's hello offered and the daemon agreed
+    /// `session.tasks`, which is what decides whether it may read a task
+    /// list or a `tasks_snapshot` event.
+    pub fn session_tasks_negotiated(&self) -> bool {
+        self.session_tasks.load(Ordering::SeqCst)
     }
 
     /// Record what this connection's hello agreed for the attach resume
@@ -310,6 +330,7 @@ impl ConnHandle {
             peer_caps,
             quit_intent,
             session_queue: AtomicBool::new(true),
+            session_tasks: AtomicBool::new(true),
             resume_outcomes: AtomicBool::new(true),
             remote_hosts: AtomicBool::new(false),
             browser_host: AtomicBool::new(false),
@@ -594,7 +615,8 @@ impl ConnHandle {
                 | SessionEvent::SessionFeatureState { .. }
                 | SessionEvent::SessionNotice { .. }
                 | SessionEvent::AgentCreated { .. }
-                | SessionEvent::ChildFinished { .. } => {
+                | SessionEvent::ChildFinished { .. }
+                | SessionEvent::TasksSnapshot { .. } => {
                     if let (Some(cursor), Some(seq)) = (
                         pull.transcript_cursor.as_mut(),
                         event.envelope.transcript_seq,

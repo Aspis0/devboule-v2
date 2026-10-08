@@ -181,6 +181,8 @@ mod server;
 #[cfg(feature = "server")]
 mod session;
 #[cfg(feature = "server")]
+mod session_tasks;
+#[cfg(feature = "server")]
 mod shell_unwrap;
 mod spawn;
 #[cfg(feature = "server")]

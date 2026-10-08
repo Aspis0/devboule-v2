@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use devboule_protocol::{
     cursor_replay_ok, AgentActivityState, AgentTaskItem, AttachmentReference, Attention,
     AttentionReason, Cursor, ErrorCode, NoticeSeverity, QueuedMessage, Session, SessionEvent,
-    SessionEventEnvelope, SessionKind, SessionModel, SessionOrigin, SessionResumeInfo,
+    SessionEventEnvelope, SessionKind, SessionModel, SessionOrigin, SessionResumeInfo, SessionTask,
     TranscriptIntegrity, UserMessageAuthor, UserMessageKind, WireError,
 };
 
@@ -236,6 +236,14 @@ pub(crate) struct SessionRuntime {
     /// moment it enters the pending table. Installed by the registry at
     /// birth, beside the attention hooks; never set by the broker itself.
     permission_park_hook: Mutex<Option<PermissionParkHook>>,
+    /// The task-list refresh observer: called after a provider frame that
+    /// can change this session's task list, at the moment it publishes.
+    /// Installed by the registry at birth, beside the park hook.
+    tasks_refresh_hook: Mutex<Option<TasksRefreshHook>>,
+    /// Background tool calls still owed a terminal update, by tool call id.
+    /// A result for any other call cannot change the task list, so only
+    /// these arm the refresh — every tool result does not re-derive it.
+    background_tool_calls: Mutex<HashSet<String>>,
     /// Duplicated OS process handle. Queried by the shared sweeper; never a
     /// PID, which the OS may reuse after the child dies.
     pub(crate) os_handle: Mutex<Option<ProcessHandle>>,
@@ -309,6 +317,12 @@ struct McpReadiness {
 /// The hook type, named once: the closure the registry installs to be told
 /// when a card parks.
 type PermissionParkHook = Arc<dyn Fn(&SessionEvent) + Send + Sync>;
+
+/// The hook type, named once: the closure the registry installs to be told
+/// when this session's task list may have changed. The published event is
+/// passed so the refresh can fold it explicitly — the journal write may not
+/// be visible yet when the hook runs.
+type TasksRefreshHook = Arc<dyn Fn(&SessionEvent) + Send + Sync>;
 
 struct AttentionHooks {
     suppressed: Arc<dyn Fn() -> bool + Send + Sync>,
@@ -580,6 +594,8 @@ impl SessionRuntime {
             attention: Mutex::new(None),
             attention_hooks: Mutex::new(None),
             permission_park_hook: Mutex::new(None),
+            tasks_refresh_hook: Mutex::new(None),
+            background_tool_calls: Mutex::new(HashSet::new()),
             os_handle: Mutex::new(None),
             on_os_death: Mutex::new(None),
             os_death_started: AtomicBool::new(false),
@@ -911,6 +927,9 @@ impl SessionRuntime {
                 // attached right now; a recovered session replays transcript
                 // events only.
                 SessionEvent::QueueSnapshot { .. } => {}
+                // The task list is derived the same way: live state for live
+                // sessions, never a journal record.
+                SessionEvent::TasksSnapshot { .. } => {}
                 // Snapshots are screen state, never journal records; a
                 // recovered session replays transcript events only.
                 SessionEvent::Snapshot { .. } => {}
@@ -1571,6 +1590,27 @@ impl SessionRuntime {
         notify_observers(&stream);
     }
 
+    /// Publish this session's whole background-task list to every attached
+    /// subscriber.
+    ///
+    /// Transient like the queue snapshot above — derived, never journaled,
+    /// never backlogged — but ungated: the tag is additive output-only, so a
+    /// connection that never agreed `session.tasks` reads it the way it
+    /// reads every other task tag it predates.
+    pub(crate) fn publish_tasks_snapshot(&self, tasks: Vec<SessionTask>) {
+        let Ok(mut stream) = self.lock_stream() else {
+            return;
+        };
+        if stream.output_closed {
+            return;
+        }
+        let event = SessionEvent::TasksSnapshot { tasks };
+        for attachment in stream.observers.values_mut() {
+            enqueue_agent_for_attachment(attachment, event.clone(), None);
+        }
+        notify_observers(&stream);
+    }
+
     pub(crate) fn publish_session_notice(&self, text: String, severity: NoticeSeverity) -> bool {
         let (event, generation, seq) = {
             let Ok(mut stream) = self.lock_stream() else {
@@ -2090,7 +2130,56 @@ impl SessionRuntime {
             // attention: see [`Self::finish_notify`].
             self.notify_finished();
         }
+        if self.tasks_refresh_due(&event) {
+            self.notify_tasks_changed(&event);
+        }
         was_silent
+    }
+
+    /// Whether the just-published provider frame can change the task list.
+    /// Task frames always can; a background call arms its id, and only a
+    /// terminal update for an armed id fires — every ordinary tool result
+    /// costs one hash lookup and no re-derive.
+    fn tasks_refresh_due(&self, event: &SessionEvent) -> bool {
+        match event {
+            SessionEvent::AgentTaskStarted { .. }
+            | SessionEvent::AgentTaskNotification { .. }
+            | SessionEvent::AgentBackgroundTasksChanged { .. } => true,
+            SessionEvent::AgentToolCall {
+                tool_call_id,
+                background: Some(true),
+                ..
+            } => {
+                if let Ok(mut armed) = self.background_tool_calls.lock() {
+                    armed.insert(tool_call_id.clone());
+                }
+                true
+            }
+            SessionEvent::AgentToolUpdate {
+                tool_call_id,
+                status,
+                ..
+            } => {
+                let terminal = matches!(
+                    status.as_deref(),
+                    Some(
+                        "completed"
+                            | "failed"
+                            | "cancelled"
+                            | "canceled"
+                            | "interrupted"
+                            | "stopped"
+                    )
+                );
+                terminal
+                    && self
+                        .background_tool_calls
+                        .lock()
+                        .map(|mut armed| armed.remove(tool_call_id))
+                        .unwrap_or(false)
+            }
+            _ => false,
+        }
     }
 
     pub(crate) fn accept_agent_report(
@@ -2293,13 +2382,16 @@ impl SessionRuntime {
     /// The id is built by the publisher for the same reason
     /// [`Self::publish_agent_user_message`]'s is: the event the caller sees and
     /// the row that links to it name one message.
+    ///
+    /// Returns the published event so the caller can fold it into the
+    /// creator's task list without waiting for the journal write.
     pub(crate) fn publish_child_created(
         &self,
         child_session_id: &str,
         display_name: &str,
         provider: &str,
         profile: &str,
-    ) -> bool {
+    ) -> Option<SessionEvent> {
         self.publish_journaled_agent_event(|generation, seq, _| SessionEvent::AgentCreated {
             message_id: Some(format!("devboule-agent-created-{generation}-{seq}")),
             child_session_id: child_session_id.to_string(),
@@ -2307,7 +2399,6 @@ impl SessionRuntime {
             provider: provider.to_string(),
             profile: profile.to_string(),
         })
-        .is_some()
     }
 
     /// Publish the structured finish record beside the text message, with the
@@ -2316,6 +2407,9 @@ impl SessionRuntime {
     /// `Some(id)` is what the caller wants: the app correlates the two records
     /// on it, which is why this one is not published through the id-building
     /// sibling above — the id is the text message's, handed in.
+    ///
+    /// Returns the published event so the caller can fold it into the
+    /// creator's task list without waiting for the journal write.
     pub(crate) fn publish_child_finished(
         &self,
         message_id: Option<String>,
@@ -2324,7 +2418,7 @@ impl SessionRuntime {
         state: devboule_protocol::AgentTaskState,
         note: Option<String>,
         artifacts: Vec<devboule_protocol::FinishArtifact>,
-    ) -> bool {
+    ) -> Option<SessionEvent> {
         let event = SessionEvent::ChildFinished {
             message_id,
             child_session_id: child_session_id.to_string(),
@@ -2337,7 +2431,6 @@ impl SessionRuntime {
         // an unattached Workspace, or one that restarts, reads the finish
         // out of, so the structured record cannot live on the stream alone.
         self.publish_journaled_agent_event(|_, _, _| event)
-            .is_some()
     }
 
     pub(crate) fn can_publish_agent_event(&self) -> bool {
@@ -2681,6 +2774,29 @@ impl SessionRuntime {
             .and_then(|slot| slot.clone());
         if let Some(hook) = hook {
             hook(request);
+        }
+    }
+
+    /// Install the task-list refresh observer. The registry installs it
+    /// where it installs the park hook: one place, at birth.
+    pub(crate) fn set_tasks_refresh_hook(&self, hook: TasksRefreshHook) {
+        if let Ok(mut slot) = self.tasks_refresh_hook.lock() {
+            *slot = Some(hook);
+        }
+    }
+
+    /// Called after a provider frame that can change the task list
+    /// publishes. Best effort and silent on a missing hook, like the park
+    /// notify above; the stream lock is released before this runs, so the
+    /// refresh's registry read cannot nest inside a publish.
+    fn notify_tasks_changed(&self, event: &SessionEvent) {
+        let hook = self
+            .tasks_refresh_hook
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone());
+        if let Some(hook) = hook {
+            hook(event);
         }
     }
 
@@ -3183,6 +3299,7 @@ impl SessionRuntime {
                 // the historical journal replay path.
                 | SessionEvent::Snapshot { .. }
                 | SessionEvent::QueueSnapshot { .. }
+                | SessionEvent::TasksSnapshot { .. }
                 | SessionEvent::AgentMessage { .. }
                 | SessionEvent::AgentUserMessage { .. }
                 | SessionEvent::Steered { .. }

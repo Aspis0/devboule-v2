@@ -1509,6 +1509,7 @@ fn item_event(
                     spawn_depth: None,
                     command: None,
                     exit_code: None,
+                    background: None,
                 }]
             }
         }
@@ -1564,6 +1565,7 @@ fn item_event(
                     spawn_depth: None,
                     exit_code: codex_exit_code(item),
                     command,
+                    background: None,
                 }]
             }
         }
@@ -1601,6 +1603,7 @@ fn item_event(
                     spawn_depth: None,
                     command: None,
                     exit_code: None,
+                    background: None,
                 }]
             }
         }

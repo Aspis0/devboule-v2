@@ -339,5 +339,30 @@
     "messageId": null,
     "text": "",
     "type": "steered"
+  },
+  {
+    "tasks": [
+      {
+        "childSessionId": "s.child.1",
+        "id": "s.child.1",
+        "kind": "agent",
+        "model": "model",
+        "sessionId": "s.1",
+        "startedAtMs": 1,
+        "state": "running",
+        "title": "child",
+        "toolCallCount": 2
+      },
+      {
+        "endedAtMs": 2,
+        "id": "toolu_1",
+        "kind": "command",
+        "sessionId": "s.1",
+        "startedAtMs": 1,
+        "state": "finished",
+        "title": "sleep 60"
+      }
+    ],
+    "type": "tasks_snapshot"
   }
 ]

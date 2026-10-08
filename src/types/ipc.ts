@@ -1298,6 +1298,32 @@ export interface DroppedQueuedMessage {
   reason: "delivery_unknown";
 }
 
+/**
+ * One row of a session's background-task list, as the daemon's
+ * `tasks_snapshot` event and `SessionTasks` reply carry it (protocol
+ * `SessionTask`). The Tasks tab renders these; until it lands the event
+ * is accepted and ignored.
+ */
+export interface SessionTask {
+  /** Child session id for an agent task, tool call id for a command task. */
+  id: string;
+  kind: "agent" | "command";
+  title: string;
+  state: "running" | "finished" | "failed" | "cancelled";
+  /** The parent session that owns the list. */
+  sessionId: string;
+  /** The child session, for agent tasks: the id to open. */
+  childSessionId?: string;
+  /** Unix milliseconds. */
+  startedAtMs: number;
+  /** Unix milliseconds; absent while running. */
+  endedAtMs?: number;
+  /** Agent-only, best effort: absent when the child never declared one. */
+  model?: string;
+  /** Agent-only: journaled tool calls counted, never stored. */
+  toolCallCount?: number;
+}
+
 export interface SessionSnapshot {
   type: "snapshot";
   asOfSeq: number;
@@ -1345,6 +1371,8 @@ export type SessionEvent =
       command?: string;
       /** The command's exit code. Absent while running or when unknown. */
       exitCode?: number;
+      /** The agent asked for this call to run in the background. Absent means foreground or unknown. */
+      background?: boolean;
     }
   /** ACP update for an existing tool call. */
   | {
@@ -1595,6 +1623,15 @@ export type SessionEvent =
   | { type: "journal_degraded"; droppedFrames: number; droppedBytes: number }
   /** Connection-scoped roster update; not an attach-channel event. */
   | { type: "sessions_snapshot"; sessions: SessionStateSnapshot[] }
+  /**
+   * One row of a session's background-task list (protocol `SessionTask`):
+   * a child agent the session created, or a background command its
+   * provider runs.
+   */
+  | {
+      type: "tasks_snapshot";
+      tasks: SessionTask[];
+    }
   /** The session's whole follow-up queue; `revision` drops an older one. */
   | {
       type: "queue_snapshot";

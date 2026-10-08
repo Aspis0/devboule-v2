@@ -2303,6 +2303,7 @@ impl CodexReader {
             spawn_depth: None,
             command: None,
             exit_code: None,
+            background: None,
         });
         let broker = Arc::clone(&self.permission_broker);
         let prompt = Arc::clone(&self.plan_prompt);

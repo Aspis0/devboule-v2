@@ -510,6 +510,7 @@ fn tool_call_command_and_exit_code_round_trip_and_are_skipped_when_absent() {
                 .to_string(),
         ),
         exit_code: None,
+        background: None,
     };
     let encoded = serde_json::to_value(&command).expect("json");
     assert_eq!(
@@ -560,6 +561,7 @@ fn old_tool_rows_without_command_and_exit_code_still_parse() {
         SessionEvent::AgentToolCall {
             command: None,
             exit_code: None,
+            background: None,
             ..
         }
     ));
@@ -1288,6 +1290,7 @@ fn tool_call_kind_and_locations_are_camel_case_and_optional() {
         spawn_depth: None,
         command: None,
         exit_code: None,
+        background: None,
     };
     let encoded = serde_json::to_value(&with).expect("json");
     assert_eq!(encoded["type"], "agent_tool_call");
@@ -1309,6 +1312,7 @@ fn tool_call_kind_and_locations_are_camel_case_and_optional() {
         spawn_depth: None,
         command: None,
         exit_code: None,
+        background: None,
     };
     let encoded = serde_json::to_value(&without).expect("json");
     assert!(encoded.get("kind").is_none());

@@ -181,6 +181,12 @@ pub(crate) fn handle_client(
         quit_intent,
     );
     conn.set_session_queue_negotiated(queue_ok);
+    conn.set_session_tasks_negotiated(
+        agreed
+            .capabilities
+            .iter()
+            .any(|capability| capability.as_str() == caps::SESSION_TASKS),
+    );
     let resume_outcomes_ok = agreed
         .capabilities
         .iter()
@@ -604,6 +610,7 @@ fn send_pending_event(
             SessionEvent::ChildFinished { .. } => " child_finished".to_string(),
             SessionEvent::Detached => " detached".to_string(),
             SessionEvent::QueueSnapshot { .. } => " queue_snapshot".to_string(),
+            SessionEvent::TasksSnapshot { .. } => " tasks_snapshot".to_string(),
         };
         eprintln!(
             "discarded stale pending event for session {} generation {}{}",

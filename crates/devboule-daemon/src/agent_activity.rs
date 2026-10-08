@@ -111,6 +111,7 @@ pub fn event_kind(event: &SessionEvent) -> &'static str {
         SessionEvent::AgentTaskStarted { .. } => "agent_task_started",
         SessionEvent::AgentTaskNotification { .. } => "agent_task_notification",
         SessionEvent::AgentBackgroundTasksChanged { .. } => "agent_background_tasks_changed",
+        SessionEvent::TasksSnapshot { .. } => "tasks_snapshot",
         SessionEvent::AgentTasks { .. } => "agent_tasks",
         SessionEvent::GoalChanged { .. } => "goal_changed",
         SessionEvent::AgentError { .. } => "agent_error",
