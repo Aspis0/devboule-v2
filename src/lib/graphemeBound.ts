@@ -10,16 +10,24 @@
  * guarantees on hosts that do not.
  */
 export function boundByGraphemes(value: string, limit: number): string {
-  const Segmenter = Intl.Segmenter;
-  const clusters =
-    typeof Segmenter === "function"
-      ? Array.from(
-          new Segmenter("en", { granularity: "grapheme" }).segment(value),
-          (part) => part.segment,
-        )
-      : Array.from(value);
+  const clusters = graphemesOf(value);
   if (clusters.length <= limit) return value;
   return `${clusters.slice(0, limit).join("")}…`;
+}
+
+/** How many grapheme clusters a reader counts in the value. */
+export function graphemeCount(value: string): number {
+  return graphemesOf(value).length;
+}
+
+function graphemesOf(value: string): string[] {
+  const Segmenter = Intl.Segmenter;
+  return typeof Segmenter === "function"
+    ? Array.from(
+        new Segmenter("en", { granularity: "grapheme" }).segment(value),
+        (part) => part.segment,
+      )
+    : Array.from(value);
 }
 
 /**

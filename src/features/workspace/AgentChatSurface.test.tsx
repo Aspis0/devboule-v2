@@ -4511,8 +4511,7 @@ describe("creator daemon notice cards", () => {
     const item = container.querySelector("[data-testid='agent-daemon-notice']");
     expect(item).not.toBeNull();
     const copy = item?.querySelector(".workspace-chat-copy");
-    expect(copy?.textContent).toContain("worker one");
-    expect(copy?.textContent).toContain("completed");
+    expect(copy?.textContent).toBe("Message from subagent · worker one · completed");
     // The child's summary, in its own quoted block with its own label.
     const quoted = item?.querySelector(".workspace-chat-child-said");
     expect(quoted?.querySelector("figcaption")?.textContent).toBe("the child's own words");
@@ -4525,7 +4524,12 @@ describe("creator daemon notice cards", () => {
     expect(copy?.textContent?.includes("build is green")).toBe(false);
     // The frame's tail — the daemon's note and any continuation of the
     // child's summary — is not tellable apart, so it renders in its own
-    // block that claims neither voice, never inside the child's quote.
+    // block that claims neither voice, never inside the child's quote; it
+    // stays hidden until the reader expands the report.
+    expect(item?.querySelector(".workspace-chat-unattributed")).toBeNull();
+    await act(async () =>
+      item?.querySelector<HTMLButtonElement>(".workspace-chat-tool-more")?.click(),
+    );
     const unattributed = item?.querySelector(".workspace-chat-unattributed");
     expect(unattributed?.querySelector("figcaption")?.textContent).toContain("unattributed");
     expect(unattributed?.querySelector("blockquote")?.textContent).toBe("note: one flake retried");
@@ -4558,8 +4562,13 @@ describe("creator daemon notice cards", () => {
     expect(note).not.toBeNull();
     expect(note?.textContent).toContain("no finish summary");
     // No child-words block: nothing may style absence as if words were quoted
-    // in it. The unattributed tail still renders in its own, voiceless block.
+    // in it. The unattributed tail still renders in its own, voiceless block,
+    // behind the expander.
     expect(item?.querySelector(".workspace-chat-child-said")).toBeNull();
+    expect(item?.querySelector(".workspace-chat-unattributed")).toBeNull();
+    await act(async () =>
+      item?.querySelector<HTMLButtonElement>(".workspace-chat-tool-more")?.click(),
+    );
     expect(item?.querySelector(".workspace-chat-unattributed blockquote")?.textContent).toBe(
       "note: one flake retried",
     );

@@ -1,5 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { firstGrapheme } from "./graphemeBound";
+import { firstGrapheme, graphemeCount } from "./graphemeBound";
+
+describe("graphemeCount", () => {
+  it("counts a decomposed letter as one, where UTF-16 counts two", () => {
+    expect("é".length).toBe(2);
+    expect(graphemeCount("é")).toBe(1);
+  });
+
+  it("counts an emoji cluster as one", () => {
+    expect(graphemeCount("👨‍👩‍👧")).toBe(1);
+  });
+
+  it("counts the empty string as none", () => {
+    expect(graphemeCount("")).toBe(0);
+  });
+});
 
 describe("firstGrapheme", () => {
   it("returns exactly one grapheme and never an ellipsis", () => {

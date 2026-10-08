@@ -273,6 +273,15 @@
   overflow-wrap: anywhere;
 }
 
+/* Collapsed summaries clip to four lines. The clamp also catches one long
+   line, which the newline split alone would leave full-height. */
+.workspace-chat-child-said.is-collapsed blockquote {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
 /* The frame the daemon's own contract broke: the excerpt's closer never came,
    so the block ran to the envelope's end. The reader is told, not left to
    wonder why the quote never seems to stop. */

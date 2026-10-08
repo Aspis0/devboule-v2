@@ -1,5 +1,6 @@
+import { useId, useState } from "react";
 import type { AgentChatItem } from "../../lib/agentSession";
-import { boundByGraphemes } from "../../lib/graphemeBound";
+import { boundByGraphemes, graphemeCount } from "../../lib/graphemeBound";
 
 type DaemonNoticeItem = Extract<AgentChatItem, { role: "daemon_notice" }>;
 type DaemonNotice = DaemonNoticeItem["notice"];
@@ -33,8 +34,8 @@ function recognizedSentence(notice: Extract<DaemonNotice, { recognized: true }>)
   const child = childReference(notice);
   if (notice.kind === "agent_finished") {
     return notice.state === null
-      ? `Its child ${child} finished.`
-      : `Its child ${child} finished — state: ${notice.state}.`;
+      ? `Message from subagent · ${child}`
+      : `Message from subagent · ${child} · ${notice.state}`;
   }
   if (notice.kind === "agent_input_required") {
     return `Its child ${child} is waiting for a person to answer a permission card.`;
@@ -76,6 +77,77 @@ function quotedFigure(text: string, caption: string, className: string) {
   );
 }
 
+// A line that wraps on a narrow pane is invisible to the line split, so the
+// grapheme bound also collapses it.
+const COLLAPSED_SUMMARY_LINES = 4;
+const COLLAPSED_SUMMARY_GRAPHEMES = 400;
+
+/**
+ * The child's report of a finish notice, collapsed by default. The summary and
+ * the frame's tail are the only parts that can be hidden; the expansion state
+ * lives on this card instance, so a reload starts collapsed.
+ */
+function FinishReport({
+  summary,
+  unattributed,
+}: {
+  summary: string | null;
+  unattributed: string | null;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const regionId = useId();
+  // A whitespace-only summary has no words to quote, so it reads as none.
+  const words = summary !== null && summary.trim() !== "" ? summary : null;
+  const lines = words === null ? [] : words.split(/\r?\n/);
+  const clipped =
+    words !== null &&
+    (graphemeCount(words) > COLLAPSED_SUMMARY_GRAPHEMES || lines.length > COLLAPSED_SUMMARY_LINES);
+  const canExpand = clipped || unattributed !== null;
+  const collapsed = canExpand && !expanded;
+  const shownSummary =
+    words !== null && clipped && collapsed
+      ? lines.slice(0, COLLAPSED_SUMMARY_LINES).join("\n")
+      : words;
+  return (
+    <>
+      {words === null ? (
+        <p className="workspace-chat-child-said-note" role="note">
+          this frame carried no finish summary — the child ended without words the app could quote
+        </p>
+      ) : null}
+      <div id={regionId}>
+        {shownSummary === null
+          ? null
+          : quotedFigure(
+              shownSummary,
+              "the child's own words",
+              collapsed && clipped
+                ? "workspace-chat-child-said is-collapsed"
+                : "workspace-chat-child-said",
+            )}
+        {unattributed === null || collapsed
+          ? null
+          : quotedFigure(
+              unattributed,
+              "unattributed — the daemon's fields and the child's words are not tellable apart here",
+              "workspace-chat-unattributed",
+            )}
+      </div>
+      {canExpand ? (
+        <button
+          type="button"
+          className="workspace-chat-tool-more"
+          aria-expanded={expanded}
+          aria-controls={regionId}
+          onClick={() => setExpanded((open) => !open)}
+        >
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      ) : null}
+    </>
+  );
+}
+
 export function DaemonNoticeCard({ item }: { item: DaemonNoticeItem }) {
   const { notice } = item;
   const titleParts: string[] = [];
@@ -106,23 +178,7 @@ export function DaemonNoticeCard({ item }: { item: DaemonNoticeItem }) {
         {notice.recognized ? recognizedSentence(notice) : unrecognizedSentence(notice)}
       </div>
       {notice.recognized && notice.kind === "agent_finished" ? (
-        <>
-          {notice.summary === null ? (
-            <p className="workspace-chat-child-said-note" role="note">
-              this frame carried no finish summary — the child ended without words the app could
-              quote
-            </p>
-          ) : (
-            quotedFigure(notice.summary, "the child's own words", "workspace-chat-child-said")
-          )}
-          {notice.unattributed === null
-            ? null
-            : quotedFigure(
-                notice.unattributed,
-                "unattributed — the daemon's fields and the child's words are not tellable apart here",
-                "workspace-chat-unattributed",
-              )}
-        </>
+        <FinishReport summary={notice.summary} unattributed={notice.unattributed} />
       ) : null}
       {notice.recognized && notice.truncated ? (
         <p className="workspace-chat-child-said-note" role="note">
