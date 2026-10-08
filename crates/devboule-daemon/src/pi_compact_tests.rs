@@ -556,23 +556,25 @@ fn a_failed_compact_closes_its_compacting_marker() {
     // thread past the 150 ms.
     gate.lock().expect("gate").clear();
     // Both lines are one worker's publications, and a poll can land between
-    // them: accumulate every line the subscription serves and compare the
-    // order in that one sequence, never a single batch's contents.
-    let mut seen: Vec<String> = Vec::new();
+    // them: accumulate every line with the channel it arrived on, compare the
+    // order in that one sequence, and keep the channels pinned — a swapped
+    // publish must fail here, not only in the app's rendering.
+    let mut seen: Vec<(&'static str, String)> = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         for event in conn.pull_events() {
             match event.envelope.event {
-                SessionEvent::SessionNotice { text, .. } => seen.push(text),
-                SessionEvent::AgentMessage { text, .. } => seen.push(text),
+                SessionEvent::SessionNotice { text, .. } => seen.push(("notice", text)),
+                SessionEvent::AgentMessage { text, .. } => seen.push(("message", text)),
                 _ => {}
             }
         }
         let end = seen
             .iter()
-            .position(|line| line == "Context manually compacted");
-        let failed = seen.iter().position(|line| {
-            line == "[Error] Failed to compact context: Pi compact response timed out"
+            .position(|(kind, line)| *kind == "notice" && line == "Context manually compacted");
+        let failed = seen.iter().position(|(kind, line)| {
+            *kind == "message"
+                && line == "[Error] Failed to compact context: Pi compact response timed out"
         });
         if let (Some(end), Some(failed)) = (end, failed) {
             assert!(
