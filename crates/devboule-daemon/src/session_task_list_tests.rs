@@ -9,6 +9,7 @@ use super::super::session_idle_close_tests::{linked_child, linked_creator};
 use super::super::session_queue_fixtures::attached_without_queue_capability;
 use super::super::tests::{test_owner, tmp_delete_registry};
 use super::super::*;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 fn snapshots_of(
@@ -364,8 +365,11 @@ fn the_pull_holds_exit_for_the_exit_publish_then_releases_it() {
     // The forced order behind the CI failure, without threads and without
     // sleeps: the death is older than EXIT_DRAIN and the exit publish has
     // not run, so the pull must hold Exit back; once the urgent refresh
-    // runs, the cancelled list arrives first and Exit follows it. No hook
-    // is installed, so no exit thread races the forcing.
+    // runs, the cancelled list arrives first and Exit follows it. The
+    // production hook is replaced by a recording stub: insert already
+    // installed the real one, whose exit thread could publish ahead of the
+    // forcing (the macOS CI failure) — the stub proves the death still
+    // reached the hook road while publishing nothing itself.
     let (_dir, registry, _journal) = tmp_delete_registry();
     let owner = test_owner("tasks-race-user", "tasks-race-client");
     let parent = "s.tasks.race.parent";
@@ -391,13 +395,20 @@ fn the_pull_holds_exit_for_the_exit_publish_then_releases_it() {
     };
     assert_eq!(task_lists(&drain()).len(), 1, "the attach snapshot arrives");
 
+    let fired = Arc::new(AtomicBool::new(false));
+    let seen = Arc::clone(&fired);
+    runtime.set_tasks_refresh_hook(Arc::new(move |event| {
+        assert!(event.is_none(), "only the death road fires here");
+        seen.store(true, Ordering::SeqCst);
+    }));
     runtime.mark_exited(Some(1));
+    assert!(
+        fired.load(Ordering::SeqCst),
+        "the death reached the hook road"
+    );
     if let Ok(mut stream) = runtime.lock_stream() {
         stream.last_publish =
             Some(std::time::Instant::now() - super::super::session_items::EXIT_DRAIN);
-        // No hook is installed, so nothing will publish: hold the bit down
-        // by hand to stand in for the pending exit publish.
-        stream.tasks_exit_published = false;
     }
     assert!(
         drain().is_empty(),
@@ -445,17 +456,24 @@ fn the_pull_reports_a_death_its_publish_never_reached() {
     };
     let _ = drain();
 
+    runtime.set_tasks_refresh_hook(Arc::new(|_| {}));
     runtime.mark_exited(Some(1));
+    // The stub replaced the production hook before the death, so no exit
+    // thread can ever run: the only road left is the 2 s fallback, and no
+    // snapshot may arrive on it. Replacing re-arms the wait, which is
+    // exactly the pending state under test.
     if let Ok(mut stream) = runtime.lock_stream() {
         let past = std::time::Instant::now() - std::time::Duration::from_secs(3);
         stream.last_publish = Some(past);
         stream.exit_at = Some(past);
-        // No hook is installed, so nothing will publish: hold the bit down
-        // by hand, so only the 2 s fallback can report this death.
-        stream.tasks_exit_published = false;
     }
+    let events = drain();
     assert!(
-        drain()
+        task_lists(&events).is_empty(),
+        "no publish ran on the stubbed road"
+    );
+    assert!(
+        events
             .into_iter()
             .any(|event| matches!(event, SessionEvent::Exit { .. })),
         "the 2 s fallback reports the death without any publish"
