@@ -17,12 +17,20 @@
  * adds one real agent turn; that is local-only and refused when CI is set.
  */
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CdpSession, captureScreenshot, findPageTarget } from "./cdp.mjs";
-import { DEFAULT_DEBUG_PORT, assertPortFree, launchApp, resolveBinaries, stopApp } from "./app.mjs";
+import {
+  DEFAULT_DEBUG_PORT,
+  assertPortFree,
+  launchApp,
+  ownedBrowserProcesses,
+  pidListeningOnPort,
+  resolveBinaries,
+  stopApp,
+} from "./app.mjs";
 import {
   DAEMON_CONNECTED_MS,
   collectConsoleErrors,
@@ -143,7 +151,7 @@ async function captureBestEffort() {
         // The session may have died with the page; a fresh attach can still see it.
       }
     }
-    const target = await findPageTarget({
+    const { target } = await findPageTarget({
       port,
       urlMatches: TARGET_URL_MATCHES,
       timeoutMs: 10_000,
@@ -208,24 +216,81 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
   });
 }
 
+/** The last lines of a file this run wrote, or null when there is nothing. */
+function readTail(path, lines) {
+  try {
+    return readFileSync(path, "utf8").trim().split(/\r?\n/).slice(-lines).join(" / ");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * What the port showed and what this run's browser was told when no page
+ * matched. A failing run must name which of the two it was — a port that never
+ * opened, a port with the wrong pages, or a browser that was never asked to
+ * open one — because those have different fixes.
+ */
+function describeAttachMiss(observed) {
+  const parts = [
+    observed.answered
+      ? `the port answered after ${Math.round(observed.firstAnsweredAfterMs / 1000)}s with ` +
+        `${observed.urls.length} target(s) ${observed.urls.map((url) => JSON.stringify(url)).join(", ") || "none"}`
+      : `the port never answered${observed.lastError === null ? "" : ` (${observed.lastError})`}`,
+  ];
+  const listener = pidListeningOnPort(port);
+  parts.push(
+    listener === null ? "nothing listens on the port" : `pid ${listener} listens on the port`,
+  );
+  const browsers = ownedBrowserProcesses({ webviewDir });
+  const flagged = browsers.filter((browser) =>
+    browser.commandLine.includes(`--remote-debugging-port=${port}`),
+  ).length;
+  parts.push(
+    `${browsers.length} WebView2 process(es) hold this run's profile, ` +
+      `${flagged} carrying --remote-debugging-port=${port}`,
+  );
+  const stderr = readTail(join(artifacts, "app.stderr.log"), 2);
+  if (stderr !== null && stderr !== "") parts.push(`app stderr: ${stderr}`);
+  return parts.join("; ");
+}
+
+/**
+ * Launch the app and attach once. A WebView2 that never opened its port inside
+ * the window earns one relaunch — the runner's first browser start is the only
+ * part of this that has ever failed on it — and the second miss reports both
+ * attempts' evidence.
+ */
+async function attachWindow(binaries) {
+  const misses = [];
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const app = await launchApp({
+      binary: binaries.app,
+      runtimeDir,
+      localAppData,
+      webviewDir,
+      logDir: artifacts,
+      port,
+    });
+    state.appPid = app.pid;
+    const { target, observed } = await findPageTarget({
+      port,
+      urlMatches: TARGET_URL_MATCHES,
+      timeoutMs: ATTACH_MS,
+    });
+    if (target !== null) return target;
+    misses.push(`attempt ${attempt}: ${describeAttachMiss(observed)}`);
+    await stopApp({ appPid: state.appPid, runtimeDir, webviewDir });
+    state.appPid = null;
+  }
+  throw new Error(
+    `no WebView page matching ${TARGET_URL_MATCHES.join(", ")} on port ${port} — ${misses.join(" | ")}`,
+  );
+}
+
 try {
   const binaries = resolveBinaries(repoRoot);
-  const app = await launchApp({
-    binary: binaries.app,
-    runtimeDir,
-    localAppData,
-    webviewDir,
-    logDir: artifacts,
-    port,
-  });
-  state.appPid = app.pid;
-
-  const target = await findPageTarget({
-    port,
-    urlMatches: TARGET_URL_MATCHES,
-    timeoutMs: ATTACH_MS,
-  });
-  if (target === null) throw new Error(`no WebView page answered on port ${port}`);
+  const target = await attachWindow(binaries);
   state.session = await CdpSession.open(target.webSocketDebuggerUrl, 15_000);
   const consoleErrors = collectConsoleErrors(state.session);
   await state.session.send("Runtime.enable");

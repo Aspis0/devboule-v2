@@ -9,44 +9,77 @@
  * global WebSocket since 22.
  */
 
+import { get } from "node:http";
+
+/**
+ * One bounded GET of the debug port's target list, over `node:http` rather
+ * than `fetch`: a probe of 127.0.0.1 must not acquire a proxy, a connection
+ * pool or any other layer that a runner's environment can bend.
+ */
+function httpTargets(port, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const request = get(
+      { host: "127.0.0.1", port, path: "/json/list", timeout: timeoutMs },
+      (response) => {
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => {
+          body += chunk;
+        });
+        response.on("end", () => {
+          try {
+            resolve(JSON.parse(body));
+          } catch (error) {
+            reject(error);
+          }
+        });
+      },
+    );
+    request.on("timeout", () => request.destroy(new Error("the port did not answer in time")));
+    request.on("error", reject);
+  });
+}
+
 /**
  * Find the page target serving the app.
  *
  * The debug port lists every page the browser process owns, so the target is
  * matched rather than assumed to be first. Cross-origin plugin frames surface
  * as their own targets, typed `page` or `iframe` depending on the WebView2
- * build; the URL match is what picks the document. Returns null when nothing
- * answers before the deadline — the app may still be starting, so callers
- * decide whether that is a failure.
+ * build; the URL match is what picks the document. Returns `{ target, observed }`
+ * — `target` is null when nothing matched before the deadline, and `observed`
+ * carries what the port actually answered, so a failing run can say which of
+ * the two it was instead of only that it gave up.
  */
 export async function findPageTarget({ port, urlMatches, timeoutMs }) {
   const deadline = Date.now() + timeoutMs;
+  const observed = { answered: false, firstAnsweredAfterMs: null, urls: [], lastError: null };
+  const startedAt = Date.now();
   while (Date.now() < deadline) {
     // Each attempt is bounded: a listener that accepts and then stalls must not
     // push the call past the deadline it advertises.
-    const attemptMs = Math.min(2_000, deadline - Date.now());
-    const abort = new AbortController();
-    const timer = setTimeout(() => abort.abort(), attemptMs);
+    const attemptMs = Math.max(250, Math.min(2_000, deadline - Date.now()));
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: abort.signal });
-      const targets = await response.json();
+      const targets = await httpTargets(port, attemptMs);
+      observed.answered = true;
+      observed.firstAnsweredAfterMs ??= Date.now() - startedAt;
+      observed.urls = [...new Set(targets.map((target) => String(target.url ?? "")))];
       const page = targets.find(
         (target) =>
           (target.type === "page" || target.type === "iframe") &&
           target.webSocketDebuggerUrl &&
           urlMatches.some((match) => String(target.url).includes(match)),
       );
-      if (page) return page;
-    } catch {
+      if (page) return { target: page, observed };
+    } catch (error) {
       // The port is not open until the WebView is created; keep waiting.
-    } finally {
-      clearTimeout(timer);
+      observed.lastError = String(error?.message ?? error);
     }
     await new Promise((resolve) =>
       setTimeout(resolve, Math.min(1_000, Math.max(0, deadline - Date.now()))),
     );
   }
-  return null;
+  return { target: null, observed };
 }
 
 /**

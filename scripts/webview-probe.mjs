@@ -102,7 +102,7 @@ async function replay(session, steps) {
 }
 
 const task = readTask(process.argv.slice(2));
-const target = await findPageTarget({
+const { target } = await findPageTarget({
   port: PORT,
   urlMatches: TARGET_URL_MATCHES,
   timeoutMs: ATTACH_TIMEOUT_MS,

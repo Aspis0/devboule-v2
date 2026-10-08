@@ -116,14 +116,16 @@ export function ownedDaemonPid({ appPid, runtimeDir, processes = listProcesses()
  * user-data folder in their command line — the browser is not a child of the
  * app, so ancestry alone cannot name it.
  */
+export function ownedBrowserProcesses({ webviewDir, processes = listProcesses() }) {
+  return processes.filter(
+    (process) =>
+      process.name.toLowerCase() === "msedgewebview2.exe" &&
+      process.commandLine.includes(webviewDir),
+  );
+}
+
 export function ownedBrowserPids({ webviewDir, processes = listProcesses() }) {
-  return processes
-    .filter(
-      (process) =>
-        process.name.toLowerCase() === "msedgewebview2.exe" &&
-        process.commandLine.includes(webviewDir),
-    )
-    .map((process) => process.pid);
+  return ownedBrowserProcesses({ webviewDir, processes }).map((process) => process.pid);
 }
 
 /**
