@@ -7,22 +7,41 @@ import { fileURLToPath } from "node:url";
 // Version arithmetic, changelog sections and the release-base tag choice —
 // pure so scripts/release.test.mjs can exercise them without a repository.
 
-const SEMVER = /^(\d+)\.(\d+)\.(\d+)$/;
-const RELEASE_TAG = /^v(\d+)\.(\d+)\.(\d+)$/;
+// Strict SemVer: no leading zeroes, no component above Number.MAX_SAFE_INTEGER
+// (a larger component would silently lose precision in any arithmetic).
+const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const RELEASE_TAG = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const JSON_VERSION_LINE = /^( {2}"version": ")([^"]*)(")/m;
 const TOML_VERSION_LINE = /^(version = ")([^"]*)(")/m;
+
+function versionComponents(text, pattern, label) {
+  const match = pattern.exec(text);
+  if (match === null) {
+    throw new Error(`${label} is not X.Y.Z: ${JSON.stringify(text)}`);
+  }
+  const parts = match.slice(1).map(Number);
+  if (!parts.every(Number.isSafeInteger)) {
+    throw new Error(`${label} exceeds Number.MAX_SAFE_INTEGER: ${JSON.stringify(text)}`);
+  }
+  return parts;
+}
+
+// Null for anything that is not a strict, precisely representable release
+// tag: malformed tags are not release bases and not valid CLI arguments.
+function parseReleaseTag(tag) {
+  const match = RELEASE_TAG.exec(tag);
+  if (match === null) {
+    return null;
+  }
+  const parts = match.slice(1).map(Number);
+  return parts.every(Number.isSafeInteger) ? parts : null;
+}
 
 export function bumpVersion(current, kind) {
   if (kind !== "patch" && kind !== "minor" && kind !== "major") {
     throw new Error(`bump kind must be patch, minor or major, got ${JSON.stringify(kind)}`);
   }
-  const match = SEMVER.exec(current);
-  if (match === null) {
-    throw new Error(`current version is not X.Y.Z: ${JSON.stringify(current)}`);
-  }
-  let major = Number(match[1]);
-  let minor = Number(match[2]);
-  let patch = Number(match[3]);
+  let [major, minor, patch] = versionComponents(current, SEMVER, "current version");
   if (kind === "patch") {
     patch += 1;
   } else if (kind === "minor") {
@@ -32,6 +51,9 @@ export function bumpVersion(current, kind) {
     major += 1;
     minor = 0;
     patch = 0;
+  }
+  if (![major, minor, patch].every(Number.isSafeInteger)) {
+    throw new Error(`bumping ${JSON.stringify(current)} exceeds Number.MAX_SAFE_INTEGER`);
   }
   return `${major}.${minor}.${patch}`;
 }
@@ -65,11 +87,10 @@ export function pickReleaseBaseTag(tagNames) {
   let best = null;
   let bestKey = null;
   for (const name of tagNames) {
-    const match = RELEASE_TAG.exec(name);
-    if (match === null) {
+    const key = parseReleaseTag(name);
+    if (key === null) {
       continue;
     }
-    const key = [Number(match[1]), Number(match[2]), Number(match[3])];
     if (bestKey === null || compare(key, bestKey) > 0) {
       best = name;
       bestKey = key;
@@ -94,12 +115,12 @@ export function parseReleaseArgs(args) {
   if (
     args.length === 3 &&
     args[0] === "notes" &&
-    /^v\d+\.\d+\.\d+$/.test(args[1]) &&
+    parseReleaseTag(args[1]) !== null &&
     args[2] !== ""
   ) {
     return { mode: "notes", version: args[1], output: args[2] };
   }
-  if (args.length === 2 && args[0] === "check-tag" && RELEASE_TAG.test(args[1])) {
+  if (args.length === 2 && args[0] === "check-tag" && parseReleaseTag(args[1]) !== null) {
     return { mode: "check-tag", version: args[1] };
   }
   throw new Error(

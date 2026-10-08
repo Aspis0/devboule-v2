@@ -33,9 +33,24 @@ describe("bumpVersion", () => {
   });
 
   it("rejects a current version that is not X.Y.Z", () => {
-    for (const current of ["1.2", "1.2.3-rc.1", "v1.2.3", "1.2.3.4", "0.1", "", "one.two.three"]) {
+    for (const current of [
+      "1.2",
+      "1.2.3-rc.1",
+      "v1.2.3",
+      "1.2.3.4",
+      "0.1",
+      "",
+      "one.two.three",
+      "01.2.3",
+      "1.2.03",
+    ]) {
       expect(() => bumpVersion(current, "patch")).toThrow(/X\.Y\.Z/);
     }
+  });
+
+  it("rejects components above Number.MAX_SAFE_INTEGER, before and after the bump", () => {
+    expect(() => bumpVersion("9007199254740992.0.0", "patch")).toThrow(/MAX_SAFE_INTEGER/);
+    expect(() => bumpVersion("0.1.9007199254740991", "patch")).toThrow(/MAX_SAFE_INTEGER/);
   });
 });
 
@@ -92,6 +107,9 @@ describe("pickReleaseBaseTag", () => {
   it("ignores malformed tags instead of ranking them", () => {
     expect(pickReleaseBaseTag(["v1.2", "1.2.3", "v1.2.3-rc.1", "release-v1.2.3"])).toBeNull();
     expect(pickReleaseBaseTag(["v1.2.3-rc.1", "v1.2.2"])).toBe("v1.2.2");
+    expect(pickReleaseBaseTag(["v01.2.3", "v1.2.3"])).toBe("v1.2.3");
+    expect(pickReleaseBaseTag(["v01.2.3"])).toBeNull();
+    expect(pickReleaseBaseTag(["v99999999999999999999.0.0", "v1.0.0"])).toBe("v1.0.0");
   });
 });
 
@@ -171,8 +189,11 @@ describe("parseReleaseArgs", () => {
       ["notes", "v0.1", "release-notes.md"],
       ["notes", "v0.1.1", ""],
       ["notes", "v0.1.1", "release-notes.md", "extra"],
+      ["notes", "v01.2.3", "release-notes.md"],
+      ["notes", "v99999999999999999999.0.0", "release-notes.md"],
       ["check-tag"],
       ["check-tag", "0.1.1"],
+      ["check-tag", "v01.2.3"],
       ["check-tag", "v0.1.1", "extra"],
     ];
     for (const args of invalid) {
