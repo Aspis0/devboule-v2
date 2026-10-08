@@ -99,7 +99,12 @@ export function parseReleaseArgs(args) {
   ) {
     return { mode: "notes", version: args[1], output: args[2] };
   }
-  throw new Error("usage: release.mjs <patch|minor|major> | release.mjs notes <vX.Y.Z> <file>");
+  if (args.length === 2 && args[0] === "check-tag" && RELEASE_TAG.test(args[1])) {
+    return { mode: "check-tag", version: args[1] };
+  }
+  throw new Error(
+    "usage: release.mjs <patch|minor|major> | release.mjs notes <vX.Y.Z> <file> | release.mjs check-tag <vX.Y.Z>",
+  );
 }
 
 export function findVersionDrift(versions, canonical) {
@@ -350,11 +355,28 @@ function runNotes(tag, outputPath) {
   writeFileSync(outputPath, `${section}\n`);
 }
 
+// CI's admission check: the pushed tag must be the app version and must have
+// a changelog section to publish, so a tag cannot label another build.
+function runCheckTag(tag) {
+  const canonical = readVersionOf(join(repoRoot, "src-tauri/tauri.conf.json"));
+  if (tag !== `v${canonical}`) {
+    throw new Error(
+      `${tag} does not match the app version v${canonical} in src-tauri/tauri.conf.json`,
+    );
+  }
+  const section = extractChangelogSection(readFileSync(CHANGELOG_PATH, "utf8"), canonical);
+  if (section === null) {
+    throw new Error(`CHANGELOG.md has no section for ${tag}`);
+  }
+}
+
 if (import.meta.main) {
   try {
     const request = parseReleaseArgs(process.argv.slice(2));
     if (request.mode === "release") {
       runRelease(request.kind);
+    } else if (request.mode === "check-tag") {
+      runCheckTag(request.version);
     } else {
       runNotes(request.version, request.output);
     }

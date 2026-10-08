@@ -152,7 +152,14 @@ describe("parseReleaseArgs", () => {
     });
   });
 
-  it("rejects anything that is not one of the two CLI forms", () => {
+  it("accepts the check-tag form with a vX.Y.Z tag", () => {
+    expect(parseReleaseArgs(["check-tag", "v0.1.1"])).toEqual({
+      mode: "check-tag",
+      version: "v0.1.1",
+    });
+  });
+
+  it("rejects anything that is not one of the three CLI forms", () => {
     const invalid = [
       [],
       ["pre"],
@@ -164,6 +171,9 @@ describe("parseReleaseArgs", () => {
       ["notes", "v0.1", "release-notes.md"],
       ["notes", "v0.1.1", ""],
       ["notes", "v0.1.1", "release-notes.md", "extra"],
+      ["check-tag"],
+      ["check-tag", "0.1.1"],
+      ["check-tag", "v0.1.1", "extra"],
     ];
     for (const args of invalid) {
       expect(() => parseReleaseArgs(args), JSON.stringify(args)).toThrow(/usage/);
