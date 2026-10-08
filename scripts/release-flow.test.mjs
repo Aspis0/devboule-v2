@@ -123,7 +123,8 @@ function fixtureRunner(file, args, options) {
   return "";
 }
 
-describe("release flow in a throwaway repository", () => {
+// Each case spawns git a dozen times; a loaded Windows box needs more than the 5 s default.
+describe("release flow in a throwaway repository", { timeout: 30_000 }, () => {
   let root;
   let origin;
   let notesPath;
