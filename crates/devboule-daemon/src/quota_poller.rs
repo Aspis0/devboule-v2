@@ -5,15 +5,16 @@
 //! leaves the cached one as it was.
 
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Condvar, Mutex, Once};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use devboule_protocol::SessionEvent;
 
 use crate::egress_client::OutboundError;
 use crate::plan_usage_cache;
-use crate::quota_key::{key_fingerprint_from_process, opencode_key_from_process, ApiKey};
+use crate::quota_key::{
+    key_fingerprint_from_process, opencode_key_from_process, ApiKey, KeySource,
+};
 use crate::quota_live;
 use crate::quota_opencode_go::OpencodeGo;
 use crate::quota_source::{fetch, QuotaError};
@@ -37,38 +38,59 @@ const DEMAND_GAP_MS: i64 = 15_000;
 
 /// Until when polling is wanted, in Unix milliseconds.
 static DEMAND_UNTIL_MS: AtomicI64 = AtomicI64::new(0);
-/// Wakes the thread to poll now; set once, when the thread starts.
-static WAKE: OnceLock<Mutex<Sender<()>>> = OnceLock::new();
+
+/// The demand flag and the thread's wake-up. A demand sets the flag and
+/// notifies; any number of demands before the thread looks are one flag, so
+/// they cost one pass of the loop and at most one request.
+struct Wake {
+    pending: Mutex<bool>,
+    changed: Condvar,
+}
+
+static WAKE: Wake = Wake {
+    pending: Mutex::new(false),
+    changed: Condvar::new(),
+};
+
+/// Starts the thread once, on the first demand.
+static STARTED: Once = Once::new();
 
 /// A Pi session is on an OpenCode model, or was just attached to one: poll now,
 /// and keep polling while the demand is recent.
 pub(crate) fn note_demand() {
     DEMAND_UNTIL_MS.store(now_ms() + DEMAND_WINDOW_MS, Ordering::SeqCst);
-    let wake = WAKE.get_or_init(|| {
-        let (sender, receiver) = mpsc::channel();
-        spawn_poller(receiver);
-        Mutex::new(sender)
-    });
-    if let Ok(sender) = wake.lock() {
-        let _ = sender.send(());
+    if let Ok(mut pending) = WAKE.pending.lock() {
+        *pending = true;
     }
+    WAKE.changed.notify_all();
+    STARTED.call_once(spawn_poller);
 }
 
-/// The poll thread. A thread that cannot start leaves the sender with no
-/// receiver: the sends above then do nothing and no reading is stored.
+/// Takes the demand flag, so one demand is one wake.
+fn take_demand() -> bool {
+    let mut pending = WAKE.pending.lock().unwrap_or_else(|error| error.into_inner());
+    std::mem::replace(&mut *pending, false)
+}
+
+/// Sleeps until a demand arrives or the timeout passes, whichever is first.
+fn wait_for_demand(timeout: Duration) {
+    let pending = WAKE.pending.lock().unwrap_or_else(|error| error.into_inner());
+    let _ = WAKE.changed.wait_timeout_while(pending, timeout, |pending| !*pending);
+}
+
+/// The poll thread. If it cannot start, the flag is set and nothing reads it:
+/// no reading is stored, and the cached one stays.
 #[cfg(not(test))]
-fn spawn_poller(receiver: Receiver<()>) {
+fn spawn_poller() {
     let _ = std::thread::Builder::new()
         .name("opencode-go-quota".to_string())
-        .spawn(move || run(receiver));
+        .spawn(run);
 }
 
 /// Tests set the demand and never start the thread, so no test reads the
 /// real environment or the person's auth file.
 #[cfg(test)]
-fn spawn_poller(receiver: Receiver<()>) {
-    drop(receiver);
-}
+fn spawn_poller() {}
 
 /// A manifest that names a Pi session on an OpenCode model is a demand: a
 /// stored manifest is what the session declares, so every handshake and model
@@ -217,38 +239,55 @@ impl Schedule {
 }
 
 #[cfg_attr(test, allow(dead_code))]
-fn run(wake: Receiver<()>) {
+fn run() {
     let mut schedule = Schedule::new();
     let mut last_source = None;
     loop {
-        // Every wake that queued while the thread was busy is one demand, and
-        // the schedule decides whether it polls at all.
-        let mut demand = false;
-        while wake.try_recv().is_ok() {
-            demand = true;
-        }
+        let demand = take_demand();
         let now = now_ms();
         if now <= DEMAND_UNTIL_MS.load(Ordering::SeqCst) {
-            let fingerprint = key_fingerprint_from_process();
-            if schedule.due(now, fingerprint, demand) {
-                let (key, source) = opencode_key_from_process();
-                // One line per change of source, so the log says which source is in
-                // use without a line per poll.
-                if last_source != Some(source) {
-                    eprintln!("{}", source.log_line());
-                    last_source = Some(source);
-                }
-                let attempt = poll_once(key.as_ref(), now, |key, observed_at_ms| {
-                    fetch(&OpencodeGo, key, observed_at_ms)
-                });
-                schedule.record(attempt, now, fingerprint);
-            }
+            pass(
+                &mut schedule,
+                &mut last_source,
+                now,
+                demand,
+                key_fingerprint_from_process(),
+                opencode_key_from_process,
+                |key, observed_at_ms| fetch(&OpencodeGo, key, observed_at_ms),
+            );
         }
-        match wake.recv_timeout(schedule.sleep_for(now_ms())) {
-            Ok(()) | Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => return,
-        }
+        wait_for_demand(schedule.sleep_for(now_ms()));
     }
+}
+
+/// One pass of the loop: asks the source when the schedule says it is due and
+/// records what came of it. The key is looked up only when a request is due,
+/// and the log names the key source once per change, never per poll. Returns
+/// whether a request was made.
+fn pass<S, F>(
+    schedule: &mut Schedule,
+    last_source: &mut Option<KeySource>,
+    now: i64,
+    demand: bool,
+    fingerprint: u64,
+    source: S,
+    fetch: F,
+) -> bool
+where
+    S: FnOnce() -> (Option<ApiKey>, KeySource),
+    F: FnOnce(&ApiKey, i64) -> Result<SessionEvent, QuotaError>,
+{
+    if !schedule.due(now, fingerprint, demand) {
+        return false;
+    }
+    let (key, key_source) = source();
+    if *last_source != Some(key_source) {
+        eprintln!("{}", key_source.log_line());
+        *last_source = Some(key_source);
+    }
+    let attempt = poll_once(key.as_ref(), now, fetch);
+    schedule.record(attempt, now, fingerprint);
+    true
 }
 
 /// What one fetch came to and, when it gave one, the reading. No key means no

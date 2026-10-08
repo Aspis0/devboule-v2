@@ -10,7 +10,7 @@ use devboule_protocol::{PlanWindow, SessionEvent};
 
 use super::{attempt_for, poll_once, Attempt, Schedule};
 use crate::egress_client::OutboundError;
-use crate::quota_key::ApiKey;
+use crate::quota_key::{ApiKey, KeySource};
 use crate::quota_live;
 use crate::quota_source::QuotaError;
 use crate::session::SessionRuntime;
@@ -286,4 +286,36 @@ fn a_poll_with_no_key_prunes_too() {
 
     assert_eq!(poll_once(None, 1, |_, _| Ok(frame(1))), Attempt::NoKey);
     assert!(!quota_live::holds(&ended_entry));
+}
+
+#[test]
+fn fifty_demands_make_one_request() {
+    let _turn = DEMAND.lock().unwrap_or_else(|error| error.into_inner());
+    super::take_demand();
+    for _ in 0..50 {
+        super::note_demand();
+    }
+
+    let mut schedule = Schedule::new();
+    let mut last_source = None;
+    let mut requests = 0;
+    let made = super::pass(
+        &mut schedule,
+        &mut last_source,
+        1_000_000,
+        super::take_demand(),
+        FINGERPRINT,
+        || (ApiKey::from_text("fixture-key"), KeySource::Environment),
+        |_, _| {
+            requests += 1;
+            Err(QuotaError::Status(502))
+        },
+    );
+
+    assert!(made);
+    assert_eq!(requests, 1);
+    assert!(
+        !super::take_demand(),
+        "the fifty demands were one wake, and it was taken"
+    );
 }
