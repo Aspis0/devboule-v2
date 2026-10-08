@@ -281,11 +281,13 @@ code it did not build. `PolisSurface` mounts the installed `plugins/polis` build
 in a cross-origin iframe served from `http://plugin.localhost`, and
 `crates/polis-backend` is the plugin backend process for the city graph and
 Augur findings. Buildings are files, sized by line count and tinted by top-level
-folder; roads are imports. The city it draws is this repository.
+folder; roads are imports. The city it draws is the open workspace's repository.
 
-The plugin currently draws a repository fixture extracted by
-`plugins/polis/scripts/extract-city-fixture.mjs`. The host's real CKG is not yet
-delivered over the plugin bridge.
+The host sends the city over the plugin bridge (`city.get`): a projection built from
+the active workspace, with CKG imports when they are available. When no host city
+arrives, the plugin falls back to a committed snapshot of this repository,
+`plugins/polis/src/fixture-city.json`, which is also the tests' fixed input. Build and
+test never regenerate it; `pnpm run extract-city` in `plugins/polis` refreshes it by hand.
 
 ## Plugins
 

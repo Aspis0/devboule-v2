@@ -9,12 +9,14 @@ describes what the v2 plugin draws and how it runs.
 
 Buildings are files — footprint and height from line count, tint from the top-level
 folder. Roads are imports, thickness from weight, direction importer → imported.
-The city is this repository, extracted by `scripts/extract-city-fixture.mjs`.
+The city comes from the host over the bridge (`city.get`): a projection of the open
+workspace. Without a host city the plugin falls back to `src/fixture-city.json`, a committed
+snapshot of this repository that the tests also read. Build and test never regenerate it;
+refresh it by hand with `pnpm run extract-city` (`scripts/extract-city-fixture.mjs`), then
+commit the result.
 
-**That extractor is a stand-in and is named as one.** The real graph is meant
-to arrive from the host over the bridge as a capability. The regex extractor
-exists so the renderer could be built and looked at before that seam is
-finished.
+**That extractor is a stand-in and is named as one.** It is a regex extractor that exists
+only to produce the fallback snapshot; the host's projection is the real city.
 
 ## What it runs inside
 
