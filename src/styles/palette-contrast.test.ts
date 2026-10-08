@@ -41,6 +41,8 @@ const CLAIMED_PAIRS: ReadonlyArray<{ text: string; ground: string; why: string }
   { text: "--accent-text", ground: "--panel-side", why: "accent text on the sidebar" },
   { text: "--accent-text", ground: "--fill-selected", why: "accent text on the selected pill" },
   { text: "--danger-contrast", ground: "--danger", why: "text on filled danger" },
+  { text: "--danger", ground: "--panel-menu", why: "failure text in menus" },
+  { text: "--danger", ground: "--panel-card", why: "failure text on cards and the surface" },
   {
     text: "--accent-on-code",
     ground: "--code-bg",
@@ -341,6 +343,40 @@ describe("the selected row and the focus ring", () => {
       expect(resolveToken("--ring", vars)).toBe(resolveToken("--accent", vars));
     }
   });
+});
+
+/**
+ * A status dot is 6 px and carries its state by colour alone, so it answers to
+ * the non-text floor (3:1), not the text one. The failed dot is judged on every
+ * ground it is painted on: the strip, the pane header, the subagent menu.
+ */
+const FAILED_DOT_GROUNDS: ReadonlyArray<{ ground: string; why: string }> = [
+  { ground: "--ground-app", why: "the app canvas" },
+  { ground: "--ground-center", why: "the transcript" },
+  { ground: "--panel-side", why: "the sidebar and the strip" },
+  { ground: "--panel-card", why: "cards" },
+  { ground: "--panel-menu", why: "the subagent menu" },
+  { ground: "--fill-selected", why: "the selected row" },
+];
+
+describe("status dot contrast (both themes, from tokens.css)", () => {
+  for (const [theme, vars] of [
+    ["light", lightVars],
+    ["dark", darkVars],
+  ] as const) {
+    for (const entry of FAILED_DOT_GROUNDS) {
+      it(`${theme}: --tone-failed ≥ 3 on ${entry.ground} (${entry.why})`, () => {
+        const dot = resolveToken("--tone-failed", vars);
+        const ground = resolveToken(entry.ground, vars);
+        expect(dot, "--tone-failed does not resolve to a hex colour").toMatch(HEX_COLOR);
+        expect(ground, `${entry.ground} does not resolve to a hex colour`).toMatch(HEX_COLOR);
+        expect(
+          contrastRatio(dot, ground),
+          `--tone-failed ${dot} on ${entry.ground} ${ground}`,
+        ).toBeGreaterThanOrEqual(3);
+      });
+    }
+  }
 });
 
 describe("palette A neutrality (both themes, from tokens.css)", () => {

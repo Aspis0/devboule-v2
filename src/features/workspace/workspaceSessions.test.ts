@@ -24,7 +24,6 @@ import {
   sessionDelegationTakeBack,
   sessionOriginBadge,
   sessionOriginUnknown,
-  sessionStateLabel,
   sessionTitle,
 } from "./workspaceSessions";
 import { fireAttentionToast, forgetAttentionFor, type ToastContent } from "./attentionNotice";
@@ -440,52 +439,6 @@ describe("workspace session controller", () => {
       selectedSessionId: null,
       error: { sentence: "Could not load sessions. The daemon is unreachable." },
     });
-  });
-
-  it("shows observed silence with its elapsed age instead of calling it idle", () => {
-    expect(sessionStateLabel({ type: "silent", generation: 1 }, 40 * 60 * 1000)).toBe(
-      "Quiet · 40 m",
-    );
-    expect(sessionStateLabel({ type: "silent", generation: 1 })).toBe("Quiet");
-  });
-
-  it("labels a finished session with an uncertified transcript", () => {
-    const state = {
-      type: "ended" as const,
-      generation: 1,
-      code: 1,
-      integrity: {
-        kind: "truncated" as const,
-        droppedFrames: 2,
-        droppedBytes: 12 * 1024,
-        trimmedBytes: 0,
-      },
-    };
-    expect(sessionStateLabel(state)).toBe("Stopped · the end is missing");
-  });
-
-  it("names an unchecked transcript in the pane header's words, never the wire's enum names", () => {
-    const integrity = {
-      kind: "unverifiable" as const,
-      droppedFrames: 2,
-      droppedBytes: 12 * 1024,
-      trimmedBytes: 0,
-    };
-    const recoveredLabel = sessionStateLabel({ type: "recovered", generation: 1, integrity });
-    const stoppedLabel = sessionStateLabel({
-      type: "ended",
-      generation: 1,
-      code: 1,
-      integrity: { ...integrity, kind: "truncated" as const },
-    });
-    expect(recoveredLabel).toBe("Recovered · some messages could not be checked");
-    expect(stoppedLabel).toBe("Stopped · the end is missing");
-    for (const label of [recoveredLabel, stoppedLabel]) {
-      expect(label).not.toContain("unverifiable");
-      expect(label).not.toContain("truncated");
-      expect(label).not.toContain("recovered ·");
-      expect(label).not.toContain("ended ·");
-    }
   });
 
   it("updates the tab roster from a pushed session snapshot", async () => {

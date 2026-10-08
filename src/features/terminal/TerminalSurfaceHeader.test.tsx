@@ -170,7 +170,7 @@ describe("terminal pane header", () => {
       "Failed",
     );
     expect(container.querySelector(".workspace-status-dot")?.className).toContain(
-      "workspace-dot-terracotta",
+      "workspace-dot-failed",
     );
   });
 

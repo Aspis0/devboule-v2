@@ -129,7 +129,7 @@ describe("chipDisplay", () => {
     expect(finished.tooltip).toContain("Done");
 
     const error = chipDisplay(base({ attention: { reason: "error", atMs: 7 } }));
-    expect(error.dot).toBe("attention");
+    expect(error.dot).toBe("failed");
     expect(error.detailLines).toContain("Failed");
     expect(error.tooltip).toContain("Failed");
   });

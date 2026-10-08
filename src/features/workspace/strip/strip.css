@@ -152,6 +152,10 @@
   background: var(--tone-attention);
 }
 
+.strip-dot-failed {
+  background: var(--tone-failed);
+}
+
 .strip-dot-unattended {
   background: var(--tone-unattended);
 }
@@ -596,4 +600,8 @@ button.workspace-rate:focus-visible:hover {
   color: var(--tone-attention-text);
   font-size: var(--type-meta);
   white-space: nowrap;
+}
+
+.workspace-overview-attention-failed {
+  color: var(--danger);
 }

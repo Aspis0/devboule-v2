@@ -73,7 +73,7 @@ describe("headerDisplay", () => {
       "restored after the restart; some messages could not be checked.",
     );
     expect(ended.word).toBe("Stopped");
-    expect(ended.tone).toBe("terracotta");
+    expect(ended.tone).toBe("stopped");
     expect(ended.word).not.toBe(recovered.word);
     expect(ended.tone).not.toBe(recovered.tone);
   });
@@ -103,12 +103,18 @@ describe("headerDisplay", () => {
     expect(headerDisplay(SILENT, 240_000, "error", undefined, undefined)).toEqual({
       word: "Failed",
       detail: null,
-      tone: "terracotta",
+      tone: "failed",
       pulse: false,
       tooltip: "Failed",
       srDetail: null,
     });
     expect(headerDisplay(LIVE, 0, "error", undefined, undefined).word).toBe("Failed");
+  });
+
+  it("paints a controller's closed status in the stopped grey, not the accent", () => {
+    const closed = headerDisplay(LIVE, 0, "closed", undefined, undefined);
+    expect(closed.word).toBe("Stopped");
+    expect(closed.tone).toBe("stopped");
   });
 
   it("reads Stopped for a closed controller even before the roster ends", () => {
@@ -182,7 +188,7 @@ describe("the strip and the header agree on roster states and approval", () => {
   });
 
   it("matches the chip's own dot and pulse on a clean row", () => {
-    const toneFor = { live: "green", idle: "border", recovered: "recovered", ended: "terracotta" };
+    const toneFor = { live: "green", idle: "border", recovered: "recovered", ended: "stopped" };
     for (const { state, elapsedMs, activity } of cases) {
       const chip = chipDisplay(cleanRow(state, elapsedMs, activity));
       const header = headerDisplay(state, elapsedMs, "idle", activity, undefined);
@@ -233,7 +239,7 @@ describe("the strip and the header agree on roster states and approval", () => {
     const chip = chipDisplay(cleanRow(ENDED, 4600));
     const header = headerDisplay(ENDED, 4600, "error", undefined, undefined);
     expect(header.word).toBe("Stopped");
-    expect(header.tone).toBe("terracotta");
+    expect(header.tone).toBe("stopped");
     expect(header.pulse).toBe(chip.pulse);
   });
 
@@ -241,10 +247,10 @@ describe("the strip and the header agree on roster states and approval", () => {
     const errorAttention: Attention = { reason: "error", atMs: 1 };
     const chip = chipDisplay(cleanRow(LIVE, 0, "working", errorAttention));
     const header = headerDisplay(LIVE, 0, "idle", "working", errorAttention);
-    expect(chip.dot).toBe("attention");
+    expect(chip.dot).toBe("failed");
     expect(chip.detailLines).toContain("Failed");
     expect(header.word).toBe("Failed");
-    expect(header.tone).toBe("attention");
+    expect(header.tone).toBe("failed");
     expect(header.pulse).toBe(chip.pulse);
   });
 

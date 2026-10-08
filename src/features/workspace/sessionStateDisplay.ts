@@ -4,6 +4,7 @@ import type { AgentActivityState, SessionState } from "../../types/ipc";
 export type ChipDot =
   | "live"
   | "attention"
+  | "failed"
   | "unattended"
   | "recovered"
   | "idle"

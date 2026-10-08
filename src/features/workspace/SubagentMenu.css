@@ -63,8 +63,12 @@
   background: var(--tone-idle);
 }
 
-.workspace-subagent-status-failed {
+.workspace-subagent-status-attention {
   background: var(--tone-attention);
+}
+
+.workspace-subagent-status-failed {
+  background: var(--tone-failed);
 }
 
 .workspace-subagent-list {
@@ -167,7 +171,7 @@
 .workspace-subagent-row-failure {
   margin: 0;
   padding: var(--space-2) var(--space-8) var(--space-4);
-  color: var(--tone-attention-text);
+  color: var(--danger);
   font-family: var(--font-ui);
   font-size: var(--type-meta);
   line-height: var(--leading-dense);

@@ -164,6 +164,38 @@ describe("SubagentMenu pill words", () => {
     expect(pill.getAttribute("aria-label")).toBe("Subagents: 1 failed, 2 working");
   });
 
+  it("counts a child waiting on an approval card only as needing approval, never as working", async () => {
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="parent"
+          sessionRoster={[
+            {
+              id: "child-waiting",
+              kind: "acp",
+              title: "Waiting",
+              createdBy: "parent",
+              state: { type: "live", generation: 1 },
+              activity: "blocked",
+            },
+            {
+              id: "child-running",
+              kind: "acp",
+              title: "Running",
+              createdBy: "parent",
+              state: { type: "live", generation: 1 },
+              activity: "working",
+            },
+          ]}
+          subagentAttention={new Map([["child-waiting", "Needs your approval"]])}
+        />,
+      );
+    });
+    const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
+    expect(pill?.getAttribute("aria-label")).toBe("Subagents: 1 needs your approval, 1 working");
+  });
+
   it("sizes its dots with its own rule, not the shared 7 px one", async () => {
     await act(async () => {
       root.render(

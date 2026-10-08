@@ -25,6 +25,7 @@ function BrowserFavicon({ favicon }: { favicon: string | null }) {
 export const DOT_CLASS: Record<ChipDisplay["dot"], string> = {
   live: "strip-dot-live",
   attention: "strip-dot-attention",
+  failed: "strip-dot-failed",
   unattended: "strip-dot-unattended",
   recovered: "strip-dot-recovered",
   idle: "strip-dot-idle",

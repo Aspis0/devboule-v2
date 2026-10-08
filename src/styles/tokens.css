@@ -102,6 +102,7 @@
   --danger-contrast: #fff5f2;
   --tone-add: #315e43;
   --tone-del: #a83040;
+  --tone-failed: var(--danger);
   --tone-warn: #b8862e;
   /* Diff tab row grounds: the spec's 22%/18%/10% tone tints over the
      centre ground the tool pane sits on. The texts mix their tone toward
@@ -293,6 +294,7 @@
   --danger-contrast: #411511;
   --tone-add: #7cba92;
   --tone-del: #e0837a;
+  --tone-failed: var(--danger);
   --tone-warn: #d1a35a;
   /* The dark tones already clear 4.5:1 on their own tints; the texts mix
      them toward ink at the same 60%/60%/50% as light, symmetrically. */

@@ -253,6 +253,23 @@ describe("SessionOverviewMenu", () => {
     expect(rendered.option("d").getAttribute("aria-label")).toContain("Recovered");
   });
 
+  it("paints a failed session's dot and label in the failed tone, an approval in the attention one", () => {
+    const { option } = renderMenu({
+      sessions: [
+        session("e", { title: "echo", attention: { reason: "error", atMs: 1 } }),
+        session("f", { title: "foxtrot", attention: { reason: "permission", atMs: 1 } }),
+      ],
+      stripOrder: ["e", "f"],
+      activeSessionId: "e",
+    });
+    expect(option("e").querySelector(".strip-dot-failed")).not.toBeNull();
+    expect(option("e").querySelector(".workspace-overview-attention-failed")?.textContent).toBe(
+      "Failed",
+    );
+    expect(option("f").querySelector(".strip-dot-attention")).not.toBeNull();
+    expect(option("f").querySelector(".workspace-overview-attention-failed")).toBeNull();
+  });
+
   it("names a row's provider the way its tab does", () => {
     const rendered = renderMenu({
       sessions: [

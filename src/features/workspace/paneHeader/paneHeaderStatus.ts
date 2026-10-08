@@ -2,7 +2,7 @@ import type { AgentStatus } from "../../../lib/agentSession";
 import type { AgentActivityState, Attention, SessionState } from "../../../types/ipc";
 import { rosterStateDisplay, type ChipDot } from "../sessionStateDisplay";
 
-export type HeaderDotTone = "green" | "terracotta" | "border" | "recovered" | "attention";
+export type HeaderDotTone = "green" | "border" | "recovered" | "attention" | "failed" | "stopped";
 
 export interface HeaderDisplay {
   /** The single status word, with its compact detail beside it in text. */
@@ -22,10 +22,11 @@ export interface HeaderDisplay {
 const DOT_TONE: Record<ChipDot, HeaderDotTone> = {
   live: "green",
   attention: "attention",
+  failed: "failed",
   unattended: "border",
   recovered: "recovered",
   idle: "border",
-  ended: "terracotta",
+  ended: "stopped",
   unknown: "border",
 };
 
@@ -73,7 +74,7 @@ function composeHeader(
     return {
       word,
       detail: null,
-      tone: "attention",
+      tone: attention.reason === "error" ? "failed" : "attention",
       pulse: false,
       tooltip: `${base.line}\n${word}`,
     };
@@ -92,13 +93,13 @@ function composeHeader(
     observed.type === "silent";
   if (processUp) {
     if (agentStatus === "error") {
-      return { word: "Failed", detail: null, tone: "terracotta", pulse: false, tooltip: "Failed" };
+      return { word: "Failed", detail: null, tone: "failed", pulse: false, tooltip: "Failed" };
     }
     if (agentStatus === "closed") {
       return {
         word: "Stopped",
         detail: null,
-        tone: "terracotta",
+        tone: "stopped",
         pulse: false,
         tooltip: "Stopped",
       };

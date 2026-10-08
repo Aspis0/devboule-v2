@@ -27,6 +27,7 @@ const AGENT = {
   sessionId: "bar-agent",
   title: "Tighten handoff summary",
   attentionWord: null,
+  attentionTone: null,
   working: true,
   stateWord: null,
 };
@@ -199,9 +200,25 @@ describe("the status bar", () => {
 
   it("puts an approval the agent waits on ahead of its task", async () => {
     const bar = await render(
-      <StatusBar agent={{ ...AGENT, attentionWord: "Needs your approval" }} daemon={DAEMON} />,
+      <StatusBar
+        agent={{ ...AGENT, attentionWord: "Needs your approval", attentionTone: "attention" }}
+        daemon={DAEMON}
+      />,
     );
     expect(bar.querySelector(".status-bar-who")?.textContent).toContain("Needs your approval");
+  });
+
+  it("paints a failed turn's dot in the failed tone, never the approval ochre", async () => {
+    const session = {
+      ...barSession({ type: "live", generation: 1 }),
+      attention: { reason: "error" as const, atMs: 1 },
+    };
+    const bar = await render(
+      <StatusBar agent={{ ...AGENT, ...agentStateOf(session) }} daemon={DAEMON} />,
+    );
+    const dot = bar.querySelector(".status-bar-who .workspace-status-dot");
+    expect(dot?.classList.contains("workspace-dot-failed")).toBe(true);
+    expect(dot?.classList.contains("workspace-dot-attention")).toBe(false);
   });
 
   it("shows no percent for a window that has reset, and no meter once all have", async () => {

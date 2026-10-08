@@ -3,7 +3,7 @@ import type { DaemonStatus, Session } from "../../../types/ipc";
 import { usePlanRecordedAt, useAllPlanUsage } from "../../../lib/planUsageStore";
 import type { PlanUsage } from "../../../types/ipc";
 import { ContextMeter } from "../ContextMeter";
-import { sessionAttentionLabel } from "../sessionAttention";
+import { activeSessionAttention, sessionAttentionLabel } from "../sessionAttention";
 import { rosterStateDisplay } from "../sessionStateDisplay";
 import { daemonDotTone, daemonLabel } from "../sidebar/SidebarFooter";
 import { useAgentReading } from "./agentReadingStore";
@@ -17,9 +17,17 @@ export interface FocusedAgent {
   title: string;
   /** The attention the roster raised ("Needs your approval"), when there is one. */
   attentionWord: string | null;
+  /** The dot's tone for that attention: a failed turn is red, every other ask is ochre. */
+  attentionTone: "attention" | "failed" | null;
   working: boolean;
   /** The chip's own word for a non-live state (Quiet, Recovered, Stopped); null while live. */
   stateWord: string | null;
+}
+
+function attentionToneOf(session: Session): FocusedAgent["attentionTone"] {
+  const reason = activeSessionAttention(session)?.reason;
+  if (reason === undefined) return null;
+  return reason === "error" ? "failed" : "attention";
 }
 
 /** The bar's share of a session: the chip's state word for every state but live, which the bar words itself. */
@@ -27,6 +35,7 @@ export function agentStateOf(session: Session): Omit<FocusedAgent, "sessionId" |
   const live = session.state.type === "live";
   return {
     attentionWord: sessionAttentionLabel(session),
+    attentionTone: attentionToneOf(session),
     working: live && session.activity === "working",
     stateWord: live
       ? null
@@ -108,13 +117,7 @@ export function StatusBar({ agent, daemon, progress = null }: StatusBarProps) {
         agent.stateWord ??
         (agent.working ? (reading?.task ?? "working") : "idle"));
   const stateTone =
-    agent === null
-      ? "border"
-      : agent.attentionWord !== null
-        ? "attention"
-        : agent.working
-          ? "green"
-          : "border";
+    agent === null ? "border" : (agent.attentionTone ?? (agent.working ? "green" : "border"));
   const tooltip = daemonLabel(daemon);
   return (
     <div className="workspace-status-bar" role="group" aria-label="Status">

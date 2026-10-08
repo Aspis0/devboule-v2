@@ -283,7 +283,11 @@ export function SessionOverviewMenu({
                     <StripKindMark kind={session.kind} />
                     <span className="workspace-overview-title">{title}</span>
                     {attentionLabel !== null ? (
-                      <span className="workspace-overview-attention">{attentionLabel}</span>
+                      <span
+                        className={`workspace-overview-attention${display.dot === "failed" ? " workspace-overview-attention-failed" : ""}`}
+                      >
+                        {attentionLabel}
+                      </span>
                     ) : null}
                     {row.open ? <span className="workspace-overview-open">Open</span> : null}
                     {lastActive === null ? null : (

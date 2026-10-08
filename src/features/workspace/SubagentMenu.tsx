@@ -20,8 +20,11 @@ function subagentTitle(title: string | null, id: string): string {
   return title?.trim() ? title : shortSubagentId(id);
 }
 
-function subagentDotClass(status: AgentSubagentStatus): string {
-  return `workspace-subagent-status-${status}`;
+/** A row paints its state, except a child waiting on a person paints the approval. */
+type SubagentDot = AgentSubagentStatus | "attention";
+
+function subagentDotClass(dot: SubagentDot): string {
+  return `workspace-subagent-status-${dot}`;
 }
 
 // Every clause is a checked effect of the close: rows and tabs leave with the
@@ -157,8 +160,12 @@ export function SubagentMenu({
     }
   };
 
-  const { failed, running: working } = countSubagentStatuses(rows);
+  const { failed } = countSubagentStatuses(rows);
   const attentionCount = rows.filter((row) => attentionOf(row) !== undefined).length;
+  // A child waiting on an approval card is counted once, as the approval it owes.
+  const working = rows.filter(
+    (row) => row.status === "running" && attentionOf(row) === undefined,
+  ).length;
   const counts = [
     ...(attentionCount > 0
       ? [`${attentionCount} ${attentionCount === 1 ? "needs" : "need"} your approval`]
@@ -186,7 +193,7 @@ export function SubagentMenu({
         {attentionCount > 0 ? (
           <span className="workspace-subagent-pill-group workspace-subagent-attention">
             <span
-              className="workspace-subagent-status-dot workspace-subagent-status-failed"
+              className={`workspace-subagent-status-dot ${subagentDotClass("attention")}`}
               aria-hidden="true"
             />
             <span>
@@ -270,7 +277,7 @@ export function SubagentMenu({
                     }}
                   >
                     <span
-                      className={`workspace-subagent-status-dot ${subagentDotClass(row.status)}`}
+                      className={`workspace-subagent-status-dot ${subagentDotClass(attention !== undefined ? "attention" : row.status)}`}
                       aria-hidden="true"
                     />
                     <span className="workspace-subagent-row-title" title={title}>

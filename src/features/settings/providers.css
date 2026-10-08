@@ -457,7 +457,7 @@
   margin: 0;
   padding: 8px 10px;
   overflow: auto;
-  color: var(--tone-attention-text, var(--tone-attention));
+  color: var(--danger);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;

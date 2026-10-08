@@ -35,7 +35,7 @@ export function chipDisplay(session: Session): ChipDisplay {
   let pulse = base.pulse;
 
   if (attention !== undefined) {
-    dot = "attention";
+    dot = attention.reason === "error" ? "failed" : "attention";
     pulse = false;
     const label = sessionAttentionLabel(session);
     if (label !== null) detailLines.push(label);

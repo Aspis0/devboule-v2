@@ -184,6 +184,14 @@
   background: var(--border-strong);
 }
 
+.workspace-dot-failed {
+  background: var(--tone-failed);
+}
+
+.workspace-dot-stopped {
+  background: var(--tone-idle);
+}
+
 /* Restore: the keyboard focus ring's offset neighbour - icon buttons change
    background on hover, a lost affordance from the R2a cleanup. */
 .workspace-icon-button:hover,

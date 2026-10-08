@@ -41,6 +41,7 @@ const COLOUR_TOKENS = [
   "tone-attention",
   "tone-unattended",
   "tone-recovered",
+  "tone-failed",
   "danger",
   "danger-contrast",
   "tone-add",
@@ -203,6 +204,12 @@ describe("the new token blocks", () => {
       expect(sheet.light.has(`--${name}`), `--${name} missing from :root`).toBe(true);
       expect(sheet.dark.has(`--${name}`), `--${name} missing from the dark block`).toBe(true);
     }
+  });
+
+  it("paints the failed tone with each theme's danger red, never the attention ochre", () => {
+    expect(sheet.light.get("--tone-failed")).toBe("var(--danger)");
+    expect(sheet.dark.get("--tone-failed")).toBe("var(--danger)");
+    expect(sheet.light.get("--tone-failed")).not.toBe("var(--tone-attention)");
   });
 
   it("define the theme-independent tokens once, in :root", () => {

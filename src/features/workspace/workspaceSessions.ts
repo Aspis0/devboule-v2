@@ -15,7 +15,6 @@ import type {
   ProviderInfo,
   Session,
   SessionKind,
-  SessionState,
   SessionStateSnapshot,
   UnattendedState,
 } from "../../types/ipc";
@@ -25,7 +24,6 @@ import { boundByGraphemes } from "../../lib/graphemeBound";
 import { errorSentence } from "../../lib/errorSentence";
 import { lastFittedGrid } from "../terminal/lastFittedGrid";
 import { fireAttentionToast, forgetAttentionFor, markAttentionSeen } from "./attentionNotice";
-import { integrityClause, rosterStateDisplay } from "./sessionStateDisplay";
 import { createOpenSessionTabs, openTabsStorage } from "./openSessionTabs";
 
 export interface WorkspaceSessionSource {
@@ -110,28 +108,6 @@ export function isRecoveredSession(session: Pick<Session, "state">): boolean {
 
 export function workspaceSessions(sessions: readonly Session[]): Session[] {
   return [...sessions];
-}
-
-/**
- * One state in the pane header's words: the roster display the header and the
- * chip already read, with its integrity clause beside the word. A label built
- * from the wire's own values says `recovered · unverifiable` to a person.
- */
-export function sessionStateLabel(state: unknown, elapsedMs?: number | null): string {
-  const display = rosterStateDisplay(state as SessionState, elapsedMs);
-  const parts = [display.word, display.detail, integrityClause(state as { integrity?: unknown })];
-  return parts.filter((part) => part !== null).join(" · ");
-}
-
-export function sessionDotTone(state: unknown): "green" | "terracotta" | "border" {
-  const label = sessionStateLabel(state);
-  if (label === "Running") return "green";
-  // The integrity clause is what separates the two stop tones: a stop that
-  // carries one is neutral, a stop that does not keeps the alert.
-  if (label.startsWith("Quiet") || label.startsWith("Recovered") || label.startsWith("Stopped ·")) {
-    return "border";
-  }
-  return "terracotta";
 }
 
 /**

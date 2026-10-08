@@ -297,9 +297,8 @@ export function shortenDeviceId(deviceId: string): string {
  * prints itself would be indistinguishable from the provenance if the two
  * shared a text run. The device is named through the workspace's `DevicesList`
  * map when it has an entry; otherwise the id's head stands in. `unknown` does
- * for a field the daemon did not send, matching `sessionStateLabel`'s
- * vocabulary — a peer origin always carries both, so that is a guard, not a
- * case in normal use.
+ * for a field the daemon did not send — a peer origin always carries both, so
+ * that is a guard, not a case in normal use.
  */
 export function permissionOriginLabel(
   origin: SessionOrigin | undefined,

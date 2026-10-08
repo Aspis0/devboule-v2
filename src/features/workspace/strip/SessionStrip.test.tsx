@@ -501,7 +501,8 @@ describe("SessionStrip", () => {
     expect(tones[2].contains("strip-dot-ended")).toBe(true);
     expect(tones[3].contains("strip-dot-recovered")).toBe(true);
     expect(tones[4].contains("strip-dot-unknown")).toBe(true);
-    expect(tones[5].contains("strip-dot-attention")).toBe(true);
+    expect(tones[5].contains("strip-dot-failed")).toBe(true);
+    expect(tones[5].contains("strip-dot-attention")).toBe(false);
     expect(tones[6].contains("strip-dot-unattended")).toBe(true);
   });
 
