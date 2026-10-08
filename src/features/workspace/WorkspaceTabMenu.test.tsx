@@ -19,6 +19,7 @@ import {
   liveSnapshot,
   menu,
   menuLabels,
+  plainClick,
   pushSnapshots,
   agentSession,
   recoveredAgentSession,
@@ -174,6 +175,42 @@ describe("the tab context menu", () => {
     expect(document.querySelector(DIALOG_SELECTOR)).toBeNull();
     expect(vi.mocked(sessionStop)).toHaveBeenCalledWith("agent-old");
     expect(document.querySelector("#workspace-session-tab-agent-old")).toBeNull();
+  });
+
+  it("returns focus to a background agent's chip when its Archive ask is cancelled", async () => {
+    vi.mocked(sessionsList).mockResolvedValue([
+      agentSession("agent-live", "Busy one"),
+      terminalSession("session-2", "shell two"),
+    ]);
+    await renderWorkspace();
+    await plainClick("session-2");
+
+    await rightClick("agent-live");
+    await clickMenuEntry("Archive");
+    expect(dialog().textContent).toContain("Archive running agent?");
+    await clickDialogButton("Cancel");
+
+    expect(document.activeElement).toBe(tabElement("agent-live"));
+  });
+
+  it("opens the tab menu from the keyboard on a focused tab and reaches Archive", async () => {
+    vi.mocked(sessionsList).mockResolvedValue([agentSession("agent-live", "Busy one")]);
+    await renderWorkspace();
+    await act(async () => tabElement("agent-live").focus());
+
+    await shiftF10("agent-live");
+    for (let step = 0; step < 12; step += 1) {
+      if (document.activeElement?.textContent === "Archive") break;
+      await act(async () =>
+        document.activeElement?.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
+        ),
+      );
+    }
+    expect(document.activeElement?.textContent).toBe("Archive");
+    await act(async () => (document.activeElement as HTMLButtonElement).click());
+
+    expect(dialog().textContent).toContain("Archive running agent?");
   });
 
   it("Delete asks, and confirming destroys through session_close", async () => {
