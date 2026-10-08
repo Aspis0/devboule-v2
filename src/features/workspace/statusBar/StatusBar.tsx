@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
-import type { DaemonStatus } from "../../../types/ipc";
+import type { DaemonStatus, Session } from "../../../types/ipc";
 import { usePlanRecordedAt, useAllPlanUsage } from "../../../lib/planUsageStore";
 import type { PlanUsage } from "../../../types/ipc";
 import { ContextMeter } from "../ContextMeter";
+import { sessionAttentionLabel } from "../sessionAttention";
+import { rosterStateDisplay } from "../sessionStateDisplay";
 import { daemonDotTone, daemonLabel } from "../sidebar/SidebarFooter";
 import { useAgentReading } from "./agentReadingStore";
 import { MeterBar } from "./MeterBar";
@@ -16,8 +18,20 @@ export interface FocusedAgent {
   /** The attention the roster raised ("Needs your approval"), when there is one. */
   attentionWord: string | null;
   working: boolean;
-  /** A silent wire reads Quiet, the same word the session's chip shows. */
-  quiet: boolean;
+  /** The chip's own word for a non-live state (Quiet, Recovered, Stopped); null while live. */
+  stateWord: string | null;
+}
+
+/** The bar's share of a session: the chip's state word for every state but live, which the bar words itself. */
+export function agentStateOf(session: Session): Omit<FocusedAgent, "sessionId" | "title"> {
+  const live = session.state.type === "live";
+  return {
+    attentionWord: sessionAttentionLabel(session),
+    working: live && session.activity === "working",
+    stateWord: live
+      ? null
+      : rosterStateDisplay(session.state, session.elapsedMs, session.activity).word,
+  };
 }
 
 interface StatusBarProps {
@@ -86,7 +100,8 @@ export function StatusBar({ agent, daemon, progress = null }: StatusBarProps) {
     agent === null
       ? null
       : (agent.attentionWord ??
-        (agent.quiet ? "Quiet" : agent.working ? (reading?.task ?? "working") : "idle"));
+        agent.stateWord ??
+        (agent.working ? (reading?.task ?? "working") : "idle"));
   const stateTone =
     agent === null
       ? "border"

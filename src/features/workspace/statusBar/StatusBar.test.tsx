@@ -7,7 +7,7 @@ import { recordPlanUsage } from "../../../lib/planUsageStore";
 import type { DaemonStatus, Session } from "../../../types/ipc";
 import { chipDisplay } from "../strip/stripDisplay";
 import { publishAgentReading, retireAgentReading } from "./agentReadingStore";
-import { StatusBar } from "./StatusBar";
+import { StatusBar, agentStateOf } from "./StatusBar";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -28,8 +28,20 @@ const AGENT = {
   title: "Tighten handoff summary",
   attentionWord: null,
   working: true,
-  quiet: false,
+  stateWord: null,
 };
+
+/** The focused agent's session, in the state the case names. */
+function barSession(state: Session["state"]): Session {
+  return {
+    id: "bar-agent",
+    workspaceId: "workspace-1",
+    kind: "acp",
+    title: "Tighten handoff summary",
+    state,
+    elapsedMs: 90_000,
+  };
+}
 
 let host: HTMLDivElement | null = null;
 let root: ReturnType<typeof createRoot> | null = null;
@@ -94,9 +106,56 @@ describe("the status bar", () => {
         task: "running tests",
       }),
     );
-    const bar = await render(<StatusBar agent={{ ...AGENT, quiet: true }} daemon={DAEMON} />);
+    const bar = await render(
+      <StatusBar
+        agent={{ ...AGENT, ...agentStateOf(barSession({ type: "silent", generation: 1 })) }}
+        daemon={DAEMON}
+      />,
+    );
     expect(bar.querySelector(".status-bar-who")?.textContent).toBe(
       "Tighten handoff summary — Quiet",
+    );
+  });
+
+  it.each([
+    ["silent", { type: "silent", generation: 1 }, "Quiet"],
+    [
+      "recovered",
+      {
+        type: "recovered",
+        generation: 1,
+        integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
+      },
+      "Recovered",
+    ],
+    [
+      "ended",
+      { type: "ended", generation: 1, code: 0, integrity: { kind: "complete" } },
+      "Stopped",
+    ],
+  ] as const)("says the chip's word for a %s session", async (_name, state, word) => {
+    const session = barSession(state);
+    expect(chipDisplay(session).stateLine.startsWith(word)).toBe(true);
+
+    const bar = await render(
+      <StatusBar agent={{ ...AGENT, ...agentStateOf(session) }} daemon={DAEMON} />,
+    );
+
+    expect(bar.querySelector(".status-bar-state")?.textContent).toBe(
+      `Tighten handoff summary — ${word}`,
+    );
+  });
+
+  it("keeps its own live wording: a live session reads idle or its step, where its chip says Running", async () => {
+    const session = barSession({ type: "live", generation: 1 });
+    expect(chipDisplay(session).stateLine).toBe("Running");
+
+    const bar = await render(
+      <StatusBar agent={{ ...AGENT, ...agentStateOf(session) }} daemon={DAEMON} />,
+    );
+
+    expect(bar.querySelector(".status-bar-state")?.textContent).toBe(
+      "Tighten handoff summary — idle",
     );
   });
 
@@ -116,22 +175,6 @@ describe("the status bar", () => {
     const bar = await render(<StatusBar agent={{ ...AGENT, title: "" }} daemon={DAEMON} />);
     expect(bar.querySelector(".status-bar-state")?.textContent).toBe("working");
     expect(bar.querySelector(".status-bar-sep")).toBeNull();
-  });
-
-  it("names a silent session with the word its chip carries", async () => {
-    const session: Session = {
-      id: "bar-agent",
-      workspaceId: "workspace-1",
-      kind: "acp",
-      title: "Tighten handoff summary",
-      state: { type: "silent", generation: 1 },
-      elapsedMs: 90_000,
-    };
-    expect(chipDisplay(session).stateLine.startsWith("Quiet")).toBe(true);
-
-    const bar = await render(<StatusBar agent={{ ...AGENT, quiet: true }} daemon={DAEMON} />);
-
-    expect(bar.querySelector(".status-bar-state")?.textContent).toContain("Quiet");
   });
 
   it("says what the app waits on in place of the title while a session starts", async () => {

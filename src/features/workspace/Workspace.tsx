@@ -82,7 +82,7 @@ import { keyOfWorkspace, useWorkspaceProjects } from "./workspaceProjects";
 import { getLastSelectedWorkspaceKey, setLastSelectedWorkspaceKey } from "./lastSelectedWorkspace";
 import { Sidebar } from "./sidebar/Sidebar";
 import { buildAgentRows } from "./sidebar/agentRowViews";
-import { StatusBar, type FocusedAgent } from "./statusBar/StatusBar";
+import { StatusBar, agentStateOf, type FocusedAgent } from "./statusBar/StatusBar";
 import { useWorkspaceStats } from "./sidebar/useWorkspaceStats";
 import { useProviderConsent } from "./useProviderConsent";
 import { focusIsWhereTheFlowLeftIt, useStripFocus } from "./strip/stripFocus";
@@ -1148,9 +1148,7 @@ export function Workspace({
       ? {
           sessionId: paneSession.id,
           title: sessionTitle(paneSession),
-          attentionWord: sessionAttentionLabel(paneSession),
-          working: paneSession.activity === "working" && paneSession.state.type !== "silent",
-          quiet: paneSession.state.type === "silent",
+          ...agentStateOf(paneSession),
         }
       : null;
   const statusProgress = sessionCreating
