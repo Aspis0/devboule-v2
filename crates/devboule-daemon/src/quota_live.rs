@@ -34,16 +34,31 @@ pub(crate) fn watch(runtime: &Arc<SessionRuntime>) {
 
 /// Sends one reading to every watched Pi session that is on an OpenCode model.
 pub(crate) fn publish(reading: &SessionEvent) {
-    // The list is copied out before any session is touched, so no session lock
-    // is taken while the watch list is held.
-    let runtimes: Vec<Arc<SessionRuntime>> = {
-        let Ok(mut watched) = PI_RUNTIMES.lock() else {
-            return;
-        };
-        prune(&mut watched);
-        watched.iter().filter_map(Weak::upgrade).collect()
+    publish_to(&watched_runtimes(), reading);
+}
+
+/// Whether a watched Pi session is on an OpenCode model with a client attached:
+/// the only condition under which the meter is polled.
+pub(crate) fn opencode_attached() -> bool {
+    watched_runtimes()
+        .iter()
+        .any(|runtime| serves_attached_opencode(runtime))
+}
+
+/// Whether this session is on an OpenCode model and a client is attached to it.
+pub(crate) fn serves_attached_opencode(runtime: &SessionRuntime) -> bool {
+    runtime.current_model_provider_id().as_deref() == Some(OPENCODE_MODEL_PROVIDER)
+        && runtime.has_observers()
+}
+
+/// The live watched sessions, copied out before any session is touched, so no
+/// session lock is taken while the watch list is held.
+fn watched_runtimes() -> Vec<Arc<SessionRuntime>> {
+    let Ok(mut watched) = PI_RUNTIMES.lock() else {
+        return Vec::new();
     };
-    publish_to(&runtimes, reading);
+    prune(&mut watched);
+    watched.iter().filter_map(Weak::upgrade).collect()
 }
 
 fn publish_to(runtimes: &[Arc<SessionRuntime>], reading: &SessionEvent) {

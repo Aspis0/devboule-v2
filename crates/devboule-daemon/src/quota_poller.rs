@@ -1,10 +1,11 @@
-//! Keeps OpenCode Go's usage reading current while a Pi session is on an
-//! OpenCode model. One thread, started by the first demand, asks the source
-//! when [`Schedule`] says it may: about once a minute after a reading, and
-//! further apart after each kind of failure. A poll that yields no reading
-//! leaves the cached one as it was.
+//! Keeps OpenCode Go's usage reading current while a client is attached to a
+//! Pi session on an OpenCode model. One thread, started by the first demand,
+//! asks the source only while such a session is attached, and only when
+//! [`Schedule`] says it may: about once a minute after a reading, and further
+//! apart after each kind of failure. A poll that yields no reading leaves the
+//! cached one as it was.
 
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::mpsc::Receiver;
 use std::sync::{Condvar, Mutex, Once};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -21,8 +22,8 @@ use crate::quota_source::{fetch, QuotaError};
 
 #[cfg_attr(test, allow(dead_code))]
 const POLL_INTERVAL: Duration = Duration::from_secs(60);
-/// A demand keeps polling this long after it was last made.
-const DEMAND_WINDOW_MS: i64 = 10 * 60 * 1000;
+/// How long shutdown waits for the thread to finish its current pass.
+const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
 /// The wait after a reading.
 const SUCCESS_INTERVAL_MS: i64 = 60_000;
 /// The wait after the first transient failure; each further one doubles it.
@@ -36,59 +37,99 @@ const MALFORMED_HOLD_MS: i64 = 30 * 60_000;
 /// A demand may poll ahead of the schedule, but not more often than this.
 const DEMAND_GAP_MS: i64 = 15_000;
 
-/// Until when polling is wanted, in Unix milliseconds.
-static DEMAND_UNTIL_MS: AtomicI64 = AtomicI64::new(0);
+/// The demand flag, the stop flag and the thread's wake-up, under one lock. A
+/// demand sets the flag and notifies; any number of demands before the thread
+/// looks are one flag, so they cost one pass of the loop and at most one request.
+#[derive(Debug, Default)]
+struct WakeState {
+    pending: bool,
+    stopping: bool,
+}
 
-/// The demand flag and the thread's wake-up. A demand sets the flag and
-/// notifies; any number of demands before the thread looks are one flag, so
-/// they cost one pass of the loop and at most one request.
 struct Wake {
-    pending: Mutex<bool>,
+    state: Mutex<WakeState>,
     changed: Condvar,
 }
 
 static WAKE: Wake = Wake {
-    pending: Mutex::new(false),
+    state: Mutex::new(WakeState {
+        pending: false,
+        stopping: false,
+    }),
     changed: Condvar::new(),
 };
 
 /// Starts the thread once, on the first demand.
 static STARTED: Once = Once::new();
 
+/// Set by the thread as its last act, so shutdown can wait for it.
+static EXITED: Mutex<Option<Receiver<()>>> = Mutex::new(None);
+
 /// A Pi session is on an OpenCode model, or was just attached to one: poll now,
-/// and keep polling while the demand is recent.
+/// if one is attached.
 pub(crate) fn note_demand() {
-    DEMAND_UNTIL_MS.store(now_ms() + DEMAND_WINDOW_MS, Ordering::SeqCst);
-    if let Ok(mut pending) = WAKE.pending.lock() {
-        *pending = true;
-    }
+    WAKE.state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .pending = true;
     WAKE.changed.notify_all();
     STARTED.call_once(spawn_poller);
 }
 
 /// Takes the demand flag, so one demand is one wake.
 fn take_demand() -> bool {
-    let mut pending = WAKE.pending.lock().unwrap_or_else(|error| error.into_inner());
-    std::mem::replace(&mut *pending, false)
+    let mut state = WAKE.state.lock().unwrap_or_else(|error| error.into_inner());
+    std::mem::replace(&mut state.pending, false)
 }
 
-/// Sleeps until a demand arrives or the timeout passes, whichever is first.
+fn stopping() -> bool {
+    WAKE.state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .stopping
+}
+
+/// Sleeps until a demand arrives, shutdown begins, or the timeout passes.
 fn wait_for_demand(timeout: Duration) {
-    let pending = WAKE.pending.lock().unwrap_or_else(|error| error.into_inner());
-    let _ = WAKE.changed.wait_timeout_while(pending, timeout, |pending| !*pending);
+    let state = WAKE.state.lock().unwrap_or_else(|error| error.into_inner());
+    let _ = WAKE
+        .changed
+        .wait_timeout_while(state, timeout, |state| !state.pending && !state.stopping);
 }
 
-/// The poll thread. If it cannot start, the flag is set and nothing reads it:
-/// no reading is stored, and the cached one stays.
+/// Ends the poll thread and waits, up to a short deadline, for its current pass
+/// to finish. A thread that never started has nothing to wait for. Called from
+/// the daemon's shutdown path.
+pub(crate) fn shutdown() {
+    WAKE.state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .stopping = true;
+    WAKE.changed.notify_all();
+    let exited = EXITED.lock().unwrap_or_else(|error| error.into_inner()).take();
+    if let Some(exited) = exited {
+        // The thread drops its sender as it returns, so this ends at once when
+        // the thread is done, and at the deadline when it is not.
+        let _ = exited.recv_timeout(SHUTDOWN_WAIT);
+    }
+}
+
+/// Starts the poll thread. A thread that cannot start leaves no receiver to
+/// wait for, and nothing reads the flag: the cached reading stays.
 #[cfg(not(test))]
 fn spawn_poller() {
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    *EXITED.lock().unwrap_or_else(|error| error.into_inner()) = Some(done_rx);
     let _ = std::thread::Builder::new()
         .name("opencode-go-quota".to_string())
-        .spawn(run);
+        .spawn(move || {
+            run();
+            drop(done_tx);
+        });
 }
 
-/// Tests set the demand and never start the thread, so no test reads the
-/// real environment or the person's auth file.
+/// Tests never start the thread, so no test reads the real environment or the
+/// person's auth file.
 #[cfg(test)]
 fn spawn_poller() {}
 
@@ -238,14 +279,17 @@ impl Schedule {
     }
 }
 
+/// The loop. It asks the source only while a Pi session is on an OpenCode model
+/// with a client attached, so the last detach stops the requests, and it returns
+/// once shutdown has begun.
 #[cfg_attr(test, allow(dead_code))]
 fn run() {
     let mut schedule = Schedule::new();
     let mut last_source = None;
-    loop {
+    while !stopping() {
         let demand = take_demand();
         let now = now_ms();
-        if now <= DEMAND_UNTIL_MS.load(Ordering::SeqCst) {
+        if quota_live::opencode_attached() {
             pass(
                 &mut schedule,
                 &mut last_source,

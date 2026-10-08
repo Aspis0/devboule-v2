@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use devboule_protocol::{PlanWindow, SessionEvent, SessionKind};
 
-use super::{publish_to, watch};
+use super::{publish_to, serves_attached_opencode, watch};
 use crate::journal::{new_session_record, Journal};
 use crate::session::{ConnHandle, SessionRuntime};
 
@@ -167,4 +167,17 @@ fn a_client_that_did_not_agree_the_name_is_never_sent_a_live_reading() {
     drain(&conn);
     publish_to(&[Arc::clone(&runtime)], &reading(6_000));
     assert!(!has_reading(&drain(&conn)));
+}
+
+#[test]
+fn a_session_is_attached_only_on_an_opencode_model_with_a_client() {
+    let (_journal, runtime, _conn) = attached_pi("quota-live-attached-check", "opencode", true);
+    assert!(serves_attached_opencode(&runtime));
+
+    let (_journal, elsewhere, _conn) = attached_pi("quota-live-elsewhere", "anthropic", true);
+    assert!(!serves_attached_opencode(&elsewhere));
+
+    let idle = Arc::new(SessionRuntime::new());
+    idle.store_session_manifest(manifest("opencode"));
+    assert!(!serves_attached_opencode(&idle), "no client is attached");
 }

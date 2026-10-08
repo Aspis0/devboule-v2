@@ -240,24 +240,34 @@ static DEMAND: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[test]
 fn a_manifest_for_another_provider_asks_for_no_quota_poll() {
     let _turn = DEMAND.lock().unwrap_or_else(|error| error.into_inner());
-    super::DEMAND_UNTIL_MS.store(0, std::sync::atomic::Ordering::SeqCst);
+    super::take_demand();
     super::note_manifest(&manifest(Some("pi"), Some("anthropic")));
     super::note_manifest(&manifest(Some("pi"), None));
     super::note_manifest(&manifest(Some("claude"), Some("opencode")));
-    assert_eq!(
-        super::DEMAND_UNTIL_MS.load(std::sync::atomic::Ordering::SeqCst),
-        0
-    );
+    assert!(!super::take_demand());
 }
 
 #[test]
-fn a_pi_manifest_on_an_opencode_model_asks_for_polls_for_the_window() {
+fn a_pi_manifest_on_an_opencode_model_asks_for_a_poll() {
     let _turn = DEMAND.lock().unwrap_or_else(|error| error.into_inner());
-    super::DEMAND_UNTIL_MS.store(0, std::sync::atomic::Ordering::SeqCst);
+    super::take_demand();
     super::note_manifest(&manifest(Some("pi"), Some("opencode")));
-    let until = super::DEMAND_UNTIL_MS.load(std::sync::atomic::Ordering::SeqCst);
-    assert!(until > super::now_ms());
-    assert!(until <= super::now_ms() + super::DEMAND_WINDOW_MS);
+    assert!(super::take_demand());
+}
+
+#[test]
+fn shutdown_ends_the_wait_at_once_when_no_thread_is_running() {
+    let _turn = DEMAND.lock().unwrap_or_else(|error| error.into_inner());
+    let started = std::time::Instant::now();
+    super::shutdown();
+    assert!(super::stopping());
+    super::wait_for_demand(Duration::from_secs(60));
+    assert!(started.elapsed() < Duration::from_secs(5));
+    super::WAKE
+        .state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .stopping = false;
 }
 
 #[test]

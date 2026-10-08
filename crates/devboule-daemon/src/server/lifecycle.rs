@@ -79,6 +79,9 @@ fn start_attachment_sweeper(state: &Arc<ServerState>) -> Option<JoinHandle<()>> 
 /// running finish. `run` calls this; the shutdown-drain test calls the
 /// same function, so the tested order is the shipped order.
 pub(super) fn drain_writes_and_close_journal(state: &Arc<ServerState>) -> bool {
+    // The OpenCode Go poll reads the sessions, so it stops before they are torn
+    // down; it holds no journal, so it need not wait on the writes below.
+    crate::quota_poller::shutdown();
     let drained = state.git_jobs.wait_for_write_jobs(GIT_WRITE_DRAIN_BOUND);
     if !drained {
         state.git_jobs.cancel_queued_writes();

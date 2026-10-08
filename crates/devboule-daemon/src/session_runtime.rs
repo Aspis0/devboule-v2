@@ -1694,6 +1694,13 @@ impl SessionRuntime {
         notify_observers(&stream);
     }
 
+    /// Whether any client is attached to this session right now.
+    pub(crate) fn has_observers(&self) -> bool {
+        self.lock_stream()
+            .map(|stream| !stream.observers.is_empty())
+            .unwrap_or(false)
+    }
+
     pub(crate) fn publish_session_notice(&self, text: String, severity: NoticeSeverity) -> bool {
         let (event, generation, seq) = {
             let Ok(mut stream) = self.lock_stream() else {
