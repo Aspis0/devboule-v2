@@ -1,8 +1,12 @@
 //! Claude task frames: the subagent and background task lifecycle, and
-//! the envelope field readers the lifecycle shares.
+//! the envelope field readers the lifecycle shares. Provider descriptions
+//! are masked on the way in: the event is what the wire, the journal and
+//! the UI all carry.
 
 use devboule_protocol::{AgentBackgroundTask, SessionEvent, SubagentTaskStatus};
 use serde_json::Value;
+
+use crate::process_argv_redact::redact_line;
 
 use super::ClaudeView;
 
@@ -16,7 +20,7 @@ impl ClaudeView {
             title: envelope
                 .get("description")
                 .and_then(Value::as_str)
-                .map(str::to_string),
+                .map(|text| redact_line(text)),
             subagent_type: envelope
                 .get("subagent_type")
                 .and_then(Value::as_str)
@@ -66,7 +70,7 @@ impl ClaudeView {
                 Some(AgentBackgroundTask {
                     task_id: task.get("task_id").and_then(Value::as_str)?.to_string(),
                     task_type: task.get("task_type").and_then(Value::as_str)?.to_string(),
-                    title: task.get("description").and_then(Value::as_str)?.to_string(),
+                    title: redact_line(task.get("description").and_then(Value::as_str)?),
                 })
             })
             .collect();

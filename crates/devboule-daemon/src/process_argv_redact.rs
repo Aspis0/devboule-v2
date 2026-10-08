@@ -1,5 +1,7 @@
 //! Argv redaction for the process index: what a tool result may show of
 //! a process's command line, and what is masked or capped before it can.
+//! `redact_line` runs the same passes over any free-text line a surface
+//! is about to show.
 
 /// An argv list is evidence, not a transcript: cap it before it reaches a
 /// tool result.
@@ -107,6 +109,17 @@ pub(crate) fn mask_scheme_credentials(line: &str) -> String {
     }
     out.push_str(&line[cursor..]);
     out
+}
+
+/// One free-text line with credentials masked: the scheme pass runs on the
+/// raw string first — splitting would destroy the two-word shape — then
+/// the line is split the way the process probe splits one, with shell
+/// quotes off, through the argv redactor.
+pub(crate) fn redact_line(line: &str) -> String {
+    let masked = mask_scheme_credentials(line);
+    let bare: String = masked.replace(['\'', '"'], "");
+    let argv: Vec<String> = bare.split_whitespace().map(str::to_string).collect();
+    redact_argv(&argv).join(" ")
 }
 
 /// any case), a glued `-pVALUE`, a `user:password` pair after `-u`/`--user`,

@@ -160,3 +160,41 @@ fn terminal_task_notification_cleans_child_stream_state() {
     assert!(mapper.current_message_ids.is_empty());
     assert!(mapper.streamed.is_empty());
 }
+
+#[test]
+fn a_started_description_is_redacted_in_the_event() {
+    let mut mapper = view();
+    let events = mapper.ingest(&json!({
+        "type": "system",
+        "subtype": "task_started",
+        "task_id": "task-1",
+        "description": "run --header \"Bearer abc123\"",
+        "subagent_type": "explorer",
+        "is_backgrounded": true,
+        "spawn_depth": 1
+    }));
+    let [SessionEvent::AgentTaskStarted { title, .. }] = events.as_slice() else {
+        panic!("expected one AgentTaskStarted event: {events:?}");
+    };
+    assert_eq!(title.as_deref(), Some("run --header Bearer [redacted]"));
+}
+
+#[test]
+fn a_background_set_description_is_redacted_in_the_event() {
+    let mut mapper = view();
+    let events = mapper.ingest(&json!({
+        "type": "system",
+        "subtype": "background_tasks_changed",
+        "tasks": [
+            {
+                "task_id": "task-1",
+                "task_type": "shell",
+                "description": "run --header \"Bearer abc123\""
+            }
+        ]
+    }));
+    let [SessionEvent::AgentBackgroundTasksChanged { tasks }] = events.as_slice() else {
+        panic!("expected one AgentBackgroundTasksChanged event: {events:?}");
+    };
+    assert_eq!(tasks[0].title, "run --header Bearer [redacted]");
+}

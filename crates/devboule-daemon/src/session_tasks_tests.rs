@@ -384,11 +384,10 @@ mod command_titles {
 
     #[test]
     fn a_short_bearer_token_is_masked_by_its_scheme_word() {
-        // Five characters fall under every length check: only the scheme
-        // word names it a credential, and the header colon then takes the
-        // scheme word too.
-        let title = command_title("curl -H 'Authorization: Bearer SHORT' https://h.test/x");
-        assert!(!title.contains("SHORT"), "{title}");
+        // Six characters with a digit name it a credential, and the header
+        // colon then takes the scheme word too.
+        let title = command_title("curl -H 'Authorization: Bearer abc123' https://h.test/x");
+        assert!(!title.contains("abc123"), "{title}");
         assert!(title.contains("[redacted]"), "{title}");
         assert!(title.contains("https://h.test/x"), "{title}");
     }
@@ -404,7 +403,7 @@ mod command_titles {
     #[test]
     fn a_scheme_word_behind_a_spaced_header_name_masks_its_value() {
         assert_eq!(
-            command_title("curl -H \"Authorization : Bearer x\""),
+            command_title("curl -H \"Authorization : Bearer x9\""),
             "curl -H Authorization : Bearer [redacted]"
         );
     }
@@ -427,7 +426,7 @@ mod command_titles {
 
     #[test]
     fn an_uppercase_scheme_word_masks_its_value() {
-        assert_eq!(command_title("BEARER abc"), "BEARER [redacted]");
+        assert_eq!(command_title("BEARER abc123"), "BEARER [redacted]");
     }
 
     #[test]
@@ -481,6 +480,40 @@ mod command_titles {
         };
         let tasks = tasks_of(&[], &[row(changed, 3)]);
         assert_eq!(tasks[0].title, "Run the test suite");
+    }
+
+    #[test]
+    fn a_started_row_keeps_its_redacted_title_when_the_set_arrives_later() {
+        // The started frame writes the row first and the set never
+        // overwrites it, so the event itself has to carry the redaction.
+        let mut mapper = crate::claude_view::ClaudeView::new(None);
+        let started = mapper.ingest(&serde_json::json!({
+            "type": "system",
+            "subtype": "task_started",
+            "task_id": "task-1",
+            "description": "run --header \"Bearer abc123\"",
+            "subagent_type": "explorer",
+            "is_backgrounded": true,
+            "spawn_depth": 1
+        }));
+        let changed = mapper.ingest(&serde_json::json!({
+            "type": "system",
+            "subtype": "background_tasks_changed",
+            "tasks": [{
+                "task_id": "task-1",
+                "task_type": "local_agent",
+                "description": "run --header \"Bearer abc123\""
+            }]
+        }));
+        let tasks = tasks_of(
+            &[],
+            &[
+                row(started.into_iter().next().expect("one started event"), 1),
+                row(changed.into_iter().next().expect("one set event"), 2),
+            ],
+        );
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].title, "run --header Bearer [redacted]");
     }
 }
 

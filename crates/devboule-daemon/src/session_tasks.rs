@@ -12,7 +12,7 @@ use devboule_protocol::{
     SubagentTaskStatus,
 };
 
-use crate::process_argv_redact::redact_argv;
+use crate::process_argv_redact::redact_line;
 
 /// A task row names its command; it does not print it. Cut at a char
 /// boundary with an ellipsis, so a cut flag reads as cut.
@@ -73,16 +73,10 @@ pub fn derive_tasks(
 }
 
 /// A background row's title — a command line or a provider description —
-/// with credentials masked, then cut to a row. The
-/// two-word credential pass runs on the original string first — splitting
-/// would destroy the `Bearer SHORT` shape — then the line is split the way
-/// the process probe splits one, with shell quotes off, through the argv
-/// redactor. The row is a redacted display form, not the exact line.
+/// with credentials masked, then cut to a row. The row is a redacted
+/// display form, not the exact line.
 pub fn command_title(line: &str) -> String {
-    let masked = crate::process_argv_redact::mask_scheme_credentials(line);
-    let bare: String = masked.replace(['\'', '"'], "");
-    let argv: Vec<String> = bare.split_whitespace().map(str::to_string).collect();
-    truncate_title(&redact_argv(&argv).join(" "))
+    truncate_title(&redact_line(line))
 }
 
 pub fn truncate_title(title: &str) -> String {
