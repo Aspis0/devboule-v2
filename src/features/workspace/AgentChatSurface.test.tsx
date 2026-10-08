@@ -640,7 +640,7 @@ describe("AgentChatSurface", () => {
       channelHarness.active?.({
         type: "agent_thought",
         messageId: "thought-b",
-        text: "Checking the tests",
+        text: "Checking the tests\nin order",
         parentToolUseId: "subagent-tool",
       });
     });
@@ -654,7 +654,8 @@ describe("AgentChatSurface", () => {
     expect(completedRow.querySelector(".workspace-chat-thought-label")?.textContent).toBe(
       "Thought",
     );
-    expect(completedRow.querySelector(".workspace-chat-thought-preview")?.textContent).toBe(
+    expect(completedRow.querySelector(".workspace-chat-thought-trigger")).toBeNull();
+    expect(completedRow.querySelector(".workspace-chat-thought-text")?.textContent).toBe(
       "Checking the config loader",
     );
     expect(streamingRow.querySelector(".workspace-chat-thought-status")?.textContent).toBe(
@@ -686,7 +687,7 @@ describe("AgentChatSurface", () => {
         ?.getAttribute("aria-expanded"),
     ).toBe("true");
     expect(updatedStreamingRow.querySelector(".workspace-chat-thought-body")?.textContent).toBe(
-      "Checking the tests and one more detail",
+      "Checking the tests\nin order and one more detail",
     );
   });
 

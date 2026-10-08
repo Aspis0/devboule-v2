@@ -47,40 +47,84 @@ async function renderThought(
   return host;
 }
 
+function occurrences(container: HTMLElement, needle: string): number {
+  return container.textContent.split(needle).length - 1;
+}
+
 describe("ThoughtRow", () => {
-  it("starts collapsed and previews only the first line", async () => {
+  it("starts collapsed, previews only the first line, and leaves the rest unmounted", async () => {
     const container = await renderThought("First line\nSecond line");
     const button = container.querySelector<HTMLButtonElement>(".workspace-chat-thought-trigger");
     expect(button?.getAttribute("aria-expanded")).toBe("false");
     expect(button?.textContent).toContain("Thought");
     expect(button?.textContent).toContain("First line");
     expect(button?.textContent).not.toContain("Second line");
-    expect(container.querySelector(".workspace-chat-thought-body")?.hasAttribute("hidden")).toBe(
-      true,
-    );
+    expect(container.querySelector(".workspace-chat-thought-body")).toBeNull();
+    expect(occurrences(container, "First line")).toBe(1);
+    expect(occurrences(container, "Second line")).toBe(0);
   });
 
-  it("expands and collapses by click with aria-expanded in sync", async () => {
+  it("expands to the full text in the box and drops the preview from the row", async () => {
     const container = await renderThought("First line\nSecond line");
     const button = container.querySelector<HTMLButtonElement>(".workspace-chat-thought-trigger");
     if (button === null) throw new Error("thought toggle did not render");
     await act(async () => button.click());
     expect(button.getAttribute("aria-expanded")).toBe("true");
-    expect(container.querySelector(".workspace-chat-thought-body")?.hasAttribute("hidden")).toBe(
-      false,
+    expect(button.textContent).toBe("Thought");
+    expect(container.querySelector(".workspace-chat-thought-body")?.textContent).toBe(
+      "First line\nSecond line",
     );
+    expect(occurrences(container, "First line")).toBe(1);
+    expect(occurrences(container, "Second line")).toBe(1);
+  });
+
+  it("collapses back to the preview by click with aria-expanded in sync", async () => {
+    const container = await renderThought("First line\nSecond line");
+    const button = container.querySelector<HTMLButtonElement>(".workspace-chat-thought-trigger");
+    if (button === null) throw new Error("thought toggle did not render");
+    await act(async () => button.click());
+    expect(button.getAttribute("aria-expanded")).toBe("true");
     await act(async () => button.click());
     expect(button.getAttribute("aria-expanded")).toBe("false");
+    expect(button.textContent).toContain("First line");
+    expect(container.querySelector(".workspace-chat-thought-body")).toBeNull();
   });
 
-  it("handles an empty thought without a preview", async () => {
+  it("keeps a single-line thought as one row with the text and no box", async () => {
+    const container = await renderThought("The user is just saying hello casually.");
+    expect(container.querySelector(".workspace-chat-thought-trigger")).toBeNull();
+    expect(container.querySelector(".workspace-chat-thought-body")).toBeNull();
+    expect(container.querySelector(".workspace-chat-thought-label")?.textContent).toBe("Thought");
+    expect(container.querySelector(".workspace-chat-thought-text")?.textContent).toBe(
+      "The user is just saying hello casually.",
+    );
+    expect(occurrences(container, "The user is just saying hello casually.")).toBe(1);
+  });
+
+  it("treats a trailing blank line as still single-line", async () => {
+    const container = await renderThought("Only line\n\n   \n");
+    expect(container.querySelector(".workspace-chat-thought-trigger")).toBeNull();
+    expect(occurrences(container, "Only line")).toBe(1);
+  });
+
+  it("shows only the label for an empty thought", async () => {
     const container = await renderThought("");
-    const button = container.querySelector(".workspace-chat-thought-trigger");
-    expect(button?.textContent).toBe("Thought");
+    expect(container.querySelector(".workspace-chat-thought-trigger")).toBeNull();
+    expect(container.querySelector(".workspace-chat-thought-body")).toBeNull();
+    expect(container.textContent).toBe("Thought");
   });
 
-  it("labels a streaming thought Thinking and keeps it collapsed", async () => {
+  it("labels a streaming single-line thought Thinking without a box", async () => {
     const container = await renderThought("Still forming", true);
+    expect(container.querySelector(".workspace-chat-thought-status")?.textContent).toBe(
+      "Thinking…",
+    );
+    expect(container.querySelector(".workspace-chat-thought-trigger")).toBeNull();
+    expect(occurrences(container, "Still forming")).toBe(1);
+  });
+
+  it("labels a streaming multi-line thought Thinking and keeps it collapsed", async () => {
+    const container = await renderThought("Still forming\nmore", true);
     const button = container.querySelector<HTMLButtonElement>(".workspace-chat-thought-trigger");
     expect(button?.textContent).toContain("Thinking…");
     expect(button?.getAttribute("aria-expanded")).toBe("false");
@@ -107,10 +151,30 @@ describe("ThoughtRow", () => {
   it("omits a preview and separator when the thought is whitespace only", async () => {
     const container = await renderThought("   \n\t  ");
     expect(container.querySelector(".workspace-chat-thought-preview")).toBeNull();
+    expect(container.querySelector(".workspace-chat-thought-trigger")).toBeNull();
+  });
+
+  it("gains a box once a second line arrives, collapsed", async () => {
+    const container = await renderThought("One line");
+    expect(container.querySelector(".workspace-chat-thought-trigger")).toBeNull();
+    await act(async () =>
+      root?.render(
+        <ThoughtRow
+          className="workspace-chat-entry workspace-chat-thought"
+          isStreaming
+          label="Thought"
+          text={"One line\nAnd another"}
+        />,
+      ),
+    );
+    const button = container.querySelector<HTMLButtonElement>(".workspace-chat-thought-trigger");
+    expect(button?.getAttribute("aria-expanded")).toBe("false");
+    expect(container.querySelector(".workspace-chat-thought-body")).toBeNull();
+    expect(occurrences(container, "One line")).toBe(1);
   });
 
   it("keeps an open row open as streamed chunks extend its text", async () => {
-    const container = await renderThought("First chunk");
+    const container = await renderThought("First chunk\nsecond chunk");
     const button = container.querySelector<HTMLButtonElement>(".workspace-chat-thought-trigger");
     if (button === null) throw new Error("thought toggle did not render");
     await act(async () => button.click());
@@ -120,7 +184,7 @@ describe("ThoughtRow", () => {
           className="workspace-chat-entry workspace-chat-thought"
           isStreaming
           label="Thought"
-          text="First chunk and second chunk"
+          text={"First chunk\nsecond chunk and a third"}
         />,
       ),
     );
@@ -128,7 +192,7 @@ describe("ThoughtRow", () => {
       container.querySelector(".workspace-chat-thought-trigger")?.getAttribute("aria-expanded"),
     ).toBe("true");
     expect(container.querySelector(".workspace-chat-thought-body")?.textContent).toBe(
-      "First chunk and second chunk",
+      "First chunk\nsecond chunk and a third",
     );
   });
 
@@ -143,14 +207,15 @@ describe("ThoughtRow", () => {
       ".workspace-chat-thought .workspace-chat-thought-trigger",
       ".workspace-chat-thought-chevron",
       ".workspace-chat-thought-preview",
+      ".workspace-chat-thought-line",
+      ".workspace-chat-thought-text",
       ".workspace-chat-thought .workspace-chat-copy",
     ]);
-    const container = await renderThought("A preview");
+    const container = await renderThought("A preview\nMore detail");
     const row = container.querySelector<HTMLElement>(".workspace-chat-thought");
-    const button = container.querySelector<HTMLElement>(".workspace-chat-thought-trigger");
+    const button = container.querySelector<HTMLButtonElement>(".workspace-chat-thought-trigger");
     const preview = container.querySelector<HTMLElement>(".workspace-chat-thought-preview");
-    const body = container.querySelector<HTMLElement>(".workspace-chat-thought-body");
-    if (row === null || button === null || preview === null || body === null) {
+    if (row === null || button === null || preview === null) {
       throw new Error("thought row styles have no rendered target");
     }
     expect(getComputedStyle(row).fontSize).toBe("12px");
@@ -162,7 +227,24 @@ describe("ThoughtRow", () => {
     expect(chevron).not.toBeNull();
     if (chevron !== null) expect(getComputedStyle(chevron).width).toBe("12px");
     expect(getComputedStyle(preview).textOverflow).toBe("ellipsis");
+    await act(async () => button.click());
+    const body = container.querySelector<HTMLElement>(".workspace-chat-thought-body");
+    if (body === null) throw new Error("expanded thought body did not render");
     expect(getComputedStyle(body).fontSize).toBe("12px");
     expect(getComputedStyle(body).fontFamily).not.toContain("JetBrains");
+  });
+
+  it("wraps a single-line thought in the row instead of ellipsizing it", async () => {
+    const { inject } = assembleCssProof([
+      read("src/styles/tokens.css"),
+      read("src/styles/global.css"),
+      read("src/features/workspace/Workspace.css"),
+    ]);
+    inject([".workspace-chat-thought-line", ".workspace-chat-thought-text"]);
+    const container = await renderThought("A single line of reasoning that is long");
+    const text = container.querySelector<HTMLElement>(".workspace-chat-thought-text");
+    if (text === null) throw new Error("single-line thought text did not render");
+    expect(getComputedStyle(text).whiteSpace).not.toBe("nowrap");
+    expect(getComputedStyle(text).textOverflow).not.toBe("ellipsis");
   });
 });

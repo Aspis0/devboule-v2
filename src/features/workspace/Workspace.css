@@ -684,6 +684,13 @@
   flex: none;
 }
 
+.workspace-chat-thought-line {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-6);
+  padding: 0 var(--space-2);
+}
+
 .workspace-chat-thought-preview {
   min-width: 0;
   overflow: hidden;
@@ -691,7 +698,14 @@
   white-space: nowrap;
 }
 
-.workspace-chat-thought-preview::before {
+/* A single line has no box to open, so the whole text wraps in the row. */
+.workspace-chat-thought-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.workspace-chat-thought-preview::before,
+.workspace-chat-thought-text::before {
   content: "·";
   margin-inline-end: var(--space-6);
 }

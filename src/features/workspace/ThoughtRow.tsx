@@ -11,15 +11,34 @@ interface ThoughtRowProps {
 export function ThoughtRow({ label, text, isStreaming, className, style }: ThoughtRowProps) {
   const [expanded, setExpanded] = useState(false);
   const bodyId = useId();
-  const preview = text
+  const lines = text
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .find((line) => line.length > 0);
+    .filter((line) => line.length > 0);
+  const [preview] = lines;
+  const status = isStreaming ? (
+    <span className="workspace-chat-thought-status">Thinking…</span>
+  ) : null;
+
+  // A single line has nothing to fold away, so the row carries the text itself.
+  if (lines.length <= 1) {
+    return (
+      <div className={className} style={style}>
+        <div className="workspace-chat-thought-line">
+          <span className="workspace-chat-thought-label">{label}</span>
+          {status}
+          {preview !== undefined ? (
+            <span className="workspace-chat-thought-text">{preview}</span>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={className} style={style}>
       <button
-        aria-controls={bodyId}
+        aria-controls={expanded ? bodyId : undefined}
         aria-expanded={expanded}
         className="workspace-chat-thought-trigger"
         onClick={() => setExpanded((value) => !value)}
@@ -38,18 +57,14 @@ export function ThoughtRow({ label, text, isStreaming, className, style }: Thoug
           <path d="m9 18 6-6-6-6" />
         </svg>
         <span className="workspace-chat-thought-label">{label}</span>
-        {isStreaming ? <span className="workspace-chat-thought-status">Thinking…</span> : null}
-        {preview !== undefined ? (
-          <span className="workspace-chat-thought-preview">{preview}</span>
-        ) : null}
+        {status}
+        {expanded ? null : <span className="workspace-chat-thought-preview">{preview}</span>}
       </button>
-      <div
-        className="workspace-chat-copy workspace-chat-thought-body"
-        hidden={!expanded}
-        id={bodyId}
-      >
-        {text}
-      </div>
+      {expanded ? (
+        <div className="workspace-chat-copy workspace-chat-thought-body" id={bodyId}>
+          {text}
+        </div>
+      ) : null}
     </div>
   );
 }
