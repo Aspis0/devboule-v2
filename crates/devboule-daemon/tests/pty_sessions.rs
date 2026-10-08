@@ -33,7 +33,10 @@ use devboule_protocol::{
     TranscriptIntegrity, WorkspaceIsolation,
 };
 use portable_pty::{CommandBuilder, PtySize};
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_TIMEOUT};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_TIMEOUT};
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+};
 use windows_sys::Win32::System::JobObjects::{
     IsProcessInJob, JobObjectExtendedLimitInformation, QueryInformationJobObject,
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
@@ -1582,35 +1585,175 @@ fn closing_session_kills_its_grandchild_at_the_os() {
 
 #[test]
 #[ignore = "spawns a real Windows ConPTY and a real child process; run locally with --ignored"]
-fn killing_daemon_kills_every_session_tree_at_the_os() {
+fn hard_daemon_death_closes_the_console_tree_and_spares_the_rest() {
+    // Measured on Windows with ConPTY: a hard daemon death closes the
+    // pseudoconsole, and its conhost closes the console, which sends CTRL_CLOSE
+    // to every process still attached to that console. The shell and a child
+    // that inherited the console die within tens of milliseconds. A child with
+    // its own console, or whose parent has already exited, has no link to that
+    // conhost and survives. This is the contract Windows Terminal gives its tabs.
     let mut harness = Harness::spawn();
-    const MARKER: &str = "DEVBOULE_DAEMON_TREE_PID=";
-    let pid_file = harness.dir.join("daemon-kill.pid");
+    let shell_file = harness.dir.join("daemon-death-shell.pid");
+    let inherit_file = harness.dir.join("daemon-death-inherit.pid");
+    let own_file = harness.dir.join("daemon-death-own.pid");
+    let detached_file = harness.dir.join("daemon-death-detached.pid");
+    let launcher = write_detaching_launcher(&harness.dir, &detached_file);
     queue_command(
         &harness.paths,
-        cmd_spawn_long_lived_child_with_pid_file(MARKER, &pid_file),
+        cmd_spawn_console_own_and_detached_children(
+            &shell_file,
+            &inherit_file,
+            &own_file,
+            &launcher,
+        ),
     );
-    let client = harness.client("tree-daemon-kill");
+    let client = harness.client("tree-daemon-death");
     let session = client
         .session_create(
             Some(scratch_workspace(&client)),
             SessionKind::Terminal,
             None,
         )
-        .expect("create daemon tree session");
-    let _received = Arc::new(Mutex::new(Vec::new()));
+        .expect("create daemon death session");
+    let received = Arc::new(Mutex::new(Vec::new()));
     client
-        .session_attach(&session.id, None, collect_handler(Arc::clone(&_received)))
-        .expect("attach daemon tree session");
-    let pid = wait_for_pid_file(&pid_file, Duration::from_secs(10));
-    assert!(process_is_alive(pid), "grandchild {pid} never became live");
+        .session_attach(&session.id, None, collect_handler(Arc::clone(&received)))
+        .expect("attach daemon death session");
+    assert!(
+        wait_for_marker(&received, "DETACHED_READY", Duration::from_secs(15)),
+        "the shell never reported that its launcher exited"
+    );
+    let shell = wait_for_pid_file(&shell_file, Duration::from_secs(10));
+    let inherit = wait_for_pid_file(&inherit_file, Duration::from_secs(10));
+    let own = wait_for_pid_file(&own_file, Duration::from_secs(10));
+    let detached = wait_for_pid_file(&detached_file, Duration::from_secs(10));
+    let _guards = [
+        PidGuard::of(shell),
+        PidGuard::of(inherit),
+        PidGuard::of(own),
+        PidGuard::of(detached),
+    ];
+    let before = process_snapshot();
+    for (label, pid) in [
+        ("shell", shell),
+        ("inherit", inherit),
+        ("own", own),
+        ("detached", detached),
+    ] {
+        println!(
+            "DAEMON_DEATH before {label} pid={pid} chain={}",
+            ancestry(pid, &before)
+        );
+        assert!(process_is_alive(pid), "{label} process {pid} is not live");
+    }
 
     let mut daemon = harness.child.take().expect("daemon child");
     daemon.child.kill().expect("kill daemon without cleanup");
     daemon.child.wait().expect("reap daemon");
-    wait_for_process_exit(pid, Duration::from_secs(5));
+    // The console-attached pair is the signal that conhost delivered its close,
+    // so the survivors are judged only once those two are gone.
+    wait_for_process_exit(shell, Duration::from_secs(10));
+    wait_for_process_exit(inherit, Duration::from_secs(10));
+    assert!(
+        process_is_alive(own),
+        "own-console child {own} died with the daemon; its own console should keep it alive"
+    );
+    assert!(
+        process_is_alive(detached),
+        "detached child {detached} died with the daemon; its parent had already exited"
+    );
+    let after = process_snapshot();
+    println!(
+        "DAEMON_DEATH after shell_dead=true inherit_dead=true own_alive=true detached_alive=true own_chain={}",
+        ancestry(own, &after)
+    );
     drop(client);
-    println!("JOB_TREE daemon_kill grandchild_pid={pid} os_alive=false");
+}
+
+/// One row of a machine-wide process snapshot: its pid, parent pid and file name.
+struct ProcessRow {
+    pid: u32,
+    ppid: u32,
+    name: String,
+}
+
+fn process_snapshot() -> Vec<ProcessRow> {
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    assert_ne!(snapshot, INVALID_HANDLE_VALUE, "process snapshot");
+    let mut rows = Vec::new();
+    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+    let mut more = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+    while more {
+        let len = entry
+            .szExeFile
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(entry.szExeFile.len());
+        rows.push(ProcessRow {
+            pid: entry.th32ProcessID,
+            ppid: entry.th32ParentProcessID,
+            name: String::from_utf16_lossy(&entry.szExeFile[..len]),
+        });
+        more = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+    }
+    unsafe { CloseHandle(snapshot) };
+    rows
+}
+
+/// The ancestry of `pid` as `name(pid)` hops, child first. A parent that has
+/// exited shows as `(gone)`, which is what a detached process looks like.
+fn ancestry(pid: u32, rows: &[ProcessRow]) -> String {
+    let mut hops = Vec::new();
+    let mut current = pid;
+    for _ in 0..6 {
+        let Some(row) = rows.iter().find(|row| row.pid == current) else {
+            hops.push(format!("({current} gone)"));
+            break;
+        };
+        hops.push(format!("{}({})", row.name, row.pid));
+        if row.ppid == 0 || row.ppid == row.pid {
+            break;
+        }
+        current = row.ppid;
+    }
+    hops.join(" <- ")
+}
+
+/// A shell that writes its PID, starts one PING that inherits the ConPTY
+/// console and one with its own console (`CreateNoWindow`), then starts the
+/// detached launcher and reports `DETACHED_READY` once it has exited.
+fn cmd_spawn_console_own_and_detached_children(
+    shell_file: &Path,
+    inherit_file: &Path,
+    own_file: &Path,
+    launcher: &Path,
+) -> PtyCommand {
+    let shell = shell_file.display().to_string().replace('\'', "''");
+    let inherit = inherit_file.display().to_string().replace('\'', "''");
+    let own = own_file.display().to_string().replace('\'', "''");
+    let launcher = launcher.display().to_string().replace('\'', "''");
+    let script = format!(
+        "Set-Content -LiteralPath '{shell}' -Value $PID; \
+         $psi = New-Object System.Diagnostics.ProcessStartInfo; \
+         $psi.FileName = Join-Path $env:SystemRoot 'System32\\PING.EXE'; \
+         $psi.Arguments = '-t 127.0.0.1'; $psi.UseShellExecute = $false; \
+         $psi.CreateNoWindow = $false; \
+         $inheritChild = [System.Diagnostics.Process]::Start($psi); \
+         Set-Content -LiteralPath '{inherit}' -Value $inheritChild.Id; \
+         $psi.CreateNoWindow = $true; \
+         $ownChild = [System.Diagnostics.Process]::Start($psi); \
+         Set-Content -LiteralPath '{own}' -Value $ownChild.Id; \
+         $launch = New-Object System.Diagnostics.ProcessStartInfo; \
+         $launch.FileName = Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe'; \
+         $launch.Arguments = '-NoLogo -NoProfile -NonInteractive -File ' + [char]34 + '{launcher}' + [char]34; \
+         $launch.UseShellExecute = $false; $launch.CreateNoWindow = $true; \
+         $launcher = [System.Diagnostics.Process]::Start($launch); \
+         $launcher.WaitForExit(); \
+         Write-Output 'DETACHED_READY'; \
+         while ($true) {{ Start-Sleep -Milliseconds 100 }}"
+    );
+    powershell_command(script)
 }
 
 #[test]
