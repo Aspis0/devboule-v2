@@ -265,6 +265,10 @@ pub(crate) struct StreamState {
     /// that arrives with the same epoch and an older revision is dropped,
     /// never published. A new epoch restarts the gate.
     pub(super) tasks_published: Option<(String, u64)>,
+    /// The session's exit task publish went out (or its urgent attempt
+    /// finished): the pull path may synthesize Exit from here on. Set only
+    /// on the exit road, never by ordinary publishes.
+    pub(super) tasks_exit_published: bool,
     /// Reader has seen EOF. Further publish_output is dropped.
     pub(super) output_closed: bool,
     /// Child::wait returned. Output may still be in the ConPTY buffer.

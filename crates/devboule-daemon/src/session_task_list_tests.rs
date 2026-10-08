@@ -230,11 +230,6 @@ fn an_exit_publishes_immediately_past_the_debounce() {
 
     // The observer attaches before the death: the exit's publish must reach
     // the already-attached channel without waiting out the window below.
-    // The drain never feeds a synthesized terminal event back into
-    // `event_sent`: the pull path synthesizes Exit once the death is older
-    // than EXIT_DRAIN, and `event_sent` detaches on it — the observer the
-    // exit publish is addressed to would be gone before the publish lands,
-    // which is the race this test is about, not its subject.
     let conn = attached_without_queue_capability(&registry, parent, 44, &owner);
     let drain_conn = |conn: &Arc<ConnHandle>| {
         let mut events = Vec::new();
@@ -244,12 +239,6 @@ fn an_exit_publishes_immediately_past_the_debounce() {
                 return events;
             }
             for event in &batch {
-                if matches!(
-                    &event.envelope.event,
-                    SessionEvent::Exit { .. } | SessionEvent::Recovered { .. }
-                ) {
-                    continue;
-                }
                 conn.event_sent(event);
             }
             events.extend(batch.into_iter().map(|pending| pending.envelope.event));
@@ -371,13 +360,12 @@ fn the_debounce_opens_after_its_window() {
 }
 
 #[test]
-fn a_detached_observer_recovers_the_list_on_reattach() {
-    // The forced losing order from the CI failure, kept as the regression
-    // document: the death is in, the synthesized Exit is consumed first
-    // (detaching this observer through the live protocol), and only then
-    // does the urgent publish run — to zero observers. The list is not
-    // lost: a fresh subscription reattaches onto the ended session and
-    // reads the cancelled list as its attach snapshot.
+fn the_pull_holds_exit_for_the_exit_publish_then_releases_it() {
+    // The forced order behind the CI failure, without threads and without
+    // sleeps: the death is older than EXIT_DRAIN and the exit publish has
+    // not run, so the pull must hold Exit back; once the urgent refresh
+    // runs, the cancelled list arrives first and Exit follows it. No hook
+    // is installed, so no exit thread races the forcing.
     let (_dir, registry, _journal) = tmp_delete_registry();
     let owner = test_owner("tasks-race-user", "tasks-race-client");
     let parent = "s.tasks.race.parent";
@@ -409,32 +397,61 @@ fn a_detached_observer_recovers_the_list_on_reattach() {
             Some(std::time::Instant::now() - super::super::session_items::EXIT_DRAIN);
     }
     assert!(
+        drain().is_empty(),
+        "Exit is held for the exit publish that has not run"
+    );
+
+    registry.refresh_session_tasks_urgent(parent);
+    let events = drain();
+    let cancelled = events
+        .iter()
+        .position(|event| matches!(event, SessionEvent::TasksSnapshot { .. }));
+    let exit = events
+        .iter()
+        .position(|event| matches!(event, SessionEvent::Exit { .. }));
+    assert!(
+        cancelled.is_some_and(|first| exit.is_some_and(|last| first < last)),
+        "the cancelled list arrives first and Exit follows it: {events:?}"
+    );
+}
+
+#[test]
+fn the_pull_reports_a_death_its_publish_never_reached() {
+    // The backstop: no urgent refresh runs at all, and the recorded death
+    // ages past the 2 s fallback — Exit is synthesized anyway, so a stuck
+    // publish thread can never hold a death forever.
+    let (_dir, registry, _journal) = tmp_delete_registry();
+    let owner = test_owner("tasks-fallback-user", "tasks-fallback-client");
+    let parent = "s.tasks.fallback.parent";
+    linked_creator(&registry, parent, &owner);
+    linked_child(&registry, "s.tasks.fallback.child", &owner, parent);
+    let runtime = registry
+        .live_runtime(parent, &owner)
+        .expect("parent runtime");
+
+    let conn = attached_without_queue_capability(&registry, parent, 46, &owner);
+    let drain = || {
+        let mut events = Vec::new();
+        loop {
+            let batch = conn.pull_events();
+            if batch.is_empty() {
+                return events;
+            }
+            events.extend(batch.into_iter().map(|pending| pending.envelope.event));
+        }
+    };
+    let _ = drain();
+
+    runtime.mark_exited(Some(1));
+    if let Ok(mut stream) = runtime.lock_stream() {
+        let past = std::time::Instant::now() - std::time::Duration::from_secs(3);
+        stream.last_publish = Some(past);
+        stream.exit_at = Some(past);
+    }
+    assert!(
         drain()
             .into_iter()
             .any(|event| matches!(event, SessionEvent::Exit { .. })),
-        "the pull synthesizes the Exit once the death outlasts the drain"
-    );
-    registry.refresh_session_tasks_urgent(parent);
-    assert!(
-        task_lists(&drain()).is_empty(),
-        "the detached observer sees no exit publish"
-    );
-
-    runtime.test_reset_tasks_throttle();
-    let conn = attached_without_queue_capability(&registry, parent, 46, &owner);
-    let mut events = Vec::new();
-    loop {
-        let batch = conn.pull_events();
-        if batch.is_empty() {
-            break;
-        }
-        events.extend(batch.into_iter().map(|pending| pending.envelope.event));
-    }
-    assert!(
-        task_lists(&events)
-            .into_iter()
-            .flat_map(|tasks| tasks.iter())
-            .any(|task| task.state == SessionTaskState::Cancelled),
-        "a fresh subscription reads the cancelled list on attach"
+        "the 2 s fallback reports the death without any publish"
     );
 }

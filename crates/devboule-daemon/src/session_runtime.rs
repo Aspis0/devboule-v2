@@ -558,6 +558,7 @@ impl SessionRuntime {
                 agent_backlog_frames: 0,
                 scrollback: Scrollback::default(),
                 tasks_published: None,
+                tasks_exit_published: false,
                 output_closed: false,
                 process_exited: false,
                 exit_code: None,
@@ -2397,6 +2398,16 @@ impl SessionRuntime {
     pub(crate) fn mark_tasks_derived(&self) {
         if let Ok(mut last) = self.tasks_last_refresh.lock() {
             *last = Some(Instant::now());
+        }
+    }
+
+    /// Mark the exit task publish settled: the pull path may synthesize
+    /// Exit from here on. Called on every urgent attempt, sent or not — a
+    /// session with no task list, or a failed derive, must not hold its own
+    /// death forever; the 2 s fallback covers a thread that never finishes.
+    pub(crate) fn mark_tasks_exit_published(&self) {
+        if let Ok(mut stream) = self.lock_stream() {
+            stream.tasks_exit_published = true;
         }
     }
 

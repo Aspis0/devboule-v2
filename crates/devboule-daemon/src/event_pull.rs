@@ -13,6 +13,12 @@ use crate::peer_policy::ConnPeer;
 use crate::screen::{ScreenSnapshot, SnapshotCursorShape};
 
 use super::session_runtime::LiveAgentReplay;
+
+/// How long after the recorded death the pull synthesizes Exit without the
+/// exit task publish: a failed or stuck publish thread must never hold the
+/// death forever. The publish marks its completion first, so this only
+/// fires when nothing will.
+const EXIT_TASKS_FALLBACK: Duration = Duration::from_secs(2);
 use super::session_types::{transcript_row_owed, AgentReplay, AttachmentKey};
 use super::{Disposition, PendingEvent, PendingItem, PullState, SessionRuntime};
 use crate::journal_lookback::{LookbackAnswer, LookbackRequest};
@@ -1187,37 +1193,54 @@ fn pull_live_events(session_id: &str, pull: &mut PullState, events: &mut Vec<Pen
             push_dead_events(session_id, pull, events);
             return;
         };
-        let Some(attachment) = stream.observers.get_mut(&pull.attachment_key) else {
-            return;
-        };
-        while drained.len() < budget {
-            let Some(item) = attachment.pending.pop_front() else {
-                break;
+        // Exit waits for the exit task publish first: an observer that
+        // detaches on Exit must not miss the cancellations addressed to
+        // it. Two seconds past the recorded death is the backstop for a
+        // publish that never lands, so a stuck thread cannot hold Exit.
+        // Read before the attachment borrow below starts: both are stream
+        // reads, and the borrow checker will not overlap them.
+        let tasks_settled = stream.tasks_exit_published
+            || stream
+                .exit_at
+                .is_none_or(|at| at.elapsed() >= EXIT_TASKS_FALLBACK);
+        // The attachment borrow ends with this block: the exit check below
+        // reads stream fields, and the two must never overlap.
+        let pending_empty = {
+            let Some(attachment) = stream.observers.get_mut(&pull.attachment_key) else {
+                return;
             };
-            match &item {
-                PendingItem::Output { data, .. } => {
-                    attachment.pending_bytes = attachment.pending_bytes.saturating_sub(data.len());
-                    attachment.pending_frames = attachment.pending_frames.saturating_sub(1);
+            while drained.len() < budget {
+                let Some(item) = attachment.pending.pop_front() else {
+                    break;
+                };
+                match &item {
+                    PendingItem::Output { data, .. } => {
+                        attachment.pending_bytes =
+                            attachment.pending_bytes.saturating_sub(data.len());
+                        attachment.pending_frames = attachment.pending_frames.saturating_sub(1);
+                    }
+                    PendingItem::Snapshot { .. } => {}
+                    PendingItem::Agent { bytes, .. } => {
+                        attachment.pending_bytes = attachment.pending_bytes.saturating_sub(*bytes);
+                        attachment.pending_frames = attachment.pending_frames.saturating_sub(1);
+                    }
                 }
-                PendingItem::Snapshot { .. } => {}
-                PendingItem::Agent { bytes, .. } => {
-                    attachment.pending_bytes = attachment.pending_bytes.saturating_sub(*bytes);
-                    attachment.pending_frames = attachment.pending_frames.saturating_sub(1);
-                }
+                drained.push(item);
             }
-            drained.push(item);
-        }
-        degraded = !pull.journal_degraded_sent && pull.runtime.journal_degraded();
-        if degraded {
-            pull.journal_degraded_sent = true;
-        }
-        silent_event = attachment
-            .pending_silences
-            .pop_front()
-            .map(|elapsed_ms| SessionEvent::Silent { elapsed_ms });
+            degraded = !pull.journal_degraded_sent && pull.runtime.journal_degraded();
+            if degraded {
+                pull.journal_degraded_sent = true;
+            }
+            silent_event = attachment
+                .pending_silences
+                .pop_front()
+                .map(|elapsed_ms| SessionEvent::Silent { elapsed_ms });
+            attachment.pending.is_empty()
+        };
         if !pull.exit_sent
-            && attachment.pending.is_empty()
+            && pending_empty
             && SessionRuntime::ready_for_exit(&stream)
+            && tasks_settled
         {
             exit_event = Some(match stream.disposition {
                 Disposition::Recovered { integrity } => SessionEvent::Recovered { integrity },

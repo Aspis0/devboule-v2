@@ -83,7 +83,9 @@ impl super::SessionRegistry {
     }
 
     /// The same derive-and-publish without the debounce: a session's own
-    /// end publishes its cancellations now, not at the window's end.
+    /// end publishes its cancellations now, not at the window's end. Marks
+    /// the exit publish settled whatever the derive answered, so the death
+    /// is never held for a list that cannot be built.
     pub(crate) fn refresh_session_tasks_urgent(&self, session_id: &str) {
         let (runtime, children, parent_ended): (Arc<SessionRuntime>, Vec<Session>, bool) = {
             let Ok(map) = self.inner.lock() else {
@@ -106,6 +108,7 @@ impl super::SessionRegistry {
             (runtime, children, parent_ended)
         };
         self.publish_session_tasks(&runtime, session_id, &children, parent_ended, &[]);
+        runtime.mark_tasks_exit_published();
     }
 
     /// Derive with the stashed triggering rows drained in, cap for the
