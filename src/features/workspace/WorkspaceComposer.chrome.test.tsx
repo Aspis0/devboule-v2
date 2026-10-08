@@ -96,10 +96,10 @@ describe("the composer's box", () => {
     );
   });
 
-  it("gives the textarea a focus ring, since the textarea's own outline is off", () => {
-    const ring = workspaceCss.rulesFor(".workspace-composer textarea:focus-visible");
-    expect(ring).toContain(`outline: 2px solid ${workspaceCss.token("--accent")}`);
-    expect(ring).toContain("outline-offset: -2px");
+  it("draws no box round the textarea on focus; the wrap's top rule is the focus cue", () => {
+    // A textarea matches :focus-visible on a mouse click too, so a ring there
+    // boxed the composer every time the person clicked in to type.
+    expect(workspaceCss.rulesFor(".workspace-composer textarea:focus-visible")).toBe("");
   });
 
   it("insets its text by the lane inset plus the rail's gutter, on the transcript's axis", () => {

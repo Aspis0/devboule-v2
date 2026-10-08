@@ -1336,13 +1336,6 @@
   border-top-color: var(--accent);
 }
 
-/* The textarea's own outline is off for the flat look, so keyboard focus
-   gets its ring here instead. */
-.workspace-composer textarea:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: -2px;
-}
-
 .workspace-composer textarea {
   /* block: an inline-block textarea sits on a line box, and the strut's
      descender left 5.3px of dead height under the only line of text. */
