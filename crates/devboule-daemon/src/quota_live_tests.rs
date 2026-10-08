@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use devboule_protocol::{PlanWindow, SessionEvent, SessionKind};
 
-use super::{publish, watch};
+use super::{publish_to, watch};
 use crate::journal::{new_session_record, Journal};
 use crate::session::{ConnHandle, SessionRuntime};
 
@@ -96,7 +96,7 @@ fn a_reading_published_while_attached_reaches_the_client_without_a_reattach() {
     let (_journal, runtime, conn) = attached_pi("quota-live-attached", "opencode", true);
     watch(&runtime);
     drain(&conn);
-    publish(&reading(1_000));
+    publish_to(&[Arc::clone(&runtime)], &reading(1_000));
     let events = drain(&conn);
     assert!(events.contains(&reading(1_000)), "{events:?}");
 }
@@ -105,7 +105,7 @@ fn a_reading_published_while_attached_reaches_the_client_without_a_reattach() {
 fn a_live_reading_is_not_journaled_so_no_replay_holds_it() {
     let (_journal, runtime, conn) = attached_pi("quota-live-replay", "opencode", true);
     watch(&runtime);
-    publish(&reading(2_000));
+    publish_to(&[Arc::clone(&runtime)], &reading(2_000));
     assert!(
         has_reading(&drain(&conn)),
         "the attached client gets the reading"
@@ -136,7 +136,7 @@ fn a_model_switch_starts_and_stops_the_meter() {
     let (_journal, runtime, conn) = attached_pi("quota-live-switch", "anthropic", true);
     watch(&runtime);
     drain(&conn);
-    publish(&reading(3_000));
+    publish_to(&[Arc::clone(&runtime)], &reading(3_000));
     assert!(
         !has_reading(&drain(&conn)),
         "off an OpenCode model the meter is silent"
@@ -145,7 +145,7 @@ fn a_model_switch_starts_and_stops_the_meter() {
     let switched = runtime.store_session_manifest(manifest("opencode"));
     let _ = runtime.publish_agent_event(switched, None);
     drain(&conn);
-    publish(&reading(4_000));
+    publish_to(&[Arc::clone(&runtime)], &reading(4_000));
     assert!(
         has_reading(&drain(&conn)),
         "switched to an OpenCode model: the meter starts"
@@ -153,7 +153,7 @@ fn a_model_switch_starts_and_stops_the_meter() {
     let back = runtime.store_session_manifest(manifest("anthropic"));
     let _ = runtime.publish_agent_event(back, None);
     drain(&conn);
-    publish(&reading(5_000));
+    publish_to(&[Arc::clone(&runtime)], &reading(5_000));
     assert!(
         !has_reading(&drain(&conn)),
         "switched away from OpenCode: the meter stops"
@@ -165,6 +165,6 @@ fn a_client_that_did_not_agree_the_name_is_never_sent_a_live_reading() {
     let (_journal, runtime, conn) = attached_pi("quota-live-unagreed", "opencode", false);
     watch(&runtime);
     drain(&conn);
-    publish(&reading(6_000));
+    publish_to(&[Arc::clone(&runtime)], &reading(6_000));
     assert!(!has_reading(&drain(&conn)));
 }

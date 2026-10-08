@@ -43,6 +43,9 @@ pub(crate) struct Limits {
 pub(crate) struct Answer {
     pub(crate) status: u16,
     pub(crate) body: Vec<u8>,
+    /// The `Retry-After` header as seconds, when the server named a number of
+    /// seconds. A date is not read: it is no delay this client can trust.
+    pub(crate) retry_after_secs: Option<u64>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -76,6 +79,7 @@ pub(crate) struct Hop<'a> {
 pub(crate) struct Raw {
     pub(crate) status: u16,
     pub(crate) location: Option<String>,
+    pub(crate) retry_after: Option<String>,
     pub(crate) body: Vec<u8>,
 }
 
@@ -125,6 +129,7 @@ pub(crate) fn send_with(
             }
             return Ok(Answer {
                 status: raw.status,
+                retry_after_secs: raw.retry_after.as_deref().and_then(delta_seconds),
                 body: raw.body,
             });
         }
@@ -143,6 +148,15 @@ pub(crate) fn send_with(
 
 fn is_redirect(status: u16) -> bool {
     matches!(status, 301 | 302 | 303 | 307 | 308)
+}
+
+/// A `Retry-After` value read as delta-seconds: digits only, so a sign or a
+/// date is no delay.
+fn delta_seconds(value: &str) -> Option<u64> {
+    let value = value.trim();
+    (!value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| value.parse().ok())
+        .flatten()
 }
 
 /// The production transport. Redirects are off: [`send_with`] follows them.
@@ -181,6 +195,11 @@ impl Transport for ReqwestTransport {
             .get(reqwest::header::LOCATION)
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
         let mut body = Vec::new();
         response
             .take(hop.read_limit as u64)
@@ -195,6 +214,7 @@ impl Transport for ReqwestTransport {
         Ok(Raw {
             status,
             location,
+            retry_after,
             body,
         })
     }

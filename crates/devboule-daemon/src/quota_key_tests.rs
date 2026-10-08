@@ -5,8 +5,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use super::{
-    opencode_key, opencode_key_and_source, pi_auth_path, ApiKey, KeySource, KeySources,
-    MAX_AUTH_BYTES,
+    key_fingerprint, opencode_key, opencode_key_and_source, pi_auth_path, ApiKey, KeySource,
+    KeySources, MAX_AUTH_BYTES,
 };
 
 /// A fresh home folder under the temp dir, holding a fixture `auth.json` when
@@ -217,4 +217,24 @@ fn the_file_and_no_key_sources_are_named_too() {
     assert!(key.is_none());
     assert_eq!(source, KeySource::Nothing);
     assert!(source.log_line().contains("no key"));
+}
+
+#[test]
+fn the_fingerprint_moves_when_the_environment_or_the_auth_file_changes() {
+    let home = Home::new(
+        "fingerprint",
+        Some(r#"{"opencode":{"type":"api_key","key":"file-key"}}"#),
+    );
+    let quiet = key_fingerprint(&sources(&no_env, Some(&home)));
+    assert_eq!(quiet, key_fingerprint(&sources(&no_env, Some(&home))));
+
+    let env = env_key("env-key");
+    assert_ne!(quiet, key_fingerprint(&sources(&env, Some(&home))));
+
+    fs::write(
+        pi_auth_path(&home.0),
+        r#"{"opencode":{"type":"api_key","key":"rotated-file-key"}}"#,
+    )
+    .expect("rewrite the fixture");
+    assert_ne!(quiet, key_fingerprint(&sources(&no_env, Some(&home))));
 }

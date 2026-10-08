@@ -35,6 +35,9 @@ pub(crate) trait QuotaSource {
 pub(crate) enum QuotaError {
     /// The provider refused the key (401 or 403).
     Rejected,
+    /// The provider asked for less traffic (429), with its own delay in seconds
+    /// when it named one.
+    Throttled { retry_after_secs: Option<u64> },
     /// Any other status the source does not read as a reading.
     Status(u16),
     /// The answer held no usable reading.
@@ -65,6 +68,11 @@ where
     match answer.status {
         200 => {}
         401 | 403 => return Err(QuotaError::Rejected),
+        429 => {
+            return Err(QuotaError::Throttled {
+                retry_after_secs: answer.retry_after_secs,
+            })
+        }
         status => return Err(QuotaError::Status(status)),
     }
     let windows = source.windows(&answer.body, observed_at_ms)?;

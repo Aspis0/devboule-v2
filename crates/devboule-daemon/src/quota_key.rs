@@ -3,7 +3,9 @@
 //! `auth.json`. A key is read for one request at a time and leaves this module
 //! only as the Authorization header of that request.
 
+use std::collections::hash_map::DefaultHasher;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -96,6 +98,32 @@ pub(crate) fn opencode_key_and_source(sources: &KeySources<'_>) -> (Option<ApiKe
         Some(key) => (Some(key), KeySource::PiAuthFile),
         None => (None, KeySource::Nothing),
     }
+}
+
+/// A fingerprint of the key sources that moves when either changes: the
+/// environment value, and the auth file's size and modification time. It is a
+/// hash, so the key text is not kept a second time, and it is compared only
+/// against an earlier fingerprint of the same sources.
+pub(crate) fn key_fingerprint(sources: &KeySources<'_>) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    (sources.env)(ENV_NAME).hash(&mut hasher);
+    if let Some(home) = sources.home.as_deref() {
+        if let Ok(meta) = std::fs::symlink_metadata(pi_auth_path(home)) {
+            meta.len().hash(&mut hasher);
+            meta.modified().ok().hash(&mut hasher);
+        }
+    }
+    hasher.finish()
+}
+
+/// The fingerprint of the production sources.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn key_fingerprint_from_process() -> u64 {
+    let env = |name: &str| std::env::var(name).ok();
+    key_fingerprint(&KeySources {
+        env: &env,
+        home: home_dir(),
+    })
 }
 
 /// The key and source the production sources name: this process's environment

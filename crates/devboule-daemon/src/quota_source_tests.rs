@@ -51,6 +51,7 @@ fn raw(status: u16, body: Vec<u8>) -> Result<Raw, OutboundError> {
     Ok(Raw {
         status,
         location: None,
+        retry_after: None,
         body,
     })
 }
@@ -152,6 +153,7 @@ fn a_redirect_is_refused_rather_than_followed() {
     let redirect = Ok(Raw {
         status: 302,
         location: Some("https://elsewhere.example/usage".to_string()),
+        retry_after: None,
         body: Vec::new(),
     });
     let (outcome, seen) = run(vec![redirect]);
@@ -169,4 +171,35 @@ fn the_key_never_appears_in_the_frame_or_in_an_error() {
     assert!(!frame.contains(KEY));
     let (rejected, _) = run(vec![raw(403, Vec::new())]);
     assert!(!format!("{rejected:?}").contains(KEY));
+}
+
+#[test]
+fn a_throttled_answer_carries_the_delay_the_provider_named() {
+    let named = Ok(Raw {
+        status: 429,
+        location: None,
+        retry_after: Some("45".to_string()),
+        body: Vec::new(),
+    });
+    let (outcome, _) = run(vec![named]);
+    assert_eq!(
+        outcome,
+        Err(QuotaError::Throttled {
+            retry_after_secs: Some(45)
+        })
+    );
+
+    let dated = Ok(Raw {
+        status: 429,
+        location: None,
+        retry_after: Some("Wed, 21 Oct 2026 07:28:00 GMT".to_string()),
+        body: Vec::new(),
+    });
+    let (outcome, _) = run(vec![dated]);
+    assert_eq!(
+        outcome,
+        Err(QuotaError::Throttled {
+            retry_after_secs: None
+        })
+    );
 }

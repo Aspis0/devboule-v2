@@ -59,6 +59,7 @@ fn answer(status: u16, body: &str) -> Result<Raw, OutboundError> {
     Ok(Raw {
         status,
         location: None,
+        retry_after: None,
         body: body.as_bytes().to_vec(),
     })
 }
@@ -67,6 +68,7 @@ fn redirect(to: &str) -> Result<Raw, OutboundError> {
     Ok(Raw {
         status: 302,
         location: Some(to.to_string()),
+        retry_after: None,
         body: Vec::new(),
     })
 }
