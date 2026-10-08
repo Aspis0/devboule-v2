@@ -199,6 +199,12 @@ pub(crate) fn handle_client(
             .iter()
             .any(|capability| capability.as_str() == caps::BROWSER_HOST),
     );
+    conn.set_plan_usage_live_negotiated(
+        agreed
+            .capabilities
+            .iter()
+            .any(|capability| capability.as_str() == caps::SESSION_PLAN_USAGE),
+    );
     let (request_tx, request_rx) = mpsc::sync_channel(64);
     let reader_wake = Arc::clone(&conn.outbound);
     let reader_framed = framed.clone();

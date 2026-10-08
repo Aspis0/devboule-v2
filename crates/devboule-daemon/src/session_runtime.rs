@@ -1672,6 +1672,28 @@ impl SessionRuntime {
         notify_observers(&stream);
     }
 
+    /// Sends one live plan-usage reading to the attached observers whose
+    /// connection negotiated `session.plan_usage`. Transient, the same road as
+    /// the queue snapshot: it goes to those observers' pending queues and
+    /// nowhere else. It is never journaled and never put in `agent_backlog`, so
+    /// a later attach replays the journal without it. Observers that did not
+    /// agree the name are skipped, and so is a session whose output is closed.
+    pub(crate) fn publish_plan_usage_live(&self, reading: SessionEvent) {
+        let Ok(mut stream) = self.lock_stream() else {
+            return;
+        };
+        if stream.output_closed {
+            return;
+        }
+        for attachment in stream.observers.values_mut() {
+            if !attachment.plan_usage_live {
+                continue;
+            }
+            enqueue_agent_for_attachment(attachment, reading.clone(), None);
+        }
+        notify_observers(&stream);
+    }
+
     pub(crate) fn publish_session_notice(&self, text: String, severity: NoticeSeverity) -> bool {
         let (event, generation, seq) = {
             let Ok(mut stream) = self.lock_stream() else {
@@ -3742,6 +3764,7 @@ impl SessionRuntime {
             typed_permissions,
             session_queue: conn.session_queue_negotiated(),
             session_tasks: conn.session_tasks_negotiated(),
+            plan_usage_live: conn.plan_usage_live_negotiated(),
             suppressed_manifest: None,
             pending: VecDeque::new(),
             pending_bytes: 0,

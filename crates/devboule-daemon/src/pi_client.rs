@@ -4072,6 +4072,9 @@ impl ReaderDispatch for PiReader {
         self.arbiter.bind_runtime(runtime);
         if self.manifest.is_some() {
             let manifest = self.manifest.take().expect("checked above");
+            // Watched from its first manifest, so a reading reaches this session
+            // from the moment it is on an OpenCode model.
+            crate::quota_live::watch(runtime);
             let manifest = runtime.store_session_manifest(manifest);
             self.publish(runtime, manifest, None);
             // The first feed is the first moment this reader holds a runtime,

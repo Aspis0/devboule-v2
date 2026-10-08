@@ -318,6 +318,16 @@ pub mod caps {
     /// the tail it carries (see `m3a_client_capabilities`).
     pub const SESSION_RESUME_OUTCOMES: &str = "session.resume_outcomes";
 
+    /// Live plan-usage readings on a Pi session that is on an OpenCode model
+    /// (`PlanUsage` published while attached).
+    ///
+    /// Transient: the daemon sends a reading to an attached connection that
+    /// agreed this name, and to no other, and never journals it. A client that
+    /// did not offer the name still gets the cached reading when it attaches,
+    /// as it always has; it just does not see a reading that lands while it is
+    /// attached.
+    pub const SESSION_PLAN_USAGE: &str = "session.plan_usage";
+
     /// Prompt-attachment deposits (`SessionDeposit`/`SessionDeposited`).
     ///
     /// A client must not send `SessionDeposit` to a daemon that predates it:
@@ -884,6 +894,9 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     // The browser host: the daemon serves its broker and the app registers as
     // the place that runs the commands, so both ends must offer the name.
     capabilities.push(Capability::new(caps::BROWSER_HOST));
+    // The live meter: the daemon publishes a reading to a connection only when
+    // both ends offered the name, so it must be in the daemon's list too.
+    capabilities.push(Capability::new(caps::SESSION_PLAN_USAGE));
     capabilities
 }
 
@@ -984,6 +997,10 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // answer, so a name only the daemon offered would never be negotiated and
     // every `browser_execute_request` would be refused on the way in.
     capabilities.push(Capability::new(caps::BROWSER_HOST));
+    // Same pairing, for the live meter: the app offers it so the intersection
+    // keeps it, and a reading that lands while attached reaches the screen only
+    // when it was agreed.
+    capabilities.push(Capability::new(caps::SESSION_PLAN_USAGE));
     capabilities
 }
 

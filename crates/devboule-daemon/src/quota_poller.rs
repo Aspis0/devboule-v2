@@ -12,6 +12,7 @@ use devboule_protocol::SessionEvent;
 
 use crate::plan_usage_cache;
 use crate::quota_key::{opencode_key_from_process, ApiKey};
+use crate::quota_live;
 use crate::quota_opencode_go::OpencodeGo;
 use crate::quota_source::{fetch, QuotaError};
 
@@ -82,6 +83,7 @@ fn run(wake: Receiver<()>) {
             );
             if let Some(frame) = frame {
                 plan_usage_cache::note_live(&frame);
+                quota_live::publish(&frame);
             }
         }
         match wake.recv_timeout(POLL_INTERVAL) {

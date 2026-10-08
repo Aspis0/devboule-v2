@@ -174,6 +174,11 @@ pub(super) struct Attachment {
     /// off the connection at attach like the queue bit above: an observer
     /// without it is never sent a `tasks_snapshot`.
     pub(super) session_tasks: bool,
+    /// Whether this observer's connection negotiated `session.plan_usage`,
+    /// copied off the connection at attach. An observer without it is never
+    /// sent a live plan-usage reading, and a reading is never journaled, so a
+    /// later attach gets the cached one from the attach path, not from here.
+    pub(super) plan_usage_live: bool,
     /// The replay seam's stored manifest. A matching live copy may have
     /// started publishing before the seam but reached this queue after it.
     pub(super) suppressed_manifest: Option<SessionEvent>,
