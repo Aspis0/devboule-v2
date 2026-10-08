@@ -229,6 +229,29 @@ describe("the workspace's Tasks tab", () => {
     );
   });
 
+  it("lights the tab's dot when a task finishes out of view, and clears it on open", async () => {
+    await renderWorkspace();
+    const running: BackgroundTaskState = {
+      epoch: "e1",
+      revision: 1,
+      tasks: [runningAgent("agent-a")],
+      omitted: 0,
+    };
+    const finished: BackgroundTaskState = {
+      epoch: "e1",
+      revision: 2,
+      tasks: [{ ...runningAgent("agent-a"), state: "finished", endedAtMs: 4_000 }],
+      omitted: 0,
+    };
+    await act(async () => surface.reportTasks?.("agent-a", running));
+    await act(async () => surface.reportTasks?.("agent-a", finished));
+    expect(tab("tasks").querySelector(".workspace-panel-tab-dot")).not.toBeNull();
+
+    await act(async () => tab("tasks").click());
+
+    expect(tab("tasks").querySelector(".workspace-panel-tab-dot")).toBeNull();
+  });
+
   it("opens on the Tasks tab when the pill's press asks for it", async () => {
     await renderWorkspace();
 

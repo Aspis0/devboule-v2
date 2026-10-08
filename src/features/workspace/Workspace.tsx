@@ -21,6 +21,7 @@ import {
   type SidePanelEntry,
 } from "./sidePanelRegistry";
 import { childRow } from "./subagentRows";
+import { useTasksAttention, type PaneTasks } from "./useTasksAttention";
 import type { BackgroundTaskState } from "../../lib/backgroundTasks";
 import { SIDE_PANEL_BODY_ID, SidePanelTabs, sidePanelTabId } from "./panel/SidePanelTabs";
 import { useMenuOpen } from "../../lib/menuOpen";
@@ -303,10 +304,9 @@ export function Workspace({
   const [activeSidePanel, setActiveSidePanel] = useState<ActiveSidePanel>("changes");
   // The front pane's background-task list, as its surface last reported it. The
   // Tasks tab reads it only while the pane still shows that session.
-  const [paneTasks, setPaneTasks] = useState<{
-    sessionId: string;
-    list: BackgroundTaskState | null;
-  } | null>(null);
+  const [paneTasks, setPaneTasks] = useState<PaneTasks | null>(null);
+  const tasksVisible = activeSidePanel === "tasks" && !rightCollapsed;
+  const tasksUnseen = useTasksAttention(paneTasks, tasksVisible);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
   const [permissionQueue, setPermissionQueue] = useState<QueuedPermission[]>([]);
@@ -2417,6 +2417,7 @@ export function Workspace({
                 onSelect={setActiveSidePanel}
                 onCollapse={() => setRightCollapsed(true)}
                 panelWidth={rightWidth}
+                attentionIds={tasksUnseen && !tasksVisible ? ["tasks"] : undefined}
               />
 
               <div

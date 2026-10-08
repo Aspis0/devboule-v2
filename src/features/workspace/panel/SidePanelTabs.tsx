@@ -28,7 +28,11 @@ interface SidePanelTabsProps {
   onCollapse: () => void;
   /** The panel's own width: the row below its label budget paints icon tabs. */
   panelWidth: number;
+  /** Tabs with news the person has not seen: each draws a dot. */
+  attentionIds?: readonly string[];
 }
+
+const NO_ATTENTION: readonly string[] = [];
 
 /** The right panel's tab row: the spec tabs in a tablist, a spacer, then the
  * kebab holding the menu-placed panels and the collapse entry. A kebab body is
@@ -41,6 +45,7 @@ export function SidePanelTabs({
   onSelect,
   onCollapse,
   panelWidth,
+  attentionIds = NO_ATTENTION,
 }: SidePanelTabsProps): ReactNode {
   const showLabels = panelTabsShowLabels(panelWidth);
   const tabs = useMemo(() => registry.filter((entry) => entry.placement === "tab"), [registry]);
@@ -141,6 +146,7 @@ export function SidePanelTabs({
         {tabs.map((entry) => {
           const selected = entry.id === selectedId;
           const painted = entry.id === paintedId;
+          const attention = attentionIds.includes(entry.id);
           return (
             <button
               key={entry.id}
@@ -153,12 +159,16 @@ export function SidePanelTabs({
               tabIndex={tabIndexFor(entry.id)}
               className={`workspace-panel-tab${painted ? " workspace-panel-tab-active" : ""}`}
               title={entry.name}
-              aria-label={showLabels ? undefined : entry.name}
+              aria-label={
+                showLabels ? undefined : attention ? `${entry.name}, new activity` : entry.name
+              }
               onClick={() => onSelect(entry.id)}
               onKeyDown={(event) => onTabKeyDown(entry.id, event)}
             >
               <PanelIcon name={entry.icon} />
               {showLabels ? <span className="workspace-panel-tab-label">{entry.name}</span> : null}
+              {showLabels && attention ? <span className="sr-only">, new activity</span> : null}
+              {attention ? <span className="workspace-panel-tab-dot" aria-hidden="true" /> : null}
             </button>
           );
         })}

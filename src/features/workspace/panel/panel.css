@@ -39,6 +39,7 @@
 }
 
 .workspace-panel-tab {
+  position: relative;
   display: flex;
   /* flex: none — a tab is its label's width or its icon's, never narrower:
      below the row's label budget (panelTabLabels.ts) the tabs go icon-only
@@ -77,6 +78,18 @@
 .workspace-panel-tab-label {
   font-size: var(--type-small);
   font-weight: var(--weight-label);
+}
+
+/* News on a tab the person is not looking at: a small accent dot at its
+ * top-right corner, drawn by the tab itself. */
+.workspace-panel-tab-dot {
+  position: absolute;
+  top: 6px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
 }
 
 .workspace-panel-spacer {
