@@ -2,12 +2,15 @@
 //! reading is kept, and a failed poll keeps no reading.
 
 use std::cell::Cell;
+use std::sync::Arc;
 
 use devboule_protocol::{PlanWindow, SessionEvent};
 
-use super::reading_for;
+use super::{poll_once, reading_for};
 use crate::quota_key::ApiKey;
+use crate::quota_live;
 use crate::quota_source::QuotaError;
+use crate::session::SessionRuntime;
 
 fn frame(observed_at_ms: i64) -> SessionEvent {
     SessionEvent::PlanUsage {
@@ -88,4 +91,32 @@ fn a_pi_manifest_on_an_opencode_model_asks_for_polls_for_the_window() {
     let until = super::DEMAND_UNTIL_MS.load(std::sync::atomic::Ordering::SeqCst);
     assert!(until > super::now_ms());
     assert!(until <= super::now_ms() + super::DEMAND_WINDOW_MS);
+}
+
+#[test]
+fn a_failed_poll_prunes_the_sessions_that_ended() {
+    let kept = Arc::new(SessionRuntime::new());
+    let ended = Arc::new(SessionRuntime::new());
+    quota_live::watch(&kept);
+    quota_live::watch(&ended);
+    let ended_entry = Arc::downgrade(&ended);
+    drop(ended);
+
+    let key = ApiKey::from_text("fixture-key").expect("a key");
+    let frame = poll_once(Some(&key), 1, |_, _| Err(QuotaError::Status(502)));
+
+    assert!(frame.is_none());
+    assert!(!quota_live::holds(&ended_entry));
+    assert!(quota_live::holds(&Arc::downgrade(&kept)));
+}
+
+#[test]
+fn a_poll_with_no_key_prunes_too() {
+    let ended = Arc::new(SessionRuntime::new());
+    quota_live::watch(&ended);
+    let ended_entry = Arc::downgrade(&ended);
+    drop(ended);
+
+    assert!(poll_once(None, 1, |_, _| Ok(frame(1))).is_none());
+    assert!(!quota_live::holds(&ended_entry));
 }

@@ -54,8 +54,26 @@ fn publish_to(runtimes: &[Arc<SessionRuntime>], reading: &SessionEvent) {
     }
 }
 
+/// Drops the entries of sessions that have ended. The poll calls it after every
+/// attempt, whatever the outcome, so a run of failed polls cannot let the list
+/// grow with entries nothing will ever prune.
+pub(crate) fn prune_dead() {
+    if let Ok(mut runtimes) = PI_RUNTIMES.lock() {
+        prune(&mut runtimes);
+    }
+}
+
 fn prune(runtimes: &mut Vec<Weak<SessionRuntime>>) {
     runtimes.retain(|weak| weak.strong_count() > 0);
+}
+
+/// Whether the watch list still holds this entry. Tests only.
+#[cfg(test)]
+pub(crate) fn holds(runtime: &Weak<SessionRuntime>) -> bool {
+    PI_RUNTIMES
+        .lock()
+        .map(|runtimes| runtimes.iter().any(|weak| Weak::ptr_eq(weak, runtime)))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]

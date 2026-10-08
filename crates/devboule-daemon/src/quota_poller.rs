@@ -84,15 +84,9 @@ fn run(wake: Receiver<()>) {
                 eprintln!("{}", source.log_line());
                 last_source = Some(source);
             }
-            let frame = reading_for(
-                key.as_ref(),
-                now_ms(),
-                |key, observed_at_ms| fetch(&OpencodeGo, key, observed_at_ms),
-            );
-            if let Some(frame) = frame {
-                plan_usage_cache::note_live(&frame);
-                quota_live::publish(&frame);
-            }
+            poll_once(key.as_ref(), now_ms(), |key, observed_at_ms| {
+                fetch(&OpencodeGo, key, observed_at_ms)
+            });
         }
         match wake.recv_timeout(POLL_INTERVAL) {
             Ok(()) | Err(RecvTimeoutError::Timeout) => {}
@@ -113,6 +107,22 @@ where
 {
     let key = key?;
     fetch(key, observed_at_ms).ok()
+}
+
+/// One poll attempt, whatever its outcome: the watch list is pruned first, so a
+/// run of failures cannot leave ended sessions in it. A reading is stored for
+/// the cache and handed to the attached sessions; a failed poll stores nothing.
+pub(crate) fn poll_once<F>(key: Option<&ApiKey>, observed_at_ms: i64, fetch: F) -> Option<SessionEvent>
+where
+    F: FnOnce(&ApiKey, i64) -> Result<SessionEvent, QuotaError>,
+{
+    let frame = reading_for(key, observed_at_ms, fetch);
+    quota_live::prune_dead();
+    if let Some(frame) = &frame {
+        plan_usage_cache::note_live(frame);
+        quota_live::publish(frame);
+    }
+    frame
 }
 
 fn now_ms() -> i64 {
