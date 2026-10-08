@@ -33,7 +33,8 @@ export function ToolOutput({ lines, collapsed, tone }: ToolOutputProps) {
       >
         {shown.map((line, index) => (
           <div
-            key={index}
+            // The index keeps blank lines distinct; the text remounts a line whose content changed.
+            key={`${index}:${line.slice(0, 32)}`}
             className={`workspace-chat-tool-output-line${
               tone === "diff" ? ` is-${outputLineKind(line)}` : ""
             }`}

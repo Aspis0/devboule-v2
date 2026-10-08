@@ -34,7 +34,8 @@ export const ToolRow = memo(function ToolRow({
   const running = isToolRunningStatus(item.status) && !interrupted;
   const status = item.status.toLowerCase();
   const cancelled = status === "cancelled" || status === "canceled";
-  const model = toolRowDisplay(item, running ? "running" : cancelled ? "cancelled" : "done");
+  const phase = running ? "running" : cancelled ? "cancelled" : "done";
+  const model = useMemo(() => toolRowDisplay(item, phase), [item, phase]);
   const linkUrl = model.linkUrl;
   const failed = item.kind !== "plan" && status === "failed";
   const completed = status === "completed" && !interrupted;
@@ -53,10 +54,16 @@ export const ToolRow = memo(function ToolRow({
   // A failure's words stand under its line without a click; every other
   // output waits in the body.
   const excerpt = useMemo(() => (failed ? failureExcerpt(lines) : []), [failed, lines]);
-  const bodyLines = failed || isPlan ? [] : lines;
+  const bodyLines = useMemo(() => (failed || isPlan ? [] : lines), [failed, isPlan, lines]);
+  const previewLines = stats === null ? OUTPUT_PREVIEW_LINES : DIFF_PREVIEW_LINES;
+  const collapsed = useMemo(() => bodyLines.slice(0, previewLines), [bodyLines, previewLines]);
   const hasImages = item.images !== undefined && item.images.length > 0;
-  const locations = (item.locations ?? []).filter(
-    (location) => location.path !== model.summary || location.line !== undefined,
+  const locations = useMemo(
+    () =>
+      (item.locations ?? []).filter(
+        (location) => location.path !== model.summary || location.line !== undefined,
+      ),
+    [item.locations, model.summary],
   );
   const hasBody =
     linkUrl !== undefined ||
@@ -130,7 +137,11 @@ export const ToolRow = memo(function ToolRow({
             {locations.length > 0 ? (
               <div className="workspace-chat-tool-locations">
                 {locations.map((location, index) => (
-                  <span className="workspace-chat-tool-location" key={index}>
+                  // The index only breaks ties between identical locations.
+                  <span
+                    className="workspace-chat-tool-location"
+                    key={`${location.path}:${location.line ?? ""}:${index}`}
+                  >
                     {location.line !== undefined
                       ? `${toolPathText(location.path)}:${location.line}`
                       : toolPathText(location.path)}
@@ -141,10 +152,7 @@ export const ToolRow = memo(function ToolRow({
             {bodyLines.length > 0 ? (
               <ToolOutput
                 lines={bodyLines}
-                collapsed={bodyLines.slice(
-                  0,
-                  stats === null ? OUTPUT_PREVIEW_LINES : DIFF_PREVIEW_LINES,
-                )}
+                collapsed={collapsed}
                 tone={stats === null ? "plain" : "diff"}
               />
             ) : null}
