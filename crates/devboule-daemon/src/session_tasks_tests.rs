@@ -179,39 +179,6 @@ mod derive {
     }
 
     #[test]
-    fn command_titles_mask_credentials_before_the_cut() {
-        let title = command_title(
-            "curl -H 'Authorization: Bearer abcdef1234567890abcdef123456' https://h.test/x",
-        );
-        assert!(
-            !title.contains("abcdef1234567890abcdef123456"),
-            "the token must not survive redaction: {title}"
-        );
-        assert!(title.contains("curl"), "{title}");
-        assert!(title.contains("[redacted]"), "{title}");
-    }
-
-    #[test]
-    fn a_short_bearer_token_is_masked_by_its_header_context() {
-        // Five characters fall under every length check: only the
-        // `Header: Bearer` shape names it a credential. The header masks
-        // its value word, so the scheme word itself goes with it.
-        let title = command_title("curl -H 'Authorization: Bearer SHORT' https://h.test/x");
-        assert!(!title.contains("SHORT"), "{title}");
-        assert!(title.contains("[redacted]"), "{title}");
-        assert!(title.contains("https://h.test/x"), "{title}");
-    }
-
-    #[test]
-    fn a_bare_scheme_word_without_a_header_is_left_alone() {
-        // No `Header:` context, no length shape: the pre-pass must not eat
-        // ordinary words. (The argv pass may still mask after `token` — its
-        // own one-sided heuristic, pinned in its own file.)
-        let masked = crate::process_argv_redact::mask_scheme_credentials("echo bearer bad news");
-        assert_eq!(masked, "echo bearer bad news", "{masked}");
-    }
-
-    #[test]
     fn backgrounded_provider_tasks_read_as_agent_rows() {
         let started = SessionEvent::AgentTaskStarted {
             task_id: "task-1".to_string(),
@@ -394,6 +361,86 @@ mod derive {
         assert!(!background_launch_failed(Some("completed")));
         assert!(!background_launch_failed(None));
         assert!(!background_launch_failed(Some("in_progress")));
+    }
+}
+
+/// What a background command's title may show: credentials masked out of
+/// the line, everything else left readable.
+mod command_titles {
+    use super::command_title;
+
+    #[test]
+    fn command_titles_mask_credentials_before_the_cut() {
+        let title = command_title(
+            "curl -H 'Authorization: Bearer abcdef1234567890abcdef123456' https://h.test/x",
+        );
+        assert!(
+            !title.contains("abcdef1234567890abcdef123456"),
+            "the token must not survive redaction: {title}"
+        );
+        assert!(title.contains("curl"), "{title}");
+        assert!(title.contains("[redacted]"), "{title}");
+    }
+
+    #[test]
+    fn a_short_bearer_token_is_masked_by_its_scheme_word() {
+        // Five characters fall under every length check: only the scheme
+        // word names it a credential, and the header colon then takes the
+        // scheme word too.
+        let title = command_title("curl -H 'Authorization: Bearer SHORT' https://h.test/x");
+        assert!(!title.contains("SHORT"), "{title}");
+        assert!(title.contains("[redacted]"), "{title}");
+        assert!(title.contains("https://h.test/x"), "{title}");
+    }
+
+    #[test]
+    fn a_short_value_after_a_scheme_word_is_masked_without_a_header() {
+        assert_eq!(
+            command_title("run --header \"Bearer abc123\""),
+            "run --header Bearer [redacted]"
+        );
+    }
+
+    #[test]
+    fn a_scheme_word_behind_a_spaced_header_name_masks_its_value() {
+        assert_eq!(
+            command_title("curl -H \"Authorization : Bearer x\""),
+            "curl -H Authorization : Bearer [redacted]"
+        );
+    }
+
+    #[test]
+    fn a_short_value_after_a_secret_flag_is_masked() {
+        assert_eq!(
+            command_title("deploy --token abc123"),
+            "deploy --token [redacted]"
+        );
+    }
+
+    #[test]
+    fn an_inline_secret_flag_value_is_masked() {
+        assert_eq!(
+            command_title("deploy --token=abc123"),
+            "deploy --token=[redacted]"
+        );
+    }
+
+    #[test]
+    fn an_uppercase_scheme_word_masks_its_value() {
+        assert_eq!(command_title("BEARER abc"), "BEARER [redacted]");
+    }
+
+    #[test]
+    fn a_scheme_word_with_nothing_after_it_is_left_alone() {
+        // Nothing follows the scheme word, so there is no credential to
+        // mask: the word itself must survive.
+        assert_eq!(command_title("echo token"), "echo token");
+    }
+
+    #[test]
+    fn an_ordinary_command_line_is_left_alone() {
+        // An everyday command must pass through redaction untouched.
+        assert_eq!(command_title("git log --oneline"), "git log --oneline");
     }
 }
 

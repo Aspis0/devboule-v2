@@ -62,9 +62,11 @@ const SECRET_NAME_SUFFIXES: &[&str] = &[
 /// Mask two-word credentials (`Bearer SHORT`) in a raw command line, before
 /// any splitting: splitting destroys the two-word shape the argv redactor's
 /// single-arg guard needs, and a short token falls under every length check
-/// after it. Only a scheme word standing after a `Header:` word is masked —
-/// a bare `token` elsewhere is an ordinary word, and masking it would eat
-/// innocent titles. The value span is replaced whole, quotes included.
+/// after it. The word after a scheme word — `bearer`, `basic` or `token`,
+/// in any case, with or without a trailing colon — is the credential
+/// wherever that scheme word stands; with nothing after it, the scheme
+/// word is an ordinary word. The value span is replaced whole, quotes
+/// included.
 pub(crate) fn mask_scheme_credentials(line: &str) -> String {
     const SCHEMES: [&str; 3] = ["bearer", "basic", "token"];
     let mut spans: Vec<(usize, usize)> = Vec::new();
@@ -84,13 +86,8 @@ pub(crate) fn mask_scheme_credentials(line: &str) -> String {
     let mut masked: Vec<(usize, usize)> = Vec::new();
     for (position, &(from, to)) in spans.iter().enumerate() {
         let word = line[from..to].trim_matches(['\'', '"']);
-        if !SCHEMES.contains(&word.to_ascii_lowercase().as_str()) {
-            continue;
-        }
-        let header = position
-            .checked_sub(1)
-            .is_some_and(|before| line[spans[before].0..spans[before].1].ends_with(':'));
-        if !header {
+        let scheme = word.strip_suffix(':').unwrap_or(word);
+        if !SCHEMES.contains(&scheme.to_ascii_lowercase().as_str()) {
             continue;
         }
         if let Some(&span) = spans.get(position + 1) {
