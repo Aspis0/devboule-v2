@@ -68,8 +68,12 @@ const SECRET_NAME_SUFFIXES: &[&str] = &[
 /// in any case, standing free or glued behind a `:`/`=` — is masked only
 /// when it reads as a credential: a digit, one of `- _ . = + /`, or sixteen
 /// characters, so `Bearer of bad news` survives while `Bearer abc123`
-/// does not. With nothing after it, the scheme word is an ordinary word.
-/// The value span is replaced whole, quotes included.
+/// does not. The exception is a header name ending in `:` whose name is a
+/// secret (`authorization`, `proxy-authorization`, any `is_secret_name`):
+/// behind it the value is masked whatever it looks like, and a secret
+/// header also owns the token right after it. With nothing after it, the
+/// scheme word is an ordinary word. The value span is replaced whole,
+/// quotes included.
 pub(crate) fn mask_scheme_credentials(line: &str) -> String {
     let mut spans: Vec<(usize, usize)> = Vec::new();
     let mut start: Option<usize> = None;
@@ -87,7 +91,13 @@ pub(crate) fn mask_scheme_credentials(line: &str) -> String {
     }
     let mut masked: Vec<(usize, usize)> = Vec::new();
     for (position, &(from, to)) in spans.iter().enumerate() {
-        let Some(scheme_end) = scheme_word_end(line, from, to) else {
+        // A secret header owns the token after it, value shape or not.
+        if is_secret_header(&line[from..to]) {
+            if let Some(&value) = spans.get(position + 1) {
+                masked.push(value);
+            }
+        }
+        let Some((scheme_start, scheme_end)) = find_scheme_word(line, from, to) else {
             continue;
         };
         let mut value_start = scheme_end;
@@ -102,7 +112,18 @@ pub(crate) fn mask_scheme_credentials(line: &str) -> String {
                 None => continue,
             }
         };
-        if looks_like_credential(&line[value.0..value.1]) {
+        let previous_word = if scheme_start > from {
+            Some(&line[from..scheme_start])
+        } else {
+            position
+                .checked_sub(1)
+                .and_then(|index| spans.get(index))
+                .map(|&(start, end)| &line[start..end])
+        };
+        // Behind a header name the scheme's value is masked whatever it
+        // looks like; elsewhere it must still read as a credential.
+        let behind_header = previous_word.is_some_and(is_secret_header);
+        if behind_header || looks_like_credential(&line[value.0..value.1]) {
             masked.push(value);
         }
     }
@@ -131,17 +152,27 @@ fn looks_like_credential(value: &str) -> bool {
         || value.chars().count() >= 16
 }
 
-/// Where a scheme word ends inside one whitespace-delimited token: `:`
-/// and `=` split it, so `Authorization:Bearer` and `--header="Bearer"`
-/// still show the scheme word whole. `None` when the token holds none.
-fn scheme_word_end(line: &str, from: usize, to: usize) -> Option<usize> {
+/// A header name: the word ends in `:` and its name is a secret.
+/// `authorization` and `proxy-authorization` split into `is_secret_name`'s
+/// own words, so they need no case here.
+fn is_secret_header(word: &str) -> bool {
+    word.trim_matches(['\'', '"'])
+        .strip_suffix(':')
+        .is_some_and(is_secret_name)
+}
+
+/// Where a scheme word sits inside one whitespace-delimited token, as
+/// `(start, end)`: `:` and `=` split the token, so `Authorization:Bearer`
+/// and `--header="Bearer"` still show the scheme word whole. `None` when
+/// the token holds none.
+fn find_scheme_word(line: &str, from: usize, to: usize) -> Option<(usize, usize)> {
     const SCHEMES: [&str; 3] = ["bearer", "basic", "token"];
     let mut part_start = from;
     for index in from..=to {
         if index == to || matches!(line.as_bytes()[index], b':' | b'=') {
             let word = line[part_start..index].trim_matches(['\'', '"']);
             if SCHEMES.contains(&word.to_ascii_lowercase().as_str()) {
-                return Some(index);
+                return Some((part_start, index));
             }
             part_start = index + 1;
         }

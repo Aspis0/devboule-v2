@@ -546,6 +546,27 @@ mod command_titles {
     }
 
     #[test]
+    fn a_header_name_masks_its_value_whatever_it_looks_like() {
+        for (line, expected) in [
+            (
+                "Authorization: Bearer SECRETWORD",
+                "Authorization: [redacted] [redacted] [redacted]",
+            ),
+            (
+                "Authorization: Basic dXNlcjpwYXNz",
+                "Authorization: [redacted] [redacted] [redacted]",
+            ),
+            (
+                "Proxy-Authorization: Bearer abc",
+                "Proxy-Authorization: [redacted] [redacted] [redacted]",
+            ),
+            ("X-Api-Key: abc", "X-Api-Key: [redacted] [redacted]"),
+        ] {
+            assert_eq!(command_title(line), expected, "{line}");
+        }
+    }
+
+    #[test]
     fn a_started_row_keeps_its_redacted_title_when_the_set_arrives_later() {
         // The started frame writes the row first and the set never
         // overwrites it, so the event itself has to carry the redaction.
