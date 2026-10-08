@@ -28,8 +28,9 @@
   height: 6px;
 }
 
-/* The title clips at 28 characters: the state after the dash is what the
-   person reads, so the title never takes the bar's width. */
+/* The component cuts the title to 28 characters; this box's ellipsis only
+   backs that up for glyphs wider than the count, so the state after the dash
+   keeps the bar's width. */
 .status-bar-title {
   display: inline-block;
   max-width: 28ch;

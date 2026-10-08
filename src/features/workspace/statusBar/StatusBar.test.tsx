@@ -99,6 +99,24 @@ describe("the status bar", () => {
     );
   });
 
+  it("cuts a long title to 28 characters and an ellipsis", async () => {
+    const bar = await render(
+      <StatusBar
+        agent={{ ...AGENT, title: "abcdefghijklmnopqrstuvwxyz0123456789" }}
+        daemon={DAEMON}
+      />,
+    );
+    expect(bar.querySelector(".status-bar-title")?.textContent).toBe(
+      "abcdefghijklmnopqrstuvwxyz01…",
+    );
+  });
+
+  it("leaves the separator out while the title is empty", async () => {
+    const bar = await render(<StatusBar agent={{ ...AGENT, title: "" }} daemon={DAEMON} />);
+    expect(bar.querySelector(".status-bar-state")?.textContent).toBe("working");
+    expect(bar.querySelector(".status-bar-sep")).toBeNull();
+  });
+
   it("says what the app waits on in place of the title while a session starts", async () => {
     const bar = await render(<StatusBar agent={AGENT} daemon={DAEMON} progress="Starting…" />);
     expect(bar.querySelector(".status-bar-state")?.textContent).toBe("Starting…");

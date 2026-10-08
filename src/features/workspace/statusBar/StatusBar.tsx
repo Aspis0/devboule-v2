@@ -27,6 +27,14 @@ interface StatusBarProps {
   progress?: string | null;
 }
 
+const TITLE_CHARS = 28;
+
+/** Cut by code point, so a surrogate pair is never split. */
+function clipTitle(title: string): string {
+  const chars = [...title];
+  return chars.length > TITLE_CHARS ? `${chars.slice(0, TITLE_CHARS).join("")}…` : title;
+}
+
 /** The time, moved on each minute: the tooltips count resets and ages in minutes. */
 function useMinuteClock(): number {
   const [now, setNow] = useState(() => Date.now());
@@ -104,8 +112,12 @@ export function StatusBar({ agent, daemon, progress = null }: StatusBarProps) {
         <span className="status-bar-who">
           <span className={`workspace-status-dot workspace-dot-${stateTone}`} />
           <span className="status-bar-state">
-            <span className="status-bar-title">{agent.title}</span>
-            <span className="status-bar-sep"> — </span>
+            {agent.title.length === 0 ? null : (
+              <>
+                <span className="status-bar-title">{clipTitle(agent.title)}</span>
+                <span className="status-bar-sep"> — </span>
+              </>
+            )}
             {state}
           </span>
         </span>
