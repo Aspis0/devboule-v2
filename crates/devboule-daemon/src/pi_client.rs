@@ -4772,10 +4772,10 @@ mod local_command_replay_tests;
 #[path = "pi_local_command_window_tests.rs"]
 mod local_command_window_tests;
 
-#[cfg(test)]
-#[path = "pi_model_levels_tests.rs"]
-mod model_levels_tests;
 /// Which provider serves a model, and which model a name means.
 #[cfg(test)]
 #[path = "pi_model_identity_tests.rs"]
 mod model_identity_tests;
+#[cfg(test)]
+#[path = "pi_model_levels_tests.rs"]
+mod model_levels_tests;
