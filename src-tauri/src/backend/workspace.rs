@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use devboule_daemon::DaemonClient;
 use devboule_protocol::{
-    Project, Workspace, WorkspaceDirectory, WorkspaceFileContent, WorkspaceFileMutation,
-    WorkspaceFilePreview, WorkspaceGitFileDiff, WorkspaceGitLog, WorkspaceGitStatus,
-    WorkspaceIsolation,
+    Project, Workspace, WorkspaceDirectory, WorkspaceEditableFile, WorkspaceFileContent,
+    WorkspaceFileMutation, WorkspaceFilePreview, WorkspaceFileVersion, WorkspaceFileWriteResult,
+    WorkspaceGitFileDiff, WorkspaceGitLog, WorkspaceGitStatus, WorkspaceIsolation,
 };
 use tauri::State;
 
@@ -310,6 +310,108 @@ pub async fn workspace_file_preview_unstage(
 ) -> Result<(), CommandError> {
     let client = require_client(&bridge)?;
     off_main_thread(move || client.workspace_file_preview_unstage()).await
+}
+
+/// Open one workspace file whole for the in-app editor: the text up to
+/// 1 MiB with its BOM flag and version, or the refusal's sentence. Same
+/// shape as the read above — `workspace_id` names the folder, `path` is
+/// relative to it, the daemon confines and walks it — and a missing file
+/// opens empty with a `missing` version: the first save creates it.
+/// Bounded like the other workspace roads: `RPC_TIMEOUT` (30 s) is what
+/// this caller feels, and the daemon's own work is one walk, one stat and
+/// one read of at most 1 MiB. The wait leaves the window's thread the way
+/// the other roads do.
+#[tauri::command]
+pub async fn workspace_file_editor_open(
+    bridge: State<'_, DaemonBridge>,
+    workspace_id: String,
+    path: String,
+) -> Result<WorkspaceEditableFile, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.workspace_file_open(&workspace_id, &path)).await
+}
+
+/// The version of one workspace file: the editor's observation poll. The
+/// daemon stats and answers; nothing is read.
+#[tauri::command]
+pub async fn workspace_file_editor_version(
+    bridge: State<'_, DaemonBridge>,
+    workspace_id: String,
+    path: String,
+) -> Result<WorkspaceFileVersion, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.workspace_file_version(&workspace_id, &path)).await
+}
+
+/// Write one workspace file from the in-app editor: `written` with the new
+/// stamp, `conflict` with the fresh version, or `error`. No expected
+/// version is a create — it succeeds only when the file is missing, and
+/// the parent folder must already exist: parents are never made silently.
+/// The content travels verbatim: BOM and line endings are the editor's,
+/// never normalised here. Bounded like the other workspace roads.
+#[tauri::command]
+pub async fn workspace_file_editor_write(
+    bridge: State<'_, DaemonBridge>,
+    workspace_id: String,
+    path: String,
+    content: String,
+    expected_modified_at: Option<i64>,
+    expected_revision: Option<String>,
+) -> Result<WorkspaceFileWriteResult, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || {
+        client.workspace_file_write(
+            &workspace_id,
+            &path,
+            &content,
+            expected_modified_at,
+            expected_revision,
+        )
+    })
+    .await
+}
+
+/// Open one file anywhere on this machine — an absolute path or a `~`
+/// path — for the in-app editor. The human's own file: links are
+/// followed, the real file opens. App-only: the daemon refuses this frame
+/// to every peer, and no agent or MCP tool speaks it. The path is the
+/// caller's own (a transcript link, a typed path), never a row the daemon
+/// vouched for — and the reply echoes the absolute spelling, because no
+/// workspace row exists to name it by.
+#[tauri::command]
+pub async fn app_file_open(
+    bridge: State<'_, DaemonBridge>,
+    path: String,
+) -> Result<WorkspaceEditableFile, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.app_file_open(&path)).await
+}
+
+/// The version of one such file: the editor's observation poll.
+#[tauri::command]
+pub async fn app_file_version(
+    bridge: State<'_, DaemonBridge>,
+    path: String,
+) -> Result<WorkspaceFileVersion, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.app_file_version(&path)).await
+}
+
+/// Write one such file, with the same create-or-check semantics as the
+/// workspace write above.
+#[tauri::command]
+pub async fn app_file_write(
+    bridge: State<'_, DaemonBridge>,
+    path: String,
+    content: String,
+    expected_modified_at: Option<i64>,
+    expected_revision: Option<String>,
+) -> Result<WorkspaceFileWriteResult, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || {
+        client.app_file_write(&path, &content, expected_modified_at, expected_revision)
+    })
+    .await
 }
 
 /// Rename one workspace entry — the first write behind this bridge. Same

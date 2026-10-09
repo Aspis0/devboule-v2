@@ -41,8 +41,11 @@ import type {
   ToolPolicyReply,
   Workspace,
   WorkspaceDirectory,
+  WorkspaceEditableFile,
   WorkspaceFileContent,
   WorkspaceFileMutation,
+  WorkspaceFileVersion,
+  WorkspaceFileWriteResult,
   WorkspaceFilePreview,
   WorkspaceFileStaged,
   PreviewMediaKind,
@@ -138,6 +141,23 @@ export type CommandArgs = {
   workspace_file_duplicate: { workspaceId: Id; path: string };
   workspace_file_delete: { workspaceId: Id; path: string };
   workspace_file_open: { workspaceId: Id; path: string; line?: number; targetId: string };
+  workspace_file_editor_open: { workspaceId: Id; path: string };
+  workspace_file_editor_version: { workspaceId: Id; path: string };
+  workspace_file_editor_write: {
+    workspaceId: Id;
+    path: string;
+    content: string;
+    expectedModifiedAt?: number | null;
+    expectedRevision?: string | null;
+  };
+  app_file_open: { path: string };
+  app_file_version: { path: string };
+  app_file_write: {
+    path: string;
+    content: string;
+    expectedModifiedAt?: number | null;
+    expectedRevision?: string | null;
+  };
   editor_targets_list: undefined;
   /** One http(s) URL for the system browser, never the webview. */
   open_external_url: { url: string };
@@ -336,6 +356,16 @@ export type CommandArgs = {
     effort?: string | null;
   };
   remote_host_set_mode: { deviceId: string; sessionId: string; modeId: string };
+  remote_host_file_open: { deviceId: string; workspaceId: string; path: string };
+  remote_host_file_version: { deviceId: string; workspaceId: string; path: string };
+  remote_host_file_write: {
+    deviceId: string;
+    workspaceId: string;
+    path: string;
+    content: string;
+    expectedModifiedAt?: number | null;
+    expectedRevision?: string | null;
+  };
   sessions_unwatch: undefined;
   providers_list: undefined;
   providers_refresh: undefined;
@@ -449,6 +479,12 @@ type CommandResults = {
   /** The editor launch done — void by design: the canonical host path goes
    * straight from the command into the launch argv, never to this side. */
   workspace_file_open: void;
+  workspace_file_editor_open: WorkspaceEditableFile;
+  workspace_file_editor_version: WorkspaceFileVersion;
+  workspace_file_editor_write: WorkspaceFileWriteResult;
+  app_file_open: WorkspaceEditableFile;
+  app_file_version: WorkspaceFileVersion;
+  app_file_write: WorkspaceFileWriteResult;
   /** The ways this machine can open a file, best target first. */
   editor_targets_list: EditorTarget[];
   /** The launch done — void by design: the URL never comes back to this side. */
@@ -562,6 +598,9 @@ type CommandResults = {
   remote_host_providers: ProviderCatalog;
   remote_host_set_model: void;
   remote_host_set_mode: void;
+  remote_host_file_open: WorkspaceEditableFile;
+  remote_host_file_version: WorkspaceFileVersion;
+  remote_host_file_write: WorkspaceFileWriteResult;
   /**
    * The STORED policy rows only (`DaemonMessage::ToolPolicy` minus its
    * request id). A provider with no row is enabled by default: the panel
@@ -661,6 +700,18 @@ export const COMMAND_ARG_KEYS = {
   workspace_file_duplicate: ["workspaceId", "path"],
   workspace_file_delete: ["workspaceId", "path"],
   workspace_file_open: ["workspaceId", "path", "line", "targetId"],
+  workspace_file_editor_open: ["workspaceId", "path"],
+  workspace_file_editor_version: ["workspaceId", "path"],
+  workspace_file_editor_write: [
+    "workspaceId",
+    "path",
+    "content",
+    "expectedModifiedAt",
+    "expectedRevision",
+  ],
+  app_file_open: ["path"],
+  app_file_version: ["path"],
+  app_file_write: ["path", "content", "expectedModifiedAt", "expectedRevision"],
   editor_targets_list: [],
   open_external_url: ["url"],
   session_create: ["workspaceId", "kind", "provider", "mode", "cols", "rows"],
@@ -793,6 +844,16 @@ export const COMMAND_ARG_KEYS = {
   remote_host_providers: ["deviceId"],
   remote_host_set_model: ["deviceId", "sessionId", "modelId", "effort"],
   remote_host_set_mode: ["deviceId", "sessionId", "modeId"],
+  remote_host_file_open: ["deviceId", "workspaceId", "path"],
+  remote_host_file_version: ["deviceId", "workspaceId", "path"],
+  remote_host_file_write: [
+    "deviceId",
+    "workspaceId",
+    "path",
+    "content",
+    "expectedModifiedAt",
+    "expectedRevision",
+  ],
   tool_policy_get: [],
   tool_policy_set: ["providerId", "enabled", "disabledTools"],
   provider_set_enabled: ["providerId", "enabled"],
@@ -1033,6 +1094,52 @@ export const workspaceFileRead = (
   fromLine?: number,
   lineCount?: number,
 ) => invokeTyped("workspace_file_read", { workspaceId, path, fromLine, lineCount });
+/**
+ * Open one workspace file whole for the in-app editor: the text up to
+ * 1 MiB with its BOM flag and version, or the refusal's sentence. A
+ * missing file opens empty with a `missing` version — the first save
+ * creates it.
+ */
+export const workspaceFileEditorOpen = (workspaceId: Id, path: string) =>
+  invokeTyped("workspace_file_editor_open", { workspaceId, path });
+/** The version of one workspace file: the editor's observation poll. */
+export const workspaceFileEditorVersion = (workspaceId: Id, path: string) =>
+  invokeTyped("workspace_file_editor_version", { workspaceId, path });
+/**
+ * Write one workspace file from the in-app editor: `written` with the new
+ * stamp, `conflict` with the fresh version, or `error`. No expected
+ * version is a create — it succeeds only when the file is missing.
+ */
+export const workspaceFileEditorWrite = (
+  workspaceId: Id,
+  path: string,
+  content: string,
+  expectedModifiedAt?: number | null,
+  expectedRevision?: string | null,
+) =>
+  invokeTyped("workspace_file_editor_write", {
+    workspaceId,
+    path,
+    content,
+    expectedModifiedAt,
+    expectedRevision,
+  });
+/**
+ * Open one file anywhere on this machine — an absolute path or a `~`
+ * path — for the in-app editor. The human's own file: links are followed.
+ * App-only: the daemon refuses this frame to every peer, and no agent or
+ * MCP tool speaks it.
+ */
+export const appFileOpen = (path: string) => invokeTyped("app_file_open", { path });
+/** The version of one such file: the editor's observation poll. */
+export const appFileVersion = (path: string) => invokeTyped("app_file_version", { path });
+/** Write one such file, with the same create-or-check semantics. */
+export const appFileWrite = (
+  path: string,
+  content: string,
+  expectedModifiedAt?: number | null,
+  expectedRevision?: string | null,
+) => invokeTyped("app_file_write", { path, content, expectedModifiedAt, expectedRevision });
 /**
  * Stage one workspace file for the panel's full-size preview: the daemon
  * confines the path exactly as the read above does, refuses what that read
@@ -1721,6 +1828,33 @@ export const remoteHostSetModel = (
 /** Switch the mode of one session on a paired host. */
 export const remoteHostSetMode = (deviceId: string, sessionId: string, modeId: string) =>
   invokeTyped("remote_host_set_mode", { deviceId, sessionId, modeId });
+/**
+ * Open one file in a workspace on a paired host, for the in-app editor.
+ * Human-originated, like every operate call — no confirmation card. The
+ * reply is the host's own file, carried through unchanged.
+ */
+export const remoteHostFileOpen = (deviceId: string, workspaceId: string, path: string) =>
+  invokeTyped("remote_host_file_open", { deviceId, workspaceId, path });
+/** The version of one such file: the observation poll over the held link. */
+export const remoteHostFileVersion = (deviceId: string, workspaceId: string, path: string) =>
+  invokeTyped("remote_host_file_version", { deviceId, workspaceId, path });
+/** Write one such file, with the caller's expected version carried through. */
+export const remoteHostFileWrite = (
+  deviceId: string,
+  workspaceId: string,
+  path: string,
+  content: string,
+  expectedModifiedAt?: number | null,
+  expectedRevision?: string | null,
+) =>
+  invokeTyped("remote_host_file_write", {
+    deviceId,
+    workspaceId,
+    path,
+    content,
+    expectedModifiedAt,
+    expectedRevision,
+  });
 
 /**
  * The STORED tool-policy rows (`DaemonMessage::ToolPolicy` minus its request

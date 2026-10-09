@@ -359,6 +359,58 @@ export interface WorkspaceFileMutation {
 }
 
 /**
+ * One file's version for the in-app editor — the reply of
+ * `workspace_file_editor_version` / `app_file_version` — Paseo's
+ * `FileVersion` (`ready|missing|error`) on this wire. `ready` carries the
+ * stamp a write echoes back; `missing` is what an open of a file that is
+ * not there answers with (the editor shows it empty and the first save
+ * creates it); `error` is the check that could not run. `workspaceId`
+ * names the confining workspace — empty for an app-file path outside any
+ * workspace, where `path` is the absolute spelling.
+ */
+export type WorkspaceFileVersion =
+  | {
+      status: "ready";
+      workspaceId: string;
+      path: string;
+      size: number;
+      modifiedAt: number;
+      revision?: string | null;
+    }
+  | { status: "missing"; workspaceId: string; path: string }
+  | { status: "error"; workspaceId: string; path: string; error: string };
+
+/**
+ * The outcome of one editor write — the reply of
+ * `workspace_file_editor_write` / `app_file_write` — Paseo's
+ * `written|conflict|error`. `written` carries the new stamp; `conflict`
+ * carries the fresh version the write lost to, for the Overwrite/Reload
+ * road; `error` carries the sentence that stopped it.
+ */
+export type WorkspaceFileWriteResult =
+  | { status: "written"; modifiedAt: number; size: number; revision: string }
+  | { status: "conflict"; version: WorkspaceFileVersion }
+  | { status: "error"; error: string };
+
+/**
+ * One file opened whole for the in-app editor — the reply of
+ * `workspace_file_editor_open` / `app_file_open`. `ok` carries the text
+ * (empty when missing — the first save creates it), whether the bytes
+ * start with a UTF-8 BOM (restored byte-for-byte on save), and the
+ * version a write echoes back; `refused` carries the sentence and claims
+ * nothing else. Never over 1 MiB, never binary, never undecodable bytes:
+ * those are refusals, not content.
+ */
+export interface WorkspaceEditableFile {
+  status: WorkspaceFileContentStatus;
+  content: string | null;
+  hasBom: boolean | null;
+  version: WorkspaceFileVersion | null;
+  size: number | null;
+  error: string | null;
+}
+
+/**
  * How the Files panel draws a staged preview — decided from the spelling
  * alone, the way the daemon decides what it will stage at all: the three
  * words here and the daemon's three lists (`IMAGE_EXTENSIONS` in

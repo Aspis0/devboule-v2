@@ -26,6 +26,9 @@ import {
   remoteHostSetModel,
   remoteHostSetMode,
   remoteHostCreate,
+  remoteHostFileOpen,
+  remoteHostFileVersion,
+  remoteHostFileWrite,
   remoteHostInterrupt,
   remoteHostPermissionRespond,
   remoteHostProviders,
@@ -59,9 +62,18 @@ import {
   toolPolicySet,
   workspaceGitLog,
   workspaceSetTitle,
+  workspaceFileEditorOpen,
+  workspaceFileEditorWrite,
+  appFileVersion,
+  appFileWrite,
   type PairingOutcome,
 } from "./tauri";
 import type { AgentProfilesDocument, PeerRow, PendingPairing, WorkspaceGitLog } from "../types/ipc";
+import type {
+  WorkspaceEditableFile,
+  WorkspaceFileVersion,
+  WorkspaceFileWriteResult,
+} from "../types/ipc";
 
 function rustCommandFiles(root: string): string[] {
   return readdirSync(root, { withFileTypes: true })
@@ -877,6 +889,120 @@ describe("workspace_git_log command wrapper", () => {
     // The manifest the structural parity test compares with the Rust
     // parameter list, so a rename on either side has to fail here.
     expect(COMMAND_ARG_KEYS.workspace_git_log).toEqual(["workspaceId"]);
+  });
+});
+
+describe("file editor command wrappers", () => {
+  it("opens a workspace file whole, with its version", async () => {
+    vi.mocked(invoke).mockClear();
+    const file: WorkspaceEditableFile = {
+      status: "ok",
+      content: "one\n",
+      hasBom: false,
+      version: {
+        status: "ready",
+        workspaceId: "w.1",
+        path: "a.txt",
+        size: 4,
+        modifiedAt: 7,
+        revision: "4:7",
+      },
+      size: 4,
+      error: null,
+    };
+    vi.mocked(invoke).mockResolvedValue(file as never);
+
+    const answer = await workspaceFileEditorOpen("w.1", "a.txt");
+
+    expect(invoke).toHaveBeenCalledWith("workspace_file_editor_open", {
+      workspaceId: "w.1",
+      path: "a.txt",
+    });
+    expect(answer).toEqual(file);
+    expect(COMMAND_ARG_KEYS.workspace_file_editor_open).toEqual(["workspaceId", "path"]);
+  });
+
+  it("writes with the echoed version, and answers written", async () => {
+    vi.mocked(invoke).mockClear();
+    const result: WorkspaceFileWriteResult = {
+      status: "written",
+      modifiedAt: 8,
+      size: 4,
+      revision: "4:8",
+    };
+    vi.mocked(invoke).mockResolvedValue(result as never);
+
+    const answer = await workspaceFileEditorWrite("w.1", "a.txt", "two\n", 7, "4:7");
+
+    expect(invoke).toHaveBeenCalledWith("workspace_file_editor_write", {
+      workspaceId: "w.1",
+      path: "a.txt",
+      content: "two\n",
+      expectedModifiedAt: 7,
+      expectedRevision: "4:7",
+    });
+    expect(answer).toEqual(result);
+  });
+
+  it("polls the version and writes outside the workspace by absolute path", async () => {
+    vi.mocked(invoke).mockClear();
+    const version: WorkspaceFileVersion = { status: "missing", workspaceId: "", path: "/n" };
+    vi.mocked(invoke).mockResolvedValue(version as never);
+    await appFileVersion("/n");
+    expect(invoke).toHaveBeenCalledWith("app_file_version", { path: "/n" });
+
+    const created: WorkspaceFileWriteResult = {
+      status: "written",
+      modifiedAt: 9,
+      size: 3,
+      revision: "3:9",
+    };
+    vi.mocked(invoke).mockResolvedValue(created as never);
+    await appFileWrite("/n", "new\n", null, null);
+    expect(invoke).toHaveBeenCalledWith("app_file_write", {
+      path: "/n",
+      content: "new\n",
+      expectedModifiedAt: null,
+      expectedRevision: null,
+    });
+  });
+
+  it("relays open, version and write to the paired host", async () => {
+    vi.mocked(invoke).mockClear();
+    const file: WorkspaceEditableFile = {
+      status: "ok",
+      content: "",
+      hasBom: false,
+      version: { status: "missing", workspaceId: "w.9", path: "n.txt" },
+      size: 0,
+      error: null,
+    };
+    vi.mocked(invoke).mockResolvedValue(file as never);
+    await remoteHostFileOpen("d.1", "w.9", "n.txt");
+    expect(invoke).toHaveBeenCalledWith("remote_host_file_open", {
+      deviceId: "d.1",
+      workspaceId: "w.9",
+      path: "n.txt",
+    });
+
+    vi.mocked(invoke).mockResolvedValue({ status: "error", error: "x" } as never);
+    await remoteHostFileWrite("d.1", "w.9", "n.txt", "x", 1, "r");
+    expect(invoke).toHaveBeenCalledWith("remote_host_file_write", {
+      deviceId: "d.1",
+      workspaceId: "w.9",
+      path: "n.txt",
+      content: "x",
+      expectedModifiedAt: 1,
+      expectedRevision: "r",
+    });
+    vi.mocked(invoke).mockResolvedValue(file.version as never);
+    await remoteHostFileVersion("d.1", "w.9", "n.txt");
+    expect(invoke).toHaveBeenCalledWith("remote_host_file_version", {
+      deviceId: "d.1",
+      workspaceId: "w.9",
+      path: "n.txt",
+    });
+    expect(COMMAND_ARG_KEYS.remote_host_file_version).toEqual(["deviceId", "workspaceId", "path"]);
   });
 });
 

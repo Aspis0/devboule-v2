@@ -17,6 +17,7 @@ use devboule_daemon::DaemonClient;
 use devboule_protocol::{
     AttachmentReference, ErrorCode, PermissionOutcome, PromptAttachment, RemoteHostList,
     RemoteHostListBody, RemoteHostStatus, RemoteRelayMessage, Session, SessionKind, SubscriptionId,
+    WorkspaceEditableFile, WorkspaceFileVersion, WorkspaceFileWriteResult,
 };
 
 use super::blocking::off_main_thread;
@@ -450,4 +451,56 @@ pub async fn remote_host_set_mode(
     require_session_id(&session_id)?;
     let client = require_client(&bridge)?;
     off_main_thread(move || client.remote_host_set_mode(&device_id, &session_id, &mode_id)).await
+/// Open one file in a workspace on a paired host, for the in-app editor.
+/// Human-originated, like every operate command — no confirmation card:
+/// the human controls everything on any paired PC. The reply is the
+/// host's own file, carried through unchanged.
+#[tauri::command]
+pub async fn remote_host_file_open(
+    bridge: State<'_, DaemonBridge>,
+    device_id: String,
+    workspace_id: String,
+    path: String,
+) -> Result<WorkspaceEditableFile, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.remote_host_file_open(&device_id, &workspace_id, &path)).await
+}
+
+/// The version of one such file: the editor's observation poll over the
+/// held link.
+#[tauri::command]
+pub async fn remote_host_file_version(
+    bridge: State<'_, DaemonBridge>,
+    device_id: String,
+    workspace_id: String,
+    path: String,
+) -> Result<WorkspaceFileVersion, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.remote_host_file_version(&device_id, &workspace_id, &path)).await
+}
+
+/// Write one such file, with the caller's expected version carried through
+/// to the host's own write.
+#[tauri::command]
+pub async fn remote_host_file_write(
+    bridge: State<'_, DaemonBridge>,
+    device_id: String,
+    workspace_id: String,
+    path: String,
+    content: String,
+    expected_modified_at: Option<i64>,
+    expected_revision: Option<String>,
+) -> Result<WorkspaceFileWriteResult, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || {
+        client.remote_host_file_write(
+            &device_id,
+            &workspace_id,
+            &path,
+            &content,
+            expected_modified_at,
+            expected_revision,
+        )
+    })
+    .await
 }
