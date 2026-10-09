@@ -1094,7 +1094,7 @@ impl PairingService {
                     }
                 })
                 .ok();
-            return Ok(ExchangeOutcome::Pending(pending));
+            Ok(ExchangeOutcome::Pending(pending))
         }
     }
 }
@@ -1544,6 +1544,7 @@ impl PairingService {
 /// when that peer tagged itself a daemon. `hosts_workspaces` is what the peer
 /// stated inside the pairing session (the v30 daemon tag, or the roleless
 /// payload's own bit) and is the fact the connection scope is later read from.
+#[allow(clippy::too_many_arguments)]
 fn local_peer_record(
     server: &Arc<ServerState>,
     device_id: &str,

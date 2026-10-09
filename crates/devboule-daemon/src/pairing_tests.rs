@@ -1730,7 +1730,7 @@ fn a_v30_daemon_tag_still_waits_for_the_local_confirmation() {
         "a daemon tag is also the machine-scope record"
     );
     let answer = join_bounded(initiator, "the v30 initiator").expect("the answer arrives");
-    assert_eq!(answer.accepted, true, "{answer:?}");
+    assert!(answer.accepted, "{answer:?}");
     join_bounded(responder, "the v30 responder's thread");
     assert!(!service.is_active(), "a confirmed pairing spends the code");
 
@@ -1802,7 +1802,7 @@ fn a_v30_client_tag_parks_for_the_local_confirmation() {
         "a client tag projects to the client word for the v30 panel"
     );
     let stored = server.peers().expect("rows");
-    assert!(stored[0].legacy_dialable == false);
+    assert!(!stored[0].legacy_dialable);
     assert!(
         !stored[0].hosts_workspaces,
         "a client tag is the paired-user-scope record"

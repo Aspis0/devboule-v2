@@ -142,6 +142,7 @@ fn daemon_hello() -> DaemonHello {
         instance_id: "wire".to_owned(),
         pid: std::process::id() as u32,
         capabilities: vec![Capability::new(caps::BROWSER_HOST)],
+        workspace_host: None,
     }
 }
 
