@@ -1744,8 +1744,13 @@ fn serve_noise_peer(
     // exchange would let a connect flood park the daemon. The slot is held for
     // the whole connection, panic included.
     let Some((_slot, quit_intent)) = state.admit_client(ClientKind::Peer) else {
-        // Shutting down: `handle_client` would answer `ShuttingDown` and return,
-        // so there is nothing to serve and no slot to hold.
+        // Shutting down: no slot is held, but the peer still gets the
+        // `ShuttingDown` answer `handle_client` would send — a silent close
+        // here resets the connection under the peer's unread hello instead.
+        crate::server::refuse_shutting_down(&crate::framing::Framed::from_stream(
+            reader, writer, closer,
+        ))
+        .map_err(|error| PeerError::Io(error.to_string()))?;
         return Ok(());
     };
     // Step 6. The remote identity is decided above; `handle_client` must never

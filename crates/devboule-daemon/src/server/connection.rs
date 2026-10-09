@@ -779,6 +779,20 @@ fn send_shutting_down(framed: &Framed, id: Option<u64>) -> Result<(), DaemonErro
     framed.send(&DaemonMessage::Error(error))
 }
 
+/// Refuse a connection the daemon is too far gone to admit, with a frame
+/// rather than a silent close.
+///
+/// The peer path admits after the Noise handshake but before the hello, so a
+/// shutdown that lands in between must still answer: the hello is read (and
+/// discarded) first, then `ShuttingDown` leaves. Reading first is what keeps
+/// the close a FIN — dropping the socket with the peer's hello still unread
+/// resets the connection on every platform instead, and a peer that redials
+/// on transport errors would never learn the daemon is going away.
+pub(crate) fn refuse_shutting_down(framed: &Framed) -> Result<(), DaemonError> {
+    let _ = framed.recv_timeout::<ClientMessage>(HANDSHAKE_TIMEOUT);
+    send_shutting_down(framed, None)
+}
+
 fn daemon_hello(state: &ServerState) -> DaemonHello {
     DaemonHello {
         protocol_version: PROTOCOL_VERSION,

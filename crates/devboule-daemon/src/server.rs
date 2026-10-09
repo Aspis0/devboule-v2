@@ -71,8 +71,8 @@ use diagnostics::*;
 #[path = "server/connection.rs"]
 mod connection;
 mod hello_owner_log;
-pub(crate) use connection::handle_client;
 use connection::*;
+pub(crate) use connection::{handle_client, refuse_shutting_down};
 
 #[path = "server/dispatch.rs"]
 mod dispatch;

@@ -1479,9 +1479,11 @@ fn a_v32_hello_rescopes_the_peer_record_in_both_directions() {
         projected_self_info(&framed_one).public_key.is_empty(),
         "the hosting peer is served the machine projection"
     );
-    drop(framed_one);
-    drop(stream_one);
-
+    // The first connection stays open until the second hello is answered:
+    // dropping it first would arm the idle shutdown, and a reconnect that
+    // loses the race against that grace is refused — legitimately, but with
+    // no hello for this test to assert on. Overlapping keeps a client
+    // admitted the whole time, so no timer is ever armed.
     let (stream_two, framed_two, reply_two) = open_raw_peer(
         address,
         &client_private,
@@ -1503,11 +1505,86 @@ fn a_v32_hello_rescopes_the_peer_record_in_both_directions() {
         !projected_self_info(&framed_two).public_key.is_empty(),
         "the client peer gets the paired-user projection again"
     );
+    drop(framed_one);
+    drop(stream_one);
     drop(framed_two);
     drop(stream_two);
 
     stop_accept_loop(&state, &stop);
     join_bounded(accept, "the peer accept loop");
+}
+
+/// A peer that finishes its Noise handshake after shutdown began is still
+/// refused with a frame: the admission happens after the handshake, so the
+/// `ShuttingDown` answer rides the session that handshake established. This
+/// drives `serve_noise_peer` directly — no accept loop, no timers — so the
+/// shutdown below is ordered before everything the server thread does.
+#[test]
+fn a_peer_refused_during_shutdown_gets_a_frame_not_a_reset() {
+    use devboule_protocol::{ClientHello, DaemonMessage, ErrorCode, OwnerId};
+
+    let state = Arc::new(crate::server::ServerState::new(
+        "peer-shutdown-refusal".to_string(),
+    ));
+    let (client_private, client_public) = keypair(PEER_NOISE_PATTERN);
+    upsert_paired_row(
+        &state,
+        "127.0.0.1:1".parse().expect("addr"),
+        client_public,
+        false,
+    );
+    let peers = PeerTable::load(&state).expect("table");
+    let listener = StdTcpListener::bind("127.0.0.1:0").expect("bind");
+    let address = listener.local_addr().expect("addr");
+
+    state.test_force_shutdown();
+    let server_state = Arc::clone(&state);
+    let server = std::thread::spawn(move || {
+        let (stream, peer_addr) = accept_bounded(&listener);
+        serve_noise_peer(
+            &TestTransport::default(),
+            stream,
+            peer_addr,
+            &peers,
+            &server_state,
+        )
+    });
+
+    let stream = connect_bounded(address);
+    let session = initiator_handshake(
+        &stream,
+        Instant::now() + bound::READ,
+        &client_private,
+        None,
+        PEER_PROLOGUE,
+        None,
+        PEER_NOISE_PATTERN,
+    )
+    .expect("the peer handshake");
+    let (reader, writer, closer) = split_session(&stream, session).expect("split");
+    let framed = crate::framing::Framed::from_stream(reader, writer, closer);
+    framed
+        .send(&devboule_protocol::ClientMessage::Hello(ClientHello::peer(
+            OwnerId::new("peer_phone", "devboule-daemon").expect("owner"),
+            "devboule-daemon",
+            false,
+        )))
+        .expect("the peer hello");
+    match framed
+        .recv_timeout::<DaemonMessage>(Duration::from_secs(5))
+        .expect("a shutdown answer")
+    {
+        DaemonMessage::Error(error) => {
+            assert!(
+                matches!(error.code, ErrorCode::ShuttingDown),
+                "a refused peer must be told why: {error:?}"
+            );
+        }
+        other => panic!("a refused peer must get a frame, got {other:?}"),
+    }
+    drop(framed);
+    drop(stream);
+    join_bounded(server, "the refused peer serve").expect("the refusal is an answer, not an error");
 }
 
 /// A peer connection is a client for the idle exit, exactly as a pipe

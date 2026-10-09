@@ -833,6 +833,21 @@ impl ServerState {
             .unwrap_or(u32::MAX)
     }
 
+    /// Test-only shutdown: enter the shutting-down state at once, without
+    /// waiting out the idle grace. A peer admitted after this point is
+    /// refused with a `ShuttingDown` frame rather than served.
+    #[cfg(test)]
+    pub(crate) fn test_force_shutdown(&self) {
+        let mut lifecycle = self
+            .lifecycle
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        lifecycle.shutting_down = true;
+        lifecycle.exit_reason = Some(ExitReason::Requested);
+        drop(lifecycle);
+        self.signal_shutdown();
+    }
+
     /// Admit a client and hand back the slot that releases it.
     ///
     /// Both accept paths take their slot here, so the pipe loop and the Noise
