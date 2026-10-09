@@ -1,5 +1,6 @@
-// A button inside a surface that stays dark in both themes (code, terminal) must not fall back to the browser's button fill, which is
-// light in the light theme and leaves the inherited near-white text unreadable.
+// A button inside a surface that stays dark in both themes (code blocks, error
+// boundaries, permission cards) must not fall back to the browser's button fill,
+// which is light in the light theme and leaves the inherited near-white text unreadable.
 // Such a surface sets the ring (ringConsumers.walk.test.ts) and the button pair
 // together; the global button rule reads them. This walk proves:
 //   1. every rule that sets the on-dark ring also sets the dark button fill,
@@ -26,7 +27,7 @@ const darkSurfaces = RULES.filter((rule) => rule.declarations.get("--ring") === 
 
 describe("buttons inside the surfaces that stay dark in both themes", () => {
   it("found the dark surfaces", () => {
-    expect(darkSurfaces.length).toBeGreaterThanOrEqual(4);
+    expect(darkSurfaces.length).toBeGreaterThanOrEqual(3);
   });
 
   it("every dark surface sets the button fill, hover fill and text", () => {

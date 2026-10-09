@@ -323,19 +323,34 @@ describe("query suppression registration and key wiring", () => {
 });
 
 describe("terminalTheme", () => {
-  it("paints the terminal's one surface: the ground token for the background, under the cursor, and as black", () => {
+  it("paints the terminal's one surface: the ground token for the background and under the cursor", () => {
     // The resolver echoes each variable's own name, so any entry that reads
     // the wrong token names itself in the failure.
     const theme = terminalTheme((variable) => variable.slice(2));
     expect(theme.background).toBe("terminal-ground");
     expect(theme.cursorAccent).toBe("terminal-ground");
-    expect(theme.black).toBe("terminal-ground");
-    expect(theme.foreground).toBe("code-text");
+    expect(theme.black).toBe("terminal-black");
+    expect(theme.foreground).toBe("ink");
     expect(theme.cursor).toBe("ring");
     expect(theme.magenta).toBe("ring");
     expect(theme.brightMagenta).toBe("ring");
-    expect(theme.selectionBackground).toBe("code-selection");
-    expect(theme.brightWhite).toBe("lb-text");
+    expect(theme.selectionBackground).toBe("terminal-selection");
+    expect(theme.white).toBe("ink");
+    expect(theme.brightWhite).toBe("ink");
+    expect(theme.brightBlack).toBe("terminal-dim");
+    expect(theme.yellow).toBe("tone-attention-text");
+    expect(theme.blue).toBe("tone-unattended-text");
+  });
+
+  it("takes every colour from the theme's own tokens, so a light ground never inherits the dark code tones", () => {
+    // Dark-only tokens (code-bg, code-text, lb-text) would put light ink on a
+    // light ground in the light theme, which is what the owner saw on 09/10.
+    const theme = terminalTheme((variable) => variable.slice(2));
+    const values = Object.values(theme);
+    expect(values).not.toContain("code-text");
+    expect(values).not.toContain("code-selection");
+    expect(values).not.toContain("lb-text");
+    expect(values).not.toContain("code-bg");
   });
 });
 

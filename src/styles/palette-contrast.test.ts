@@ -48,11 +48,6 @@ const CLAIMED_PAIRS: ReadonlyArray<{ text: string; ground: string; why: string }
     ground: "--code-bg",
     why: "the terminal's magenta and cursor on code",
   },
-  {
-    text: "--accent-on-code",
-    ground: "--terminal-ground",
-    why: "the terminal's magenta and cursor on its ground",
-  },
   { text: "--diff-add", ground: "--code-bg", why: "added diff lines on code" },
   { text: "--diff-del", ground: "--code-bg", why: "removed diff lines on code" },
   { text: "--code-text", ground: "--code-bg", why: "code and terminal text" },
@@ -120,7 +115,7 @@ const DARK_INK_FLOOR_7: ReadonlyArray<{ ground: string; why: string }> = [
   { ground: "--fill-selected", why: "the selected fill" },
   { ground: "--fill-selected-soft", why: "multi-selected chips" },
   { ground: "--fill-tool", why: "tool rows" },
-  { ground: "--code-bg", why: "code blocks and the terminal ground (one value)" },
+  { ground: "--code-bg", why: "code blocks" },
 ];
 /**
  * The legacy `*-deep` names stay in service as text tones through the alias
@@ -298,7 +293,7 @@ const RING_ON_GROUNDS: ReadonlyArray<{ ring: string; ground: string; why: string
   { ring: "--ring", ground: "--fill-selected-soft", why: "multi-selected chips" },
   { ring: "--ring", ground: "--fill-tool", why: "tool rows and the copyable block" },
   { ring: "--accent-on-code", ground: "--code-bg", why: "code blocks" },
-  { ring: "--accent-on-code", ground: "--terminal-ground", why: "the terminal" },
+  { ring: "--ring", ground: "--terminal-ground", why: "the terminal" },
 ];
 
 describe("the selected row and the focus ring", () => {
@@ -343,6 +338,41 @@ describe("the selected row and the focus ring", () => {
       expect(resolveToken("--ring", vars)).toBe(resolveToken("--accent", vars));
     }
   });
+});
+
+/**
+ * What a terminal paints on its own ground in each theme: the default
+ * foreground, the dim text and the ANSI tones a shell prints for prompts,
+ * errors and warnings. Each one reads as text on `--terminal-ground`.
+ */
+const TERMINAL_TEXT_ON_GROUND: ReadonlyArray<{ text: string; why: string }> = [
+  { text: "--ink", why: "the default foreground and bright white" },
+  { text: "--terminal-dim", why: "ANSI bright black" },
+  { text: "--danger", why: "ANSI red" },
+  { text: "--tone-live", why: "ANSI green and cyan" },
+  { text: "--tone-attention-text", why: "ANSI yellow" },
+  { text: "--tone-unattended-text", why: "ANSI blue" },
+  { text: "--ring", why: "the cursor and ANSI magenta" },
+];
+
+describe("the terminal's text on its ground (both themes, from tokens.css)", () => {
+  for (const [theme, vars] of [
+    ["light", lightVars],
+    ["dark", darkVars],
+  ] as const) {
+    for (const entry of TERMINAL_TEXT_ON_GROUND) {
+      it(`${theme}: ${entry.text} on --terminal-ground ≥ 4.5 (${entry.why})`, () => {
+        const text = resolveToken(entry.text, vars);
+        const ground = resolveToken("--terminal-ground", vars);
+        expect(text, `${entry.text} does not resolve to a hex colour`).toMatch(HEX_COLOR);
+        expect(ground, "--terminal-ground does not resolve to a hex colour").toMatch(HEX_COLOR);
+        expect(
+          contrastRatio(text, ground),
+          `${entry.text} ${text} on --terminal-ground ${ground}`,
+        ).toBeGreaterThanOrEqual(4.5);
+      });
+    }
+  }
 });
 
 /**

@@ -42,37 +42,36 @@ function paletteColor(host: HTMLElement, variable: string): string {
 
 /**
  * The terminal palette, resolved through the supplied reader so it is pure and
- * testable. The ground is `--terminal-ground` — the one surface the host and
- * frame paint — for the background, the block cursor's under-colour and black;
- * anything else lets the viewport's own fill diverge from the frame and show
- * as a line at the box's edge — a measured 1px black line. The cursor and
- * magenta read `--ring`, which the terminal's ground scope sets to the tone
- * that reads on a ground that is dark in both themes; the tones flip with
- * `[data-theme="dark"]`.
+ * testable. Every colour comes from the theme's own tokens, so the ground, the
+ * text and the ANSI tones always belong to one theme. The ground is
+ * `--terminal-ground`, the surface the host and frame paint: anything else
+ * lets the viewport's fill diverge from the frame and show as a line at the
+ * box's edge. ANSI black is the ink in the light theme and the ground in the
+ * dark one, so it stays visible on the ground in both.
  */
 export function terminalTheme(color: (variable: string) => string) {
   return {
     background: color("--terminal-ground"),
-    foreground: color("--code-text"),
+    foreground: color("--ink"),
     cursor: color("--ring"),
     cursorAccent: color("--terminal-ground"),
-    selectionBackground: color("--code-selection"),
-    black: color("--terminal-ground"),
+    selectionBackground: color("--terminal-selection"),
+    black: color("--terminal-black"),
     red: color("--danger"),
     green: color("--tone-live"),
-    yellow: color("--tone-attention"),
-    blue: color("--tone-unattended"),
+    yellow: color("--tone-attention-text"),
+    blue: color("--tone-unattended-text"),
     magenta: color("--ring"),
     cyan: color("--tone-live"),
-    white: color("--code-text"),
-    brightBlack: color("--tone-idle"),
+    white: color("--ink"),
+    brightBlack: color("--terminal-dim"),
     brightRed: color("--danger"),
     brightGreen: color("--tone-live"),
-    brightYellow: color("--tone-attention"),
-    brightBlue: color("--tone-unattended"),
+    brightYellow: color("--tone-attention-text"),
+    brightBlue: color("--tone-unattended-text"),
     brightMagenta: color("--ring"),
     brightCyan: color("--tone-live"),
-    brightWhite: color("--lb-text"),
+    brightWhite: color("--ink"),
   };
 }
 

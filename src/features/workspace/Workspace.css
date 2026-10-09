@@ -376,15 +376,12 @@
   flex-direction: column;
 }
 
-/* The terminal's one surface in both themes. The host carries margins, not
-   padding: the fit (addon-fit) counts the measured box's padding as content,
-   which overfilled the grid and clipped the last row and column — margins put
-   the inset where the fit cannot count it, on the ground wrapper's colour. */
+/* The terminal's one surface, light or dark with its theme. The host carries
+   margins, not padding: the fit (addon-fit) counts the measured box's padding
+   as content, which overfilled the grid and clipped the last row and column —
+   margins put the inset where the fit cannot count it, on the ground wrapper's
+   colour. */
 .workspace-terminal-ground {
-  --ring: var(--accent-on-code);
-  --button-fill: var(--code-control);
-  --button-fill-hover: var(--code-control-hover);
-  --button-text: var(--code-text);
   display: flex;
   flex: 1;
   min-width: 0;

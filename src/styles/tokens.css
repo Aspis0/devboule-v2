@@ -131,8 +131,12 @@
   --avatar-letter-mix: 35%;
 
   /* the terminal's one surface: the host, its frame and the xterm background
-     are all this token, so the terminal wears no light frame in either theme */
-  --terminal-ground: #201f1e;
+     are all this token. Its text tokens below are the same theme's ink, so
+     the ground and the text always come from one theme. */
+  --terminal-ground: #ffffff;
+  --terminal-black: #242321;
+  --terminal-dim: #6b6a64;
+  --terminal-selection: rgba(36, 35, 33, 0.2);
 
   /* overlays: lightbox and modal scrims own the window */
   --scrim: rgba(30, 30, 29, 0.78);
@@ -319,6 +323,11 @@
   --tone-unattended-text: #a893cf;
 
   --terminal-ground: #131312;
+  --terminal-black: #131312;
+  /* 3.7:1 on the ground at the old #6e6e68; this is the one dark terminal
+     value that moved, to reach the 4.5:1 floor the light theme already meets. */
+  --terminal-dim: #8f8f88;
+  --terminal-selection: rgba(232, 231, 226, 0.28);
 
   --scrim: rgba(8, 8, 7, 0.82);
   --modal-dim: rgba(0, 0, 0, 0.5);

@@ -1,8 +1,8 @@
 // The focus ring on the grounds it is really drawn on. palette-contrast.test.ts
 // holds each (ring token, ground token) pair to 3:1; this walk reads every
 // stylesheet and proves the CSS uses those pairs:
-//   1. a rule that paints a ground that is dark in both themes (--code-bg,
-//      --terminal-ground) sets `--ring` to --accent-on-code, or is allow-listed
+//   1. a rule that paints a ground that is dark in both themes (--code-bg)
+//      sets `--ring` to --accent-on-code, or is allow-listed
 //      as having no focusable control to ring;
 //   2. every `--ring` a rule sets reaches 3:1 on that rule's ground;
 //   3. a rule that paints a ground and also draws an accent outline or edge on
@@ -26,7 +26,7 @@ import {
   type Theme,
 } from "./sheetRules";
 
-const DARK_GROUNDS = new Set(["--code-bg", "--terminal-ground"]);
+const DARK_GROUNDS = new Set(["--code-bg"]);
 const ON_DARK_RING = "var(--accent-on-code)";
 const RING_FLOOR = 3;
 
@@ -56,21 +56,6 @@ const RINGLESS: ReadonlyArray<{ file: string; selector: string; why: string }> =
     file: "src/components/codeBlocks.css",
     selector: ".codeblock-sample pre",
     why: "its copy button is a sibling, ringed by .codeblock-sample",
-  },
-  {
-    file: "src/features/workspace/Workspace.css",
-    selector: ".workspace-terminal-host",
-    why: "inside .workspace-terminal-ground, which sets the ring",
-  },
-  {
-    file: "src/features/workspace/Workspace.css",
-    selector: ".workspace-terminal-host .xterm .xterm-viewport",
-    why: "inside .workspace-terminal-ground, which sets the ring",
-  },
-  {
-    file: "src/features/workspace/Workspace.css",
-    selector: ".workspace-terminal-host .xterm .xterm-viewport::-webkit-scrollbar-track",
-    why: "a scrollbar track, not a control",
   },
 ];
 

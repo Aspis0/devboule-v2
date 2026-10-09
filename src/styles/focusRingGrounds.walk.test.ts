@@ -10,7 +10,7 @@ import { contrastRatio } from "./contrast";
 import { DIRECT_RING_GROUNDS } from "./focusRingGrounds";
 import { hex, label, RULES, THEMES, type SheetRule } from "./sheetRules";
 
-const DARK_IN_BOTH_THEMES = new Set(["--code-bg", "--terminal-ground", "--code-control"]);
+const DARK_IN_BOTH_THEMES = new Set(["--code-bg", "--code-control"]);
 const RING_FLOOR = 3;
 const DIRECT = /var\(\s*--(accent|terracotta)(-deep|-pressed)?\s*\)/;
 const RING_PAINT = new Set(["outline", "outline-color", "box-shadow"]);
