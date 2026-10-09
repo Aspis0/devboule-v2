@@ -183,7 +183,7 @@ export const NewProjectDialog = memo(function NewProjectDialog({
               setValue(event.target.value);
               setError(null);
             }}
-            placeholder="C:\\Users\\you\\project"
+            placeholder="C:/Users/you/project"
             aria-invalid={error !== null}
             aria-describedby={error !== null ? "workspace-project-error" : undefined}
             disabled={submitting}

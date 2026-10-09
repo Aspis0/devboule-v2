@@ -1880,6 +1880,14 @@
   border: 1px solid var(--border-strong);
 }
 
+/* Initial focus lands here on open: ink, never the danger tone the shared
+   secondary-action focus rule wears — red is the failed submit's error box,
+   not a pristine field's button. Later in the sheet, so it wins the tie. */
+.workspace-project-picker-button:hover,
+.workspace-project-picker-button:focus-visible {
+  color: var(--ink);
+}
+
 .workspace-project-picker-hint {
   color: var(--silence);
   font-size: var(--type-meta);
