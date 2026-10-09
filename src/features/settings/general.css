@@ -53,50 +53,6 @@
   line-height: var(--leading-body);
 }
 
-/* The switch: 34x20, on in the neutral on fill — the skeleton's toggle, not the
-   providers' wider row switch. The knob is a drawn span, so the button
-   carries the role and the checkedness. */
-.machine-switch {
-  position: relative;
-  width: 34px;
-  height: 20px;
-  flex: none;
-  padding: 0;
-  background: var(--line-strong);
-  border: none;
-  border-radius: 999px;
-  cursor: pointer;
-}
-
-.machine-switch-knob {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: var(--panel-card);
-}
-
-.machine-switch-on {
-  background: var(--control-on);
-}
-
-.machine-switch-on .machine-switch-knob {
-  right: 2px;
-  left: auto;
-}
-
-.machine-switch:disabled {
-  cursor: default;
-  opacity: 0.45;
-}
-
-.machine-switch:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
 /* The Layout choice: a segmented control, not a select. Three short
    mutually exclusive options fit the card side by side, every alternative
    stays visible, and one click changes it — a select would hide the

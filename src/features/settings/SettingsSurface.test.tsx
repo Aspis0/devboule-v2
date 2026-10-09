@@ -531,7 +531,7 @@ describe("Settings menu shell", () => {
     ["layout", "Layout", "[data-settings-row]"],
     ["editing", "Editing", "[data-settings-row]"],
     ["shortcuts", "Shortcuts", "#settings-panel-shortcuts"],
-    ["notifications", "Notifications", ".machine-card"],
+    ["notifications", "Notifications", "[data-settings-row]"],
   ])("mounts the %s panel", async (_id, label, selector) => {
     await renderShell();
     await act(async () => openPage(label).click());

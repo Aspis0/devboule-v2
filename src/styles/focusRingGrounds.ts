@@ -69,8 +69,8 @@ export const DIRECT_RING_GROUNDS: readonly DirectRingGround[] = [
   { file: "src/features/oracle/oracle.css", match: ".oracle-result:focus-visible", ground: card },
   { file: "src/features/settings/devices.css", match: ".dev-kebab:focus-visible", ground: card },
   {
-    file: "src/features/settings/general.css",
-    match: ".machine-switch:focus-visible",
+    file: "src/features/settings/settingsSwitch.css",
+    match: ".settings-switch:focus-visible",
     ground: card,
   },
   {

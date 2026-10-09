@@ -61,7 +61,7 @@ export const SETTINGS_MENU: readonly SettingsMenuGroup[] = [
       {
         id: "notifications",
         label: "Notifications",
-        intro: "Toasts for sessions that need attention, and what those toasts may quote.",
+        intro: "",
       },
       {
         id: "diagnostics",

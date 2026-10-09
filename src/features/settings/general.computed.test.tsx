@@ -83,6 +83,7 @@ describe("this-machine card language (real stylesheets, no app launch)", () => {
     read("src/styles/global.css"),
     read("src/features/settings/general.css"),
     read("src/features/settings/settings.css"),
+    read("src/features/settings/settingsSwitch.css"),
   ]);
 
   it("holds the cards at max-width 720 with the r12 panel face", () => {
@@ -103,8 +104,8 @@ describe("this-machine card language (real stylesheets, no app launch)", () => {
   });
 
   it("sizes the notification switch at 34x20 with the on fill", () => {
-    proof.inject([".machine-switch", ".machine-switch-on"]);
-    const toggle = box("machine-switch machine-switch-on");
+    proof.inject([".settings-switch", ".settings-switch-on"]);
+    const toggle = box("settings-switch settings-switch-on");
     const style = getComputedStyle(toggle);
     expect(style.width).toBe("34px");
     expect(style.height).toBe("20px");
@@ -118,7 +119,7 @@ describe("this-machine card language (real stylesheets, no app launch)", () => {
     const ringVsFill: Array<[ringRules: string, ringProp: string, fillToken: string]> = [
       [proof.rulesFor(".machine-segment-option-checked:focus-within"), "outline-color", "--ink"],
       [proof.rulesFor(".machine-segment-option:focus-within"), "outline", "--panel-card"],
-      [proof.rulesFor(".machine-switch:focus-visible"), "outline", "--panel-card"],
+      [proof.rulesFor(".settings-switch:focus-visible"), "outline", "--panel-card"],
     ];
     for (const [rules, prop, fillToken] of ringVsFill) {
       const match = rules
