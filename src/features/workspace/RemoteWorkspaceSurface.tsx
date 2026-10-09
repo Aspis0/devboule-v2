@@ -17,6 +17,7 @@ import {
   type RemoteEventChannel,
 } from "../../lib/tauri";
 import { errorSentence } from "../../lib/errorSentence";
+import { useMenuOpen } from "../../lib/menuOpen";
 import { PermissionCard, type PermissionAnswer } from "../../components/PermissionCard";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 import { WorkspaceNewTabMenu } from "./strip/WorkspaceNewTabMenu";
@@ -169,6 +170,9 @@ export function RemoteWorkspaceSurface({
   const [providerPick, setProviderPick] = useState<readonly ProviderInfo[] | null>(null);
   const [creating, setCreating] = useState(false);
   const [createFailed, setCreateFailed] = useState<CreateFailed | null>(null);
+  // The provider picker is a menu like any other: the shared hook lets a
+  // menu-closer dismiss it, and walking away from it ends the choice.
+  useMenuOpen(providerPick !== null, () => setProviderPick(null));
 
   // The host's own session rows for this workspace. The roster is live, not a
   // one-shot snapshot: it reloads on the online edge, on a working session's
