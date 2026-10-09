@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   allocRemoteSubscriptionId,
   createRemoteEventChannel,
@@ -18,6 +18,11 @@ import {
 } from "../../lib/tauri";
 import { errorSentence } from "../../lib/errorSentence";
 import { useMenuOpen } from "../../lib/menuOpen";
+import {
+  remoteWorkspaceStoreKey,
+  setPendingRemoteCreate,
+  usePendingRemoteCreate,
+} from "./remoteCreateKeys";
 import { PermissionCard, type PermissionAnswer } from "../../components/PermissionCard";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 import { WorkspaceNewTabMenu } from "./strip/WorkspaceNewTabMenu";
@@ -169,7 +174,45 @@ export function RemoteWorkspaceSurface({
   const [newTabOpen, setNewTabOpen] = useState(false);
   const [providerPick, setProviderPick] = useState<readonly ProviderInfo[] | null>(null);
   const [creating, setCreating] = useState(false);
-  const [createFailed, setCreateFailed] = useState<CreateFailed | null>(null);
+  // The failed create's retry identity lives in the workspace store, not in
+  // this mount: switching workspaces remounts this surface, and the key
+  // must survive the trip (P2-2).
+  const storeKey = useMemo(
+    () => remoteWorkspaceStoreKey(deviceId, workspaceId),
+    [deviceId, workspaceId],
+  );
+  const storedFailure = usePendingRemoteCreate(storeKey);
+  const createFailed: CreateFailed | null = useMemo(
+    () =>
+      storedFailure === null
+        ? null
+        : {
+            kind: storedFailure.kind,
+            provider: storedFailure.provider,
+            key: storedFailure.key,
+            message: storedFailure.error,
+          },
+    [storedFailure],
+  );
+  const setCreateFailed = useCallback(
+    (failed: CreateFailed | null) => {
+      if (storeKey === null) return;
+      setPendingRemoteCreate(
+        storeKey,
+        failed === null
+          ? null
+          : {
+              key: failed.key,
+              deviceId,
+              workspaceId,
+              kind: failed.kind,
+              provider: failed.provider,
+              error: failed.message,
+            },
+      );
+    },
+    [deviceId, storeKey, workspaceId],
+  );
   // The provider picker is a menu like any other: the shared hook lets a
   // menu-closer dismiss it, and walking away from it ends the choice.
   useMenuOpen(providerPick !== null, () => setProviderPick(null));
@@ -457,7 +500,7 @@ export function RemoteWorkspaceSurface({
         setCreateFailed({ kind, provider, key, message: errorSentence(cause).sentence });
       }
     },
-    [deviceId, load, workspaceId],
+    [deviceId, load, setCreateFailed, workspaceId],
   );
 
   const startCreate = useCallback(
@@ -494,7 +537,7 @@ export function RemoteWorkspaceSurface({
     } else {
       setProviderPick([]);
     }
-  }, [deviceId, startCreate]);
+  }, [deviceId, setCreateFailed, startCreate]);
 
   const handleNewTerminal = useCallback(() => {
     startCreate("terminal");
@@ -508,7 +551,7 @@ export function RemoteWorkspaceSurface({
 
   const dismissCreateFailed = useCallback(() => {
     setCreateFailed(null);
-  }, []);
+  }, [setCreateFailed]);
 
   const closeSession = useCallback(
     async (sessionId: string) => {

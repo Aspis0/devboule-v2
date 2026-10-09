@@ -315,6 +315,44 @@ describe("the remote operate surface", () => {
     expect(lastCreateKey()).toBe(key);
   });
 
+  it("keeps the retry identity across a workspace switch", async () => {
+    vi.mocked(remoteHostCreate).mockRejectedValueOnce(new Error("The host stopped answering."));
+    await render();
+    const add = container.querySelector<HTMLButtonElement>("button[aria-label='New remote tab']");
+    await act(async () => {
+      add?.click();
+    });
+    await flush();
+    const agentEntry = [...document.querySelectorAll<HTMLButtonElement>("[role='menuitem']")].find(
+      (button) => button.textContent === "Agent",
+    );
+    await act(async () => {
+      agentEntry?.click();
+    });
+    await flush();
+    const key = lastCreateKey();
+
+    // Leaving the workspace remounts the surface; the failure and its key
+    // come back with it instead of dying in component state.
+    await act(async () => root.unmount());
+    container.remove();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await render();
+
+    const retry = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Retry",
+    );
+    expect(retry).toBeDefined();
+    await act(async () => {
+      retry?.click();
+    });
+    await flush();
+    expect(vi.mocked(remoteHostCreate)).toHaveBeenCalledTimes(2);
+    expect(lastCreateKey()).toBe(key);
+  });
+
   it("sends composer text on the attached subscription", async () => {
     await render();
     const subscription = await openSession("session-one");
