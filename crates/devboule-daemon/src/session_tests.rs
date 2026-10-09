@@ -2086,6 +2086,7 @@ fn invalid_claude_effort_is_rejected_before_switcher() {
         provider_id: Some("claude".to_string()),
         current_model_id: Some("claude-sonnet-5".to_string()),
         models: vec![devboule_protocol::SessionModel {
+            accepts_images: true,
             model_id: "claude-sonnet-5".to_string(),
             name: "Claude Sonnet 5".to_string(),
             description: None,

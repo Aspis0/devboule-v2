@@ -23,9 +23,10 @@ use super::acp_host::{AcpHost, RpcError, RpcRespond};
 use crate::acp_tool_content::ToolContentMemory;
 use crate::acp_view::{
     add_vendor_surface, catalog_from_config_options, classify_line, current_mode_id_from_update,
-    has_standard_modes, merge_handshake_manifest, unmodeled_content_kind, view_from_envelope_in,
-    view_from_envelope_with, AcpLineKind, ConfigOptionSurface, HandshakeManifest, ModelSwitchShape,
-    PromptCapabilities, SwitchControlShape,
+    has_standard_modes, manifest_with_image_capability, merge_handshake_manifest,
+    unmodeled_content_kind, view_from_envelope_in, view_from_envelope_with, AcpLineKind,
+    ConfigOptionSurface, HandshakeManifest, ModelSwitchShape, PromptCapabilities,
+    PromptCapabilityState, SwitchControlShape,
 };
 use crate::mcp_broker::McpLaunchConfig;
 use crate::paths::RuntimePaths;
@@ -1609,6 +1610,13 @@ impl AcpTransport {
         }
     }
 
+    /// The image capability belongs to the agent, not to one model: every model
+    /// in a manifest the transport publishes carries the handshake's answer.
+    fn override_manifest_images(&self, event: SessionEvent) -> SessionEvent {
+        let accepts = self.prompt_capabilities().image == PromptCapabilityState::Supported;
+        manifest_with_image_capability(event, accepts)
+    }
+
     fn last_manifest(&self) -> Option<SessionEvent> {
         match self.last_manifest.lock() {
             Ok(manifest) => manifest.clone(),
@@ -3171,6 +3179,11 @@ impl AcpReader {
     ) {
         let event = if let Some(transport) = &self.transport {
             transport.override_manifest_effort(event)
+        } else {
+            event
+        };
+        let event = if let Some(transport) = &self.transport {
+            transport.override_manifest_images(event)
         } else {
             event
         };

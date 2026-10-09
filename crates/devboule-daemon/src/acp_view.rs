@@ -775,6 +775,20 @@ pub(crate) fn prompt_capabilities_from_initialize(
     }
 }
 
+/// Stamps the agent's image capability on every model of a manifest: the
+/// capability belongs to the agent, not to one model, so the models share one answer.
+pub(crate) fn manifest_with_image_capability(
+    mut event: SessionEvent,
+    accepts: bool,
+) -> SessionEvent {
+    if let SessionEvent::SessionManifest { models, .. } = &mut event {
+        for model in models.iter_mut() {
+            model.accepts_images = accepts;
+        }
+    }
+    event
+}
+
 /// `session/update` kinds whose payload is a single text-bearing content
 /// block. A block of another type on one of these updates is discarded by
 /// [`unmodeled_content_kind`]'s caller; keep the two lists in step.
@@ -1281,6 +1295,7 @@ pub(crate) fn catalog_from_config_options(
             continue;
         }
         models.push(SessionModel {
+            accepts_images: false,
             name: entry
                 .get("name")
                 .and_then(serde_json::Value::as_str)
@@ -1557,6 +1572,7 @@ fn session_model_from_vendor(value: &serde_json::Value) -> Option<SessionModel> 
         None
     };
     Some(SessionModel {
+        accepts_images: false,
         model_id,
         name,
         description,
@@ -1713,11 +1729,11 @@ mod command_row_tests;
 mod tests {
     use super::{
         catalog_from_config_options, classify_line, current_mode_id_from_update,
-        merge_handshake_manifest, prompt_capabilities_from_initialize,
-        session_manifest_from_initialize, session_manifest_from_models_update,
-        session_manifest_from_new_session, unmodeled_content_kind, view_from_envelope,
-        view_from_envelope_in, AcpLineKind, AgentTaskStatus, PromptCapabilities,
-        PromptCapabilityState,
+        manifest_with_image_capability, merge_handshake_manifest,
+        prompt_capabilities_from_initialize, session_manifest_from_initialize,
+        session_manifest_from_models_update, session_manifest_from_new_session,
+        unmodeled_content_kind, view_from_envelope, view_from_envelope_in, AcpLineKind,
+        AgentTaskStatus, PromptCapabilities, PromptCapabilityState,
     };
     use devboule_protocol::SessionEvent;
     use devboule_protocol::{UserMessageAuthor, UserMessageKind};
@@ -2954,6 +2970,34 @@ mod tests {
                 assert!(title.is_none(), "empty title must not overwrite the row");
             }
             other => panic!("expected tool update with empty title, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_image_capability_is_stamped_on_every_model() {
+        let model = |id: &str| devboule_protocol::SessionModel {
+            model_id: id.to_string(),
+            name: id.to_string(),
+            description: None,
+            context_tokens: None,
+            current_effort: None,
+            efforts: None,
+            accepts_images: false,
+        };
+        let manifest = SessionEvent::SessionManifest {
+            provider_id: None,
+            current_model_id: Some("a".to_string()),
+            current_model_provider_id: None,
+            models: vec![model("a"), model("b")],
+            modes: None,
+        };
+        for accepts in [true, false] {
+            let SessionEvent::SessionManifest { models, .. } =
+                manifest_with_image_capability(manifest.clone(), accepts)
+            else {
+                panic!("a manifest stays a manifest");
+            };
+            assert!(models.iter().all(|model| model.accepts_images == accepts));
         }
     }
 

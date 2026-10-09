@@ -51,6 +51,9 @@ interface WorkspaceComposerProps {
   queueUnsupportedReason?: string | null;
   /** The daemon agreed `attachments.gif_webp`: the picker offers GIF and WebP. */
   gifWebpSupported?: boolean;
+  /** The target takes image blocks: an image with no text may then be sent or queued.
+   * Absent, an image needs text beside it. */
+  imageOnlyAccepted?: boolean;
   /** The composer's attached files, owned by the parent: they upload as they
    * arrive and clear once a send has settled. */
   files?: readonly AttachedFile[];
@@ -120,6 +123,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   queueAllowed = true,
   queueUnsupportedReason = null,
   gifWebpSupported = false,
+  imageOnlyAccepted = false,
   files = [],
   onAddFiles,
   onRemoveFile,
@@ -306,9 +310,11 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   const dragCarriesFiles = (event: ReactDragEvent<HTMLDivElement>): boolean =>
     Array.from(event.dataTransfer?.types ?? []).includes("Files");
 
+  const imageOnlySendable = imageOnlyAccepted && attachedImages.length > 0;
+
   const sendInput = useCallback(() => {
     const text = input.trim();
-    if ((!text && attachedImages.length === 0) || disabled || sendingImages || filesBlocked) return;
+    if ((!text && !imageOnlySendable) || disabled || sendingImages || filesBlocked) return;
     // Imageless sends keep the fire-and-forget they always had. A send that
     // carries anything else takes a snapshot and waits for the answer: the
     // picks stay put as sending and clear only on success, so a failure keeps
@@ -340,6 +346,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
       );
   }, [
     attachedImages,
+    imageOnlySendable,
     disabled,
     fileReferences,
     filesBlocked,
@@ -355,7 +362,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
     // in-flight picks still belong to that send, and queueing them again
     // would send them twice.
     if (
-      (!text && attachedImages.length === 0) ||
+      (!text && !imageOnlySendable) ||
       disabled ||
       sendingImages ||
       filesBlocked ||
@@ -381,6 +388,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
     setInput("");
   }, [
     attachedImages,
+    imageOnlySendable,
     disabled,
     fileReferences,
     filesBlocked,
@@ -597,7 +605,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
                 disabled ||
                 sendingImages ||
                 filesBlocked ||
-                (!input.trim() && attachedImages.length === 0)
+                (!input.trim() && !imageOnlySendable)
               }
             >
               {/* A clock while the action queues: it sends later. The
@@ -662,10 +670,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
               aria-label="Send"
               onClick={sendInput}
               disabled={
-                disabled ||
-                sendingImages ||
-                filesBlocked ||
-                (!input.trim() && attachedImages.length === 0)
+                disabled || sendingImages || filesBlocked || (!input.trim() && !imageOnlySendable)
               }
             >
               <svg

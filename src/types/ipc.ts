@@ -687,6 +687,9 @@ export interface SessionModel {
   contextTokens?: number;
   currentEffort?: string;
   efforts?: SessionModelEffort[];
+  /** Whether the model takes image blocks. Absent or false: an image travels as a
+   * path line, so an image with no text is not sent on its own. */
+  acceptsImages?: boolean;
 }
 
 export interface SessionModeView {

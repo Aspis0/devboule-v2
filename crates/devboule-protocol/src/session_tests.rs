@@ -885,6 +885,7 @@ fn session_manifest_round_trips_with_camel_case_wire_names() {
         provider_id: Some("grok".to_string()),
         current_model_id: Some("grok-4.6".to_string()),
         models: vec![SessionModel {
+            accepts_images: true,
             model_id: "grok-4.6".to_string(),
             name: "Grok 4.6".to_string(),
             description: Some("SpaceXAI's latest frontier model".to_string()),

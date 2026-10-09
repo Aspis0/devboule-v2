@@ -481,6 +481,7 @@ fn replace_claude_catalog(previous: &SessionEvent, incoming: SessionEvent) -> Se
                 merged_models.push(current_model);
             } else {
                 merged_models.push(SessionModel {
+                    accepts_images: false,
                     model_id: current_model_id.to_string(),
                     name: current_model_id.to_string(),
                     description: None,

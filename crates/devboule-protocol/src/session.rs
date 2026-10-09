@@ -1605,6 +1605,10 @@ pub struct SessionModel {
     pub current_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub efforts: Option<Vec<SessionModelEffort>>,
+    /// Whether the model takes image blocks. `false` sends an image as a path
+    /// line, so the composer does not send an image with no text.
+    #[serde(default)]
+    pub accepts_images: bool,
 }
 
 /// One mutually exclusive ACP session mode.

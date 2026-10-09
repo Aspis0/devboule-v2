@@ -221,6 +221,7 @@ fn interrupt_frame_matches_the_measured_control_request_wire() {
 
 fn claude_model(model_id: &str) -> devboule_protocol::SessionModel {
     devboule_protocol::SessionModel {
+        accepts_images: true,
         model_id: model_id.to_string(),
         name: model_id.to_string(),
         description: None,
@@ -2215,6 +2216,7 @@ fn the_static_route_declines_a_prompt_with_no_attachments() {
 
 fn model(id: &str, effort_ids: Option<Vec<&str>>) -> SessionModel {
     SessionModel {
+        accepts_images: true,
         model_id: id.to_string(),
         name: id.to_string(),
         description: None,

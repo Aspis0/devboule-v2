@@ -56,6 +56,7 @@ impl ClaudeView {
                     provider_id: Some("claude".to_string()),
                     current_model_id: Some(model.clone()),
                     models: vec![SessionModel {
+                        accepts_images: true,
                         model_id: model.clone(),
                         name: model,
                         description: None,

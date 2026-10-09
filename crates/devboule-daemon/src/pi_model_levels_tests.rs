@@ -1,5 +1,8 @@
-//! The thinking levels pi's model list gives each model that is not the one
-//! running, read the way pi reads them (`getSupportedThinkingLevels`).
+//! What pi's model list says about each model that is not the one running:
+//! its thinking levels (read the way pi reads them, `getSupportedThinkingLevels`)
+//! and whether it takes image input.
+
+use devboule_protocol::SessionEvent;
 
 /// The catalog for `models` with `current` as the running model.
 fn catalog_with_current(current: &str, models: &str) -> super::PiCatalog {
@@ -70,4 +73,31 @@ fn a_model_that_does_not_reason_offers_no_control() {
 ]}}"#,
     );
     assert_eq!(level_ids(&catalog, "plain"), None);
+}
+
+#[test]
+fn a_model_takes_images_only_when_pi_lists_image_input() {
+    // The manifest tells the composer which models take image blocks: pi's
+    // own `input` list decides, and a model whose list omits `image` does not.
+    let catalog = catalog_with_current(
+        "current",
+        r#"{"data":{"models":[
+{"id":"current","name":"Current","provider":"p","reasoning":true,"input":["text"]},
+{"id":"vision","name":"Vision","provider":"p","reasoning":true,"input":["text","image"]},
+{"id":"text-only","name":"Text only","provider":"p","reasoning":true,"input":["text"]}
+]}}"#,
+    );
+    let SessionEvent::SessionManifest { models, .. } =
+        super::manifest_from_catalog(&catalog, "bypass")
+    else {
+        panic!("a catalog builds a manifest");
+    };
+    let accepts = |id: &str| {
+        models
+            .iter()
+            .find(|model| model.model_id == id)
+            .map(|model| model.accepts_images)
+    };
+    assert_eq!(accepts("vision"), Some(true));
+    assert_eq!(accepts("text-only"), Some(false));
 }

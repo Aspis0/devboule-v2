@@ -50,6 +50,7 @@ fn live_claude_replay_derives_journaled_views() {
         provider_id: Some("claude".to_string()),
         current_model_id: Some("claude-test".to_string()),
         models: vec![devboule_protocol::SessionModel {
+            accepts_images: true,
             model_id: "claude-test".to_string(),
             name: "Claude Test".to_string(),
             description: None,

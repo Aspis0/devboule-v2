@@ -153,6 +153,7 @@ fn live_agent_replay_uses_stored_manifest_state() {
         provider_id: Some("grok".to_string()),
         current_model_id: Some("grok-live".to_string()),
         models: vec![devboule_protocol::SessionModel {
+            accepts_images: true,
             model_id: "grok-live".to_string(),
             name: "Grok Live".to_string(),
             description: None,

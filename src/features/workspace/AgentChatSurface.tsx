@@ -888,6 +888,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         queueAllowed={!hasPendingPermission}
         queueUnsupportedReason={noQueue}
         gifWebpSupported={gifWebpSupported}
+        imageOnlyAccepted={stripModel?.acceptsImages === true}
         files={fileAttachments.files}
         onAddFiles={fileAttachments.addFiles}
         onRemoveFile={fileAttachments.removeFile}

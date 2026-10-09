@@ -292,6 +292,7 @@ impl ClaudeView {
         self.last_manifest_model = model.clone();
         let models = match &model {
             Some(model) => vec![SessionModel {
+                accepts_images: true,
                 model_id: model.clone(),
                 name: model.clone(),
                 description: None,
@@ -358,6 +359,7 @@ impl ClaudeView {
         let models = model
             .as_ref()
             .map(|model_id| SessionModel {
+                accepts_images: true,
                 model_id: model_id.clone(),
                 name: model_id.clone(),
                 description: None,
