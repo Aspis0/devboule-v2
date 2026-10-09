@@ -433,7 +433,7 @@ export function AgentProfileForm({
       {vocabularyError !== null && !providerMissing ? (
         <p className="device-field-hint">
           <ErrorText
-            sentence={`The vocabulary query failed (${vocabularyError.sentence}); type the model and mode below; what you type is checked when the session starts.`}
+            sentence={`The vocabulary query failed (${vocabularyError.sentence}).`}
             detail={vocabularyError.detail}
             id="settings-vocabulary-error"
           />

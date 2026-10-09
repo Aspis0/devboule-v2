@@ -46,12 +46,11 @@ describe("Settings agents panel — new profile form: vocabulary states", () => 
 
     expect(providerVocabularyGet).toHaveBeenCalledWith("claude", "", false);
     // The spec's own sentence, once per axis.
-    expect(form().textContent).toContain(
-      "This provider did not publish its models; what you type is checked when the session starts.",
-    );
-    expect(form().textContent).toContain(
-      "This provider did not publish its modes; what you type is checked when the session starts.",
-    );
+    expect(form().textContent).toContain("This provider did not publish its models.");
+    expect(form().textContent).toContain("This provider did not publish its modes.");
+    // The fallback states name the fact only; none of them tells the person
+    // what to type.
+    expect(form().textContent).not.toMatch(/what you type|type the (model|one)/i);
     // Free text, not an empty select: the human can finish the form.
     expect(modelControl().tagName).toBe("INPUT");
     expect(modeControl().tagName).toBe("INPUT");
@@ -230,7 +229,7 @@ describe("Settings agents panel — new profile form: vocabulary states", () => 
     // the contradiction and stays typeable rather than rendering a select
     // with nothing to select.
     expect(modelControl().tagName).toBe("INPUT");
-    expect(form().textContent).toContain("listed none — a contradiction");
+    expect(form().textContent).toContain("listed none: a contradiction");
     expect(form().textContent).not.toContain("reports no models");
     expect(form().textContent).not.toContain("did not publish its models");
     // The modes axis in the same reply is a real `absent`.

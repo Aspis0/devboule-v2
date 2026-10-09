@@ -17,7 +17,7 @@ import type { ReactNode } from "react";
  * discriminating words are each sentence's own reason, never the tail.
  */
 export const VOCABULARY_UNAVAILABLE_TEXT =
-  "This daemon is older than this app: it does not advertise the provider_vocabulary capability, so it cannot say what this provider offers. Type the model and mode below; what you type is checked when the session starts.";
+  "This daemon is older than this app: it does not advertise the provider_vocabulary capability, so it cannot say what this provider offers.";
 
 /** `origin: "daemon"` — the honest sentence that travels with such a list. */
 const DAEMON_VOCABULARY_TEXT =
@@ -33,17 +33,17 @@ const DAEMON_VOCABULARY_TEXT =
  * not be rendered as a declared one.
  */
 function undeclaredOriginVocabularyText(axisWord: "models" | "modes"): string {
-  return `This ${axisWord} list arrived with no author declared: the daemon did not say whether the provider published it or the daemon mapped it itself. Choose one from the list, or type your own instead.`;
+  return `This ${axisWord} list arrived with no author declared: the daemon did not say whether the provider published it or the daemon mapped it itself.`;
 }
 
 /** `none`: the provider CAN answer and answered "I have none". The field stays required. */
 function noneVocabularyText(axisWord: "models" | "modes"): string {
-  return `This provider reports no ${axisWord}: type the one to use; a name it does not serve fails at the provider when the session starts.`;
+  return `This provider reports no ${axisWord}.`;
 }
 
 /** `absent`: no source could answer. The spec's own fallback sentence. */
 function absentVocabularyText(axisWord: "models" | "modes"): string {
-  return `This provider did not publish its ${axisWord}; what you type is checked when the session starts.`;
+  return `This provider did not publish its ${axisWord}.`;
 }
 
 /**
@@ -54,10 +54,8 @@ function absentVocabularyText(axisWord: "models" | "modes"): string {
  * is the single provider-named exception on this surface, and it exists
  * because the generic sentence would state the one thing that is false.
  */
-export const PI_MODELS_READING_TEXT =
-  "Reading pi's model list — the pickers arrive when it answers.";
-export const PI_MODELS_UNREADABLE_TEXT =
-  "Pi's model list could not be read; type the model below, or reopen this editor to retry. What you type is checked when the session starts.";
+export const PI_MODELS_READING_TEXT = "Reading pi's model list…";
+export const PI_MODELS_UNREADABLE_TEXT = "Pi's model list could not be read.";
 
 /**
  * A reply that arrived without this axis at all: the daemon answered, and
@@ -68,7 +66,7 @@ export const PI_MODELS_UNREADABLE_TEXT =
  * throw away a usable half.
  */
 function malformedVocabularyText(axisWord: "models" | "modes"): string {
-  return `The daemon's reply was malformed — it carried no ${axisWord} axis at all — so nothing is known about what this provider offers there. Type the one to use; what you type is checked when the session starts.`;
+  return `The daemon's reply was malformed: it carried no ${axisWord} axis, so nothing is known about what this provider offers there.`;
 }
 
 /**
@@ -78,7 +76,7 @@ function malformedVocabularyText(axisWord: "models" | "modes"): string {
  * never a select with nothing to select.
  */
 function emptyPresentVocabularyText(axisWord: "models" | "modes"): string {
-  return `The daemon answered that this provider publishes its ${axisWord} and then listed none — a contradiction on the wire. Type the one to use; what you type is checked when the session starts.`;
+  return `The daemon answered that this provider publishes its ${axisWord} and then listed none: a contradiction on the wire.`;
 }
 
 /**
@@ -90,7 +88,7 @@ function emptyPresentVocabularyText(axisWord: "models" | "modes"): string {
 function unknownStateVocabularyText(axisWord: "models" | "modes", state: unknown): string {
   return `The daemon answered for the ${axisWord} axis with a value this app does not know (${
     JSON.stringify(state) ?? "undefined"
-  }); it is none of present, none or absent. Type the one to use; what you type is checked when the session starts.`;
+  }); it is none of present, none or absent.`;
 }
 
 /**
