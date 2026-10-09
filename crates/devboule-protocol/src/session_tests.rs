@@ -2043,3 +2043,23 @@ fn user_message_without_images_still_parses_from_an_old_row() {
         "a legacy row reads as carrying no images: {decoded:?}"
     );
 }
+
+#[test]
+fn a_model_without_accepts_images_decodes_as_taking_no_images() {
+    // Protocol 30 added `acceptsImages`: a manifest from an older daemon has no key.
+    let older: SessionModel =
+        serde_json::from_str(r#"{"modelId":"m","name":"M"}"#).expect("an older model decodes");
+    assert!(!older.accepts_images);
+
+    let newer = SessionModel {
+        model_id: "m".to_string(),
+        name: "M".to_string(),
+        description: None,
+        context_tokens: None,
+        current_effort: None,
+        efforts: None,
+        accepts_images: true,
+    };
+    let wire = serde_json::to_value(&newer).expect("encode");
+    assert_eq!(wire["acceptsImages"], true);
+}

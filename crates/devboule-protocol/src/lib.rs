@@ -210,7 +210,11 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// and so would the event. Protocol 29 adds `gitMissing` to the
 /// `workspace_git` status reply: an optional key with a serde default, so an
 /// older daemon's reply still decodes (as `false`) and the floor stays put.
-pub const PROTOCOL_VERSION: u32 = 29;
+/// Protocol 30 adds `acceptsImages` to each `SessionModel` in a session
+/// manifest: a bool with a serde default of `false`, so a manifest from an
+/// older daemon decodes with every model read as taking no images, and an
+/// older reader ignores the key. The floor stays put.
+pub const PROTOCOL_VERSION: u32 = 30;
 /// Oldest dialect this crate still accepts. Protocols 17, 18 and 20 added only
 /// optional fields, so a v16 peer still interoperates — it just shows no
 /// command chip, turn time, cache, cost or chat-image thumbnails until

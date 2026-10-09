@@ -3422,7 +3422,7 @@ fn reply_status(message: &DaemonMessage) -> WorkspaceGitStatus {
 /// dialect that added it is the one this crate speaks.
 #[test]
 fn workspace_git_status_without_git_missing_decodes_for_older_daemons() {
-    assert_eq!(crate::PROTOCOL_VERSION, 29);
+    assert_eq!(crate::PROTOCOL_VERSION, 30);
     let older = r#"{"type":"workspace_git","id":7,"status":{"isGit":false,"dirty":false,"branch":null,"totals":{"additions":0,"deletions":0},"rows":[],"error":null}}"#;
     let DaemonMessage::WorkspaceGit { status, .. } =
         serde_json::from_str::<DaemonMessage>(older).expect("parse an older reply")
