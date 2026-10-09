@@ -138,7 +138,7 @@ export const SETTINGS_MENU: readonly SettingsMenuGroup[] = [
       {
         id: "about",
         label: "About devboule",
-        intro: "The app and daemon versions, and the license.",
+        intro: "",
       },
     ],
   },

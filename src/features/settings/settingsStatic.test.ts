@@ -202,7 +202,7 @@ describe("Settings static contracts", () => {
     }
   });
 
-  it("gives the profiles, appearance, layout, editing and notifications pages a title and no paragraph", () => {
+  it("gives the profiles, appearance, layout, editing, notifications and about pages a title and no paragraph", () => {
     const pages = SETTINGS_MENU.flatMap((group) => group.pages);
     const introOf = (id: string) => pages.find((page) => page.id === id)?.intro ?? "missing";
     expect(introOf("profiles")).toBe("");
@@ -210,6 +210,7 @@ describe("Settings static contracts", () => {
     expect(introOf("layout")).toBe("");
     expect(introOf("editing")).toBe("");
     expect(introOf("notifications")).toBe("");
+    expect(introOf("about")).toBe("");
     const providers = pages.find((page) => page.id === "providers")?.intro ?? "";
     expect(providers).toContain("An executable is not a login");
   });

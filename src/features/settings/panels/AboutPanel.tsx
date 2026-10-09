@@ -2,15 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { useTrackedRequest } from "../../../lib/trackedRequest";
 import { daemonDiagnostics } from "../../../lib/tauri";
+import { SettingsAdvanced, SettingsRow, SettingsSection } from "../rows";
 import { useSettingsDaemon } from "../settingsDaemon";
 
 function FactRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="settings-card settings-value-row">
-      <span className="settings-card-title">{label}</span>
-      <span className="settings-card-value">{value}</span>
-    </div>
-  );
+  return <SettingsRow title={label} control={<span>{value}</span>} />;
 }
 
 export function AboutPanel() {
@@ -45,36 +41,27 @@ export function AboutPanel() {
 
   return (
     <div id="settings-panel-about">
-      <section>
-        <h3 className="settings-subheading">This app</h3>
-        {appVersion !== null ? (
-          <div className="settings-stack settings-stack-spaced">
-            <FactRow label="Version" value={appVersion} />
-          </div>
-        ) : null}
-      </section>
-      <section>
-        <h3 className="settings-subheading">Daemon</h3>
+      <SettingsSection label="This app">
+        {appVersion !== null ? <FactRow label="Version" value={appVersion} /> : null}
+      </SettingsSection>
+      <SettingsSection label="Daemon">
         {report.status === "ready" ? (
-          <div className="settings-stack settings-stack-spaced">
+          <>
             <FactRow label="Version" value={report.value.daemon.version} />
             <FactRow label="Protocol version" value={String(report.value.daemon.protocolVersion)} />
-          </div>
+          </>
         ) : report.status === "error" ? (
-          <p className="settings-page-empty" role="alert">
+          <p className="settings-status" role="alert">
             {report.message}
           </p>
         ) : null}
-      </section>
-      <section>
-        <h3 className="settings-subheading">License and notices</h3>
-        <div className="settings-stack settings-stack-spaced">
-          <FactRow label="Devboule's own code" value="Apache-2.0" />
-        </div>
-        <p className="settings-page-empty">
-          Third-party components keep their own licenses, listed in THIRD_PARTY.md.
-        </p>
-      </section>
+      </SettingsSection>
+      <SettingsSection label="License">
+        <FactRow label="Devboule's own code" value="Apache-2.0" />
+        <SettingsAdvanced>
+          <p>Third-party components keep their own licenses, listed in THIRD_PARTY.md.</p>
+        </SettingsAdvanced>
+      </SettingsSection>
     </div>
   );
 }

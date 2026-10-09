@@ -62,19 +62,20 @@ describe("AboutPanel", () => {
   let root: Root;
 
   function sectionOf(title: string): HTMLElement {
-    const heading = Array.from(container.querySelectorAll("h3")).find(
-      (candidate) => candidate.textContent === title,
+    const section = Array.from(
+      container.querySelectorAll<HTMLElement>("[data-settings-section]"),
+    ).find(
+      (candidate) => candidate.querySelector(".settings-section-label")?.textContent === title,
     );
-    const section = heading?.parentElement ?? null;
-    expect(section, `the ${title} section did not render`).not.toBeNull();
+    expect(section, `the ${title} section did not render`).not.toBeUndefined();
     return section as HTMLElement;
   }
 
   function valueIn(section: HTMLElement, label: string): string | null {
-    const row = Array.from(section.querySelectorAll(".settings-card")).find(
-      (card) => card.querySelector(".settings-card-title")?.textContent === label,
+    const row = Array.from(section.querySelectorAll("[data-settings-row]")).find(
+      (candidate) => candidate.querySelector(".settings-row-title")?.textContent === label,
     );
-    return row?.querySelector(".settings-card-value")?.textContent ?? null;
+    return row?.querySelector(".settings-row-control")?.textContent ?? null;
   }
 
   async function renderPanel(): Promise<void> {
@@ -156,7 +157,7 @@ describe("AboutPanel", () => {
 
   it("says whose code is Apache-2.0 and where the other licenses are listed", async () => {
     await renderPanel();
-    const license = sectionOf("License and notices");
+    const license = sectionOf("License");
     expect(valueIn(license, "Devboule's own code")).toBe("Apache-2.0");
     expect(license.textContent).toContain(
       "Third-party components keep their own licenses, listed in THIRD_PARTY.md.",
