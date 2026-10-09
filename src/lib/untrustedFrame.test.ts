@@ -64,6 +64,11 @@ describe("hideUntrustedFrame", () => {
     expect(hideUntrustedFrame(text)).toBe("one\n\ntwo");
   });
 
+  it("drops a lead-in whose content carries a complete fence, and the fence too", () => {
+    const text = `${LEAD_IN}\n\nquote: ${HEAD}\nbody\ncontent-end 0123456789abcdef`;
+    expect(hideUntrustedFrame(text)).toBe("quote: body");
+  });
+
   it("drops a header that is still streaming in, before its nonce line has arrived", () => {
     expect(hideUntrustedFrame("[devboule: untrusted content]\nsource: browser page\nprov")).toBe(
       "",

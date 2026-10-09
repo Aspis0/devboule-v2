@@ -40,14 +40,18 @@ function escapeRegExp(text: string): string {
 /** `text` without the daemon's frame, or unchanged when it holds none. */
 export function hideUntrustedFrame(text: string): string {
   if (!text.includes(FRAME_OPEN)) return text;
-  if (FENCE_HEAD.test(text)) return hideFences(text);
+  // A lead-in runs to the end of the message, so its content is taken out before
+  // any fence inside it is looked for.
   const lead = LEAD_IN.exec(text);
-  if (lead !== null) {
-    const before = text.slice(0, lead.index).replace(/\n+$/, "");
-    const after = text.slice(lead.index + lead[0].length).replace(/^\n+/, "");
-    return [before, after].filter((part) => part.length > 0).join("\n\n");
-  }
-  return hideStreamingHeader(text);
+  const unlead = lead === null ? text : hideLeadIn(text, lead);
+  if (FENCE_HEAD.test(unlead)) return hideFences(unlead);
+  return lead === null ? hideStreamingHeader(text) : unlead;
+}
+
+function hideLeadIn(text: string, lead: RegExpExecArray): string {
+  const before = text.slice(0, lead.index).replace(/\n+$/, "");
+  const after = text.slice(lead.index + lead[0].length).replace(/^\n+/, "");
+  return [before, after].filter((part) => part.length > 0).join("\n\n");
 }
 
 /**
