@@ -2363,7 +2363,8 @@ struct PiCatalog {
 /// is never handed to whichever provider happened to be listed last.
 enum PiLookup<'a> {
     Found(&'a PiModel),
-    Ambiguous,
+    /// The providers that serve the id, sorted, so the refusal can name them.
+    Ambiguous(Vec<String>),
     Missing,
 }
 
@@ -2372,11 +2373,22 @@ impl PiCatalog {
         if let Some(model) = self.models.get(name) {
             return PiLookup::Found(model);
         }
-        let mut same_id = self.models.values().filter(|model| model.id == name);
-        match (same_id.next(), same_id.next()) {
-            (Some(model), None) => PiLookup::Found(model),
-            (Some(_), Some(_)) => PiLookup::Ambiguous,
-            (None, _) => PiLookup::Missing,
+        let same_id: Vec<&PiModel> = self
+            .models
+            .values()
+            .filter(|model| model.id == name)
+            .collect();
+        match same_id.as_slice() {
+            [model] => PiLookup::Found(model),
+            [] => PiLookup::Missing,
+            _ => {
+                let mut providers: Vec<String> = same_id
+                    .iter()
+                    .filter_map(|model| model.provider.clone())
+                    .collect();
+                providers.sort();
+                PiLookup::Ambiguous(providers)
+            }
         }
     }
 
@@ -2395,7 +2407,7 @@ impl PiCatalog {
     fn input_kinds(&self, model_id: &str) -> Option<&PiInputKinds> {
         match self.lookup(model_id) {
             PiLookup::Found(model) => Some(&model.input),
-            PiLookup::Ambiguous | PiLookup::Missing => None,
+            PiLookup::Ambiguous(_) | PiLookup::Missing => None,
         }
     }
 
@@ -2421,6 +2433,18 @@ impl PiCatalog {
         self.current_levels = levels;
         self.current_effort = current_effort;
     }
+}
+
+/// Names the serving providers so the refusal says what to pick. The profile
+/// form has no provider field yet, so the wording points at the profile.
+fn ambiguous_model_error(model_id: &str, providers: &[String]) -> WireError {
+    WireError::new(
+        ErrorCode::InvalidRequest,
+        format!(
+            "Pi model '{model_id}' is offered by {}; pick one in the profile.",
+            providers.join(" and ")
+        ),
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -3465,13 +3489,8 @@ impl ModelSwitcher for PiSwitcher {
         }
         let model = match current.lookup(model_id) {
             PiLookup::Found(model) => model,
-            PiLookup::Ambiguous => {
-                return Err(WireError::new(
-                    ErrorCode::InvalidRequest,
-                    format!(
-                        "Pi model '{model_id}' is served by more than one provider; name it as provider/model."
-                    ),
-                ))
+            PiLookup::Ambiguous(providers) => {
+                return Err(ambiguous_model_error(model_id, &providers));
             }
             PiLookup::Missing => {
                 return Err(WireError::new(

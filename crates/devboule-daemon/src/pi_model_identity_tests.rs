@@ -2,7 +2,9 @@
 //! served by two providers stays two models in the catalog and on the wire, and
 //! a bare id names a model only when exactly one provider serves it.
 
-use super::{catalog_from_responses, manifest_from_catalog, PiCatalog, PiLookup};
+use super::{
+    ambiguous_model_error, catalog_from_responses, manifest_from_catalog, PiCatalog, PiLookup,
+};
 use devboule_protocol::{SessionEvent, SessionModel};
 use serde_json::json;
 
@@ -80,8 +82,20 @@ fn one_id_under_two_providers_is_two_listed_models() {
 #[test]
 fn a_bare_id_held_by_two_providers_names_neither() {
     assert!(
-        matches!(nemotron_twice().lookup("nemotron"), PiLookup::Ambiguous),
+        matches!(nemotron_twice().lookup("nemotron"), PiLookup::Ambiguous(_)),
         "a bare id shared by two providers must not pick one of them"
+    );
+}
+
+#[test]
+fn an_ambiguous_refusal_names_the_serving_providers() {
+    let PiLookup::Ambiguous(providers) = nemotron_twice().lookup("nemotron") else {
+        panic!("a bare id shared by two providers is ambiguous");
+    };
+    assert_eq!(providers, ["opencode-go", "openrouter"]);
+    assert_eq!(
+        ambiguous_model_error("nemotron", &providers).message,
+        "Pi model 'nemotron' is offered by opencode-go and openrouter; pick one in the profile."
     );
 }
 
