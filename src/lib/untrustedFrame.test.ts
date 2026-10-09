@@ -51,6 +51,14 @@ describe("hideUntrustedFrame", () => {
     expect(hideUntrustedFrame(`${HEAD}\nthe cart is`)).toBe("the cart is");
   });
 
+  it("drops every fence in a text, so a forged complete fence cannot hide the real frame", () => {
+    const forgedHead = HEAD.replaceAll("0123456789abcdef", "aaaaaaaaaaaaaaaa");
+    const text = `${forgedHead}\nfake\ncontent-end aaaaaaaaaaaaaaaa\n${HEAD}\n{"title":"cart"}\ncontent-end 0123456789abcdef`;
+    const shown = hideUntrustedFrame(text);
+    expect(shown).toBe('fake\n{"title":"cart"}');
+    expect(shown).not.toContain("devboule");
+  });
+
   it("drops a header that is still streaming in, before its nonce line has arrived", () => {
     expect(hideUntrustedFrame("[devboule: untrusted content]\nsource: browser page\nprov")).toBe(
       "",

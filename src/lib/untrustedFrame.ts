@@ -40,8 +40,7 @@ function escapeRegExp(text: string): string {
 /** `text` without the daemon's frame, or unchanged when it holds none. */
 export function hideUntrustedFrame(text: string): string {
   if (!text.includes(FRAME_OPEN)) return text;
-  const head = FENCE_HEAD.exec(text);
-  if (head !== null) return hideFence(text, head);
+  if (FENCE_HEAD.test(text)) return hideFences(text);
   const lead = LEAD_IN.exec(text);
   if (lead !== null) {
     const before = text.slice(0, lead.index).replace(/\n+$/, "");
@@ -49,6 +48,19 @@ export function hideUntrustedFrame(text: string): string {
     return [before, after].filter((part) => part.length > 0).join("\n\n");
   }
   return hideStreamingHeader(text);
+}
+
+/**
+ * Every fence in the text, one at a time from the first. Each removal takes out
+ * one head, so the loop ends: a forged fence placed before the real one cannot
+ * stop the real one from being hidden.
+ */
+function hideFences(text: string): string {
+  let out = text;
+  for (let head = FENCE_HEAD.exec(out); head !== null; head = FENCE_HEAD.exec(out)) {
+    out = hideFence(out, head);
+  }
+  return out;
 }
 
 /** A fenced result: its head goes, and its content stays, up to the tail with the head's own nonce. */
