@@ -740,6 +740,7 @@ describe("workspace session controller", () => {
         kind: "acp",
         title: "restored agent",
         state: { type: "live", generation: 1 },
+        activity: "working",
         elapsedMs: 10,
       },
     ]);

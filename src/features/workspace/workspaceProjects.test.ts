@@ -41,9 +41,9 @@ describe("workspaceView", () => {
     });
     // Settled, not asking: idle, with neither leaked marker.
     expect(workspaceView(workspace, [ended]).stateDot).toBe("idle");
-    expect(
-      workspaceView(workspace, [ended, session({ activity: "working" })]).stateDot,
-    ).toBe("pulse");
+    expect(workspaceView(workspace, [ended, session({ activity: "working" })]).stateDot).toBe(
+      "pulse",
+    );
   });
 
   it.each(["finished", "error"] as const)("does not mark %s as needing approval", (reason) => {
