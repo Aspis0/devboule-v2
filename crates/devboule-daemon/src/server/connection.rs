@@ -545,33 +545,31 @@ pub(super) fn flush_final_events(
     let _ = framed.flush_pipe();
 }
 
-/// The owner whose sessions a connection may read.
+/// The owner a machine-peer create writes: the pairing human when the
+/// pairing is this user's own, else the peer identity as before.
 ///
-/// Derived from the connection's peer identity rather than from whatever owner
-/// the caller passed, so a caller cannot widen the projection: a client-scoped
-/// peer reads the paired user's sessions, a machine peer reads what its own
-/// device created, and the local pipe reads its own. `handle_client` builds the
-/// same owner for a client-scoped peer on every other request, so this restates
-/// the rule where the reply is built instead of trusting the argument
-/// (`DESIGN-remote-agents.md` §8b A3, §8 R2).
-pub(super) fn session_list_owner(conn_peer: &Option<ConnPeer>, caller: &OwnerId) -> OwnerId {
-    let projected = match conn_peer {
-        Some(ConnPeer::Remote {
-            scope: crate::peer_policy::PeerScope::PairedUser,
-            paired_by_user: Some(paired),
-            ..
-        }) => OwnerId::new(paired.clone(), crate::peer_policy::PEER_OWNER_TAG),
+/// A session created from the paired human's other PC belongs to that
+/// human — not to a hidden `peer_<device>` owner — so the hosting machine
+/// lists it in its own roster and can stop, drive and archive it, and the
+/// session survives a later revoke of the device instead of orphaning.
+/// The origin tag still records the creating device for attribution; only
+/// the owner moves. Multi-user machines and rows that predate the pairing
+/// user keep the peer identity (the conservative arm: no local SID match,
+/// no human owner).
+pub(super) fn session_create_owner(
+    state: &Arc<ServerState>,
+    conn_peer: &Option<ConnPeer>,
+    caller: &OwnerId,
+) -> OwnerId {
+    let human = match conn_peer {
         Some(ConnPeer::Remote {
             scope: crate::peer_policy::PeerScope::PeerDevice,
-            device_id,
+            paired_by_user: Some(paired),
             ..
-        }) => OwnerId::new(
-            format!("peer_{device_id}"),
-            crate::peer_policy::PEER_OWNER_TAG,
-        ),
+        }) if state.local_user_sid().as_deref() == Some(paired.as_str()) => paired.clone(),
         _ => return caller.clone(),
     };
-    projected.unwrap_or_else(|_| caller.clone())
+    OwnerId::new(human, crate::peer_policy::PEER_OWNER_TAG).unwrap_or_else(|_| caller.clone())
 }
 
 /// The one gate every reply passes on its way out to a peer connection.

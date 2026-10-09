@@ -904,10 +904,10 @@ pub(super) fn check_user_owner(
 }
 
 /// The observing door: reading a session — its transcript, its terminal
-/// screen, its roster row — is not operating on it. A machine peer observes
-/// the pairing user's sessions (the owner's two PCs each see the other's
-/// agents), while every operation keeps the origin-only rule below. The
-/// product decision is explicit: read-only opens up, writes do not.
+/// screen, its roster row. Since P1-3 it answers exactly what the operating
+/// door answers: a machine peer bound to the pairing human reaches that
+/// human's sessions for reads and writes alike (the human acting from their
+/// own other PC), while another account's sessions stay out of both.
 pub(super) fn check_user_owner_observing(
     entry: &RegistryEntry,
     owner: &OwnerId,
@@ -939,10 +939,19 @@ fn check_user_owner_with(
             // No recorded pairing user, or another account's session: refuse.
             _ => Err(unauthorized()),
         },
-        // A machine peer's scope is the *origin*, not the owner name (§8 R2):
-        // the sessions it created here, and nothing else. A session this
-        // device created is refused even when the owner comparison would pass,
-        // because the origin is the authority A3 names.
+        // A machine peer reaches two registers: the sessions it created
+        // here (the origin is the authority A3 names, §8 R2), and the
+        // sessions of the person who paired it — observing AND operating.
+        // The pairing binds the device to that human, so operating their
+        // sessions from the human's own other PC is the human acting, not
+        // a device reaching past them: human-originated requests use the
+        // human scope, while agent-originated cross-machine commands stay
+        // on the permission-card path and never reach this door as human.
+        // Another account's sessions stay out either way. Sessions owned
+        // by the connection's own peer identity keep the origin rule even
+        // when the recorded pairing user spells the same: the peer
+        // identity is synthetic (`peer_<device>`), never the human, and
+        // conflating them would let origin checks pass by name comparison.
         Some(ConnPeer::Remote {
             scope: crate::peer_policy::PeerScope::PeerDevice,
             device_id,
@@ -952,13 +961,20 @@ fn check_user_owner_with(
             let origin = entry.origin();
             let own_origin = origin.kind == SessionOriginKind::Peer
                 && origin.device_id.as_deref() == Some(device_id.as_str());
-            // Observing also reaches the sessions of the person who paired
-            // this machine here; operating does not.
-            let pairing_users_session = observing
-                && paired_by_user
-                    .as_deref()
-                    .is_some_and(|paired| entry.owner().user == paired);
-            if (own_origin && entry.owner().user == owner.user) || pairing_users_session {
+            // The pairing human's sessions: the human's own, including ones
+            // this device created for them (owned by the human since P1-2)
+            // and ones they started locally. Observing keeps the old
+            // inclusive match; operating additionally requires the owner not
+            // be the connection's own peer identity (`peer_<device>` is
+            // synthetic, never the human — conflating them would let origin
+            // checks pass by name comparison).
+            let peer_identity = format!("peer_{device_id}");
+            let paired_match = paired_by_user
+                .as_deref()
+                .is_some_and(|paired| entry.owner().user == paired);
+            let pairing_human_session =
+                paired_match && (observing || entry.owner().user != peer_identity);
+            if (own_origin && entry.owner().user == owner.user) || pairing_human_session {
                 Ok(())
             } else {
                 Err(unauthorized())

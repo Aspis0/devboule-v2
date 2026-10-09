@@ -30,15 +30,16 @@ pub(super) fn dispatch(
     // A remote peer's session list is a projection, not the local list, and it
     // is derived from the *connection* rather than from the `owner` this call
     // was handed: a caller that passes something else cannot widen the
-    // projection. A `Client` sees the sessions of the user it was paired by
-    // (what `handle_client` computes for every other request too, §8b A3); a
-    // `Daemon` sees the sessions its own device created (§8 R2); the local pipe
-    // sees its own list. In all three cases the registry's single owner-user
-    // filter is the whole rule.
+    // projection. A client-scoped peer sees the sessions of the user it was
+    // paired by; a machine peer sees the union of that user's sessions and
+    // the ones its own device created (Slice 4: a session created over the
+    // link is listed back to the peer that created it); the local pipe sees
+    // its own list. In all cases the registry's owner-user filter is the
+    // whole rule (`DESIGN-remote-agents.md` §8b A3, §8 R2, as extended by
+    // the remote-host slices).
     if let Some(ConnPeer::Remote { .. }) = &conn.conn_peer {
         if let ClientMessage::SessionsList { id } = &request {
-            let projected = session_list_owner(&conn.conn_peer, owner);
-            return Some(match state.sessions.list(&projected) {
+            return Some(match state.sessions.list_for_conn(owner, &conn.conn_peer) {
                 Ok(sessions) => DaemonMessage::Sessions { id: *id, sessions },
                 Err(error) => DaemonMessage::Error(error.with_id(*id)),
             });

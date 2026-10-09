@@ -1994,11 +1994,10 @@ fn a_host_creates_and_operates_sessions_on_its_peer_over_loopback() {
     let terminal = create_on_b(&b_workspace, SessionKind::Terminal, None, "s4-term-1");
     assert_eq!(terminal.kind, SessionKind::Terminal);
 
-    // ---- both daemons' inventories: B holds them, A does not --------------
-    // B's own user roster stays B-user scoped: a machine peer's sessions
-    // belong to the peer's origin, so they are listed back over the link
-    // that created them — never in the host user's own list, and never in
-    // the creating daemon's local list either.
+    // ---- both daemons' inventories ----------------------------------------
+    // A session created from the paired human's other PC belongs to that
+    // human (P1-2): B's own roster lists what A created, and A's local
+    // roster holds nothing of B's.
     let inventory = |peer: &Peer| {
         request_skipping_pushes(
             peer,
@@ -2041,8 +2040,8 @@ fn a_host_creates_and_operates_sessions_on_its_peer_over_loopback() {
     );
     let b_inventory = inventory(&b);
     assert!(
-        !b_inventory.contains(&agent.id) && !b_inventory.contains(&terminal.id),
-        "B's own user roster stays B-user scoped: {b_inventory:?}"
+        b_inventory.contains(&agent.id) && b_inventory.contains(&terminal.id),
+        "B's roster lists what A created for its human: {b_inventory:?}"
     );
     let a_inventory = inventory(&a);
     assert!(
@@ -2366,6 +2365,16 @@ fn a_host_creates_and_operates_sessions_on_its_peer_over_loopback() {
         },
     );
     assert!(refused_send.is_some(), "a revoked host cannot be operated");
+    // P1-2: revoking the device does not orphan the sessions — they belong
+    // to the pairing human, so B's roster keeps listing them and B can
+    // drive them locally.
+    let b_inventory_after_revoke = inventory(&b);
+    assert!(
+        b_inventory_after_revoke.contains(&agent.id)
+            && b_inventory_after_revoke.contains(&terminal.id)
+            && b_inventory_after_revoke.contains(&retried.id),
+        "revoke removes the device, not the human's sessions: {b_inventory_after_revoke:?}"
+    );
 
     let _ = a_self;
 }

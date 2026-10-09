@@ -4094,6 +4094,13 @@ impl SessionRegistry {
         conn_peer: &Option<ConnPeer>,
     ) -> Result<Vec<Session>, WireError> {
         match conn_peer {
+            // A client-scoped peer reads the paired user's register, derived
+            // from the connection — never from a caller-passed owner.
+            Some(ConnPeer::Remote {
+                scope: crate::peer_policy::PeerScope::PairedUser,
+                paired_by_user: Some(paired),
+                ..
+            }) => self.list_for_user(paired),
             Some(ConnPeer::Remote {
                 scope: crate::peer_policy::PeerScope::PeerDevice,
                 paired_by_user: Some(paired),

@@ -3707,12 +3707,17 @@ fn a_remote_sessions_list_is_projected_by_role_and_paired_user() {
         &[crate::peer_policy::CAP_VIEW]
     ))
     .is_empty());
-    assert!(ids(&remote_conn_with_caps(
-        PeerScope::PeerDevice,
-        Some("S-user-a"),
-        &[crate::peer_policy::CAP_VIEW]
-    ))
-    .is_empty());
+    // A machine peer reads the union of the pairing user's sessions and its
+    // own created ones (P1-2/P1-3): the pairing user's row is listed, and
+    // only that user's.
+    assert_eq!(
+        ids(&remote_conn_with_caps(
+            PeerScope::PeerDevice,
+            Some("S-user-a"),
+            &[crate::peer_policy::CAP_VIEW]
+        )),
+        vec!["s.user-a.1".to_string()]
+    );
     // H10: without `view` the list is not an unconditional read any more.
     // The refusal is the capability gate's, and it names `view`.
     assert_eq!(

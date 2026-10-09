@@ -405,11 +405,12 @@ fn live_transition_does_not_rebuild_a_large_roster() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The owner's two PCs each host workspaces: a machine peer observes the
-/// pairing user's sessions — attach, roster — while every operating frame
-/// keeps the origin-only scope. Reading opens up; writing does not.
+/// The owner's two PCs each host workspaces: a machine peer bound to the
+/// pairing human reaches that human's sessions for reads AND writes — the
+/// human acting from their own other PC — while another account's sessions
+/// stay out of both. The peer identity's own sessions keep the origin rule.
 #[test]
-fn a_machine_peer_observes_the_pairing_users_sessions_but_does_not_operate_on_them() {
+fn a_machine_peer_operates_the_pairing_humans_sessions_and_nothing_else() {
     let (dir, registry, journal) = tmp_delete_registry();
     let host = test_owner("S-1-5-21-host", "process-host");
     let other = test_owner("S-1-5-21-other", "process-other");
@@ -430,14 +431,20 @@ fn a_machine_peer_observes_the_pairing_users_sessions_but_does_not_operate_on_th
     assert!(
         registry
             .session_scope(&host_session, &caller, &peer.conn_peer)
-            .is_err(),
-        "operating on that session stays origin-only"
+            .is_ok(),
+        "operating on the pairing human's session is the human acting (P1-3)"
     );
     assert!(
         registry
             .session_scope_observing(&other_session, &caller, &peer.conn_peer)
             .is_err(),
         "another account's session is not the pairing user's"
+    );
+    assert!(
+        registry
+            .session_scope(&other_session, &caller, &peer.conn_peer)
+            .is_err(),
+        "another account's session stays out of operating too"
     );
 
     let roster = registry

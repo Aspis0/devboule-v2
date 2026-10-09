@@ -814,6 +814,13 @@ fn session_create(
     idempotency_key: Option<String>,
     initial_size: Option<(u16, u16)>,
 ) -> DaemonMessage {
+    // A machine-peer create from the pairing human's own other PC is owned
+    // by that human, not by a hidden peer identity: the hosting machine
+    // lists the session in its own roster and can drive it, and the session
+    // survives a later revoke instead of orphaning (P1-2). The origin tag
+    // still records the creating device.
+    let human_owner = super::connection::session_create_owner(state, conn_peer, owner);
+    let owner = &human_owner;
     // A session starts inside a workspace. A create that names none is refused
     // before anything is journaled or spawned, so it never starts in the
     // daemon's own directory.
