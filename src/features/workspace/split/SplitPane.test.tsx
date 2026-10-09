@@ -42,31 +42,6 @@ function bodyOf(css: string, selector: string): string {
   return css.slice(at, css.indexOf("}", at));
 }
 
-/** The selectors that share the rule the reveal's own arm belongs to, with the
- * `a:hover, b:focus` arms split back out. */
-/** The selectors that share the rule the reveal's own arm belongs to, with the
- * `a:hover,` continuation lines walked back so the whole list comes out. */
-function revealRule(): { selectors: string[]; body: string } {
-  const at = sheet.indexOf(".workspace-split-merge:hover");
-  expect(at, "the merge reveal rule has no :hover arm").toBeGreaterThan(-1);
-  const open = sheet.indexOf("{", at);
-  let start = sheet.lastIndexOf(String.fromCharCode(10), open) + 1;
-  while (start > 0) {
-    const previous = sheet.lastIndexOf(String.fromCharCode(10), start - 2);
-    const line = sheet.slice(previous + 1, start - 1);
-    if (!line.trimEnd().endsWith(",")) break;
-    start = previous + 1;
-  }
-  return {
-    selectors: sheet
-      .slice(start, open)
-      .split(",")
-      .map((part) => part.trim())
-      .filter((part) => part.length > 0),
-    body: sheet.slice(open, sheet.indexOf("}", open)),
-  };
-}
-
 /** The split area's own box, which happy-dom cannot lay out. */
 function stubArea(height: number): void {
   const area = container.querySelector<HTMLElement>(".workspace-split");
@@ -296,20 +271,11 @@ describe("a workspace with a split", () => {
     expect(onMerge).toHaveBeenCalled();
   });
 
-  it("reveals the merge control when the pane below is hovered, not only the button", () => {
+  it("keeps the merge control visible at all times, not only on hover", () => {
+    // A control that appears only under the pointer hides the way back.
     const base = ruleBody(".workspace-split-merge");
-    expect(base).toMatch(/opacity:\s*0/);
-    expect(base).toMatch(/transition:[^;]*opacity/);
-    // The pointer must not have to find an invisible button first: the whole
-    // pane below reveals it, and so does the header holding the focus.
-    const reveal = revealRule();
-    expect(reveal.selectors).toContain(".workspace-split-bottom:hover .workspace-split-merge");
-    expect(reveal.selectors).toContain(
-      ".workspace-split-header:focus-within .workspace-split-merge",
-    );
-    expect(reveal.selectors).toContain(".workspace-split-merge:hover");
-    expect(reveal.selectors).toContain(".workspace-split-merge:focus-visible");
-    expect(reveal.body).toMatch(/opacity:\s*1/);
+    expect(base).not.toMatch(/opacity:\s*0/);
+    expect(base).not.toMatch(/transition:[^;]*opacity/);
   });
 
   it("keeps the merge control at least 24 px tall and named for a screen reader", () => {

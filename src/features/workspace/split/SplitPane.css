@@ -84,10 +84,8 @@
   white-space: nowrap;
 }
 
-/* Quiet until the pane below is hovered or the focus is inside its header:
-   the merge is one action, and it must not sit in every pane's face — nor ask
-   a pointer to find an invisible button. Hidden, never absent, so the keyboard
-   finds the same control the pointer does, and never under 24px tall. */
+/* Always visible: a control that appears only under the pointer hides the way
+   back to one pane. Quiet by colour, and never under 24px tall. */
 .workspace-split-merge {
   flex: none;
   height: var(--control-default);
@@ -100,17 +98,12 @@
   cursor: pointer;
   font-family: var(--font-ui);
   font-size: var(--type-interface);
-  opacity: 0;
-  transition: opacity 120ms ease;
 }
 
-.workspace-split-bottom:hover .workspace-split-merge,
-.workspace-split-header:focus-within .workspace-split-merge,
 .workspace-split-merge:hover,
 .workspace-split-merge:focus-visible {
   background: var(--panel-menu);
   color: var(--accent-text);
-  opacity: 1;
 }
 
 .workspace-split-bottom > .workspace-browser-pane {

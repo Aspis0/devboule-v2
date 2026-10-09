@@ -174,8 +174,6 @@ function SplitArea({
           <span className="workspace-split-title" title={lowerLabel}>
             {lowerLabel}
           </span>
-          {/* Hidden rather than absent, so the keyboard reaches it, and shown on
-              hover and on focus alike — see SplitPane.css. */}
           <button type="button" className="workspace-split-merge" onClick={onMerge}>
             Merge into tabs
           </button>
