@@ -180,3 +180,58 @@ fn a_peer_hello_keeps_its_presence_and_service_in_step() {
         "a client does not advertise a service it does not provide"
     );
 }
+
+#[test]
+fn the_remote_attach_frames_round_trip_with_their_fields() {
+    let attach = ClientMessage::RemoteHostAttach {
+        id: 7,
+        device_id: "b".to_string(),
+        session_id: "session-one".to_string(),
+        subscription_id: 3,
+    };
+    assert_eq!(attach.name(), "RemoteHostAttach");
+    let json = serde_json::to_value(&attach).expect("json");
+    assert_eq!(json["type"], "remote_host_attach");
+    assert_eq!(json["deviceId"], "b");
+    assert_eq!(json["sessionId"], "session-one");
+    assert_eq!(json["subscriptionId"], 3);
+    let back: ClientMessage = serde_json::from_value(json).expect("back");
+    assert_eq!(back, attach);
+
+    let detach = ClientMessage::RemoteHostDetach {
+        id: 8,
+        device_id: "b".to_string(),
+        session_id: "session-one".to_string(),
+        subscription_id: 3,
+    };
+    assert_eq!(detach.name(), "RemoteHostDetach");
+    let back: ClientMessage =
+        serde_json::from_value(serde_json::to_value(&detach).expect("json")).expect("back");
+    assert_eq!(back, detach);
+}
+
+#[test]
+fn a_relayed_remote_event_names_its_host_session_and_subscription() {
+    let message = DaemonMessage::RemoteHostEvent {
+        device_id: "device-b".to_string(),
+        session_id: "session-one".to_string(),
+        subscription_id: 9,
+        envelope: SessionEventEnvelope {
+            session_id: "session-one".to_string(),
+            generation: 1,
+            transcript_seq: None,
+            event: SessionEvent::Output {
+                seq: 1,
+                data: "hello".to_string(),
+            },
+        },
+    };
+    let json = serde_json::to_value(&message).expect("json");
+    assert_eq!(json["type"], "remote_host_event");
+    assert_eq!(json["deviceId"], "device-b");
+    assert_eq!(json["sessionId"], "session-one");
+    assert_eq!(json["subscriptionId"], 9);
+    assert_eq!(json["envelope"]["event"]["data"], "hello");
+    let back: DaemonMessage = serde_json::from_value(json).expect("back");
+    assert_eq!(back, message);
+}

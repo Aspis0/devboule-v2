@@ -734,6 +734,8 @@ pub(super) fn dispatch_session(
         | ClientMessage::RemoteHostWatch { .. }
         | ClientMessage::RemoteHostUnwatch { .. }
         | ClientMessage::RemoteHostList { .. }
+        | ClientMessage::RemoteHostAttach { .. }
+        | ClientMessage::RemoteHostDetach { .. }
         // Nor are the browser-host frames: `dispatch_immediate` answers them.
         | ClientMessage::BrowserHostRegister { .. }
         | ClientMessage::BrowserHostUnregister { .. }

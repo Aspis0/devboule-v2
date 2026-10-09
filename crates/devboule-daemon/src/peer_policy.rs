@@ -460,7 +460,9 @@ pub fn peer_allows(caps: &[String], request: &ClientMessage) -> PeerDecision {
         // named `remote_hosts` and refused by name.
         ClientMessage::RemoteHostWatch { .. }
         | ClientMessage::RemoteHostUnwatch { .. }
-        | ClientMessage::RemoteHostList { .. } => PeerDecision::Deny("remote_hosts"),
+        | ClientMessage::RemoteHostList { .. }
+        | ClientMessage::RemoteHostAttach { .. }
+        | ClientMessage::RemoteHostDetach { .. } => PeerDecision::Deny("remote_hosts"),
         // Being the place agents' browser commands run is the local app's job.
         // A paired device reaches a browser only through the per-device grant
         // the MCP tools check (a later slice), never by registering as a host
@@ -2774,6 +2776,8 @@ pub(crate) mod tests {
             ClientMessage::DelegationGet { .. } => administrative(),
             ClientMessage::DelegationSet { .. } => administrative(),
             ClientMessage::RemoteHostWatch { .. } => local("remote_hosts"),
+            ClientMessage::RemoteHostAttach { .. } => local("remote_hosts"),
+            ClientMessage::RemoteHostDetach { .. } => local("remote_hosts"),
             ClientMessage::RemoteHostUnwatch { .. } => local("remote_hosts"),
             ClientMessage::RemoteHostList { .. } => local("remote_hosts"),
             ClientMessage::BrowserHostRegister { .. } => local("browser.host"),
@@ -2883,6 +2887,8 @@ pub(crate) mod tests {
             ClientMessage::DelegationGet { .. } => "DelegationGet",
             ClientMessage::DelegationSet { .. } => "DelegationSet",
             ClientMessage::RemoteHostWatch { .. } => "RemoteHostWatch",
+            ClientMessage::RemoteHostAttach { .. } => "RemoteHostAttach",
+            ClientMessage::RemoteHostDetach { .. } => "RemoteHostDetach",
             ClientMessage::RemoteHostUnwatch { .. } => "RemoteHostUnwatch",
             ClientMessage::RemoteHostList { .. } => "RemoteHostList",
             ClientMessage::BrowserHostRegister { .. } => "BrowserHostRegister",

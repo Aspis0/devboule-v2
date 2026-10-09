@@ -2926,6 +2926,8 @@ fn session_paths_of(request: &ClientMessage) -> Option<&'static [&'static str]> 
         // A held link reaches another machine's rows; this harness calls the
         // registry directly and there is no path here for it.
         ClientMessage::RemoteHostWatch { .. } => None,
+        ClientMessage::RemoteHostAttach { .. } => None,
+        ClientMessage::RemoteHostDetach { .. } => None,
         ClientMessage::RemoteHostUnwatch { .. } => None,
         ClientMessage::RemoteHostList { .. } => None,
         // The browser host answers to the daemon's broker, not to a session.

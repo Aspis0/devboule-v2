@@ -303,6 +303,8 @@ pub(super) fn dispatch_immediate(
         // an id rather than a panic.
         ClientMessage::RemoteHostWatch { .. }
         | ClientMessage::RemoteHostUnwatch { .. }
+        | ClientMessage::RemoteHostAttach { .. }
+        | ClientMessage::RemoteHostDetach { .. }
         | ClientMessage::RemoteHostList { .. } => DaemonMessage::Error(WireError::new(
             ErrorCode::InvalidRequest,
             "remote host frames are dispatched by the async wrapper",

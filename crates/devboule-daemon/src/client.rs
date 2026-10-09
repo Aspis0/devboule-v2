@@ -3029,6 +3029,9 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         // The inventory push is a broadcast too: it answers no request, and
         // the link's own reader decides what to do with it.
         | DaemonMessage::HostWorkspaceChanged { .. }
+        // The relayed remote-session event answers no local request either:
+        // the connection's remote-attach subscription carries it.
+        | DaemonMessage::RemoteHostEvent { .. }
         // A command for the browser host answers no request either; the
         // reader queues it for the host before this match runs.
         | DaemonMessage::BrowserExecuteRequest(_) => None,

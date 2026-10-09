@@ -507,6 +507,27 @@ pub enum ClientMessage {
         device_id: String,
         list: crate::RemoteHostList,
     },
+
+    /// Open a live view of one session on a paired host. Local-only: the
+    /// daemon maps it to the peer's own `SessionAttach` on the held link, so
+    /// the app never names a session on a connection that is not this
+    /// machine's. The peer's grant and its session scope decide the answer,
+    /// exactly as they do for a local attach.
+    RemoteHostAttach {
+        id: u64,
+        device_id: String,
+        session_id: String,
+        subscription_id: u64,
+    },
+    /// Close the live view opened by [`ClientMessage::RemoteHostAttach`].
+    /// Local-only for the same reason; absent a subscription it is still an
+    /// `Ok`, so a surface that tears down twice is not careful about it.
+    RemoteHostDetach {
+        id: u64,
+        device_id: String,
+        session_id: String,
+        subscription_id: u64,
+    },
     /// Register this connection as the browser host: the place that runs
     /// browser commands for agents. The reply is
     /// [`DaemonMessage::BrowserHostRegistered`], and from then on the daemon
@@ -1441,6 +1462,8 @@ impl ClientMessage {
             | Self::RemoteHostWatch { id, .. }
             | Self::RemoteHostUnwatch { id, .. }
             | Self::RemoteHostList { id, .. }
+            | Self::RemoteHostAttach { id, .. }
+            | Self::RemoteHostDetach { id, .. }
             | Self::BrowserHostRegister { id, .. }
             | Self::BrowserHostUnregister { id, .. }
             | Self::BrowserExecuteResponse { id, .. }
@@ -1587,6 +1610,8 @@ impl ClientMessage {
             | Self::RemoteHostWatch { .. }
             | Self::RemoteHostUnwatch { .. }
             | Self::RemoteHostList { .. }
+            | Self::RemoteHostAttach { .. }
+            | Self::RemoteHostDetach { .. }
             | Self::BrowserHostRegister { .. }
             | Self::BrowserHostUnregister { .. }
             | Self::BrowserExecuteResponse { .. }
@@ -1665,6 +1690,8 @@ impl ClientMessage {
             Self::RemoteHostWatch { .. } => "RemoteHostWatch",
             Self::RemoteHostUnwatch { .. } => "RemoteHostUnwatch",
             Self::RemoteHostList { .. } => "RemoteHostList",
+            Self::RemoteHostAttach { .. } => "RemoteHostAttach",
+            Self::RemoteHostDetach { .. } => "RemoteHostDetach",
             Self::BrowserHostRegister { .. } => "BrowserHostRegister",
             Self::BrowserHostUnregister { .. } => "BrowserHostUnregister",
             Self::BrowserExecuteResponse { .. } => "BrowserExecuteResponse",
@@ -1855,9 +1882,12 @@ impl ClientMessage {
             | Self::AgentProfilesSet { .. }
             | Self::DelegationSet { .. }
             // Taking and giving back a lease both change what this daemon is
-            // connected to, which is the fact an audit row would name.
+            // connected to, which is the fact an audit row would name; the
+            // same goes for opening and closing a remote session stream.
             | Self::RemoteHostWatch { .. }
             | Self::RemoteHostUnwatch { .. }
+            | Self::RemoteHostAttach { .. }
+            | Self::RemoteHostDetach { .. }
             // Registering or leaving decides which process runs the agents'
             // browser commands, which is the fact an audit row would name.
             | Self::BrowserHostRegister { .. }
@@ -2190,6 +2220,16 @@ pub enum DaemonMessage {
     Event(SessionEventEnvelope),
     SubscriptionEvent {
         subscription_id: SubscriptionId,
+        envelope: SessionEventEnvelope,
+    },
+    /// One event relayed from a paired host's session feed, tagged with the
+    /// host it came from and the local subscription the app opened. The host's
+    /// own session id is carried unchanged: two machines may mint the same
+    /// id, and the device id is what keeps them apart. It answers no request.
+    RemoteHostEvent {
+        device_id: String,
+        session_id: String,
+        subscription_id: u64,
         envelope: SessionEventEnvelope,
     },
     /// Everything the Devices panel needs in one reply, already projected for

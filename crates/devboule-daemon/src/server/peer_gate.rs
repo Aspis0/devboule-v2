@@ -395,6 +395,8 @@ pub(super) fn peer_mode_refusal_for_conn(
         ClientMessage::RemoteHostWatch { .. } => None,
         ClientMessage::RemoteHostUnwatch { .. } => None,
         ClientMessage::RemoteHostList { .. } => None,
+        ClientMessage::RemoteHostAttach { .. } => None,
+        ClientMessage::RemoteHostDetach { .. } => None,
         // The browser-host frames name no session or mode either; a peer is
         // refused them by `peer_allows` before this is asked.
         ClientMessage::BrowserHostRegister { .. } => None,
@@ -660,6 +662,8 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::RemoteHostWatch { .. }
         | ClientMessage::RemoteHostUnwatch { .. }
         | ClientMessage::RemoteHostList { .. }
+        | ClientMessage::RemoteHostAttach { .. }
+        | ClientMessage::RemoteHostDetach { .. }
         // Likewise the browser host's three: they name this machine's own
         // browser, never a session; their peer refusal is `peer_allows`'s.
         | ClientMessage::BrowserHostRegister { .. }
