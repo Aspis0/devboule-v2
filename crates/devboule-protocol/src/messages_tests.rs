@@ -4456,20 +4456,22 @@ fn agent_profile_model_provider_travels_beside_the_bare_id() {
 
 #[test]
 fn session_model_carries_its_serving_provider() {
-    // Pi's catalog serves one id under several providers: the manifest item
-    // names which one, so the picker and the row can tell them apart.
+    // Pi's catalog serves one id under several providers: each row is
+    // named by provider and id, and `provider_id` says which provider
+    // serves it, so the picker and the row can tell them apart.
     let served = serde_json::json!({
-        "modelId": "mimo-v2-6-flash",
+        "modelId": "opencode-go/mimo-v2-6-flash",
         "name": "MiMo V2.6 Flash",
-        "provider": "opencode-go"
+        "providerId": "opencode-go"
     });
     let model = serde_json::from_value::<SessionModel>(served).expect("served model");
-    assert_eq!(model.provider.as_deref(), Some("opencode-go"));
+    assert_eq!(model.provider_id.as_deref(), Some("opencode-go"));
     let json = serde_json::to_value(&model).expect("json");
-    assert_eq!(json["provider"], "opencode-go");
+    assert_eq!(json["providerId"], "opencode-go");
+    assert_eq!(json["modelId"], "opencode-go/mimo-v2-6-flash");
 
     // Items from providers that name none still read, with nothing claimed.
     let plain = serde_json::json!({ "modelId": "opus", "name": "Opus" });
     let unserved = serde_json::from_value::<SessionModel>(plain).expect("plain model");
-    assert_eq!(unserved.provider, None);
+    assert_eq!(unserved.provider_id, None);
 }

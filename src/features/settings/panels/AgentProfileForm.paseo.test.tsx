@@ -34,7 +34,7 @@ function piVocabulary() {
         {
           modelId: "opencode-go/mimo-v2-6-flash",
           name: "MiMo V2.6 Flash",
-          provider_id: "opencode-go",
+          providerId: "opencode-go",
           efforts: [
             { id: "Low", label: "Low" },
             { id: "High", label: "High", default: true },
@@ -43,12 +43,12 @@ function piVocabulary() {
         {
           modelId: "nvidia/nemotron-3-ultra",
           name: "Nemotron 3 Ultra",
-          provider_id: "nvidia",
+          providerId: "nvidia",
         },
         {
           modelId: "openrouter/mimo-v2-6-flash",
           name: "MiMo V2.6 Flash",
-          provider_id: "openrouter",
+          providerId: "openrouter",
           efforts: [{ id: "High", label: "High" }],
         },
       ],

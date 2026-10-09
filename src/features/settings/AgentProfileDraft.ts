@@ -440,8 +440,8 @@ export function modelKeyOf(modelProvider: string | null, id: string): string {
  * The bare id behind a catalog item's composite identity: the provider
  * prefix off when the item names one, the id itself otherwise.
  */
-export function bareModelIdOf(item: Pick<SessionModel, "modelId" | "provider_id">): string {
-  const serving = item.provider_id ?? "";
+export function bareModelIdOf(item: Pick<SessionModel, "modelId" | "providerId">): string {
+  const serving = item.providerId ?? "";
   const prefix = serving === "" ? "" : `${serving}/`;
   return prefix !== "" && item.modelId.startsWith(prefix)
     ? item.modelId.slice(prefix.length)
@@ -462,7 +462,7 @@ export function parseModelRef(
   if (separator > 0) {
     const provider = ref.slice(0, separator);
     const rest = ref.slice(separator + 1);
-    if (items.some((item) => item.modelId === ref && (item.provider_id ?? "") === provider)) {
+    if (items.some((item) => item.modelId === ref && (item.providerId ?? "") === provider)) {
       return { model: rest, modelProvider: provider };
     }
   }
@@ -501,10 +501,10 @@ export function pairRefusal(
 ): string | null {
   if (model === "" || providerId !== "pi") return null;
   const same = items.filter(
-    (item) => bareModelIdOf(item) === model && (item.provider_id ?? "") !== "",
+    (item) => bareModelIdOf(item) === model && (item.providerId ?? "") !== "",
   );
   if (same.length === 0) return null;
-  const providers = [...new Set(same.map((item) => item.provider_id as string))].sort();
+  const providers = [...new Set(same.map((item) => item.providerId as string))].sort();
   if (modelProvider !== null && providers.includes(modelProvider)) return null;
   return `Pi model '${model}' is offered by ${providers.join(" and ")}; pick one in the profile.`;
 }
@@ -514,10 +514,10 @@ export function pairRefusal(
  * first when the catalog names one, so two rows for one id read apart.
  */
 export function modelOptionLabel(
-  item: Pick<SessionModel, "modelId" | "name" | "provider_id">,
+  item: Pick<SessionModel, "modelId" | "name" | "providerId">,
 ): string {
   const bare = bareModelIdOf(item);
   const base = item.name && item.name !== bare ? `${item.name} (${bare})` : bare;
-  const serving = item.provider_id ?? "";
+  const serving = item.providerId ?? "";
   return serving === "" ? base : `${serving} · ${base}`;
 }

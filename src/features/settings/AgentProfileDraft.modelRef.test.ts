@@ -11,11 +11,11 @@ import {
   parseModelRef,
 } from "./AgentProfileDraft";
 
-function item(modelId: string, provider_id?: string | null, name?: string): SessionModel {
+function item(modelId: string, providerId?: string | null, name?: string): SessionModel {
   return {
     modelId,
     name: name ?? modelId,
-    provider_id: provider_id ?? null,
+    providerId: providerId ?? null,
   };
 }
 
