@@ -119,6 +119,28 @@ describe("the tree's identity", () => {
     );
   }
 
+  it("keys two machines' same-id projects apart", async () => {
+    const remoteHost = "device-one" as WorkspaceProject["hostId"];
+    const remoteProject: WorkspaceProject = {
+      id: "p-a",
+      name: "design-sandbox",
+      path: "C:\\remote\\design-sandbox",
+      hostId: remoteHost,
+      workspaces: [
+        { ...workspace("p-a", "w-a", "design-sandbox", "C:\\remote"), hostId: remoteHost },
+      ],
+    };
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    });
+    await render({ projects: [TWIN_A, remoteProject] });
+    spy.mockRestore();
+
+    expect(heads()).toHaveLength(2);
+    expect(errors.join("\n")).not.toContain("same key");
+  });
+
   it("gives every project a header and closes it with a New workspace row", async () => {
     await render({ projects: [TWIN_A, SOLO] });
 

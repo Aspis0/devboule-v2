@@ -263,6 +263,21 @@ describe("remoteProjectRecords", () => {
     expect(remoteProjectRecords(new Map([["device-three", empty]]))).toEqual([]);
   });
 
+  it("contributes nothing from a device that no longer hosts", () => {
+    const notHosting: RemoteHostSnapshot = {
+      ...host("device-five"),
+      hostsWorkspaces: false,
+    };
+    expect(remoteProjectRecords(new Map([["device-five", notHosting]]))).toEqual([]);
+  });
+
+  it("keys the same project id from two machines apart", async () => {
+    const { hostProjectKey } = await import("./workspaceProjects");
+    expect(hostProjectKey("device-one" as never, "p1")).not.toBe(
+      hostProjectKey("device-two" as never, "p1"),
+    );
+  });
+
   it("keeps a project whose workspace list has not arrived yet", () => {
     const pending: RemoteHostSnapshot = { ...host("device-four"), workspaces: new Map() };
     const records = remoteProjectRecords(new Map([["device-four", pending]]));

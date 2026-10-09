@@ -3,7 +3,7 @@ import { ErrorText } from "../../../components/ErrorText";
 import { firstGrapheme } from "../../../lib/graphemeBound";
 import type { ErrorSentence } from "../../../lib/errorSentence";
 import type { WorkspaceProject } from "../workspaceProjects";
-import { keyOfWorkspace } from "../workspaceProjects";
+import { hostProjectKey, keyOfWorkspace } from "../workspaceProjects";
 import { LOCAL_HOST_ID, type HostId, type WorkspaceKey } from "../hosts/hostIdentity";
 import { avatarStyle } from "./avatars";
 import { hostLabel } from "./hostNames";
@@ -121,7 +121,7 @@ export function WorkspaceTree({
         return (
           <div
             className="workspace-project"
-            key={project.id}
+            key={hostProjectKey(project.hostId, project.id)}
             role="group"
             aria-label={folder === null ? project.name : `${project.name} in ${folder}`}
           >

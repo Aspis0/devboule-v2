@@ -62,6 +62,15 @@ export function keyOfWorkspace(workspace: HostWorkspace): WorkspaceKey | null {
   return workspaceKey(workspace.hostId, workspace.id);
 }
 
+/**
+ * A project section's identity in the tree: two machines may mint the same
+ * project id, and a bare id would make the two sections the same React child.
+ * Same shape as a workspace key, for the same reason.
+ */
+export function hostProjectKey(hostId: HostId, projectId: string): string {
+  return `${hostId}:${projectId}`;
+}
+
 function sessionsOf(
   index: Map<WorkspaceKey, Session[]>,
   workspace: HostWorkspace,
@@ -92,6 +101,10 @@ export function remoteProjectRecords(
 ): ProjectRecord[] {
   const records: ProjectRecord[] = [];
   for (const host of hosts.values()) {
+    // A device that does not host workspaces contributes no rows, whatever a
+    // stale snapshot still holds: the boundary is decided by presence, not by
+    // a cache left over from when the device hosted.
+    if (!host.hostsWorkspaces) continue;
     const hostId = host.deviceId as HostId;
     for (const project of host.projects) {
       records.push({
