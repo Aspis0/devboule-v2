@@ -157,7 +157,7 @@ fn member_pair() -> (std::process::Child, u32) {
     let status = std::process::Command::new("/bin/sh")
         .arg("-c")
         .arg(script)
-        .process_group(root.id())
+        .process_group(i32::try_from(root.id()).expect("pid fits in i32"))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
