@@ -6,7 +6,11 @@ import type { JournalUsage, Session } from "../../types/ipc";
 import { isAgentKind } from "../../types/ipc";
 import type { WorkspaceProject } from "../workspace/workspaceProjects";
 import { keyOfWorkspace } from "../workspace/workspaceProjects";
-import { localWorkspaceKey, type WorkspaceKey } from "../workspace/hosts/hostIdentity";
+import {
+  LOCAL_HOST_ID,
+  localWorkspaceKey,
+  type WorkspaceKey,
+} from "../workspace/hosts/hostIdentity";
 import { useTrackedRequest } from "../../lib/trackedRequest";
 import { formatCount } from "../../lib/format";
 import { isRunningSessionState } from "../workspace/strip/closePolicy";
@@ -23,9 +27,19 @@ import {
 } from "./HistoryRow";
 import "./history.css";
 
+export interface HistoryHost {
+  id: string;
+  name: string;
+}
+
 export interface HistoryPanelProps {
   search: string;
   now?: number;
+  onSearchChange?: (value: string) => void;
+  /** The hosts a row may belong to, local first; the filter lists them. */
+  hosts?: readonly HistoryHost[];
+  hostFilter?: string;
+  onHostFilterChange?: (host: string) => void;
   onReopen?: (session: Session) => void;
   onReopenAgent?: (session: Session) => void;
   projects?: readonly WorkspaceProject[];
@@ -39,6 +53,7 @@ const EMPTY_SESSIONS: Session[] = [];
 const EMPTY_PROJECTS: readonly WorkspaceProject[] = [];
 const EMPTY_BRANCHES: ReadonlyMap<WorkspaceKey, string> = new Map();
 const EMPTY_KEYS: readonly WorkspaceKey[] = [];
+const EMPTY_HOSTS: readonly HistoryHost[] = [];
 
 /** A hung daemon reply must not blank the panel forever. */
 const ROSTER_WAIT_MS = 5000;
@@ -59,6 +74,10 @@ type FocusTarget = { deletedId: string; id: string } | { deletedId: string; head
 export function HistoryPanel({
   search,
   now: injectedNow,
+  onSearchChange,
+  hosts = EMPTY_HOSTS,
+  hostFilter = "all",
+  onHostFilterChange,
   onReopen,
   onReopenAgent,
   projects = EMPTY_PROJECTS,
@@ -134,6 +153,10 @@ export function HistoryPanel({
     () => new Map(roster.map((session) => [session.id, session])),
     [roster],
   );
+  const hostById = useMemo(
+    () => new Map<string, string>(hosts.map((host) => [host.id, host.name])),
+    [hosts],
+  );
   const rowsBase = useMemo(() => {
     const projectsByWorkspace = new Map<WorkspaceKey, string>();
     for (const project of projects) {
@@ -156,10 +179,15 @@ export function HistoryPanel({
       if (!showAll && !topLevel) continue;
       const workspaceId = session?.workspaceId ?? null;
       const key = workspaceId === null ? null : localWorkspaceKey(workspaceId);
+      // Today the only feed is the local host: a row naming a workspace
+      // belongs to it, and a row with no workspace names no host.
+      const hostId = key === null ? null : LOCAL_HOST_ID;
       byId.set(saved.id, {
         ...saved,
         workspace: key === null ? null : workspaceLabel(key),
         project: key === null ? null : (projectsByWorkspace.get(key) ?? null),
+        host: hostId === null ? null : (hostById.get(hostId) ?? null),
+        hostId,
         branch: null,
         session,
         updatedAtMs: saved.updatedAtMs,
@@ -172,6 +200,7 @@ export function HistoryPanel({
       if (!isOpenRosterState(session.state)) continue;
       const workspaceId = session.workspaceId;
       const key = workspaceId === null ? null : localWorkspaceKey(workspaceId);
+      const hostId = key === null ? null : LOCAL_HOST_ID;
       byId.set(session.id, {
         id: session.id,
         title: session.title,
@@ -181,6 +210,8 @@ export function HistoryPanel({
         updatedAtMs: session.createdAtMs ?? null,
         workspace: key === null ? null : workspaceLabel(key),
         project: key === null ? null : (projectsByWorkspace.get(key) ?? null),
+        host: hostId === null ? null : (hostById.get(hostId) ?? null),
+        hostId,
         branch: null,
         session,
         workspaceId,
@@ -188,7 +219,7 @@ export function HistoryPanel({
       });
     }
     return [...byId.values()];
-  }, [projects, roster, sessionsById, showAll, usage, workspaceNames]);
+  }, [hostById, projects, roster, sessionsById, showAll, usage, workspaceNames]);
   // Sorted, so a reordered list is not a new read set.
   const rowWorkspaceKeys = useMemo(() => {
     const keys = new Set<WorkspaceKey>();
@@ -231,8 +262,12 @@ export function HistoryPanel({
     rows = merged;
   }
   const filteredRows = useMemo(
-    () => rows.filter((row) => historyRowMatches(row, search)),
-    [rows, search],
+    () =>
+      rows.filter(
+        (row) =>
+          (hostFilter === "all" || row.hostId === hostFilter) && historyRowMatches(row, search),
+      ),
+    [hostFilter, rows, search],
   );
   const groups = useMemo(() => groupByDay(filteredRows, now), [filteredRows, now]);
   const refreshUsage = usageRequest.run;
@@ -374,6 +409,32 @@ export function HistoryPanel({
         <h2 className="history-heading-title" tabIndex={-1} ref={headingRef}>
           History
         </h2>
+      </div>
+      <div className="history-page-bar">
+        <label className="history-page-search">
+          <span className="sr-only">Search history</span>
+          <input
+            value={search}
+            onChange={(event) => onSearchChange?.(event.target.value)}
+            placeholder="Search"
+            aria-label="Search history"
+          />
+        </label>
+        <label className="history-page-host">
+          <span className="sr-only">Host</span>
+          <select
+            value={hostFilter}
+            onChange={(event) => onHostFilterChange?.(event.target.value)}
+            aria-label="Host"
+          >
+            <option value="all">All hosts</option>
+            {hosts.map((host) => (
+              <option key={host.id} value={host.id}>
+                {host.name}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
       {usageError ? <Alert sentence={usageError} id="history-usage-error" /> : null}
       {usage && sessionsError ? (

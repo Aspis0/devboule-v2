@@ -9,6 +9,8 @@ import {
 } from "react";
 import type { JournalSessionUsage, Session } from "../../types/ipc";
 import { isAgentKind } from "../../types/ipc";
+import type { HostId } from "../workspace/hosts/hostIdentity";
+import { StripKindMark } from "../workspace/strip/StripKindMark";
 import { rosterStateDisplay } from "../workspace/sessionStateDisplay";
 import { formatCount } from "../../lib/format";
 import { sessionTitle } from "../workspace/workspaceSessions";
@@ -20,6 +22,8 @@ import { historyRelativeTime } from "./historyGrouping";
 export interface HistoryRow extends Omit<JournalSessionUsage, "updatedAtMs"> {
   workspace: string | null;
   project: string | null;
+  host: string | null;
+  hostId: HostId | null;
   branch: string | null;
   session: Session | null;
   updatedAtMs: number | null;
@@ -39,6 +43,8 @@ export function isSameHistoryRow(oldRow: HistoryRow, row: HistoryRow): boolean {
     oldRow.updatedAtMs === row.updatedAtMs &&
     oldRow.workspace === row.workspace &&
     oldRow.project === row.project &&
+    oldRow.host === row.host &&
+    oldRow.hostId === row.hostId &&
     oldRow.branch === row.branch &&
     oldRow.workspaceId === row.workspaceId &&
     oldRow.groupWithToday === row.groupWithToday
@@ -166,7 +172,9 @@ export const HistoryRowView = memo(function HistoryRowView({
   const readOnly = row.session !== null && !openable;
   const visibleMeta = [
     readOnly ? "Read-only" : null,
-    row.workspace,
+    row.project,
+    row.host,
+    row.branch,
     age ?? (row.session ? stateLabel : null),
   ].filter(Boolean);
   const trimmed = transcriptWasTrimmed(row.session);
@@ -222,7 +230,17 @@ export const HistoryRowView = memo(function HistoryRowView({
         ref={anchorRef}
         className="history-row-main"
         data-agent-id={row.id}
-        aria-label={[title, row.workspace, stateLabel, reopenReason].filter(Boolean).join(", ")}
+        aria-label={[
+          title,
+          row.workspace,
+          row.project,
+          row.host,
+          row.branch,
+          stateLabel,
+          reopenReason,
+        ]
+          .filter(Boolean)
+          .join(", ")}
         aria-current={selected ? "true" : undefined}
         aria-disabled={!openable}
         title={tooltip || undefined}
@@ -234,6 +252,19 @@ export const HistoryRowView = memo(function HistoryRowView({
       />
       <div className="history-row-copy">
         <div className="history-row-title-line">
+          {row.workspace === null ? null : (
+            <>
+              <span className="history-row-workspace" aria-hidden="true">
+                {row.workspace}
+              </span>
+              <span className="history-row-sep" aria-hidden="true">
+                {" › "}
+              </span>
+            </>
+          )}
+          <span className="history-row-kind" aria-hidden="true">
+            <StripKindMark kind={row.kind} />
+          </span>
           <span className="workspace-row-title" aria-hidden="true">
             {title}
           </span>

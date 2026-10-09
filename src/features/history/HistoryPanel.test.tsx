@@ -1887,7 +1887,8 @@ describe("HistoryPanel delete refusal and focus during deletes", () => {
     });
     await act(async () => undefined);
     const meta = container.querySelector<HTMLElement>(".history-row-meta");
-    expect(meta?.textContent?.startsWith("Read-only · Rust workspace")).toBe(true);
+    // The marker still leads: project, host, branch and time follow it.
+    expect(meta?.textContent?.startsWith("Read-only · Rust project")).toBe(true);
   });
 
   it("reaches a running row's menu Delete by keyboard, hears why, and deletes nothing", async () => {

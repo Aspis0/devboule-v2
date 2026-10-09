@@ -17,6 +17,7 @@ export interface HistorySearchFields {
   workspace?: string | null;
   branch?: string | null;
   project?: string | null;
+  host?: string | null;
 }
 
 interface TimestampedEntry {
@@ -78,8 +79,8 @@ export function historyRowMatches(
 
   // The name the row shows, from the one function that decides it, plus the
   // stored fields the list can hold while open: id and title for a renamed
-  // row, kind so the show-all list answers "terminal", workspace, branch
-  // and project for the meta line. None of these is painted, so a query can
+  // row, kind so the show-all list answers "terminal", workspace, branch,
+  // project and host for the meta line. None of these is painted, so a query can
   // match where the eye sees nothing — that is the price of searching rows
   // whose fields may still be loading.
   const shownName = sessionTitle({
@@ -89,9 +90,16 @@ export function historyRowMatches(
     displayName: row.displayName ?? undefined,
   });
 
-  return [shownName, row.id, row.title, row.kind, row.workspace, row.branch, row.project].some(
-    (value) => typeof value === "string" && value.toLowerCase().includes(normalizedQuery),
-  );
+  return [
+    shownName,
+    row.id,
+    row.title,
+    row.kind,
+    row.workspace,
+    row.branch,
+    row.project,
+    row.host,
+  ].some((value) => typeof value === "string" && value.toLowerCase().includes(normalizedQuery));
 }
 
 export function historyRelativeTime(

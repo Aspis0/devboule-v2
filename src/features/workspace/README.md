@@ -111,22 +111,22 @@ What is wired and what is not:
   they are real controls in the Changes panel now.) "Open Design" is real and selects the Design
   surface.
 
-History lives in the left sidebar footer beside the daemon status. It is a
+History is a full page in the main area, opened from the sidebar's History top
+action while the sidebar keeps showing the workspaces. It is a
 separate journal log view, not terminal screen restore.
 
-## The sidebar's hosts
+## The sidebar
 
-The sidebar lists this PC plus one section per paired `daemon`-role peer, from
-the `devices_list` snapshot `workspaceDaemon.ts` polls on the daemon-status
-cadence — the same snapshot the peer badges take their device names from, so
-there is one reader. A `client` peer is a device that views and steers this one
-and is never dialled as a machine, so it is not a host. With one host the
-header is what it has always been — a name and a dot; sections start at two. A
-remote section's body is one honest line: nothing of another host's workspaces
-is in the app yet. `devices_list` reports a peer's liveness and nothing else —
-no credential state, no protocol version — so a host header claims only what it
-was told, and a failed read keeps the last rows and marks them unknown. A peer
-with no display name falls back to its tailnet node name and then to "Unnamed
+The sidebar's top actions are one row each — New workspace, History, Search —
+then one header per project (letter avatar, name, count) with its workspace
+rows beneath and a "+ New workspace" row closing each project. A workspace row
+carries its host as a small second line with a server glyph; nothing collapses
+and no section hides a working workspace. Rows from a remote host appear only
+when that host actually serves workspaces. The bottom icon row holds add
+project, settings, and the daemon's status dot. `devices_list` reports a
+peer's liveness and nothing else — no credential state, no protocol version —
+so a host label claims only what it was told. A peer with no display name
+falls back to its tailnet node name and then to "Unnamed
 device": a raw device id is never a label.
 
 ## The tab strip

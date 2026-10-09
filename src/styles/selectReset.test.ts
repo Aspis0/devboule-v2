@@ -1,7 +1,8 @@
 // Selects inherit the global reset: Inter from the body and the primary ink
 // for the value text. The design picker keeps its own author size; the
 // settings selects share one interface-size rule with the input beside them,
-// and dim while disabled instead of keeping the reset's primary ink.
+// and dim while disabled instead of keeping the reset's primary ink. The
+// History host filter keeps the primary ink in its own page-bar wrapper.
 // @vitest-environment happy-dom
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
@@ -16,6 +17,7 @@ const SHEETS = [
   "src/styles/global.css",
   "src/features/design/design.css",
   "src/features/settings/settings.css",
+  "src/features/history/history.css",
 ];
 
 afterEach(removeCssProof);
@@ -74,7 +76,9 @@ function selectsIn(source: string): { line: number; wrapped: boolean }[] {
       name,
       wrapper:
         classAttr !== null &&
-        (classAttr[1]!.includes("device-field") || classAttr[1]!.includes("design-agent-picker")),
+        (classAttr[1]!.includes("device-field") ||
+          classAttr[1]!.includes("design-agent-picker") ||
+          classAttr[1]!.includes("history-page-host")),
     });
   }
   return selects;
@@ -151,16 +155,29 @@ describe("settings field controls share one size", () => {
 });
 
 describe("selects paint the primary ink in both themes", () => {
-  it.each(["light", "dark"] as const)("all five selects read --ink (%s)", (theme) => {
+  it.each(["light", "dark"] as const)("all six selects read --ink (%s)", (theme) => {
     const css = assembleCssProof(SHEETS.map(read), theme);
-    css.inject(["body", "select", ".design-agent-picker select", ".device-field"]);
+    css.inject([
+      "body",
+      "select",
+      ".design-agent-picker select",
+      ".device-field",
+      ".history-page-host select",
+    ]);
     const expected = css.token("--ink")!;
+    const hostWrap = document.createElement("label");
+    hostWrap.className = "history-page-host";
+    const host = document.createElement("select");
+    host.setAttribute("aria-label", "Host");
+    hostWrap.appendChild(host);
+    document.body.appendChild(hostWrap);
     const selects = [
       buildDesignSelect("Model"),
       buildDesignSelect("Thinking effort"),
       buildSettingsSelect("Profile feature"),
       buildSettingsSelect("Provider"),
       buildSettingsSelect("Vocabulary"),
+      host,
     ];
     for (const select of selects) {
       expect(getComputedStyle(select).color).toBe(expected);
@@ -208,7 +225,7 @@ describe("a busy settings field dims instead of keeping the enabled ink", () => 
 });
 
 describe("every real select lives in a wrapped field", () => {
-  it("each <select> in src nests inside .device-field or .design-agent-picker", () => {
+  it("each <select> in src nests inside .device-field, .design-agent-picker or .history-page-host", () => {
     const sources: string[] = [];
     const walk = (dir: string): void => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -229,6 +246,6 @@ describe("every real select lives in a wrapped field", () => {
       }
     }
     expect(unwrapped).toEqual([]);
-    expect(found).toHaveLength(5);
+    expect(found).toHaveLength(6);
   });
 });

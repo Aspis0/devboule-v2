@@ -2,6 +2,61 @@
   min-width: 0;
 }
 
+/* The page's own search field and host filter, one row under the heading. */
+.history-page-bar {
+  display: flex;
+  gap: var(--space-8);
+  margin: 0 6px 10px;
+}
+
+.history-page-search {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  min-width: 0;
+  height: var(--control-default);
+  padding: 0 var(--space-8);
+  background: var(--panel-card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-6);
+}
+
+.history-page-search:focus-within {
+  border-color: var(--accent);
+}
+
+.history-page-search input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  color: var(--ink);
+  background: transparent;
+  font-size: var(--type-meta);
+  outline: none;
+}
+
+.history-page-search input::placeholder {
+  color: var(--muted);
+}
+
+.history-page-host {
+  display: flex;
+  flex: none;
+  align-items: center;
+}
+
+.history-page-host select {
+  height: var(--control-default);
+  max-width: 160px;
+  padding: 0 var(--space-8);
+  color: var(--ink);
+  background: var(--panel-card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-6);
+  font-size: var(--type-meta);
+}
+
 .history-heading {
   padding: 0 6px 8px;
 }
@@ -153,6 +208,32 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The row's workspace ahead of the agent: quiet, capped so the title keeps
+   the line. */
+.history-row-workspace {
+  display: block;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-row-sep {
+  flex: none;
+  color: var(--muted);
+}
+
+.history-row-kind {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  margin-right: var(--space-4);
+  color: var(--ink-soft);
 }
 
 .history-row-meta {

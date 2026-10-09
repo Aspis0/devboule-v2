@@ -505,8 +505,24 @@ async function openSidebarSearch(): Promise<HTMLInputElement> {
   const trigger = document.querySelector<HTMLButtonElement>(".sidebar-search-trigger");
   if (trigger === null) throw new Error("the sidebar search row did not render");
   await act(async () => trigger.click());
-  const field = document.querySelector<HTMLInputElement>('input[placeholder="Search"]');
+  const field = document.querySelector<HTMLInputElement>(
+    '.sidebar-search-row input[placeholder="Search"]',
+  );
   if (field === null) throw new Error("the search field did not open");
+  return field;
+}
+
+/** The sidebar's History top action opens the full page in the main area. */
+async function toggleHistoryPanel(): Promise<void> {
+  const button = document.querySelector<HTMLButtonElement>('.sidebar-action[aria-label="History"]');
+  if (button === null) throw new Error("the sidebar History action did not render");
+  await act(async () => button.click());
+}
+
+/** The History page's own search field, always open with the page. */
+function historySearchField(): HTMLInputElement {
+  const field = document.querySelector<HTMLInputElement>(".history-page-bar input");
+  if (field === null) throw new Error("the History page search did not render");
   return field;
 }
 
@@ -918,9 +934,7 @@ describe("Workspace sessions", () => {
     await act(async () => otherRow.click());
     expect(container.textContent).toContain("No tabs yet");
 
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>(".workspace-history-button")?.click();
-    });
+    await toggleHistoryPanel();
     await act(async () => undefined);
     const reopen = container.querySelector<HTMLButtonElement>(".history-reopen-action");
     if (reopen === null) throw new Error("history reopen button did not render");
@@ -954,10 +968,8 @@ describe("Workspace sessions", () => {
       root.render(<Workspace />);
     });
     await act(async () => undefined);
-    await act(async () =>
-      container.querySelector<HTMLButtonElement>(".workspace-history-button")?.click(),
-    );
-    const search = await openSidebarSearch();
+    await toggleHistoryPanel();
+    const search = historySearchField();
     await act(async () => setSearchValue(search, "Feature"));
     const row = container.querySelector<HTMLButtonElement>('[data-agent-id="agent-w2"]');
     if (!row) throw new Error("History agent row did not render");
@@ -980,7 +992,9 @@ describe("Workspace sessions", () => {
       container.querySelector("#workspace-session-tab-agent-w2")?.getAttribute("aria-selected"),
     ).toBe("true");
     expect(container.querySelector("#workspace-history-panel")).toBeNull();
-    expect(search.value).toBe("");
+    // The draft clears with the open: a fresh page mounts an empty field.
+    await toggleHistoryPanel();
+    expect(historySearchField().value).toBe("");
     expect(sessionResume).not.toHaveBeenCalled();
   });
 
@@ -1024,11 +1038,9 @@ describe("Workspace sessions", () => {
     const tree = container.querySelector('aside[aria-label="Workspaces"]');
     if (tree === null) throw new Error("Workspaces sidebar did not render");
     expect(tree.textContent).not.toContain("other-main");
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>(".workspace-history-button")?.click();
-    });
+    await toggleHistoryPanel();
     await act(async () => undefined);
-    const historySearch = container.querySelector<HTMLInputElement>('input[placeholder="Search"]');
+    const historySearch = historySearchField();
     if (!historySearch) throw new Error("history search did not render");
     await act(async () => setSearchValue(historySearch, "branch-two"));
     await act(async () => undefined);
@@ -1066,11 +1078,9 @@ describe("Workspace sessions", () => {
     const readIds = () => vi.mocked(workspaceGitStatus).mock.calls.map(([id]) => id);
     expect(readIds()).not.toContain("workspace-9");
     await openSidebarSearch();
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>(".workspace-history-button")?.click();
-    });
+    await toggleHistoryPanel();
     await act(async () => undefined);
-    const historySearch = container.querySelector<HTMLInputElement>('input[placeholder="Search"]');
+    const historySearch = historySearchField();
     if (!historySearch) throw new Error("history search did not render");
     await act(async () => setSearchValue(historySearch, "orphan-branch"));
     await act(async () => undefined);
@@ -1104,10 +1114,7 @@ describe("Workspace sessions", () => {
       root.render(<Workspace />);
     });
     await act(async () => undefined);
-    const toggleHistory = () =>
-      act(async () => {
-        container.querySelector<HTMLButtonElement>(".workspace-history-button")?.click();
-      });
+    const toggleHistory = () => toggleHistoryPanel();
     const readIds = () => vi.mocked(workspaceGitStatus).mock.calls.map(([id]) => id);
     vi.mocked(workspaceGitStatus).mockClear();
     await toggleHistory();
@@ -1489,7 +1496,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-new");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
 
@@ -1511,7 +1518,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-new");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
@@ -1563,7 +1570,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-new");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
@@ -1600,7 +1607,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-new");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
@@ -1621,7 +1628,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-new");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
@@ -1641,7 +1648,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-new");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
@@ -1661,7 +1668,7 @@ describe("Workspace sessions", () => {
       root.render(<Workspace />);
     });
     await act(async () => undefined);
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-new");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
@@ -1688,7 +1695,7 @@ describe("Workspace sessions", () => {
       root.render(<Workspace />);
     });
     await act(async () => undefined);
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-new");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
@@ -1780,7 +1787,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-new");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
@@ -1804,7 +1811,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-new");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
@@ -1835,7 +1842,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-new");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     const rowsBefore = container.querySelectorAll(".workspace-row").length;
 
@@ -1914,7 +1921,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-new");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
@@ -1946,7 +1953,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const projectAdd = container.querySelector<HTMLButtonElement>(".workspace-project-add");
+    const projectAdd = container.querySelector<HTMLButtonElement>(".workspace-project-new");
     if (projectAdd === null) throw new Error("project add control did not render");
     await act(async () => projectAdd.click());
     await act(async () => undefined);
@@ -1979,7 +1986,7 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-new");
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
@@ -2036,40 +2043,31 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
+    // The tree search lives in the sidebar, the History search on its page:
+    // two fields, two drafts, each surviving the page's toggles.
     const search = await openSidebarSearch();
     if (!search) throw new Error("search input did not render");
-    const historyToggle = container.querySelector<HTMLButtonElement>(".workspace-history-button");
-    if (!historyToggle) throw new Error("History toggle did not render");
-
-    await act(async () => historyToggle.click());
+    await toggleHistoryPanel();
     await act(async () => undefined);
-    await act(async () => {
-      setSearchValue(search, "history-only");
-    });
-    expect(search.value).toBe("history-only");
-    await act(async () => historyToggle.click());
-    expect(search.value).toBe("");
-    // The Changes branch row names the same "main" (the mocked git
-    // branch), so the workspace-list assertions scope to the sidebar —
-    // and the lookup hard-fails, so a renamed aside breaks loudly
-    // instead of passing on an empty string.
-    const sidebar = container.querySelector('aside[aria-label="Workspaces"]');
-    if (sidebar === null) throw new Error("Workspaces sidebar did not render");
-    expect(sidebar.textContent).toContain("main");
-
+    const pageSearch = historySearchField();
     await act(async () => {
       setSearchValue(search, "missing");
     });
-    expect(search.value).toBe("missing");
-    expect(sidebar.textContent).not.toContain("main");
-    await act(async () => historyToggle.click());
     await act(async () => {
-      setSearchValue(search, "Saved");
+      setSearchValue(pageSearch, "Saved");
     });
-    await act(async () => historyToggle.click());
-
     expect(search.value).toBe("missing");
+    expect(pageSearch.value).toBe("Saved");
+    // The sidebar keeps the workspaces listed while the page is open.
+    const sidebar = container.querySelector('aside[aria-label="Workspaces"]');
+    if (sidebar === null) throw new Error("Workspaces sidebar did not render");
     expect(sidebar.textContent).not.toContain("main");
+    await toggleHistoryPanel();
+    await act(async () => undefined);
+    await toggleHistoryPanel();
+    await act(async () => undefined);
+    expect(search.value).toBe("missing");
+    expect(historySearchField().value).toBe("Saved");
   });
 
   it("tree sweeps skip workspaces hidden by the tree search", async () => {
