@@ -30,6 +30,10 @@ struct Held {
 
 impl Held {
     /// `None` when the process is gone or its handle cannot be opened.
+    /// An exited process stays openable while handles to it are outstanding,
+    /// so only a still-live process opens: a dead root is gone even when the
+    /// daemon's own handles keep its object around, and everything under it
+    /// is detached by definition.
     fn open(pid: u32) -> Option<Self> {
         let handle = unsafe {
             OpenProcess(
@@ -39,6 +43,10 @@ impl Held {
             )
         };
         if handle.is_null() {
+            return None;
+        }
+        if unsafe { WaitForSingleObject(handle, 0) } != WAIT_TIMEOUT {
+            unsafe { CloseHandle(handle) };
             return None;
         }
         match read_creation_time(handle) {
@@ -116,11 +124,64 @@ pub(super) fn capture(
     tree
 }
 
+/// Members that appeared after a capture and whose parent chain leads into
+/// it: the second pass after the first kill, so a child born in the window
+/// does not escape with its parent dead.
+pub(super) fn capture_newcomers(
+    captured: &CapturedTree,
+    job_members: &[u32],
+) -> CapturedTree {
+    let mut newcomers = CapturedTree::default();
+    let Some(parents) = process_parents() else {
+        return newcomers;
+    };
+    let members: HashSet<u32> = job_members.iter().copied().collect();
+    let mut times = captured.member_times();
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (&pid, &ppid) in &parents {
+        if members.contains(&pid) {
+            children.entry(ppid).or_default().push(pid);
+        }
+    }
+    let mut queue: Vec<u32> = times.keys().copied().collect();
+    let mut next = 0;
+    while next < queue.len() {
+        let parent = queue[next];
+        next += 1;
+        let Some(&parent_created_at) = times.get(&parent) else {
+            continue;
+        };
+        for &child in children.get(&parent).into_iter().flatten() {
+            if times.contains_key(&child) {
+                continue;
+            }
+            let Some(held) = Held::open(child) else {
+                continue;
+            };
+            if held.created_at < parent_created_at {
+                continue;
+            }
+            times.insert(held.pid, held.created_at);
+            queue.push(held.pid);
+            newcomers.members.push(held);
+        }
+    }
+    newcomers
+}
+
 impl CapturedTree {
     pub(super) fn terminate(&self) {
         for held in &self.members {
             unsafe { TerminateProcess(held.handle, 1) };
         }
+    }
+
+    /// One capture's clock table, for the second pass to prove newcomers against.
+    fn member_times(&self) -> HashMap<u32, u64> {
+        self.members
+            .iter()
+            .map(|held| (held.pid, held.created_at))
+            .collect()
     }
 
     /// Waits until every captured process has exited, or the deadline passes.

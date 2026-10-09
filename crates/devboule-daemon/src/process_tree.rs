@@ -179,6 +179,8 @@ mod platform {
         /// The tree a stop must end, read while the root still lives. A child that
         /// outlives its parent is detached and drops out of the tree, so a capture
         /// taken after the root exits would miss what was still attached.
+        /// A child spawned after the second capture still escapes; closing that
+        /// would need the root suspended.
         #[cfg(feature = "server")]
         pub fn capture_tree(&self) -> CapturedTree {
             match self.scope {
@@ -207,6 +209,11 @@ mod platform {
                 Scope::Whole => self.terminate(),
                 Scope::Attached { .. } => {
                     tree.terminate();
+                    // A child born between the capture and this kill has a parent
+                    // in the captured set, so one second pass takes it too.
+                    if let Ok(members) = self.pids() {
+                        attached::capture_newcomers(tree, &members).terminate();
+                    }
                     Ok(())
                 }
             }
@@ -222,8 +229,15 @@ mod platform {
             match self.scope {
                 Scope::Whole => self.terminate_and_wait(timeout),
                 Scope::Attached { .. } => {
+                    let deadline = Instant::now() + timeout;
                     tree.terminate();
-                    tree.wait(Instant::now() + timeout)
+                    let newcomers = self
+                        .pids()
+                        .map(|members| attached::capture_newcomers(tree, &members))
+                        .unwrap_or_default();
+                    newcomers.terminate();
+                    tree.wait(deadline)?;
+                    newcomers.wait(deadline)
                 }
             }
         }
