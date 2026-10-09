@@ -9,6 +9,10 @@
 mod attached;
 
 #[cfg(windows)]
+#[path = "process_tree_job_list.rs"]
+mod job_list;
+
+#[cfg(windows)]
 mod platform {
     use std::io;
     use std::mem;
@@ -250,15 +254,19 @@ mod platform {
         /// than from a machine-wide image name, so a co-tenant process cannot
         /// pass as a member.
         pub fn pids(&self) -> io::Result<Vec<u32>> {
-            #[repr(C)]
-            struct BasicProcessIdList {
-                number_of_assigned_processes: u32,
-                number_of_process_ids_in_list: u32,
-                process_id_list: [usize; 1],
-            }
+            super::job_list::read_pid_list(|buffer| self.query_pid_list(buffer))
+        }
+
+        /// One `JobObjectBasicProcessIdList` answer into the buffer. A buffer
+        /// too small for the answer is grown to the size the kernel asked for,
+        /// a bounded number of times; the list's own count is judged by the
+        /// caller, because a short answer is not an error here.
+        fn query_pid_list(&self, buffer: &mut Vec<u8>) -> io::Result<()> {
+            // ERROR_INSUFFICIENT_BUFFER and ERROR_MORE_DATA both mean "the
+            // size in return_length is what the next read needs".
             const ERROR_INSUFFICIENT_BUFFER: i32 = 122;
-            let mut buffer = vec![0u8; 4096];
-            loop {
+            const ERROR_MORE_DATA: i32 = 234;
+            for _ in 0..super::job_list::JOB_LIST_ATTEMPTS {
                 let mut return_length = 0u32;
                 let ok = unsafe {
                     QueryInformationJobObject(
@@ -269,28 +277,21 @@ mod platform {
                         &mut return_length,
                     )
                 };
-                if ok == 0 {
-                    let error = io::Error::last_os_error();
-                    // ERROR_INSUFFICIENT_BUFFER: return_length holds the size
-                    // the next read needs. Any other failure is final.
-                    if error.raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER) {
-                        return Err(error);
-                    }
-                    buffer.resize(return_length as usize, 0);
-                    continue;
+                if ok != 0 {
+                    return Ok(());
                 }
-                let list = unsafe { &*(buffer.as_ptr() as *const BasicProcessIdList) };
-                let count = list.number_of_process_ids_in_list as usize;
-                let needed = 2 * mem::size_of::<u32>() + count * mem::size_of::<usize>();
-                if needed <= buffer.len() {
-                    let ids = unsafe {
-                        let ptr = buffer.as_ptr().add(2 * mem::size_of::<u32>()) as *const usize;
-                        (0..count).map(|index| *ptr.add(index) as u32).collect()
-                    };
-                    return Ok(ids);
+                let error = io::Error::last_os_error();
+                if !matches!(
+                    error.raw_os_error(),
+                    Some(ERROR_INSUFFICIENT_BUFFER | ERROR_MORE_DATA)
+                ) {
+                    return Err(error);
                 }
-                buffer.resize(needed, 0);
+                buffer.resize(return_length as usize, 0);
             }
+            Err(io::Error::other(
+                "the job list kept needing more room than it was given",
+            ))
         }
 
         /// Assign a process created with CREATE_SUSPENDED, then resume its

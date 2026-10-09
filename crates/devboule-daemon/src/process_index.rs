@@ -75,7 +75,9 @@ pub(crate) trait ProcessProbe {
     fn begin_refresh(&mut self) -> Result<(), String> {
         Ok(())
     }
-    fn members(&self, job: &JobObject) -> Vec<u32>;
+    /// The members the job holds now. An error means the list cannot be read
+    /// whole: the session's plan is then refused, never drawn from a partial list.
+    fn members(&self, job: &JobObject) -> Result<Vec<u32>, String>;
     fn identity(&self, pid: u32) -> Option<ProcessIdentity>;
     fn listening_ports(&self) -> Vec<(u16, u32)>;
     fn proof_kind(&self) -> &'static str;
@@ -105,7 +107,7 @@ impl ProcessProbe for SystemProbe {
         self.platform.begin_refresh()
     }
 
-    fn members(&self, job: &JobObject) -> Vec<u32> {
+    fn members(&self, job: &JobObject) -> Result<Vec<u32>, String> {
         self.platform.members(job)
     }
 
@@ -156,8 +158,8 @@ mod platform {
             Ok(())
         }
 
-        pub(crate) fn members(&self, _job: &JobObject) -> Vec<u32> {
-            Vec::new()
+        pub(crate) fn members(&self, _job: &JobObject) -> Result<Vec<u32>, String> {
+            Ok(Vec::new())
         }
 
         pub(crate) fn identity(&self, _pid: u32) -> Option<ProcessIdentity> {
@@ -185,6 +187,9 @@ struct SessionProcesses {
     agent: String,
     entries: HashMap<u32, ProcessEntry>,
     unproven: HashSet<u32>,
+    /// The last refresh could not read the job's member list whole: no plan is
+    /// drawn from this session until a refresh reads it.
+    membership_unreadable: bool,
     /// The root the first sight recorded: (pid, creation time) of the
     /// daemon's direct child. The exclusion matches this pair, so a stray
     /// merely re-parented to the daemon never inherits the agent's safety.
@@ -236,7 +241,10 @@ impl ProcessIndex {
         sessions.retain(|id, _| roots.iter().any(|root| &root.id == id));
         for root in roots {
             let proof = probe.proof_kind();
-            let members: HashSet<u32> = probe.members(&root.job).into_iter().collect();
+            let (members, unreadable): (HashSet<u32>, bool) = match probe.members(&root.job) {
+                Ok(members) => (members.into_iter().collect(), false),
+                Err(_) => (HashSet::new(), true),
+            };
             let state = sessions
                 .entry(root.id.clone())
                 .or_insert_with(|| SessionProcesses {
@@ -244,10 +252,12 @@ impl ProcessIndex {
                     agent: String::new(),
                     entries: HashMap::new(),
                     unproven: HashSet::new(),
+                    membership_unreadable: false,
                     agent_root: None,
                 });
             state.workspace_id = root.workspace_id.clone();
             state.agent = root.label.clone();
+            state.membership_unreadable = unreadable;
             state.entries.retain(|pid, _| members.contains(pid));
             state.unproven.retain(|pid| members.contains(pid));
             for &pid in &members {
@@ -354,7 +364,7 @@ impl ProcessIndex {
     ) -> Option<Result<CleanupPlan, &'static str>> {
         let sessions = self.sessions();
         let state = sessions.get(session_id)?;
-        if !state.unproven.is_empty() {
+        if state.membership_unreadable || !state.unproven.is_empty() {
             return Some(Err(MEMBER_UNPROVEN));
         }
         let tree = match provider_tree(&state.entries, state.agent_root) {

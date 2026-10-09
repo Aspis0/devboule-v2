@@ -17,8 +17,8 @@ pub(super) struct FakeProbe {
 }
 
 impl ProcessProbe for FakeProbe {
-    fn members(&self, _job: &JobObject) -> Vec<u32> {
-        self.members.clone()
+    fn members(&self, _job: &JobObject) -> Result<Vec<u32>, String> {
+        Ok(self.members.clone())
     }
 
     fn identity(&self, pid: u32) -> Option<ProcessIdentity> {

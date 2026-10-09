@@ -65,15 +65,16 @@ impl Probe {
         Ok(())
     }
 
-    pub(crate) fn members(&self, job: &JobObject) -> Vec<u32> {
+    pub(crate) fn members(&self, job: &JobObject) -> Result<Vec<u32>, String> {
         let Some(group) = job.group_id() else {
-            return Vec::new();
+            return Err("the session leads no process group".to_string());
         };
-        self.rows
+        Ok(self
+            .rows
             .iter()
             .filter(|(_, row)| row.pgid == group)
             .map(|(pid, _)| *pid)
-            .collect()
+            .collect())
     }
 
     pub(crate) fn identity(&self, pid: u32) -> Option<ProcessIdentity> {

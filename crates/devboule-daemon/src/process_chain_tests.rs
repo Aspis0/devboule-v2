@@ -15,7 +15,7 @@ use crate::process_tree::JobObject;
 struct ReparentingProbe<'a>(&'a FakeProbe);
 
 impl ProcessProbe for ReparentingProbe<'_> {
-    fn members(&self, job: &JobObject) -> Vec<u32> {
+    fn members(&self, job: &JobObject) -> Result<Vec<u32>, String> {
         self.0.members(job)
     }
 
@@ -290,6 +290,51 @@ fn a_session_without_a_provider_root_is_refused() {
     assert!(matches!(
         index.cleanup_plan("session-rootless"),
         Some(Err(reason)) if reason == CHAIN_UNPROVEN
+    ));
+}
+
+/// The same OS answers, but the job's member list cannot be read at all.
+struct UnreadableJobProbe<'a>(&'a FakeProbe);
+
+impl ProcessProbe for UnreadableJobProbe<'_> {
+    fn members(&self, _job: &JobObject) -> Result<Vec<u32>, String> {
+        Err("the job's member list could not be read".to_string())
+    }
+
+    fn identity(&self, pid: u32) -> Option<ProcessIdentity> {
+        self.0.identity(pid)
+    }
+
+    fn listening_ports(&self) -> Vec<(u16, u32)> {
+        self.0.listening_ports()
+    }
+
+    fn proof_kind(&self) -> &'static str {
+        self.0.proof_kind()
+    }
+}
+
+/// A job whose member list cannot be read is no proof of anything: the plan is
+/// refused, not drawn from an empty membership that would look like a clean one.
+#[test]
+fn an_unreadable_job_refuses_the_plan() {
+    let daemon = std::process::id();
+    let probe = FakeProbe {
+        members: vec![100, 200],
+        identities: HashMap::from([(100, identity(1_000, daemon)), (200, identity(2_000, 100))]),
+        ports: vec![],
+    };
+    let index = ProcessIndex::new();
+    index
+        .refresh_with(
+            vec![proof("session-blind", None)],
+            &mut UnreadableJobProbe(&probe),
+        )
+        .expect("the refresh itself works");
+
+    assert!(matches!(
+        index.cleanup_plan("session-blind"),
+        Some(Err(reason)) if reason == MEMBER_UNPROVEN
     ));
 }
 

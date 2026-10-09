@@ -60,10 +60,10 @@ impl Probe {
         Ok(())
     }
 
-    pub(crate) fn members(&self, job: &JobObject) -> Vec<u32> {
-        // A failed query means the job handle is gone (the session ended), and a
-        // dead job has no members to claim.
-        job.pids().unwrap_or_default()
+    pub(crate) fn members(&self, job: &JobObject) -> Result<Vec<u32>, String> {
+        // A failed read is no membership at all: the session is refused until a
+        // read of its whole list succeeds, never planned from an empty one.
+        job.pids().map_err(|error| error.to_string())
     }
 
     pub(crate) fn identity(&self, pid: u32) -> Option<ProcessIdentity> {
