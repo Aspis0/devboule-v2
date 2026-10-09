@@ -10,7 +10,8 @@ use crate::provider_catalog::{
     MCP_ROSTER_TOOL,
 };
 use crate::server::ServerState;
-use devboule_protocol::{OwnerId, PeerRole, PermissionOutcome, SessionKind, WorkspaceIsolation};
+use devboule_protocol::{OwnerId, PermissionOutcome, SessionKind, WorkspaceIsolation};
+
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream};
@@ -392,22 +393,16 @@ fn the_peer_door_judges_all_workspace_tools_as_their_wire_frames() {
             }
             other => panic!("{tool} is judged at the door, got {other:?}"),
         }
-        for role in [PeerRole::Client, PeerRole::Daemon] {
-            assert_eq!(
-                crate::peer_policy::mcp_tool_denial(role, &[], tool),
-                Some(crate::peer_policy::CAP_ADMIN),
-                "{role:?} without admin is refused {tool}"
-            );
-            assert_eq!(
-                crate::peer_policy::mcp_tool_denial(
-                    role,
-                    &[crate::peer_policy::CAP_ADMIN.to_string()],
-                    tool
-                ),
-                None,
-                "{role:?} with admin reaches {tool}"
-            );
-        }
+        assert_eq!(
+            crate::peer_policy::mcp_tool_denial(&[], tool),
+            Some(crate::peer_policy::CAP_ADMIN),
+            "without admin is refused {tool}"
+        );
+        assert_eq!(
+            crate::peer_policy::mcp_tool_denial(&[crate::peer_policy::CAP_ADMIN.to_string()], tool),
+            None,
+            "with admin reaches {tool}"
+        );
     }
 }
 

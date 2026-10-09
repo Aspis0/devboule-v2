@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::journal::AuditRecord;
 use crate::server::ServerState;
-use devboule_protocol::{PeerRole, SessionOriginKind};
+use devboule_protocol::SessionOriginKind;
 use serde_json::Value;
 
 use super::dispatch::rpc_error;
@@ -16,10 +16,10 @@ use super::dispatch::rpc_error;
 ///
 /// `Local` is the person at this machine's own agent: the door allows without
 /// consulting the policy, so local behaviour and sentences are byte-identical.
-/// `Peer` carries the device, the role it was paired as, and that device's
-/// current capability set (fail-closed: a missing, unreadable or revoked row
-/// holds nothing). `Unknown` is a stored origin the daemon cannot establish —
-/// an `Unknown` row, or a peer-shaped row without a device or a role — and the
+/// `Peer` carries the device and that device's current capability set
+/// (fail-closed: a missing, unreadable or revoked row holds nothing). `Unknown`
+/// is a stored origin the daemon cannot establish — an `Unknown` row, or a
+/// peer-shaped row without a device — and the
 /// door refuses it hard: unlike absence it never resolves. `Absent` is no
 /// readable row at all, and the door refuses it with the pre-existing retryable
 /// absence sentence: an agent's first call can land before its own commit, and
@@ -32,7 +32,6 @@ pub(super) enum McpCaller {
     Local,
     Peer {
         device_id: String,
-        role: PeerRole,
         caps: Vec<String>,
     },
     Unknown,
@@ -45,16 +44,12 @@ pub(super) fn resolve_mcp_caller(state: &ServerState, caller_session_id: &str) -
     };
     match origin.kind {
         SessionOriginKind::Local => McpCaller::Local,
-        SessionOriginKind::Peer => match (origin.device_id, origin.role) {
-            (Some(device_id), Some(role)) => {
+        SessionOriginKind::Peer => match origin.device_id {
+            Some(device_id) => {
                 let caps = state.peer_caps(&device_id);
-                McpCaller::Peer {
-                    device_id,
-                    role,
-                    caps,
-                }
+                McpCaller::Peer { device_id, caps }
             }
-            _ => McpCaller::Unknown,
+            None => McpCaller::Unknown,
         },
         SessionOriginKind::Unknown => McpCaller::Unknown,
     }
@@ -80,10 +75,10 @@ pub(super) fn mcp_peer_door(
     let tool = tool_name?;
     match caller {
         McpCaller::Local => None,
-        McpCaller::Peer { role, caps, .. } => crate::peer_policy::mcp_tool_locality(tool)
+        McpCaller::Peer { caps, .. } => crate::peer_policy::mcp_tool_locality(tool)
             .map(|sentence| rpc_error(id.clone(), -32601, sentence))
             .or_else(|| {
-                crate::peer_policy::mcp_tool_denial(*role, caps, tool).map(|reason| {
+                crate::peer_policy::mcp_tool_denial(caps, tool).map(|reason| {
                     rpc_error(
                         id.clone(),
                         -32601,
@@ -116,22 +111,28 @@ pub(super) fn mcp_peer_door(
 /// connection, byte-identical to before. `Unknown`/`Absent` never reach a
 /// body — the door refuses them — and keep it too.
 ///
-/// `paired_by_user` and the transport binding come from the peer's row: the
-/// ownership check for a `Client`-role device compares against the user that
-/// ran the pairing, and the binding is the facts recorded at pairing time.
-/// Dispatch reads no field of the binding — the handshake owned it — so a
-/// row-sourced copy is the truthful thing to carry, not a fresh measurement.
+/// `paired_by_user`, the session scope and the transport binding come from the
+/// peer's row: a client-scoped device is compared against the user that ran the
+/// pairing, and the binding is the facts recorded at pairing time. Dispatch
+/// reads no field of the binding — the handshake owned it — so a row-sourced
+/// copy is the truthful thing to carry, not a fresh measurement.
 pub(super) fn caller_conn(
     state: &ServerState,
     caller: &McpCaller,
 ) -> Arc<crate::session::ConnHandle> {
     match caller {
-        McpCaller::Peer {
-            device_id,
-            role,
-            caps,
-        } => {
+        McpCaller::Peer { device_id, caps } => {
             let record = state.peer_get(device_id).ok().flatten();
+            // The row's v30 dial hint is the only scope evidence a session
+            // carries: presence is a property of a live hello, and this
+            // connection is reconstructed from the row. A row that says nothing
+            // stays client-scoped, which is the fail-narrow direction.
+            let scope = crate::peer_policy::PeerScope::legacy(
+                record
+                    .as_ref()
+                    .map(|record| record.legacy_dialable)
+                    .unwrap_or(false),
+            );
             let binding = crate::peer_policy::TransportBinding {
                 kind: record
                     .as_ref()
@@ -155,7 +156,7 @@ pub(super) fn caller_conn(
                 None,
                 Some(crate::peer_policy::ConnPeer::Remote {
                     device_id: device_id.clone(),
-                    role: *role,
+                    scope,
                     paired_by_user: record.and_then(|record| record.paired_by_user),
                     binding,
                 }),
@@ -169,8 +170,8 @@ pub(super) fn caller_conn(
     }
 }
 
-/// The audit identity for one tool call. A peer-origin caller names its device
-/// and role, never `"local"`; an unestablishable origin names `"unknown"`,
+/// The audit identity for one tool call. A peer-origin caller names its device,
+/// never `"local"`; an unestablishable origin names `"unknown"`,
 /// never the benign one. Local callers keep exactly what they had: this
 /// device's id with `"local"`.
 pub(super) fn audit_mcp_tool(
@@ -185,9 +186,10 @@ pub(super) fn audit_mcp_tool(
             Ok(identity) => (identity.device_id.clone(), "local".to_string()),
             Err(_) => return,
         },
-        McpCaller::Peer {
-            device_id, role, ..
-        } => (device_id.clone(), role.as_str().to_string()),
+        McpCaller::Peer { device_id, .. } => (
+            device_id.clone(),
+            crate::peer_policy::PEER_AUDIT_ROLE.to_string(),
+        ),
         // Who called cannot be established; the audit says so rather than the
         // benign thing. Both absences share the label: the refusal message the
         // caller saw already distinguishes the transient one.

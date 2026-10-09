@@ -1,12 +1,15 @@
 //! Characterisation tests for the create road: the birth road as it stands,
 //! each test naming the mutant it must catch.
 
+use crate::peer_policy::PeerScope;
 use std::sync::Arc;
 
 use devboule_protocol::{ErrorCode, OwnerId, SessionKind, SessionOrigin};
 
 use crate::journal::{PersistStatus, SessionRecord};
-use crate::peer_policy::{ConnPeer, PeerRole, TransportBinding};
+use crate::peer_policy::{ConnPeer, TransportBinding};
+use devboule_protocol::PeerRole;
+
 use crate::profile_delivery::ProfileDelivery;
 use crate::server::ServerState;
 
@@ -52,7 +55,7 @@ pub(super) fn echo_command() -> PtyCommand {
 fn remote_peer() -> Option<ConnPeer> {
     Some(ConnPeer::Remote {
         device_id: "dev-phone".to_string(),
-        role: PeerRole::Client,
+        scope: PeerScope::PairedUser,
         paired_by_user: None,
         binding: TransportBinding::tailnet("nstable", "node.tailnet.ts.net.", "user@example.com"),
     })

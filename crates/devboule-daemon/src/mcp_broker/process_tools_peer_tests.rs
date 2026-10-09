@@ -8,7 +8,8 @@
 use serde_json::json;
 
 use super::caller::{mcp_peer_door, McpCaller};
-use crate::peer_policy::{mcp_tool_locality, PeerRole};
+use crate::peer_policy::mcp_tool_locality;
+
 use crate::provider_catalog::{
     MCP_CLEANUP_PROCESSES_TOOL, MCP_PROCESS_OWNER_TOOL, MCP_SESSION_PROCESSES_TOOL,
 };
@@ -22,7 +23,6 @@ const PROCESS_TOOLS: [&str; 3] = [
 fn peer(held: &[&str]) -> McpCaller {
     McpCaller::Peer {
         device_id: "dev-process".to_string(),
-        role: PeerRole::Client,
         caps: held.iter().map(|cap| (*cap).to_string()).collect(),
     }
 }

@@ -69,10 +69,11 @@ pub(crate) fn handle_client(
     // Authority is `OwnerId.user`: a kernel SID (starts with `S-` on Windows)
     // or uid (a decimal string on Unix) for a local client, `peer_<device_id>` for a remote one.
     let true_owner = match &conn_peer {
-        Some(ConnPeer::Remote {
-            device_id, role, ..
-        }) => OwnerId::new(format!("peer_{device_id}"), role.as_str())
-            .map_err(DaemonError::Protocol)?,
+        Some(ConnPeer::Remote { device_id, .. }) => OwnerId::new(
+            format!("peer_{device_id}"),
+            crate::peer_policy::PEER_OWNER_TAG,
+        )
+        .map_err(DaemonError::Protocol)?,
         _ => match &peer {
             Some(peer) => match OwnerId::new(peer.user.clone(), format!("process-{}", peer.pid)) {
                 Ok(owner) => owner,
@@ -93,7 +94,14 @@ pub(crate) fn handle_client(
     if client_hello.owner != true_owner {
         super::hello_owner_log::log_mismatch_once(&client_hello.owner, &true_owner);
     }
-    let daemon_hello = daemon_hello(&state);
+    let mut daemon_hello = daemon_hello(&state);
+    // A peer connection is the one conversation where this daemon's own
+    // workspace-host presence belongs in the hello: it is what the far side
+    // binds to this device id to pick the session scope it grants us. An app's
+    // hello carries no such claim, and never gets one.
+    if conn_peer.is_some() {
+        daemon_hello.workspace_host = Some(state.has_hosted_workspace());
+    }
     let agreed = match negotiate(&client_hello, &daemon_hello) {
         Ok(agreed) => {
             // The client learns the usable capability set from this hello;
@@ -140,21 +148,32 @@ pub(crate) fn handle_client(
         .capabilities
         .iter()
         .any(|capability| capability.as_str() == caps::REMOTE_HOSTS);
+    // The session register this connection reaches, resolved from the hello
+    // it just sent and bound to the device id the Noise handshake verified —
+    // never to the hello's owner label, and never to anything the far side can
+    // set outside the authenticated connection. A hello that states the bit
+    // wins over the row's migrated dial hint; a hello that cannot state it (a
+    // v30 one, today) keeps that hint.
+    let conn_peer = conn_peer.map(|peer| {
+        let scope =
+            crate::peer_policy::resolve_peer_scope(client_hello.workspace_host, peer.scope());
+        peer.with_scope(scope)
+    });
     // The hello owner is diagnostic only. All idempotency and session access
     // below use the identity decided above.
     //
-    // A paired `Client` speaks for the person who paired it, so every session
-    // request it makes is that user's request: the registry's owner-user filter
-    // is then the whole scope (§8b A3), and it is also what makes a
-    // peer-created session appear in the desktop's list. A `Daemon` peer keeps
-    // the `peer_<device_id>` identity, so the same filter
+    // A paired device with no hosted workspace speaks for the person who paired
+    // it, so every session request it makes is that user's request: the
+    // registry's owner-user filter is then the whole scope (§8b A3), and it is
+    // also what makes a peer-created session appear in the desktop's list. A
+    // machine peer keeps the `peer_<device_id>` identity, so the same filter
     // scopes it to the sessions it created.
     let owner = match &conn_peer {
         Some(ConnPeer::Remote {
-            role: PeerRole::Client,
+            scope: crate::peer_policy::PeerScope::PairedUser,
             paired_by_user: Some(paired),
             ..
-        }) => OwnerId::new(paired.clone(), PeerRole::Client.as_str())
+        }) => OwnerId::new(paired.clone(), crate::peer_policy::PEER_OWNER_TAG)
             .unwrap_or_else(|_| true_owner.clone()),
         _ => true_owner.clone(),
     };
@@ -173,6 +192,9 @@ pub(crate) fn handle_client(
         quit_intent,
     );
     conn.set_session_queue_negotiated(queue_ok);
+    // The dialect decides whether a devices-family reply carries the v30 role
+    // projection; recorded here, before the connection reads a request.
+    conn.set_negotiated_protocol(agreed.protocol_version);
     conn.set_session_tasks_negotiated(
         agreed
             .capabilities
@@ -265,13 +287,10 @@ pub(crate) fn handle_client(
                 let close_request = matches!(&request, ClientMessage::SessionClose { .. });
                 if is_remote && !bucket.take(Instant::now()) {
                     // Exactly one audit row, then close: the audit table must not amplify a flood.
-                    if let Some(ConnPeer::Remote {
-                        device_id, role, ..
-                    }) = &conn.conn_peer
-                    {
+                    if let Some(ConnPeer::Remote { device_id, .. }) = &conn.conn_peer {
                         state.audit(AuditRecord {
                             device_id: device_id.clone(),
-                            role: role.as_str().to_string(),
+                            role: crate::peer_policy::PEER_AUDIT_ROLE.to_string(),
                             claimed_origin: None,
                             action: "rate_limited".to_string(),
                             session_id: None,
@@ -484,24 +503,27 @@ pub(super) fn flush_final_events(
 /// The owner whose sessions a connection may read.
 ///
 /// Derived from the connection's peer identity rather than from whatever owner
-/// the caller passed, so a caller cannot widen the projection: a `Client` peer
-/// reads the paired user's sessions, a `Daemon` peer reads what its own device
-/// created, and the local pipe reads its own. `handle_client` builds the same
-/// owner for a `Client` peer on every other request, so this restates the rule
-/// where the reply is built instead of trusting the argument
+/// the caller passed, so a caller cannot widen the projection: a client-scoped
+/// peer reads the paired user's sessions, a machine peer reads what its own
+/// device created, and the local pipe reads its own. `handle_client` builds the
+/// same owner for a client-scoped peer on every other request, so this restates
+/// the rule where the reply is built instead of trusting the argument
 /// (`DESIGN-remote-agents.md` §8b A3, §8 R2).
 pub(super) fn session_list_owner(conn_peer: &Option<ConnPeer>, caller: &OwnerId) -> OwnerId {
     let projected = match conn_peer {
         Some(ConnPeer::Remote {
-            role: PeerRole::Client,
+            scope: crate::peer_policy::PeerScope::PairedUser,
             paired_by_user: Some(paired),
             ..
-        }) => OwnerId::new(paired.clone(), PeerRole::Client.as_str()),
+        }) => OwnerId::new(paired.clone(), crate::peer_policy::PEER_OWNER_TAG),
         Some(ConnPeer::Remote {
-            role: PeerRole::Daemon,
+            scope: crate::peer_policy::PeerScope::PeerDevice,
             device_id,
             ..
-        }) => OwnerId::new(format!("peer_{device_id}"), PeerRole::Daemon.as_str()),
+        }) => OwnerId::new(
+            format!("peer_{device_id}"),
+            crate::peer_policy::PEER_OWNER_TAG,
+        ),
         _ => return caller.clone(),
     };
     projected.unwrap_or_else(|_| caller.clone())
@@ -517,9 +539,10 @@ pub(super) fn session_list_owner(conn_peer: &Option<ConnPeer>, caller: &OwnerId)
 /// applied to the event stream: a permission card's text is the owner's own
 /// screen, shown to whoever is driving the session (§8b A14).
 pub(super) fn redact_for_conn(conn: &ConnHandle, reply: DaemonMessage) -> DaemonMessage {
-    let role = conn.conn_peer.as_ref().and_then(|peer| peer.role());
     match reply {
-        DaemonMessage::Error(error) => DaemonMessage::Error(error.redacted_for(role.as_ref())),
+        DaemonMessage::Error(error) => {
+            DaemonMessage::Error(error.redacted_for(conn.conn_peer.is_some()))
+        }
         other => other,
     }
 }
@@ -707,6 +730,9 @@ fn daemon_hello(state: &ServerState) -> DaemonHello {
         instance_id: state.instance_id.clone(),
         pid: std::process::id(),
         capabilities: m3a_daemon_capabilities(),
+        // A hello with no workspace database to speak for: the peer entrance
+        // overwrites this with the daemon's own presence before it leaves.
+        workspace_host: None,
     }
 }
 

@@ -21,12 +21,6 @@
 
 use devboule_protocol::{ClientMessage, SessionKind, SessionOrigin};
 
-/// The role a peer was paired as. Stored in the `peers` row; the transcript
-/// separates the two Noise handshakes, so the role cannot be changed by the
-/// other side. Defined once, in the protocol crate: the wire and this policy
-/// must not be able to disagree about the spelling.
-pub use devboule_protocol::PeerRole;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PeerDecision {
     Allow,
@@ -35,15 +29,68 @@ pub enum PeerDecision {
     Deny(&'static str),
 }
 
+/// A paired device's connection scope, resolved once when its hello is read.
+///
+/// This is what replaced the paired role's only live effect: a device that
+/// **states** it hosts workspaces reaches the sessions it created on this
+/// machine, and every other paired device reaches the sessions of the person
+/// who paired it. It is service presence, never a pairing choice and never
+/// stored: the v30 dialect cannot state presence, so its remaining dial hint
+/// (`legacy_dialable`, preserved by the peers migration) is the fallback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PeerScope {
+    /// A device with no hosted workspace: the person who paired it, and only
+    /// that person's sessions.
+    PairedUser,
+    /// A device that hosts workspaces: the sessions it created here.
+    PeerDevice,
+}
+
+/// The scope a peer connection gets: its own workspace-host presence when the
+/// hello states it, the v30 dial hint when it cannot (a v30 hello is the only
+/// dialect allowed to omit the bit). Presence wins over the hint in both
+/// directions — a new-style device with no workspace reads as a client even
+/// when it was paired as a daemon before the roleless dialect.
+pub fn resolve_peer_scope(presence: Option<bool>, fallback: PeerScope) -> PeerScope {
+    match presence {
+        Some(true) => PeerScope::PeerDevice,
+        Some(false) => PeerScope::PairedUser,
+        None => fallback,
+    }
+}
+
+impl PeerScope {
+    /// The v30 projection of the migrated dial hint: a peer whose old tag said
+    /// `daemon` promised a listener and keeps the machine scope; anything else
+    /// reads as a client.
+    pub fn legacy(legacy_dialable: bool) -> Self {
+        if legacy_dialable {
+            Self::PeerDevice
+        } else {
+            Self::PairedUser
+        }
+    }
+
+    /// The v30 word this scope projects to, for stored attribution only — a
+    /// session's `origin_role`, an audit row's `role`. No decision reads it
+    /// back.
+    pub fn projected_role(self) -> devboule_protocol::PeerRole {
+        match self {
+            Self::PairedUser => devboule_protocol::PeerRole::Client,
+            Self::PeerDevice => devboule_protocol::PeerRole::Daemon,
+        }
+    }
+}
+
 /// The capability names this gate reads, spelled once. `PEER_CAPS` in the
 /// protocol crate is the wire set a `PeerSetCaps` may name; the test below
 /// pins these six to it so a rename cannot leave the gate enforcing a
 /// capability nobody can hold.
 pub const CAP_VIEW: &str = "view";
 /// `send` names two target scopes: `SessionSend` keeps the peer's existing
-/// own-origin scope, while `AgentMessageSend` lets a daemon-role peer write
-/// only into local sessions of the user who paired that device. The frame's
-/// target rule enforces the latter; this capability still gates the act.
+/// own-origin scope, while `AgentMessageSend` lets a machine peer write only
+/// into local sessions of the user who paired that device. The frame's target
+/// rule enforces the latter; this capability still gates the act.
 pub const CAP_SEND: &str = "send";
 pub const CAP_ANSWER_PERMISSIONS: &str = "answer_permissions";
 pub const CAP_CREATE_SESSIONS: &str = "create_sessions";
@@ -131,7 +178,7 @@ pub(crate) fn budget_for(origin: &SessionOrigin) -> u64 {
     BUDGET_PAGES_PER_TURN * BUDGET_BYTES_PER_PAGE + BUDGET_INLINE_FRAME_BYTES
 }
 
-/// May `role`, holding `caps`, send `request`?
+/// May a peer holding `caps` send `request`?
 /// `caps` is the peer's own capability set, read from its `peers` row. Seven
 /// names are the wire permission model for a paired device (§8b A9/A11):
 /// `view` (`SessionsList`, `DevicesList`, `SessionAttach`), `send`
@@ -148,13 +195,10 @@ pub(crate) fn budget_for(origin: &SessionOrigin) -> u64 {
 /// permission-model variants — pairing, a device's capability set, revocation —
 /// are refused to every set, and that is the whole remaining `Deny`.
 ///
-/// `role` does not decide permission here: the capability set does. It stays
-/// in the signature because it decides *scope* one layer down (the owner
-/// projection in `server.rs` and the origin branch of `check_user_owner`), and
-/// because a future role-specific rule gets one place to live rather than a
-/// second allowlist.
-pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> PeerDecision {
-    let _ = role;
+/// A pairing role decides nothing here: the capability set alone allows or
+/// refuses, and the one live effect the role had is the connection's session
+/// scope ([`PeerScope`]), resolved a layer above.
+pub fn peer_allows(caps: &[String], request: &ClientMessage) -> PeerDecision {
     match request {
         // The handshake itself and the read-only liveness/identity pair.
         // `Hello` never reaches `dispatch()` — the connection loop answers a
@@ -164,12 +208,9 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         ClientMessage::Ping { .. } => PeerDecision::Allow,
         // The two list acts are reads, and both ride `view` (§8b A11):
         // `SessionsList` and `DevicesList` are how a paired device sees
-        // anything at all, so a peer stripped of `view` — only a
-        // `Daemon` peer can be, since `validate_caps` will not remove it from a
-        // `Client` — reaches neither.
+        // anything at all, so a peer stripped of `view` reaches neither.
         ClientMessage::SessionsList { .. } => with_capability(caps, CAP_VIEW),
-        // Role-projected at the dispatch site; a `Daemon` peer sees only
-        // `{device_id, display_name, role, online}` (design §8b A13).
+        // Projected at the dispatch site for whoever asks.
         ClientMessage::DevicesList { .. } => with_capability(caps, CAP_VIEW),
         // The live agent roster of the responding device, scoped on the
         // responder to the user that approved the pairing (`paired_by_user`,
@@ -183,9 +224,9 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
 
         // The seven session variants a paired device may reach — each
         // under the capability that names the act. `view` is what makes a peer
-        // a viewer at all; it is the one capability `validate_caps` will not
-        // remove from a `Client`. `SessionSend` keeps the peer's own
-        // origin scope; `AgentMessageSend` uses the pairing user's local
+        // a viewer at all; it is the one capability the capability set needs
+        // to reach the sessions its scope names. `SessionSend` keeps the peer's
+        // own origin scope; `AgentMessageSend` uses the pairing user's local
         // target scope, because its sender may live on the far device.
         ClientMessage::SessionAttach { .. } => with_capability(caps, CAP_VIEW),
         // The task list is a read of one session's surface — what its agents
@@ -1004,7 +1045,7 @@ pub const UNLISTED_TOOL: &str = "unlisted_tool";
 ///
 /// `Unjudged` tools allow here: they perform nothing judged. A name with no row
 /// never does — absence is a refusal, not a pass to whatever routes the name.
-pub fn mcp_tool_denial(role: PeerRole, caps: &[String], tool: &str) -> Option<&'static str> {
+pub fn mcp_tool_denial(caps: &[String], tool: &str) -> Option<&'static str> {
     let Some(wire) = mcp_tool_wire(tool) else {
         return Some(UNLISTED_TOOL);
     };
@@ -1016,7 +1057,7 @@ pub fn mcp_tool_denial(role: PeerRole, caps: &[String], tool: &str) -> Option<&'
         }
     };
     for request in &judged {
-        if let PeerDecision::Deny(reason) = peer_allows(role, caps, request) {
+        if let PeerDecision::Deny(reason) = peer_allows(caps, request) {
             return Some(reason);
         }
     }
@@ -1069,16 +1110,30 @@ impl TransportBinding {
     }
 }
 
+/// The `OwnerId.client` tag every peer connection uses, inbound and outbound.
+/// Diagnostic only — authority is `OwnerId.user` plus the peer's own row — and
+/// one stable word, so two daemons cannot disagree about the spelling.
+pub const PEER_OWNER_TAG: &str = "paired-device";
+
+/// The audit `role` word a peer action records now. Historical rows keep the
+/// old `client`/`daemon` words — they are attribution a person reads — but a
+/// connection is a paired device and nothing more, so new rows say so.
+pub const PEER_AUDIT_ROLE: &str = "paired-device";
+
 /// What the daemon knows about the far end of one connection: `Some` is the
 /// Noise-authenticated peer, and its `paired_by_user` is copied from the
 /// `peers` row at handshake time so no journal lookup happens at dispatch. A
 /// pipe connection carries `None`, and its kernel-derived identity stays in
 /// `ConnHandle.peer`.
+///
+/// `scope` is the connection's session register, initially the v30 dial hint
+/// from the row and replaced from the hello's workspace-host presence before
+/// any request is served ([`resolve_peer_scope`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConnPeer {
     Remote {
         device_id: String,
-        role: PeerRole,
+        scope: PeerScope,
         paired_by_user: Option<String>,
         binding: TransportBinding,
     },
@@ -1091,9 +1146,26 @@ impl ConnPeer {
         }
     }
 
-    pub fn role(&self) -> Option<PeerRole> {
+    pub fn scope(&self) -> PeerScope {
         match self {
-            Self::Remote { role, .. } => Some(*role),
+            Self::Remote { scope, .. } => *scope,
+        }
+    }
+
+    /// The same connection with its scope re-resolved from the hello it sent.
+    pub fn with_scope(self, scope: PeerScope) -> Self {
+        match self {
+            Self::Remote {
+                device_id,
+                paired_by_user,
+                binding,
+                ..
+            } => Self::Remote {
+                device_id,
+                scope,
+                paired_by_user,
+                binding,
+            },
         }
     }
 }
@@ -1101,7 +1173,7 @@ impl ConnPeer {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use devboule_protocol::{OwnerId, PromptAttachment};
+    use devboule_protocol::{OwnerId, PeerRole, PromptAttachment};
 
     fn ping() -> ClientMessage {
         ClientMessage::Ping { id: 1 }
@@ -1147,50 +1219,48 @@ pub(crate) mod tests {
     #[test]
     fn the_peer_roster_has_a_capability_of_its_own() {
         let roster = ClientMessage::PeerAgentsList { id: 1 };
-        for role in [PeerRole::Client, PeerRole::Daemon] {
-            // A new pairing holds it, because the default is the whole set.
-            assert_eq!(
-                peer_allows(role, &default_caps(), &roster),
-                PeerDecision::Allow,
-                "{role:?} holding the default grant must read the roster"
-            );
-            // `view` alone does not open it, and neither does every other
-            // capability together — `admin` included: the roster read is the
-            // one act only its own name reaches, which is why it keeps a switch of its own.
-            assert_eq!(
-                peer_allows(role, &caps(&[CAP_VIEW]), &roster),
-                PeerDecision::Deny(CAP_ROSTER),
-                "{role:?} holding only `view` must not read the roster"
-            );
-            let mut without_roster = all_caps();
-            without_roster.retain(|cap| cap != CAP_ROSTER);
-            assert_eq!(
-                peer_allows(role, &without_roster, &roster),
-                PeerDecision::Deny(CAP_ROSTER),
-                "{role:?} holding every other capability must not read the roster"
-            );
-            // The capability of its own does, and nothing else about it.
-            assert_eq!(
-                peer_allows(role, &caps(&[CAP_VIEW, CAP_ROSTER]), &roster),
-                PeerDecision::Allow
-            );
-            assert_eq!(
-                peer_allows(role, &caps(&[CAP_ROSTER]), &roster),
-                PeerDecision::Allow
-            );
-            // And holding it opens nothing else: the roster read is the act it names.
-            let send = ClientMessage::AgentMessageSend {
-                id: 1,
-                from_session: "s.a.1".to_string(),
-                to_session: "s.b.2".to_string(),
-                text: "hi".to_string(),
-                idempotency_key: None,
-            };
-            assert_eq!(
-                peer_allows(role, &caps(&[CAP_ROSTER]), &send),
-                PeerDecision::Deny(CAP_SEND)
-            );
-        }
+        // A new pairing holds it, because the default is the whole set.
+        assert_eq!(
+            peer_allows(&default_caps(), &roster),
+            PeerDecision::Allow,
+            "holding the default grant must read the roster"
+        );
+        // `view` alone does not open it, and neither does every other
+        // capability together — `admin` included: the roster read is the
+        // one act only its own name reaches, which is why it keeps a switch of its own.
+        assert_eq!(
+            peer_allows(&caps(&[CAP_VIEW]), &roster),
+            PeerDecision::Deny(CAP_ROSTER),
+            "holding only `view` must not read the roster"
+        );
+        let mut without_roster = all_caps();
+        without_roster.retain(|cap| cap != CAP_ROSTER);
+        assert_eq!(
+            peer_allows(&without_roster, &roster),
+            PeerDecision::Deny(CAP_ROSTER),
+            "holding every other capability must not read the roster"
+        );
+        // The capability of its own does, and nothing else about it.
+        assert_eq!(
+            peer_allows(&caps(&[CAP_VIEW, CAP_ROSTER]), &roster),
+            PeerDecision::Allow
+        );
+        assert_eq!(
+            peer_allows(&caps(&[CAP_ROSTER]), &roster),
+            PeerDecision::Allow
+        );
+        // And holding it opens nothing else: the roster read is the act it names.
+        let send = ClientMessage::AgentMessageSend {
+            id: 1,
+            from_session: "s.a.1".to_string(),
+            to_session: "s.b.2".to_string(),
+            text: "hi".to_string(),
+            idempotency_key: None,
+        };
+        assert_eq!(
+            peer_allows(&caps(&[CAP_ROSTER]), &send),
+            PeerDecision::Deny(CAP_SEND)
+        );
     }
 
     #[test]
@@ -1216,35 +1286,26 @@ pub(crate) mod tests {
 
     #[test]
     fn the_handshake_pair_is_unconditional_and_view_makes_a_reader() {
-        for role in [PeerRole::Client, PeerRole::Daemon] {
-            assert_eq!(
-                peer_allows(role, &default_caps(), &ping()),
-                PeerDecision::Allow
-            );
-            assert_eq!(
-                peer_allows(
-                    role,
-                    &default_caps(),
-                    &ClientMessage::SessionsList { id: 1 }
-                ),
-                PeerDecision::Allow
-            );
-            // §8b A11, H10: the two list acts are reads and `view` is what
-            // makes a peer a reader, so a peer holding nothing reaches
-            // neither. `Hello` and `Ping` stay unconditional: they are the
-            // handshake and the liveness probe the panel needs before any
-            // capability question exists.
-            let none: Vec<String> = Vec::new();
-            assert_eq!(
-                peer_allows(role, &none, &ClientMessage::SessionsList { id: 1 }),
-                PeerDecision::Deny(CAP_VIEW)
-            );
-            assert_eq!(
-                peer_allows(role, &none, &ClientMessage::DevicesList { id: 1 }),
-                PeerDecision::Deny(CAP_VIEW)
-            );
-            assert_eq!(peer_allows(role, &none, &ping()), PeerDecision::Allow);
-        }
+        assert_eq!(peer_allows(&default_caps(), &ping()), PeerDecision::Allow);
+        assert_eq!(
+            peer_allows(&default_caps(), &ClientMessage::SessionsList { id: 1 }),
+            PeerDecision::Allow
+        );
+        // §8b A11, H10: the two list acts are reads and `view` is what
+        // makes a peer a reader, so a peer holding nothing reaches
+        // neither. `Hello` and `Ping` stay unconditional: they are the
+        // handshake and the liveness probe the panel needs before any
+        // capability question exists.
+        let none: Vec<String> = Vec::new();
+        assert_eq!(
+            peer_allows(&none, &ClientMessage::SessionsList { id: 1 }),
+            PeerDecision::Deny(CAP_VIEW)
+        );
+        assert_eq!(
+            peer_allows(&none, &ClientMessage::DevicesList { id: 1 }),
+            PeerDecision::Deny(CAP_VIEW)
+        );
+        assert_eq!(peer_allows(&none, &ping()), PeerDecision::Allow);
     }
 
     /// One capability, one act. Holding `send` must not open `create`, holding
@@ -1306,90 +1367,78 @@ pub(crate) mod tests {
             enabled: true,
         };
 
-        for role in [PeerRole::Client, PeerRole::Daemon] {
-            // No capability at all: every refused act is refused, and the
-            // refusal names the capability the peer would need.
-            let none: Vec<String> = Vec::new();
-            assert_eq!(
-                peer_allows(role, &none, &attach()),
-                PeerDecision::Deny(CAP_VIEW)
-            );
-            assert_eq!(
-                peer_allows(role, &none, &create()),
-                PeerDecision::Deny(CAP_CREATE_SESSIONS)
-            );
-            assert_eq!(
-                peer_allows(role, &none, &send()),
-                PeerDecision::Deny(CAP_SEND)
-            );
-            assert_eq!(
-                peer_allows(role, &none, &respond()),
-                PeerDecision::Deny(CAP_ANSWER_PERMISSIONS)
-            );
+        // No capability at all: every refused act is refused, and the
+        // refusal names the capability the peer would need.
+        let none: Vec<String> = Vec::new();
+        assert_eq!(peer_allows(&none, &attach()), PeerDecision::Deny(CAP_VIEW));
+        assert_eq!(
+            peer_allows(&none, &create()),
+            PeerDecision::Deny(CAP_CREATE_SESSIONS)
+        );
+        assert_eq!(peer_allows(&none, &send()), PeerDecision::Deny(CAP_SEND));
+        assert_eq!(
+            peer_allows(&none, &respond()),
+            PeerDecision::Deny(CAP_ANSWER_PERMISSIONS)
+        );
 
-            // One capability each, and only its own act.
-            assert_eq!(
-                peer_allows(role, &caps(&[CAP_VIEW]), &attach()),
-                PeerDecision::Allow
-            );
-            assert_eq!(
-                peer_allows(role, &caps(&[CAP_VIEW]), &send()),
-                PeerDecision::Deny(CAP_SEND)
-            );
-            assert_eq!(
-                peer_allows(role, &caps(&[CAP_CREATE_SESSIONS]), &create()),
-                PeerDecision::Allow
-            );
-            assert_eq!(
-                peer_allows(role, &caps(&[CAP_CREATE_SESSIONS]), &attach()),
-                PeerDecision::Deny(CAP_VIEW)
-            );
-            assert_eq!(
-                peer_allows(role, &caps(&[CAP_SEND]), &send()),
-                PeerDecision::Allow
-            );
-            assert_eq!(
-                peer_allows(role, &caps(&[CAP_SEND]), &set_mode()),
-                PeerDecision::Allow,
-                "driving the mode is the act `send` names"
-            );
-            assert_eq!(
-                peer_allows(role, &caps(&[CAP_SEND]), &set_name()),
-                PeerDecision::Allow,
-                "renaming the session is the act `send` names"
-            );
-            assert_eq!(
-                peer_allows(role, &none, &set_name()),
-                PeerDecision::Deny(CAP_SEND)
-            );
-            assert_eq!(
-                peer_allows(role, &caps(&[CAP_SEND]), &set_feature()),
-                PeerDecision::Allow,
-                "driving a session feature is the act `send` names"
-            );
-            assert_eq!(
-                peer_allows(role, &caps(&[CAP_ANSWER_PERMISSIONS]), &respond()),
-                PeerDecision::Allow
-            );
-            // The operational five open exactly the acts they name — and stop
-            // is not one of them, whatever combination of act-names is held.
-            assert_eq!(
-                peer_allows(role, &all_caps(), &create()),
-                PeerDecision::Allow
-            );
-            assert_eq!(
-                peer_allows(
-                    role,
-                    &operational_caps(),
-                    &ClientMessage::SessionStop {
-                        id: 1,
-                        session_id: "s.a.1".to_string(),
-                        subscription_id: 1,
-                    }
-                ),
-                PeerDecision::Deny(CAP_ADMIN)
-            );
-        }
+        // One capability each, and only its own act.
+        assert_eq!(
+            peer_allows(&caps(&[CAP_VIEW]), &attach()),
+            PeerDecision::Allow
+        );
+        assert_eq!(
+            peer_allows(&caps(&[CAP_VIEW]), &send()),
+            PeerDecision::Deny(CAP_SEND)
+        );
+        assert_eq!(
+            peer_allows(&caps(&[CAP_CREATE_SESSIONS]), &create()),
+            PeerDecision::Allow
+        );
+        assert_eq!(
+            peer_allows(&caps(&[CAP_CREATE_SESSIONS]), &attach()),
+            PeerDecision::Deny(CAP_VIEW)
+        );
+        assert_eq!(
+            peer_allows(&caps(&[CAP_SEND]), &send()),
+            PeerDecision::Allow
+        );
+        assert_eq!(
+            peer_allows(&caps(&[CAP_SEND]), &set_mode()),
+            PeerDecision::Allow,
+            "driving the mode is the act `send` names"
+        );
+        assert_eq!(
+            peer_allows(&caps(&[CAP_SEND]), &set_name()),
+            PeerDecision::Allow,
+            "renaming the session is the act `send` names"
+        );
+        assert_eq!(
+            peer_allows(&none, &set_name()),
+            PeerDecision::Deny(CAP_SEND)
+        );
+        assert_eq!(
+            peer_allows(&caps(&[CAP_SEND]), &set_feature()),
+            PeerDecision::Allow,
+            "driving a session feature is the act `send` names"
+        );
+        assert_eq!(
+            peer_allows(&caps(&[CAP_ANSWER_PERMISSIONS]), &respond()),
+            PeerDecision::Allow
+        );
+        // The operational five open exactly the acts they name — and stop
+        // is not one of them, whatever combination of act-names is held.
+        assert_eq!(peer_allows(&all_caps(), &create()), PeerDecision::Allow);
+        assert_eq!(
+            peer_allows(
+                &operational_caps(),
+                &ClientMessage::SessionStop {
+                    id: 1,
+                    session_id: "s.a.1".to_string(),
+                    subscription_id: 1,
+                }
+            ),
+            PeerDecision::Deny(CAP_ADMIN)
+        );
     }
 
     /// Every variant denied to every role, always (§8 R1), in
@@ -1477,15 +1526,11 @@ pub(crate) mod tests {
             },
             // Local acts: a peer that could pair or revoke could change this
             // device's trusted set.
-            ClientMessage::PairingStart {
-                id: 1,
-                role: PeerRole::Client,
-            },
+            ClientMessage::PairingStart { id: 1 },
             ClientMessage::PairingComplete {
                 id: 1,
                 address: "100.64.0.2:47831".to_string(),
                 code: devboule_protocol::PairingSecret::new("ABCDEFGH"),
-                role: PeerRole::Client,
             },
             ClientMessage::PairingConfirm {
                 id: 1,
@@ -1725,39 +1770,37 @@ pub(crate) mod tests {
             VARIANT_COUNT,
             "the parity walk must cover every variant that is not always allowed"
         );
-        for role in [PeerRole::Client, PeerRole::Daemon] {
-            for request in &denied {
-                match unconditional_denial(request) {
-                    // The frames no capability set opens: the five
-                    // permission-model acts and the local-only open root.
-                    Some(reason) => {
-                        assert_eq!(
-                            peer_allows(role, &default_caps(), request),
-                            PeerDecision::Deny(reason),
-                            "{role} may not change the trusted set through {request:?}"
-                        );
-                        assert_eq!(
-                            peer_allows(role, &operational_caps(), request),
-                            PeerDecision::Deny(reason),
-                            "{role} holding no `admin` is refused {request:?} for the local reason"
-                        );
-                    }
-                    // Everything else: open to a device holding the
-                    // administrative capability, refused with that capability's
-                    // name — not the act's name, which is not what would open
-                    // it — to one that does not.
-                    None => {
-                        assert_eq!(
-                            peer_allows(role, &default_caps(), request),
-                            PeerDecision::Allow,
-                            "{role} holding a new pairing's grant must be able to ask {request:?}"
-                        );
-                        assert_eq!(
-                            peer_allows(role, &operational_caps(), request),
-                            PeerDecision::Deny(CAP_ADMIN),
-                            "{role} without `admin` must still be refused {request:?}"
-                        );
-                    }
+        for request in &denied {
+            match unconditional_denial(request) {
+                // The frames no capability set opens: the five
+                // permission-model acts and the local-only open root.
+                Some(reason) => {
+                    assert_eq!(
+                        peer_allows(&default_caps(), request),
+                        PeerDecision::Deny(reason),
+                        "may not change the trusted set through {request:?}"
+                    );
+                    assert_eq!(
+                        peer_allows(&operational_caps(), request),
+                        PeerDecision::Deny(reason),
+                        "holding no `admin` is refused {request:?} for the local reason"
+                    );
+                }
+                // Everything else: open to a device holding the
+                // administrative capability, refused with that capability's
+                // name — not the act's name, which is not what would open
+                // it — to one that does not.
+                None => {
+                    assert_eq!(
+                        peer_allows(&default_caps(), request),
+                        PeerDecision::Allow,
+                        "holding a new pairing's grant must be able to ask {request:?}"
+                    );
+                    assert_eq!(
+                        peer_allows(&operational_caps(), request),
+                        PeerDecision::Deny(CAP_ADMIN),
+                        "without `admin` must still be refused {request:?}"
+                    );
                 }
             }
         }
@@ -1830,21 +1873,19 @@ pub(crate) mod tests {
     /// administrative capability like the rest of the surface no act names.
     #[test]
     fn status_and_diagnostics_ride_the_administrative_capability() {
-        for role in [PeerRole::Client, PeerRole::Daemon] {
-            let status = ClientMessage::Status { id: 1 };
-            let diagnostics = ClientMessage::DaemonDiagnostics { id: 1 };
-            for request in [&status, &diagnostics] {
-                assert_eq!(
-                    peer_allows(role, &default_caps(), request),
-                    PeerDecision::Allow,
-                    "{role} holding a new pairing's grant must reach {request:?}"
-                );
-                assert_eq!(
-                    peer_allows(role, &operational_caps(), request),
-                    PeerDecision::Deny(CAP_ADMIN),
-                    "{role} without `admin` must not reach {request:?}"
-                );
-            }
+        let status = ClientMessage::Status { id: 1 };
+        let diagnostics = ClientMessage::DaemonDiagnostics { id: 1 };
+        for request in [&status, &diagnostics] {
+            assert_eq!(
+                peer_allows(&default_caps(), request),
+                PeerDecision::Allow,
+                "holding a new pairing's grant must reach {request:?}"
+            );
+            assert_eq!(
+                peer_allows(&operational_caps(), request),
+                PeerDecision::Deny(CAP_ADMIN),
+                "without `admin` must not reach {request:?}"
+            );
         }
     }
 
@@ -2092,52 +2133,50 @@ pub(crate) mod tests {
             session_id: String::new(),
             idempotency_key: None,
         };
-        for role in [PeerRole::Client, PeerRole::Daemon] {
-            for cap in PEER_CAPS {
-                let caps = caps(&[cap]);
-                let (wire, door) = if cap == CAP_ADMIN {
-                    (PeerDecision::Allow, None)
-                } else {
-                    (PeerDecision::Deny(CAP_ADMIN), Some(CAP_ADMIN))
-                };
-                assert_eq!(
-                    peer_allows(role, &caps, &stop),
-                    wire,
-                    "{role:?} holding {cap} on SessionStop"
-                );
-                assert_eq!(
-                    peer_allows(role, &caps, &close),
-                    wire,
-                    "{role:?} holding {cap} on SessionClose"
-                );
-                assert_eq!(
-                    mcp_tool_denial(role, &caps, MCP_STOP_AGENT_TOOL),
-                    door,
-                    "{role:?} holding {cap} on the stop tool"
-                );
-                assert_eq!(
-                    mcp_tool_denial(role, &caps, MCP_CLOSE_AGENT_TOOL),
-                    door,
-                    "{role:?} holding {cap} on the close tool"
-                );
-            }
-            // One capability at a time is not "every peer": a peer holding the
-            // act-named five is legal, and so is the whole table. Without
-            // `admin` the verbs stay refused; with it they open — the parity
-            // decision, not an accident of the loop above.
-            for (set, wire, door) in [
-                (
-                    operational_caps(),
-                    PeerDecision::Deny(CAP_ADMIN),
-                    Some(CAP_ADMIN),
-                ),
-                (all_caps(), PeerDecision::Allow, None),
-            ] {
-                assert_eq!(peer_allows(role, &set, &stop), wire);
-                assert_eq!(peer_allows(role, &set, &close), wire);
-                assert_eq!(mcp_tool_denial(role, &set, MCP_STOP_AGENT_TOOL), door);
-                assert_eq!(mcp_tool_denial(role, &set, MCP_CLOSE_AGENT_TOOL), door);
-            }
+        for cap in PEER_CAPS {
+            let caps = caps(&[cap]);
+            let (wire, door) = if cap == CAP_ADMIN {
+                (PeerDecision::Allow, None)
+            } else {
+                (PeerDecision::Deny(CAP_ADMIN), Some(CAP_ADMIN))
+            };
+            assert_eq!(
+                peer_allows(&caps, &stop),
+                wire,
+                "holding {cap} on SessionStop"
+            );
+            assert_eq!(
+                peer_allows(&caps, &close),
+                wire,
+                "holding {cap} on SessionClose"
+            );
+            assert_eq!(
+                mcp_tool_denial(&caps, MCP_STOP_AGENT_TOOL),
+                door,
+                "holding {cap} on the stop tool"
+            );
+            assert_eq!(
+                mcp_tool_denial(&caps, MCP_CLOSE_AGENT_TOOL),
+                door,
+                "holding {cap} on the close tool"
+            );
+        }
+        // One capability at a time is not "every peer": a peer holding the
+        // act-named five is legal, and so is the whole table. Without
+        // `admin` the verbs stay refused; with it they open — the parity
+        // decision, not an accident of the loop above.
+        for (set, wire, door) in [
+            (
+                operational_caps(),
+                PeerDecision::Deny(CAP_ADMIN),
+                Some(CAP_ADMIN),
+            ),
+            (all_caps(), PeerDecision::Allow, None),
+        ] {
+            assert_eq!(peer_allows(&set, &stop), wire);
+            assert_eq!(peer_allows(&set, &close), wire);
+            assert_eq!(mcp_tool_denial(&set, MCP_STOP_AGENT_TOOL), door);
+            assert_eq!(mcp_tool_denial(&set, MCP_CLOSE_AGENT_TOOL), door);
         }
     }
 
@@ -2154,43 +2193,38 @@ pub(crate) mod tests {
         use crate::provider_catalog::{
             MCP_CANCEL_AGENT_TOOL, MCP_GET_AGENT_STATUS_TOOL, MCP_LIST_PENDING_PERMISSIONS_TOOL,
         };
-        for role in [PeerRole::Client, PeerRole::Daemon] {
-            for cap in devboule_protocol::PEER_CAPS {
-                let set = caps(&[cap]);
-                assert_eq!(
-                    mcp_tool_denial(role, &set, MCP_CANCEL_AGENT_TOOL),
-                    (cap != CAP_ADMIN).then_some(CAP_ADMIN),
-                    "{role:?} holding {cap} on the cancel tool"
-                );
-                assert_eq!(
-                    mcp_tool_denial(role, &set, MCP_GET_AGENT_STATUS_TOOL),
-                    (cap != CAP_VIEW).then_some(CAP_VIEW),
-                    "{role:?} holding {cap} on the status tool"
-                );
-                assert_eq!(
-                    mcp_tool_denial(role, &set, MCP_LIST_PENDING_PERMISSIONS_TOOL),
-                    (cap != CAP_ANSWER_PERMISSIONS).then_some(CAP_ANSWER_PERMISSIONS),
-                    "{role:?} holding {cap} on the pending-list tool"
-                );
-            }
+        for cap in devboule_protocol::PEER_CAPS {
+            let set = caps(&[cap]);
             assert_eq!(
-                mcp_tool_denial(role, &operational_caps(), MCP_CANCEL_AGENT_TOOL),
-                Some(CAP_ADMIN),
-                "{role:?}: every capability but admin still refuses the cancel"
+                mcp_tool_denial(&set, MCP_CANCEL_AGENT_TOOL),
+                (cap != CAP_ADMIN).then_some(CAP_ADMIN),
+                "holding {cap} on the cancel tool"
             );
             assert_eq!(
-                mcp_tool_denial(role, &operational_caps(), MCP_GET_AGENT_STATUS_TOOL),
-                None
+                mcp_tool_denial(&set, MCP_GET_AGENT_STATUS_TOOL),
+                (cap != CAP_VIEW).then_some(CAP_VIEW),
+                "holding {cap} on the status tool"
             );
             assert_eq!(
-                mcp_tool_denial(role, &operational_caps(), MCP_LIST_PENDING_PERMISSIONS_TOOL),
-                None
-            );
-            assert_eq!(
-                mcp_tool_denial(role, &all_caps(), MCP_CANCEL_AGENT_TOOL),
-                None
+                mcp_tool_denial(&set, MCP_LIST_PENDING_PERMISSIONS_TOOL),
+                (cap != CAP_ANSWER_PERMISSIONS).then_some(CAP_ANSWER_PERMISSIONS),
+                "holding {cap} on the pending-list tool"
             );
         }
+        assert_eq!(
+            mcp_tool_denial(&operational_caps(), MCP_CANCEL_AGENT_TOOL),
+            Some(CAP_ADMIN),
+            "every capability but admin still refuses the cancel"
+        );
+        assert_eq!(
+            mcp_tool_denial(&operational_caps(), MCP_GET_AGENT_STATUS_TOOL),
+            None
+        );
+        assert_eq!(
+            mcp_tool_denial(&operational_caps(), MCP_LIST_PENDING_PERMISSIONS_TOOL),
+            None
+        );
+        assert_eq!(mcp_tool_denial(&all_caps(), MCP_CANCEL_AGENT_TOOL), None);
         // The road to card details is the pending list alone: status must
         // never be judged as that road, or `view` would price what
         // `answer_permissions` protects (the broker test pins the body).
@@ -2229,41 +2263,39 @@ pub(crate) mod tests {
         use devboule_protocol::PEER_CAPS;
         const GRAPH_TOOLS: [&str; 3] =
             [MCP_NEIGHBORHOOD_TOOL, MCP_IMPORTS_TOOL, MCP_IMPORTERS_TOOL];
-        for role in [PeerRole::Client, PeerRole::Daemon] {
-            for cap in PEER_CAPS {
-                let expected = if cap == CAP_ADMIN {
-                    None
-                } else {
-                    Some(CAP_ADMIN)
-                };
-                for tool in GRAPH_TOOLS {
-                    assert_eq!(
-                        mcp_tool_denial(role, &caps(&[cap]), tool),
-                        expected,
-                        "{role:?} holding {cap} on {tool}"
-                    );
-                }
-            }
-            // The negative control that matters: every act-named capability at
-            // once, and still no graph.
+        for cap in PEER_CAPS {
+            let expected = if cap == CAP_ADMIN {
+                None
+            } else {
+                Some(CAP_ADMIN)
+            };
             for tool in GRAPH_TOOLS {
                 assert_eq!(
-                    mcp_tool_denial(role, &operational_caps(), tool),
-                    Some(CAP_ADMIN),
-                    "{role:?} holding every act-named capability must not read the project graph through {tool}"
+                    mcp_tool_denial(&caps(&[cap]), tool),
+                    expected,
+                    "holding {cap} on {tool}"
                 );
             }
-            // And the parity half: with the whole table no served tool is
-            // refused at the door — the graph tools included, which is the
-            // statement "a paired device with the administrative capability
-            // reaches what the app reaches".
-            for (name, _) in crate::provider_catalog::MCP_BROKER_TOOLS {
-                assert_eq!(
-                    mcp_tool_denial(role, &all_caps(), name),
-                    None,
-                    "{role:?} holding every capability must reach the served tool {name}"
-                );
-            }
+        }
+        // The negative control that matters: every act-named capability at
+        // once, and still no graph.
+        for tool in GRAPH_TOOLS {
+            assert_eq!(
+                mcp_tool_denial(&operational_caps(), tool),
+                Some(CAP_ADMIN),
+                "holding every act-named capability must not read the project graph through {tool}"
+            );
+        }
+        // And the parity half: with the whole table no served tool is
+        // refused at the door — the graph tools included, which is the
+        // statement "a paired device with the administrative capability
+        // reaches what the app reaches".
+        for (name, _) in crate::provider_catalog::MCP_BROKER_TOOLS {
+            assert_eq!(
+                mcp_tool_denial(&all_caps(), name),
+                None,
+                "holding every capability must reach the served tool {name}"
+            );
         }
     }
 
@@ -2275,44 +2307,42 @@ pub(crate) mod tests {
     fn the_terminal_reads_are_judged_at_the_door() {
         use crate::provider_catalog::{MCP_CAPTURE_TERMINAL_TOOL, MCP_LIST_TERMINALS_TOOL};
         use devboule_protocol::PEER_CAPS;
-        for role in [PeerRole::Client, PeerRole::Daemon] {
-            for cap in PEER_CAPS {
-                let roster = if cap == CAP_VIEW {
-                    None
-                } else {
-                    Some(CAP_VIEW)
-                };
-                let screen = if cap == CAP_ADMIN {
-                    None
-                } else {
-                    Some(CAP_ADMIN)
-                };
-                assert_eq!(
-                    mcp_tool_denial(role, &caps(&[cap]), MCP_LIST_TERMINALS_TOOL),
-                    roster,
-                    "{role:?} holding {cap} on the terminal roster"
-                );
-                assert_eq!(
-                    mcp_tool_denial(role, &caps(&[cap]), MCP_CAPTURE_TERMINAL_TOOL),
-                    screen,
-                    "{role:?} holding {cap} on the terminal screen read"
-                );
-            }
-            // The negative control: every act-named capability at once opens
-            // the roster and still does not open the screen.
-            assert_eq!(
-                mcp_tool_denial(role, &operational_caps(), MCP_LIST_TERMINALS_TOOL),
+        for cap in PEER_CAPS {
+            let roster = if cap == CAP_VIEW {
                 None
+            } else {
+                Some(CAP_VIEW)
+            };
+            let screen = if cap == CAP_ADMIN {
+                None
+            } else {
+                Some(CAP_ADMIN)
+            };
+            assert_eq!(
+                mcp_tool_denial(&caps(&[cap]), MCP_LIST_TERMINALS_TOOL),
+                roster,
+                "holding {cap} on the terminal roster"
             );
             assert_eq!(
-                mcp_tool_denial(role, &operational_caps(), MCP_CAPTURE_TERMINAL_TOOL),
-                Some(CAP_ADMIN)
+                mcp_tool_denial(&caps(&[cap]), MCP_CAPTURE_TERMINAL_TOOL),
+                screen,
+                "holding {cap} on the terminal screen read"
             );
-            // And the parity half: with the whole table neither read is
-            // refused at the door.
-            for name in [MCP_LIST_TERMINALS_TOOL, MCP_CAPTURE_TERMINAL_TOOL] {
-                assert_eq!(mcp_tool_denial(role, &all_caps(), name), None, "{name}");
-            }
+        }
+        // The negative control: every act-named capability at once opens
+        // the roster and still does not open the screen.
+        assert_eq!(
+            mcp_tool_denial(&operational_caps(), MCP_LIST_TERMINALS_TOOL),
+            None
+        );
+        assert_eq!(
+            mcp_tool_denial(&operational_caps(), MCP_CAPTURE_TERMINAL_TOOL),
+            Some(CAP_ADMIN)
+        );
+        // And the parity half: with the whole table neither read is
+        // refused at the door.
+        for name in [MCP_LIST_TERMINALS_TOOL, MCP_CAPTURE_TERMINAL_TOOL] {
+            assert_eq!(mcp_tool_denial(&all_caps(), name), None, "{name}");
         }
     }
 
@@ -2326,63 +2356,61 @@ pub(crate) mod tests {
             MCP_CREATE_TERMINAL_TOOL, MCP_KILL_TERMINAL_TOOL, MCP_SEND_TERMINAL_KEYS_TOOL,
         };
         use devboule_protocol::PEER_CAPS;
-        for role in [PeerRole::Client, PeerRole::Daemon] {
-            for cap in PEER_CAPS {
-                let create = if cap == CAP_CREATE_SESSIONS {
-                    None
-                } else {
-                    Some(CAP_CREATE_SESSIONS)
-                };
-                let keys = if cap == CAP_SEND {
-                    None
-                } else {
-                    Some(CAP_SEND)
-                };
-                let kill = if cap == CAP_ADMIN {
-                    None
-                } else {
-                    Some(CAP_ADMIN)
-                };
-                assert_eq!(
-                    mcp_tool_denial(role, &caps(&[cap]), MCP_CREATE_TERMINAL_TOOL),
-                    create,
-                    "{role:?} holding {cap} on the terminal open"
-                );
-                assert_eq!(
-                    mcp_tool_denial(role, &caps(&[cap]), MCP_SEND_TERMINAL_KEYS_TOOL),
-                    keys,
-                    "{role:?} holding {cap} on the terminal keys"
-                );
-                assert_eq!(
-                    mcp_tool_denial(role, &caps(&[cap]), MCP_KILL_TERMINAL_TOOL),
-                    kill,
-                    "{role:?} holding {cap} on the terminal kill"
-                );
-            }
-            // The negative control that matters: every act-named capability
-            // except the administrative one, and still no kill — while the
-            // same set opens the other two writes, each through its own.
-            assert_eq!(
-                mcp_tool_denial(role, &operational_caps(), MCP_CREATE_TERMINAL_TOOL),
+        for cap in PEER_CAPS {
+            let create = if cap == CAP_CREATE_SESSIONS {
                 None
-            );
-            assert_eq!(
-                mcp_tool_denial(role, &operational_caps(), MCP_SEND_TERMINAL_KEYS_TOOL),
+            } else {
+                Some(CAP_CREATE_SESSIONS)
+            };
+            let keys = if cap == CAP_SEND {
                 None
+            } else {
+                Some(CAP_SEND)
+            };
+            let kill = if cap == CAP_ADMIN {
+                None
+            } else {
+                Some(CAP_ADMIN)
+            };
+            assert_eq!(
+                mcp_tool_denial(&caps(&[cap]), MCP_CREATE_TERMINAL_TOOL),
+                create,
+                "holding {cap} on the terminal open"
             );
             assert_eq!(
-                mcp_tool_denial(role, &operational_caps(), MCP_KILL_TERMINAL_TOOL),
-                Some(CAP_ADMIN),
-                "{role:?} without admin must not kill through the tool"
+                mcp_tool_denial(&caps(&[cap]), MCP_SEND_TERMINAL_KEYS_TOOL),
+                keys,
+                "holding {cap} on the terminal keys"
             );
-            // And the parity half: with the whole table no write is refused at the door.
-            for name in [
-                MCP_CREATE_TERMINAL_TOOL,
-                MCP_SEND_TERMINAL_KEYS_TOOL,
-                MCP_KILL_TERMINAL_TOOL,
-            ] {
-                assert_eq!(mcp_tool_denial(role, &all_caps(), name), None, "{name}");
-            }
+            assert_eq!(
+                mcp_tool_denial(&caps(&[cap]), MCP_KILL_TERMINAL_TOOL),
+                kill,
+                "holding {cap} on the terminal kill"
+            );
+        }
+        // The negative control that matters: every act-named capability
+        // except the administrative one, and still no kill — while the
+        // same set opens the other two writes, each through its own.
+        assert_eq!(
+            mcp_tool_denial(&operational_caps(), MCP_CREATE_TERMINAL_TOOL),
+            None
+        );
+        assert_eq!(
+            mcp_tool_denial(&operational_caps(), MCP_SEND_TERMINAL_KEYS_TOOL),
+            None
+        );
+        assert_eq!(
+            mcp_tool_denial(&operational_caps(), MCP_KILL_TERMINAL_TOOL),
+            Some(CAP_ADMIN),
+            "without admin must not kill through the tool"
+        );
+        // And the parity half: with the whole table no write is refused at the door.
+        for name in [
+            MCP_CREATE_TERMINAL_TOOL,
+            MCP_SEND_TERMINAL_KEYS_TOOL,
+            MCP_KILL_TERMINAL_TOOL,
+        ] {
+            assert_eq!(mcp_tool_denial(&all_caps(), name), None, "{name}");
         }
     }
 
@@ -2394,136 +2422,113 @@ pub(crate) mod tests {
     fn the_mcp_door_denies_with_the_policy_own_sentences() {
         use crate::provider_catalog::*;
         let none: Vec<String> = Vec::new();
-        for role in [PeerRole::Client, PeerRole::Daemon] {
+        assert_eq!(mcp_tool_denial(&none, MCP_ROSTER_TOOL), Some(CAP_VIEW));
+        assert_eq!(mcp_tool_denial(&caps(&[CAP_VIEW]), MCP_ROSTER_TOOL), None);
+        // The activity read is the roster's act: a peer without `view`
+        // is refused, a peer with it reads one agent's metadata.
+        assert_eq!(mcp_tool_denial(&none, MCP_ACTIVITY_TOOL), Some(CAP_VIEW));
+        assert_eq!(mcp_tool_denial(&caps(&[CAP_VIEW]), MCP_ACTIVITY_TOOL), None);
+        // The devices read is the roster's act: this daemon's own paired
+        // rows, refused without `view`, allowed with it.
+        assert_eq!(
+            mcp_tool_denial(&none, MCP_LIST_DEVICES_TOOL),
+            Some(CAP_VIEW)
+        );
+        assert_eq!(
+            mcp_tool_denial(&caps(&[CAP_VIEW]), MCP_LIST_DEVICES_TOOL),
+            None
+        );
+        // The peer roster is judged under its own capability, not `view`:
+        // every pairing holds `view`, and the roster is the pairing
+        // user's whole live surface.
+        assert_eq!(
+            mcp_tool_denial(&none, MCP_LIST_PEER_AGENTS_TOOL),
+            Some(CAP_ROSTER)
+        );
+        assert_eq!(
+            mcp_tool_denial(&caps(&[CAP_VIEW]), MCP_LIST_PEER_AGENTS_TOOL),
+            Some(CAP_ROSTER),
+            "holding only `view` must not reach the roster tool"
+        );
+        assert_eq!(
+            mcp_tool_denial(&caps(&[CAP_ROSTER]), MCP_LIST_PEER_AGENTS_TOOL),
+            None
+        );
+        // The ticked list performs nothing judged: allowed even holding
+        // nothing, for both roles.
+        assert_eq!(mcp_tool_denial(&none, MCP_LIST_PROFILES_TOOL), None);
+        assert_eq!(mcp_tool_denial(&all_caps(), MCP_LIST_PROFILES_TOOL), None);
+        assert_eq!(
+            mcp_tool_denial(&none, MCP_SEND_MESSAGE_TOOL),
+            Some(CAP_SEND)
+        );
+        assert_eq!(
+            mcp_tool_denial(&caps(&[CAP_SEND]), MCP_SEND_MESSAGE_TOOL),
+            None
+        );
+        assert_eq!(
+            mcp_tool_denial(&none, MCP_CREATE_AGENT_TOOL),
+            Some(CAP_CREATE_SESSIONS)
+        );
+        // The create row understated its tool until the re-audit caught it:
+        // the tool always sends the mandatory initial prompt, so
+        // `create_sessions` without `send` is refused with the policy's own
+        // `send` sentence — and `send` without `create_sessions` still meets
+        // the create half first.
+        assert_eq!(
+            mcp_tool_denial(&caps(&[CAP_CREATE_SESSIONS]), MCP_CREATE_AGENT_TOOL),
+            Some(CAP_SEND)
+        );
+        assert_eq!(
+            mcp_tool_denial(
+                &caps(&[CAP_VIEW, CAP_CREATE_SESSIONS]),
+                MCP_CREATE_AGENT_TOOL
+            ),
+            Some(CAP_SEND),
+            "that may create but may not talk creates nothing through this tool"
+        );
+        assert_eq!(
+            mcp_tool_denial(
+                &caps(&[CAP_CREATE_SESSIONS, CAP_SEND]),
+                MCP_CREATE_AGENT_TOOL
+            ),
+            None
+        );
+        assert_eq!(
+            mcp_tool_denial(&none, MCP_ANSWER_PERMISSION_TOOL),
+            Some(CAP_ANSWER_PERMISSIONS)
+        );
+        assert_eq!(
+            mcp_tool_denial(&caps(&[CAP_ANSWER_PERMISSIONS]), MCP_ANSWER_PERMISSION_TOOL),
+            None
+        );
+        // The move tool, both halves: without `send` the mode half fires
+        // first; with `send` the mode half allows and the model half —
+        // which needs `admin` — refuses instead.
+        assert_eq!(
+            mcp_tool_denial(&none, MCP_SET_AGENT_PROFILE_TOOL),
+            Some(CAP_SEND)
+        );
+        assert_eq!(
+            mcp_tool_denial(&caps(&[CAP_SEND]), MCP_SET_AGENT_PROFILE_TOOL),
+            Some(CAP_ADMIN)
+        );
+        assert_eq!(
+            mcp_tool_denial(&all_caps(), MCP_SET_AGENT_PROFILE_TOOL),
+            None,
+            "holding every capability, `admin` included, applies the whole profile"
+        );
+        assert_eq!(
+            mcp_tool_denial(&operational_caps(), MCP_SET_AGENT_PROFILE_TOOL),
+            Some(CAP_ADMIN),
+            "holding every act-named capability is still refused the model half"
+        );
+        // A name with no row is refused, whatever the device holds.
+        for held in [&none, &all_caps()] {
             assert_eq!(
-                mcp_tool_denial(role, &none, MCP_ROSTER_TOOL),
-                Some(CAP_VIEW)
+                mcp_tool_denial(held, "devboule_no_such_tool"),
+                Some(UNLISTED_TOOL)
             );
-            assert_eq!(
-                mcp_tool_denial(role, &caps(&[CAP_VIEW]), MCP_ROSTER_TOOL),
-                None
-            );
-            // The activity read is the roster's act: a peer without `view`
-            // is refused, a peer with it reads one agent's metadata.
-            assert_eq!(
-                mcp_tool_denial(role, &none, MCP_ACTIVITY_TOOL),
-                Some(CAP_VIEW)
-            );
-            assert_eq!(
-                mcp_tool_denial(role, &caps(&[CAP_VIEW]), MCP_ACTIVITY_TOOL),
-                None
-            );
-            // The devices read is the roster's act: this daemon's own paired
-            // rows, refused without `view`, allowed with it.
-            assert_eq!(
-                mcp_tool_denial(role, &none, MCP_LIST_DEVICES_TOOL),
-                Some(CAP_VIEW)
-            );
-            assert_eq!(
-                mcp_tool_denial(role, &caps(&[CAP_VIEW]), MCP_LIST_DEVICES_TOOL),
-                None
-            );
-            // The peer roster is judged under its own capability, not `view`:
-            // every pairing holds `view`, and the roster is the pairing
-            // user's whole live surface.
-            assert_eq!(
-                mcp_tool_denial(role, &none, MCP_LIST_PEER_AGENTS_TOOL),
-                Some(CAP_ROSTER)
-            );
-            assert_eq!(
-                mcp_tool_denial(role, &caps(&[CAP_VIEW]), MCP_LIST_PEER_AGENTS_TOOL),
-                Some(CAP_ROSTER),
-                "{role:?} holding only `view` must not reach the roster tool"
-            );
-            assert_eq!(
-                mcp_tool_denial(role, &caps(&[CAP_ROSTER]), MCP_LIST_PEER_AGENTS_TOOL),
-                None
-            );
-            // The ticked list performs nothing judged: allowed even holding
-            // nothing, for both roles.
-            assert_eq!(mcp_tool_denial(role, &none, MCP_LIST_PROFILES_TOOL), None);
-            assert_eq!(
-                mcp_tool_denial(role, &all_caps(), MCP_LIST_PROFILES_TOOL),
-                None
-            );
-            assert_eq!(
-                mcp_tool_denial(role, &none, MCP_SEND_MESSAGE_TOOL),
-                Some(CAP_SEND)
-            );
-            assert_eq!(
-                mcp_tool_denial(role, &caps(&[CAP_SEND]), MCP_SEND_MESSAGE_TOOL),
-                None
-            );
-            assert_eq!(
-                mcp_tool_denial(role, &none, MCP_CREATE_AGENT_TOOL),
-                Some(CAP_CREATE_SESSIONS)
-            );
-            // The create row understated its tool until the re-audit caught it:
-            // the tool always sends the mandatory initial prompt, so
-            // `create_sessions` without `send` is refused with the policy's own
-            // `send` sentence — and `send` without `create_sessions` still meets
-            // the create half first.
-            assert_eq!(
-                mcp_tool_denial(role, &caps(&[CAP_CREATE_SESSIONS]), MCP_CREATE_AGENT_TOOL),
-                Some(CAP_SEND)
-            );
-            assert_eq!(
-                mcp_tool_denial(
-                    role,
-                    &caps(&[CAP_VIEW, CAP_CREATE_SESSIONS]),
-                    MCP_CREATE_AGENT_TOOL
-                ),
-                Some(CAP_SEND),
-                "{role:?} that may create but may not talk creates nothing through this tool"
-            );
-            assert_eq!(
-                mcp_tool_denial(
-                    role,
-                    &caps(&[CAP_CREATE_SESSIONS, CAP_SEND]),
-                    MCP_CREATE_AGENT_TOOL
-                ),
-                None
-            );
-            assert_eq!(
-                mcp_tool_denial(role, &none, MCP_ANSWER_PERMISSION_TOOL),
-                Some(CAP_ANSWER_PERMISSIONS)
-            );
-            assert_eq!(
-                mcp_tool_denial(
-                    role,
-                    &caps(&[CAP_ANSWER_PERMISSIONS]),
-                    MCP_ANSWER_PERMISSION_TOOL
-                ),
-                None
-            );
-            // The move tool, both halves: without `send` the mode half fires
-            // first; with `send` the mode half allows and the model half —
-            // which needs `admin` — refuses instead.
-            assert_eq!(
-                mcp_tool_denial(role, &none, MCP_SET_AGENT_PROFILE_TOOL),
-                Some(CAP_SEND)
-            );
-            assert_eq!(
-                mcp_tool_denial(role, &caps(&[CAP_SEND]), MCP_SET_AGENT_PROFILE_TOOL),
-                Some(CAP_ADMIN)
-            );
-            assert_eq!(
-                mcp_tool_denial(role, &all_caps(), MCP_SET_AGENT_PROFILE_TOOL),
-                None,
-                "{role:?} holding every capability, `admin` included, applies the whole profile"
-            );
-            assert_eq!(
-                mcp_tool_denial(role, &operational_caps(), MCP_SET_AGENT_PROFILE_TOOL),
-                Some(CAP_ADMIN),
-                "{role:?} holding every act-named capability is still refused the model half"
-            );
-            // A name with no row is refused, whatever the device holds.
-            for held in [&none, &all_caps()] {
-                assert_eq!(
-                    mcp_tool_denial(role, held, "devboule_no_such_tool"),
-                    Some(UNLISTED_TOOL)
-                );
-            }
         }
     }
 
@@ -2537,20 +2542,18 @@ pub(crate) mod tests {
     #[test]
     fn the_oracle_search_rides_its_own_capability() {
         use crate::provider_catalog::MCP_ORACLE_SEARCH_TOOL;
-        for role in [PeerRole::Client, PeerRole::Daemon] {
-            assert_eq!(
-                mcp_tool_denial(role, &caps(&[]), MCP_ORACLE_SEARCH_TOOL),
+        assert_eq!(
+                mcp_tool_denial(&caps(&[]), MCP_ORACLE_SEARCH_TOOL),
                 Some(CAP_SEARCH),
-                "{role:?} holding nothing: devboule_oracle_search is refused for the missing `search` capability"
+                "holding nothing: devboule_oracle_search is refused for the missing `search` capability"
             );
-            assert_eq!(
-                mcp_tool_denial(role, &caps(&[CAP_VIEW]), MCP_ORACLE_SEARCH_TOOL),
-                Some(CAP_SEARCH),
-                "{role:?} holding `view` but not `search`: devboule_oracle_search names what is missing"
-            );
-            assert_eq!(
+        assert_eq!(
+            mcp_tool_denial(&caps(&[CAP_VIEW]), MCP_ORACLE_SEARCH_TOOL),
+            Some(CAP_SEARCH),
+            "holding `view` but not `search`: devboule_oracle_search names what is missing"
+        );
+        assert_eq!(
                 mcp_tool_denial(
-                    role,
                     &caps(&[
                         CAP_VIEW,
                         CAP_SEND,
@@ -2561,25 +2564,24 @@ pub(crate) mod tests {
                     MCP_ORACLE_SEARCH_TOOL
                 ),
                 Some(CAP_SEARCH),
-                "{role:?} holding every act-named capability but no `search` is still refused devboule_oracle_search"
+                "holding every act-named capability but no `search` is still refused devboule_oracle_search"
             );
-            assert_eq!(
-                mcp_tool_denial(role, &caps(&[CAP_SEARCH]), MCP_ORACLE_SEARCH_TOOL),
-                None,
-                "{role:?} holding `search` reaches devboule_oracle_search"
-            );
-            assert_eq!(
-                mcp_tool_denial(role, &all_caps(), MCP_ORACLE_SEARCH_TOOL),
-                None,
-                "{role:?} holding the whole table reaches devboule_oracle_search"
-            );
-            // `admin` alone is what the old row accepted; it must not be enough any more.
-            assert_eq!(
-                mcp_tool_denial(role, &caps(&[CAP_ADMIN]), MCP_ORACLE_SEARCH_TOOL),
-                Some(CAP_SEARCH),
-                "{role:?} holding only `admin` no longer reaches devboule_oracle_search"
-            );
-        }
+        assert_eq!(
+            mcp_tool_denial(&caps(&[CAP_SEARCH]), MCP_ORACLE_SEARCH_TOOL),
+            None,
+            "holding `search` reaches devboule_oracle_search"
+        );
+        assert_eq!(
+            mcp_tool_denial(&all_caps(), MCP_ORACLE_SEARCH_TOOL),
+            None,
+            "holding the whole table reaches devboule_oracle_search"
+        );
+        // `admin` alone is what the old row accepted; it must not be enough any more.
+        assert_eq!(
+            mcp_tool_denial(&caps(&[CAP_ADMIN]), MCP_ORACLE_SEARCH_TOOL),
+            Some(CAP_SEARCH),
+            "holding only `admin` no longer reaches devboule_oracle_search"
+        );
     }
 
     /// The wire sentence the door renders a `Deny` payload with is the wire's
@@ -3235,15 +3237,11 @@ pub(crate) mod tests {
             },
             ClientMessage::DevicesList { id: 1 },
             ClientMessage::PeerAgentsList { id: 1 },
-            ClientMessage::PairingStart {
-                id: 1,
-                role: PeerRole::Client,
-            },
+            ClientMessage::PairingStart { id: 1 },
             ClientMessage::PairingComplete {
                 id: 1,
                 address: "100.64.0.2:47831".to_string(),
                 code: devboule_protocol::PairingSecret::new("ABCDEFGH"),
-                role: PeerRole::Client,
             },
             ClientMessage::PairingConfirm {
                 id: 1,
@@ -3341,26 +3339,24 @@ pub(crate) mod tests {
                 "the matrix arm must spell the wire name"
             );
             let (without_caps, with_operational, with_all) = matrix_row(sample);
-            for role in [PeerRole::Client, PeerRole::Daemon] {
-                assert_eq!(
-                    peer_allows(role, &none, sample),
-                    without_caps,
-                    "{role} with no capability on {}",
-                    sample.name()
-                );
-                assert_eq!(
-                    peer_allows(role, &operational_caps(), sample),
-                    with_operational,
-                    "{role} with every act-named capability on {}",
-                    sample.name()
-                );
-                assert_eq!(
-                    peer_allows(role, &all_caps(), sample),
-                    with_all,
-                    "{role} with every capability on {}",
-                    sample.name()
-                );
-            }
+            assert_eq!(
+                peer_allows(&none, sample),
+                without_caps,
+                "with no capability on {}",
+                sample.name()
+            );
+            assert_eq!(
+                peer_allows(&operational_caps(), sample),
+                with_operational,
+                "with every act-named capability on {}",
+                sample.name()
+            );
+            assert_eq!(
+                peer_allows(&all_caps(), sample),
+                with_all,
+                "with every capability on {}",
+                sample.name()
+            );
         }
     }
 
@@ -3400,67 +3396,70 @@ pub(crate) mod tests {
                 name: String::new(),
             },
         };
-        for role in [PeerRole::Client, PeerRole::Daemon] {
-            assert_eq!(
-                peer_allows(role, &Vec::new(), &read()),
-                PeerDecision::Deny(CAP_ADMIN)
-            );
-            assert_eq!(
-                peer_allows(role, &operational_caps(), &read()),
-                PeerDecision::Deny(CAP_ADMIN),
-                "{role:?} holding every act-named capability must not read deposited bytes"
-            );
-            assert_eq!(peer_allows(role, &all_caps(), &read()), PeerDecision::Allow);
-        }
+        assert_eq!(
+            peer_allows(&Vec::new(), &read()),
+            PeerDecision::Deny(CAP_ADMIN)
+        );
+        assert_eq!(
+            peer_allows(&operational_caps(), &read()),
+            PeerDecision::Deny(CAP_ADMIN),
+            "holding every act-named capability must not read deposited bytes"
+        );
+        assert_eq!(peer_allows(&all_caps(), &read()), PeerDecision::Allow);
     }
 
     #[test]
     fn a_peer_may_read_the_device_list_but_may_not_change_the_trusted_set() {
-        for role in [PeerRole::Client, PeerRole::Daemon] {
-            let devices = ClientMessage::DevicesList { id: 1 };
-            assert_eq!(
-                peer_allows(role, &all_caps(), &devices),
-                PeerDecision::Allow
+        let devices = ClientMessage::DevicesList { id: 1 };
+        assert_eq!(peer_allows(&all_caps(), &devices), PeerDecision::Allow);
+        for request in [
+            ClientMessage::PairingStart { id: 1 },
+            ClientMessage::PairingConfirm {
+                id: 1,
+                device_id: "dev-1".to_string(),
+                accept: true,
+            },
+            ClientMessage::PeerRevoke {
+                id: 1,
+                device_id: "dev-1".to_string(),
+            },
+            ClientMessage::PeerSetCaps {
+                id: 1,
+                device_id: "dev-1".to_string(),
+                caps: vec!["view".to_string()],
+            },
+        ] {
+            let decision = peer_allows(&all_caps(), &request);
+            assert!(
+                matches!(decision, PeerDecision::Deny(_)),
+                "may not send {request:?}"
             );
-            for request in [
-                ClientMessage::PairingStart {
-                    id: 1,
-                    role: PeerRole::Client,
-                },
-                ClientMessage::PairingConfirm {
-                    id: 1,
-                    device_id: "dev-1".to_string(),
-                    accept: true,
-                },
-                ClientMessage::PeerRevoke {
-                    id: 1,
-                    device_id: "dev-1".to_string(),
-                },
-                ClientMessage::PeerSetCaps {
-                    id: 1,
-                    device_id: "dev-1".to_string(),
-                    caps: vec!["view".to_string()],
-                },
-            ] {
-                let decision = peer_allows(role, &all_caps(), &request);
-                assert!(
-                    matches!(decision, PeerDecision::Deny(_)),
-                    "{role} may not send {request:?}"
-                );
-            }
         }
     }
 
     #[test]
-    fn a_remote_conn_carries_its_device_and_role() {
+    fn a_remote_conn_carries_its_device_and_scope() {
         let peer = ConnPeer::Remote {
             device_id: "dev-1".to_string(),
-            role: PeerRole::Daemon,
+            scope: PeerScope::PeerDevice,
             paired_by_user: Some("S-1-5-21-1".to_string()),
             binding: TransportBinding::tailnet("nstable", "node", "user@example.com"),
         };
         assert_eq!(peer.device_id(), Some("dev-1"));
-        assert_eq!(peer.role(), Some(PeerRole::Daemon));
+        assert_eq!(peer.scope(), PeerScope::PeerDevice);
+        // The scope is re-resolved from a hello that states presence, and a
+        // hello that states "no workspace" narrows a machine peer back to the
+        // paired user.
+        let narrowed = peer.with_scope(resolve_peer_scope(Some(false), PeerScope::PeerDevice));
+        assert_eq!(narrowed.scope(), PeerScope::PairedUser);
+        assert_eq!(
+            resolve_peer_scope(None, PeerScope::legacy(true)),
+            PeerScope::PeerDevice
+        );
+        assert_eq!(
+            resolve_peer_scope(None, PeerScope::legacy(false)),
+            PeerScope::PairedUser
+        );
     }
 
     #[test]

@@ -4,13 +4,14 @@ use rusqlite::Connection;
 
 use super::validate_agent_columns;
 
+use devboule_protocol::PeerRole;
 use devboule_protocol::{
-    PeerRole, SessionEvent, SessionOrigin, SessionOriginKind, SessionState, TranscriptIntegrity,
+    SessionEvent, SessionOrigin, SessionOriginKind, SessionState, TranscriptIntegrity,
 };
 
 use super::super::{
-    crc32, sample_session, tmp_journal, AuditRecord, Journal, JournalError, PeerRecord,
-    JOURNAL_MAX_AGE_MS, JOURNAL_MAX_SESSIONS, JOURNAL_SCHEMA_VERSION,
+    crc32, sample_session, tmp_journal, AuditRecord, Journal, JournalError, PeerMutation,
+    PeerRecord, JOURNAL_MAX_AGE_MS, JOURNAL_MAX_SESSIONS, JOURNAL_SCHEMA_VERSION,
 };
 use super::SCHEMA_SQL;
 
@@ -851,7 +852,7 @@ fn version_7_journal_migrates_to_v8_with_peers_audit_and_triggers() {
         .peer_upsert(PeerRecord {
             device_id: "dev-migrated".to_string(),
             display_name: "Host".to_string(),
-            role: "client".to_string(),
+            legacy_dialable: false,
             public_key: vec![1u8; 32],
             paired_by_user: Some("S-1-5-21-1".to_string()),
             binding_kind: "tailnet".to_string(),
@@ -870,7 +871,7 @@ fn version_7_journal_migrates_to_v8_with_peers_audit_and_triggers() {
     journal
         .audit_append(AuditRecord {
             device_id: "dev-migrated".to_string(),
-            role: "client".to_string(),
+            role: "paired-device".to_string(),
             claimed_origin: None,
             action: "Ping".to_string(),
             session_id: None,
@@ -1703,7 +1704,7 @@ fn v16_migration_adds_a_nullable_goal_column() {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("version");
     assert_eq!(version, JOURNAL_SCHEMA_VERSION);
-    assert_eq!(version, 16);
+    assert_eq!(version, 17, "the v17 peers migration runs after v16");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1752,5 +1753,204 @@ fn a_v16_migration_does_not_stamp_a_colliding_goal_column() {
         version, 15,
         "the stamp never commits — refused, not bricked"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The v17 migration: the peers table loses `role` and gains the v30 dial
+/// hint, and every other fact about a pairing survives untouched — the key
+/// bytes, the binding, the address, the timestamps, the pairing user and the
+/// capability array (copied, never re-derived). A revoked row stays revoked,
+/// a post-migration revoke and cap change still land, and the audit trail
+/// keeps the historical role words readable.
+#[test]
+fn a_v16_journal_migrates_to_the_roleless_peers_table_and_preserves_every_row() {
+    let (dir, path) = tmp_journal();
+    // A current file, then its peers table rewritten to the v8-v16 shape with
+    // the role column and its CHECK: the v17 migration is the only difference
+    // between this file and a real v16 journal.
+    Journal::open(&path)
+        .expect("create")
+        .flush()
+        .expect("flush");
+    let conn = Connection::open(&path).expect("v16 journal");
+    conn.execute_batch(
+        "DROP TABLE peers;
+         CREATE TABLE peers (
+             device_id TEXT PRIMARY KEY,
+             display_name TEXT NOT NULL,
+             role TEXT NOT NULL CHECK (role IN ('client','daemon')),
+             public_key BLOB NOT NULL,
+             paired_by_user TEXT,
+             binding_kind TEXT NOT NULL,
+             binding_stable_id TEXT,
+             binding_node_name TEXT,
+             binding_login_name TEXT,
+             address TEXT NOT NULL,
+             paired_at INTEGER NOT NULL,
+             revoked_at INTEGER,
+             caps TEXT NOT NULL
+         );",
+    )
+    .expect("the v16 peers shape");
+    let daemon_id = "11111111-1111-4111-8111-111111111111";
+    let client_id = "22222222-2222-4222-8222-222222222222";
+    conn.execute(
+        "INSERT INTO peers (
+                device_id, display_name, role, public_key, paired_by_user,
+                binding_kind, binding_stable_id, binding_node_name, binding_login_name,
+                address, paired_at, revoked_at, caps
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        rusqlite::params![
+            daemon_id,
+            "Desk",
+            "daemon",
+            vec![0xabu8; 32],
+            "S-1-5-21-1",
+            "tailnet",
+            "nDESK",
+            Some("desk.tailnet.ts.net."),
+            Some("user@example.com"),
+            "100.64.0.2:47831",
+            1_700_000_000_000_i64,
+            None::<i64>,
+            "[\"view\",\"send\"]",
+        ],
+    )
+    .expect("the daemon row");
+    conn.execute(
+        "INSERT INTO peers (
+                device_id, display_name, role, public_key, paired_by_user,
+                binding_kind, binding_stable_id, binding_node_name, binding_login_name,
+                address, paired_at, revoked_at, caps
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        rusqlite::params![
+            client_id,
+            "Phone",
+            "client",
+            vec![0xcdu8; 32],
+            None::<String>,
+            "tailnet",
+            "nPHONE",
+            None::<String>,
+            None::<String>,
+            "100.64.0.3:47831",
+            1_700_000_050_000_i64,
+            Some(1_700_000_100_000_i64),
+            "[\"view\",\"admin\"]",
+        ],
+    )
+    .expect("the revoked client row");
+    // Recent enough to survive the retention sweep every open runs.
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_millis() as i64;
+    conn.execute(
+        "INSERT INTO audit (at, device_id, role, claimed_origin, action, session_id, outcome)
+             VALUES (?2, ?1, 'daemon', NULL, 'PeerConnect', NULL, 'ok')",
+        rusqlite::params![daemon_id, now_ms - 1_000],
+    )
+    .expect("historical audit row");
+    conn.pragma_update(None, "user_version", 16)
+        .expect("v16 version");
+    drop(conn);
+
+    let journal = Journal::open(&path).expect("migrate");
+    let rows = journal.peers_list().expect("peers");
+    assert_eq!(rows.len(), 2, "both legacy rows survive");
+    let daemon = rows
+        .iter()
+        .find(|row| row.device_id == daemon_id)
+        .expect("the daemon row");
+    assert!(
+        daemon.legacy_dialable,
+        "the old daemon tag is the dial hint"
+    );
+    assert_eq!(daemon.display_name, "Desk");
+    assert_eq!(daemon.public_key, vec![0xabu8; 32], "key bytes survive");
+    assert_eq!(daemon.paired_by_user.as_deref(), Some("S-1-5-21-1"));
+    assert_eq!(daemon.binding_kind, "tailnet");
+    assert_eq!(daemon.binding_stable_id.as_deref(), Some("nDESK"));
+    assert_eq!(
+        daemon.binding_node_name.as_deref(),
+        Some("desk.tailnet.ts.net.")
+    );
+    assert_eq!(
+        daemon.binding_login_name.as_deref(),
+        Some("user@example.com")
+    );
+    assert_eq!(daemon.address, "100.64.0.2:47831");
+    assert_eq!(daemon.paired_at, 1_700_000_000_000);
+    assert_eq!(daemon.revoked_at, None);
+    assert_eq!(
+        daemon.caps,
+        vec!["view".to_string(), "send".to_string()],
+        "the grant is copied, never refilled"
+    );
+    let client = rows
+        .iter()
+        .find(|row| row.device_id == client_id)
+        .expect("the client row");
+    assert!(!client.legacy_dialable);
+    assert_eq!(client.public_key, vec![0xcdu8; 32]);
+    assert_eq!(client.paired_by_user, None);
+    assert_eq!(client.binding_node_name, None);
+    assert_eq!(client.revoked_at, Some(1_700_000_100_000));
+    assert_eq!(client.caps, vec!["view".to_string(), "admin".to_string()]);
+
+    // A revoke and a capability change still land on the migrated table.
+    assert_eq!(
+        journal
+            .peer_set_caps(daemon_id, vec!["view".to_string()])
+            .expect("caps"),
+        PeerMutation::Updated
+    );
+    assert_eq!(
+        journal.peer_revoke(client_id, 7).expect("revoke"),
+        PeerMutation::Revoked,
+        "a revoked row stays revoked through the migration"
+    );
+    assert_eq!(
+        journal.peer_revoke(daemon_id, 7).expect("revoke"),
+        PeerMutation::Updated
+    );
+    journal.flush().expect("flush");
+    drop(journal);
+
+    let check = Connection::open(&path).expect("reopen");
+    let role_columns: i64 = check
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('peers') WHERE name = 'role'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("peers shape");
+    assert_eq!(role_columns, 0, "the live table carries no role");
+    let version: i32 = check
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("version");
+    assert_eq!(version, JOURNAL_SCHEMA_VERSION);
+    let (audit_role, action): (String, String) = check
+        .query_row(
+            "SELECT role, action FROM audit ORDER BY id DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("audit row");
+    assert_eq!(action, "PeerConnect");
+    assert_eq!(
+        audit_role, "daemon",
+        "a historical audit role stays readable as it was written"
+    );
+    let (caps, revoked): (String, Option<i64>) = check
+        .query_row(
+            "SELECT caps, revoked_at FROM peers WHERE device_id = ?1",
+            [daemon_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("the migrated daemon row");
+    assert_eq!(caps, "[\"view\"]");
+    assert_eq!(revoked, Some(7));
+    drop(check);
     let _ = std::fs::remove_dir_all(&dir);
 }

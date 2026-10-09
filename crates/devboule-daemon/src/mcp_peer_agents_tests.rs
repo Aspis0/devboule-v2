@@ -7,7 +7,7 @@ fn row(device_id: &str, address: &str, paired_by: Option<String>) -> PeerRecord 
     PeerRecord {
         device_id: device_id.to_string(),
         display_name: format!("Device {device_id}"),
-        role: "daemon".to_string(),
+        legacy_dialable: true,
         public_key: vec![7u8; 32],
         paired_by_user: paired_by,
         binding_kind: "tailnet".to_string(),

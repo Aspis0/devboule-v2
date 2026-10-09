@@ -9,6 +9,7 @@ use super::tests::{
 };
 use super::*;
 use crate::origin_chain::{hop, Chain};
+use crate::peer_policy::PeerScope;
 use crate::raster_metadata::clean_png;
 
 /// A far agent writes to a local one, which writes on to a second local one:
@@ -29,7 +30,7 @@ fn origin_chain_survives_local_and_peer_a2a() {
             Box::new(RecordingWriter(Arc::clone(sink))),
         );
     }
-    let peer = remote_conn(PeerRole::Daemon, Some("S-1-5-21-chain"));
+    let peer = remote_conn(PeerScope::PeerDevice, Some("S-1-5-21-chain"));
     let local = ConnHandle::new(42);
 
     registry

@@ -802,15 +802,13 @@ impl AgentCreator {
     /// wire message the door names for this tool (`SessionCreate`; that arm reads
     /// only the capability set, so the placeholder kind never decides). The lookup
     /// is fail-closed — an unknown, unreadable or revoked device holds nothing —
-    /// and an origin the daemon cannot read (peer-shaped without device or role)
-    /// is not a licence either.
+    /// and an origin the daemon cannot read (peer-shaped without a device) is not
+    /// a licence either.
     pub(crate) fn may_create_sessions(&self, state: &crate::server::ServerState) -> bool {
         match self.origin.kind {
             SessionOriginKind::Local => true,
             SessionOriginKind::Peer => {
-                let (Some(device), Some(role)) =
-                    (self.origin.device_id.as_deref(), self.origin.role)
-                else {
+                let Some(device) = self.origin.device_id.as_deref() else {
                     return false;
                 };
                 let caps = state.peer_caps(device);
@@ -826,7 +824,7 @@ impl AgentCreator {
                     rows: None,
                 };
                 matches!(
-                    crate::peer_policy::peer_allows(role, &caps, &request),
+                    crate::peer_policy::peer_allows(&caps, &request),
                     crate::peer_policy::PeerDecision::Allow
                 )
             }

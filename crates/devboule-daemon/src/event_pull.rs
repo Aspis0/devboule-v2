@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -217,6 +217,9 @@ pub struct ConnHandle {
     /// is assumed to want. A connection the daemon builds for itself has no
     /// hello and therefore no leases.
     remote_hosts: AtomicBool,
+    /// The app/daemon dialect this connection negotiated. See
+    /// [`ConnHandle::negotiated_protocol`].
+    negotiated_protocol: AtomicU32,
     /// Whether this connection's hello negotiated `browser.host`.
     ///
     /// Defaults to **false**: being the place agents' browser commands run is
@@ -303,6 +306,21 @@ impl ConnHandle {
         self.remote_hosts.load(Ordering::SeqCst)
     }
 
+    /// Record the protocol dialect this connection negotiated. Called once, by
+    /// the serve loop, before this connection reads a request. It decides
+    /// whether a devices-family reply carries the v30 role projection.
+    pub fn set_negotiated_protocol(&self, version: u32) {
+        self.negotiated_protocol.store(version, Ordering::SeqCst);
+    }
+
+    /// The app/daemon dialect this connection negotiated. Defaults to the
+    /// current protocol for a connection the daemon built for itself: such a
+    /// connection never asks for device rows, and the default keeps it on the
+    /// roleless shape if it ever did.
+    pub fn negotiated_protocol(&self) -> u32 {
+        self.negotiated_protocol.load(Ordering::SeqCst)
+    }
+
     /// Record what this connection's hello agreed for the browser host. Called
     /// once, by the serve loop, before this connection reads a request.
     pub fn set_browser_host_negotiated(&self, negotiated: bool) {
@@ -374,6 +392,7 @@ impl ConnHandle {
             session_tasks: AtomicBool::new(true),
             resume_outcomes: AtomicBool::new(true),
             remote_hosts: AtomicBool::new(false),
+            negotiated_protocol: AtomicU32::new(devboule_protocol::PROTOCOL_VERSION),
             browser_host: AtomicBool::new(false),
             plan_usage_live: AtomicBool::new(false),
             agent_resumed: AtomicBool::new(false),

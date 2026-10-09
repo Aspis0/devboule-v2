@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::device_identity::MAX_DISPLAY_NAME_CHARS;
+use devboule_protocol::PeerRole;
 use std::path::PathBuf;
 
 fn tmp_paths() -> (PathBuf, crate::paths::RuntimePaths) {
@@ -43,7 +44,7 @@ fn a_client_pairing_completes_and_writes_both_rows() {
     let (dir_b, server_b) = server("responder");
     let service_a = PairingService::new();
     let service_b = Arc::new(PairingService::new());
-    let (code, _expires_at) = service_b.start(PeerRole::Client).expect("a code");
+    let (code, _expires_at) = service_b.start().expect("a code");
     let transport = Arc::new(crate::peer_transport::TestTransport::default());
     // `complete` binds the peer through this device's transport, so the
     // stub has to be *installed*, not merely passed.
@@ -73,7 +74,7 @@ fn a_client_pairing_completes_and_writes_both_rows() {
     });
 
     let outcome = service_a
-        .complete(&server_a, &address, &code, PeerRole::Client)
+        .complete(&server_a, &address, &code)
         .expect("the initiator completes the exchange");
     let pending = match outcome {
         PairingOutcome::Pending(pending) => pending,
@@ -89,7 +90,7 @@ fn a_client_pairing_completes_and_writes_both_rows() {
         .device_id
         .clone();
     assert_eq!(pending.device_id, responder_id);
-    assert_eq!(pending.role, PeerRole::Client);
+    assert_eq!(pending.role, Some(PeerRole::Client));
     assert!(!pending.key_fingerprint.is_empty());
 
     // B parked it, keyed by the device that typed the code (A). The
@@ -125,7 +126,7 @@ fn a_client_pairing_completes_and_writes_both_rows() {
         ConfirmOutcome::Declined => panic!("an accept must produce a row"),
     };
     assert_eq!(row.device_id, initiator_id);
-    assert_eq!(row.role, PeerRole::Client);
+    assert_eq!(row.role, Some(PeerRole::Client));
     assert!(row.revoked_at.is_none());
     assert_eq!(row.caps, new_pairing_caps());
 
@@ -149,7 +150,10 @@ fn a_client_pairing_completes_and_writes_both_rows() {
     assert_eq!(a_row.device_id, responder_id, "A's row names B");
     // `peers()` hands back the stored record, whose role is the wire
     // string, not the enum.
-    assert_eq!(a_row.role, "client");
+    assert!(
+        !a_row.legacy_dialable,
+        "a roleless pairing keeps no v30 dial hint"
+    );
     assert_eq!(a_row.caps, new_pairing_caps());
     assert!(a_row.revoked_at.is_none());
 
@@ -159,15 +163,13 @@ fn a_client_pairing_completes_and_writes_both_rows() {
     let _ = std::fs::remove_dir_all(&dir_b);
 }
 
-/// Pair two in-process services over the given loopback bind, both sides
-/// declaring `role`, the initiator advertising `initiator_listen_port`
-/// from its listener state (`None` when it has nothing to advertise). A
-/// `Daemon` pairing writes the responder's row inside the exchange; a
-/// `Client` pairing parks at the responder and is confirmed here. Returns
-/// the responder's runtime directory, its state, and the address it
+/// Pair two in-process services over the given loopback bind, the initiator
+/// advertising `initiator_listen_port` from its listener state (`None` when it
+/// has nothing to advertise). Every current pairing is roleless: the responder
+/// parks it and the person there confirms, which is what the helper does.
+/// Returns the responder's runtime directory, its state, and the address it
 /// recorded for the initiator.
 fn a_pairing_completes_and_the_responder_records(
-    role: PeerRole,
     initiator_listen_port: Option<u16>,
     bind: &str,
 ) -> (PathBuf, Arc<ServerState>, String) {
@@ -181,7 +183,7 @@ fn a_pairing_completes_and_the_responder_records(
     }
     let service_a = PairingService::new();
     let service_b = Arc::new(PairingService::new());
-    let (code, _expires_at) = service_b.start(role).expect("a code");
+    let (code, _expires_at) = service_b.start().expect("a code");
     let transport = Arc::new(crate::peer_transport::TestTransport::default());
     assert!(server_a.set_peer_transport(transport.clone()).is_ok());
 
@@ -206,53 +208,56 @@ fn a_pairing_completes_and_the_responder_records(
         );
     });
 
-    service_a
-        .complete(&server_a, &address, &code, role)
-        .expect("the initiator completes the exchange");
-    let recorded = match role {
-        PeerRole::Daemon => {
-            join_bounded(responder, "the responder's pairing thread");
-            let rows = server_b.peers().expect("the responder's rows");
-            assert_eq!(rows.len(), 1, "exactly one row at the responder");
-            rows[0].address.clone()
-        }
-        PeerRole::Client => {
-            let initiator_id = server_a
-                .device_identity()
-                .as_ref()
-                .expect("A has an identity")
-                .device_id
-                .clone();
-            // The initiator's `complete` returns before the responder thread
-            // has parked the pairing, and a confirm that beats the park is
-            // answered UnknownPending — the same wait the happy-path test
-            // makes before its own confirm.
-            let deadline = Instant::now() + bound::THREAD;
-            loop {
-                if !service_b.pending_snapshot().is_empty() {
-                    break;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "the responder never parked the pairing"
-                );
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            let row = match service_b
-                .confirm(&server_b, &initiator_id, true)
-                .expect("confirm")
-            {
-                ConfirmOutcome::Accepted(row) => *row,
-                ConfirmOutcome::Declined => panic!("an accept must produce a row"),
-            };
-            join_bounded(responder, "the responder's pairing thread");
-            row.address
+    let pending = match service_a
+        .complete(&server_a, &address, &code)
+        .expect("the initiator completes the exchange")
+    {
+        PairingOutcome::Pending(pending) => pending,
+        PairingOutcome::Done(_) => {
+            panic!("a roleless pairing is always parked: the far side has not confirmed yet")
         }
     };
+    assert_eq!(
+        pending.device_id,
+        server_b
+            .device_identity()
+            .as_ref()
+            .expect("B has an identity")
+            .device_id,
+        "the initiator's card names the device that has to confirm"
+    );
+    let initiator_id = server_a
+        .device_identity()
+        .as_ref()
+        .expect("A has an identity")
+        .device_id
+        .clone();
+    // The initiator's `complete` returns before the responder thread has
+    // parked the pairing, and a confirm that beats the park is answered
+    // UnknownPending — so wait for the park, as the happy-path test does.
+    let deadline = Instant::now() + bound::THREAD;
+    loop {
+        if !service_b.pending_snapshot().is_empty() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the responder never parked the pairing"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let row = match service_b
+        .confirm(&server_b, &initiator_id, true)
+        .expect("confirm")
+    {
+        ConfirmOutcome::Accepted(row) => *row,
+        ConfirmOutcome::Declined => panic!("an accept must produce a row"),
+    };
+    join_bounded(responder, "the responder's pairing thread");
 
     drop(server_a);
     let _ = std::fs::remove_dir_all(&dir_a);
-    (dir_b, server_b, recorded)
+    (dir_b, server_b, row.address)
 }
 
 /// The responder's row must record the listener port the initiator
@@ -263,7 +268,7 @@ fn a_pairing_completes_and_the_responder_records(
 #[test]
 fn the_responder_records_the_initiators_advertised_listener_port() {
     let (dir_b, server_b, recorded) =
-        a_pairing_completes_and_the_responder_records(PeerRole::Daemon, Some(47890), "127.0.0.1:0");
+        a_pairing_completes_and_the_responder_records(Some(47890), "127.0.0.1:0");
     assert_eq!(
         recorded, "127.0.0.1:47890",
         "the recorded port is the advertised listener, not the pairing socket's source port"
@@ -279,7 +284,7 @@ fn the_responder_records_the_initiators_advertised_listener_port() {
 #[test]
 fn the_responder_composes_an_ipv6_initiator_address_that_parses() {
     let (dir_b, server_b, recorded) =
-        a_pairing_completes_and_the_responder_records(PeerRole::Daemon, Some(47890), "[::1]:0");
+        a_pairing_completes_and_the_responder_records(Some(47890), "[::1]:0");
     assert_eq!(
         recorded.parse::<SocketAddr>(),
         Ok("[::1]:47890"
@@ -297,7 +302,7 @@ fn the_responder_composes_an_ipv6_initiator_address_that_parses() {
 #[test]
 fn an_initiator_that_advertises_no_port_is_recorded_with_port_zero() {
     let (dir_b, server_b, recorded) =
-        a_pairing_completes_and_the_responder_records(PeerRole::Client, None, "127.0.0.1:0");
+        a_pairing_completes_and_the_responder_records(None, "127.0.0.1:0");
     assert_eq!(
         recorded, "127.0.0.1:0",
         "an absent advertisement is recorded as zero, never guessed"
@@ -316,7 +321,7 @@ fn the_listener_advertisement_keeps_its_wire_key() {
     let payload = PairPayload {
         device_id: "6f1e5b7a-0000-4000-8000-00000000c0dd".to_string(),
         display_name: "Peer".to_string(),
-        role: PeerRole::Daemon,
+        role: Some(PeerRole::Daemon),
         public_key: String::new(),
         listen_port: Some(47831),
     };
@@ -328,22 +333,38 @@ fn the_listener_advertisement_keeps_its_wire_key() {
     );
 }
 
-/// A `Daemon` initiator promises to be callable, so it must have a
-/// listener to advertise. Without one the responder would record `:0`,
-/// both screens would say paired, and the row would be dead on arrival —
-/// and "re-pair" would reproduce the same `0` forever. The refusal is the
-/// same one showing a code gets: start Tailscale, then pair again.
+/// A device that hosts a workspace promises to be callable, so it must have a
+/// listener to advertise. Without one the far side would record `:0`, both
+/// screens would say paired, and the row would be dead on arrival — and
+/// "re-pair" would reproduce the same `0` forever. A device with no workspace
+/// makes no such promise, so the same test below pairs without one. The refusal
+/// is the same one showing a code gets: start Tailscale, then pair again.
 #[test]
-fn a_daemon_initiator_without_a_listener_is_refused_not_recorded_as_zero() {
+fn a_workspace_host_without_a_listener_is_refused_not_recorded_as_zero() {
     let (dir, server) = server("no-listener-initiator");
+    let project_dir = dir.join("project");
+    std::fs::create_dir_all(&project_dir).expect("project dir");
+    let project = server
+        .sessions
+        .project_add(project_dir.to_str().expect("utf-8 path"))
+        .expect("project row");
+    server
+        .sessions
+        .workspace_create(
+            &project.id,
+            devboule_protocol::WorkspaceIsolation::Local,
+            None,
+        )
+        .expect("workspace row");
+    assert!(server.has_hosted_workspace(), "the setup made a host");
     assert!(server
         .set_peer_transport(Arc::new(NoListenerTransport))
         .is_ok());
     let service = PairingService::new();
-    let (code, _expires_at) = service.start(PeerRole::Daemon).expect("a code");
+    let (code, _expires_at) = service.start().expect("a code");
     let error = service
-        .complete(&server, "127.0.0.1:1", &code, PeerRole::Daemon)
-        .expect_err("a daemon initiator with no listener must be refused");
+        .complete(&server, "127.0.0.1:1", &code)
+        .expect_err("a workspace host with no listener must be refused");
     assert!(
         error.to_string().contains("listener"),
         "the refusal must name what is missing: {error}"
@@ -397,7 +418,7 @@ fn a_wrong_code_never_writes_a_row() {
     let (dir_b, server_b) = server("wrong-responder");
     let service_a = PairingService::new();
     let service_b = Arc::new(PairingService::new());
-    let (_real_code, _) = service_b.start(PeerRole::Client).expect("a code");
+    let (_real_code, _) = service_b.start().expect("a code");
     let wrong = PairingSecret::new("ZZZZ2345");
     let transport = Arc::new(crate::peer_transport::TestTransport::default());
     assert!(server_a.set_peer_transport(transport.clone()).is_ok());
@@ -423,7 +444,7 @@ fn a_wrong_code_never_writes_a_row() {
         );
     });
 
-    let outcome = service_a.complete(&server_a, &address, &wrong, PeerRole::Client);
+    let outcome = service_a.complete(&server_a, &address, &wrong);
     assert!(
         outcome.is_err(),
         "a wrong code must not complete the pairing: {outcome:?}"
@@ -795,7 +816,6 @@ fn three_wrong_codes_block_the_source_and_twelve_kill_the_code() {
     let mut state = State {
         active: Some(ActiveCode {
             code: PairingSecret::new("ABCDEFGH"),
-            role: PeerRole::Daemon,
             expires_at: Instant::now() + CODE_LIFETIME,
         }),
         ..State::default()
@@ -850,7 +870,7 @@ fn attempts_are_capped_per_source_per_window() {
 #[test]
 fn an_expired_code_is_no_longer_active_and_resets_the_lockouts() {
     let service = PairingService::new();
-    let (code, _expires_at) = service.start(PeerRole::Daemon).expect("code");
+    let (code, _expires_at) = service.start().expect("code");
     assert!(service.is_active());
     assert_eq!(code.as_str().len(), CODE_LEN);
     {
@@ -873,39 +893,32 @@ fn an_expired_code_is_no_longer_active_and_resets_the_lockouts() {
 #[test]
 fn only_one_code_is_active_at_a_time() {
     let service = PairingService::new();
-    let (first, _) = service.start(PeerRole::Client).expect("code");
-    let (second, _) = service.start(PeerRole::Daemon).expect("code");
+    let (first, _) = service.start().expect("code");
+    let (second, _) = service.start().expect("code");
     assert_ne!(first.as_str(), second.as_str());
     let state = service.state.lock().expect("lock");
-    assert_eq!(
-        state.active.as_ref().map(|a| a.role),
-        Some(PeerRole::Daemon)
+    assert!(
+        state.active.is_some(),
+        "the newest code replaced the older one"
     );
 }
 
 #[test]
 fn caps_are_validated_against_the_closed_set() {
     let ok = vec!["view".to_string(), "send".to_string()];
-    assert_eq!(validate_caps(PeerRole::Client, &ok).expect("ok"), ok);
-    assert!(validate_caps(PeerRole::Daemon, &[]).is_err());
-    assert!(validate_caps(PeerRole::Client, &["view".to_string(), "root".to_string()]).is_err());
-    assert!(validate_caps(PeerRole::Client, &["view".to_string(), "view".to_string()]).is_err());
+    assert_eq!(validate_caps(&ok).expect("ok"), ok);
+    assert!(validate_caps(&[]).is_err());
+    assert!(validate_caps(&["view".to_string(), "root".to_string()]).is_err());
+    assert!(validate_caps(&["view".to_string(), "view".to_string()]).is_err());
     assert!(
-        validate_caps(PeerRole::Client, &["send".to_string()]).is_err(),
-        "a client peer cannot lose 'view'"
+        validate_caps(&["send".to_string()]).is_ok(),
+        "no capability is tied to a role any more"
     );
     assert!(
-        validate_caps(PeerRole::Daemon, &["send".to_string()]).is_ok(),
-        "only the client role is required to keep 'view'"
-    );
-    assert!(
-        validate_caps(
-            PeerRole::Client,
-            &[
-                "view".to_string(),
-                crate::peer_policy::CAP_ADMIN.to_string()
-            ]
-        )
+        validate_caps(&[
+            "view".to_string(),
+            crate::peer_policy::CAP_ADMIN.to_string()
+        ])
         .is_ok(),
         "the administrative capability is a name this validator accepts"
     );
@@ -918,13 +931,13 @@ fn a_local_peer_record_carries_this_device_as_the_pairer() {
         &server,
         "6f1e5b7a-0000-4000-8000-00000000c0de",
         "Peer",
-        PeerRole::Client,
+        false,
         &[5u8; 32],
         TransportBinding::tailnet("npeer", "peer.tailnet.ts.net.", "user@example.com"),
         "100.64.0.2:47831".to_string(),
     )
     .expect("record");
-    assert_eq!(record.role, "client");
+    assert!(!record.legacy_dialable);
     assert_eq!(record.caps, new_pairing_caps());
     assert_eq!(record.paired_by_user, server.local_user_sid());
     assert!(record.revoked_at.is_none());
@@ -935,7 +948,7 @@ fn a_local_peer_record_carries_this_device_as_the_pairer() {
         &server,
         "not-a-uuid",
         "Peer",
-        PeerRole::Client,
+        false,
         &[5u8; 32],
         TransportBinding::tailnet("n", "n", "n"),
         "100.64.0.2:47831".to_string(),
@@ -945,7 +958,7 @@ fn a_local_peer_record_carries_this_device_as_the_pairer() {
         &server,
         "6f1e5b7a-0000-4000-8000-00000000c0df",
         "Peer",
-        PeerRole::Client,
+        false,
         &[5u8; 31],
         TransportBinding::tailnet("n", "n", "n"),
         "100.64.0.2:47831".to_string(),
@@ -964,7 +977,7 @@ fn re_pairing_a_live_device_is_refused_until_it_is_revoked() {
         &server,
         id,
         "Peer",
-        PeerRole::Daemon,
+        true,
         &[6u8; 32],
         TransportBinding::tailnet("npeer", "peer.", "user@example.com"),
         "100.64.0.2:47831".to_string(),
@@ -976,7 +989,7 @@ fn re_pairing_a_live_device_is_refused_until_it_is_revoked() {
         &server,
         id,
         "Peer",
-        PeerRole::Daemon,
+        true,
         &[7u8; 32],
         TransportBinding::tailnet("npeer", "peer.", "user@example.com"),
         "100.64.0.2:47831".to_string(),
@@ -988,7 +1001,7 @@ fn re_pairing_a_live_device_is_refused_until_it_is_revoked() {
         &server,
         id,
         "Peer",
-        PeerRole::Daemon,
+        true,
         &[7u8; 32],
         TransportBinding::tailnet("npeer", "peer.", "user@example.com"),
         "100.64.0.2:47831".to_string(),
@@ -1014,7 +1027,7 @@ fn a_pending_pairing_is_answered_by_confirm_and_writes_the_row_only_when_accepte
             token: 1,
             device_id: "6f1e5b7a-0000-4000-8000-00000000c0d2".to_string(),
             display_name: "Phone".to_string(),
-            role: PeerRole::Client,
+            legacy_dialable: false,
             key_fingerprint: crate::device_identity::key_fingerprint(&public_key),
             address: "100.64.0.2:47831".to_string(),
             public_key: public_key.clone(),
@@ -1023,7 +1036,7 @@ fn a_pending_pairing_is_answered_by_confirm_and_writes_the_row_only_when_accepte
             decision,
         });
     assert_eq!(service.pending_snapshot().len(), 1);
-    assert_eq!(service.pending_snapshot()[0].role, PeerRole::Client);
+    assert_eq!(service.pending_snapshot()[0].role, Some(PeerRole::Client));
 
     let row = match service
         .confirm(&server, "6f1e5b7a-0000-4000-8000-00000000c0d2", true)
@@ -1032,7 +1045,7 @@ fn a_pending_pairing_is_answered_by_confirm_and_writes_the_row_only_when_accepte
         ConfirmOutcome::Accepted(row) => *row,
         ConfirmOutcome::Declined => panic!("accepting must produce a row"),
     };
-    assert_eq!(row.role, PeerRole::Client);
+    assert_eq!(row.role, Some(PeerRole::Client));
     assert_eq!(row.display_name, "Phone");
     assert_eq!(row.caps, new_pairing_caps());
     assert_eq!(row.key_fingerprint.len(), 32);
@@ -1064,7 +1077,7 @@ fn declining_a_pending_pairing_writes_no_row_but_does_audit() {
             token: 1,
             device_id: "6f1e5b7a-0000-4000-8000-00000000c0d3".to_string(),
             display_name: "Phone".to_string(),
-            role: PeerRole::Client,
+            legacy_dialable: false,
             key_fingerprint: crate::device_identity::key_fingerprint(&[9u8; 32]),
             address: "100.64.0.2:47831".to_string(),
             public_key: vec![9u8; 32],
@@ -1119,7 +1132,7 @@ fn at_most_two_pairings_park_and_a_third_is_answered_busy() {
                 token: u64::try_from(index).unwrap_or(0),
                 device_id: format!("6f1e5b7a-0000-4000-8000-00000000000{index}"),
                 display_name: "Phone".to_string(),
-                role: PeerRole::Client,
+                legacy_dialable: false,
                 key_fingerprint: String::new(),
                 address: "100.64.0.2:47831".to_string(),
                 public_key: vec![1u8; 32],
@@ -1154,7 +1167,7 @@ fn a_code_pairs_only_once() {
     let service_a = PairingService::new();
     let service_c = PairingService::new();
     let service_b = Arc::new(PairingService::new());
-    let (code, _expires_at) = service_b.start(PeerRole::Client).expect("a code");
+    let (code, _expires_at) = service_b.start().expect("a code");
     let transport = Arc::new(crate::peer_transport::TestTransport::default());
     assert!(server_a.set_peer_transport(transport.clone()).is_ok());
     assert!(server_c.set_peer_transport(transport.clone()).is_ok());
@@ -1193,7 +1206,7 @@ fn a_code_pairs_only_once() {
 
     // The first candidate pairs: this device reports it as pending.
     let first = service_a
-        .complete(&server_a, &address, &code, PeerRole::Client)
+        .complete(&server_a, &address, &code)
         .expect("the first candidate pairs");
     assert!(
         matches!(first, PairingOutcome::Pending(_)),
@@ -1237,7 +1250,7 @@ fn a_code_pairs_only_once() {
     assert!(matches!(accepted, ConfirmOutcome::Accepted(_)));
 
     // The second candidate presents the same code and is refused.
-    let second = service_c.complete(&server_c, &address, &code, PeerRole::Client);
+    let second = service_c.complete(&server_c, &address, &code);
     assert!(
         second.is_err(),
         "a second pairing with the same code must fail, got {second:?}"
@@ -1319,9 +1332,9 @@ fn a_pairing_target_must_be_a_tailnet_address() {
 fn pairing_complete_refuses_a_non_tailnet_address() {
     let (dir, server) = server("address");
     let service = PairingService::new();
-    let (code, _expires_at) = service.start(PeerRole::Daemon).expect("a code");
+    let (code, _expires_at) = service.start().expect("a code");
     let error = service
-        .complete(&server, "8.8.8.8:47831", &code, PeerRole::Client)
+        .complete(&server, "8.8.8.8:47831", &code)
         .expect_err("a public address must be refused");
     let message = error.to_string();
     assert!(
@@ -1333,9 +1346,7 @@ fn pairing_complete_refuses_a_non_tailnet_address() {
         "the refusal must not carry the code: {message}"
     );
     // And a malformed address is still refused, by the earlier parse.
-    assert!(service
-        .complete(&server, "not-an-address", &code, PeerRole::Client)
-        .is_err());
+    assert!(service.complete(&server, "not-an-address", &code).is_err());
 
     drop(server);
     let _ = std::fs::remove_dir_all(&dir);
@@ -1348,7 +1359,7 @@ fn a_payload_name_that_cannot_be_shown_is_refused() {
     let payload = |name: &str| PairPayload {
         device_id: "6f1e5b7a-0000-4000-8000-00000000c0d9".to_string(),
         display_name: name.to_string(),
-        role: PeerRole::Client,
+        role: Some(PeerRole::Client),
         public_key: String::new(),
         listen_port: None,
     };
@@ -1387,7 +1398,7 @@ fn a_peer_record_refuses_a_name_that_cannot_be_shown() {
         &server,
         "6f1e5b7a-0000-4000-8000-00000000c0da",
         "invisible\u{202e}name",
-        PeerRole::Client,
+        false,
         &[5u8; 32],
         TransportBinding::tailnet("n", "n", "n"),
         "100.64.0.2:47831".to_string(),
@@ -1419,7 +1430,7 @@ fn re_pairing_with_the_same_key_finishes_the_pairing() {
         &server,
         id,
         "Peer",
-        PeerRole::Daemon,
+        true,
         &key,
         TransportBinding::tailnet("npeer", "peer.", "user@example.com"),
         "100.64.0.2:47831".to_string(),
@@ -1432,7 +1443,7 @@ fn re_pairing_with_the_same_key_finishes_the_pairing() {
         &server,
         id,
         "Peer Renamed",
-        PeerRole::Daemon,
+        true,
         &key,
         TransportBinding::tailnet("npeer", "peer.", "user@example.com"),
         "100.64.0.9:47831".to_string(),
@@ -1454,7 +1465,7 @@ fn re_pairing_with_the_same_key_finishes_the_pairing() {
         &server,
         id,
         "Peer",
-        PeerRole::Daemon,
+        true,
         &[7u8; 32],
         TransportBinding::tailnet("npeer", "peer.", "user@example.com"),
         "100.64.0.2:47831".to_string(),
@@ -1493,7 +1504,7 @@ fn a_second_park_for_the_same_device_replaces_the_first() {
     // Two codes, two connections, both parked by the same device A. The
     // second code is what makes a second park possible at all: the first is
     // spent by the first park.
-    let (code_one, _) = service_b.start(PeerRole::Client).expect("code one");
+    let (code_one, _) = service_b.start().expect("code one");
     let responder_service = Arc::clone(&service_b);
     let responder_transport = Arc::clone(&transport);
     let responder_server = Arc::clone(&server_b);
@@ -1523,7 +1534,7 @@ fn a_second_park_for_the_same_device_replaces_the_first() {
     });
 
     service_a
-        .complete(&server_a, &address, &code_one, PeerRole::Client)
+        .complete(&server_a, &address, &code_one)
         .expect("the first pairing");
     let deadline = Instant::now() + bound::THREAD;
     while service_b.park_count() < 1 {
@@ -1534,9 +1545,9 @@ fn a_second_park_for_the_same_device_replaces_the_first() {
 
     // A second code, and the same device pairs again while the first park is
     // still waiting for a confirmation.
-    let (code_two, _) = service_b.start(PeerRole::Client).expect("code two");
+    let (code_two, _) = service_b.start().expect("code two");
     service_a
-        .complete(&server_a, &address, &code_two, PeerRole::Client)
+        .complete(&server_a, &address, &code_two)
         .expect("the second pairing");
     while service_b.park_count() < 2 {
         assert!(Instant::now() < deadline, "the second park never landed");
@@ -1568,4 +1579,309 @@ fn a_second_park_for_the_same_device_replaces_the_first() {
     drop(server_b);
     let _ = std::fs::remove_dir_all(&dir_a);
     let _ = std::fs::remove_dir_all(&dir_b);
+}
+
+/// The v30 initiator's side of one exchange, spoken by hand: the role tag, the
+/// v1 PSK label, the v1 prologue, and a payload that still carries `role`.
+/// This is the compatibility edge from the far side, which is what makes the
+/// responder's handling of an old peer testable without an old binary.
+fn v30_initiator_exchange(
+    address: &str,
+    code: &PairingSecret,
+    tag: PeerRole,
+    device_id: &str,
+) -> Result<PairAnswer, String> {
+    use std::io::Write as _;
+    let (private, public) = test_keypair();
+    let mut stream = connect_bounded(address.parse().expect("addr"));
+    let deadline = Instant::now() + bound::THREAD;
+    stream
+        .write_all(&PAIRING_MAGIC)
+        .map_err(|error| error.to_string())?;
+    write_prelude(&mut stream, role_tag(tag), deadline).map_err(|error| error.to_string())?;
+    let responder_tag = role_from_tag(
+        read_prelude(&mut stream, deadline).map_err(|end| prelude_error(end).to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    let password = spake2::Password::new(code.as_str().as_bytes());
+    let responder_identity = spake2::Identity::new(PAIR_RESPONDER_ID);
+    let initiator_identity = spake2::Identity::new(PAIR_INITIATOR_ID);
+    let mut their_message = [0u8; 256];
+    let their_len =
+        read_framed(&stream, &mut their_message, deadline).map_err(|error| error.to_string())?;
+    let (spake_state, our_message) = spake2::Spake2::<spake2::Ed25519Group>::start_b(
+        &password,
+        &responder_identity,
+        &initiator_identity,
+    );
+    write_framed(&stream, &our_message, deadline).map_err(|error| error.to_string())?;
+    let mut spake_key = spake_state
+        .finish(&their_message[..their_len])
+        .map_err(|error| error.to_string())?;
+    let mut psk = derive_psk(&spake_key, tag, responder_tag);
+    spake_key.zeroize();
+    let session = initiator_handshake(
+        &stream,
+        deadline,
+        &private,
+        None,
+        PAIR_PROLOGUE,
+        Some(&psk),
+        PAIR_NOISE_PATTERN,
+    )
+    .map_err(|error| error.to_string())?;
+    for byte in psk.iter_mut() {
+        *byte = 0;
+    }
+    let (mut reader, mut writer, _closer) =
+        split_session(&stream, session).map_err(|error| error.to_string())?;
+    let payload = PairPayload {
+        device_id: device_id.to_string(),
+        display_name: "Old phone".to_string(),
+        role: Some(tag),
+        public_key: base64_encode(&public),
+        listen_port: None,
+    };
+    write_json(&mut writer, &payload, deadline).map_err(|error| error.to_string())?;
+    let _responder_payload: PairPayload =
+        read_json(&mut reader, deadline).map_err(|error| error.to_string())?;
+    let answer: PairAnswer = read_json(&mut reader, deadline).map_err(|error| error.to_string())?;
+    Ok(answer)
+}
+
+/// A v30 daemon tag is the one shape the old responder answered at once, and
+/// this daemon keeps that: the row is written inside the exchange, the code is
+/// spent, and the only thing kept from the tag is the transport hint.
+#[test]
+fn a_v30_daemon_tag_is_recorded_as_a_dial_hint_without_confirmation() {
+    let (dir, server) = server("v30-daemon");
+    let service = Arc::new(PairingService::new());
+    let (code, _expires_at) = service.start().expect("a code");
+    let transport = Arc::new(crate::peer_transport::TestTransport::default());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let address = listener.local_addr().expect("addr").to_string();
+
+    let responder_server = Arc::clone(&server);
+    let responder_service = Arc::clone(&service);
+    let responder_transport = Arc::clone(&transport);
+    let caps = Arc::new(crate::peer_transport::AcceptCaps::default());
+    let responder = std::thread::spawn(move || {
+        let (stream, peer_addr) = accept_bounded(&listener);
+        let slot = caps
+            .admit_handshake(crate::peer_transport::HandshakeKind::Pairing)
+            .expect("a pairing slot");
+        responder_service.handle(
+            responder_transport.as_ref(),
+            stream,
+            peer_addr,
+            &responder_server,
+            slot,
+        );
+    });
+
+    let device_id = "6f1e5b7a-0000-4000-8000-00000000c0aa";
+    let answer = v30_initiator_exchange(&address, &code, PeerRole::Daemon, device_id)
+        .expect("a v30 daemon exchange completes");
+    assert!(answer.accepted, "{answer:?}");
+    join_bounded(responder, "the v30 responder's thread");
+
+    let rows = server.peers().expect("rows");
+    assert_eq!(rows.len(), 1, "the v30 tag wrote the row at once: {rows:?}");
+    assert_eq!(rows[0].device_id, device_id);
+    assert!(rows[0].legacy_dialable, "the daemon tag is the dial hint");
+    assert!(
+        !service.is_active(),
+        "an auto-accepted pairing spends the code"
+    );
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A v30 client tag is the shape that always waited for the person at the
+/// code-displaying device, and it still does: the exchange parks, the card
+/// names the old peer, and only a confirm writes the row — with no dial hint.
+#[test]
+fn a_v30_client_tag_parks_for_the_local_confirmation() {
+    let (dir, server) = server("v30-client");
+    let service = Arc::new(PairingService::new());
+    let (code, _expires_at) = service.start().expect("a code");
+    let transport = Arc::new(crate::peer_transport::TestTransport::default());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let address = listener.local_addr().expect("addr").to_string();
+
+    let responder_server = Arc::clone(&server);
+    let responder_service = Arc::clone(&service);
+    let responder_transport = Arc::clone(&transport);
+    let caps = Arc::new(crate::peer_transport::AcceptCaps::default());
+    let responder = std::thread::spawn(move || {
+        let (stream, peer_addr) = accept_bounded(&listener);
+        let slot = caps
+            .admit_handshake(crate::peer_transport::HandshakeKind::Pairing)
+            .expect("a pairing slot");
+        responder_service.handle(
+            responder_transport.as_ref(),
+            stream,
+            peer_addr,
+            &responder_server,
+            slot,
+        );
+    });
+
+    let device_id = "6f1e5b7a-0000-4000-8000-00000000c0ab";
+    let initiator = std::thread::spawn(move || {
+        v30_initiator_exchange(&address, &code, PeerRole::Client, device_id)
+    });
+    // The park lands after the payloads; wait for the card, then decide.
+    let deadline = Instant::now() + bound::THREAD;
+    let parked = loop {
+        let pending = service.pending_snapshot();
+        if !pending.is_empty() {
+            break pending;
+        }
+        assert!(Instant::now() < deadline, "the v30 pairing never parked");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(
+        parked[0].role,
+        Some(PeerRole::Client),
+        "a client tag projects to the client word for the v30 panel"
+    );
+    assert!(server.peers().expect("rows").is_empty());
+
+    let row = match service
+        .confirm(&server, "6f1e5b7a-0000-4000-8000-00000000c0ab", true)
+        .expect("confirm")
+    {
+        ConfirmOutcome::Accepted(row) => *row,
+        ConfirmOutcome::Declined => panic!("an accept must produce a row"),
+    };
+    assert_eq!(
+        row.role,
+        Some(PeerRole::Client),
+        "a client tag projects to the client word for the v30 panel"
+    );
+    let answer = join_bounded(initiator, "the v30 initiator").expect("the answer arrives");
+    assert!(answer.accepted, "{answer:?}");
+    join_bounded(responder, "the v30 responder's thread");
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The old topology had one machine per pair. A v30 daemon tag against a device
+/// that hosts a workspace makes both sides a daemon, and the handshake refuses
+/// with a clear reason rather than storing either claim.
+#[test]
+fn a_v30_pairing_cannot_make_two_machines() {
+    let (dir, server) = server("v30-two-machines");
+    let project_dir = dir.join("project");
+    std::fs::create_dir_all(&project_dir).expect("project dir");
+    let project = server
+        .sessions
+        .project_add(project_dir.to_str().expect("utf-8 path"))
+        .expect("project row");
+    server
+        .sessions
+        .workspace_create(
+            &project.id,
+            devboule_protocol::WorkspaceIsolation::Local,
+            None,
+        )
+        .expect("workspace row");
+
+    let service = Arc::new(PairingService::new());
+    let (code, _expires_at) = service.start().expect("a code");
+    let transport = Arc::new(crate::peer_transport::TestTransport::default());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let address = listener.local_addr().expect("addr").to_string();
+
+    let responder_server = Arc::clone(&server);
+    let responder_service = Arc::clone(&service);
+    let responder_transport = Arc::clone(&transport);
+    let caps = Arc::new(crate::peer_transport::AcceptCaps::default());
+    let responder = std::thread::spawn(move || {
+        let (stream, peer_addr) = accept_bounded(&listener);
+        let slot = caps
+            .admit_handshake(crate::peer_transport::HandshakeKind::Pairing)
+            .expect("a pairing slot");
+        responder_service.handle(
+            responder_transport.as_ref(),
+            stream,
+            peer_addr,
+            &responder_server,
+            slot,
+        );
+    });
+
+    let refused = v30_initiator_exchange(
+        &address,
+        &code,
+        PeerRole::Daemon,
+        "6f1e5b7a-0000-4000-8000-00000000c0ac",
+    );
+    assert!(
+        refused.is_err(),
+        "two machines cannot be represented by the v30 wire: {refused:?}"
+    );
+    join_bounded(responder, "the refused v30 responder's thread");
+    assert!(
+        server.peers().expect("rows").is_empty(),
+        "the refusal stores nothing"
+    );
+    assert!(
+        service.pending_snapshot().is_empty(),
+        "the refusal parks nothing"
+    );
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A roleless initiator retries on the v30 wire only for a version signal —
+/// a role tag where the version byte belongs, or a close — and never after a
+/// code or proof failure. The fake responder here counts the connections, so
+/// the retry itself is the assertion.
+#[test]
+fn a_roleless_initiator_downgrades_only_on_a_role_tag_or_a_close() {
+    let (dir, server) = server("downgrade");
+    let service = PairingService::new();
+    let (code, _expires_at) = service.start().expect("a code");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let address = listener.local_addr().expect("addr").to_string();
+    let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    let counter = Arc::clone(&accepted);
+    let fake = std::thread::spawn(move || {
+        for attempt in 0..2 {
+            let (mut stream, _) = accept_bounded(&listener);
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut magic = [0u8; 4];
+            use std::io::Read as _;
+            stream.read_exact(&mut magic).expect("the pairing magic");
+            assert_eq!(magic, PAIRING_MAGIC);
+            if attempt == 0 {
+                // The v30 responder's first byte is a role tag, which is the
+                // explicit version rejection the retry exists for.
+                use std::io::Write as _;
+                stream.write_all(&[ROLE_CLIENT_TAG]).expect("the tag");
+            }
+            // Then close: the second attempt has nothing left to answer.
+        }
+    });
+
+    let error = service
+        .complete(&server, &address, &code)
+        .expect_err("neither attempt can complete against the fake responder");
+    let _ = error;
+    join_bounded(fake, "the two-connection fake responder");
+    assert_eq!(
+        accepted.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "the roleless attempt must have been retried once on the v30 wire"
+    );
+    assert!(server.peers().expect("rows").is_empty());
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
 }

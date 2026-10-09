@@ -1,5 +1,7 @@
 use super::git_workers::test_support::wait_for_worker_reply;
 use super::*;
+use crate::peer_policy::PeerScope;
+use devboule_protocol::PeerRole;
 use devboule_protocol::{ClientMessage, OwnerId, PermissionOutcome, RetentionPatch};
 
 use crate::journal::new_session_record;
@@ -163,14 +165,14 @@ fn providers_list_answers_a_live_user_row() {
     let _ = std::fs::remove_dir_all(&path);
 }
 
-fn remote_conn(role: PeerRole, paired_by_user: Option<&str>) -> Arc<ConnHandle> {
-    remote_conn_with_caps(role, paired_by_user, &[])
+fn remote_conn(scope: PeerScope, paired_by_user: Option<&str>) -> Arc<ConnHandle> {
+    remote_conn_with_caps(scope, paired_by_user, &[])
 }
 
 /// The same connection, holding the capability set `caps` names: what the
 /// gate actually reads (`DESIGN-remote-agents.md` §8b A9/A11).
 fn remote_conn_with_caps(
-    role: PeerRole,
+    scope: PeerScope,
     paired_by_user: Option<&str>,
     caps: &[&str],
 ) -> Arc<ConnHandle> {
@@ -179,7 +181,7 @@ fn remote_conn_with_caps(
         None,
         Some(ConnPeer::Remote {
             device_id: "dev-peer-1".to_string(),
-            role,
+            scope,
             paired_by_user: paired_by_user.map(str::to_string),
             binding: TransportBinding::tailnet(
                 "nstable",
@@ -1495,7 +1497,7 @@ fn both_agent_profile_frames_ride_the_administrative_capability() {
     let state = ServerState::new("agent-profiles-peer".to_string());
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
     let operational = ["view", "send", "answer_permissions", "create_sessions"];
-    let conn = remote_conn_with_caps(PeerRole::Client, None, &operational);
+    let conn = remote_conn_with_caps(PeerScope::PairedUser, None, &operational);
 
     for request in [
         ClientMessage::AgentProfilesGet { id: 41 },
@@ -1520,7 +1522,7 @@ fn both_agent_profile_frames_ride_the_administrative_capability() {
     // what the arm needs, and the wire answer is the handler's own.
     let mut admin = operational.to_vec();
     admin.push(crate::peer_policy::CAP_ADMIN);
-    let conn = remote_conn_with_caps(PeerRole::Client, None, &admin);
+    let conn = remote_conn_with_caps(PeerScope::PairedUser, None, &admin);
     let reply = dispatch(
         &state,
         &owner,
@@ -1705,7 +1707,7 @@ fn both_delegation_frames_ride_the_administrative_capability() {
     let state = ServerState::new("delegation-peer".to_string());
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
     let operational = ["view", "send", "answer_permissions", "create_sessions"];
-    let conn = remote_conn_with_caps(PeerRole::Client, None, &operational);
+    let conn = remote_conn_with_caps(PeerScope::PairedUser, None, &operational);
 
     for request in [
         ClientMessage::DelegationGet { id: 41 },
@@ -1731,7 +1733,7 @@ fn both_delegation_frames_ride_the_administrative_capability() {
     // the gate, never as a local act (`stores.rs::delegation_set`).
     let mut admin = operational.to_vec();
     admin.push(crate::peer_policy::CAP_ADMIN);
-    let conn = remote_conn_with_caps(PeerRole::Client, None, &admin);
+    let conn = remote_conn_with_caps(PeerScope::PairedUser, None, &admin);
     let reply = dispatch(
         &state,
         &owner,
@@ -1800,7 +1802,7 @@ fn a_peers_delegation_write_is_audited_under_the_peers_identity() {
     );
 
     let peer = remote_conn_with_caps(
-        PeerRole::Client,
+        PeerScope::PairedUser,
         Some("S-user-a"),
         &[crate::peer_policy::CAP_VIEW, crate::peer_policy::CAP_ADMIN],
     );
@@ -1832,8 +1834,8 @@ fn a_peers_delegation_write_is_audited_under_the_peers_identity() {
     assert_eq!(actors[0].1, "local", "the local write is the local row");
     assert_eq!(
         actors[1],
-        ("dev-peer-1".to_string(), "client".to_string()),
-        "the peer's write carries the peer's own device id and role"
+        ("dev-peer-1".to_string(), "paired-device".to_string()),
+        "the peer's write carries the peer's own device id and the one peer audit word"
     );
 
     drop(state);
@@ -1850,7 +1852,7 @@ fn a_vocabulary_request_rides_the_administrative_capability() {
     let state = ServerState::new("vocabulary-peer".to_string());
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
     let operational = ["view", "send", "answer_permissions", "create_sessions"];
-    let conn = remote_conn_with_caps(PeerRole::Client, None, &operational);
+    let conn = remote_conn_with_caps(PeerScope::PairedUser, None, &operational);
 
     let reply = dispatch(
         &state,
@@ -1881,7 +1883,7 @@ fn a_vocabulary_request_rides_the_administrative_capability() {
     // local pipe reaches.
     let mut admin = operational.to_vec();
     admin.push(crate::peer_policy::CAP_ADMIN);
-    let conn = remote_conn_with_caps(PeerRole::Client, None, &admin);
+    let conn = remote_conn_with_caps(PeerScope::PairedUser, None, &admin);
     let reply = dispatch(
         &state,
         &owner,
@@ -3464,7 +3466,7 @@ fn the_peer_gate_denies_the_destructive_set_before_any_spawn() {
 
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
     let local = ConnHandle::new(1);
-    let remote = remote_conn(PeerRole::Daemon, None);
+    let remote = remote_conn(PeerScope::PeerDevice, None);
 
     // 1. The local path really does spawn, for both async variants. This is
     //    the control that makes the peer assertion below meaningful.
@@ -3543,7 +3545,7 @@ fn the_peer_gate_denies_the_destructive_set_before_any_spawn() {
 fn an_allowed_read_writes_no_audit_row() {
     let (path, state) = temp_state("peer-ping");
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
-    let conn = remote_conn(PeerRole::Client, Some("S-1-5-21-1"));
+    let conn = remote_conn(PeerScope::PairedUser, Some("S-1-5-21-1"));
     for id in 0..20 {
         let reply = dispatch(
             &state,
@@ -3570,7 +3572,7 @@ fn an_allowed_read_writes_no_audit_row() {
 fn a_forced_auth_check_is_audited_but_an_unforced_one_is_not() {
     let (path, state) = temp_state("peer-auth-check-audit");
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
-    let conn = remote_conn_with_caps(PeerRole::Client, Some("S-1-5-21-1"), &[CAP_ADMIN]);
+    let conn = remote_conn_with_caps(PeerScope::PairedUser, Some("S-1-5-21-1"), &[CAP_ADMIN]);
     // dispatch intercepts the auth check and answers from its worker; the
     // peer gate has already run and written its row by the time it returns.
     let forced = dispatch(
@@ -3600,7 +3602,7 @@ fn a_forced_auth_check_is_audited_but_an_unforced_one_is_not() {
 fn an_unforced_auth_check_from_a_peer_writes_no_audit_row() {
     let (path, state) = temp_state("peer-auth-check-read");
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
-    let conn = remote_conn_with_caps(PeerRole::Client, Some("S-1-5-21-1"), &[CAP_ADMIN]);
+    let conn = remote_conn_with_caps(PeerScope::PairedUser, Some("S-1-5-21-1"), &[CAP_ADMIN]);
     for id in 0..20 {
         let reply = dispatch(
             &state,
@@ -3685,7 +3687,7 @@ fn a_remote_sessions_list_is_projected_by_role_and_paired_user() {
 
     assert_eq!(
         ids(&remote_conn_with_caps(
-            PeerRole::Client,
+            PeerScope::PairedUser,
             Some("S-user-a"),
             &[crate::peer_policy::CAP_VIEW]
         )),
@@ -3693,20 +3695,20 @@ fn a_remote_sessions_list_is_projected_by_role_and_paired_user() {
     );
     assert_eq!(
         ids(&remote_conn_with_caps(
-            PeerRole::Client,
+            PeerScope::PairedUser,
             Some("S-user-b"),
             &[crate::peer_policy::CAP_VIEW]
         )),
         vec!["s.user-b.1".to_string()]
     );
     assert!(ids(&remote_conn_with_caps(
-        PeerRole::Client,
+        PeerScope::PairedUser,
         None,
         &[crate::peer_policy::CAP_VIEW]
     ))
     .is_empty());
     assert!(ids(&remote_conn_with_caps(
-        PeerRole::Daemon,
+        PeerScope::PeerDevice,
         Some("S-user-a"),
         &[crate::peer_policy::CAP_VIEW]
     ))
@@ -3714,7 +3716,7 @@ fn a_remote_sessions_list_is_projected_by_role_and_paired_user() {
     // H10: without `view` the list is not an unconditional read any more.
     // The refusal is the capability gate's, and it names `view`.
     assert_eq!(
-        ids_error(&remote_conn(PeerRole::Client, Some("S-user-a"))),
+        ids_error(&remote_conn(PeerScope::PairedUser, Some("S-user-a"))),
         (
             ErrorCode::CapabilityNotSupported,
             format!(
@@ -3766,7 +3768,6 @@ fn pairing_complete_reaches_the_initiator_and_never_echoes_the_code() {
             id: 5,
             address,
             code: devboule_protocol::PairingSecret::new("ABCD2345"),
-            role: PeerRole::Client,
         },
         &conn,
         true,
@@ -3800,7 +3801,6 @@ fn pairing_complete_reaches_the_initiator_and_never_echoes_the_code() {
             id: 6,
             address: "127.0.0.1:1".to_string(),
             code: devboule_protocol::PairingSecret::new("aaaa0000"),
-            role: PeerRole::Client,
         },
         &conn,
         true,
@@ -4009,7 +4009,7 @@ fn the_peer_table_is_loaded_once_and_refreshed_on_change() {
         .peer_upsert(PeerRecord {
             device_id: "6f1e5b7a-0000-4000-8000-00000000c0db".to_string(),
             display_name: "Peer".to_string(),
-            role: "client".to_string(),
+            legacy_dialable: false,
             public_key: vec![7u8; 32],
             paired_by_user: None,
             binding_kind: "tailnet".to_string(),
@@ -4142,7 +4142,7 @@ fn a_peer_request_the_caps_do_not_open_never_reaches_the_session_layer() {
     };
 
     let viewer = remote_conn_with_caps(
-        PeerRole::Client,
+        PeerScope::PairedUser,
         Some("S-user-a"),
         &[crate::peer_policy::CAP_VIEW],
     );
@@ -4156,7 +4156,7 @@ fn a_peer_request_the_caps_do_not_open_never_reaches_the_session_layer() {
     }
 
     let sender = remote_conn_with_caps(
-        PeerRole::Client,
+        PeerScope::PairedUser,
         Some("S-user-a"),
         &[crate::peer_policy::CAP_VIEW, crate::peer_policy::CAP_SEND],
     );
@@ -4195,7 +4195,7 @@ fn an_agent_message_from_a_view_only_peer_is_refused() {
     let (path, state) = temp_state("peer-agent-message-caps");
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
     let viewer = remote_conn_with_caps(
-        PeerRole::Client,
+        PeerScope::PairedUser,
         Some("S-user-a"),
         &[crate::peer_policy::CAP_VIEW],
     );
@@ -4242,7 +4242,7 @@ fn every_agent_message_receipt_state_is_produced() {
     let (path, state) = temp_state("agent-message-receipts");
     let owner = OwnerId::new("S-user-a", "test-client").expect("owner");
     let peer = remote_conn_with_caps(
-        PeerRole::Client,
+        PeerScope::PairedUser,
         Some("S-user-a"),
         &[crate::peer_policy::CAP_VIEW, crate::peer_policy::CAP_SEND],
     );
@@ -4323,7 +4323,7 @@ fn a_daemon_peer_uses_far_sender_ids_and_refuses_relays_at_the_gate() {
     let (path, state) = temp_state("agent-message-remote-sender");
     let owner = OwnerId::new("peer_dev-peer-1", "daemon").expect("owner");
     let peer = remote_conn_with_caps(
-        PeerRole::Daemon,
+        PeerScope::PeerDevice,
         Some("local-user"),
         &[crate::peer_policy::CAP_VIEW, crate::peer_policy::CAP_SEND],
     );
@@ -4451,7 +4451,7 @@ fn a_retried_agent_message_with_the_same_key_delivers_once() {
     let (path, state) = temp_state("agent-message-idempotent");
     let owner = OwnerId::new("peer_dev-peer-1", "daemon").expect("owner");
     let peer = remote_conn_with_caps(
-        PeerRole::Daemon,
+        PeerScope::PeerDevice,
         Some("local-user"),
         &[crate::peer_policy::CAP_VIEW, crate::peer_policy::CAP_SEND],
     );
@@ -4524,7 +4524,7 @@ fn a_peer_create_in_a_prompt_skipping_mode_is_refused_and_labelled() {
     let (path, state) = temp_state("peer-prompt-skipping");
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
     let creator = remote_conn_with_caps(
-        PeerRole::Client,
+        PeerScope::PairedUser,
         Some("S-user-a"),
         &[
             crate::peer_policy::CAP_VIEW,
@@ -4801,7 +4801,7 @@ fn a_remote_reply_is_redacted_at_the_boundary_and_a_local_one_is_not() {
     }
 
     let remote = redact_for_conn(
-        &remote_conn_with_caps(PeerRole::Client, Some("S-user-a"), &[]),
+        &remote_conn_with_caps(PeerScope::PairedUser, Some("S-user-a"), &[]),
         DaemonMessage::Error(error()),
     );
     match remote {
@@ -4827,7 +4827,10 @@ fn a_remote_reply_is_redacted_at_the_boundary_and_a_local_one_is_not() {
     // stream carries the owner's own screen (§8b A14).
     let event = DaemonMessage::Ok { id: 4 };
     assert!(matches!(
-        redact_for_conn(&remote_conn_with_caps(PeerRole::Daemon, None, &[]), event),
+        redact_for_conn(
+            &remote_conn_with_caps(PeerScope::PeerDevice, None, &[]),
+            event
+        ),
         DaemonMessage::Ok { id: 4 }
     ));
 }
@@ -4843,7 +4846,7 @@ fn the_capability_set_of_a_device_comes_from_its_row_and_fails_closed() {
     let mut record = PeerRecord {
         device_id: "dev-phone".to_string(),
         display_name: "Phone".to_string(),
-        role: "client".to_string(),
+        legacy_dialable: false,
         // The store refuses a peer key that is not a 32-byte X25519 public key,
         // and that refusal is the point: a fixture cannot skip the shape.
         public_key: vec![7u8; 32],
@@ -4894,7 +4897,7 @@ fn a_daemon_peer_narrowed_from_the_panel_is_stored_and_read_back() {
         .peer_upsert(PeerRecord {
             device_id: "dev-daemon".to_string(),
             display_name: "Other devboule".to_string(),
-            role: "daemon".to_string(),
+            legacy_dialable: true,
             public_key: vec![9u8; 32],
             paired_by_user: Some("S-user-a".to_string()),
             binding_kind: "tailnet".to_string(),
@@ -4930,7 +4933,7 @@ fn a_daemon_peer_narrowed_from_the_panel_is_stored_and_read_back() {
     match reply {
         DaemonMessage::PeerUpdated { id, peer } => {
             assert_eq!(id, 4);
-            assert_eq!(peer.role, PeerRole::Daemon);
+            assert_eq!(peer.role, None, "the v32 reply carries no v30 projection");
             assert_eq!(
                 peer.caps,
                 vec![crate::peer_policy::CAP_VIEW.to_string()],
@@ -4957,7 +4960,7 @@ fn a_peer_send_with_attachments_is_refused_until_the_deposit_counter_lands() {
     let (path, state) = temp_state("peer-attachments");
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
     let sender = remote_conn_with_caps(
-        PeerRole::Client,
+        PeerScope::PairedUser,
         Some("S-user-a"),
         &[crate::peer_policy::CAP_VIEW, crate::peer_policy::CAP_SEND],
     );
@@ -5031,7 +5034,7 @@ fn a_peer_may_not_name_an_acp_mode_while_the_local_pipe_may() {
     let (path, state) = temp_state("peer-acp-modes");
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
     let creator = remote_conn_with_caps(
-        PeerRole::Client,
+        PeerScope::PairedUser,
         Some("S-user-a"),
         &[
             crate::peer_policy::CAP_VIEW,
@@ -5077,7 +5080,7 @@ fn a_peer_may_not_name_an_acp_mode_while_the_local_pipe_may() {
     let member = OwnerId::new("S-user-a", "client").expect("owner");
     crate::session::insert_test_live_agent(&state.sessions, "s.acp.1", member);
     let switcher = remote_conn_with_caps(
-        PeerRole::Client,
+        PeerScope::PairedUser,
         Some("S-user-a"),
         &[crate::peer_policy::CAP_VIEW, crate::peer_policy::CAP_SEND],
     );
@@ -5160,7 +5163,7 @@ fn a_peer_may_not_name_an_acp_mode_while_the_local_pipe_may() {
 fn a_peer_with_no_capability_cannot_read_the_lists() {
     let (path, state) = temp_state("peer-zero-caps");
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
-    let unpaired = remote_conn_with_caps(PeerRole::Daemon, None, &[]);
+    let unpaired = remote_conn_with_caps(PeerScope::PeerDevice, None, &[]);
     for request in [
         ClientMessage::SessionsList { id: 1 },
         ClientMessage::DevicesList { id: 2 },
@@ -5185,7 +5188,8 @@ fn a_peer_with_no_capability_cannot_read_the_lists() {
         }
     }
 
-    let reader = remote_conn_with_caps(PeerRole::Daemon, None, &[crate::peer_policy::CAP_VIEW]);
+    let reader =
+        remote_conn_with_caps(PeerScope::PeerDevice, None, &[crate::peer_policy::CAP_VIEW]);
     for request in [
         ClientMessage::SessionsList { id: 3 },
         ClientMessage::DevicesList { id: 4 },
@@ -5214,7 +5218,7 @@ fn a_peer_probing_a_foreign_session_gets_the_same_answer_as_a_nonexistent_one() 
     let someone_else = OwnerId::new("S-user-b", "client").expect("owner");
     crate::session::insert_test_live_agent(&state.sessions, "s.acp.foreign", someone_else);
     let prober = remote_conn_with_caps(
-        PeerRole::Client,
+        PeerScope::PairedUser,
         Some("S-user-a"),
         &[crate::peer_policy::CAP_VIEW, crate::peer_policy::CAP_SEND],
     );
@@ -5283,7 +5287,7 @@ fn a_peers_attachment_refusal_comes_before_any_decode() {
     let (path, state) = temp_state("peer-attachment-decode");
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
     let sender = remote_conn_with_caps(
-        PeerRole::Client,
+        PeerScope::PairedUser,
         Some("S-user-a"),
         &[crate::peer_policy::CAP_VIEW, crate::peer_policy::CAP_SEND],
     );
@@ -5348,7 +5352,7 @@ fn a_peers_deposit_is_refused_with_the_attachment_sentence() {
     let (path, state) = temp_state("peer-deposit-refused");
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
     let peer = remote_conn_with_caps(
-        PeerRole::Client,
+        PeerScope::PairedUser,
         Some("S-user-a"),
         &[crate::peer_policy::CAP_VIEW, crate::peer_policy::CAP_SEND],
     );
@@ -5552,13 +5556,13 @@ fn a_peers_attachment_read_rides_the_administrative_capability() {
     ];
     let mut admin = operational.to_vec();
     admin.push(crate::peer_policy::CAP_ADMIN);
-    for role in [PeerRole::Client, PeerRole::Daemon] {
-        let peer = remote_conn_with_caps(role, Some("S-user-a"), &operational);
+    let peer = remote_conn_with_caps(PeerScope::PairedUser, Some("S-user-a"), &operational);
+    {
         let refusal = match dispatch(&state, &owner, read(1), &peer, true, true, true, true)
             .expect("the gate answers")
         {
             DaemonMessage::Error(error) => error,
-            other => panic!("{role:?} peer's read must be refused: {other:?}"),
+            other => panic!("peer's read must be refused: {other:?}"),
         };
         assert_eq!(
             refusal.code,
@@ -5574,12 +5578,12 @@ fn a_peers_attachment_read_rides_the_administrative_capability() {
         // The parity half: with the administrative capability the same frame
         // reaches the store, and the store's answer for an unknown session is
         // the handler's, not the gate's.
-        let peer = remote_conn_with_caps(role, Some("S-user-a"), &admin);
+        let peer = remote_conn_with_caps(PeerScope::PairedUser, Some("S-user-a"), &admin);
         let answered = match dispatch(&state, &owner, read(2), &peer, true, true, true, true)
             .expect("the gate answers")
         {
             DaemonMessage::Error(error) => error,
-            other => panic!("{role:?} peer's read reached the store, not the gate: {other:?}"),
+            other => panic!("peer's read reached the store, not the gate: {other:?}"),
         };
         assert_eq!(answered.code, ErrorCode::SessionNotFound, "{answered:?}");
         assert_eq!(answered.id, Some(2));
@@ -5607,8 +5611,8 @@ fn a_peers_attachment_read_rides_the_administrative_capability() {
     drop(state);
     assert_eq!(
         audit_sessions(&path),
-        vec![Some("s.none.1".to_string()), Some("s.none.1".to_string())],
-        "one audit row per refused read, each naming the session it named; the two allowed reads write none"
+        vec![Some("s.none.1".to_string())],
+        "one audit row for the refused read, naming the session it named; the two allowed reads write none"
     );
     let _ = std::fs::remove_dir_all(path);
 }
@@ -6370,7 +6374,7 @@ fn a_peers_refused_shutdown_is_never_memorized() {
         .expect("B is admitted");
     let _conn_b = ConnHandle::with_peer_caps(54, None, None, Vec::new(), intent_b);
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
-    let conn_peer = remote_conn_with_caps(PeerRole::Daemon, None, &[CAP_ADMIN]);
+    let conn_peer = remote_conn_with_caps(PeerScope::PeerDevice, None, &[CAP_ADMIN]);
     let reply = dispatch(
         &state,
         &owner,

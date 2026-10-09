@@ -10,6 +10,7 @@ use super::tests::{
     answer, insert_child, insert_live_agent, park_card, test_owner, tmp_delete_registry,
 };
 use super::*;
+use devboule_protocol::PeerRole;
 
 /// C1 + C2: the switch is read **at the answer**, never at the park. Off
 /// refuses with the card still pending; off-after-park refuses the same

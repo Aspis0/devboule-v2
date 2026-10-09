@@ -28,10 +28,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension};
 
+use devboule_protocol::PeerRole;
 use devboule_protocol::{
-    ErrorCode, JournalRetention, PeerRole, Project, RetentionPatch, Session, SessionEvent,
-    SessionKind, SessionOrigin, SessionOriginKind, SessionState, TranscriptIntegrity,
-    UnattendedState, WireError, Workspace, WorkspaceIsolation,
+    ErrorCode, JournalRetention, Project, RetentionPatch, Session, SessionEvent, SessionKind,
+    SessionOrigin, SessionOriginKind, SessionState, TranscriptIntegrity, UnattendedState,
+    WireError, Workspace, WorkspaceIsolation,
 };
 
 #[path = "journal_replay.rs"]
@@ -60,7 +61,7 @@ pub(crate) use journal_transcript_time::time_a_kindless_report;
 
 /// Stored in `PRAGMA user_version`. Bump whenever the journal schema gains
 /// tables or columns that need migration.
-pub const JOURNAL_SCHEMA_VERSION: i32 = 16;
+pub const JOURNAL_SCHEMA_VERSION: i32 = 17;
 
 /// How often the append path enforces the audit age floor and per-device cap.
 /// The session retention sweep is byte-driven, not time-driven, so the hourly
@@ -393,15 +394,17 @@ impl WorkspaceRecord {
 
 /// One paired device, as stored in `peers`.
 ///
-/// `role` is `client` or `daemon` (the CHECK constraint holds the same set).
-/// `caps` is a JSON array of capability names. `paired_by_user` is **this**
-/// daemon's own user SID at pairing time, written by this side: it is never
-/// received from the peer and never trusted from a frame.
+/// The pairing records no role: `legacy_dialable` is transport compatibility,
+/// preserved by the v17 migration from the old role, and says only whether a
+/// v30 endpoint at the recorded address may still be dialled. `caps` is a JSON
+/// array of capability names. `paired_by_user` is **this** daemon's own user SID
+/// at pairing time, written by this side: it is never received from the peer
+/// and never trusted from a frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PeerRecord {
     pub device_id: String,
     pub display_name: String,
-    pub role: String,
+    pub legacy_dialable: bool,
     pub public_key: Vec<u8>,
     pub paired_by_user: Option<String>,
     pub binding_kind: String,
@@ -2729,7 +2732,7 @@ fn set_workspace_title(
         .ok_or_else(|| JournalError::InvalidRequest(format!("Workspace '{id}' does not exist.")))
 }
 
-const PEER_COLUMNS: &str = "device_id, display_name, role, public_key, paired_by_user, \
+const PEER_COLUMNS: &str = "device_id, display_name, legacy_dialable, public_key, paired_by_user, \
      binding_kind, binding_stable_id, binding_node_name, binding_login_name, address, \
      paired_at, revoked_at, caps";
 
@@ -2741,7 +2744,7 @@ fn peers_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PeerRecord> {
     Ok(PeerRecord {
         device_id: row.get(0)?,
         display_name: row.get(1)?,
-        role: row.get(2)?,
+        legacy_dialable: row.get(2)?,
         public_key: row.get(3)?,
         paired_by_user: row.get(4)?,
         binding_kind: row.get(5)?,
@@ -2775,12 +2778,6 @@ fn get_peer(conn: &Connection, device_id: &str) -> Result<Option<PeerRecord>, Jo
 }
 
 fn upsert_peer(conn: &Connection, record: &PeerRecord) -> Result<PeerRecord, JournalError> {
-    if record.role != "client" && record.role != "daemon" {
-        return Err(JournalError::InvalidRequest(format!(
-            "peer role {:?} is not client or daemon",
-            record.role
-        )));
-    }
     if record.public_key.len() != 32 {
         return Err(JournalError::InvalidRequest(format!(
             "peer public key is {} bytes, expected 32",
@@ -2791,13 +2788,13 @@ fn upsert_peer(conn: &Connection, record: &PeerRecord) -> Result<PeerRecord, Jou
         .map_err(|error| JournalError::InvalidRequest(error.to_string()))?;
     conn.execute(
         "INSERT INTO peers (
-                device_id, display_name, role, public_key, paired_by_user,
+                device_id, display_name, legacy_dialable, public_key, paired_by_user,
                 binding_kind, binding_stable_id, binding_node_name, binding_login_name,
                 address, paired_at, revoked_at, caps
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(device_id) DO UPDATE SET
                 display_name = excluded.display_name,
-                role = excluded.role,
+                legacy_dialable = excluded.legacy_dialable,
                 public_key = excluded.public_key,
                 paired_by_user = excluded.paired_by_user,
                 binding_kind = excluded.binding_kind,
@@ -2811,7 +2808,7 @@ fn upsert_peer(conn: &Connection, record: &PeerRecord) -> Result<PeerRecord, Jou
         params![
             record.device_id,
             record.display_name,
-            record.role,
+            record.legacy_dialable,
             record.public_key,
             record.paired_by_user,
             record.binding_kind,

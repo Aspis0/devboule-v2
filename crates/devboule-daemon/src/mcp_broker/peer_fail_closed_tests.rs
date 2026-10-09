@@ -11,9 +11,11 @@ use serde_json::{json, Value};
 use super::caller::{mcp_peer_door, McpCaller};
 use super::{McpServerHandle, McpSessionGuard};
 use crate::peer_policy::{
-    mcp_refusal_message, mcp_tool_denial, mcp_tool_locality, PeerRole, CAP_ADMIN, CAP_BROWSER,
-    CAP_SEARCH, UNLISTED_TOOL,
+    mcp_refusal_message, mcp_tool_denial, mcp_tool_locality, CAP_ADMIN, CAP_BROWSER, CAP_SEARCH,
+    UNLISTED_TOOL,
 };
+use devboule_protocol::PeerRole;
+
 use crate::provider_catalog::{
     MCP_BROWSER_FILL_LOGIN_TOOL, MCP_CI_WATCH_TOOL, MCP_LIST_PROFILES_TOOL, MCP_ORACLE_SEARCH_TOOL,
     MCP_PROCESS_OWNER_TOOL, MCP_SEND_MESSAGE_TOOL,
@@ -34,10 +36,9 @@ fn every_cap() -> Vec<String> {
     caps(&PEER_CAPS)
 }
 
-fn peer(role: PeerRole, held: Vec<String>) -> McpCaller {
+fn peer(held: Vec<String>) -> McpCaller {
     McpCaller::Peer {
         device_id: "dev-fail-closed".to_string(),
-        role,
         caps: held,
     }
 }
@@ -55,11 +56,11 @@ fn peer_unknown_tool_denied_at_the_helper_for_every_role_and_set() {
     for role in ROLES {
         for held in capability_sets() {
             assert_eq!(
-                mcp_tool_denial(role, &held, UNLISTED_NAME),
+                mcp_tool_denial(&held, UNLISTED_NAME),
                 Some(UNLISTED_TOOL),
                 "{role:?} holding {held:?} must not pass a name with no rule"
             );
-            let refused = mcp_peer_door(&peer(role, held.clone()), Some(UNLISTED_NAME), &json!(1))
+            let refused = mcp_peer_door(&peer(held.clone()), Some(UNLISTED_NAME), &json!(1))
                 .expect("the door refuses it");
             assert_eq!(
                 refused.pointer("/error/message"),
@@ -196,7 +197,7 @@ fn ci_watch_peer_requires_admin() {
         for held in capability_sets() {
             let expected = (!held.iter().any(|cap| cap == CAP_ADMIN)).then_some(CAP_ADMIN);
             assert_eq!(
-                mcp_tool_denial(role, &held, MCP_CI_WATCH_TOOL),
+                mcp_tool_denial(&held, MCP_CI_WATCH_TOOL),
                 expected,
                 "{role:?} holding {held:?} on the CI watch"
             );
@@ -209,7 +210,7 @@ fn browser_fill_login_local_only() {
     for role in ROLES {
         for held in capability_sets() {
             let refused = mcp_peer_door(
-                &peer(role, held.clone()),
+                &peer(held.clone()),
                 Some(MCP_BROWSER_FILL_LOGIN_TOOL),
                 &json!(1),
             )
@@ -245,26 +246,22 @@ fn each_kind_of_peer_rule_answers_for_both_roles_and_every_capability_set() {
             let has = |cap: &str| held.iter().any(|name| name == cap);
             let ctx = format!("{role:?} holding {held:?}");
 
-            let judged = mcp_tool_denial(role, &held, MCP_SEND_MESSAGE_TOOL);
+            let judged = mcp_tool_denial(&held, MCP_SEND_MESSAGE_TOOL);
             assert_eq!(judged.is_none(), has("send"), "{ctx}: judged on the wire");
 
             assert_eq!(
-                mcp_tool_denial(role, &held, MCP_LIST_PROFILES_TOOL),
+                mcp_tool_denial(&held, MCP_LIST_PROFILES_TOOL),
                 None,
                 "{ctx}: the ticked list is unjudged"
             );
 
             assert_eq!(
-                mcp_tool_denial(role, &held, MCP_ORACLE_SEARCH_TOOL),
+                mcp_tool_denial(&held, MCP_ORACLE_SEARCH_TOOL),
                 (!has(CAP_SEARCH)).then_some(CAP_SEARCH),
                 "{ctx}: a bare capability"
             );
             assert_eq!(
-                mcp_tool_denial(
-                    role,
-                    &held,
-                    crate::provider_catalog::MCP_BROWSER_NAVIGATE_TOOL
-                ),
+                mcp_tool_denial(&held, crate::provider_catalog::MCP_BROWSER_NAVIGATE_TOOL),
                 (!has(CAP_BROWSER)).then_some(CAP_BROWSER),
                 "{ctx}: the browser lane"
             );
@@ -274,17 +271,13 @@ fn each_kind_of_peer_rule_answers_for_both_roles_and_every_capability_set() {
                 "{ctx}: local only"
             );
             assert!(
-                mcp_peer_door(
-                    &peer(role, held.clone()),
-                    Some(MCP_PROCESS_OWNER_TOOL),
-                    &json!(3)
-                )
-                .is_some(),
+                mcp_peer_door(&peer(held.clone()), Some(MCP_PROCESS_OWNER_TOOL), &json!(3))
+                    .is_some(),
                 "{ctx}: the door refuses the process table"
             );
 
             assert_eq!(
-                mcp_tool_denial(role, &held, UNLISTED_NAME),
+                mcp_tool_denial(&held, UNLISTED_NAME),
                 Some(UNLISTED_TOOL),
                 "{ctx}: no rule at all"
             );

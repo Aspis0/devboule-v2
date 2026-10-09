@@ -343,6 +343,24 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
             // build, rather than stamped 16.
             validate_v16_columns(&tx)?;
         }
+        if version < 17 {
+            // The roleless peers table. `role` said which grade of device the
+            // peer was paired as; pairing no longer asks, and a paired device
+            // is a client until it hosts a workspace. The one fact worth
+            // keeping from the column is transport compatibility: whether the
+            // v30 endpoint recorded at this address may still be dialled,
+            // which is exactly `role = 'daemon'` in the old vocabulary. The
+            // table is rebuilt rather than altered because the role CHECK
+            // constraint cannot be dropped in place. Every other column is
+            // copied byte-for-byte: caps included, and a revoked row stays
+            // revoked.
+            tx.execute_batch(PEERS_ROLELESS_SQL)?;
+            // The pre-stamp guard, same ordering as v12 to v16: a colliding
+            // shape must leave the file at 16, openable by the previous
+            // build, rather than stamped 17 — where the first `peers` read
+            // would die on a table this daemon cannot read honestly.
+            validate_v17_columns(&tx)?;
+        }
         tx.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
         tx.commit()?;
     }
@@ -361,6 +379,8 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
     validate_v15_columns(&conn)?;
     // The v16 column, the same way (see [`is_our_goal_shape`]).
     validate_v16_columns(&conn)?;
+    // The v17 peers shape: the dial hint present, `role` gone.
+    validate_v17_columns(&conn)?;
     // A crash inside `sweep_audit` between dropping the triggers and
     // recreating them leaves the audit table writable, so the guarantee is
     // re-established on every open rather than trusted from the migration.
@@ -564,6 +584,53 @@ fn validate_v14_columns(conn: &Connection) -> Result<(), JournalError> {
     Ok(())
 }
 
+/// The v17 peers shape, spelled once: `legacy_dialable` is
+/// `INTEGER NOT NULL DEFAULT 0` (the migration writes only `0`/`1`, and a
+/// column that can be NULL is a shape this daemon cannot read honestly),
+/// and `role` is gone. The pre-stamp guard and the post-commit check both
+/// read this predicate.
+fn validate_v17_columns(conn: &Connection) -> Result<(), JournalError> {
+    let legacy = peer_column_shape(conn, "legacy_dialable")?;
+    let ours = matches!(
+        legacy,
+        Some((ref kind, 1, Some(ref default)))
+            if kind.eq_ignore_ascii_case("integer") && default == "0"
+    );
+    if !ours {
+        return Err(JournalError::Corrupt(
+            "journal schema has an unexpected peers.legacy_dialable column".to_string(),
+        ));
+    }
+    if peer_column_shape(conn, "role")?.is_some() {
+        return Err(JournalError::Corrupt(
+            "journal schema has a peers.role column pairing no longer records".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// One `peers` column's `(type, notnull, default)` as SQLite reports it, or
+/// `None` when the table has no such column.
+fn peer_column_shape(
+    conn: &Connection,
+    column: &str,
+) -> Result<Option<(String, i32, Option<String>)>, JournalError> {
+    let mut statement = conn.prepare(
+        "SELECT type, \"notnull\", dflt_value FROM pragma_table_info('peers') \
+         WHERE name = ?1",
+    )?;
+    let shape = statement
+        .query_row([column], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i32>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .optional()?;
+    Ok(shape)
+}
+
 fn validate_v13_columns(conn: &Connection) -> Result<(), JournalError> {
     if !is_our_overlay_shape(column_shape(conn, "overlay")?) {
         return Err(JournalError::Corrupt(
@@ -720,7 +787,7 @@ fn validate_v6_schema(conn: &Connection) -> Result<(), JournalError> {
         &[
             ("device_id", "TEXT", 0, 1),
             ("display_name", "TEXT", 1, 0),
-            ("role", "TEXT", 1, 0),
+            ("legacy_dialable", "INTEGER", 1, 0),
             ("public_key", "BLOB", 1, 0),
             ("paired_by_user", "TEXT", 0, 0),
             ("binding_kind", "TEXT", 1, 0),
@@ -816,7 +883,9 @@ fn validate_table_shape(
 /// v8: the paired peers and the append-only audit trail. `caps` is a JSON
 /// array in TEXT (SQLite has no array type); `paired_by_user` is the local
 /// daemon's own SID at pairing time, written by this side and never received
-/// from the peer.
+/// from the peer. `role` is the v8 shape, replaced in place by the v17
+/// migration — this constant stays the previous schema on purpose, so a
+/// fresh database walks the same migrations a stored one does.
 const PEERS_AUDIT_SQL: &str = "
 CREATE TABLE IF NOT EXISTS peers (
     device_id TEXT PRIMARY KEY,
@@ -849,6 +918,42 @@ CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit
 BEGIN SELECT RAISE(ABORT, 'audit is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit
 BEGIN SELECT RAISE(ABORT, 'audit is append-only'); END;
+";
+
+/// v17: the roleless `peers` table.
+///
+/// A rebuild, not an `ALTER`, because the old table's CHECK constraint names
+/// `role` and SQLite cannot drop it in place. `legacy_dialable` is the only
+/// derived value — `1` exactly for the old `role = 'daemon'` rows, which is
+/// the one grade of the old topology that opened a link — and every other
+/// column is copied from the old row without interpretation.
+const PEERS_ROLELESS_SQL: &str = "
+CREATE TABLE peers_roleless (
+    device_id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    legacy_dialable INTEGER NOT NULL DEFAULT 0,
+    public_key BLOB NOT NULL,
+    paired_by_user TEXT,
+    binding_kind TEXT NOT NULL,
+    binding_stable_id TEXT,
+    binding_node_name TEXT,
+    binding_login_name TEXT,
+    address TEXT NOT NULL,
+    paired_at INTEGER NOT NULL,
+    revoked_at INTEGER,
+    caps TEXT NOT NULL
+);
+INSERT INTO peers_roleless (
+    device_id, display_name, legacy_dialable, public_key, paired_by_user,
+    binding_kind, binding_stable_id, binding_node_name, binding_login_name,
+    address, paired_at, revoked_at, caps
+)
+SELECT device_id, display_name, CASE WHEN role = 'daemon' THEN 1 ELSE 0 END,
+       public_key, paired_by_user, binding_kind, binding_stable_id,
+       binding_node_name, binding_login_name, address, paired_at, revoked_at, caps
+FROM peers;
+DROP TABLE peers;
+ALTER TABLE peers_roleless RENAME TO peers;
 ";
 
 const AUDIT_NO_DELETE_SQL: &str = "

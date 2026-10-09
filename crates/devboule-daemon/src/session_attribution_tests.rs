@@ -17,6 +17,8 @@ use super::tests::{
     tmp_delete_registry, RecordingWriter,
 };
 use super::*;
+use crate::peer_policy::PeerScope;
+use devboule_protocol::PeerRole;
 
 /// S4-05: the envelope's `origin` and `role` come from the *caller's*
 /// connection. A paired device that names a local session of its own user as
@@ -34,7 +36,7 @@ fn a_remote_sender_id_is_not_resolved_in_this_registry() {
         SessionKind::Pi,
         Box::new(RecordingWriter(Arc::clone(&received))),
     );
-    let peer = remote_conn(PeerRole::Daemon, Some("peer_dev-phone"));
+    let peer = remote_conn(PeerScope::PeerDevice, Some("peer_dev-phone"));
 
     registry
         .agent_message_send_from_peer(
@@ -78,7 +80,7 @@ fn a_remote_sender_cannot_relay_into_a_third_device_or_smuggle_an_id() {
         "s.third.target",
         SessionOrigin::peer("dev-tablet", PeerRole::Daemon),
     );
-    let peer = remote_conn(PeerRole::Daemon, None);
+    let peer = remote_conn(PeerScope::PeerDevice, None);
 
     let error = registry
         .agent_message_send_from_peer(
@@ -140,7 +142,7 @@ fn a_remote_device_has_one_message_brake_across_far_sender_ids() {
     let (dir, registry, journal) = tmp_delete_registry();
     let owner = test_owner("peer_dev-phone", "daemon");
     insert_live_agent(&registry, "s.brake.target", owner.clone());
-    let conn = remote_conn(PeerRole::Daemon, Some("peer_dev-phone"));
+    let conn = remote_conn(PeerScope::PeerDevice, Some("peer_dev-phone"));
     let now = Instant::now();
 
     for index in 0..5 {
@@ -194,7 +196,7 @@ fn an_agent_message_is_attributed_to_the_caller_not_to_the_session_it_names() {
         SessionKind::Pi,
         Box::new(RecordingWriter(Arc::clone(&received))),
     );
-    let peer = remote_conn(PeerRole::Client, Some("S-1-5-21-peer"));
+    let peer = remote_conn(PeerScope::PairedUser, Some("S-1-5-21-peer"));
 
     registry
         .agent_message_send_from_peer(
@@ -246,7 +248,7 @@ fn a_peer_bearer_with_a_local_source_keeps_the_local_echo() {
         SessionOrigin::peer("device-mcp", PeerRole::Client),
     );
     let source_conn = attach_live_agent_for_test(&sender, "s.mcp.source", 91);
-    let peer = remote_conn(PeerRole::Client, Some("S-1-5-21-mcp"));
+    let peer = remote_conn(PeerScope::PairedUser, Some("S-1-5-21-mcp"));
 
     // This is the MCP shape: the bearer is remote, but the source id came
     // from its local registration row, so the local entry point must resolve

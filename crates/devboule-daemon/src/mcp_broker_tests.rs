@@ -2273,7 +2273,7 @@ pub(super) fn peer_row(device_id: &str, caps: &[&str]) -> crate::journal::PeerRe
     crate::journal::PeerRecord {
         device_id: device_id.to_string(),
         display_name: "Peer".to_string(),
-        role: "client".to_string(),
+        legacy_dialable: false,
         public_key: vec![7u8; 32],
         paired_by_user: None,
         binding_kind: "tailnet".to_string(),
@@ -2318,7 +2318,6 @@ fn a_peer_is_refused_the_oracle_search_until_it_holds_search() {
     use crate::provider_catalog::{MCP_NEIGHBORHOOD_TOOL, MCP_ORACLE_SEARCH_TOOL};
     let view_only = McpCaller::Peer {
         device_id: "dev-view".to_string(),
-        role: crate::peer_policy::PeerRole::Client,
         caps: vec!["view".to_string()],
     };
     let refused = mcp_peer_door(&view_only, Some(MCP_ORACLE_SEARCH_TOOL), &json!(7))
@@ -2332,7 +2331,6 @@ fn a_peer_is_refused_the_oracle_search_until_it_holds_search() {
     );
     let searcher = McpCaller::Peer {
         device_id: "dev-search".to_string(),
-        role: crate::peer_policy::PeerRole::Client,
         caps: vec!["view".to_string(), "search".to_string()],
     };
     assert_eq!(
@@ -2364,7 +2362,7 @@ fn the_devices_tool_answers_scoped_from_this_daemons_rows() {
         .peer_upsert(crate::journal::PeerRecord {
             device_id: "dev-mine".to_string(),
             display_name: "Work laptop".to_string(),
-            role: "daemon".to_string(),
+            legacy_dialable: true,
             public_key: vec![7u8; 32],
             paired_by_user: Some(owner.user.clone()),
             binding_kind: "tailnet".to_string(),
@@ -2558,7 +2556,7 @@ fn a_roster_call_that_dials_is_audited_with_its_actor() {
         .peer_upsert(crate::journal::PeerRecord {
             device_id: "dev-audit".to_string(),
             display_name: "Far daemon".to_string(),
-            role: "daemon".to_string(),
+            legacy_dialable: true,
             public_key: keypair.public.clone(),
             paired_by_user: Some(owner.user.clone()),
             binding_kind: "tailnet".to_string(),
@@ -2646,7 +2644,7 @@ fn a_far_side_scope_refusal_is_audited_as_unscoped() {
         .peer_upsert(crate::journal::PeerRecord {
             device_id: "dev-far".to_string(),
             display_name: "Far daemon".to_string(),
-            role: "daemon".to_string(),
+            legacy_dialable: true,
             public_key: keypair.public.clone(),
             paired_by_user: Some(owner.user.clone()),
             binding_kind: "tailnet".to_string(),
@@ -2718,7 +2716,7 @@ fn a_dial_that_goes_nowhere_is_audited_as_failed() {
         .peer_upsert(crate::journal::PeerRecord {
             device_id: "dev-asleep".to_string(),
             display_name: "Sleeping daemon".to_string(),
-            role: "daemon".to_string(),
+            legacy_dialable: true,
             public_key: vec![7u8; 32],
             paired_by_user: Some(owner.user.clone()),
             binding_kind: "tailnet".to_string(),
@@ -2880,7 +2878,7 @@ fn a_peer_caller_is_refused_the_model_half_with_the_policy_sentence() {
     );
     state.sessions.set_test_origin(
         &creator,
-        SessionOrigin::peer("device-p0", crate::peer_policy::PeerRole::Client),
+        SessionOrigin::peer("device-p0", devboule_protocol::PeerRole::Client),
     );
     state
         .peer_upsert(peer_row(
@@ -2921,7 +2919,7 @@ fn a_peer_without_send_is_refused_the_mode_half_first() {
     crate::session::insert_test_live_agent(&state.sessions, &creator, owner.clone());
     state.sessions.set_test_origin(
         &creator,
-        SessionOrigin::peer("device-p0-mode", crate::peer_policy::PeerRole::Client),
+        SessionOrigin::peer("device-p0-mode", devboule_protocol::PeerRole::Client),
     );
     state
         .peer_upsert(peer_row("device-p0-mode", &["view"]))
@@ -2963,7 +2961,7 @@ fn a_peer_denial_is_audited_under_the_device_not_local() {
         .insert_test_child(&child, owner.clone(), &creator);
     state.sessions.set_test_origin(
         &creator,
-        SessionOrigin::peer("device-p0-audit", crate::peer_policy::PeerRole::Client),
+        SessionOrigin::peer("device-p0-audit", devboule_protocol::PeerRole::Client),
     );
     // No `answer_permissions` on the row: the door refuses.
     state
@@ -3015,7 +3013,7 @@ fn a_peer_denial_is_audited_under_the_device_not_local() {
     assert!(
         rows.contains(&(
             "device-p0-audit".to_string(),
-            "client".to_string(),
+            "paired-device".to_string(),
             crate::provider_catalog::MCP_ANSWER_PERMISSION_TOOL.to_string(),
             Some(creator.clone()),
             "denied".to_string()
@@ -3041,7 +3039,7 @@ fn a_peer_roster_is_the_view_act() {
     crate::session::insert_test_live_agent(&state.sessions, &creator, owner.clone());
     state.sessions.set_test_origin(
         &creator,
-        SessionOrigin::peer("device-p0-roster", crate::peer_policy::PeerRole::Client),
+        SessionOrigin::peer("device-p0-roster", devboule_protocol::PeerRole::Client),
     );
     state
         .peer_upsert(peer_row("device-p0-roster", &[]))
@@ -3085,7 +3083,7 @@ fn a_peer_send_is_the_send_act() {
     crate::session::insert_test_live_agent(&state.sessions, &creator, owner.clone());
     state.sessions.set_test_origin(
         &creator,
-        SessionOrigin::peer("device-p0-send", crate::peer_policy::PeerRole::Client),
+        SessionOrigin::peer("device-p0-send", devboule_protocol::PeerRole::Client),
     );
     state
         .peer_upsert(peer_row("device-p0-send", &["view"]))
@@ -3305,7 +3303,7 @@ fn a_peer_tool_send_is_attributed_to_the_peer() {
     crate::session::insert_test_live_agent(&state.sessions, &creator, owner.clone());
     state.sessions.set_test_origin(
         &creator,
-        SessionOrigin::peer("device-f4-send", crate::peer_policy::PeerRole::Client),
+        SessionOrigin::peer("device-f4-send", devboule_protocol::PeerRole::Client),
     );
     let received = crate::session::insert_test_live_agent_with_recording_writer(
         &state.sessions,
@@ -3364,7 +3362,7 @@ fn a_daemon_role_tool_send_stops_at_owner_scoped_target_lookup() {
     crate::session::insert_test_live_agent(&state.sessions, &creator, peer_owner.clone());
     state.sessions.set_test_origin(
         &creator,
-        SessionOrigin::peer("device-f4-scope", crate::peer_policy::PeerRole::Daemon),
+        SessionOrigin::peer("device-f4-scope", devboule_protocol::PeerRole::Daemon),
     );
     let received = crate::session::insert_test_live_agent_with_recording_writer(
         &state.sessions,
@@ -3414,7 +3412,7 @@ fn a_peer_create_is_the_create_act() {
     crate::session::insert_test_live_agent(&state.sessions, &creator, owner.clone());
     state.sessions.set_test_origin(
         &creator,
-        SessionOrigin::peer("device-p0-create", crate::peer_policy::PeerRole::Client),
+        SessionOrigin::peer("device-p0-create", devboule_protocol::PeerRole::Client),
     );
     state
         .peer_upsert(peer_row("device-p0-create", &["view"]))
@@ -3497,7 +3495,6 @@ fn a_creation_card_names_a_device_that_may_answer_it() {
     state.peer_upsert(row).expect("store a peer");
     let holder = McpCaller::Peer {
         device_id: "device-f1-note".to_string(),
-        role: crate::peer_policy::PeerRole::Client,
         caps: vec!["view".to_string(), "answer_permissions".to_string()],
     };
     let note = self_answer_note(&state, &holder)
@@ -3509,7 +3506,6 @@ fn a_creation_card_names_a_device_that_may_answer_it() {
     );
     let plain = McpCaller::Peer {
         device_id: "device-f1-note".to_string(),
-        role: crate::peer_policy::PeerRole::Client,
         caps: vec!["view".to_string()],
     };
     assert!(
@@ -3537,7 +3533,7 @@ fn a_peer_pi_caller_meets_the_same_door_as_acp() {
     );
     state.sessions.set_test_origin(
         &creator,
-        SessionOrigin::peer("device-pi-door", crate::peer_policy::PeerRole::Client),
+        SessionOrigin::peer("device-pi-door", devboule_protocol::PeerRole::Client),
     );
     state
         .peer_upsert(peer_row("device-pi-door", &["view", "create_sessions"]))
@@ -3606,7 +3602,7 @@ fn a_peer_reads_the_ticked_list_holding_nothing() {
     crate::session::insert_test_live_agent(&state.sessions, &creator, owner.clone());
     state.sessions.set_test_origin(
         &creator,
-        SessionOrigin::peer("device-p0-list", crate::peer_policy::PeerRole::Client),
+        SessionOrigin::peer("device-p0-list", devboule_protocol::PeerRole::Client),
     );
     state
         .peer_upsert(peer_row("device-p0-list", &[]))
@@ -6304,7 +6300,6 @@ fn agent_status_reads_a_live_child() {
     // while the list that carries the details is priced at `answer_permissions`.
     let view_peer = McpCaller::Peer {
         device_id: "c1a-status-view".to_string(),
-        role: crate::peer_policy::PeerRole::Client,
         caps: vec![crate::peer_policy::CAP_VIEW.to_string()],
     };
     assert!(

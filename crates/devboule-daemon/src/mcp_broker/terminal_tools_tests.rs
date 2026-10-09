@@ -4,9 +4,9 @@
 use super::dispatch::{enabled_tool_list, tool_call_refusal};
 use super::tests::{http_request, owner, peer_row, response_json};
 use super::*;
-use crate::peer_policy::PeerRole;
 use crate::provider_catalog::{ToolOverlay, MCP_CAPTURE_TERMINAL_TOOL, MCP_LIST_TERMINALS_TOOL};
 use crate::session::ConnHandle;
+use devboule_protocol::PeerRole;
 use devboule_protocol::SessionOrigin;
 
 /// One `tools/call` against the loopback broker, answered already parsed.
@@ -690,9 +690,11 @@ fn a_daemon_origin_caller_reads_only_terminals_of_its_own_origin() {
     );
     // The door lets the tool through on the way in: both reads are judged
     // against this device's own capabilities first.
-    state
-        .peer_upsert(peer_row("device-d", &["view", "admin"]))
-        .expect("store a peer");
+    // `legacy_dialable` is this row's v30 daemon tag: a machine peer's session
+    // scope is reconstructed from the stored hint, never from the stored role.
+    let mut device_row = peer_row("device-d", &["view", "admin"]);
+    device_row.legacy_dialable = true;
+    state.peer_upsert(device_row).expect("store a peer");
 
     let guard = state
         .mcp

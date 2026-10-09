@@ -94,7 +94,7 @@ use crate::attachment_store::AttachmentStore;
 use crate::journal::{new_session_record, Journal, PersistStatus, SessionRecord};
 use crate::mcp_broker::McpSessionGuard;
 use crate::paths::RuntimePaths;
-use crate::peer_policy::{ConnPeer, PeerRole};
+use crate::peer_policy::ConnPeer;
 use crate::process_tree::{JobObject, ProcessHandle};
 #[cfg(test)]
 use crate::screen::Screen;

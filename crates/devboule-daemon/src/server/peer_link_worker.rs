@@ -238,9 +238,10 @@ pub(crate) fn peer_row(state: &Arc<ServerState>, device_id: &str) -> Result<Peer
     if row.is_revoked() {
         return Err(DialStep::Revoked);
     }
-    if row.role != "daemon" {
-        // A client-role device has no listener and no host lists; refusing here
-        // keeps the app from dialling whatever owns an ephemeral port now.
+    if !row.legacy_dialable {
+        // A peer with no v30 daemon hint has no listener we know of and no
+        // host lists; refusing here keeps the app from dialling whatever owns
+        // an ephemeral port now.
         return Err(DialStep::NoListenPort);
     }
     Ok(row)

@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use devboule_protocol::{
     ActiveTurnBehavior, AgentActivityState, AttachmentReference, BrowserExecuteRequest,
     ClientHello, ClientMessage, Cursor, DaemonHello, DaemonMessage, DaemonStatusBody, ErrorCode,
-    JournalRetention, JournalUsage, OwnerId, PairingSecret, PeerRole, PeerRow, PermissionOutcome,
+    JournalRetention, JournalUsage, OwnerId, PairingSecret, PeerRow, PermissionOutcome,
     Persistence, Project, PromptAttachment, ProviderInfo, RemoteHostList, RemoteHostListBody,
     RemoteHostStatus, ResumeResult, RetentionPatch, Session, SessionEvent, SessionEventEnvelope,
     SessionKind, SessionResumeInfo, SessionResumeOutcome, SessionStateSnapshot, SessionTask,
@@ -1691,18 +1691,17 @@ impl DaemonClient {
         }
     }
 
-    /// Asks the daemon to display a fresh one-time pairing code for `role`.
+    /// Asks the daemon to display a fresh one-time pairing code.
     ///
     /// The code is a five-minute secret: it leaves here only inside the returned
     /// frame, which the panel puts on screen. This method formats no frame into
-    /// a message, so no error path of it can carry the code.
-    ///
-    /// `role` is the typed enum, not a string: an unrecognised role string is
-    /// refused where it is parsed (the Tauri command boundary) rather than
-    /// travelling as a request the daemon would have to reinterpret.
-    pub fn pairing_start(&self, role: PeerRole) -> Result<DaemonMessage, DaemonError> {
+    /// a message, so no error path of it can carry the code. No role is asked:
+    /// the code-displaying device confirms every new pairing itself, and what
+    /// the paired device becomes is decided later by whether it hosts a
+    /// workspace.
+    pub fn pairing_start(&self) -> Result<DaemonMessage, DaemonError> {
         let id = self.alloc_id();
-        match self.roundtrip(ClientMessage::PairingStart { id, role })? {
+        match self.roundtrip(ClientMessage::PairingStart { id })? {
             reply @ DaemonMessage::PairingCode { .. } => Ok(reply),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             _ => pairing_reply_mismatch(),
@@ -1719,14 +1718,12 @@ impl DaemonClient {
         &self,
         address: &str,
         code: PairingSecret,
-        role: PeerRole,
     ) -> Result<DaemonMessage, DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::PairingComplete {
             id,
             address: address.to_string(),
             code,
-            role,
         })? {
             reply @ (DaemonMessage::PairingPending { .. } | DaemonMessage::PairingDone { .. }) => {
                 Ok(reply)

@@ -24,7 +24,7 @@ pub(super) fn child_answer_caps_refusal(
     if origin.kind != SessionOriginKind::Peer {
         return Ok(());
     }
-    let (Some(device_id), Some(role)) = (origin.device_id.as_deref(), origin.role) else {
+    let Some(device_id) = origin.device_id.as_deref() else {
         return Err("the calling session's origin is unknown; the card stays pending".to_string());
     };
     let caps = device_caps(device_id);
@@ -39,7 +39,7 @@ pub(super) fn child_answer_caps_refusal(
         idempotency_key: None,
     };
     if let crate::peer_policy::PeerDecision::Deny(reason) =
-        crate::peer_policy::peer_allows(role, &caps, &request)
+        crate::peer_policy::peer_allows(&caps, &request)
     {
         return Err(format!(
             "{}; the card stays pending",

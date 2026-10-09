@@ -208,6 +208,7 @@ pub(crate) fn spawn_capturing_noise_responder(
                     instance_id: "fake-responder".to_string(),
                     pid: std::process::id(),
                     capabilities: capabilities.clone(),
+                    workspace_host: None,
                 }))
                 .expect("hello reply");
             let request = match framed.recv_timeout::<ClientMessage>(Duration::from_secs(10)) {
@@ -276,6 +277,7 @@ pub(crate) fn spawn_silent_noise_responder(
                 instance_id: "fake-responder".to_string(),
                 pid: std::process::id(),
                 capabilities: capabilities.clone(),
+                workspace_host: None,
             }))
             .expect("hello reply");
         match framed.recv_timeout::<ClientMessage>(Duration::from_secs(10)) {

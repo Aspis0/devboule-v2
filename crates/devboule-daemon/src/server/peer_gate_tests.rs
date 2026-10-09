@@ -1,7 +1,9 @@
 //! Tests for the peer gate's session-target ordering and capability door.
 
 use super::*;
+use crate::peer_policy::PeerScope;
 use crate::peer_policy::{TransportBinding, CAP_SEND, CAP_VIEW};
+use devboule_protocol::PeerRole;
 
 fn remote_conn(caps: &[&str]) -> Arc<ConnHandle> {
     ConnHandle::with_peer_caps(
@@ -9,7 +11,7 @@ fn remote_conn(caps: &[&str]) -> Arc<ConnHandle> {
         None,
         Some(ConnPeer::Remote {
             device_id: "dev-peer-1".to_string(),
-            role: PeerRole::Daemon,
+            scope: PeerScope::PeerDevice,
             paired_by_user: Some("local-user".to_string()),
             binding: TransportBinding::tailnet("nstable", "node", "user@example.com"),
         }),

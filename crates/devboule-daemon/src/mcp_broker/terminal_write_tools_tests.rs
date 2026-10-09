@@ -143,7 +143,7 @@ fn a_daemon_origin_caller_writes_only_its_own_terminals() {
     caller_in(&state, "tw-daemon-caller", &workspace);
     state.sessions.set_test_origin(
         "tw-daemon-caller",
-        devboule_protocol::SessionOrigin::peer("device-tw", crate::peer_policy::PeerRole::Daemon),
+        devboule_protocol::SessionOrigin::peer("device-tw", devboule_protocol::PeerRole::Daemon),
     );
     let human = crate::session::insert_test_terminal_with_recording_writer(
         &state.sessions,
@@ -159,14 +159,13 @@ fn a_daemon_origin_caller_writes_only_its_own_terminals() {
     );
     state.sessions.set_test_origin(
         "tw-daemon-own",
-        devboule_protocol::SessionOrigin::peer("device-tw", crate::peer_policy::PeerRole::Daemon),
+        devboule_protocol::SessionOrigin::peer("device-tw", devboule_protocol::PeerRole::Daemon),
     );
-    state
-        .peer_upsert(peer_row(
-            "device-tw",
-            &["view", "send", "admin", "create_sessions"],
-        ))
-        .expect("store a peer");
+    // The stored v30 daemon tag is what reconstructs this session's machine
+    // scope; the origin role word is attribution and is not consulted.
+    let mut device_row = peer_row("device-tw", &["view", "send", "admin", "create_sessions"]);
+    device_row.legacy_dialable = true;
+    state.peer_upsert(device_row).expect("store a peer");
 
     let token = serve(&state, "tw-daemon-caller");
     allow_terminal_writes(&state, "tw-daemon-caller");

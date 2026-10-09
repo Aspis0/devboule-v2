@@ -2,6 +2,7 @@
 //! the dial fixtures and journal readers are test-only weight.
 
 use super::*;
+use crate::peer_policy::PeerScope;
 use crate::peer_policy::{TransportBinding, CAP_VIEW};
 
 fn remote_conn(paired_by_user: Option<String>) -> Arc<ConnHandle> {
@@ -10,7 +11,7 @@ fn remote_conn(paired_by_user: Option<String>) -> Arc<ConnHandle> {
         None,
         Some(ConnPeer::Remote {
             device_id: "dev-far".to_string(),
-            role: PeerRole::Daemon,
+            scope: PeerScope::PeerDevice,
             paired_by_user,
             binding: TransportBinding::tailnet("nstable", "node", "user@example.com"),
         }),
@@ -147,7 +148,7 @@ fn a_roster_served_to_a_peer_is_audited_with_its_scope() {
         rows.contains(&(
             "PeerAgentsList".to_string(),
             "dev-far".to_string(),
-            "daemon".to_string(),
+            "paired-device".to_string(),
             "ok".to_string()
         )),
         "the served roster read is audited ok: {rows:?}"
@@ -156,7 +157,7 @@ fn a_roster_served_to_a_peer_is_audited_with_its_scope() {
         rows.contains(&(
             "PeerAgentsList".to_string(),
             "dev-far".to_string(),
-            "daemon".to_string(),
+            "paired-device".to_string(),
             "unscoped".to_string()
         )),
         "the unscoped answer is audited as unscoped, never as a served read: {rows:?}"
@@ -229,7 +230,7 @@ fn a_roster_that_fails_to_serve_is_audited_as_error() {
         rows.contains(&(
             "PeerAgentsList".to_string(),
             "dev-far".to_string(),
-            "daemon".to_string(),
+            "paired-device".to_string(),
             "error".to_string()
         )),
         "the failed read is audited as error: {rows:?}"

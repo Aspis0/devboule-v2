@@ -2,6 +2,7 @@
 //! called on its own, so a phase that is wrong fails here even before the
 //! through-the-road characterisation in `session_create_tests.rs` notices.
 
+use devboule_protocol::PeerRole;
 use std::path::PathBuf;
 
 use devboule_protocol::{
@@ -9,7 +10,6 @@ use devboule_protocol::{
 };
 
 use crate::journal::PersistStatus;
-use crate::peer_policy::PeerRole;
 use crate::profile_delivery::ProfileDelivery;
 use crate::server::ServerState;
 

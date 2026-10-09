@@ -8,7 +8,9 @@
 
 use std::sync::Arc;
 
-use devboule_protocol::{PeerRole, SessionKind, SessionOrigin};
+use devboule_protocol::PeerRole;
+use devboule_protocol::{SessionKind, SessionOrigin};
+
 use serde_json::{json, Value};
 
 use crate::mcp_broker::{McpServerHandle, McpSessionGuard};

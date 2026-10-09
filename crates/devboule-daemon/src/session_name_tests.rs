@@ -16,6 +16,8 @@ use super::tests::{
     remote_conn, set_entry_origin, test_owner, tmp_delete_registry, RecordingWriter,
 };
 use super::*;
+use crate::peer_policy::PeerScope;
+use devboule_protocol::PeerRole;
 use std::sync::Mutex;
 
 /// One roster push, as the transition sink delivers it: whose roster, and
@@ -655,7 +657,7 @@ fn a_paired_client_renames_only_its_paired_users_sessions() {
     insert_live_agent(&registry, theirs_id, theirs.clone());
     birth_row(&journal, mine_id, &mine);
     birth_row(&journal, theirs_id, &theirs);
-    let conn = remote_conn(PeerRole::Client, Some("S-1-5-21-mine"));
+    let conn = remote_conn(PeerScope::PairedUser, Some("S-1-5-21-mine"));
 
     registry
         .set_display_name(mine_id, &mine, "worker one", &conn)
@@ -697,7 +699,7 @@ fn a_daemon_peer_renames_only_the_sessions_it_created() {
         own_id,
         SessionOrigin::peer("dev-phone", PeerRole::Daemon),
     );
-    let conn = remote_conn(PeerRole::Daemon, Some("peer_dev-phone"));
+    let conn = remote_conn(PeerScope::PeerDevice, Some("peer_dev-phone"));
 
     registry
         .set_display_name(own_id, &owner, "worker one", &conn)

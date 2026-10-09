@@ -3,13 +3,27 @@
 //! The device that **displays** a code is the responder; the device that
 //! **types** it is the initiator. On the wire, after `DBP1`:
 //!
-//! 1. responder → SPAKE2 message (`start_a`);
-//! 2. initiator → SPAKE2 message (`start_b`); both `finish`;
-//! 3. both HKDF-SHA256 the SPAKE2 key into a 32-byte PSK;
-//! 4. Noise `XXpsk3` with each side's long-term static, prologue
-//!    `devboule-pair-v1`, and that PSK;
-//! 5. inside Noise: `{device_id, display_name, role, public_key, listenPort}`
-//!    each way, and the responder answers `{accepted, reason}`.
+//! 1. the responder and initiator exchange one prelude byte — a role tag in
+//!    the v30 dialect, the roleless version byte (`2`) in the current one;
+//! 2. responder → SPAKE2 message (`start_a`);
+//! 3. initiator → SPAKE2 message (`start_b`); both `finish`;
+//! 4. both HKDF-SHA256 the SPAKE2 key into a 32-byte PSK — with the roles in
+//!    the `info` on the v30 dialect, under a separate label without them on
+//!    the roleless one;
+//! 5. Noise `XXpsk3` with each side's long-term static, prologue
+//!    `devboule-pair-v1` (v30) or `devboule-pair-v2`, and that PSK;
+//! 6. inside Noise: `{device_id, display_name, public_key, listenPort}` each
+//!    way, the responder answers `{accepted, reason}`, and a v30 payload also
+//!    carries the sender's `role`.
+//!
+//! The current dialect asks no role: the code-displaying device always
+//! confirms a new pairing itself, and a paired device is a client until it
+//! hosts a workspace. The v30 exchange survives only for old peers, and the
+//! one thing kept from its role tags is `legacy_dialable` — whether the other
+//! side promised a listener. A v32 initiator tries the roleless prelude first
+//! and retries v30 only when the far side answers with a role tag or closes
+//! the socket right after that prelude, before any SPAKE proof; a code or
+//! proof failure and a timeout never downgrade.
 //!
 //! `listenPort` is how the initiator tells the responder which port its own
 //! listener is bound to: the responder would otherwise record the ephemeral
@@ -28,12 +42,11 @@
 //!
 //! # Not a blocked thread
 //!
-//! A pairing whose incoming role is `Client` needs the local user's answer,
-//! which may take a minute. The responder parks the socket inside a state
-//! machine entry with a deadline and waits on a channel; `PairingConfirm`
-//! fills it. The accept loop's one-second tick expires codes and parked
-//! entries, so nothing blocks on a timer and at most
-//! [`MAX_PENDING_PAIRINGS`] sockets are held.
+//! A pairing whose far side must confirm needs the local user's answer, which
+//! may take a minute. The responder parks the socket inside a state machine
+//! entry with a deadline and waits on a channel; `PairingConfirm` fills it. The
+//! accept loop's one-second tick expires codes and parked entries, so nothing
+//! blocks on a timer and at most [`MAX_PENDING_PAIRINGS`] sockets are held.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{self, Read};
@@ -41,7 +54,9 @@ use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use devboule_protocol::{PairingSecret, PeerRole, PeerRow, PendingPairing, PEER_DEFAULT_CAPS};
+use devboule_protocol::PeerRole;
+use devboule_protocol::{PairingSecret, PeerRow, PendingPairing, PEER_DEFAULT_CAPS};
+
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use zeroize::Zeroize;
@@ -93,19 +108,32 @@ pub const PAIRING_SETUP_TIMEOUT: Duration = Duration::from_secs(30);
 /// responder's person is being asked to fill.
 pub const ANSWER_TIMEOUT: Duration = Duration::from_secs(CONFIRM_WINDOW.as_secs() + 10);
 
-/// The two sides' PAKE identity strings. Fixed: the
-/// roles do **not** live here, they are bound in the PSK (`psk_info`), which is
-/// what actually has to hold (design §8 R1).
+/// The two sides' PAKE identity strings. Fixed: no roles live here, they are
+/// bound in the PSK on the v30 dialect only, and the roleless dialect binds no
+/// role at all.
+///
+/// These are legacy protocol identifiers: the `v1` in the strings names the
+/// pairing wire's first dialect, not the app/daemon protocol version.
 pub const PAIR_RESPONDER_ID: &[u8] = b"devboule/pair/v1/responder";
 pub const PAIR_INITIATOR_ID: &[u8] = b"devboule/pair/v1/initiator";
-/// HKDF-SHA256 `info` prefix. The roles are appended to it, so the two sides
-/// cannot derive the same PSK while disagreeing about who is what.
+/// The v30 HKDF-SHA256 `info` prefix. The roles are appended to it, so the two
+/// sides cannot derive the same PSK while disagreeing about who is what.
 pub const PAIR_INFO_PREFIX: &[u8] = b"devboule-pair-v1";
-/// The one-byte role tag each side writes before the SPAKE2 exchange. In the
-/// clear on purpose: it is *bound* (a flipped byte changes the PSK and the
-/// `XXpsk3` handshake then fails), so it needs no confidentiality.
+/// The roleless HKDF-SHA256 `info`, whole. A separate label from the v1 prefix
+/// on purpose: the same code can never derive the same key under both
+/// dialects.
+pub const PAIR_INFO_V2: &[u8] = b"devboule-pair-v2";
+/// The roleless Noise prologue. The v30 dialect keeps `PAIR_PROLOGUE`.
+pub const PAIR_PROLOGUE_V2: &[u8] = b"devboule-pair-v2";
+/// The one-byte role tag the v30 dialect writes where the roleless dialect
+/// writes [`PAIR_VERSION_V2`]. In the clear on purpose: it is *bound* (a
+/// flipped byte changes the PSK and the `XXpsk3` handshake then fails), so it
+/// needs no confidentiality.
 pub const ROLE_CLIENT_TAG: u8 = 0;
 pub const ROLE_DAEMON_TAG: u8 = 1;
+/// The roleless prelude byte, and the only other value the first byte after
+/// the magic may take.
+pub const PAIR_VERSION_V2: u8 = 2;
 
 #[derive(Debug)]
 pub enum PairingError {
@@ -277,7 +305,8 @@ pub fn psk_info(initiator: PeerRole, responder: PeerRole) -> Vec<u8> {
     info
 }
 
-/// The 32-byte PSK both sides derive from the SPAKE2 output.
+/// The 32-byte PSK both sides derive from the SPAKE2 output on the v30
+/// dialect, where each side's declared role is bound into the label.
 pub fn derive_psk(spake_key: &[u8], initiator: PeerRole, responder: PeerRole) -> [u8; 32] {
     let info = psk_info(initiator, responder);
     let hk = hkdf::Hkdf::<Sha256>::new(None, spake_key);
@@ -287,7 +316,19 @@ pub fn derive_psk(spake_key: &[u8], initiator: PeerRole, responder: PeerRole) ->
     psk
 }
 
-/// The one-byte role tag written before the SPAKE2 exchange.
+/// The 32-byte PSK both sides derive on the roleless dialect. No role exists
+/// to bind, so the label is the whole of the domain separation.
+pub fn derive_psk_v2(spake_key: &[u8]) -> [u8; 32] {
+    let hk = hkdf::Hkdf::<Sha256>::new(None, spake_key);
+    let mut psk = [0u8; 32];
+    hk.expand(PAIR_INFO_V2, &mut psk)
+        .expect("32 bytes is a valid HKDF-SHA256 output length");
+    psk
+}
+
+/// The one-byte role tag written before the SPAKE2 exchange on the v30
+/// dialect. Kept for that dialect only; the roleless wire writes
+/// [`PAIR_VERSION_V2`] in the same position.
 fn role_tag(role: PeerRole) -> u8 {
     match role {
         PeerRole::Client => ROLE_CLIENT_TAG,
@@ -303,23 +344,52 @@ fn role_from_tag(tag: u8) -> Result<PeerRole, PairingError> {
     }
 }
 
-fn write_role(
+/// The v30 role this device advertises when a v30 peer is on the other side:
+/// a machine only when it hosts a workspace, and a client otherwise. This is
+/// the compatibility projection the design names — the old topology has no
+/// other honest spelling for a device that is a client until it hosts.
+fn legacy_role(server: &Arc<ServerState>) -> PeerRole {
+    if server.has_hosted_workspace() {
+        PeerRole::Daemon
+    } else {
+        PeerRole::Client
+    }
+}
+
+/// Write this side's one-byte prelude: a v30 role tag or the roleless version.
+fn write_prelude(
     stream: &mut TcpStream,
-    role: PeerRole,
+    prelude: u8,
     deadline: Instant,
 ) -> Result<(), PairingError> {
     use std::io::Write as _;
     apply_stream_deadline(stream, deadline)?;
-    stream
-        .write_all(&[role_tag(role)])
-        .map_err(PairingError::from)
+    stream.write_all(&[prelude]).map_err(PairingError::from)
 }
 
-fn read_role(stream: &mut TcpStream, deadline: Instant) -> Result<PeerRole, PairingError> {
-    apply_stream_deadline(stream, deadline)?;
-    let mut tag = [0u8; 1];
-    stream.read_exact(&mut tag).map_err(PairingError::from)?;
-    role_from_tag(tag[0])
+/// Read the other side's one-byte prelude without interpreting it; the caller
+/// decides whether the byte is a v30 role tag or the roleless version, and
+/// that decision is the whole dialect negotiation. The reason the read stopped
+/// is kept apart from the general error so a close (a v30 responder that hung
+/// up on the version byte) can be told from a timeout (never a downgrade).
+fn read_prelude(stream: &mut TcpStream, deadline: Instant) -> Result<u8, PreludeEnd> {
+    apply_stream_deadline(stream, deadline).map_err(|error| match error {
+        PairingError::Failed(message) => PreludeEnd::Io(message),
+        other => PreludeEnd::Io(other.to_string()),
+    })?;
+    let mut byte = [0u8; 1];
+    match stream.read_exact(&mut byte) {
+        Ok(()) => Ok(byte[0]),
+        Err(error) => match error.kind() {
+            std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted => Err(PreludeEnd::Closed),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
+                Err(PreludeEnd::TimedOut)
+            }
+            _ => Err(PreludeEnd::Io(error.to_string())),
+        },
+    }
 }
 
 /// Recompute the socket deadline before every operation, the same discipline
@@ -346,7 +416,11 @@ fn apply_stream_deadline(stream: &TcpStream, deadline: Instant) -> Result<(), Pa
 struct PairPayload {
     device_id: String,
     display_name: String,
-    role: PeerRole,
+    /// The v30 dialect's role word. `None` on the roleless wire, where no role
+    /// exists; optional so the roleless payload decodes on the shared struct,
+    /// and always `Some` on a v30 exchange because an old decoder requires it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    role: Option<PeerRole>,
     /// The claimed Noise static public key, base64. It must equal the remote
     /// static the Noise handshake actually authenticated.
     public_key: String,
@@ -359,13 +433,14 @@ struct PairPayload {
     listen_port: Option<u16>,
 }
 
-/// This device's own payload: its identity, its role in this pairing, and the
-/// port its peer listener actually bound. The port is read from the listener
-/// state the daemon published when it bound — the bound socket is the truth —
-/// not re-parsed from the environment.
+/// This device's own payload: its identity, the role word a v30 peer expects
+/// (`None` on the roleless wire), and the port its peer listener actually
+/// bound. The port is read from the listener state the daemon published when
+/// it bound — the bound socket is the truth — not re-parsed from the
+/// environment.
 fn own_payload(
     identity: &crate::device_identity::DeviceIdentity,
-    role: PeerRole,
+    role: Option<PeerRole>,
     server: &Arc<ServerState>,
 ) -> PairPayload {
     PairPayload {
@@ -449,8 +524,6 @@ fn base64_encode(bytes: &[u8]) -> String {
 
 struct ActiveCode {
     code: PairingSecret,
-    /// This device's own role in the pairing it is displaying.
-    role: PeerRole,
     expires_at: Instant,
 }
 
@@ -464,7 +537,10 @@ struct PendingEntry {
     token: u64,
     device_id: String,
     display_name: String,
-    role: PeerRole,
+    /// Whether the parked peer's v30 tag promised a listener. It travels onto
+    /// the stored row as `legacy_dialable` and is the only thing the old role
+    /// contributes to the pairing; a roleless park records `false`.
+    legacy_dialable: bool,
     key_fingerprint: String,
     address: String,
     public_key: Vec<u8>,
@@ -591,8 +667,10 @@ impl PairingService {
     }
 
     /// Display a new code, replacing any previous one: there is exactly one
-    /// active code per daemon.
-    pub fn start(&self, role: PeerRole) -> Result<(PairingSecret, i64), PairingError> {
+    /// active code per daemon. No role: the code-displaying device confirms
+    /// every new pairing itself, and a v30 peer's expected role is synthesized
+    /// from this device's own workspace state when one actually connects.
+    pub fn start(&self) -> Result<(PairingSecret, i64), PairingError> {
         let now = Instant::now();
         let expires_at = now + CODE_LIFETIME;
         let code = generate_code()?;
@@ -604,13 +682,13 @@ impl PairingService {
         state.attempts.clear();
         state.active = Some(ActiveCode {
             code: code.clone(),
-            role,
             expires_at,
         });
         Ok((code, millis_from(now, expires_at)))
     }
 
-    /// The parked pairings the panel must decide on.
+    /// The parked pairings the panel must decide on. `role` is the v30
+    /// projection the Devices reply strips for a v32 connection.
     pub fn pending_snapshot(&self) -> Vec<PendingPairing> {
         let now = Instant::now();
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
@@ -621,7 +699,7 @@ impl PairingService {
             .map(|entry| PendingPairing {
                 device_id: entry.device_id.clone(),
                 display_name: entry.display_name.clone(),
-                role: entry.role,
+                role: Some(devboule_protocol::projected_role(entry.legacy_dialable)),
                 key_fingerprint: entry.key_fingerprint.clone(),
                 address: entry.address.clone(),
                 expires_at: millis_from(now, entry.expires_at),
@@ -660,7 +738,7 @@ impl PairingService {
             server,
             &entry.device_id,
             &entry.display_name,
-            entry.role,
+            entry.legacy_dialable,
             &entry.public_key,
             entry.binding.clone(),
             entry.address.clone(),
@@ -684,7 +762,6 @@ impl PairingService {
         server: &Arc<ServerState>,
         address: &str,
         code: &PairingSecret,
-        role: PeerRole,
     ) -> Result<PairingOutcome, PairingError> {
         let remote_addr: SocketAddr = address
             .parse()
@@ -705,13 +782,14 @@ impl PairingService {
                 "the code is not in the expected format".to_string(),
             ));
         }
-        // A `Daemon` peer promises to be callable, so this device must have a
-        // listener to advertise: without one the responder records `:0`, both
-        // screens say paired, and the row can never be dialled — re-pairing
-        // would reproduce the same `0`. A `Client` peer makes no such promise
-        // and may pair without a listener. The retry is the same one showing a
-        // code uses, so the instruction below is one the daemon honours.
-        if role == PeerRole::Daemon {
+        // A device that hosts a workspace promises to be callable, so this
+        // side must have a listener to advertise: without one the far side
+        // records `:0`, both screens say paired, and the row can never be
+        // dialled — re-pairing would reproduce the same `0`. A device with no
+        // workspace makes no such promise and may pair without a listener. The
+        // retry is the same one showing a code uses, so the instruction below
+        // is one the daemon honours.
+        if server.has_hosted_workspace() {
             if server.remote_port().is_none() {
                 server.ensure_remote_listener();
             }
@@ -729,6 +807,51 @@ impl PairingService {
             .map_err(|error| PairingError::NotReady(error.to_string()))?
             .clone();
 
+        // The roleless prelude first, always. A far side that answers it with a
+        // v30 role tag — or closes the socket before answering — is an old
+        // peer, and retrying on the v30 wire is the whole compatibility story:
+        // only that version signal downgrades, never a code, a proof or a
+        // timeout.
+        match self.exchange(
+            server,
+            remote_addr,
+            address,
+            code,
+            &identity,
+            Dialect::Roleless,
+        )? {
+            ExchangeOutcome::Downgrade => {
+                let legacy = legacy_role(server);
+                match self.exchange(
+                    server,
+                    remote_addr,
+                    address,
+                    code,
+                    &identity,
+                    Dialect::Legacy(legacy),
+                )? {
+                    ExchangeOutcome::Downgrade => Err(PairingError::Failed(
+                        "the other device did not answer the pairing prelude".to_string(),
+                    )),
+                    outcome => Ok(outcome.into_outcome()),
+                }
+            }
+            outcome => Ok(outcome.into_outcome()),
+        }
+    }
+
+    /// One initiator-side attempt on a fresh connection. `dialect` fixes the
+    /// prelude byte, the PSK label and the Noise prologue; nothing else about
+    /// the exchange differs between the two wires.
+    fn exchange(
+        &self,
+        server: &Arc<ServerState>,
+        remote_addr: SocketAddr,
+        address: &str,
+        code: &PairingSecret,
+        identity: &crate::device_identity::DeviceIdentity,
+        dialect: Dialect,
+    ) -> Result<ExchangeOutcome, PairingError> {
         let mut stream = TcpStream::connect_timeout(&remote_addr, PAIRING_IO_TIMEOUT)
             .map_err(|error| PairingError::Failed(error.to_string()))?;
         // One budget for the setup phase (SPAKE2, Noise, the payloads), and a
@@ -743,10 +866,53 @@ impl PairingService {
             stream.write_all(&PAIRING_MAGIC)?;
         }
 
-        // 1-2: SPAKE2, side B. Each side's role goes over in the clear first,
-        // because both must be bound into the PSK before either derives it.
-        write_role(&mut stream, role, setup_deadline)?;
-        let responder_role = read_role(&mut stream, setup_deadline)?;
+        // 1: the prelude. A role tag back on the roleless attempt, or a close
+        // where its version byte would be, is the v30 far side announcing
+        // itself; anything else is a failure, and a timeout never downgrades.
+        let legacy_peer_role = match dialect {
+            Dialect::Roleless => {
+                write_prelude(&mut stream, PAIR_VERSION_V2, setup_deadline)?;
+                match read_prelude(&mut stream, setup_deadline) {
+                    Ok(byte) if byte == PAIR_VERSION_V2 => None,
+                    Ok(tag) if tag == ROLE_CLIENT_TAG || tag == ROLE_DAEMON_TAG => {
+                        return Ok(ExchangeOutcome::Downgrade);
+                    }
+                    Ok(other) => {
+                        return Err(PairingError::Failed(format!(
+                            "the other device answered the pairing prelude with {other}"
+                        )));
+                    }
+                    Err(PreludeEnd::Closed) => return Ok(ExchangeOutcome::Downgrade),
+                    Err(PreludeEnd::TimedOut) => {
+                        return Err(PairingError::Failed(
+                            "no answer to the pairing prelude".to_string(),
+                        ));
+                    }
+                    Err(PreludeEnd::Io(message)) => return Err(PairingError::Failed(message)),
+                }
+            }
+            Dialect::Legacy(local) => {
+                write_prelude(&mut stream, role_tag(local), setup_deadline)?;
+                let peer_role = role_from_tag(
+                    read_prelude(&mut stream, setup_deadline).map_err(prelude_error)?,
+                )?;
+                // The old topology had one machine per pair. Two daemon tags
+                // would make both sides claim the machine scope; refuse before
+                // the PAKE rather than store either claim.
+                if local == PeerRole::Daemon && peer_role == PeerRole::Daemon {
+                    return Err(PairingError::Failed(
+                        "both devices host workspaces; the v30 pairing cannot represent two \
+                         machines — upgrade the other device"
+                            .to_string(),
+                    ));
+                }
+                Some(peer_role)
+            }
+        };
+
+        // 2-3: SPAKE2, side B. Both sides derive the same key only under the
+        // same dialect: the v30 label carries both roles, the roleless label
+        // carries none.
         let password = spake2::Password::new(code.as_str().as_bytes());
         let responder_identity = spake2::Identity::new(PAIR_RESPONDER_ID);
         let initiator_identity = spake2::Identity::new(PAIR_INITIATOR_ID);
@@ -761,18 +927,30 @@ impl PairingService {
         let mut spake_key = spake_state
             .finish(&their_message[..their_len])
             .map_err(|error| PairingError::Failed(error.to_string()))?;
-        let mut psk = derive_psk(&spake_key, role, responder_role);
+        let mut psk = match dialect {
+            Dialect::Roleless => derive_psk_v2(&spake_key),
+            Dialect::Legacy(local) => derive_psk(
+                &spake_key,
+                local,
+                legacy_peer_role.expect("a legacy attempt read the far side's role"),
+            ),
+        };
         // The PAKE output is key material too.
         spake_key.zeroize();
 
-        // 3-4: Noise XXpsk3 over the PAKE-derived key. A wrong code derives a
-        // different PSK and the handshake fails here.
+        // 4: Noise XXpsk3 over the PAKE-derived key. A wrong code derives a
+        // different PSK and the handshake fails here. Never a downgrade: after
+        // the proof has begun, a failure is a failure on both wires.
+        let prologue = match dialect {
+            Dialect::Roleless => PAIR_PROLOGUE_V2,
+            Dialect::Legacy(_) => PAIR_PROLOGUE,
+        };
         let session = initiator_handshake(
             &stream,
             setup_deadline,
             identity.private_key(),
             None,
-            PAIR_PROLOGUE,
+            prologue,
             Some(&psk),
             PAIR_NOISE_PATTERN,
         );
@@ -786,7 +964,7 @@ impl PairingService {
             .to_vec();
         let (mut reader, mut writer, _closer) = split_session(&stream, session)?;
 
-        let payload = own_payload(&identity, role, server);
+        let payload = own_payload(identity, dialect.payload_role(), server);
         write_json(&mut writer, &payload, setup_deadline)?;
 
         // The responder's own payload. This is the identity recorded below:
@@ -802,18 +980,23 @@ impl PairingService {
         }
         // Validated before it can be shown on this device's card, parked, or stored.
         validate_peer_payload(&peer_payload)?;
+        // The far side's v30 tag is the only fact the role word carries: it
+        // says whether a v30 endpoint at this address may later be dialled.
+        let peer_legacy_dialable = peer_payload.role == Some(PeerRole::Daemon);
 
-        // The far side's user answers a `Client` pairing, which can take a
-        // minute. Waiting for that here would hold the caller's RPC open for
-        // the whole window and, worse, leave the caller unable to poll
+        // The far side's user answers a pairing parked on that device, which
+        // can take a minute. Waiting for that here would hold the caller's RPC
+        // open for the whole window and, worse, leave the caller unable to poll
         // `DevicesList` and answer it: the confirm could never arrive. So this
         // side reports the pairing as pending now and finishes it on its own
-        // thread, writing the row only if the answer is `accepted`.
-        if role == PeerRole::Client {
+        // thread, writing the row only if the answer is `accepted`. A v30
+        // exchange whose far side read a daemon tag is the one shape that old
+        // responder answers at once, and only that shape waits here.
+        if !matches!(dialect, Dialect::Legacy(PeerRole::Daemon)) {
             let pending = PendingPairing {
                 device_id: peer_payload.device_id.clone(),
                 display_name: peer_payload.display_name.clone(),
-                role: peer_payload.role,
+                role: Some(devboule_protocol::projected_role(peer_legacy_dialable)),
                 key_fingerprint: crate::device_identity::key_fingerprint(&remote_static),
                 address: address.to_string(),
                 expires_at: millis_from(Instant::now(), Instant::now() + CONFIRM_WINDOW),
@@ -821,7 +1004,6 @@ impl PairingService {
             let server = Arc::clone(server);
             let peer_device_id = peer_payload.device_id.clone();
             let peer_display_name = peer_payload.display_name.clone();
-            let peer_role = peer_payload.role;
             let address_for_answer = address.to_string();
             // The far side's whole confirmation window starts now, after the
             // handshake, so a slow setup cannot shorten it.
@@ -852,7 +1034,7 @@ impl PairingService {
                         &server,
                         &peer_device_id,
                         &peer_display_name,
-                        peer_role,
+                        peer_legacy_dialable,
                         &remote_static,
                         binding,
                         address_for_answer,
@@ -868,7 +1050,7 @@ impl PairingService {
                     }
                 })
                 .ok();
-            return Ok(PairingOutcome::Pending(pending));
+            return Ok(ExchangeOutcome::Pending(pending));
         }
 
         let answer: PairAnswer = read_json(&mut reader, Instant::now() + ANSWER_TIMEOUT)?;
@@ -889,13 +1071,76 @@ impl PairingService {
             server,
             &peer_payload.device_id,
             &peer_payload.display_name,
-            peer_payload.role,
+            peer_legacy_dialable,
             &remote_static,
             binding,
             address.to_string(),
         )?;
         let stored = upsert_peer(server, record)?;
-        Ok(PairingOutcome::Done(peer_row(server, &stored)))
+        Ok(ExchangeOutcome::Done(peer_row(server, &stored)))
+    }
+}
+
+/// The pairing wire one attempt speaks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Dialect {
+    /// The roleless wire: prelude byte `2`, the v2 PSK label and prologue.
+    Roleless,
+    /// The v30 compatibility wire, with this device's synthesized tag.
+    Legacy(PeerRole),
+}
+
+impl Dialect {
+    /// The role word this dialect's payload carries: the v30 tag, or none.
+    fn payload_role(self) -> Option<PeerRole> {
+        match self {
+            Self::Roleless => None,
+            Self::Legacy(role) => Some(role),
+        }
+    }
+}
+
+/// What one initiator-side attempt produced.
+enum ExchangeOutcome {
+    /// The far side must confirm; the row lands on the answer thread.
+    Pending(PendingPairing),
+    /// Both sides wrote their row.
+    Done(PeerRow),
+    /// The far side answered the roleless prelude with a v30 role tag (or
+    /// closed the socket where its answer belonged): retry on the v30 wire.
+    Downgrade,
+}
+
+impl ExchangeOutcome {
+    fn into_outcome(self) -> PairingOutcome {
+        match self {
+            Self::Pending(pending) => PairingOutcome::Pending(pending),
+            Self::Done(row) => PairingOutcome::Done(row),
+            Self::Downgrade => unreachable!("the caller maps a downgrade before unwrapping"),
+        }
+    }
+}
+
+/// Why the prelude read stopped, kept apart from the general pairing error so
+/// the roleless attempt can tell a close (a version signal) from a timeout
+/// (never one).
+enum PreludeEnd {
+    /// The other side closed or reset before writing its prelude byte.
+    Closed,
+    /// The deadline elapsed with no byte.
+    TimedOut,
+    Io(String),
+}
+
+fn prelude_error(end: PreludeEnd) -> PairingError {
+    match end {
+        PreludeEnd::Closed => {
+            PairingError::Failed("the peer closed before the pairing prelude".to_string())
+        }
+        PreludeEnd::TimedOut => {
+            PairingError::Failed("no answer to the pairing prelude".to_string())
+        }
+        PreludeEnd::Io(message) => PairingError::Failed(message),
     }
 }
 
@@ -955,7 +1200,7 @@ impl PairingService {
         }
 
         let now = Instant::now();
-        let (code, responder_role) = {
+        let code = {
             let mut guard = self.state.lock().unwrap_or_else(|error| error.into_inner());
             guard
                 .note_attempt(peer_addr.ip(), now)
@@ -963,7 +1208,7 @@ impl PairingService {
             let active = guard
                 .active_if_live(now)
                 .ok_or(PairingError::NoActiveCode)?;
-            (active.code.clone(), active.role)
+            active.code.clone()
         };
         let deadline = now + CONFIRM_WINDOW + Duration::from_secs(10);
 
@@ -973,11 +1218,38 @@ impl PairingService {
             .map_err(|error| PairingError::NotReady(error.to_string()))?
             .clone();
 
-        // 1–2: SPAKE2. The responder is side A and speaks first. Each side's role
-        // goes over in the clear first, because both must be bound into the PSK
-        // before either derives it.
-        write_role(stream, responder_role, deadline)?;
-        let initiator_role = read_role(stream, deadline)?;
+        // 1: the prelude decides the dialect before anything is derived. A
+        // version byte means the roleless wire; a role tag means the v30 one,
+        // whose PSK binds both tags. This side reads first — the initiator has
+        // already written its byte — so a v30 initiator's write-first order is
+        // untouched.
+        let local_legacy_role = legacy_role(server);
+        let initiator_role = match read_prelude(stream, deadline).map_err(prelude_error)? {
+            PAIR_VERSION_V2 => {
+                write_prelude(stream, PAIR_VERSION_V2, deadline)?;
+                None
+            }
+            tag => {
+                let peer_role = role_from_tag(tag)?;
+                write_prelude(stream, role_tag(local_legacy_role), deadline)?;
+                // The old topology had one machine per pair. Two daemon tags
+                // would make both sides claim the machine scope; refuse before
+                // the PAKE rather than store either claim.
+                if local_legacy_role == PeerRole::Daemon && peer_role == PeerRole::Daemon {
+                    return Err(PairingError::Failed(
+                        "both devices host workspaces; the v30 pairing cannot represent two \
+                         machines — upgrade the other device"
+                            .to_string(),
+                    ));
+                }
+                Some(peer_role)
+            }
+        };
+
+        // 2-3: SPAKE2. The responder is side A and speaks first. The PSK label
+        // carries both tags on the v30 wire and nothing on the roleless one, so
+        // two sides that disagree about the dialect derive different keys and
+        // the Noise handshake fails rather than completes.
         let password = spake2::Password::new(code.as_str().as_bytes());
         let responder_identity = spake2::Identity::new(PAIR_RESPONDER_ID);
         let initiator_identity = spake2::Identity::new(PAIR_INITIATOR_ID);
@@ -993,18 +1265,25 @@ impl PairingService {
             Ok(key) => key,
             Err(error) => return Err(self.note_wrong(peer_addr.ip(), server, &error.to_string())),
         };
-        let mut psk = derive_psk(&spake_key, initiator_role, responder_role);
+        let mut psk = match initiator_role {
+            None => derive_psk_v2(&spake_key),
+            Some(peer_role) => derive_psk(&spake_key, peer_role, local_legacy_role),
+        };
         // The PAKE output is key material too: the PSK was wiped already, and
         // this is the other half of the same secret.
         spake_key.zeroize();
 
-        // 3–4: Noise XXpsk3 over the PAKE-derived key. A wrong code produces a
+        // 4: Noise XXpsk3 over the PAKE-derived key. A wrong code produces a
         // different PSK, and the handshake fails here.
+        let prologue = match initiator_role {
+            None => PAIR_PROLOGUE_V2,
+            Some(_) => PAIR_PROLOGUE,
+        };
         let session = responder_handshake(
             stream,
             deadline,
             identity.private_key(),
-            PAIR_PROLOGUE,
+            prologue,
             Some(&psk),
             PAIR_NOISE_PATTERN,
         );
@@ -1041,10 +1320,12 @@ impl PairingService {
         // Our own payload, so the initiator can record who it paired with.
         // Each side sends one pairing payload and the answer
         // below carries the decision; without this the initiator would have no
-        // identity to store but its own.
+        // identity to store but its own. A v30 initiator's decoder requires the
+        // role word, so it travels there and only there.
+        let own_role = initiator_role.map(|_| local_legacy_role);
         write_json(
             &mut writer,
-            &own_payload(&identity, responder_role, server),
+            &own_payload(&identity, own_role, server),
             deadline,
         )?;
 
@@ -1071,14 +1352,18 @@ impl PairingService {
             payload.listen_port.unwrap_or(0),
         );
 
-        // 5: a `Daemon` peer is answered at once; a `Client` peer is the one
-        // the person at this device must approve (design §8b A11).
-        let accepted = if payload.role == PeerRole::Daemon {
+        // 5: a v30 initiator that tagged itself a daemon promised a listener
+        // and is answered at once. Every other pairing — the roleless wire,
+        // and a v30 client — is the one the person at this device must approve
+        // (design §8b A11). The legacy dial hint stored on the row is exactly
+        // that tag, and nothing more.
+        let legacy_dialable = initiator_role == Some(PeerRole::Daemon);
+        let accepted = if legacy_dialable {
             let record = local_peer_record(
                 server,
                 &payload.device_id,
                 &payload.display_name,
-                payload.role,
+                true,
                 &remote_static,
                 binding,
                 address,
@@ -1125,7 +1410,7 @@ impl PairingService {
                             token,
                             device_id: payload.device_id.clone(),
                             display_name: payload.display_name.clone(),
-                            role: payload.role,
+                            legacy_dialable,
                             key_fingerprint: key_fingerprint.clone(),
                             address: address.clone(),
                             public_key: remote_static.clone(),
@@ -1239,11 +1524,14 @@ impl PairingService {
 ///
 /// `paired_by_user` is this daemon's own SID: the person at this machine who
 /// ran the pairing. It is written here and never received from the peer.
+/// `legacy_dialable` is the only thing kept from the v30 role tags: whether a
+/// v30 endpoint at the recorded address may be dialled, which is true exactly
+/// when that peer tagged itself a daemon.
 fn local_peer_record(
     server: &Arc<ServerState>,
     device_id: &str,
     display_name: &str,
-    role: PeerRole,
+    legacy_dialable: bool,
     public_key: &[u8],
     binding: TransportBinding,
     address: String,
@@ -1299,7 +1587,7 @@ fn local_peer_record(
     Ok(PeerRecord {
         device_id: device_id.to_string(),
         display_name: display_name.to_string(),
-        role: role.as_str().to_string(),
+        legacy_dialable,
         public_key: public_key.to_vec(),
         paired_by_user: server.local_user_sid(),
         binding_kind: binding.kind,
@@ -1320,12 +1608,13 @@ fn upsert_peer(server: &Arc<ServerState>, record: PeerRecord) -> Result<PeerReco
     server.peer_upsert(record).map_err(PairingError::Failed)
 }
 
-/// Project a stored row onto the wire.
+/// Project a stored row onto the wire. `role` is the v30 projection; the
+/// Devices reply strips it for a v32 connection.
 pub fn peer_row(server: &Arc<ServerState>, record: &PeerRecord) -> PeerRow {
     PeerRow {
         device_id: record.device_id.clone(),
         display_name: record.display_name.clone(),
-        role: PeerRole::parse(&record.role).unwrap_or(PeerRole::Daemon),
+        role: Some(devboule_protocol::projected_role(record.legacy_dialable)),
         public_key: base64_encode(&record.public_key),
         key_fingerprint: crate::device_identity::key_fingerprint(&record.public_key),
         binding_kind: record.binding_kind.clone(),
@@ -1341,8 +1630,12 @@ pub fn peer_row(server: &Arc<ServerState>, record: &PeerRecord) -> PeerRow {
 }
 
 /// The capability names the daemon accepts, and the rules about which may be
-/// absent (design §8b A11).
-pub fn validate_caps(role: PeerRole, caps: &[String]) -> Result<Vec<String>, String> {
+/// absent. Pairing no longer asks a role, so no capability is tied to one: the
+/// nonempty, known-name and no-duplicate checks are the whole rule, and a
+/// device that loses `view` loses the reads that name (design §8b A11). The
+/// permission gate already denies each act whose capability is absent; nothing
+/// is added here during a pairing or a migration.
+pub fn validate_caps(caps: &[String]) -> Result<Vec<String>, String> {
     if caps.is_empty() {
         return Err("a peer must keep at least the 'view' capability".to_string());
     }
@@ -1356,9 +1649,6 @@ pub fn validate_caps(role: PeerRole, caps: &[String]) -> Result<Vec<String>, Str
         if !seen.insert(cap.as_str()) {
             return Err(format!("capability '{cap}' was given twice"));
         }
-    }
-    if role == PeerRole::Client && !caps.iter().any(|cap| cap == "view") {
-        return Err("a client peer cannot lose 'view'".to_string());
     }
     Ok(caps.to_vec())
 }

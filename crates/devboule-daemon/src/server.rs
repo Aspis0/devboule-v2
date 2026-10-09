@@ -27,7 +27,7 @@ use crate::lock::SingleInstanceLock;
 use crate::login_shell_env::login_shell_capture_outcome;
 use crate::outbound::ConnOut;
 use crate::paths::RuntimePaths;
-use crate::peer_policy::{peer_allows, ConnPeer, PeerDecision, PeerRole};
+use crate::peer_policy::{peer_allows, ConnPeer, PeerDecision};
 use crate::peer_transport::{accept_peers, TokenBucket};
 use crate::provider_update::{NpmInstallRunner, ProcessNpmInstallRunner};
 use crate::secret_store::SecretStore;

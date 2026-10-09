@@ -12,7 +12,7 @@ pub(super) fn dispatch_devices(
     request: ClientMessage,
     _passed: &GatePassed,
 ) -> DaemonMessage {
-    match request {
+    let reply = match request {
         ClientMessage::DevicesList { id } => match devices_reply(state, &conn.conn_peer) {
             Ok(reply) => DaemonMessage::Devices {
                 id,
@@ -22,11 +22,11 @@ pub(super) fn dispatch_devices(
             },
             Err(error) => DaemonMessage::Error(error.with_id(id)),
         },
-        ClientMessage::PairingStart { id, role } => {
+        ClientMessage::PairingStart { id } => {
             // The address shown is where *this* device can be reached.
             match pairing_address(state) {
                 Err(error) => DaemonMessage::Error(error.with_id(id)),
-                Ok(address) => match state.pairing().start(role) {
+                Ok(address) => match state.pairing().start() {
                     Ok((code, expires_at)) => DaemonMessage::PairingCode {
                         id,
                         code,
@@ -41,16 +41,11 @@ pub(super) fn dispatch_devices(
                 },
             }
         }
-        ClientMessage::PairingComplete {
-            id,
-            address,
-            code,
-            role,
-        } => {
+        ClientMessage::PairingComplete { id, address, code } => {
             // The pairing service takes this device's transport from its own
             // state, so the binding check on both the immediate path and the
             // deferred answer thread see the same one.
-            match state.pairing().complete(state, &address, &code, role) {
+            match state.pairing().complete(state, &address, &code) {
                 Ok(crate::pairing::PairingOutcome::Pending(peer)) => {
                     DaemonMessage::PairingPending { id, peer }
                 }
@@ -128,9 +123,8 @@ pub(super) fn dispatch_devices(
             Ok(None) => DaemonMessage::Error(
                 WireError::new(ErrorCode::InvalidRequest, "No such peer.").with_id(id),
             ),
-            Ok(Some(record)) => {
-                let role = PeerRole::parse(&record.role).unwrap_or(PeerRole::Daemon);
-                match crate::pairing::validate_caps(role, &caps) {
+            Ok(Some(_)) => {
+                match crate::pairing::validate_caps(&caps) {
                     Err(message) => DaemonMessage::Error(
                         WireError::new(ErrorCode::InvalidRequest, message).with_id(id),
                     ),
@@ -176,7 +170,66 @@ pub(super) fn dispatch_devices(
             ErrorCode::InvalidRequest,
             format!("unexpected device frame {other:?}"),
         )),
+    };
+    // The devices family is built with the v30 role projection so an old
+    // decoder can parse it; a connection that negotiated the roleless dialect
+    // never sees the word. This is the one place the projection leaves the
+    // daemon, so no other reply path can leak it. A v30 connection is the only
+    // one that keeps it, and it is also the only one whose decoder requires it.
+    if conn.negotiated_protocol() <= LEGACY_DEVICES_DIALECT {
+        reply
+    } else {
+        strip_projected_roles(reply)
     }
+}
+
+/// The last app/daemon dialect whose `devices`/pairing DTOs carried a required
+/// `role` field. Everything at or below it is handed the projection; nothing
+/// above it is.
+const LEGACY_DEVICES_DIALECT: u32 = 30;
+
+/// Drop the v30 role projection from one devices-family reply. The rows are
+/// built once with the word a v30 decoder requires; this is where a v32
+/// connection's copy loses it.
+fn strip_projected_roles(reply: DaemonMessage) -> DaemonMessage {
+    match reply {
+        DaemonMessage::Devices {
+            id,
+            self_info,
+            peers,
+            pending,
+        } => DaemonMessage::Devices {
+            id,
+            self_info,
+            peers: peers.into_iter().map(roleless_peer).collect(),
+            pending: pending.into_iter().map(roleless_pending).collect(),
+        },
+        DaemonMessage::PairingPending { id, peer } => DaemonMessage::PairingPending {
+            id,
+            peer: roleless_pending(peer),
+        },
+        DaemonMessage::PairingDone { id, peer } => DaemonMessage::PairingDone {
+            id,
+            peer: roleless_peer(peer),
+        },
+        DaemonMessage::PeerUpdated { id, peer } => DaemonMessage::PeerUpdated {
+            id,
+            peer: roleless_peer(peer),
+        },
+        other => other,
+    }
+}
+
+fn roleless_peer(mut peer: devboule_protocol::PeerRow) -> devboule_protocol::PeerRow {
+    peer.role = None;
+    peer
+}
+
+fn roleless_pending(
+    mut peer: devboule_protocol::PendingPairing,
+) -> devboule_protocol::PendingPairing {
+    peer.role = None;
+    peer
 }
 
 struct DevicesReply {
@@ -185,9 +238,9 @@ struct DevicesReply {
     pending: Vec<devboule_protocol::PendingPairing>,
 }
 
-/// Build the reply for the requesting role.
+/// Build the reply for the requesting scope.
 ///
-/// A `Daemon` peer sees `{device_id, display_name, role, online}` per peer and
+/// A machine peer sees `{device_id, display_name, online}` per peer and
 /// `{device_id, display_name, daemon_version, protocol_version}` for this
 /// device: never an address, a binding, a public key, or the SID this device
 /// paired it from. Its own Noise key is what it needs, and it already has it.
@@ -207,7 +260,7 @@ fn devices_reply(
     // remote projections then discarded.
     match conn_peer {
         Some(ConnPeer::Remote {
-            role: PeerRole::Daemon,
+            scope: crate::peer_policy::PeerScope::PeerDevice,
             ..
         }) => {
             let peers = records
@@ -215,7 +268,7 @@ fn devices_reply(
                 .map(|record| devboule_protocol::PeerRow {
                     device_id: record.device_id.clone(),
                     display_name: record.display_name.clone(),
-                    role: PeerRole::parse(&record.role).unwrap_or(PeerRole::Daemon),
+                    role: Some(devboule_protocol::projected_role(record.legacy_dialable)),
                     public_key: String::new(),
                     key_fingerprint: String::new(),
                     binding_kind: String::new(),
@@ -253,7 +306,7 @@ fn devices_reply(
             })
         }
         Some(ConnPeer::Remote {
-            role: PeerRole::Client,
+            scope: crate::peer_policy::PeerScope::PairedUser,
             ..
         }) => Ok(DevicesReply {
             self_info: devboule_protocol::SelfInfo {

@@ -11,7 +11,8 @@ use devboule_protocol::{
 
 use super::harness::Harness;
 use super::peer_link_test_support::eventually;
-use crate::peer_policy::{peer_allows, PeerDecision, PeerRole, CAP_ADMIN, CAP_VIEW};
+use crate::peer_policy::{peer_allows, PeerDecision, CAP_ADMIN, CAP_VIEW};
+
 use crate::server::peer_link_state::LinkAnswer;
 
 /// The three reads, each under the capability that names it **on the remote**:
@@ -25,14 +26,12 @@ fn each_list_carries_the_capability_the_remote_gate_names() {
     let admin = vec![CAP_VIEW.to_string(), CAP_ADMIN.to_string()];
     let expect = |list: RemoteHostList, caps: &[String], decision: PeerDecision| {
         let request = list.peer_request(1);
-        for role in [PeerRole::Client, PeerRole::Daemon] {
-            assert_eq!(
-                peer_allows(role, caps, &request),
-                decision,
-                "{} under {caps:?} as {role}",
-                request.name()
-            );
-        }
+        assert_eq!(
+            peer_allows(caps, &request),
+            decision,
+            "{} under {caps:?}",
+            request.name()
+        );
     };
     expect(RemoteHostList::Sessions, &view, PeerDecision::Allow);
     expect(RemoteHostList::Sessions, &[], PeerDecision::Deny(CAP_VIEW));
@@ -70,14 +69,12 @@ fn a_peer_may_not_reach_a_link() {
             list: RemoteHostList::Sessions,
         },
     ] {
-        for role in [PeerRole::Client, PeerRole::Daemon] {
-            assert_eq!(
-                peer_allows(role, &["view".to_string(), CAP_ADMIN.to_string()], &request),
-                PeerDecision::Deny(caps::REMOTE_HOSTS),
-                "{} as {role} must be refused by name",
-                request.name()
-            );
-        }
+        assert_eq!(
+            peer_allows(&["view".to_string(), CAP_ADMIN.to_string()], &request),
+            PeerDecision::Deny(caps::REMOTE_HOSTS),
+            "{} must be refused by name",
+            request.name()
+        );
     }
 }
 

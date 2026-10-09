@@ -529,7 +529,7 @@ fn the_peer_table_matches_addresses_and_pinned_keys_exactly() {
     let row = PeerRecord {
         device_id: "dev-1".to_string(),
         display_name: "Host".to_string(),
-        role: "daemon".to_string(),
+        legacy_dialable: true,
         public_key: vec![3u8; 32],
         paired_by_user: Some("S-1-5-21-1".to_string()),
         binding_kind: "tailnet".to_string(),
@@ -627,7 +627,7 @@ fn the_pre_noise_filter_separates_revoked_from_unknown_from_off_tailnet() {
     let row = PeerRecord {
         device_id: "dev-1".to_string(),
         display_name: "Host".to_string(),
-        role: "daemon".to_string(),
+        legacy_dialable: true,
         public_key: vec![3u8; 32],
         paired_by_user: None,
         binding_kind: "tailnet".to_string(),
@@ -1235,7 +1235,7 @@ fn a_connected_peer_is_a_client_for_the_idle_exit() {
         .peer_upsert(PeerRecord {
             device_id: "phone".to_string(),
             display_name: "phone".to_string(),
-            role: "client".to_string(),
+            legacy_dialable: false,
             public_key: client_public,
             paired_by_user: None,
             binding_kind: "tailnet".to_string(),

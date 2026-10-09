@@ -312,17 +312,13 @@ mod fix_tests;
 fn archive_tool_is_hidden_from_design_and_peer_door_requires_admin() {
     use crate::provider_catalog::{ToolOverlay, MCP_ARCHIVE_WORKSPACE_TOOL};
     assert!(!ToolOverlay::DESIGN.allows(MCP_ARCHIVE_WORKSPACE_TOOL));
-    for role in [
-        devboule_protocol::PeerRole::Client,
-        devboule_protocol::PeerRole::Daemon,
-    ] {
+    {
         assert_eq!(
-            crate::peer_policy::mcp_tool_denial(role, &[], MCP_ARCHIVE_WORKSPACE_TOOL),
+            crate::peer_policy::mcp_tool_denial(&[], MCP_ARCHIVE_WORKSPACE_TOOL),
             Some(crate::peer_policy::CAP_ADMIN)
         );
         assert_eq!(
             crate::peer_policy::mcp_tool_denial(
-                role,
                 &[crate::peer_policy::CAP_ADMIN.to_string()],
                 MCP_ARCHIVE_WORKSPACE_TOOL
             ),

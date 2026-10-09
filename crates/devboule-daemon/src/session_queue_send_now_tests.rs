@@ -11,6 +11,7 @@ use super::session_queue_fixtures::{
 };
 use super::tests::{remote_conn, test_owner};
 use super::*;
+use crate::peer_policy::PeerScope;
 
 /// One busy agent session with one attached client and a writer that records
 /// what the daemon sent it. The turn is open, so an add stays where a send-now
@@ -515,7 +516,7 @@ fn a_paired_device_may_queue_but_may_not_interrupt_through_send_now() {
     let id = compose_session_id(&owner.session_token(), "i").expect("id");
     let (runtime, _sent) = queued_agent(&registry, &journal, &owner, &id);
     runtime.begin_turn();
-    let phone = remote_conn(PeerRole::Client, Some(owner.user.as_str()));
+    let phone = remote_conn(PeerScope::PairedUser, Some(owner.user.as_str()));
     registry
         .attach_with_subscription(&id, phone.id, None, &phone, &owner, false)
         .expect("the device attaches");

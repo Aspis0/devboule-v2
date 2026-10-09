@@ -3,6 +3,7 @@
 //! the acknowledgements that must not tell a stranger what is pending.
 
 use super::*;
+use crate::peer_policy::PeerScope;
 use crate::peer_policy::{TransportBinding, CAP_ADMIN};
 use devboule_protocol::{
     BrowserCaller, BrowserError, BrowserErrorCode, BrowserOutcome, ErrorDetails,
@@ -22,7 +23,7 @@ fn peer_conn() -> Arc<ConnHandle> {
         None,
         Some(ConnPeer::Remote {
             device_id: "dev-peer-1".to_string(),
-            role: PeerRole::Client,
+            scope: PeerScope::PairedUser,
             paired_by_user: Some("local-user".to_string()),
             binding: TransportBinding::tailnet("nstable", "node", "user@example.com"),
         }),

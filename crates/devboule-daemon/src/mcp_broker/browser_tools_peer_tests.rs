@@ -11,7 +11,7 @@ use serde_json::json;
 
 use super::caller::{mcp_peer_door, McpCaller};
 use super::tools::browser_commands::TOOLS;
-use crate::peer_policy::{PeerRole, CAP_BROWSER};
+use crate::peer_policy::CAP_BROWSER;
 
 /// The one tool of the lane a paired device may never call, whatever its set
 /// holds: it would type a password of the person at this keyboard into a page.
@@ -22,7 +22,6 @@ const NEVER_PAIRED: &str = crate::provider_catalog::MCP_BROWSER_FILL_LOGIN_TOOL;
 fn peer(held: &[&str]) -> McpCaller {
     McpCaller::Peer {
         device_id: "dev-browser".to_string(),
-        role: PeerRole::Client,
         caps: held.iter().map(|cap| (*cap).to_string()).collect(),
     }
 }
@@ -97,26 +96,23 @@ fn a_saved_login_is_refused_for_a_device_holding_everything() {
         .map(|cap| (*cap).to_string())
         .collect::<Vec<_>>();
     held.push(CAP_BROWSER.to_owned());
-    for role in [PeerRole::Client, PeerRole::Daemon] {
-        let refused = mcp_peer_door(
-            &McpCaller::Peer {
-                device_id: "dev-browser".to_string(),
-                role,
-                caps: held.clone(),
-            },
-            Some(NEVER_PAIRED),
-            &json!(8),
-        )
-        .expect("no peer may use a saved login");
-        assert_eq!(refused.pointer("/error/code"), Some(&json!(-32601)));
-        assert_eq!(
-            refused.pointer("/error/message"),
-            Some(&json!(
-                "a saved login of this machine is never used from a paired device"
-            )),
-            "{refused}"
-        );
-    }
+    let refused = mcp_peer_door(
+        &McpCaller::Peer {
+            device_id: "dev-browser".to_string(),
+            caps: held.clone(),
+        },
+        Some(NEVER_PAIRED),
+        &json!(8),
+    )
+    .expect("no peer may use a saved login");
+    assert_eq!(refused.pointer("/error/code"), Some(&json!(-32601)));
+    assert_eq!(
+        refused.pointer("/error/message"),
+        Some(&json!(
+            "a saved login of this machine is never used from a paired device"
+        )),
+        "{refused}"
+    );
     assert!(
         !devboule_protocol::PEER_CAPS.contains(&"saved_login"),
         "and no capability named after one could be granted"

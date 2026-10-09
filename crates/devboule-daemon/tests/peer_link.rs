@@ -8,8 +8,8 @@
 //! The test drives two separate daemon processes over their named pipes for
 //! control (pairing, device lists, revocation), and acts as a **peer** itself
 //! over Noise for the assertions that only exist on the peer path: the
-//! `Daemon`-role projection, what the grant opens and what narrowing it
-//! closes, the audit rows, and the
+//! device projection, what the grant opens and what narrowing it closes, the
+//! audit rows, and the
 //! revocation drop. Acting as the peer means reading daemon B's long-term
 //! static key out of its own file secret store, which is exactly what a real
 //! peer holds.
@@ -33,8 +33,8 @@ use devboule_daemon::{
     PEER_NOISE_PATTERN, PEER_PROLOGUE,
 };
 use devboule_protocol::{
-    AgentMessageState, ClientHello, ClientMessage, DaemonMessage, ErrorCode, OwnerId, PeerRole,
-    SessionEvent, SessionKind, UserMessageKind, WorkspaceIsolation,
+    AgentMessageState, ClientHello, ClientMessage, DaemonMessage, ErrorCode, OwnerId, SessionEvent,
+    SessionKind, UserMessageKind, WorkspaceIsolation,
 };
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -338,16 +338,16 @@ impl Peer {
 
     /// The stored peer rows, as raw columns. Read straight from the journal so
     /// the assertion does not depend on a projection that is itself under test.
-    fn peer_rows(&self) -> Vec<(String, String, Option<i64>)> {
+    fn peer_rows(&self) -> Vec<(String, bool, Option<i64>)> {
         let connection = rusqlite::Connection::open(self.dir.join("journal.db")).expect("journal");
         let mut statement = connection
-            .prepare("SELECT device_id, role, revoked_at FROM peers ORDER BY device_id")
+            .prepare("SELECT device_id, legacy_dialable, revoked_at FROM peers ORDER BY device_id")
             .expect("prepare");
         statement
             .query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
+                    row.get::<_, bool>(1)?,
                     row.get::<_, Option<i64>>(2)?,
                 ))
             })
@@ -433,10 +433,65 @@ impl NoisePeer {
     }
 }
 
-/// Poll `DevicesList` until the daemon holds `count` rows. The initiator of a
-/// `Client` pairing writes its row on its own thread once the far side
-/// answers, so the row appears shortly after the confirm rather than at once.
-fn wait_for_row_count(peer: &Peer, count: usize) -> Vec<(String, String, Option<i64>)> {
+/// Pair `a` to `b`, `b` displaying the code. Every pairing asks no role, and
+/// the displaying device always parks it for its own person's confirmation, so
+/// this confirms there and returns once both rows are written.
+fn pair_devices(a: &Peer, b: &Peer, address_b: &str, b_device_id: &str) {
+    let id = b.pipe.id();
+    let code = match b.pipe.expect(ClientMessage::PairingStart { id }) {
+        DaemonMessage::PairingCode { code, .. } => code,
+        other => panic!("expected PairingCode, got {other:?}"),
+    };
+    let id = a.pipe.id();
+    match a.pipe.expect(ClientMessage::PairingComplete {
+        id,
+        address: address_b.to_string(),
+        code,
+    }) {
+        DaemonMessage::PairingPending { peer, .. } => {
+            assert_eq!(peer.device_id, b_device_id);
+            assert_eq!(
+                peer.role, None,
+                "a v32 pending row carries no v30 role projection"
+            );
+        }
+        other => panic!("expected PairingPending for a roleless pairing, got {other:?}"),
+    }
+    // The displaying device parks after the exchange; poll its own list for the
+    // card, then answer it. `pairing_complete` returns before the park has
+    // landed, so a confirm that beats it is refused as UnknownPending.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let parking = loop {
+        let pending = match b
+            .pipe
+            .expect(ClientMessage::DevicesList { id: b.pipe.id() })
+        {
+            DaemonMessage::Devices { pending, .. } => pending,
+            other => panic!("expected Devices, got {other:?}"),
+        };
+        if !pending.is_empty() {
+            break pending;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the displaying device never parked the pairing"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let id = b.pipe.id();
+    match b.pipe.expect(ClientMessage::PairingConfirm {
+        id,
+        device_id: parking[0].device_id.clone(),
+        accept: true,
+    }) {
+        DaemonMessage::PeerUpdated { .. } => {}
+        other => panic!("expected PeerUpdated on confirm, got {other:?}"),
+    }
+    wait_for_row_count(a, 1);
+    wait_for_row_count(b, 1);
+}
+
+fn wait_for_row_count(peer: &Peer, count: usize) -> Vec<(String, bool, Option<i64>)> {
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let rows = peer.peer_rows();
@@ -450,35 +505,6 @@ fn wait_for_row_count(peer: &Peer, count: usize) -> Vec<(String, String, Option<
         );
         std::thread::sleep(Duration::from_millis(50));
     }
-}
-
-/// Pair `a` to `b` as Daemon peers, `b` displaying the code. A `Daemon`
-/// pairing needs no confirmation window, so this returns once both rows are
-/// written.
-fn pair_as_daemons(a: &Peer, b: &Peer, address_b: &str, b_device_id: &str) {
-    let id = b.pipe.id();
-    let code = match b.pipe.expect(ClientMessage::PairingStart {
-        id,
-        role: PeerRole::Daemon,
-    }) {
-        DaemonMessage::PairingCode { code, .. } => code,
-        other => panic!("expected PairingCode, got {other:?}"),
-    };
-    let id = a.pipe.id();
-    match a.pipe.expect(ClientMessage::PairingComplete {
-        id,
-        address: address_b.to_string(),
-        code,
-        role: PeerRole::Daemon,
-    }) {
-        DaemonMessage::PairingDone { peer, .. } => {
-            assert_eq!(peer.device_id, b_device_id);
-            assert_eq!(peer.role, PeerRole::Daemon);
-        }
-        other => panic!("expected PairingDone for a Daemon pairing, got {other:?}"),
-    }
-    wait_for_row_count(a, 1);
-    wait_for_row_count(b, 1);
 }
 
 /// Assert that a JSON object carries no usable value under `key`.
@@ -527,20 +553,16 @@ fn two_daemons_pair_over_the_tailnet_and_the_grant_decides_what_the_peer_reaches
         "self_info carries the public key"
     );
 
-    // ---- pairing one: A displays a Client code, B types it, A confirms -----
+    // ---- pairing one: A displays a code, B types it, A confirms ------------
     //
-    // Only two daemons are used, so both roles are exercised on the same pair:
-    // the design refuses to re-pair a device that already has a live row
-    // (§8 R8, F-19), so the `Daemon` pairing below happens only after a revoke.
-    // Two daemons rather than three is also forced by the tailnet: every daemon
-    // on this host shares one tailnet address, and the pre-Noise filter matches
-    // peers by address, so a third daemon's connection would be mistaken for
-    // the second one's.
+    // Only two daemons are used, and the design refuses to re-pair a device
+    // that already has a live row (§8 R8, F-19), so the re-pair below happens
+    // only after a revoke. Two daemons rather than three is also forced by the
+    // tailnet: every daemon on this host shares one tailnet address, and the
+    // pre-Noise filter matches peers by address, so a third daemon's connection
+    // would be mistaken for the second one's.
     let id = a.pipe.id();
-    let code = match a.pipe.expect(ClientMessage::PairingStart {
-        id,
-        role: PeerRole::Client,
-    }) {
+    let code = match a.pipe.expect(ClientMessage::PairingStart { id }) {
         DaemonMessage::PairingCode { code, .. } => code,
         other => panic!("expected PairingCode, got {other:?}"),
     };
@@ -549,15 +571,17 @@ fn two_daemons_pair_over_the_tailnet_and_the_grant_decides_what_the_peer_reaches
         id,
         address: address_a.clone(),
         code,
-        role: PeerRole::Client,
     }) {
-        // B's own role is Client, so it learns that A must confirm.
+        // A roleless pairing is always parked, so B learns that A must confirm.
         DaemonMessage::PairingPending { peer, .. } => {
-            assert_eq!(peer.role, PeerRole::Client);
+            assert_eq!(
+                peer.role, None,
+                "a v32 pending row carries no v30 role projection"
+            );
             assert_eq!(peer.device_id, a_self.device_id);
             assert!(!peer.key_fingerprint.is_empty());
         }
-        other => panic!("expected PairingPending for a Client pairing, got {other:?}"),
+        other => panic!("expected PairingPending for a roleless pairing, got {other:?}"),
     }
 
     // A learns about the request by polling `DevicesList`: there is no push
@@ -588,7 +612,10 @@ fn two_daemons_pair_over_the_tailnet_and_the_grant_decides_what_the_peer_reaches
         parking[0].device_id, b_self.device_id,
         "the parked entry is keyed by the device that typed the code"
     );
-    assert_eq!(parking[0].role, PeerRole::Client);
+    assert_eq!(
+        parking[0].role, None,
+        "the v32 panel reads a pending row without a v30 role word"
+    );
 
     let id = a.pipe.id();
     match a.pipe.expect(ClientMessage::PairingConfirm {
@@ -598,7 +625,10 @@ fn two_daemons_pair_over_the_tailnet_and_the_grant_decides_what_the_peer_reaches
     }) {
         DaemonMessage::PeerUpdated { peer, .. } => {
             assert_eq!(peer.device_id, b_self.device_id);
-            assert_eq!(peer.role, PeerRole::Client);
+            assert_eq!(
+                peer.role, None,
+                "a v32 PeerUpdated carries no v30 role projection"
+            );
         }
         other => panic!("expected PeerUpdated on confirm, got {other:?}"),
     }
@@ -608,7 +638,7 @@ fn two_daemons_pair_over_the_tailnet_and_the_grant_decides_what_the_peer_reaches
     let a_rows = a.peer_rows();
     assert_eq!(a_rows.len(), 1);
     assert_eq!(a_rows[0].0, b_self.device_id, "A's row names B");
-    assert_eq!(a_rows[0].1, "client");
+    assert!(!a_rows[0].1, "a roleless pairing keeps no v30 dial hint");
     let b_rows = wait_for_row_count(&b, 1);
     assert_eq!(b_rows[0].0, a_self.device_id, "B's row names A");
 
@@ -630,22 +660,22 @@ fn two_daemons_pair_over_the_tailnet_and_the_grant_decides_what_the_peer_reaches
         "20 allowed pings must not write an audit row: {rows:?}"
     );
 
-    // ---- the Client-role device list withholds the pairing user's SID ------
+    // ---- a paired device's list withholds the pairing user's SID ----------
     match peer.request(ClientMessage::DevicesList { id: 200 }) {
         Ok(DaemonMessage::Devices {
             self_info, peers, ..
         }) => {
             let self_json = serde_json::to_value(&self_info).expect("json");
             for leaked in ["addresses", "remote"] {
-                assert_absent_or_empty(&self_json, leaked, "a Client peer's self_info");
+                assert_absent_or_empty(&self_json, leaked, "a paired device's self_info");
             }
             assert!(
                 !peers.is_empty(),
-                "a Client peer sees the devices it may drive"
+                "a paired device sees the devices it may drive"
             );
             for row in &peers {
                 let json = serde_json::to_value(row).expect("json");
-                assert_absent_or_empty(&json, "pairedByUser", "a Client peer's peer row");
+                assert_absent_or_empty(&json, "pairedByUser", "a paired device's peer row");
                 assert!(
                     json.get("deviceId").is_some(),
                     "the row still identifies the device: {json}"
@@ -803,7 +833,7 @@ fn two_daemons_pair_over_the_tailnet_and_the_grant_decides_what_the_peer_reaches
     };
     assert!(refused, "a revoked peer must not be able to reconnect");
 
-    // ---- re-pairing after a revoke, this time as a Daemon peer -------------
+    // ---- re-pairing after a revoke -----------------------------------------
     //
     // The row must be gone from both sides before a code is shown, which is the
     // rule the UI states ("revoke it first").
@@ -816,10 +846,7 @@ fn two_daemons_pair_over_the_tailnet_and_the_grant_decides_what_the_peer_reaches
         other => panic!("expected PeerUpdated on B's revoke, got {other:?}"),
     }
     let id = b.pipe.id();
-    let code = match b.pipe.expect(ClientMessage::PairingStart {
-        id,
-        role: PeerRole::Daemon,
-    }) {
+    let code = match b.pipe.expect(ClientMessage::PairingStart { id }) {
         DaemonMessage::PairingCode { code, .. } => code,
         other => panic!("expected PairingCode, got {other:?}"),
     };
@@ -829,20 +856,41 @@ fn two_daemons_pair_over_the_tailnet_and_the_grant_decides_what_the_peer_reaches
         // B displayed the code, so this is B's address.
         address: address_b.clone(),
         code,
-        role: PeerRole::Daemon,
     }) {
-        // A Daemon pairing needs no local confirmation, so it completes on the
-        // spot.
-        DaemonMessage::PairingDone { peer, .. } => {
+        DaemonMessage::PairingPending { peer, .. } => {
             assert_eq!(peer.device_id, b_self.device_id);
-            assert_eq!(peer.role, PeerRole::Daemon);
+            assert_eq!(peer.role, None, "a v32 pending row carries no role word");
         }
-        other => panic!("expected PairingDone for a Daemon pairing, got {other:?}"),
+        other => panic!("expected PairingPending for a roleless pairing, got {other:?}"),
     }
-    assert_eq!(
-        wait_for_row_count(&a, 1)[0].1,
-        "daemon",
-        "the re-pair after a revoke carries the new role"
+    // B parks the re-pair too, so confirm it there before both rows exist.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let parking = loop {
+        let pending = match b
+            .pipe
+            .expect(ClientMessage::DevicesList { id: b.pipe.id() })
+        {
+            DaemonMessage::Devices { pending, .. } => pending,
+            other => panic!("expected Devices, got {other:?}"),
+        };
+        if !pending.is_empty() {
+            break pending;
+        }
+        assert!(Instant::now() < deadline, "B never parked the re-pair");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let id = b.pipe.id();
+    match b.pipe.expect(ClientMessage::PairingConfirm {
+        id,
+        device_id: parking[0].device_id.clone(),
+        accept: true,
+    }) {
+        DaemonMessage::PeerUpdated { .. } => {}
+        other => panic!("expected PeerUpdated on confirm, got {other:?}"),
+    }
+    assert!(
+        !wait_for_row_count(&a, 1)[0].1,
+        "the re-pair after a revoke keeps no v30 dial hint"
     );
 
     // ---- neither daemon's stderr leaks an identity or a key ----------------
@@ -902,7 +950,7 @@ fn a_paired_daemon_dials_its_peer_and_reads_the_reply() {
     );
 
     // ---- pair as Daemon peers: a Daemon pairing needs no confirmation window
-    pair_as_daemons(&a, &b, &address_b, &b_self.device_id);
+    pair_devices(&a, &b, &address_b, &b_self.device_id);
 
     let (pinned_key, stored_address) = a
         .stored_row_for(&b_self.device_id)
@@ -981,7 +1029,7 @@ fn the_device_that_displayed_the_code_can_dial_its_peer_back() {
     let b_self = b.self_info();
 
     // B displays the code, A types it: B is the responder.
-    pair_as_daemons(&a, &b, &address_b, &b_self.device_id);
+    pair_devices(&a, &b, &address_b, &b_self.device_id);
 
     let (pinned_key, stored_address) = b
         .stored_row_for(&a_self.device_id)
@@ -1043,7 +1091,7 @@ fn a_dial_refuses_an_address_that_is_not_on_the_tailnet() {
     };
     let a_self = a.self_info();
     let b_self = b.self_info();
-    pair_as_daemons(&a, &b, &address_b, &b_self.device_id);
+    pair_devices(&a, &b, &address_b, &b_self.device_id);
     let (pinned_key, _stored_address) = a
         .stored_row_for(&b_self.device_id)
         .expect("A holds a row for B");
@@ -1106,7 +1154,7 @@ fn a_paired_daemon_delivers_an_agent_message_and_replays_its_receipt_once() {
     };
     let a_self = a.self_info();
     let b_self = b.self_info();
-    pair_as_daemons(&a, &b, &address_b, &b_self.device_id);
+    pair_devices(&a, &b, &address_b, &b_self.device_id);
 
     // ---- B grows a live agent the paired daemon may write into -------------
     // The wire refuses an agent with no workspace, so B gets a scratch one.

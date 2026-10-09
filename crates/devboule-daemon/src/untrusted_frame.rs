@@ -84,9 +84,9 @@ impl Stance {
 
 /// Whether the daemon verified the sender behind an origin: its own
 /// session, or a paired device authenticated over the tailnet with a device
-/// id and a role to show for it. Anything else — unknown or absent origin,
-/// or a peer-shaped row with no established device — is nobody verified,
-/// never the sender's own claim. The MCP door reads peer rows the same way
+/// id to show for it. Anything else — unknown or absent origin, or a
+/// peer-shaped row with no established device — is nobody verified, never the
+/// sender's own claim. The MCP door reads peer rows the same way
 /// (`mcp_broker/caller.rs`); this is that rule, shared, not a second copy.
 ///
 /// Which origins can reach it today: every live road is verified — local
@@ -95,11 +95,15 @@ impl Stance {
 /// arrive unverified. A second road that forgets to stamp an origin would
 /// read as `Local` by default, which is why the unverified branch below is
 /// pinned through a real producer, not just a hand-built source.
+///
+/// The device id is the whole test: a paired-device origin carries the
+/// verified id, and a historical `origin_role` is attribution the sender
+/// proves nothing with.
 pub(crate) fn sender_verified(origin: &devboule_protocol::SessionOrigin) -> bool {
     use devboule_protocol::SessionOriginKind::{Local, Peer, Unknown};
     match origin.kind {
         Local => true,
-        Peer => origin.device_id.is_some() && origin.role.is_some(),
+        Peer => origin.device_id.is_some(),
         Unknown => false,
     }
 }

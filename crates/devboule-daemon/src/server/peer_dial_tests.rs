@@ -22,7 +22,7 @@ fn dial_row(address: String, pinned_public: &[u8]) -> PeerRecord {
     PeerRecord {
         device_id: "b".to_string(),
         display_name: "peer b".to_string(),
-        role: "daemon".to_string(),
+        legacy_dialable: true,
         public_key: pinned_public.to_vec(),
         paired_by_user: None,
         binding_kind: "tailscale".to_string(),
@@ -69,6 +69,7 @@ fn spawn_talking_responder(static_private: [u8; 32], reply: DaemonMessage) -> So
                 instance_id: "fake-responder".to_string(),
                 pid: std::process::id(),
                 capabilities: Vec::new(),
+                workspace_host: None,
             }))
             .expect("hello reply");
         let _request: ClientMessage = framed
@@ -178,6 +179,7 @@ fn spawn_rosterless_responder(
                 instance_id: "fake-responder".to_string(),
                 pid: std::process::id(),
                 capabilities: Vec::new(),
+                workspace_host: None,
             }))
             .expect("hello reply");
         // A well-behaved dialer refuses before any request arrives: fail

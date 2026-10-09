@@ -40,8 +40,8 @@ pub(super) fn run_gate(
     request: &ClientMessage,
     conn: &Arc<ConnHandle>,
 ) -> Result<GatePassed, Box<DaemonMessage>> {
-    if let Some(ConnPeer::Remote { role, .. }) = &conn.conn_peer {
-        match peer_allows(*role, &conn.peer_caps, request) {
+    if let Some(ConnPeer::Remote { .. }) = &conn.conn_peer {
+        match peer_allows(&conn.peer_caps, request) {
             PeerDecision::Deny(reason) => {
                 audit_peer_request(state, &conn.conn_peer, request, "denied");
                 return Err(Box::new(capability_not_supported(
@@ -241,7 +241,7 @@ pub(super) fn peer_mode_refusal_for_conn(
         // store's.
         ClientMessage::AgentProfilesGet { .. } | ClientMessage::AgentProfilesSet { .. } => None,
         // The delegation pair is the same shape: no session, no mode, and its
-        // peer refusal is `peer_allows`'s (both roles, always), its validation
+        // peer refusal is `peer_allows`'s (every capability set), its validation
         // the one-boolean store's.
         ClientMessage::DelegationGet { .. } | ClientMessage::DelegationSet { .. } => None,
         // The vocabulary query is the profile store's companion read and
@@ -453,10 +453,7 @@ pub(super) fn audit_peer_unauthorized(
     session_id: Option<String>,
     reply: &DaemonMessage,
 ) {
-    let Some(ConnPeer::Remote {
-        device_id, role, ..
-    }) = &conn.conn_peer
-    else {
+    let Some(ConnPeer::Remote { device_id, .. }) = &conn.conn_peer else {
         return;
     };
     let refused = match reply {
@@ -477,7 +474,7 @@ pub(super) fn audit_peer_unauthorized(
     }
     state.audit(AuditRecord {
         device_id: device_id.clone(),
-        role: role.as_str().to_string(),
+        role: crate::peer_policy::PEER_AUDIT_ROLE.to_string(),
         claimed_origin: None,
         action: action.to_string(),
         session_id,
@@ -487,24 +484,21 @@ pub(super) fn audit_peer_unauthorized(
 
 /// Audit one request that came from a remote peer.
 ///
-/// `device_id` and `role` come from the Noise-authenticated `ConnPeer`, never
-/// from the frame, and the action is the variant name. The outcome is refined
-/// by [`peer_outcome`].
+/// `device_id` comes from the Noise-authenticated `ConnPeer`, never from the
+/// frame, and the action is the variant name. The outcome is refined by
+/// [`peer_outcome`].
 pub(super) fn audit_peer_request(
     state: &Arc<ServerState>,
     conn_peer: &Option<ConnPeer>,
     request: &ClientMessage,
     outcome: &str,
 ) {
-    let Some(ConnPeer::Remote {
-        device_id, role, ..
-    }) = conn_peer
-    else {
+    let Some(ConnPeer::Remote { device_id, .. }) = conn_peer else {
         return;
     };
     state.audit(AuditRecord {
         device_id: device_id.clone(),
-        role: role.as_str().to_string(),
+        role: crate::peer_policy::PEER_AUDIT_ROLE.to_string(),
         claimed_origin: None,
         action: request.name().to_string(),
         session_id: request_session_id(request),

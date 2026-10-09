@@ -6,9 +6,9 @@ use devboule_protocol::PEER_CAPS;
 
 use super::tools::browser_commands;
 use crate::peer_policy::{
-    mcp_tool_denial, mcp_tool_locality, mcp_tool_wire, McpToolWire, PeerRole, CAP_BROWSER,
-    UNLISTED_TOOL,
+    mcp_tool_denial, mcp_tool_locality, mcp_tool_wire, McpToolWire, CAP_BROWSER, UNLISTED_TOOL,
 };
+
 use crate::provider_catalog::{
     BROWSER_TOOL_PREFIX, MCP_BROKER_TOOLS, MCP_BROWSER_FILL_LOGIN_TOOL, MCP_LIST_PROFILES_TOOL,
 };
@@ -183,19 +183,17 @@ fn a_browser_name_outside_the_lanes_table_is_not_given_the_lane_row() {
             other => panic!("{name}: a listed browser tool with no usable row: {other:?}"),
         }
     }
-    for role in [PeerRole::Client, PeerRole::Daemon] {
-        let everything: Vec<String> = PEER_CAPS.iter().map(|cap| (*cap).to_string()).collect();
-        for synthetic in ["browser_export_cookies", "browser_", "browser_navigate "] {
-            assert!(
-                mcp_tool_wire(synthetic).is_none(),
-                "{synthetic:?} is not in the lane's table"
-            );
-            assert_eq!(
-                mcp_tool_denial(role, &everything, synthetic),
-                Some(UNLISTED_TOOL),
-                "{role:?} holding the browser grant is still refused {synthetic:?}"
-            );
-        }
+    let everything: Vec<String> = PEER_CAPS.iter().map(|cap| (*cap).to_string()).collect();
+    for synthetic in ["browser_export_cookies", "browser_", "browser_navigate "] {
+        assert!(
+            mcp_tool_wire(synthetic).is_none(),
+            "{synthetic:?} is not in the lane's table"
+        );
+        assert_eq!(
+            mcp_tool_denial(&everything, synthetic),
+            Some(UNLISTED_TOOL),
+            "holding the browser grant is still refused {synthetic:?}"
+        );
     }
     assert!(
         matches!(

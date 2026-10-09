@@ -752,16 +752,16 @@ pub(super) enum AgentMessageSourceNamespace {
 }
 
 /// Classify an agent-message target once for the registry, gate, and mode
-/// consumers. The daemon allowance is scoped to the user who paired the
-/// device: `send` is consent to write into that user's local sessions, not
-/// into every owner's sessions on this machine.
+/// consumers. The allowance is scoped to the user who paired the device:
+/// `send` is consent to write into that user's local sessions, not into every
+/// owner's sessions on this machine, and no role decides it — the verified
+/// pairing user and the send grant do.
 pub(super) fn classify_agent_message_target(
     entry: &RegistryEntry,
     conn_peer: &Option<ConnPeer>,
 ) -> AgentMessageTargetClass {
     let Some(ConnPeer::Remote {
         device_id,
-        role,
         paired_by_user,
         ..
     }) = conn_peer
@@ -776,8 +776,7 @@ pub(super) fn classify_agent_message_target(
         }
         SessionOriginKind::Peer => AgentMessageTargetClass::Relay,
         SessionOriginKind::Local
-            if *role == PeerRole::Daemon
-                && paired_by_user.as_deref() == Some(entry.owner().user.as_str()) =>
+            if paired_by_user.as_deref() == Some(entry.owner().user.as_str()) =>
         {
             AgentMessageTargetClass::Local
         }
@@ -846,14 +845,14 @@ pub(super) fn is_child_of(created_by: Option<&str>, creator_session_id: &str) ->
 /// The origin a create from this connection writes.
 ///
 /// A connection with no peer identity is the person at this machine. A remote
-/// one is the paired device with the role it was paired as, so the stored
-/// origin can be rendered on a permission card and scoped on by the `Daemon`
-/// role's ownership branch.
+/// one is the paired device, with the role word projected from the scope of
+/// the connection that asked: stored attribution for a permission card and the
+/// journal, never consulted by a later authorization decision.
 pub(crate) fn session_origin_for(conn_peer: &Option<ConnPeer>) -> SessionOrigin {
     match conn_peer {
         Some(ConnPeer::Remote {
-            device_id, role, ..
-        }) => SessionOrigin::peer(device_id.clone(), *role),
+            device_id, scope, ..
+        }) => SessionOrigin::peer(device_id.clone(), scope.projected_role()),
         _ => SessionOrigin::local(),
     }
 }
@@ -887,15 +886,15 @@ pub(super) fn check_user_owner(
     conn_peer: &Option<ConnPeer>,
 ) -> Result<(), WireError> {
     match conn_peer {
-        // A paired `Client` speaks for the person who paired it: the register
+        // A client-scoped peer speaks for the person who paired it: the register
         // of sessions it reaches is that user's, and only that user's. The
         // effective owner `server.rs` hands down is already that SID, so the
         // comparison here is the same one a local call makes — stated in the
-        // role branch anyway, because "the peer reaches its paired user" is a
-        // rule about the role, not a side effect of how dispatch built the
+        // scope branch anyway, because "the peer reaches its paired user" is a
+        // rule about the connection, not a side effect of how dispatch built the
         // owner (`DESIGN-remote-agents.md` §8b A3).
         Some(ConnPeer::Remote {
-            role: PeerRole::Client,
+            scope: crate::peer_policy::PeerScope::PairedUser,
             paired_by_user,
             ..
         }) => match paired_by_user.as_deref() {
@@ -903,12 +902,12 @@ pub(super) fn check_user_owner(
             // No recorded pairing user, or another account's session: refuse.
             _ => Err(unauthorized()),
         },
-        // A `Daemon` peer's scope is the *origin*, not the owner name (§8 R2):
+        // A machine peer's scope is the *origin*, not the owner name (§8 R2):
         // the sessions it created here, and nothing else. A session this
         // device created is refused even when the owner comparison would pass,
         // because the origin is the authority A3 names.
         Some(ConnPeer::Remote {
-            role: PeerRole::Daemon,
+            scope: crate::peer_policy::PeerScope::PeerDevice,
             device_id,
             ..
         }) => {

@@ -31,7 +31,7 @@ pub(crate) fn host_row(address: String, pinned_public: &[u8]) -> PeerRecord {
     PeerRecord {
         device_id: "b".to_string(),
         display_name: "peer b".to_string(),
-        role: "daemon".to_string(),
+        legacy_dialable: true,
         public_key: pinned_public.to_vec(),
         paired_by_user: None,
         binding_kind: "tailscale".to_string(),
@@ -177,6 +177,7 @@ pub(crate) fn spawn(
                     instance_id: "held-link-responder".to_string(),
                     pid: std::process::id(),
                     capabilities: capabilities.clone(),
+                    workspace_host: None,
                 }))
                 .is_err()
             {

@@ -9,6 +9,7 @@
 use super::*;
 use crate::origin_chain::{hop, Chain};
 use crate::release_guard::ReleaseGuard;
+use devboule_protocol::PeerRole;
 
 /// The one sentence a send that promised to start from idle answers with when
 /// a turn began between its look and the writer. The queue's drain recognises

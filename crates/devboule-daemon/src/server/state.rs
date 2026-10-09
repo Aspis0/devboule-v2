@@ -1761,6 +1761,22 @@ impl ServerState {
             .port()
     }
 
+    /// Whether this daemon holds at least one persisted workspace: the service
+    /// presence a v32 hello states and the v30 compatibility tag synthesizes
+    /// from. Project-only records do not make a machine host, so every project
+    /// is asked for its workspaces.
+    pub(crate) fn has_hosted_workspace(&self) -> bool {
+        let Ok(projects) = self.sessions.projects_list() else {
+            return false;
+        };
+        projects.iter().any(|project| {
+            self.sessions
+                .workspaces_list(&project.id)
+                .map(|workspaces| !workspaces.is_empty())
+                .unwrap_or(false)
+        })
+    }
+
     /// The pairing service: the displayed code, its lockouts, and the parked
     /// confirmations.
     pub(crate) fn pairing(&self) -> &Arc<crate::pairing::PairingService> {

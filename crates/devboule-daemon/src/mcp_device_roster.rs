@@ -4,10 +4,11 @@
 //! Answers locally — never a dial. The list is scoped to the calling session's
 //! own user (the `paired_by_user` each row records at pairing time), and it
 //! carries only what an agent needs to *name* a device: id, display name,
-//! role, reachable now. The key, the fingerprint, the address, the binding
-//! and the pairing user are withheld by not being in the document at all.
+//! the v30 role projection, reachable now. The key, the fingerprint, the
+//! address, the binding and the pairing user are withheld by not being in the
+//! document at all.
 
-use devboule_protocol::{OwnerId, PeerRole};
+use devboule_protocol::{projected_role, OwnerId};
 use serde_json::{json, Value};
 
 use crate::server::ServerState;
@@ -31,9 +32,7 @@ pub(crate) fn list_devices_document(
             json!({
                 "deviceId": record.device_id,
                 "displayName": record.display_name,
-                "role": PeerRole::parse(&record.role)
-                    .unwrap_or(PeerRole::Daemon)
-                    .as_str(),
+                "role": projected_role(record.legacy_dialable).as_str(),
                 "online": state.is_peer_online(&record.device_id),
             })
         })
@@ -53,7 +52,7 @@ mod tests {
         crate::journal::PeerRecord {
             device_id: device_id.to_string(),
             display_name: format!("Device {device_id}"),
-            role: "daemon".to_string(),
+            legacy_dialable: true,
             public_key: vec![7u8; 32],
             paired_by_user: paired_by,
             binding_kind: "tailnet".to_string(),

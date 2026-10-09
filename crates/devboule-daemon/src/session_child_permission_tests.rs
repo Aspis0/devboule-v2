@@ -8,6 +8,7 @@
 
 use super::tests::{insert_child, insert_live_agent};
 use super::*;
+use devboule_protocol::PeerRole;
 
 pub(super) fn registry_with_journal() -> (std::path::PathBuf, SessionRegistry, Arc<Journal>) {
     let dir = crate::test_dirs::test_temp_dir("devboule-child-perm");

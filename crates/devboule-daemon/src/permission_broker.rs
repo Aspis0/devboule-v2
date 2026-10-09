@@ -2206,10 +2206,11 @@ mod tests {
         MAX_ACP_PERMISSION_ARGS, MAX_PENDING_ACP_PERMISSIONS, MAX_PENDING_FOR_PEER,
     };
     use crate::journal::Journal;
+    use devboule_protocol::PeerRole;
     use devboule_protocol::{
-        PeerRole, PermissionOutcome, PermissionRequestKind, SessionEvent, SessionKind,
-        SessionOrigin,
+        PermissionOutcome, PermissionRequestKind, SessionEvent, SessionKind, SessionOrigin,
     };
+
     use rusqlite::Connection;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Barrier, Mutex};

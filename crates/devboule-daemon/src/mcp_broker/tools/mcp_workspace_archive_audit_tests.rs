@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::mcp_broker::caller::McpCaller;
-use devboule_protocol::{PeerRole, SessionKind};
+use devboule_protocol::SessionKind;
 
 fn audit_rows(state: &ServerState) -> Vec<(String, String)> {
     let connection = rusqlite::Connection::open(state.sessions.runtime_dir().join("journal.db"))
@@ -21,7 +21,6 @@ fn audit_rows(state: &ServerState) -> Vec<(String, String)> {
 fn peer_caller() -> McpCaller {
     McpCaller::Peer {
         device_id: "audit-test-peer".to_string(),
-        role: PeerRole::Client,
         caps: Vec::new(),
     }
 }

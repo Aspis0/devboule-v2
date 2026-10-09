@@ -38,7 +38,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::journal::{AuditRecord, PeerRecord};
-use crate::peer_policy::{ConnPeer, PeerRole, TransportBinding};
+use crate::peer_policy::{ConnPeer, PeerScope, TransportBinding};
 use crate::server::{handle_client, ClientKind, ServerState};
 
 /// The steady-state handshake. Separate from the pairing pattern by name *and*
@@ -1647,10 +1647,9 @@ fn serve_noise_peer(
     if binding.kind != row.binding_kind
         || row.binding_stable_id.as_deref() != Some(binding.stable_id.as_str())
     {
-        let role = PeerRole::parse(&row.role).unwrap_or(PeerRole::Daemon);
         state.audit(AuditRecord {
             device_id: row.device_id.clone(),
-            role: role.as_str().to_string(),
+            role: crate::peer_policy::PEER_AUDIT_ROLE.to_string(),
             claimed_origin: None,
             action: "PeerConnect".to_string(),
             session_id: None,
@@ -1659,11 +1658,12 @@ fn serve_noise_peer(
         return Err(PeerError::Binding(BindingError::Mismatch));
     }
 
-    let role = PeerRole::parse(&row.role)
-        .ok_or_else(|| PeerError::Protocol(format!("peer role {:?} is not known", row.role)))?;
+    // The scope starts as the v30 dial hint the migration preserved; the hello
+    // read in `handle_client` replaces it when the peer states workspace-host
+    // presence, before any request is served.
     let conn_peer = ConnPeer::Remote {
         device_id: row.device_id.clone(),
-        role,
+        scope: PeerScope::legacy(row.legacy_dialable),
         paired_by_user: row.paired_by_user.clone(),
         binding: binding.clone(),
     };

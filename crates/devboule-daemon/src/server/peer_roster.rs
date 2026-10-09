@@ -29,39 +29,26 @@ pub(super) fn peer_agents_reply(
     // and no guess: `unscoped` is its own answer, never an empty "no agents"
     // — the row may predate user recording, or the platform may have no user
     // ids at all. A local pipe reads its own user, and says so.
-    let (scope, scope_user, caller_device, caller_role) = match &conn.conn_peer {
+    let (scope, scope_user, caller_device) = match &conn.conn_peer {
         Some(ConnPeer::Remote {
             paired_by_user: Some(user),
             device_id,
-            role,
             ..
         }) => (
             PeerRosterScope::PairingUser,
             Some(user.clone()),
             Some(device_id.clone()),
-            Some(*role),
         ),
         Some(ConnPeer::Remote {
             paired_by_user: None,
             device_id,
-            role,
             ..
-        }) => (
-            PeerRosterScope::Unscoped,
-            None,
-            Some(device_id.clone()),
-            Some(*role),
-        ),
-        _ => (
-            PeerRosterScope::LocalUser,
-            Some(owner.user.clone()),
-            None,
-            None,
-        ),
+        }) => (PeerRosterScope::Unscoped, None, Some(device_id.clone())),
+        _ => (PeerRosterScope::LocalUser, Some(owner.user.clone()), None),
     };
     // The one read that discloses the pairing user's whole live surface is a
-    // fact the audit table keeps, beside the peer denials: who read, from
-    // which device and role. Every remote attempt lands exactly one row,
+    // fact the audit table keeps, beside the peer denials: who read, and from
+    // which device. Every remote attempt lands exactly one row,
     // written where the outcome is known — never before the fallible work
     // below, where a failure would leave a row claiming a disclosure that
     // did not happen. The outcome is the scope verdict, not a bare `ok`:
@@ -71,10 +58,10 @@ pub(super) fn peer_agents_reply(
     // the whole pair. A local pipe's read is its own business, like every
     // other local read.
     let audit = |outcome: &str| {
-        if let (Some(device_id), Some(role)) = (&caller_device, &caller_role) {
+        if let Some(device_id) = &caller_device {
             state.audit(AuditRecord {
                 device_id: device_id.clone(),
-                role: role.as_str().to_string(),
+                role: crate::peer_policy::PEER_AUDIT_ROLE.to_string(),
                 claimed_origin: None,
                 action: "PeerAgentsList".to_string(),
                 session_id: None,

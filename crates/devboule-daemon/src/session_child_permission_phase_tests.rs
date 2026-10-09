@@ -9,6 +9,7 @@ use super::session_child_permission_tests::{
 };
 use super::tests::{insert_child, insert_live_agent};
 use super::*;
+use devboule_protocol::PeerRole;
 
 /// A registered row that is not live: the transcript arm of the registry,
 /// the kind of row only a bare `map.get` may answer through.

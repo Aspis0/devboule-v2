@@ -7,6 +7,7 @@ use super::session_queue::queue_items_for_test;
 use super::session_queue_fixtures::{attached, queue_registry, queued_agent};
 use super::tests::{remote_conn, test_owner};
 use super::*;
+use crate::peer_policy::PeerScope;
 use crate::peer_policy::{peer_allows, PeerDecision, CAP_SEND, CAP_VIEW};
 use devboule_protocol::ClientMessage;
 
@@ -14,7 +15,6 @@ use devboule_protocol::ClientMessage;
 /// `caps`, with the audit side of the gate left out.
 fn peer_decision(caps: &[&str], request: &ClientMessage) -> PeerDecision {
     peer_allows(
-        PeerRole::Client,
         &caps
             .iter()
             .map(|name| (*name).to_string())
@@ -108,7 +108,7 @@ fn a_device_that_may_send_may_queue_into_the_session_it_may_send_to() {
     let id = compose_session_id(&owner.session_token(), "p").expect("id");
     let (runtime, _sent) = queued_agent(&registry, &journal, &owner, &id);
     runtime.begin_turn();
-    let phone = remote_conn(PeerRole::Client, Some(owner.user.as_str()));
+    let phone = remote_conn(PeerScope::PairedUser, Some(owner.user.as_str()));
 
     registry
         .queue_add(&id, "op-1", "from a phone", &[], &[], &owner, &phone)
@@ -128,7 +128,7 @@ fn a_device_that_may_not_reach_the_session_may_not_queue_into_it() {
     let (runtime, _sent) = queued_agent(&registry, &journal, &owner, &id);
     runtime.begin_turn();
     // A device another account paired: its scope never opens this session.
-    let stranger = remote_conn(PeerRole::Client, Some("S-1-5-21-someone-else"));
+    let stranger = remote_conn(PeerScope::PairedUser, Some("S-1-5-21-someone-else"));
 
     let error = registry
         .queue_add(&id, "op-1", "not yours", &[], &[], &owner, &stranger)

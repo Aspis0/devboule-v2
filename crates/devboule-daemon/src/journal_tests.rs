@@ -1,6 +1,7 @@
 //! Tests for the journal: row durability, replay ordering and schema round-trips.
 
 use super::*;
+use devboule_protocol::PeerRole;
 use devboule_protocol::TranscriptIntegrity;
 use devboule_protocol::{UserMessageAuthor, UserMessageKind};
 use std::process::Command;
@@ -1484,7 +1485,7 @@ fn peer_record(device_id: &str) -> PeerRecord {
     PeerRecord {
         device_id: device_id.to_string(),
         display_name: "Marco's MacBook Pro".to_string(),
-        role: "daemon".to_string(),
+        legacy_dialable: true,
         public_key: vec![7u8; 32],
         paired_by_user: Some("S-1-5-21-1".to_string()),
         binding_kind: "tailnet".to_string(),
@@ -1504,7 +1505,7 @@ fn peer_record(device_id: &str) -> PeerRecord {
 fn audit_record(device_id: &str, action: &str) -> AuditRecord {
     AuditRecord {
         device_id: device_id.to_string(),
-        role: "daemon".to_string(),
+        role: "paired-device".to_string(),
         claimed_origin: None,
         action: action.to_string(),
         session_id: None,
@@ -1521,7 +1522,7 @@ fn peers_round_trip_revoke_and_caps() {
     assert_eq!(stored, record);
     assert_eq!(journal.peers_list().expect("list").len(), 1);
     let loaded = journal.peer_get("dev-1").expect("get").expect("row");
-    assert_eq!(loaded.role, "daemon");
+    assert!(loaded.legacy_dialable);
     assert_eq!(loaded.caps, devboule_protocol::PEER_DEFAULT_CAPS.to_vec());
     assert!(loaded.owns_address(&"100.74.116.126".parse().expect("ip")));
     assert!(!loaded.owns_address(&"100.74.116.127".parse().expect("ip")));
@@ -1577,10 +1578,10 @@ fn peers_round_trip_revoke_and_caps() {
     assert!(!replaced.is_revoked());
     assert_eq!(journal.peers_list().expect("list").len(), 1);
 
-    let mut bad_role = peer_record("dev-2");
-    bad_role.role = "admin".to_string();
+    let mut short = peer_record("dev-2");
+    short.public_key = vec![1u8; 31];
     assert!(matches!(
-        journal.peer_upsert(bad_role),
+        journal.peer_upsert(short),
         Err(JournalError::InvalidRequest(_))
     ));
     let mut short_key = peer_record("dev-3");

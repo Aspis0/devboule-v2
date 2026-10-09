@@ -1,6 +1,8 @@
 use super::*;
+use crate::peer_policy::PeerScope;
 use crate::raster_metadata::clean_png;
 use devboule_protocol::ClientMessage;
+use devboule_protocol::PeerRole;
 
 // ------------------------------------------------------------------
 // The delegation switch's reader side: the delegated answer, the
@@ -2300,13 +2302,13 @@ fn request_provided_npx_id_still_resolves_past_env_gate() {
 const IDENTITY_FREE_PATHS: [&str; 2] = ["stop", "set_model"];
 
 /// A connection that speaks for a paired device, as `server.rs` builds one.
-pub(super) fn remote_conn(role: PeerRole, paired_by_user: Option<&str>) -> Arc<ConnHandle> {
+pub(super) fn remote_conn(scope: PeerScope, paired_by_user: Option<&str>) -> Arc<ConnHandle> {
     ConnHandle::with_conn_peer(
         7,
         None,
         Some(ConnPeer::Remote {
             device_id: "dev-phone".to_string(),
-            role,
+            scope,
             paired_by_user: paired_by_user.map(str::to_string),
             binding: crate::peer_policy::TransportBinding::tailnet(
                 "nstable",
@@ -2529,9 +2531,9 @@ fn the_ownership_check_branches_on_role_and_origin() {
 
     // A `Client` peer speaks for the user who paired it, and only for that
     // user: its own answer is the paired SID, never another account.
-    let client = remote_conn(PeerRole::Client, Some("S-1-5-21-mine"));
+    let client = remote_conn(PeerScope::PairedUser, Some("S-1-5-21-mine"));
     assert!(check_user_owner(&owned, &mine, &client.conn_peer).is_ok());
-    let other_client = remote_conn(PeerRole::Client, Some("S-1-5-21-other"));
+    let other_client = remote_conn(PeerScope::PairedUser, Some("S-1-5-21-other"));
     assert_eq!(
         check_user_owner(&owned, &mine, &other_client.conn_peer)
             .err()
@@ -2539,11 +2541,11 @@ fn the_ownership_check_branches_on_role_and_origin() {
         Some(ErrorCode::Unauthorized)
     );
     // A pairing row with no recorded user grants nothing.
-    let unlabelled = remote_conn(PeerRole::Client, None);
+    let unlabelled = remote_conn(PeerScope::PairedUser, None);
     assert!(check_user_owner(&owned, &mine, &unlabelled.conn_peer).is_err());
 
     // A `Daemon` peer is scoped by the origin, not by the owner name.
-    let daemon = remote_conn(PeerRole::Daemon, None);
+    let daemon = remote_conn(PeerScope::PeerDevice, None);
     let own = test_owner("peer_dev-phone", "daemon");
     let own_origin = SessionOrigin::peer("dev-phone", PeerRole::Daemon);
     let its_own = transcript_entry("peer_dev-phone", own_origin.clone());
@@ -2633,7 +2635,7 @@ fn a_client_peer_reaches_only_the_paired_users_sessions() {
     let theirs_id = compose_session_id(&theirs.session_token(), "theirs01").expect("id");
     insert_live(&registry, &mine_id, mine.clone());
     insert_live(&registry, &theirs_id, theirs.clone());
-    let conn = remote_conn(PeerRole::Client, Some("S-1-5-21-mine"));
+    let conn = remote_conn(PeerScope::PairedUser, Some("S-1-5-21-mine"));
 
     for (path, result) in ownership_paths(&registry, &theirs_id, &mine, &conn) {
         assert_eq!(
@@ -2677,7 +2679,7 @@ fn every_ownership_path_before_close_runs_on_a_live_session() {
             "Terminal",
         ))
         .expect("birth row");
-    let conn = remote_conn(PeerRole::Client, Some("S-1-5-21-mine"));
+    let conn = remote_conn(PeerScope::PairedUser, Some("S-1-5-21-mine"));
 
     let mut all: Vec<(&'static str, Option<ErrorCode>)> = Vec::new();
     let mut missing: Vec<&'static str> = Vec::new();
@@ -2754,7 +2756,7 @@ fn a_daemon_peer_is_scoped_by_origin_and_delivers_agent_messages() {
         &other_id,
         SessionOrigin::peer("dev-tablet", PeerRole::Daemon),
     );
-    let conn = remote_conn(PeerRole::Daemon, Some("peer_dev-phone"));
+    let conn = remote_conn(PeerScope::PeerDevice, Some("peer_dev-phone"));
 
     for (path, result) in ownership_paths(&registry, &other_id, &owner, &conn) {
         if IDENTITY_FREE_PATHS.contains(&path) {
@@ -3039,11 +3041,9 @@ fn every_identity_free_path_is_denied_to_a_peer() {
         ],
     ];
     let reachable_by_a_peer = |request: &ClientMessage| {
-        [PeerRole::Client, PeerRole::Daemon].iter().any(|role| {
-            capability_sets
-                .iter()
-                .any(|caps| peer_allows(*role, caps, request) == PeerDecision::Allow)
-        })
+        capability_sets
+            .iter()
+            .any(|caps| peer_allows(caps, request) == PeerDecision::Allow)
     };
     let mut reachable_variants: Vec<(&'static str, &'static str)> = Vec::new();
     for (path, request) in path_requests() {
@@ -3121,7 +3121,7 @@ fn a_daemon_peer_is_refused_an_unknown_origin_like_a_local_one() {
             role: None,
         },
     );
-    let conn = remote_conn(PeerRole::Daemon, Some("peer_dev-phone"));
+    let conn = remote_conn(PeerScope::PeerDevice, Some("peer_dev-phone"));
     for id in [&local_id, &unknown_id] {
         for (path, result) in ownership_paths(&registry, id, &owner, &conn) {
             if IDENTITY_FREE_PATHS.contains(&path) {
@@ -3868,7 +3868,7 @@ fn a_steer_the_provider_cannot_take_is_refused_for_a_paired_device() {
     );
 
     // The same request from a device paired to that user.
-    let peer = remote_conn(PeerRole::Client, Some("S-1-5-21-peer"));
+    let peer = remote_conn(PeerScope::PairedUser, Some("S-1-5-21-peer"));
     attach_conn_for_test(&runtime, "s.steer.fallback", &peer);
     let error = registry
         .send_with_subscription_behavior(
@@ -4163,7 +4163,7 @@ fn a_peer_daemons_agent_message_steer_leaves_the_permission_cards_alone() {
             &owner,
             // The daemon peer is paired by the target's own user: the send
             // capability is scoped to that user's local sessions.
-            &remote_conn(PeerRole::Daemon, Some("peer_dev-phone")),
+            &remote_conn(PeerScope::PeerDevice, Some("peer_dev-phone")),
             Instant::now(),
         )
         .expect("the provider took the steer");
@@ -4214,7 +4214,7 @@ fn a_paired_devices_agent_message_steer_still_dismisses_the_cards() {
             "s.steer.peer-client",
             "the person on the paired device says so",
             &owner,
-            &remote_conn(PeerRole::Client, Some("S-1-5-21-peer")),
+            &remote_conn(PeerScope::PairedUser, Some("S-1-5-21-peer")),
             Instant::now(),
         )
         .expect("the provider took the steer");
@@ -4379,7 +4379,7 @@ fn a_refused_steer_leaves_the_pending_cards_to_the_turn_that_is_still_running() 
     // The same text from a device paired to that user: refused, with no
     // interrupt, and again with the card still pending afterwards.
     interrupted.store(false, Ordering::Release);
-    let peer = remote_conn(PeerRole::Client, Some("S-1-5-21-cards-refused"));
+    let peer = remote_conn(PeerScope::PairedUser, Some("S-1-5-21-cards-refused"));
     attach_conn_for_test(&runtime, "s.steer.cards-refused", &peer);
     let error = registry
         .send_with_subscription_behavior(
