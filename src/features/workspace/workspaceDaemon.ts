@@ -266,7 +266,14 @@ const NO_REMOTE_HOSTS: RemoteHosts = { hosts: new Map() };
 let remoteHosts: RemoteHosts = NO_REMOTE_HOSTS;
 const remoteHostReaders = new Set<() => void>();
 let remoteStatusChannel: RemoteHostStatusChannel | null = null;
+// A host is watched only once its watch call succeeded. A failed or busy call
+// (the daemon caps held links) is retried after a backoff instead of being
+// remembered as watched: with more devices than link slots, the ones that lost
+// the first race must still get their turn when a slot opens.
 const watchedHosts = new Set<string>();
+const watchPending = new Set<string>();
+const watchRetryAt = new Map<string, number>();
+const WATCH_RETRY_MS = 10_000;
 const loadingHosts = new Set<string>();
 // A host whose rows changed while a load was already running. The running
 // load's snapshot is older than the change, so it is followed by exactly one
@@ -440,6 +447,8 @@ function syncRemoteHosts(peers: readonly PeerRow[]): void {
       continue;
     }
     watchedHosts.delete(deviceId);
+    watchPending.delete(deviceId);
+    watchRetryAt.delete(deviceId);
     changed = true;
     void remoteHostUnwatch(deviceId).catch(() => undefined);
   }
@@ -456,11 +465,25 @@ function syncRemoteHosts(peers: readonly PeerRow[]): void {
     };
     if (!sameHost(previous, updated)) changed = true;
     next.set(deviceId, updated);
-    if (!watchedHosts.has(deviceId)) {
+    if (
+      !watchedHosts.has(deviceId) &&
+      !watchPending.has(deviceId) &&
+      Date.now() >= (watchRetryAt.get(deviceId) ?? 0)
+    ) {
       const channel = remoteChannel();
       if (channel !== null) {
-        watchedHosts.add(deviceId);
-        void remoteHostWatch(deviceId, channel).catch(() => undefined);
+        watchPending.add(deviceId);
+        void remoteHostWatch(deviceId, channel)
+          .then(() => {
+            watchedHosts.add(deviceId);
+            watchRetryAt.delete(deviceId);
+          })
+          .catch(() => {
+            watchRetryAt.set(deviceId, Date.now() + WATCH_RETRY_MS);
+          })
+          .finally(() => {
+            watchPending.delete(deviceId);
+          });
       }
     }
     // A device that just became a host has rows to read; one that never had
@@ -479,6 +502,8 @@ function resetRemoteHosts(): void {
     void remoteHostUnwatch(deviceId).catch(() => undefined);
   }
   watchedHosts.clear();
+  watchPending.clear();
+  watchRetryAt.clear();
   loadingHosts.clear();
   dirtyHosts.clear();
   remoteGeneration += 1;

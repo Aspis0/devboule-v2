@@ -199,6 +199,29 @@ describe("remote hosts on the sidebar poll", () => {
     expect(mockStatusListeners).toHaveLength(1);
   });
 
+  it("retries a watch the link cap refused instead of marking it watched", async () => {
+    vi.mocked(devicesList).mockResolvedValue(
+      reply([peer("device-one", "One"), peer("device-two", "Two")]),
+    );
+    let attempts = 0;
+    vi.mocked(remoteHostWatch).mockImplementation(async () => {
+      attempts += 1;
+      if (attempts === 1) throw { code: "operation_conflict", message: "no link slot" };
+    });
+    await mount(<HostsProbe />);
+    expect(remoteHostWatch).toHaveBeenCalledTimes(2);
+
+    // The backoff is real time under the fake clock; the poll keeps ticking.
+    await act(async () => {
+      vi.advanceTimersByTime(12_000);
+    });
+    await flush();
+    expect(vi.mocked(remoteHostWatch).mock.calls.length).toBeGreaterThan(2);
+    // The refused host is the one retried: the calls now cover both ids.
+    const ids = vi.mocked(remoteHostWatch).mock.calls.map((call) => call[0]);
+    expect(new Set(ids).size).toBe(2);
+  });
+
   it("routes one channel's statuses by device id and reads each host's rows", async () => {
     vi.mocked(devicesList).mockResolvedValue(
       reply([peer("device-one", "One"), peer("device-two", "Two", { online: false })]),
