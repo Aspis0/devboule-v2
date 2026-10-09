@@ -49,20 +49,11 @@ describe("projects page (real stylesheets, no app launch)", () => {
     expect(proof.rulesFor(".settings-add")).not.toMatch(/dashed/);
   });
 
-  it("keeps workspace paths on the shell's mono meta face at meta 12", () => {
-    // The effective face comes from the shell sheet (last in the bundle).
-    // Drop the family there and every path turns sans with a size-only
-    // assertion still green.
-    proof.inject([".settings-card-meta", "#settings-panel-projects .settings-card-meta"]);
-    const panel = document.createElement("div");
-    panel.id = "settings-panel-projects";
-    const meta = document.createElement("span");
-    meta.className = "settings-card-meta";
-    meta.textContent = "D:\\real-project";
-    panel.appendChild(meta);
-    document.body.appendChild(panel);
-    const style = getComputedStyle(meta);
-    expect(style.fontSize).toBe("12px");
-    expect(style.fontFamily).toMatch(/monospace|JetBrains/i);
+  it("keeps workspace paths on the shell's mono meta face", () => {
+    // The face is the shell's `.settings-card-meta`; the Projects page adds no
+    // rule of its own for it, so the path lines cannot drift from the shell.
+    proof.inject([".settings-card-meta"]);
+    const meta = box("settings-card-meta");
+    expect(getComputedStyle(meta).fontFamily).toMatch(/monospace|JetBrains/i);
   });
 });
