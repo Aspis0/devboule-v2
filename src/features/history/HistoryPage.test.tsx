@@ -145,20 +145,25 @@ describe("the History page", () => {
     });
   });
 
-  it("filters by host, starting from All hosts", async () => {
-    const onHostFilterChange = vi.fn();
-    await renderPage({ onHostFilterChange });
+  it("hides the host filter while every row is local", async () => {
+    await renderPage({ hosts: [...HOSTS, { id: "peer-1", name: "Marcolenovo" }] });
 
-    const select = container.querySelector<HTMLSelectElement>(".history-page-bar select");
-    if (select === null) throw new Error("the host filter did not render");
-    expect(select.getAttribute("aria-label")).toBe("Host");
-    expect([...select.options].map((option) => option.text)).toEqual(["All hosts", "This PC"]);
-    expect(select.value).toBe("all");
-    await act(async () => {
-      select.value = LOCAL_HOST_ID;
-      select.dispatchEvent(new Event("change", { bubbles: true }));
+    // A paired remote host with no rows must not offer a filter that can
+    // only return an empty list.
+    expect(container.querySelector(".history-page-bar select")).toBeNull();
+    // And the local rows still list.
+    expect(container.querySelector(".history-row")).not.toBeNull();
+  });
+
+  it("falls back to all rows when the set filter owns no rows", async () => {
+    await renderPage({
+      hosts: [...HOSTS, { id: "peer-1", name: "Marcolenovo" }],
+      hostFilter: "peer-1",
     });
-    expect(onHostFilterChange).toHaveBeenCalledWith(LOCAL_HOST_ID);
+
+    // No remote rows exist, so a stale non-all filter must not trap the
+    // page on an empty list it offers no way out of.
+    expect(container.querySelector(".history-row")).not.toBeNull();
   });
 
   it("reads one row per session as workspace › glyph title, then project, host, branch, time", async () => {

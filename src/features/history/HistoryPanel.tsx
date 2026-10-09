@@ -261,14 +261,26 @@ export function HistoryPanel({
     setMergedState({ source: freshRows, rows: merged });
     rows = merged;
   }
-  const filteredRows = useMemo(
-    () =>
-      rows.filter(
-        (row) =>
-          (hostFilter === "all" || row.hostId === hostFilter) && historyRowMatches(row, search),
-      ),
-    [hostFilter, rows, search],
+  // Hosts that own a row, in the order the hosts arrived: the filter offers
+  // only these, and hides entirely while every row is local.
+  const showHostFilter = useMemo(
+    () => rows.some((row) => row.hostId !== null && row.hostId !== LOCAL_HOST_ID),
+    [rows],
   );
+  const hostOptions = useMemo(
+    () => hosts.filter((host) => rows.some((row) => row.hostId === host.id)),
+    [hosts, rows],
+  );
+  const filteredRows = useMemo(() => {
+    // The filter lists only hosts that own rows, and hides entirely while
+    // every row is local: a remote option with no rows behind it can only
+    // return an empty list. Remote rows arrive in a later slice.
+    const effective = showHostFilter ? hostFilter : "all";
+    return rows.filter(
+      (row) =>
+        (effective === "all" || row.hostId === effective) && historyRowMatches(row, search),
+    );
+  }, [hostFilter, rows, search, showHostFilter]);
   const groups = useMemo(() => groupByDay(filteredRows, now), [filteredRows, now]);
   const refreshUsage = usageRequest.run;
   const refreshSessions = sessionsRequest.run;
@@ -420,21 +432,23 @@ export function HistoryPanel({
             aria-label="Search history"
           />
         </label>
-        <label className="history-page-host">
-          <span className="sr-only">Host</span>
-          <select
-            value={hostFilter}
-            onChange={(event) => onHostFilterChange?.(event.target.value)}
-            aria-label="Host"
-          >
-            <option value="all">All hosts</option>
-            {hosts.map((host) => (
-              <option key={host.id} value={host.id}>
-                {host.name}
-              </option>
-            ))}
-          </select>
-        </label>
+        {showHostFilter ? (
+          <label className="history-page-host">
+            <span className="sr-only">Host</span>
+            <select
+              value={hostFilter}
+              onChange={(event) => onHostFilterChange?.(event.target.value)}
+              aria-label="Host"
+            >
+              <option value="all">All hosts</option>
+              {hostOptions.map((host) => (
+                <option key={host.id} value={host.id}>
+                  {host.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
       </div>
       {usageError ? <Alert sentence={usageError} id="history-usage-error" /> : null}
       {usage && sessionsError ? (
