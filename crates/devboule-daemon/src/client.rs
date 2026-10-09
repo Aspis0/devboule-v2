@@ -1700,12 +1700,34 @@ impl DaemonClient {
     /// the paired device becomes is decided later by whether it hosts a
     /// workspace.
     pub fn pairing_start(&self) -> Result<DaemonMessage, DaemonError> {
+        self.require_pairing_dialect()?;
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::PairingStart { id })? {
             reply @ DaemonMessage::PairingCode { .. } => Ok(reply),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             _ => pairing_reply_mismatch(),
         }
+    }
+
+    /// Refuse pairing against a daemon that predates the roleless requests.
+    ///
+    /// Every dialect before 32 requires a `role` field in `PairingStart` and
+    /// `PairingComplete`; a roleless request is a frame that old decoder cannot
+    /// construct, and the connection would die on it. The app and its daemon
+    /// normally ship together, so the actionable sentence is to restart
+    /// devboule so the matching daemon binary starts.
+    fn require_pairing_dialect(&self) -> Result<(), DaemonError> {
+        let daemon = self.inner.hello.protocol_version;
+        if daemon >= devboule_protocol::PROTOCOL_VERSION {
+            return Ok(());
+        }
+        Err(DaemonError::Handshake(WireError::new(
+            ErrorCode::ProtocolVersionMismatch,
+            format!(
+                "the running daemon speaks protocol {daemon} and cannot take a roleless pairing; \
+                 restart devboule so the matching daemon binary starts"
+            ),
+        )))
     }
 
     /// Types a code shown on another device. The daemon answers either with a
@@ -1719,6 +1741,7 @@ impl DaemonClient {
         address: &str,
         code: PairingSecret,
     ) -> Result<DaemonMessage, DaemonError> {
+        self.require_pairing_dialect()?;
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::PairingComplete {
             id,

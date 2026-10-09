@@ -11,8 +11,8 @@ use crate::session::{ACP_FIRST_RESPONSE_TIMEOUT, ACP_RESPONSE_TIMEOUT};
 #[cfg(windows)]
 use crate::transport::{Listener, NamedPipeListener};
 use devboule_protocol::{
-    ClientMessage, DaemonHello, DaemonMessage, ErrorCode, Persistence, PersistenceKind,
-    ResumeResult, SessionEvent, SessionKind,
+    ClientMessage, DaemonHello, DaemonMessage, ErrorCode, PairingSecret, Persistence,
+    PersistenceKind, ResumeResult, SessionEvent, SessionKind,
 };
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
@@ -1557,4 +1557,77 @@ fn a_daemon_that_did_not_negotiate_tasks_is_never_sent_a_tasks_rpc() {
     drop(client);
     server.join().expect("server joins");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A client inner whose daemon hello states `protocol_version`, with a
+/// read-only wire: a request that actually left would fail as an IO error, so
+/// a test can tell "refused before sending" from "sent and failed".
+fn pairing_stub_inner(protocol_version: u32) -> Arc<ClientInner> {
+    Arc::new(ClientInner {
+        framed: Framed::new(
+            std::fs::File::open(std::env::current_exe().expect("exe")).expect("open exe"),
+        ),
+        next_id: std::sync::atomic::AtomicU64::new(1),
+        next_subscription_id: std::sync::atomic::AtomicU64::new(1),
+        pending: Mutex::new(HashMap::new()),
+        pending_subscriptions: Mutex::new(HashMap::new()),
+        subscriptions: Mutex::new(HashMap::new()),
+        default_subscriptions: Mutex::new(HashMap::new()),
+        session_state_subscription: Mutex::new(None),
+        delegation_subscription: Mutex::new(None),
+        remote_host_status_handler: Mutex::new(None),
+        browser_requests: Mutex::new(None),
+        browser_request_inbox: Mutex::new(None),
+        browser_rejects: Mutex::new(None),
+        stop: AtomicBool::new(false),
+        hello: DaemonHello {
+            protocol_version,
+            min_protocol_version: devboule_protocol::PROTOCOL_MIN_VERSION,
+            daemon_version: "0.1.0".to_string(),
+            instance_id: "old-daemon".to_string(),
+            pid: 1,
+            capabilities: Vec::new(),
+            workspace_host: None,
+        },
+        server_pid: None,
+        runtime: None,
+    })
+}
+
+/// A daemon that still speaks a role-bearing pairing dialect cannot take the
+/// roleless requests: its reader has no `role`-less `PairingStart` variant, so
+/// the connection would die on the frame. The door refuses first, with a
+/// sentence a person can act on, and the code never leaves.
+#[test]
+fn pairing_refuses_a_daemon_that_predates_the_roleless_request() {
+    let client = super::DaemonClient {
+        inner: pairing_stub_inner(31),
+        reader: Mutex::new(None),
+    };
+
+    let DaemonError::Handshake(error) = client
+        .pairing_start()
+        .expect_err("a role-bearing daemon cannot take a roleless pairing")
+    else {
+        panic!("the refusal is a handshake error");
+    };
+    assert_eq!(error.code, ErrorCode::ProtocolVersionMismatch);
+    assert!(
+        error.message.contains("restart"),
+        "the sentence says what to do: {}",
+        error.message
+    );
+
+    let DaemonError::Handshake(error) = client
+        .pairing_complete("100.64.0.1:47831", PairingSecret::new("ABCD2345"))
+        .expect_err("completing is refused before the code leaves")
+    else {
+        panic!("the refusal is a handshake error");
+    };
+    assert_eq!(error.code, ErrorCode::ProtocolVersionMismatch);
+    assert!(
+        !error.message.contains("ABCD2345"),
+        "the refusal must not carry the code: {}",
+        error.message
+    );
 }
