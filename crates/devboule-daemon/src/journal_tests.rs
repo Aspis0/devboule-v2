@@ -1503,49 +1503,60 @@ fn peer_record(device_id: &str) -> PeerRecord {
     }
 }
 
-/// The hosting record is one-way: it is written for a peer that claims to
-/// host, idempotent when it already says so, and refused for a revoked row.
-/// A later claim of "no workspace" is the connection layer's business, and it
-/// must never clear the column here.
+/// The hosting record follows the peer's own authenticated presence pair in
+/// both directions: it is written for a peer that claims to host, cleared when
+/// that peer's last workspace is gone, idempotent when it already says the
+/// value asked for, and refused for a revoked row.
 #[test]
-fn a_peer_is_recorded_as_a_workspace_host_one_way() {
+fn a_peers_hosting_record_follows_its_presence_both_ways() {
     let (dir, path) = tmp_journal();
     let journal = Journal::open(&path).expect("open");
     let mut record = peer_record("dev-1");
     record.hosts_workspaces = false;
     journal.peer_upsert(record).expect("upsert");
-    assert!(
-        !journal
-            .peer_get("dev-1")
-            .expect("get")
-            .expect("row")
-            .hosts_workspaces
-    );
-
-    assert_eq!(
-        journal.peer_note_workspaces("dev-1").expect("note"),
-        PeerMutation::Updated
-    );
-    assert!(
+    let hosts = |journal: &Journal| {
         journal
             .peer_get("dev-1")
             .expect("get")
             .expect("row")
             .hosts_workspaces
-    );
-    // Idempotent: recording it again is still an update, not a revoke.
+    };
+    assert!(!hosts(&journal));
+
     assert_eq!(
-        journal.peer_note_workspaces("dev-1").expect("note"),
+        journal
+            .peer_set_hosts_workspaces("dev-1", true)
+            .expect("set"),
         PeerMutation::Updated
     );
+    assert!(hosts(&journal));
+    // Idempotent: setting the value it already holds is still an update.
     assert_eq!(
-        journal.peer_note_workspaces("dev-missing").expect("note"),
+        journal
+            .peer_set_hosts_workspaces("dev-1", true)
+            .expect("set"),
+        PeerMutation::Updated
+    );
+    // The last workspace is gone: the record follows the peer back to client.
+    assert_eq!(
+        journal
+            .peer_set_hosts_workspaces("dev-1", false)
+            .expect("set"),
+        PeerMutation::Updated
+    );
+    assert!(!hosts(&journal));
+    assert_eq!(
+        journal
+            .peer_set_hosts_workspaces("dev-missing", true)
+            .expect("set"),
         PeerMutation::NotFound
     );
 
     journal.peer_revoke("dev-1", 7).expect("revoke");
     assert_eq!(
-        journal.peer_note_workspaces("dev-1").expect("note"),
+        journal
+            .peer_set_hosts_workspaces("dev-1", true)
+            .expect("set"),
         PeerMutation::Revoked
     );
     drop(journal);

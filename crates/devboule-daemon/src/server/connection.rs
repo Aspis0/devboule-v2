@@ -97,20 +97,14 @@ pub(crate) fn handle_client(
     let mut daemon_hello = daemon_hello(&state);
     // A peer connection is the one conversation where this daemon's own
     // workspace-host presence belongs in the hello: it is what the far side
-    // binds to this device id to pick the session scope it grants us. An app's
-    // hello carries no such claim, and never gets one.
+    // binds to this device id to pick the session scope it grants us. The
+    // builder keeps the bit and the advertised service in step. An app's hello
+    // carries no such claim, and never gets one.
     if conn_peer.is_some() {
-        daemon_hello.workspace_host = Some(state.has_hosted_workspace());
+        daemon_hello = daemon_hello.with_workspace_host(state.has_hosted_workspace());
     }
     let agreed = match negotiate(&client_hello, &daemon_hello) {
-        Ok(agreed) => {
-            // The client learns the usable capability set from this hello;
-            // do not expose daemon-only capabilities as if they were agreed.
-            let mut agreed_hello = daemon_hello.clone();
-            agreed_hello.capabilities = agreed.capabilities.clone();
-            framed.send(&DaemonMessage::Hello(agreed_hello))?;
-            agreed
-        }
+        Ok(agreed) => agreed,
         Err(error) => {
             framed.send(&DaemonMessage::Error(error))?;
             return Ok(());
@@ -160,25 +154,48 @@ pub(crate) fn handle_client(
         )))?;
         return Ok(());
     }
-    // The session register this connection reaches is what this daemon
-    // **recorded** for the device when its pairing was confirmed, narrowed by
-    // the peer's own presence claim. The claim may never widen: a machine peer
-    // claiming "no workspace" must not be handed the broader paired-user
-    // scope. A claim of "hosts" is applied and recorded, because that is the
-    // machine scope — the narrower one — and it is how a client device that
-    // later creates its first workspace is re-scoped on its next connection.
-    // See `peer_policy::peer_scope`.
-    let conn_peer = conn_peer.map(|peer| {
-        let scope = crate::peer_policy::peer_scope(client_hello.workspace_host, peer.scope());
-        peer.with_scope(scope)
-    });
-    if client_hello.workspace_host == Some(true) {
+    // The session register this connection reaches comes from the peer's own
+    // authenticated presence pair — its `workspaceHost` word and whether the
+    // same hello advertised the hosted-workspace service. The two are one fact
+    // computed from one workspace database, so a hello where they disagree is
+    // refused: a device that hosts workspaces cannot claim "no workspace" and
+    // keep a broader recorded scope, and a device that advertises the service
+    // cannot deny hosting. The stored record is updated in both directions so
+    // a legitimate host whose last workspace is gone becomes a client again.
+    // A v30/v31 hello carries no presence at all and keeps the pairing record,
+    // which is the only fact the older wire has. See `peer_policy::peer_scope`.
+    let advertises_service = client_hello
+        .capabilities
+        .iter()
+        .any(|capability| capability.as_str() == caps::HOSTED_WORKSPACES);
+    let conn_peer = if conn_peer.is_some() && agreed.protocol_version >= 32 {
+        let Some(scope) =
+            crate::peer_policy::peer_scope(client_hello.workspace_host, advertises_service)
+        else {
+            framed.send(&DaemonMessage::Error(WireError::new(
+                ErrorCode::InvalidRequest,
+                "the peer's workspace-host presence and its advertised service disagree",
+            )))?;
+            return Ok(());
+        };
         if let Some(ConnPeer::Remote { device_id, .. }) = &conn_peer {
-            if let Err(error) = state.peer_note_workspaces(device_id) {
-                eprintln!("daemon could not record a peer as a workspace host: {error}");
+            if let Err(error) = state.peer_set_hosts_workspaces(
+                device_id,
+                scope == crate::peer_policy::PeerScope::PeerDevice,
+            ) {
+                eprintln!("daemon could not record a peer's workspace presence: {error}");
             }
         }
-    }
+        conn_peer.map(|peer| peer.with_scope(scope))
+    } else {
+        conn_peer
+    };
+    // The connection is admissible; only now does this daemon's own hello
+    // leave, with the negotiated capability set and its own presence already
+    // in step. A peer refused above never learns which daemon it reached.
+    let mut agreed_hello = daemon_hello.clone();
+    agreed_hello.capabilities = agreed.capabilities.clone();
+    framed.send(&DaemonMessage::Hello(agreed_hello))?;
     // The hello owner is diagnostic only. All idempotency and session access
     // below use the identity decided above.
     //
@@ -233,12 +250,6 @@ pub(crate) fn handle_client(
         .any(|capability| capability.as_str() == caps::SESSION_RESUME_OUTCOMES);
     conn.set_resume_outcomes_negotiated(resume_outcomes_ok);
     conn.set_remote_hosts_negotiated(remote_hosts_ok);
-    conn.set_hosted_workspaces_negotiated(
-        agreed
-            .capabilities
-            .iter()
-            .any(|capability| capability.as_str() == caps::HOSTED_WORKSPACES),
-    );
     conn.set_browser_host_negotiated(
         agreed
             .capabilities

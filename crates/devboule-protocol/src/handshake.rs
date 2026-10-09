@@ -65,10 +65,21 @@ impl ClientHello {
     /// app's does not: this daemon's workspace-host presence, computed from
     /// its own workspace database.
     pub fn peer(owner: OwnerId, client_name: impl Into<String>, workspace_host: bool) -> Self {
-        Self {
+        let mut hello = Self {
             workspace_host: Some(workspace_host),
             ..Self::m3a(owner, client_name)
+        };
+        // The presence bit and the advertised service are one fact: a peer
+        // that does not host workspaces does not offer the service, and the
+        // receiver refuses a hello where the two disagree. Keeping the two in
+        // step here makes every hello this build sends consistent by
+        // construction.
+        if !workspace_host {
+            hello
+                .capabilities
+                .retain(|capability| capability.as_str() != crate::caps::HOSTED_WORKSPACES);
         }
+        hello
     }
 
     /// Host→plugin-backend hello. Same wire type as [`Self::m3a`]; a
@@ -118,6 +129,12 @@ impl DaemonHello {
     /// verified device id.
     pub fn with_workspace_host(mut self, workspace_host: bool) -> Self {
         self.workspace_host = Some(workspace_host);
+        // Same rule as [`ClientHello::peer`]: the bit and the service name are
+        // one fact, and a daemon with no workspace does not advertise it.
+        if !workspace_host {
+            self.capabilities
+                .retain(|capability| capability.as_str() != crate::caps::HOSTED_WORKSPACES);
+        }
         self
     }
 

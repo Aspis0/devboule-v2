@@ -1206,6 +1206,198 @@ fn many_connects_share_one_peer_table_load() {
     join_bounded(accept, "the peer accept loop");
 }
 
+/// Open one raw peer connection, send `hello`, and hand back the transport,
+/// the framing and the first answer (the daemon's hello, or its refusal).
+fn open_raw_peer(
+    address: SocketAddr,
+    client_private: &[u8],
+    hello: devboule_protocol::ClientHello,
+) -> (
+    TcpStream,
+    crate::framing::Framed,
+    devboule_protocol::DaemonMessage,
+) {
+    let stream = connect_bounded(address);
+    let session = initiator_handshake(
+        &stream,
+        Instant::now() + bound::READ,
+        client_private,
+        None,
+        PEER_PROLOGUE,
+        None,
+        PEER_NOISE_PATTERN,
+    )
+    .expect("the peer handshake");
+    let (reader, writer, closer) = split_session(&stream, session).expect("split");
+    let framed = crate::framing::Framed::from_stream(reader, writer, closer);
+    framed
+        .send(&devboule_protocol::ClientMessage::Hello(hello))
+        .expect("the peer hello");
+    let reply = framed
+        .recv_timeout::<devboule_protocol::DaemonMessage>(Duration::from_secs(5))
+        .expect("a hello answer");
+    (stream, framed, reply)
+}
+
+/// One paired row in the shape pairing writes, with its presence record set.
+fn upsert_paired_row(
+    state: &Arc<crate::server::ServerState>,
+    address: SocketAddr,
+    public_key: Vec<u8>,
+    hosts_workspaces: bool,
+) {
+    state
+        .peer_upsert(PeerRecord {
+            device_id: "phone".to_string(),
+            display_name: "phone".to_string(),
+            legacy_dialable: false,
+            hosts_workspaces,
+            public_key,
+            paired_by_user: None,
+            binding_kind: "tailnet".to_string(),
+            binding_stable_id: Some("nstable".to_string()),
+            binding_node_name: None,
+            binding_login_name: None,
+            address: address.to_string(),
+            paired_at: 1,
+            revoked_at: None,
+            caps: vec!["view".to_string(), "devices".to_string()],
+        })
+        .expect("upsert the peer row");
+}
+
+/// The identity projection one peer connection sees: the machine scope
+/// withholds the public key, the paired-user scope returns it.
+fn projected_self_info(framed: &crate::framing::Framed) -> devboule_protocol::SelfInfo {
+    framed
+        .send(&devboule_protocol::ClientMessage::DevicesList { id: 9 })
+        .expect("devices");
+    match framed
+        .recv_timeout::<devboule_protocol::DaemonMessage>(Duration::from_secs(5))
+        .expect("the device reply")
+    {
+        devboule_protocol::DaemonMessage::Devices { self_info, .. } => self_info,
+        other => panic!("expected Devices, got {other:?}"),
+    }
+}
+
+/// A v32 hello whose presence word denies hosting while the same hello
+/// advertises the hosted-workspace service. The two are one fact computed from
+/// one workspace database, so the connection is refused: a device that hosts
+/// workspaces cannot claim "no workspace" and keep the broader paired-user
+/// scope, and a service advertisement that denies hosting is not resolved in
+/// the sender's favour.
+#[test]
+fn a_presence_word_that_denies_the_advertised_service_is_refused() {
+    use devboule_protocol::{ClientHello, DaemonMessage, OwnerId};
+
+    let transport = Arc::new(TestTransport::default());
+    let (address, state, stop, accept) = spawn_accept_loop(
+        transport,
+        Arc::new(PairingDisabled) as Arc<dyn PairingHook>,
+        "peer-presence-mismatch",
+    );
+    let (client_private, client_public) = keypair(PEER_NOISE_PATTERN);
+    upsert_paired_row(&state, address, client_public, false);
+
+    // `m3a` advertises the service; the presence word denies hosting.
+    let mut hello = ClientHello::m3a(
+        OwnerId::new("peer_phone", "devboule-daemon").expect("owner"),
+        "devboule-daemon",
+    );
+    hello.workspace_host = Some(false);
+    let (stream, framed, reply) = open_raw_peer(address, &client_private, hello);
+    match reply {
+        DaemonMessage::Error(error) => {
+            assert!(error.message.contains("disagree"), "{error:?}");
+        }
+        other => panic!("a disagreeing presence must be refused, got {other:?}"),
+    }
+    assert!(
+        !state
+            .peer_get("phone")
+            .expect("row")
+            .expect("row")
+            .hosts_workspaces,
+        "a refused hello must not move the record"
+    );
+
+    drop(framed);
+    drop(stream);
+    stop_accept_loop(&state, &stop);
+    join_bounded(accept, "the peer accept loop");
+}
+
+/// The presence pair is followed in both directions: a truthful host flips the
+/// record to hosting and is served the machine projection, and a host whose
+/// last workspace is gone flips it back to client and is served the broader
+/// paired-user projection again.
+#[test]
+fn a_v32_hello_rescopes_the_peer_record_in_both_directions() {
+    use devboule_protocol::{ClientHello, DaemonMessage, OwnerId};
+
+    let transport = Arc::new(TestTransport::default());
+    let (address, state, stop, accept) = spawn_accept_loop(
+        transport,
+        Arc::new(PairingDisabled) as Arc<dyn PairingHook>,
+        "peer-presence-rescope",
+    );
+    let (client_private, client_public) = keypair(PEER_NOISE_PATTERN);
+    upsert_paired_row(&state, address, client_public, false);
+    let owner = || OwnerId::new("peer_phone", "devboule-daemon").expect("owner");
+
+    let (stream_one, framed_one, reply_one) = open_raw_peer(
+        address,
+        &client_private,
+        ClientHello::peer(owner(), "devboule-daemon", true),
+    );
+    assert!(
+        matches!(reply_one, DaemonMessage::Hello(_)),
+        "{reply_one:?}"
+    );
+    assert!(
+        state
+            .peer_get("phone")
+            .expect("row")
+            .expect("row")
+            .hosts_workspaces,
+        "a truthful host flips the record to hosting"
+    );
+    assert!(
+        projected_self_info(&framed_one).public_key.is_empty(),
+        "the hosting peer is served the machine projection"
+    );
+    drop(framed_one);
+    drop(stream_one);
+
+    let (stream_two, framed_two, reply_two) = open_raw_peer(
+        address,
+        &client_private,
+        ClientHello::peer(owner(), "devboule-daemon", false),
+    );
+    assert!(
+        matches!(reply_two, DaemonMessage::Hello(_)),
+        "{reply_two:?}"
+    );
+    assert!(
+        !state
+            .peer_get("phone")
+            .expect("row")
+            .expect("row")
+            .hosts_workspaces,
+        "a host with no workspace left is a client again"
+    );
+    assert!(
+        !projected_self_info(&framed_two).public_key.is_empty(),
+        "the client peer gets the paired-user projection again"
+    );
+    drop(framed_two);
+    drop(stream_two);
+
+    stop_accept_loop(&state, &stop);
+    join_bounded(accept, "the peer accept loop");
+}
+
 /// A peer connection is a client for the idle exit, exactly as a pipe
 /// connection is.
 ///

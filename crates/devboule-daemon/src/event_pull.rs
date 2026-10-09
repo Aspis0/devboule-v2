@@ -217,11 +217,6 @@ pub struct ConnHandle {
     /// is assumed to want. A connection the daemon builds for itself has no
     /// hello and therefore no leases.
     remote_hosts: AtomicBool,
-    /// Whether this connection's hello negotiated `hosted_workspaces`, which
-    /// is what lets a peer on the far side receive this daemon's
-    /// workspace-change push. Defaults to **false**: a connection that did not
-    /// offer the name cannot decode the frame, so it is never sent one.
-    hosted_workspaces: AtomicBool,
     /// The app/daemon dialect this connection negotiated. See
     /// [`ConnHandle::negotiated_protocol`].
     negotiated_protocol: AtomicU32,
@@ -311,18 +306,6 @@ impl ConnHandle {
         self.remote_hosts.load(Ordering::SeqCst)
     }
 
-    /// Record what this connection's hello agreed for the workspace-change
-    /// push. Called once, by the serve loop, before this connection reads a
-    /// request.
-    pub fn set_hosted_workspaces_negotiated(&self, negotiated: bool) {
-        self.hosted_workspaces.store(negotiated, Ordering::SeqCst);
-    }
-
-    /// Whether this connection may receive `host_workspace_changed` frames.
-    pub fn hosted_workspaces_negotiated(&self) -> bool {
-        self.hosted_workspaces.load(Ordering::SeqCst)
-    }
-
     /// Record the protocol dialect this connection negotiated. Called once, by
     /// the serve loop, before this connection reads a request. It decides
     /// whether a devices-family reply carries the v30 role projection.
@@ -409,7 +392,6 @@ impl ConnHandle {
             session_tasks: AtomicBool::new(true),
             resume_outcomes: AtomicBool::new(true),
             remote_hosts: AtomicBool::new(false),
-            hosted_workspaces: AtomicBool::new(false),
             negotiated_protocol: AtomicU32::new(devboule_protocol::PROTOCOL_VERSION),
             browser_host: AtomicBool::new(false),
             plan_usage_live: AtomicBool::new(false),

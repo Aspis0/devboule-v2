@@ -1692,16 +1692,20 @@ impl ServerState {
         Ok(outcome)
     }
 
-    /// Record a peer as a workspace host, one-way. Called when an
-    /// authenticated hello states hosting; the table is invalidated so the
-    /// next scope resolution reads it.
-    pub(crate) fn peer_note_workspaces(&self, device_id: &str) -> Result<PeerMutation, String> {
+    /// Record whether a peer hosts workspaces, from its own authenticated
+    /// hello. The table is invalidated so the next scope resolution (and the
+    /// sidebar's `PeerRow`) reads the new fact.
+    pub(crate) fn peer_set_hosts_workspaces(
+        &self,
+        device_id: &str,
+        hosts: bool,
+    ) -> Result<PeerMutation, String> {
         let journal = self
             .journal
             .as_ref()
             .ok_or_else(|| "the journal is unavailable".to_string())?;
         let outcome = journal
-            .peer_note_workspaces(device_id)
+            .peer_set_hosts_workspaces(device_id, hosts)
             .map_err(|error| error.to_string())?;
         self.invalidate_peer_table();
         Ok(outcome)
@@ -1797,9 +1801,11 @@ impl ServerState {
         inbound || self.peer_links.is_online(device_id)
     }
 
-    /// Bump the revision and push it to every live peer connection that
-    /// negotiated `hosted_workspaces`. A connection that did not negotiate the
-    /// name cannot decode the frame, so it is never sent one.
+    /// Bump the revision and push it to every live peer connection whose
+    /// dialect knows the frame. The gate is the negotiated protocol version,
+    /// not the presence capability: a client daemon with no workspaces of its
+    /// own still watches hosts and still decodes the frame, while a v30/v31
+    /// peer never negotiates the version and is never sent one.
     pub(crate) fn note_workspace_change(&self) -> u64 {
         let revision = self.workspace_revision.fetch_add(1, Ordering::SeqCst) + 1;
         let device_id = self
@@ -1812,7 +1818,7 @@ impl ServerState {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .values()
-            .filter(|entry| entry.conn.hosted_workspaces_negotiated())
+            .filter(|entry| entry.conn.negotiated_protocol() >= 32)
             .map(|entry| Arc::clone(&entry.conn))
             .collect();
         for conn in peers {

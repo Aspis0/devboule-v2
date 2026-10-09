@@ -956,8 +956,9 @@ enum JournalCmd {
         caps: Vec<String>,
         reply: mpsc::Sender<Result<PeerMutation, JournalError>>,
     },
-    PeerNoteWorkspaces {
+    PeerSetHostsWorkspaces {
         device_id: String,
+        hosts: bool,
         reply: mpsc::Sender<Result<PeerMutation, JournalError>>,
     },
     AuditAppend {
@@ -1576,13 +1577,20 @@ impl Journal {
         })
     }
 
-    /// Record that a peer hosts workspaces. One-way on purpose: the column is
-    /// never cleared by a peer's later claim, because clearing it would widen
-    /// that connection's session scope. A revoked row is refused like every
-    /// other peer mutation.
-    pub fn peer_note_workspaces(&self, device_id: &str) -> Result<PeerMutation, JournalError> {
-        self.rpc(|reply| JournalCmd::PeerNoteWorkspaces {
+    /// Record whether a peer hosts workspaces. Set from the peer's own
+    /// authenticated hello, in both directions: hosting keeps the machine
+    /// scope, a device whose last workspace is gone is a client again. The
+    /// caller only ever reaches this with a hello whose presence pair agreed,
+    /// so the stored value tracks the peer's own current statement. A revoked
+    /// row is refused like every other peer mutation.
+    pub fn peer_set_hosts_workspaces(
+        &self,
+        device_id: &str,
+        hosts: bool,
+    ) -> Result<PeerMutation, JournalError> {
+        self.rpc(|reply| JournalCmd::PeerSetHostsWorkspaces {
             device_id: device_id.to_string(),
+            hosts,
             reply,
         })
     }
@@ -2520,8 +2528,12 @@ fn journal_loop(
                 }
                 let _ = reply.send(result);
             }
-            JournalCmd::PeerNoteWorkspaces { device_id, reply } => {
-                let result = note_peer_workspaces(&conn, &device_id);
+            JournalCmd::PeerSetHostsWorkspaces {
+                device_id,
+                hosts,
+                reply,
+            } => {
+                let result = set_peer_hosts_workspaces(&conn, &device_id, hosts);
                 if let Err(error) = &result {
                     on_write_error(error);
                 }
@@ -2922,9 +2934,13 @@ fn set_peer_caps(
     })
 }
 
-/// Record a peer as a workspace host, idempotently. The row is read before the
-/// write so "already recorded" and "revoked" stay distinct outcomes.
-fn note_peer_workspaces(conn: &Connection, device_id: &str) -> Result<PeerMutation, JournalError> {
+/// Record whether a peer hosts workspaces, idempotently. The row is read before
+/// the write so "already recorded" and "revoked" stay distinct outcomes.
+fn set_peer_hosts_workspaces(
+    conn: &Connection,
+    device_id: &str,
+    hosts: bool,
+) -> Result<PeerMutation, JournalError> {
     let row: Option<(Option<i64>, bool)> = conn
         .query_row(
             "SELECT revoked_at, hosts_workspaces FROM peers WHERE device_id = ?1",
@@ -2932,16 +2948,16 @@ fn note_peer_workspaces(conn: &Connection, device_id: &str) -> Result<PeerMutati
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    let Some((revoked_at, hosts)) = row else {
+    let Some((revoked_at, stored)) = row else {
         return Ok(PeerMutation::NotFound);
     };
     if revoked_at.is_some() {
         return Ok(PeerMutation::Revoked);
     }
-    if !hosts {
+    if stored != hosts {
         conn.execute(
-            "UPDATE peers SET hosts_workspaces = 1 WHERE device_id = ?1",
-            [device_id],
+            "UPDATE peers SET hosts_workspaces = ?2 WHERE device_id = ?1",
+            rusqlite::params![device_id, hosts],
         )?;
     }
     Ok(PeerMutation::Updated)

@@ -47,22 +47,21 @@ pub enum PeerScope {
     PeerDevice,
 }
 
-/// The scope a peer connection reaches: the recorded pairing fact, narrowed by
-/// the peer's own presence claim and never widened by it.
-///
-/// `hello_claim` is the peer's `workspaceHost` word as it arrived in the
-/// authenticated hello. A claim of `true` says the peer hosts workspaces now,
-/// which is the machine scope — strictly less access on this daemon than the
-/// paired-user scope, so it is applied and recorded. A claim of `false` — or an
-/// absent word — never turns a recorded host into a client: that is the
-/// direction the hostile review found, where a machine peer could claim "no
-/// workspace" and be handed the broader paired-user scope (the full device
-/// projection and the paired user's sessions). The durable record is updated
-/// on the same one-way rule by the connection layer.
-pub fn peer_scope(hello_claim: Option<bool>, recorded: PeerScope) -> PeerScope {
-    match hello_claim {
-        Some(true) => PeerScope::PeerDevice,
-        _ => recorded,
+/// The scope a v32 peer connection reaches, from the two presence facts its
+/// authenticated hello carried: the `workspaceHost` word and whether the same
+/// hello advertised the hosted-workspace service. They are one fact computed
+/// from one workspace database, so a hello where they disagree is refused
+/// rather than resolved — that closes the case a hostile review found, where a
+/// device that hosts workspaces could claim `false` and keep a broader
+/// recorded scope. A peer that speaks the service name hosts; a peer that
+/// does not claimed clienthood at the protocol level, and the record is
+/// updated in both directions so the transition back to client is possible.
+/// `None` is an unstated v32 hello, which is refused by the caller.
+pub fn peer_scope(hello_claim: Option<bool>, advertises_service: bool) -> Option<PeerScope> {
+    match (hello_claim, advertises_service) {
+        (Some(true), true) => Some(PeerScope::PeerDevice),
+        (Some(false), false) => Some(PeerScope::PairedUser),
+        _ => None,
     }
 }
 
@@ -3466,32 +3465,24 @@ pub(crate) mod tests {
         };
         assert_eq!(peer.device_id(), Some("dev-1"));
         assert_eq!(peer.scope(), PeerScope::PeerDevice);
-        // A denied claim is the forged direction the review found: a machine
-        // peer saying "no workspace" must not be handed the broader
-        // paired-user scope. An absent word changes nothing.
-        for denied in [Some(false), None] {
-            assert_eq!(
-                peer_scope(denied, PeerScope::PeerDevice),
-                PeerScope::PeerDevice,
-                "a denied claim may not widen a machine peer: {denied:?}"
-            );
-            assert_eq!(
-                peer_scope(denied, PeerScope::PairedUser),
-                PeerScope::PairedUser,
-                "a denied claim changes nothing for a client peer: {denied:?}"
-            );
-        }
-        // A claim of hosting is the one direction allowed: it narrows a client
-        // to the machine scope, which is how a device that later creates its
-        // first workspace is re-scoped on its next connection.
+        // The pair is one fact computed from one workspace database: the word
+        // and the advertised service must agree, and each consistent pair
+        // names its scope. A disagreeing or unstated hello has no scope and is
+        // refused by the connection layer.
+        assert_eq!(peer_scope(Some(true), true), Some(PeerScope::PeerDevice));
+        assert_eq!(peer_scope(Some(false), false), Some(PeerScope::PairedUser));
         assert_eq!(
-            peer_scope(Some(true), PeerScope::PairedUser),
-            PeerScope::PeerDevice
+            peer_scope(Some(true), false),
+            None,
+            "a host that hides its service cannot keep the broad scope"
         );
         assert_eq!(
-            peer_scope(Some(true), PeerScope::PeerDevice),
-            PeerScope::PeerDevice
+            peer_scope(Some(false), true),
+            None,
+            "a service advertisement that denies hosting is refused"
         );
+        assert_eq!(peer_scope(None, false), None);
+        assert_eq!(peer_scope(None, true), None);
         assert_eq!(PeerScope::recorded(true), PeerScope::PeerDevice);
         assert_eq!(PeerScope::recorded(false), PeerScope::PairedUser);
     }

@@ -146,16 +146,17 @@ fn remote_conn_handle(id: u64, device_id: &str) -> std::sync::Arc<crate::session
     )
 }
 
-/// A workspace change is pushed to the peer connections that negotiated
-/// `hosted_workspaces`, and to no others: a connection that cannot decode the
-/// frame is never sent one.
+/// A workspace change is pushed to the peer connections whose dialect knows
+/// the frame, and to no others: a v31 connection that cannot decode it is
+/// never sent one.
 #[test]
-fn a_workspace_change_is_pushed_only_to_negotiating_peers() {
+fn a_workspace_change_is_pushed_only_to_dialects_that_know_it() {
     let harness = Harness::start("peer-link-workspace-push");
     let negotiating = remote_conn_handle(1, "b");
-    negotiating.set_hosted_workspaces_negotiated(true);
+    negotiating.set_negotiated_protocol(32);
     harness.state.register_remote_conn(Arc::clone(&negotiating));
     let plain = remote_conn_handle(2, "c");
+    plain.set_negotiated_protocol(31);
     harness.state.register_remote_conn(Arc::clone(&plain));
 
     let revision = harness.state.note_workspace_change();
@@ -193,7 +194,7 @@ fn a_workspace_change_is_pushed_only_to_negotiating_peers() {
             reply,
             devboule_protocol::DaemonMessage::HostWorkspaceChanged { .. }
         )),
-        "a connection that did not negotiate the name is never sent the frame"
+        "a v31 connection is never sent the frame it cannot decode"
     );
 }
 
