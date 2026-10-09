@@ -247,6 +247,12 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// capability like the other workspace reads and writes; the request frames
 /// are new variants an older reader cannot parse, so the dialect moves.
 pub const PROTOCOL_VERSION: u32 = 33;
+/// Oldest dialect whose daemon speaks the in-app editor frames
+/// (`WorkspaceFileOpen` / `Version` / `Write` and their app-file spellings).
+/// A relay checks the far hello against this before writing one: an older
+/// reader cannot deserialize the new variants and would drop the
+/// connection on a frame it never knew.
+pub const FILE_EDIT_MIN_VERSION: u32 = 33;
 /// Oldest dialect this crate still accepts. Protocols 17, 18 and 20 added only
 /// optional fields, so a v16 peer still interoperates — it just shows no
 /// command chip, turn time, cache, cost or chat-image thumbnails until

@@ -2705,3 +2705,229 @@ fn a_host_creates_and_operates_sessions_on_its_peer_over_loopback() {
 
     let _ = a_self;
 }
+
+/// The file editor over the held host link: A opens, creates, reads and
+/// conflicts on a file in B's workspace through `RemoteHostFile*`, and B's
+/// own read proves the bytes landed. Human-originated, like every operate
+/// call — no confirmation card exists on this road — and validated against
+/// the authenticated paired row by the relay's own live check.
+#[test]
+fn a_host_opens_and_writes_a_file_on_its_peer_over_loopback() {
+    let _guard = lock_tests();
+
+    let (port_a, port_b) = two_free_ports();
+    let a = Peer::spawn_with_env("loop-file-a", port_a, &[("DEVBOULE_PEER_LOOPBACK", "1")]);
+    let b = Peer::spawn_with_env("loop-file-b", port_b, &[("DEVBOULE_PEER_LOOPBACK", "1")]);
+    let _address_a = wait_until_listening(&a);
+    let address_b = wait_until_listening(&b);
+    let a_self = a.self_info();
+    let b_self = b.self_info();
+    assert_ne!(a_self.device_id, b_self.device_id, "distinct identities");
+
+    pair_devices(&a, &b, &address_b, &b_self.device_id);
+    let (_b_project, b_workspace) = create_project_and_workspace(&b, "files");
+
+    // A watches B and waits for the link, like the workspace loopback test.
+    let id = a.pipe.id();
+    let watched = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostWatch {
+            id,
+            device_id: b_self.device_id.clone(),
+        },
+        |frame| match frame {
+            DaemonMessage::Ok { .. } => Some(()),
+            _ => None,
+        },
+    );
+    assert!(watched.is_some(), "the watch never answered");
+    let online = a.pipe.recv_until(
+        Instant::now() + Duration::from_secs(30),
+        |frame| match frame {
+            DaemonMessage::RemoteHostStatus {
+                device_id, state, ..
+            } if device_id == &b_self.device_id
+                && *state == devboule_protocol::RemoteHostState::Online =>
+            {
+                Some(())
+            }
+            _ => None,
+        },
+    );
+    assert!(online.is_some(), "the link never came online");
+
+    // A missing file opens empty: the first save creates it.
+    let opened = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostFileOpen {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+            workspace_id: b_workspace.clone(),
+            path: "note.txt".to_string(),
+        },
+        |frame| match frame {
+            DaemonMessage::RemoteHostFileOpened { file, .. } => Some(file.clone()),
+            _ => None,
+        },
+    )
+    .expect("the remote open never answered");
+    assert_eq!(
+        opened.content.as_deref(),
+        Some(""),
+        "a missing file opens empty: {opened:?}"
+    );
+    assert!(
+        matches!(
+            opened.version,
+            Some(devboule_protocol::WorkspaceFileVersion::Missing { .. })
+        ),
+        "a missing file versions missing: {opened:?}"
+    );
+
+    // The create: no expected version, parent exists (the workspace root).
+    let written = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostFileWrite {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+            workspace_id: b_workspace.clone(),
+            path: "note.txt".to_string(),
+            content: "hello from A\n".to_string(),
+            expected_modified_at: None,
+            expected_revision: None,
+        },
+        |frame| match frame {
+            DaemonMessage::RemoteHostFileWrite { result, .. } => Some(result.clone()),
+            _ => None,
+        },
+    )
+    .expect("the remote create never answered");
+    assert!(
+        matches!(
+            written,
+            devboule_protocol::WorkspaceFileWriteResult::Written { .. }
+        ),
+        "the first save creates: {written:?}"
+    );
+
+    // The re-open carries the bytes and a ready version.
+    let reopened = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostFileOpen {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+            workspace_id: b_workspace.clone(),
+            path: "note.txt".to_string(),
+        },
+        |frame| match frame {
+            DaemonMessage::RemoteHostFileOpened { file, .. } => Some(file.clone()),
+            _ => None,
+        },
+    )
+    .expect("the remote re-open never answered");
+    assert_eq!(reopened.content.as_deref(), Some("hello from A\n"));
+    let (modified_at, revision) = match reopened.version.clone() {
+        Some(devboule_protocol::WorkspaceFileVersion::Ready {
+            modified_at,
+            revision,
+            ..
+        }) => (modified_at, revision),
+        other => panic!("a created file versions ready: {other:?}"),
+    };
+
+    // A stale write conflicts with the fresh version; the disk keeps A's
+    // bytes, not the refused ones.
+    let conflicted = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostFileWrite {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+            workspace_id: b_workspace.clone(),
+            path: "note.txt".to_string(),
+            content: "stale\n".to_string(),
+            expected_modified_at: Some(0),
+            expected_revision: None,
+        },
+        |frame| match frame {
+            DaemonMessage::RemoteHostFileWrite { result, .. } => Some(result.clone()),
+            _ => None,
+        },
+    )
+    .expect("the stale remote write never answered");
+    assert!(
+        matches!(
+            conflicted,
+            devboule_protocol::WorkspaceFileWriteResult::Conflict { .. }
+        ),
+        "a stale write conflicts: {conflicted:?}"
+    );
+
+    // The version poll tracks the host's file.
+    let version = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostFileVersion {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+            workspace_id: b_workspace.clone(),
+            path: "note.txt".to_string(),
+        },
+        |frame| match frame {
+            DaemonMessage::RemoteHostFileVersion { version, .. } => Some(version.clone()),
+            _ => None,
+        },
+    )
+    .expect("the remote version poll never answered");
+    assert!(
+        matches!(
+            version,
+            devboule_protocol::WorkspaceFileVersion::Ready { .. }
+        ),
+        "{version:?}"
+    );
+
+    // The fresh write lands.
+    let rewritten = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostFileWrite {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+            workspace_id: b_workspace.clone(),
+            path: "note.txt".to_string(),
+            content: "second from A\n".to_string(),
+            expected_modified_at: Some(modified_at),
+            expected_revision: revision,
+        },
+        |frame| match frame {
+            DaemonMessage::RemoteHostFileWrite { result, .. } => Some(result.clone()),
+            _ => None,
+        },
+    )
+    .expect("the fresh remote write never answered");
+    assert!(
+        matches!(
+            rewritten,
+            devboule_protocol::WorkspaceFileWriteResult::Written { .. }
+        ),
+        "{rewritten:?}"
+    );
+
+    // B's own read proves the bytes: the relay wrote B's checkout, not a
+    // copy.
+    let id = b.pipe.id();
+    let content = request_skipping_pushes(
+        &b,
+        ClientMessage::WorkspaceFileRead {
+            id,
+            workspace_id: b_workspace.clone(),
+            path: "note.txt".to_string(),
+            from_line: None,
+            line_count: None,
+        },
+        |frame| match frame {
+            DaemonMessage::WorkspaceFileContent { file, .. } => Some(file.content.clone()),
+            _ => None,
+        },
+    )
+    .expect("the host's own read never answered");
+    assert_eq!(content, Some("second from A\n".to_string()));
+}

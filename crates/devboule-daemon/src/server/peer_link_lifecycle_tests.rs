@@ -114,6 +114,9 @@ fn closing_the_far_end_unblocks_the_read() {
         | LinkAnswer::Accepted
         | LinkAnswer::Created(_)
         | LinkAnswer::Sent(_)
+        | LinkAnswer::FileOpened(_)
+        | LinkAnswer::FileVersion(_)
+        | LinkAnswer::FileWrite(_)
         | LinkAnswer::Providers { .. } => {}
         LinkAnswer::Failed(state, sentence) => {
             assert_eq!(state, RemoteHostState::Offline, "{sentence}")

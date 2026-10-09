@@ -2461,6 +2461,79 @@ impl DaemonClient {
         }
     }
 
+    /// Open one file in a workspace on a paired host, for the in-app
+    /// editor. Human-originated, like every operate call — no confirmation
+    /// card. The reply is the host's own file, carried through unchanged.
+    pub fn remote_host_file_open(
+        &self,
+        device_id: &str,
+        workspace_id: &str,
+        path: &str,
+    ) -> Result<WorkspaceEditableFile, DaemonError> {
+        self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::RemoteHostFileOpen {
+            id,
+            device_id: device_id.to_string(),
+            workspace_id: workspace_id.to_string(),
+            path: path.to_string(),
+        })? {
+            DaemonMessage::RemoteHostFileOpened { file, .. } => Ok(file),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// The version of one such file: the editor's observation poll over
+    /// the held link.
+    pub fn remote_host_file_version(
+        &self,
+        device_id: &str,
+        workspace_id: &str,
+        path: &str,
+    ) -> Result<WorkspaceFileVersion, DaemonError> {
+        self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::RemoteHostFileVersion {
+            id,
+            device_id: device_id.to_string(),
+            workspace_id: workspace_id.to_string(),
+            path: path.to_string(),
+        })? {
+            DaemonMessage::RemoteHostFileVersion { version, .. } => Ok(version),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Write one such file, with the caller's expected version carried
+    /// through to the host's own write.
+    pub fn remote_host_file_write(
+        &self,
+        device_id: &str,
+        workspace_id: &str,
+        path: &str,
+        content: &str,
+        expected_modified_at: Option<i64>,
+        expected_revision: Option<String>,
+    ) -> Result<WorkspaceFileWriteResult, DaemonError> {
+        self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::RemoteHostFileWrite {
+            id,
+            device_id: device_id.to_string(),
+            workspace_id: workspace_id.to_string(),
+            path: path.to_string(),
+            content: content.to_string(),
+            expected_modified_at,
+            expected_revision,
+        })? {
+            DaemonMessage::RemoteHostFileWrite { result, .. } => Ok(result),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     pub fn on_remote_host_status(&self, handler: RemoteHostStatusHandler) {
         *self
             .inner

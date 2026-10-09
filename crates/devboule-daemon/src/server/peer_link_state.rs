@@ -13,7 +13,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use devboule_protocol::{
-    DaemonMessage, RemoteHostList, RemoteHostListBody, RemoteHostState, RemoteHostStatus, WireError,
+    DaemonMessage, RemoteHostList, RemoteHostListBody, RemoteHostState, RemoteHostStatus,
+    WireError, WorkspaceEditableFile, WorkspaceFileVersion, WorkspaceFileWriteResult,
 };
 
 use crate::session::ConnHandle;
@@ -37,6 +38,12 @@ pub(crate) enum LinkAnswer {
         providers: Vec<devboule_protocol::ProviderInfo>,
         unreadable_dirs: u32,
     },
+    /// The host's own opened file, carried through unchanged.
+    FileOpened(WorkspaceEditableFile),
+    /// The host's own file version, carried through unchanged.
+    FileVersion(WorkspaceFileVersion),
+    /// The host's own write result, carried through unchanged.
+    FileWrite(WorkspaceFileWriteResult),
     /// The remote refused; its own error code and reason, intact.
     Refused(WireError),
     /// The link could not carry the read: the state the host row should show,
@@ -165,6 +172,32 @@ pub(crate) enum LinkCommand {
         session_id: String,
         mode_id: String,
         answer: SyncSender<LinkAnswer>,
+    },
+    /// Open one file in a workspace on the far side.
+    FileOpen {
+        generation: u64,
+        workspace_id: String,
+        path: String,
+        answer: SyncSender<LinkAnswer>,
+    },
+    /// The version of one such file.
+    FileVersion {
+        generation: u64,
+        workspace_id: String,
+        path: String,
+        answer: SyncSender<LinkAnswer>,
+    },
+    /// Write one such file.
+    FileWrite {
+        generation: u64,
+        workspace_id: String,
+        path: String,
+        content: String,
+        expected_modified_at: Option<i64>,
+        expected_revision: Option<String>,
+        answer: SyncSender<LinkAnswer>,
+    },
+    /// The row was revoked: drop the transport now, streams included.
     },
     /// The row was revoked: drop the transport now, streams included.
     Revoke,

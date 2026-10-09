@@ -25,6 +25,14 @@ use super::peer_link_worker::{peer_row, LinkSession, PROBE_ID_BASE};
 use super::ServerState;
 use crate::error::DaemonError;
 
+/// The hello protocol version the far daemon must speak for a file call.
+/// The editor frames are new variants an older reader cannot deserialize,
+/// so the refusal happens here, before anything is written — the same
+/// check the session calls make against their capability.
+fn file_edit_advertised(session: &LinkSession) -> bool {
+    session.hello.protocol_version >= devboule_protocol::FILE_EDIT_MIN_VERSION
+}
+
 /// The hello capability the far daemon must advertise for a session operate
 /// call. A daemon that predates the session frames cannot deserialize the
 /// request, so the refusal happens here, before anything is written — the
@@ -174,6 +182,9 @@ fn reply_id(message: &DaemonMessage) -> Option<u64> {
         DaemonMessage::Session { id, .. }
         | DaemonMessage::SessionSend { id, .. }
         | DaemonMessage::Providers { id, .. }
+        | DaemonMessage::WorkspaceFileOpened { id, .. }
+        | DaemonMessage::WorkspaceFileVersion { id, .. }
+        | DaemonMessage::WorkspaceFileWrite { id, .. }
         | DaemonMessage::Ok { id } => Some(*id),
         _ => None,
     }
@@ -696,6 +707,201 @@ pub(crate) fn serve_providers(
                 providers,
                 unreadable_dirs,
             }),
+            _ if reply_id(&message) == Some(request_id) => Some(LinkAnswer::Failed(
+                RemoteHostState::Offline,
+                offline_sentence().to_string(),
+            )),
+            _ => None,
+        },
+    ));
+}
+
+/// Open one file in a workspace on the far side. The paired row is checked
+/// live (a revoke that landed while the link was up stops the next call),
+/// the far hello must speak the editor dialect, and the peer's `admin`
+/// grant decides the answer on the far side exactly as it does for a local
+/// open — this side adds no grant of its own.
+pub(crate) fn serve_file_open(
+    state: &Arc<ServerState>,
+    link: &HostLink,
+    session: &mut LinkSession,
+    command: LinkCommand,
+    request_id: u64,
+    read_deadline: Duration,
+) {
+    let LinkCommand::FileOpen {
+        generation,
+        workspace_id,
+        path,
+        answer,
+    } = command
+    else {
+        return;
+    };
+    if !operate_ready(state, link, session, generation, &answer) {
+        return;
+    }
+    if !file_edit_advertised(session) {
+        let _ = answer.send(LinkAnswer::Failed(
+            RemoteHostState::Unsupported,
+            unsupported_sentence().to_string(),
+        ));
+        return;
+    }
+    if session
+        .framed
+        .send(&ClientMessage::WorkspaceFileOpen {
+            id: request_id,
+            workspace_id,
+            path,
+        })
+        .is_err()
+    {
+        let _ = answer.send(LinkAnswer::Failed(
+            RemoteHostState::Offline,
+            offline_sentence().to_string(),
+        ));
+        return;
+    }
+    let _ = answer.send(wait_for_operate_reply(
+        link,
+        session,
+        request_id,
+        read_deadline,
+        |message| match message {
+            DaemonMessage::WorkspaceFileOpened { id, file, .. } if id == request_id => {
+                Some(LinkAnswer::FileOpened(file))
+            }
+            _ if reply_id(&message) == Some(request_id) => Some(LinkAnswer::Failed(
+                RemoteHostState::Offline,
+                offline_sentence().to_string(),
+            )),
+            _ => None,
+        },
+    ));
+}
+
+/// The version of one such file.
+pub(crate) fn serve_file_version(
+    state: &Arc<ServerState>,
+    link: &HostLink,
+    session: &mut LinkSession,
+    command: LinkCommand,
+    request_id: u64,
+    read_deadline: Duration,
+) {
+    let LinkCommand::FileVersion {
+        generation,
+        workspace_id,
+        path,
+        answer,
+    } = command
+    else {
+        return;
+    };
+    if !operate_ready(state, link, session, generation, &answer) {
+        return;
+    }
+    if !file_edit_advertised(session) {
+        let _ = answer.send(LinkAnswer::Failed(
+            RemoteHostState::Unsupported,
+            unsupported_sentence().to_string(),
+        ));
+        return;
+    }
+    if session
+        .framed
+        .send(&ClientMessage::WorkspaceFileVersion {
+            id: request_id,
+            workspace_id,
+            path,
+        })
+        .is_err()
+    {
+        let _ = answer.send(LinkAnswer::Failed(
+            RemoteHostState::Offline,
+            offline_sentence().to_string(),
+        ));
+        return;
+    }
+    let _ = answer.send(wait_for_operate_reply(
+        link,
+        session,
+        request_id,
+        read_deadline,
+        |message| match message {
+            DaemonMessage::WorkspaceFileVersion { id, version, .. } if id == request_id => {
+                Some(LinkAnswer::FileVersion(version))
+            }
+            _ if reply_id(&message) == Some(request_id) => Some(LinkAnswer::Failed(
+                RemoteHostState::Offline,
+                offline_sentence().to_string(),
+            )),
+            _ => None,
+        },
+    ));
+}
+
+/// Write one such file, with the caller's expected version carried through
+/// so a retry the user explicitly makes answers like the local write
+/// would: `written`, `conflict` with the fresh version, or `error`.
+pub(crate) fn serve_file_write(
+    state: &Arc<ServerState>,
+    link: &HostLink,
+    session: &mut LinkSession,
+    command: LinkCommand,
+    request_id: u64,
+    read_deadline: Duration,
+) {
+    let LinkCommand::FileWrite {
+        generation,
+        workspace_id,
+        path,
+        content,
+        expected_modified_at,
+        expected_revision,
+        answer,
+    } = command
+    else {
+        return;
+    };
+    if !operate_ready(state, link, session, generation, &answer) {
+        return;
+    }
+    if !file_edit_advertised(session) {
+        let _ = answer.send(LinkAnswer::Failed(
+            RemoteHostState::Unsupported,
+            unsupported_sentence().to_string(),
+        ));
+        return;
+    }
+    if session
+        .framed
+        .send(&ClientMessage::WorkspaceFileWrite {
+            id: request_id,
+            workspace_id,
+            path,
+            content,
+            expected_modified_at,
+            expected_revision,
+        })
+        .is_err()
+    {
+        let _ = answer.send(LinkAnswer::Failed(
+            RemoteHostState::Offline,
+            offline_sentence().to_string(),
+        ));
+        return;
+    }
+    let _ = answer.send(wait_for_operate_reply(
+        link,
+        session,
+        request_id,
+        read_deadline,
+        |message| match message {
+            DaemonMessage::WorkspaceFileWrite { id, result, .. } if id == request_id => {
+                Some(LinkAnswer::FileWrite(result))
+            }
             _ if reply_id(&message) == Some(request_id) => Some(LinkAnswer::Failed(
                 RemoteHostState::Offline,
                 offline_sentence().to_string(),

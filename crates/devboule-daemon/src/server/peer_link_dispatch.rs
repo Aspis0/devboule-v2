@@ -144,7 +144,7 @@ pub(super) fn dispatch_remote_host(
                 LinkAnswer::Body(_) => DaemonMessage::Error(
                     WireError::new(ErrorCode::Internal, "an attach is not a list read").with_id(id),
                 ),
-                LinkAnswer::Created(_) | LinkAnswer::Sent(_) | LinkAnswer::Providers { .. } => {
+                LinkAnswer::Created(_) | LinkAnswer::Sent(_) | LinkAnswer::Providers { .. } | LinkAnswer::FileOpened(_) | LinkAnswer::FileVersion(_) | LinkAnswer::FileWrite(_) => {
                     DaemonMessage::Error(
                         WireError::new(ErrorCode::Internal, "an attach is not an operate call")
                             .with_id(id),
@@ -181,7 +181,7 @@ pub(super) fn dispatch_remote_host(
                 LinkAnswer::Body(_) => DaemonMessage::Error(
                     WireError::new(ErrorCode::Internal, "a detach is not a list read").with_id(id),
                 ),
-                LinkAnswer::Created(_) | LinkAnswer::Sent(_) | LinkAnswer::Providers { .. } => {
+                LinkAnswer::Created(_) | LinkAnswer::Sent(_) | LinkAnswer::Providers { .. } | LinkAnswer::FileOpened(_) | LinkAnswer::FileVersion(_) | LinkAnswer::FileWrite(_) => {
                     DaemonMessage::Error(
                         WireError::new(ErrorCode::Internal, "a detach is not an operate call")
                             .with_id(id),
@@ -220,7 +220,7 @@ pub(super) fn dispatch_remote_host(
                     )
                     .with_id(id),
                 ),
-                LinkAnswer::Created(_) | LinkAnswer::Sent(_) | LinkAnswer::Providers { .. } => {
+                LinkAnswer::Created(_) | LinkAnswer::Sent(_) | LinkAnswer::Providers { .. } | LinkAnswer::FileOpened(_) | LinkAnswer::FileVersion(_) | LinkAnswer::FileWrite(_) => {
                     DaemonMessage::Error(
                         WireError::new(ErrorCode::Internal, "a list read is not an operate call")
                             .with_id(id),
@@ -484,6 +484,94 @@ pub(super) fn dispatch_remote_host(
                 LinkAnswer::Accepted => Some(DaemonMessage::Ok { id }),
                 _ => None,
             })
+        }
+        ClientMessage::RemoteHostFileOpen {
+            id,
+            device_id,
+            workspace_id,
+            path,
+        } => {
+            if let Some(refused) = app_only(conn, id) {
+                return refused;
+            }
+            let answer = state
+                .peer_links
+                .operate_file_open(&device_id, workspace_id, path);
+            operate_answer(
+                id,
+                &device_id,
+                answer,
+                |id, device_id, answer| match answer {
+                    LinkAnswer::FileOpened(file) => Some(DaemonMessage::RemoteHostFileOpened {
+                        id,
+                        device_id: device_id.to_string(),
+                        file,
+                    }),
+                    _ => None,
+                },
+            )
+        }
+        ClientMessage::RemoteHostFileVersion {
+            id,
+            device_id,
+            workspace_id,
+            path,
+        } => {
+            if let Some(refused) = app_only(conn, id) {
+                return refused;
+            }
+            let answer = state
+                .peer_links
+                .operate_file_version(&device_id, workspace_id, path);
+            operate_answer(
+                id,
+                &device_id,
+                answer,
+                |id, device_id, answer| match answer {
+                    LinkAnswer::FileVersion(version) => {
+                        Some(DaemonMessage::RemoteHostFileVersion {
+                            id,
+                            device_id: device_id.to_string(),
+                            version,
+                        })
+                    }
+                    _ => None,
+                },
+            )
+        }
+        ClientMessage::RemoteHostFileWrite {
+            id,
+            device_id,
+            workspace_id,
+            path,
+            content,
+            expected_modified_at,
+            expected_revision,
+        } => {
+            if let Some(refused) = app_only(conn, id) {
+                return refused;
+            }
+            let answer = state.peer_links.operate_file_write(
+                &device_id,
+                workspace_id,
+                path,
+                content,
+                expected_modified_at,
+                expected_revision,
+            );
+            operate_answer(
+                id,
+                &device_id,
+                answer,
+                |id, device_id, answer| match answer {
+                    LinkAnswer::FileWrite(result) => Some(DaemonMessage::RemoteHostFileWrite {
+                        id,
+                        device_id: device_id.to_string(),
+                        result,
+                    }),
+                    _ => None,
+                },
+            )
         }
         other => DaemonMessage::Error(WireError::new(
             ErrorCode::InvalidRequest,

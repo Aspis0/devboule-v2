@@ -25,8 +25,9 @@ use devboule_protocol::{
 use super::peer_dial::{connect_and_handshake, DialStep};
 use super::peer_link::{sentence_for, state_for, LinkTuning};
 use super::peer_link_operate::{
-    serve_claim, serve_close, serve_create, serve_interrupt, serve_permission_respond,
-    serve_providers, serve_resize, serve_send, serve_set_mode, serve_set_model, serve_stop,
+    serve_claim, serve_close, serve_create, serve_file_open, serve_file_version, serve_file_write,
+    serve_interrupt, serve_permission_respond, serve_providers, serve_resize, serve_send,
+    serve_set_mode, serve_set_model, serve_stop,
 };
 use super::peer_link_read::{serve_attach, serve_detach, serve_read};
 use super::peer_link_state::{HostLink, LinkAnswer, LinkCommand};
@@ -203,6 +204,23 @@ fn run(
                     }
                     LinkCommand::SetMode { .. } => {
                         serve_set_mode(&state, &link, open, command, reads, tuning.read_deadline);
+                    }
+                    LinkCommand::FileOpen { .. } => {
+                        serve_file_open(&state, &link, open, command, reads, tuning.read_deadline);
+                    }
+                    LinkCommand::FileVersion { .. } => {
+                        serve_file_version(
+                            &state,
+                            &link,
+                            open,
+                            command,
+                            reads,
+                            tuning.read_deadline,
+                        );
+                    }
+                    LinkCommand::FileWrite { .. } => {
+                        serve_file_write(&state, &link, open, command, reads, tuning.read_deadline);
+                    }
                     }
                     LinkCommand::Revoke => {
                         // The row is gone: the transport and every stream on
@@ -477,7 +495,10 @@ pub(super) fn refuse_reads_until(queue: &Receiver<LinkCommand>, step: DialStep, 
             | Ok(LinkCommand::Stop { answer, .. })
             | Ok(LinkCommand::Providers { answer, .. })
             | Ok(LinkCommand::SetModel { answer, .. })
-            | Ok(LinkCommand::SetMode { answer, .. }) => {
+            | Ok(LinkCommand::SetMode { answer, .. })
+            | Ok(LinkCommand::FileOpen { answer, .. })
+            | Ok(LinkCommand::FileVersion { answer, .. })
+            | Ok(LinkCommand::FileWrite { answer, .. }) => {
                 let _ = answer.send(LinkAnswer::Failed(state_for(step), sentence_for(step)));
             }
             // A revoke during a backoff is served by the next loop turn,

@@ -788,6 +788,27 @@ impl PeerLinks {
         })
     }
 
+    /// Open one file in a workspace on the host: the peer's own
+    /// `WorkspaceFileOpen` goes out on the held link, and the host's own
+    /// file comes back unchanged. Human-originated, like every operate
+    /// call — no confirmation card.
+    pub(crate) fn operate_file_open(
+        &self,
+        device_id: &str,
+        workspace_id: String,
+        path: String,
+    ) -> LinkAnswer {
+        let wait = self.operate_wait(false);
+        self.operate(device_id, wait, false, |generation, answer| {
+            LinkCommand::FileOpen {
+                generation,
+                workspace_id,
+                path,
+                answer,
+            }
+        })
+    }
+
     /// Switch the mode of one session on the host.
     pub(crate) fn operate_set_mode(
         &self,
@@ -801,6 +822,49 @@ impl PeerLinks {
                 generation,
                 session_id,
                 mode_id,
+                answer,
+            }
+        })
+    }
+
+    /// The version of one such file.
+    pub(crate) fn operate_file_version(
+        &self,
+        device_id: &str,
+        workspace_id: String,
+        path: String,
+    ) -> LinkAnswer {
+        let wait = self.operate_wait(false);
+        self.operate(device_id, wait, false, |generation, answer| {
+            LinkCommand::FileVersion {
+                generation,
+                workspace_id,
+                path,
+                answer,
+            }
+        })
+    }
+
+    /// Write one such file, with the same create-or-check semantics the
+    /// peer serves locally.
+    pub(crate) fn operate_file_write(
+        &self,
+        device_id: &str,
+        workspace_id: String,
+        path: String,
+        content: String,
+        expected_modified_at: Option<i64>,
+        expected_revision: Option<String>,
+    ) -> LinkAnswer {
+        let wait = self.operate_wait(false);
+        self.operate(device_id, wait, false, |generation, answer| {
+            LinkCommand::FileWrite {
+                generation,
+                workspace_id,
+                path,
+                content,
+                expected_modified_at,
+                expected_revision,
                 answer,
             }
         })
