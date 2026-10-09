@@ -115,20 +115,66 @@ fn a_pushed_workspace_revision_reaches_the_watcher() {
         std::thread::sleep(Duration::from_millis(20));
     }
 
-    // A push naming another device is dropped: the link's own device id is the
-    // only identity this side trusts.
-    harness.responder.push_workspace_changed_from("not-b", 99);
-    let quiet = Instant::now() + Duration::from_millis(400);
-    while Instant::now() < quiet {
+    // The next number in the sequence moves it.
+    harness.responder.push_workspace_changed(8);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if harness
+            .statuses_with_revision()
+            .iter()
+            .any(|(_, revision)| *revision == Some(8))
+        {
+            break;
+        }
         assert!(
-            !harness
-                .statuses_with_revision()
-                .iter()
-                .any(|(_, revision)| *revision == Some(99)),
-            "a frame for another device must not move this link's revision"
+            Instant::now() < deadline,
+            "a continuing revision never reached the watcher"
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+
+    // A jump over an unseen value, a replay, and a frame for another device
+    // are all refused: none may move the link's revision or produce a push.
+    harness.responder.push_workspace_changed(50);
+    harness.responder.push_workspace_changed(8);
+    harness.responder.push_workspace_changed_from("not-b", 99);
+    let quiet = Instant::now() + Duration::from_millis(400);
+    while Instant::now() < quiet {
+        let revisions = harness.statuses_with_revision();
+        assert!(
+            !revisions
+                .iter()
+                .any(|(_, revision)| matches!(revision, Some(50) | Some(99))),
+            "a jump or a foreign device moved this link's revision: {revisions:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The revision rule itself: a link's first number is its baseline, later ones
+/// must continue it, a replay or a poisoned value moves nothing, and a new
+/// transport re-baselines.
+#[test]
+fn a_pushed_revision_must_be_a_continuation() {
+    let link = super::HostLink::new("b".to_string(), Duration::from_secs(1));
+    assert_eq!(link.remote_revision(), None);
+    assert!(
+        link.set_remote_revision(2),
+        "the first number of a link is its baseline"
+    );
+    assert!(!link.set_remote_revision(2), "a replay is refused");
+    assert!(!link.set_remote_revision(50), "a jump is refused");
+    assert!(link.set_remote_revision(3));
+    assert_eq!(link.remote_revision(), Some(3));
+
+    link.clear_remote_revision();
+    assert_eq!(link.remote_revision(), None);
+    assert!(!link.set_remote_revision(0), "zero is never a revision");
+    assert!(
+        !link.set_remote_revision(u64::MAX),
+        "a poisoned u64 is refused as a baseline"
+    );
+    assert!(link.set_remote_revision(1), "a fresh link re-baselines");
 }
 
 /// One connection that looks like an accepted peer to the state: its peer

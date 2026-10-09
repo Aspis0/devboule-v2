@@ -106,7 +106,11 @@ fn wait_for_reply(
         // A workspace push that lands mid-read is recorded and shown before
         // the read's own answer is matched; it names no request, so it must
         // never be mistaken for the reply.
-        super::peer_link_worker::record_workspace_change(link, &message);
+        super::peer_link_worker::record_workspace_change(
+            link,
+            session.hello.protocol_version,
+            &message,
+        );
         if reply_id(&message) != Some(request_id) {
             continue;
         }

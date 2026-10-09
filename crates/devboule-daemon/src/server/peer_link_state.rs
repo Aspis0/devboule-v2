@@ -42,6 +42,11 @@ pub(crate) enum LinkCommand {
     },
 }
 
+/// The largest workspace revision accepted as a link's baseline. A real
+/// counter advances once per project/workspace mutation, so this is far beyond
+/// any daemon's lifetime; anything above it is a poisoned value, not a state.
+pub(crate) const REVISION_BASELINE_MAX: u64 = 1 << 40;
+
 /// One paired device's link, shared by every connection watching it.
 pub(crate) struct HostLink {
     pub(crate) device_id: String,
@@ -90,17 +95,32 @@ impl HostLink {
         })
     }
 
-    /// Record a workspace revision the host pushed over this link. Only a
-    /// monotonically newer number is kept: a replayed or out-of-order frame
-    /// must not make a watcher reload backwards.
-    pub(crate) fn set_remote_revision(&self, revision: u64) {
+    /// Record a workspace revision the host pushed over this link, if it is a
+    /// plausible continuation.
+    ///
+    /// The first number of a link generation is the baseline; every later one
+    /// must advance by exactly one, because a host bumps the counter once per
+    /// project/workspace mutation and pushes each bump on the same ordered
+    /// link. That refuses a replay, a jump over an unseen value, an extreme
+    /// `u64` sent once to poison every later legitimate revision, and a host
+    /// that restarted its counter — a reconnect clears the baseline, so the
+    /// next link re-baselines instead. A refused number leaves the baseline
+    /// untouched and is never re-published.
+    ///
+    /// Returns whether the number was accepted.
+    pub(crate) fn set_remote_revision(&self, revision: u64) -> bool {
         let mut held = self
             .remote_revision
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if held.is_none_or(|current| revision > current) {
+        let accepted = match *held {
+            None => (1..=REVISION_BASELINE_MAX).contains(&revision),
+            Some(current) => revision == current.saturating_add(1),
+        };
+        if accepted {
             *held = Some(revision);
         }
+        accepted
     }
 
     /// Ask the worker to drop this transport and dial again, so the hello it
@@ -113,6 +133,16 @@ impl HostLink {
     /// worker that takes it performs exactly one redial for it.
     pub(crate) fn take_reconnect_request(&self) -> bool {
         self.reconnect_requested.swap(false, Ordering::SeqCst)
+    }
+
+    /// Drop the baseline. Called when a new transport replaces the old one: a
+    /// host that restarted resets its counter, and its next push is a fresh
+    /// baseline rather than a value this link has already surpassed.
+    pub(crate) fn clear_remote_revision(&self) {
+        *self
+            .remote_revision
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
     }
 
     /// The newest workspace revision pushed by this host, if one arrived.

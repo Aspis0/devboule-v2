@@ -188,7 +188,7 @@ fn keepalive(
                 return Keepalive::Alive;
             }
         }
-        record_workspace_change(link, &message);
+        record_workspace_change(link, session.hello.protocol_version, &message);
     }
     if let Some(sent) = session.outstanding_since {
         if sent.elapsed() >= tuning.pong_timeout {
@@ -241,7 +241,11 @@ fn keepalive(
 /// makes the sidebar reload that host's snapshots. A frame naming another
 /// device is dropped: the link's own device id is the only identity this side
 /// trusts, and a peer cannot make this daemon act for a third one.
-pub(crate) fn record_workspace_change(link: &HostLink, message: &DaemonMessage) {
+pub(crate) fn record_workspace_change(
+    link: &HostLink,
+    far_protocol_version: u32,
+    message: &DaemonMessage,
+) {
     let DaemonMessage::HostWorkspaceChanged {
         device_id,
         revision,
@@ -249,10 +253,18 @@ pub(crate) fn record_workspace_change(link: &HostLink, message: &DaemonMessage) 
     else {
         return;
     };
+    // The frame exists only from the roleless dialect on; a peer that
+    // negotiated less cannot have sent it legitimately.
+    if far_protocol_version < 32 {
+        return;
+    }
     if device_id != &link.device_id {
         return;
     }
-    link.set_remote_revision(*revision);
+    // A refused number is not news: it moves nothing and is not re-published.
+    if !link.set_remote_revision(*revision) {
+        return;
+    }
     link.publish(status(link, RemoteHostState::Online, None));
 }
 
@@ -323,6 +335,9 @@ fn open(state: &Arc<ServerState>, link: &HostLink) -> Result<LinkSession, DialSt
     // The far end's hello is what the frame-capability check reads, so it is
     // kept; nothing else about the dial survives into the link.
     link.bump_generation();
+    // A new transport re-baselines the host's counter: a host that restarted
+    // resets its revision, and the old value must not outrank the new link's.
+    link.clear_remote_revision();
     Ok(LinkSession {
         framed,
         hello: remote,
