@@ -8,7 +8,6 @@ function peer(overrides: Partial<PeerRow> = {}): PeerRow {
   return {
     deviceId: "peer-1",
     displayName: "Studio",
-    role: "daemon",
     publicKey: "k",
     keyFingerprint: "aaaa bbbb",
     bindingKind: "tailnet",
@@ -29,25 +28,28 @@ function devices(peers: readonly PeerRow[], stale = false): PairedDevices {
 }
 
 describe("the hosts' short labels", () => {
-  it("names the local machine first, alone when no daemon peer is paired", () => {
+  it("names the local machine first, alone when no peer is paired", () => {
     const names = hostNames(devices([]));
 
     expect([...names]).toEqual([[LOCAL_HOST_ID, "This PC"]]);
     expect(LOCAL_HOST_NAME).toBe("This PC");
   });
 
-  it("never lists a client peer, and never a revoked one", () => {
+  it("lists every paired peer and never a revoked one", () => {
     const names = hostNames(
       devices([
-        peer({ deviceId: "peer-client", displayName: "Phone", role: "client" }),
+        peer({ deviceId: "peer-phone", displayName: "Phone" }),
         peer({ deviceId: "peer-revoked", displayName: "Old box", revokedAt: 99 }),
       ]),
     );
 
-    expect([...names.values()]).toEqual(["This PC"]);
+    expect([...names]).toEqual([
+      [LOCAL_HOST_ID, LOCAL_HOST_NAME],
+      ["peer-phone", "Phone"],
+    ]);
   });
 
-  it("lists daemon peers by their chosen name", () => {
+  it("lists a paired peer by its chosen name", () => {
     const names = hostNames(devices([peer({ deviceId: "device-a", displayName: "Marcolenovo" })]));
 
     expect(names.get("device-a" as never)).toBe("Marcolenovo");

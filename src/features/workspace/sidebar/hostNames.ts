@@ -27,15 +27,16 @@ export function hostLabel(names: ReadonlyMap<HostId, string>, hostId: HostId): s
 }
 
 /**
- * Every host's short label by id: the local machine first, then one per
- * paired peer that is a machine. A `client` peer views and steers this device
- * and is never dialled as a machine, so it is not a host; a revoked peer is
- * not paired at all.
+ * Every paired host's short label by id: the local machine first, then one per
+ * paired, non-revoked peer. Pairing records no role and the slice-1 wire has
+ * no field that says whether a peer hosts workspaces, so every paired device
+ * is a candidate; a peer with no workspaces renders no rows and therefore no
+ * section, because the tree is built from workspaces, not from this map.
  */
 export function hostNames(devices: PairedDevices): ReadonlyMap<HostId, string> {
   const names = new Map<HostId, string>([[LOCAL_HOST_ID, LOCAL_HOST_NAME]]);
   for (const peer of devices.peers) {
-    if (peer.role === "daemon" && peer.revokedAt === null) {
+    if (peer.revokedAt === null) {
       names.set(peer.deviceId as HostId, peerName(peer));
     }
   }

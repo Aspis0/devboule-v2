@@ -82,7 +82,6 @@ function peersReply(): DevicesReply {
       {
         deviceId: "peer-1",
         displayName: "Marcolenovo",
-        role: "daemon",
         publicKey: "k",
         keyFingerprint: "aaaa bbbb",
         bindingKind: "tailnet",
