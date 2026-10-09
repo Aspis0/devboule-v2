@@ -513,5 +513,8 @@ pub(super) fn is_remote_host(request: &ClientMessage) -> bool {
             | ClientMessage::RemoteHostProviders { .. }
             | ClientMessage::RemoteHostSetModel { .. }
             | ClientMessage::RemoteHostSetMode { .. }
+            | ClientMessage::RemoteHostFileOpen { .. }
+            | ClientMessage::RemoteHostFileVersion { .. }
+            | ClientMessage::RemoteHostFileWrite { .. }
     )
 }

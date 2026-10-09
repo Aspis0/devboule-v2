@@ -2907,6 +2907,14 @@ fn session_paths_of(request: &ClientMessage) -> Option<&'static [&'static str]> 
         ClientMessage::WorkspaceFilePreviewUnstage { .. } => None,
         // A folder lookup, never a session's frame: nothing to serve here.
         ClientMessage::WorkspaceOpenRoot { .. } => None,
+        // The editor's frames name a workspace path (or a human path, or a
+        // remote host), never a session: nothing to serve here either.
+        ClientMessage::WorkspaceFileOpen { .. } => None,
+        ClientMessage::WorkspaceFileVersion { .. } => None,
+        ClientMessage::WorkspaceFileWrite { .. } => None,
+        ClientMessage::AppFileOpen { .. } => None,
+        ClientMessage::AppFileVersion { .. } => None,
+        ClientMessage::AppFileWrite { .. } => None,
         ClientMessage::WorkspaceCreate { .. } => None,
         ClientMessage::WorkspaceDelete { .. } => None,
         ClientMessage::WorkspaceSetTitle { .. } => None,
@@ -2948,6 +2956,9 @@ fn session_paths_of(request: &ClientMessage) -> Option<&'static [&'static str]> 
         ClientMessage::RemoteHostProviders { .. } => None,
         ClientMessage::RemoteHostSetModel { .. } => None,
         ClientMessage::RemoteHostSetMode { .. } => None,
+        ClientMessage::RemoteHostFileOpen { .. } => None,
+        ClientMessage::RemoteHostFileVersion { .. } => None,
+        ClientMessage::RemoteHostFileWrite { .. } => None,
         ClientMessage::RemoteHostUnwatch { .. } => None,
         ClientMessage::RemoteHostList { .. } => None,
         // The browser host answers to the daemon's broker, not to a session.

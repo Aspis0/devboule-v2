@@ -317,6 +317,9 @@ pub(super) fn dispatch_immediate(
         | ClientMessage::RemoteHostProviders { .. }
         | ClientMessage::RemoteHostSetModel { .. }
         | ClientMessage::RemoteHostSetMode { .. }
+        | ClientMessage::RemoteHostFileOpen { .. }
+        | ClientMessage::RemoteHostFileVersion { .. }
+        | ClientMessage::RemoteHostFileWrite { .. }
         | ClientMessage::RemoteHostList { .. } => DaemonMessage::Error(WireError::new(
             ErrorCode::InvalidRequest,
             "remote host frames are dispatched by the async wrapper",
@@ -428,6 +431,12 @@ pub(super) fn dispatch_immediate(
         | ClientMessage::WorkspaceFilesList { .. }
         | ClientMessage::WorkspaceFileRead { .. }
         | ClientMessage::WorkspaceOpenRoot { .. }
+        | ClientMessage::WorkspaceFileOpen { .. }
+        | ClientMessage::WorkspaceFileVersion { .. }
+        | ClientMessage::WorkspaceFileWrite { .. }
+        | ClientMessage::AppFileOpen { .. }
+        | ClientMessage::AppFileVersion { .. }
+        | ClientMessage::AppFileWrite { .. }
         | ClientMessage::WorkspaceFileRename { .. }
         | ClientMessage::WorkspaceFileDuplicate { .. }
         | ClientMessage::WorkspaceFileDelete { .. }

@@ -438,6 +438,15 @@ pub(super) fn peer_mode_refusal_for_conn(
         ClientMessage::WorkspaceGitCommit { .. } => None,
         ClientMessage::WorkspaceFilesList { .. } => None,
         ClientMessage::WorkspaceFileRead { .. } => None,
+        // The editor's open and version poll are reads like the windowed
+        // read above; the write acts on this machine's own disk, never on
+        // an agent — no mode to vet in either case.
+        ClientMessage::WorkspaceFileOpen { .. } => None,
+        ClientMessage::WorkspaceFileVersion { .. } => None,
+        ClientMessage::WorkspaceFileWrite { .. } => None,
+        ClientMessage::AppFileOpen { .. } => None,
+        ClientMessage::AppFileVersion { .. } => None,
+        ClientMessage::AppFileWrite { .. } => None,
         // The open root is a folder lookup and reaches no agent — nothing
         // to vet here either.
         ClientMessage::WorkspaceOpenRoot { .. } => None,
@@ -489,6 +498,9 @@ pub(super) fn peer_mode_refusal_for_conn(
         ClientMessage::RemoteHostProviders { .. } => None,
         ClientMessage::RemoteHostSetModel { .. } => None,
         ClientMessage::RemoteHostSetMode { .. } => None,
+        ClientMessage::RemoteHostFileOpen { .. } => None,
+        ClientMessage::RemoteHostFileVersion { .. } => None,
+        ClientMessage::RemoteHostFileWrite { .. } => None,
         // The browser-host frames name no session or mode either; a peer is
         // refused them by `peer_allows` before this is asked.
         ClientMessage::BrowserHostRegister { .. } => None,
@@ -724,6 +736,12 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::WorkspaceFileDelete { .. }
         | ClientMessage::WorkspaceFilePreviewStage { .. }
         | ClientMessage::WorkspaceFilePreviewUnstage { .. }
+        | ClientMessage::WorkspaceFileOpen { .. }
+        | ClientMessage::WorkspaceFileVersion { .. }
+        | ClientMessage::WorkspaceFileWrite { .. }
+        | ClientMessage::AppFileOpen { .. }
+        | ClientMessage::AppFileVersion { .. }
+        | ClientMessage::AppFileWrite { .. }
         | ClientMessage::WorkspaceCreate { .. }
         | ClientMessage::WorkspaceDelete { .. }
         | ClientMessage::WorkspaceSetTitle { .. }
@@ -767,6 +785,9 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::RemoteHostProviders { .. }
         | ClientMessage::RemoteHostSetModel { .. }
         | ClientMessage::RemoteHostSetMode { .. }
+        | ClientMessage::RemoteHostFileOpen { .. }
+        | ClientMessage::RemoteHostFileVersion { .. }
+        | ClientMessage::RemoteHostFileWrite { .. }
         // Likewise the browser host's three: they name this machine's own
         // browser, never a session; their peer refusal is `peer_allows`'s.
         | ClientMessage::BrowserHostRegister { .. }

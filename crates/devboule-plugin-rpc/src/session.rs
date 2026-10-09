@@ -334,6 +334,18 @@ impl PluginSession {
                         // the reads above: the match stays exhaustive on
                         // purpose.
                         | DaemonMessage::WorkspaceOpenRoot { id, .. }
+                        // The editor's open, version and write are replies a
+                        // plugin backend never receives either — editing is
+                        // the desktop app's own act, and the app-file roads
+                        // name this machine's paths no plugin may address.
+                        // Listed with their ids for the same reason as the
+                        // reads above: the match stays exhaustive on purpose.
+                        | DaemonMessage::WorkspaceFileOpened { id, .. }
+                        | DaemonMessage::WorkspaceFileVersion { id, .. }
+                        | DaemonMessage::WorkspaceFileWrite { id, .. }
+                        | DaemonMessage::AppFileOpened { id, .. }
+                        | DaemonMessage::AppFileVersion { id, .. }
+                        | DaemonMessage::AppFileWrite { id, .. }
                         | DaemonMessage::DelegationState { id, .. }
                         // The host list is the app's own sidebar read of
                         // another machine; a plugin backend has no sidebar and
@@ -345,6 +357,12 @@ impl PluginSession {
                         | DaemonMessage::RemoteHostSession { id, .. }
                         | DaemonMessage::RemoteHostSent { id, .. }
                         | DaemonMessage::RemoteHostProviders { id, .. }
+                        // The remote file roads are the same read's further
+                        // siblings: a plugin backend never opens a file on
+                        // another machine either.
+                        | DaemonMessage::RemoteHostFileOpened { id, .. }
+                        | DaemonMessage::RemoteHostFileVersion { id, .. }
+                        | DaemonMessage::RemoteHostFileWrite { id, .. }
                         // The browser host answers to the desktop app alone; a
                         // plugin backend never registers one or is sent a command.
                         | DaemonMessage::BrowserHostRegistered { id, .. }

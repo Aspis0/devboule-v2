@@ -242,6 +242,8 @@ mod wire_json;
 #[cfg(feature = "server")]
 mod workspace;
 #[cfg(feature = "server")]
+mod workspace_file_edit;
+#[cfg(feature = "server")]
 mod workspace_file_mutations;
 #[cfg(feature = "server")]
 mod workspace_file_preview;

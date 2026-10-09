@@ -249,6 +249,63 @@ pub(super) fn dispatch_journal(
                 Err(error) => DaemonMessage::Error(error.with_id(id)),
             }
         }
+        // The editor's open and version poll: reads through
+        // [`crate::workspace_file_edit`], answered for local clients and
+        // admin peers under the same grant as the windowed read.
+        ClientMessage::WorkspaceFileOpen {
+            id,
+            workspace_id,
+            path,
+        } => crate::workspace_file_edit::reply_open(state, id, &workspace_id, &path),
+        ClientMessage::WorkspaceFileVersion {
+            id,
+            workspace_id,
+            path,
+        } => crate::workspace_file_edit::reply_version(state, id, &workspace_id, &path),
+        // The editor's write: a state change, audited as one by the gate's
+        // own rule — no idempotency key rides this frame (Paseo's write
+        // carries none either), so a retry after a success answers
+        // `conflict` on its stale version rather than replaying.
+        ClientMessage::WorkspaceFileWrite {
+            id,
+            workspace_id,
+            path,
+            content,
+            expected_modified_at,
+            expected_revision,
+        } => crate::workspace_file_edit::reply_write(
+            state,
+            id,
+            &workspace_id,
+            &path,
+            &content,
+            expected_modified_at,
+            expected_revision.as_deref(),
+        ),
+        // The human's own files: app-only one layer up (the peer gate
+        // refuses these frames to every peer, and no agent or MCP tool
+        // speaks them), so no workspace id is resolved here — the path
+        // itself is the address.
+        ClientMessage::AppFileOpen { id, path } => {
+            crate::workspace_file_edit::reply_app_open(state, id, &path)
+        }
+        ClientMessage::AppFileVersion { id, path } => {
+            crate::workspace_file_edit::reply_app_version(state, id, &path)
+        }
+        ClientMessage::AppFileWrite {
+            id,
+            path,
+            content,
+            expected_modified_at,
+            expected_revision,
+        } => crate::workspace_file_edit::reply_app_write(
+            state,
+            id,
+            &path,
+            &content,
+            expected_modified_at,
+            expected_revision.as_deref(),
+        ),
         // The two write acts: keyed like the other keyed writes here (a
         // retry with the same key replays the first success instead of
         // acting twice — the second rename would find nothing to rename),

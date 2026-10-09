@@ -750,6 +750,18 @@ pub(super) fn dispatch_session(
         | ClientMessage::RemoteHostProviders { .. }
         | ClientMessage::RemoteHostSetModel { .. }
         | ClientMessage::RemoteHostSetMode { .. }
+        | ClientMessage::RemoteHostFileOpen { .. }
+        | ClientMessage::RemoteHostFileVersion { .. }
+        | ClientMessage::RemoteHostFileWrite { .. }
+        // The editor's frames are journal frames, not session frames: they
+        // are answered by the journal dispatcher, so one arriving here is
+        // a routing bug and says only that.
+        | ClientMessage::WorkspaceFileOpen { .. }
+        | ClientMessage::WorkspaceFileVersion { .. }
+        | ClientMessage::WorkspaceFileWrite { .. }
+        | ClientMessage::AppFileOpen { .. }
+        | ClientMessage::AppFileVersion { .. }
+        | ClientMessage::AppFileWrite { .. }
         // Nor are the browser-host frames: `dispatch_immediate` answers them.
         | ClientMessage::BrowserHostRegister { .. }
         | ClientMessage::BrowserHostUnregister { .. }

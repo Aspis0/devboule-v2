@@ -134,12 +134,13 @@ pub use messages::{
     SelfInfo, SessionEventEnvelope, StoredAttachment, ToolDescriptor, ToolPolicyEntry,
     Unreclaimable, VocabularyFeature, VocabularyFeatureControl, VocabularyFeatureOption,
     VocabularyFeatures, VocabularyModels, VocabularyModes, VocabularyOrigin, VocabularySource,
-    VocabularyState, WorkspaceDirectory, WorkspaceFileContent, WorkspaceFileContentKind,
-    WorkspaceFileContentStatus, WorkspaceFileEntry, WorkspaceFileKind, WorkspaceFileMutation,
-    WorkspaceFilePreview, WorkspaceFilePreviewStatus, WorkspaceGitCommitEntry,
-    WorkspaceGitDiffLine, WorkspaceGitDiffLineKind, WorkspaceGitDiffStatus, WorkspaceGitFileDiff,
-    WorkspaceGitFileStatus, WorkspaceGitLog, WorkspaceGitRow, WorkspaceGitStatus,
-    WorkspaceGitTotals, PEER_CAPS, PEER_DEFAULT_CAPS,
+    VocabularyState, WorkspaceDirectory, WorkspaceEditableFile, WorkspaceFileContent,
+    WorkspaceFileContentKind, WorkspaceFileContentStatus, WorkspaceFileEntry, WorkspaceFileKind,
+    WorkspaceFileMutation, WorkspaceFilePreview, WorkspaceFilePreviewStatus, WorkspaceFileVersion,
+    WorkspaceFileWriteResult, WorkspaceGitCommitEntry, WorkspaceGitDiffLine,
+    WorkspaceGitDiffLineKind, WorkspaceGitDiffStatus, WorkspaceGitFileDiff, WorkspaceGitFileStatus,
+    WorkspaceGitLog, WorkspaceGitRow, WorkspaceGitStatus, WorkspaceGitTotals, PEER_CAPS,
+    PEER_DEFAULT_CAPS,
 };
 pub use plugin::WorkspaceRootBody;
 pub use project::{Project, Workspace, WorkspaceIsolation};
@@ -231,7 +232,21 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// floor stays put at 16 because every v30 DTO still decodes on the
 /// compatibility path, and a v30/v31 reader is still handed the one projected
 /// role word its decoder requires.
-pub const PROTOCOL_VERSION: u32 = 32;
+///
+/// Protocol 33 adds the in-app file editor: `WorkspaceFileOpen` (whole text
+/// up to 1 MiB with its BOM flag and version; a missing file opens empty
+/// and the first save creates it), `WorkspaceFileVersion` (the observation
+/// poll, mapping Paseo's `fs.file.subscribe` + `fs.file.update`), and
+/// `WorkspaceFileWrite` (Paseo's `fs.file.write.request` as
+/// `written|conflict|error`), each in a workspace spelling, an app-file
+/// spelling for absolute or `~` paths on this machine (`AppFileOpen` /
+/// `Version` / `Write` — app-only, refused to every peer like the open
+/// root), and a remote-host spelling relayed over the held peer link
+/// (`RemoteHostFileOpen` / `Version` / `Write` — local-only, human-
+/// originated, no confirmation card). All three rides the `journal`
+/// capability like the other workspace reads and writes; the request frames
+/// are new variants an older reader cannot parse, so the dialect moves.
+pub const PROTOCOL_VERSION: u32 = 33;
 /// Oldest dialect this crate still accepts. Protocols 17, 18 and 20 added only
 /// optional fields, so a v16 peer still interoperates — it just shows no
 /// command chip, turn time, cache, cost or chat-image thumbnails until

@@ -19,9 +19,9 @@ use devboule_protocol::{
     RemoteHostStatus, RemoteRelayMessage, RemoteRelayedEvent, ResumeResult, RetentionPatch,
     Session, SessionEvent, SessionEventEnvelope, SessionKind, SessionResumeInfo,
     SessionResumeOutcome, SessionStateSnapshot, SessionTask, StoredAttachment, SubscriptionId,
-    WireError, Workspace, WorkspaceDirectory, WorkspaceFileContent, WorkspaceFileMutation,
-    WorkspaceFilePreview, WorkspaceGitFileDiff, WorkspaceGitLog, WorkspaceGitStatus,
-    WorkspaceIsolation,
+    WireError, Workspace, WorkspaceDirectory, WorkspaceEditableFile, WorkspaceFileContent,
+    WorkspaceFileMutation, WorkspaceFilePreview, WorkspaceFileVersion, WorkspaceFileWriteResult,
+    WorkspaceGitFileDiff, WorkspaceGitLog, WorkspaceGitStatus, WorkspaceIsolation,
 };
 
 use crate::diagnostics::DiagnosticsReport;
@@ -1528,7 +1528,123 @@ impl DaemonClient {
         }
     }
 
-    /// Rename one workspace entry. The id, a relative `path` — of an entry
+    /// Open one workspace file whole for the in-app editor: the text up to
+    /// 1 MiB with its BOM flag and version, or the refusal's sentence. A
+    /// missing file opens empty with a `missing` version — the first save
+    /// creates it.
+    pub fn workspace_file_open(
+        &self,
+        workspace_id: &str,
+        path: &str,
+    ) -> Result<WorkspaceEditableFile, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::WorkspaceFileOpen {
+            id,
+            workspace_id: workspace_id.to_string(),
+            path: path.to_string(),
+        })? {
+            DaemonMessage::WorkspaceFileOpened { file, .. } => Ok(file),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// The version of one workspace file: the editor's observation poll.
+    /// The daemon stats and answers; nothing is read.
+    pub fn workspace_file_version(
+        &self,
+        workspace_id: &str,
+        path: &str,
+    ) -> Result<WorkspaceFileVersion, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::WorkspaceFileVersion {
+            id,
+            workspace_id: workspace_id.to_string(),
+            path: path.to_string(),
+        })? {
+            DaemonMessage::WorkspaceFileVersion { version, .. } => Ok(version),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Write one workspace file from the in-app editor: `written` with the
+    /// new stamp, `conflict` with the fresh version, or `error`. No
+    /// expected version is a create — it succeeds only when the file is
+    /// missing, and the parent folder must already exist.
+    pub fn workspace_file_write(
+        &self,
+        workspace_id: &str,
+        path: &str,
+        content: &str,
+        expected_modified_at: Option<i64>,
+        expected_revision: Option<String>,
+    ) -> Result<WorkspaceFileWriteResult, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::WorkspaceFileWrite {
+            id,
+            workspace_id: workspace_id.to_string(),
+            path: path.to_string(),
+            content: content.to_string(),
+            expected_modified_at,
+            expected_revision,
+        })? {
+            DaemonMessage::WorkspaceFileWrite { result, .. } => Ok(result),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Open one file anywhere on this machine — an absolute path or a `~`
+    /// path — for the in-app editor. App-only: the daemon refuses this
+    /// frame to every peer, and no agent or MCP tool speaks it.
+    pub fn app_file_open(&self, path: &str) -> Result<WorkspaceEditableFile, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::AppFileOpen {
+            id,
+            path: path.to_string(),
+        })? {
+            DaemonMessage::AppFileOpened { file, .. } => Ok(file),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// The version of one such file: the editor's observation poll.
+    pub fn app_file_version(&self, path: &str) -> Result<WorkspaceFileVersion, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::AppFileVersion {
+            id,
+            path: path.to_string(),
+        })? {
+            DaemonMessage::AppFileVersion { version, .. } => Ok(version),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Write one such file, with the same create-or-check semantics as
+    /// [`Self::workspace_file_write`].
+    pub fn app_file_write(
+        &self,
+        path: &str,
+        content: &str,
+        expected_modified_at: Option<i64>,
+        expected_revision: Option<String>,
+    ) -> Result<WorkspaceFileWriteResult, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::AppFileWrite {
+            id,
+            path: path.to_string(),
+            content: content.to_string(),
+            expected_modified_at,
+            expected_revision,
+        })? {
+            DaemonMessage::AppFileWrite { result, .. } => Ok(result),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
     /// the listing handed back, never the workspace's own folder — and the
     /// new name are the whole argument; the daemon confines the path,
     /// validates the name, and answers with the entry's new spelling (or
@@ -3471,6 +3587,12 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::WorkspaceGitWrite { id, .. }
         | DaemonMessage::WorkspaceFiles { id, .. }
         | DaemonMessage::WorkspaceFileContent { id, .. }
+        | DaemonMessage::WorkspaceFileOpened { id, .. }
+        | DaemonMessage::WorkspaceFileVersion { id, .. }
+        | DaemonMessage::WorkspaceFileWrite { id, .. }
+        | DaemonMessage::AppFileOpened { id, .. }
+        | DaemonMessage::AppFileVersion { id, .. }
+        | DaemonMessage::AppFileWrite { id, .. }
         | DaemonMessage::WorkspaceOpenRoot { id, .. }
         | DaemonMessage::WorkspaceFileRenamed { id, .. }
         | DaemonMessage::WorkspaceFileDuplicated { id, .. }
@@ -3493,6 +3615,9 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::RemoteHostSession { id, .. }
         | DaemonMessage::RemoteHostSent { id, .. }
         | DaemonMessage::RemoteHostProviders { id, .. }
+        | DaemonMessage::RemoteHostFileOpened { id, .. }
+        | DaemonMessage::RemoteHostFileVersion { id, .. }
+        | DaemonMessage::RemoteHostFileWrite { id, .. }
         | DaemonMessage::InvokeResult { id, .. } => Some(*id),
     }
 }

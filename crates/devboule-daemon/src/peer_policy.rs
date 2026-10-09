@@ -323,6 +323,14 @@ pub fn peer_allows(caps: &[String], request: &ClientMessage) -> PeerDecision {
         // process. `admin` does not open it, and the reason names an act no
         // capability can hold.
         ClientMessage::WorkspaceOpenRoot { .. } => PeerDecision::Deny("workspace.open"),
+        // The human's own files outside any workspace: local-only like the
+        // open root, for the stronger reason — an absolute host path must
+        // never travel to a paired device, and no agent or MCP tool speaks
+        // these frames, so agents gain nothing. `admin` does not open
+        // them either.
+        ClientMessage::AppFileOpen { .. }
+        | ClientMessage::AppFileVersion { .. }
+        | ClientMessage::AppFileWrite { .. } => PeerDecision::Deny("workspace.open"),
         // The read half of the deposit. Reads of *content* ride the
         // administrative capability while only the list reads ride `view`:
         // deposited bytes are a session's own material, and a device the owner
@@ -436,6 +444,9 @@ pub fn peer_allows(caps: &[String], request: &ClientMessage) -> PeerDecision {
         | ClientMessage::WorkspaceGitDiff { .. }
         | ClientMessage::WorkspaceFilesList { .. }
         | ClientMessage::WorkspaceFileRead { .. }
+        | ClientMessage::WorkspaceFileOpen { .. }
+        | ClientMessage::WorkspaceFileVersion { .. }
+        | ClientMessage::WorkspaceFileWrite { .. }
         | ClientMessage::WorkspaceFileRename { .. }
         | ClientMessage::WorkspaceFileDuplicate { .. }
         | ClientMessage::WorkspaceFileDelete { .. }
@@ -473,7 +484,10 @@ pub fn peer_allows(caps: &[String], request: &ClientMessage) -> PeerDecision {
         | ClientMessage::RemoteHostStop { .. }
         | ClientMessage::RemoteHostProviders { .. }
         | ClientMessage::RemoteHostSetModel { .. }
-        | ClientMessage::RemoteHostSetMode { .. } => PeerDecision::Deny("remote_hosts"),
+        | ClientMessage::RemoteHostSetMode { .. }
+        | ClientMessage::RemoteHostFileOpen { .. }
+        | ClientMessage::RemoteHostFileVersion { .. }
+        | ClientMessage::RemoteHostFileWrite { .. } => PeerDecision::Deny("remote_hosts"),
         // Being the place agents' browser commands run is the local app's job.
         // A paired device reaches a browser only through the per-device grant
         // the MCP tools check (a later slice), never by registering as a host
@@ -1741,6 +1755,27 @@ pub(crate) mod tests {
                 session_id: "s.a.1".to_string(),
                 mode_id: "default".to_string(),
             },
+            ClientMessage::RemoteHostFileOpen {
+                id: 15,
+                device_id: "b".to_string(),
+                workspace_id: "ws.1".to_string(),
+                path: "README.md".to_string(),
+            },
+            ClientMessage::RemoteHostFileVersion {
+                id: 16,
+                device_id: "b".to_string(),
+                workspace_id: "ws.1".to_string(),
+                path: "README.md".to_string(),
+            },
+            ClientMessage::RemoteHostFileWrite {
+                id: 17,
+                device_id: "b".to_string(),
+                workspace_id: "ws.1".to_string(),
+                path: "README.md".to_string(),
+                content: "guide\n".to_string(),
+                expected_modified_at: None,
+                expected_revision: None,
+            },
             // The browser host, all three frames: local-only like the link
             // above, refused to a peer by name.
             ClientMessage::BrowserHostRegister {
@@ -1872,6 +1907,39 @@ pub(crate) mod tests {
                 id: 1,
                 workspace_id: "ws.1".to_string(),
             },
+            ClientMessage::WorkspaceFileOpen {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                path: "README.md".to_string(),
+            },
+            ClientMessage::WorkspaceFileVersion {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                path: "README.md".to_string(),
+            },
+            ClientMessage::WorkspaceFileWrite {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                path: "README.md".to_string(),
+                content: "guide\n".to_string(),
+                expected_modified_at: None,
+                expected_revision: None,
+            },
+            ClientMessage::AppFileOpen {
+                id: 1,
+                path: "/tmp/note.md".to_string(),
+            },
+            ClientMessage::AppFileVersion {
+                id: 1,
+                path: "/tmp/note.md".to_string(),
+            },
+            ClientMessage::AppFileWrite {
+                id: 1,
+                path: "/tmp/note.md".to_string(),
+                content: "note\n".to_string(),
+                expected_modified_at: None,
+                expected_revision: None,
+            },
             ClientMessage::WorkspaceFileRename {
                 id: 1,
                 workspace_id: "ws.1".to_string(),
@@ -1998,6 +2066,9 @@ pub(crate) mod tests {
             ClientMessage::PeerSetCaps { .. } => Some("peer.set_caps"),
             ClientMessage::PeerRevoke { .. } => Some("peer.revoke"),
             ClientMessage::WorkspaceOpenRoot { .. } => Some("workspace.open"),
+            ClientMessage::AppFileOpen { .. } => Some("workspace.open"),
+            ClientMessage::AppFileVersion { .. } => Some("workspace.open"),
+            ClientMessage::AppFileWrite { .. } => Some("workspace.open"),
             ClientMessage::RemoteHostWatch { .. } => Some("remote_hosts"),
             ClientMessage::RemoteHostUnwatch { .. } => Some("remote_hosts"),
             ClientMessage::RemoteHostList { .. } => Some("remote_hosts"),
@@ -2012,6 +2083,9 @@ pub(crate) mod tests {
             ClientMessage::RemoteHostProviders { .. } => Some("remote_hosts"),
             ClientMessage::RemoteHostSetModel { .. } => Some("remote_hosts"),
             ClientMessage::RemoteHostSetMode { .. } => Some("remote_hosts"),
+            ClientMessage::RemoteHostFileOpen { .. } => Some("remote_hosts"),
+            ClientMessage::RemoteHostFileVersion { .. } => Some("remote_hosts"),
+            ClientMessage::RemoteHostFileWrite { .. } => Some("remote_hosts"),
             ClientMessage::BrowserHostRegister { .. } => Some("browser.host"),
             ClientMessage::BrowserHostUnregister { .. } => Some("browser.host"),
             ClientMessage::BrowserExecuteResponse { .. } => Some("browser.host"),
@@ -2874,7 +2948,13 @@ pub(crate) mod tests {
             ClientMessage::WorkspaceGitDiff { .. } => administrative(),
             ClientMessage::WorkspaceFilesList { .. } => administrative(),
             ClientMessage::WorkspaceFileRead { .. } => administrative(),
+            ClientMessage::WorkspaceFileOpen { .. } => administrative(),
+            ClientMessage::WorkspaceFileVersion { .. } => administrative(),
+            ClientMessage::WorkspaceFileWrite { .. } => administrative(),
             ClientMessage::WorkspaceOpenRoot { .. } => local("workspace.open"),
+            ClientMessage::AppFileOpen { .. } => local("workspace.open"),
+            ClientMessage::AppFileVersion { .. } => local("workspace.open"),
+            ClientMessage::AppFileWrite { .. } => local("workspace.open"),
             ClientMessage::WorkspaceFileRename { .. } => administrative(),
             ClientMessage::WorkspaceFileDuplicate { .. } => administrative(),
             ClientMessage::WorkspaceFileDelete { .. } => administrative(),
@@ -2920,6 +3000,9 @@ pub(crate) mod tests {
             ClientMessage::RemoteHostProviders { .. } => local("remote_hosts"),
             ClientMessage::RemoteHostSetModel { .. } => local("remote_hosts"),
             ClientMessage::RemoteHostSetMode { .. } => local("remote_hosts"),
+            ClientMessage::RemoteHostFileOpen { .. } => local("remote_hosts"),
+            ClientMessage::RemoteHostFileVersion { .. } => local("remote_hosts"),
+            ClientMessage::RemoteHostFileWrite { .. } => local("remote_hosts"),
             ClientMessage::RemoteHostUnwatch { .. } => local("remote_hosts"),
             ClientMessage::RemoteHostList { .. } => local("remote_hosts"),
             ClientMessage::BrowserHostRegister { .. } => local("browser.host"),
@@ -2935,7 +3018,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 102;
+    pub(crate) const VARIANT_COUNT: usize = 111;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -2999,6 +3082,12 @@ pub(crate) mod tests {
             ClientMessage::WorkspaceGitLog { .. } => "WorkspaceGitLog",
             ClientMessage::WorkspaceFilesList { .. } => "WorkspaceFilesList",
             ClientMessage::WorkspaceFileRead { .. } => "WorkspaceFileRead",
+            ClientMessage::WorkspaceFileOpen { .. } => "WorkspaceFileOpen",
+            ClientMessage::WorkspaceFileVersion { .. } => "WorkspaceFileVersion",
+            ClientMessage::WorkspaceFileWrite { .. } => "WorkspaceFileWrite",
+            ClientMessage::AppFileOpen { .. } => "AppFileOpen",
+            ClientMessage::AppFileVersion { .. } => "AppFileVersion",
+            ClientMessage::AppFileWrite { .. } => "AppFileWrite",
             ClientMessage::WorkspaceOpenRoot { .. } => "WorkspaceOpenRoot",
             ClientMessage::WorkspaceFileRename { .. } => "WorkspaceFileRename",
             ClientMessage::WorkspaceFileDuplicate { .. } => "WorkspaceFileDuplicate",
@@ -3042,6 +3131,9 @@ pub(crate) mod tests {
             ClientMessage::RemoteHostProviders { .. } => "RemoteHostProviders",
             ClientMessage::RemoteHostSetModel { .. } => "RemoteHostSetModel",
             ClientMessage::RemoteHostSetMode { .. } => "RemoteHostSetMode",
+            ClientMessage::RemoteHostFileOpen { .. } => "RemoteHostFileOpen",
+            ClientMessage::RemoteHostFileVersion { .. } => "RemoteHostFileVersion",
+            ClientMessage::RemoteHostFileWrite { .. } => "RemoteHostFileWrite",
             ClientMessage::RemoteHostUnwatch { .. } => "RemoteHostUnwatch",
             ClientMessage::RemoteHostList { .. } => "RemoteHostList",
             ClientMessage::BrowserHostRegister { .. } => "BrowserHostRegister",
@@ -3356,6 +3448,39 @@ pub(crate) mod tests {
                 id: 1,
                 workspace_id: "ws.1".to_string(),
             },
+            ClientMessage::WorkspaceFileOpen {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                path: "README.md".to_string(),
+            },
+            ClientMessage::WorkspaceFileVersion {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                path: "README.md".to_string(),
+            },
+            ClientMessage::WorkspaceFileWrite {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                path: "README.md".to_string(),
+                content: "guide\n".to_string(),
+                expected_modified_at: None,
+                expected_revision: None,
+            },
+            ClientMessage::AppFileOpen {
+                id: 1,
+                path: "/tmp/note.md".to_string(),
+            },
+            ClientMessage::AppFileVersion {
+                id: 1,
+                path: "/tmp/note.md".to_string(),
+            },
+            ClientMessage::AppFileWrite {
+                id: 1,
+                path: "/tmp/note.md".to_string(),
+                content: "note\n".to_string(),
+                expected_modified_at: None,
+                expected_revision: None,
+            },
             ClientMessage::WorkspaceFileRename {
                 id: 1,
                 workspace_id: "ws.1".to_string(),
@@ -3557,6 +3682,27 @@ pub(crate) mod tests {
                 device_id: "b".to_string(),
                 session_id: "s.a.1".to_string(),
                 mode_id: "default".to_string(),
+            },
+            ClientMessage::RemoteHostFileOpen {
+                id: 15,
+                device_id: "b".to_string(),
+                workspace_id: "ws.1".to_string(),
+                path: "README.md".to_string(),
+            },
+            ClientMessage::RemoteHostFileVersion {
+                id: 16,
+                device_id: "b".to_string(),
+                workspace_id: "ws.1".to_string(),
+                path: "README.md".to_string(),
+            },
+            ClientMessage::RemoteHostFileWrite {
+                id: 17,
+                device_id: "b".to_string(),
+                workspace_id: "ws.1".to_string(),
+                path: "README.md".to_string(),
+                content: "guide\n".to_string(),
+                expected_modified_at: None,
+                expected_revision: None,
             },
             ClientMessage::BrowserHostRegister {
                 id: 1,

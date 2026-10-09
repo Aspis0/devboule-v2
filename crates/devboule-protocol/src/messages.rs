@@ -679,6 +679,45 @@ pub enum ClientMessage {
         session_id: String,
         mode_id: String,
     },
+    /// Open one file in a workspace on a paired host, for the in-app
+    /// editor. Local-only: the daemon maps it to the peer's own
+    /// `WorkspaceFileOpen` on the held link. Human-originated, like every
+    /// operate frame — no confirmation card (the human controls everything
+    /// on any paired PC). The peer's `admin` grant decides the answer,
+    /// exactly as it does for a local open. The reply is
+    /// [`DaemonMessage::RemoteHostFileOpened`]: the host's own file,
+    /// carried through unchanged.
+    RemoteHostFileOpen {
+        id: u64,
+        device_id: String,
+        workspace_id: String,
+        path: String,
+    },
+    /// The version of one such file. Local-only, mapped to the peer's own
+    /// `WorkspaceFileVersion`. The reply is
+    /// [`DaemonMessage::RemoteHostFileVersion`].
+    RemoteHostFileVersion {
+        id: u64,
+        device_id: String,
+        workspace_id: String,
+        path: String,
+    },
+    /// Write one such file. Local-only, mapped to the peer's own
+    /// `WorkspaceFileWrite` with the same create-or-check semantics. The
+    /// reply is [`DaemonMessage::RemoteHostFileWrite`]: the host's own
+    /// result, carried through unchanged.
+    RemoteHostFileWrite {
+        id: u64,
+        device_id: String,
+        workspace_id: String,
+        path: String,
+        content: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_modified_at: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_revision: Option<String>,
+    },
+    },
     /// Register this connection as the browser host: the place that runs
     /// browser commands for agents. The reply is
     /// [`DaemonMessage::BrowserHostRegistered`], and from then on the daemon
@@ -1138,6 +1177,86 @@ pub enum ClientMessage {
     WorkspaceOpenRoot {
         id: u64,
         workspace_id: String,
+    },
+    /// Open one workspace file for the in-app editor: the whole text up to
+    /// 1 MiB with its BOM flag and version, or the refusal's sentence. A
+    /// read like [`Self::WorkspaceFileRead`]: the daemon resolves the
+    /// directory from `workspace_id` and confines `path` inside it before
+    /// anything is opened. A missing file opens empty — the reply carries
+    /// empty content with a `missing` version, and the first save creates
+    /// it (Paseo answers ENOENT here; the missing arm is the fix). The
+    /// reply is [`DaemonMessage::WorkspaceFileOpened`].
+    WorkspaceFileOpen {
+        id: u64,
+        workspace_id: String,
+        /// Path relative to the workspace folder, of a file — the spelling
+        /// a listing entry already handed back.
+        path: String,
+    },
+    /// The version of one workspace file for the editor's observation
+    /// source: the poll the model refreshes from, mapping Paseo's
+    /// `fs.file.subscribe` + `fs.file.update` onto a request/reply pair
+    /// (this daemon pushes nothing to the app outside session feeds and
+    /// host status). The reply is [`DaemonMessage::WorkspaceFileVersion`].
+    WorkspaceFileVersion {
+        id: u64,
+        workspace_id: String,
+        path: String,
+    },
+    /// Write one workspace file from the in-app editor: Paseo's
+    /// `fs.file.write.request` mapped onto this wire (`content` for
+    /// `content`, `expected_modified_at` for `expectedModifiedAt`,
+    /// `expected_revision` for `expectedRevision`). A **write** like
+    /// [`Self::WorkspaceFileRename`]: the folder comes from `workspace_id`
+    /// and `path` is confined before anything opens. No expected version
+    /// is a create: it succeeds only when the file is missing — the parent
+    /// folder must already exist, parents are never made silently — and
+    /// answers `conflict` with the ready version when anything is already
+    /// there. The content travels verbatim: BOM and line endings are the
+    /// editor's, never normalised here. The reply is
+    /// [`DaemonMessage::WorkspaceFileWrite`].
+    WorkspaceFileWrite {
+        id: u64,
+        workspace_id: String,
+        path: String,
+        content: String,
+        /// Milliseconds since the Unix epoch, as the last open or version
+        /// poll reported them; absent (with absent revision) is a create.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_modified_at: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_revision: Option<String>,
+    },
+    /// Open one file anywhere on this machine for the in-app editor: an
+    /// absolute path or a `~` path (for example
+    /// `~/.config/pubvia/anthropic.env`), expanded and read as the human's
+    /// own file — links are followed, the real file opens. Local app
+    /// connections only: the peer gate refuses these frames under every
+    /// capability, like [`Self::WorkspaceOpenRoot`], and no agent or MCP
+    /// tool speaks them, so agents gain nothing. The reply is
+    /// [`DaemonMessage::AppFileOpened`].
+    AppFileOpen {
+        id: u64,
+        path: String,
+    },
+    /// The version of one such file: the same poll as
+    /// [`Self::WorkspaceFileVersion`], for a path outside any workspace.
+    /// The reply is [`DaemonMessage::AppFileVersion`].
+    AppFileVersion {
+        id: u64,
+        path: String,
+    },
+    /// Write one such file: the same create-or-check semantics as
+    /// [`Self::WorkspaceFileWrite`], for a path outside any workspace.
+    /// The reply is [`DaemonMessage::AppFileWrite`].
+    AppFileWrite {
+        id: u64,
+        path: String,
+        content: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_modified_at: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_revision: Option<String>,
     },
     /// Rename one entry inside a workspace — the Files panel's inline rename.
     /// A **write**: the daemon resolves the folder from `workspace_id`,
@@ -1626,6 +1745,9 @@ impl ClientMessage {
             | Self::RemoteHostProviders { id, .. }
             | Self::RemoteHostSetModel { id, .. }
             | Self::RemoteHostSetMode { id, .. }
+            | Self::RemoteHostFileOpen { id, .. }
+            | Self::RemoteHostFileVersion { id, .. }
+            | Self::RemoteHostFileWrite { id, .. }
             | Self::BrowserHostRegister { id, .. }
             | Self::BrowserHostUnregister { id, .. }
             | Self::BrowserExecuteResponse { id, .. }
@@ -1668,6 +1790,12 @@ impl ClientMessage {
             | Self::WorkspaceFilesList { id, .. }
             | Self::WorkspaceFileRead { id, .. }
             | Self::WorkspaceOpenRoot { id, .. }
+            | Self::WorkspaceFileOpen { id, .. }
+            | Self::WorkspaceFileVersion { id, .. }
+            | Self::WorkspaceFileWrite { id, .. }
+            | Self::AppFileOpen { id, .. }
+            | Self::AppFileVersion { id, .. }
+            | Self::AppFileWrite { id, .. }
             | Self::WorkspaceFileRename { id, .. }
             | Self::WorkspaceFileDuplicate { id, .. }
             | Self::WorkspaceFileDelete { id, .. }
@@ -1793,6 +1921,9 @@ impl ClientMessage {
             | Self::RemoteHostProviders { .. }
             | Self::RemoteHostSetModel { .. }
             | Self::RemoteHostSetMode { .. }
+            | Self::RemoteHostFileOpen { .. }
+            | Self::RemoteHostFileVersion { .. }
+            | Self::RemoteHostFileWrite { .. }
             | Self::BrowserHostRegister { .. }
             | Self::BrowserHostUnregister { .. }
             | Self::BrowserExecuteResponse { .. }
@@ -1821,6 +1952,12 @@ impl ClientMessage {
             | Self::WorkspaceFilesList { .. }
             | Self::WorkspaceFileRead { .. }
             | Self::WorkspaceOpenRoot { .. }
+            | Self::WorkspaceFileOpen { .. }
+            | Self::WorkspaceFileVersion { .. }
+            | Self::WorkspaceFileWrite { .. }
+            | Self::AppFileOpen { .. }
+            | Self::AppFileVersion { .. }
+            | Self::AppFileWrite { .. }
             | Self::WorkspaceFilePreviewStage { .. }
             | Self::WorkspaceFilePreviewUnstage { .. }
             | Self::WorkspaceCreate { .. }
@@ -1884,6 +2021,9 @@ impl ClientMessage {
             Self::RemoteHostProviders { .. } => "RemoteHostProviders",
             Self::RemoteHostSetModel { .. } => "RemoteHostSetModel",
             Self::RemoteHostSetMode { .. } => "RemoteHostSetMode",
+            Self::RemoteHostFileOpen { .. } => "RemoteHostFileOpen",
+            Self::RemoteHostFileVersion { .. } => "RemoteHostFileVersion",
+            Self::RemoteHostFileWrite { .. } => "RemoteHostFileWrite",
             Self::BrowserHostRegister { .. } => "BrowserHostRegister",
             Self::BrowserHostUnregister { .. } => "BrowserHostUnregister",
             Self::BrowserExecuteResponse { .. } => "BrowserExecuteResponse",
@@ -1926,6 +2066,12 @@ impl ClientMessage {
             Self::WorkspaceFilesList { .. } => "WorkspaceFilesList",
             Self::WorkspaceFileRead { .. } => "WorkspaceFileRead",
             Self::WorkspaceOpenRoot { .. } => "WorkspaceOpenRoot",
+            Self::WorkspaceFileOpen { .. } => "WorkspaceFileOpen",
+            Self::WorkspaceFileVersion { .. } => "WorkspaceFileVersion",
+            Self::WorkspaceFileWrite { .. } => "WorkspaceFileWrite",
+            Self::AppFileOpen { .. } => "AppFileOpen",
+            Self::AppFileVersion { .. } => "AppFileVersion",
+            Self::AppFileWrite { .. } => "AppFileWrite",
             Self::WorkspaceFileRename { .. } => "WorkspaceFileRename",
             Self::WorkspaceFileDuplicate { .. } => "WorkspaceFileDuplicate",
             Self::WorkspaceFileDelete { .. } => "WorkspaceFileDelete",
@@ -1983,6 +2129,12 @@ impl ClientMessage {
             | Self::WorkspaceFilesList { .. }
             | Self::WorkspaceFileRead { .. }
             | Self::RemoteHostList { .. }
+            | Self::WorkspaceFileOpen { .. }
+            | Self::WorkspaceFileVersion { .. }
+            | Self::AppFileOpen { .. }
+            | Self::AppFileVersion { .. }
+            | Self::RemoteHostFileOpen { .. }
+            | Self::RemoteHostFileVersion { .. }
             | Self::RemoteHostProviders { .. }
             // An answer to a call the daemon made: it changes no durable state,
             // and a row per answer would be a disk sink a busy host drives.
@@ -2046,6 +2198,8 @@ impl ClientMessage {
             // The one act that destroys data — audited like the two writes
             // above, and the reason its frame exists at all.
             | Self::WorkspaceFileDelete { .. }
+            | Self::WorkspaceFileWrite { .. }
+            | Self::AppFileWrite { .. }
             // The four git writes: they move paths through the index and
             // (commit) into history — a disk sink an audit row must cover,
             // exactly like the file writes above them.
@@ -2091,6 +2245,7 @@ impl ClientMessage {
             | Self::RemoteHostStop { .. }
             | Self::RemoteHostSetModel { .. }
             | Self::RemoteHostSetMode { .. }
+            | Self::RemoteHostFileWrite { .. }
             // Registering or leaving decides which process runs the agents'
             // browser commands, which is the fact an audit row would name.
             | Self::BrowserHostRegister { .. }
@@ -2232,6 +2387,50 @@ pub enum DaemonMessage {
         id: u64,
         #[serde(flatten)]
         file: WorkspaceFileContent,
+    },
+    /// The reply to [`ClientMessage::WorkspaceFileOpen`]: the file's whole
+    /// text with its BOM flag and version, or the refusal's sentence.
+    /// Flattened beside `id` the way [`DaemonMessage::WorkspaceFileContent`]
+    /// flattens its body.
+    WorkspaceFileOpened {
+        id: u64,
+        #[serde(flatten)]
+        file: WorkspaceEditableFile,
+    },
+    /// The reply to [`ClientMessage::WorkspaceFileVersion`]: the file's
+    /// current version — the observation source's poll answer.
+    WorkspaceFileVersion {
+        id: u64,
+        #[serde(flatten)]
+        version: WorkspaceFileVersion,
+    },
+    /// The reply to [`ClientMessage::WorkspaceFileWrite`]: `written` with
+    /// the new stamp, `conflict` with the fresh version, or `error` with
+    /// the sentence that stopped it — Paseo's `written|conflict|error`.
+    WorkspaceFileWrite {
+        id: u64,
+        #[serde(flatten)]
+        result: WorkspaceFileWriteResult,
+    },
+    /// The reply to [`ClientMessage::AppFileOpen`]: the same body as
+    /// [`DaemonMessage::WorkspaceFileOpened`], for a path outside any
+    /// workspace.
+    AppFileOpened {
+        id: u64,
+        #[serde(flatten)]
+        file: WorkspaceEditableFile,
+    },
+    /// The reply to [`ClientMessage::AppFileVersion`].
+    AppFileVersion {
+        id: u64,
+        #[serde(flatten)]
+        version: WorkspaceFileVersion,
+    },
+    /// The reply to [`ClientMessage::AppFileWrite`].
+    AppFileWrite {
+        id: u64,
+        #[serde(flatten)]
+        result: WorkspaceFileWriteResult,
     },
     /// The reply to [`ClientMessage::WorkspaceOpenRoot`]: the workspace's
     /// absolute root in the daemon's own plain spelling, for the local
@@ -2470,6 +2669,32 @@ pub enum DaemonMessage {
         providers: Vec<ProviderInfo>,
         #[serde(default)]
         unreadable_dirs: u32,
+    },
+    /// The reply to [`ClientMessage::RemoteHostFileOpen`]: the paired
+    /// host's own file, carried through unchanged. A refusal is not an arm
+    /// here: it comes back as the remote's own [`WireError`], code and
+    /// reason intact.
+    RemoteHostFileOpened {
+        id: u64,
+        device_id: String,
+        #[serde(flatten)]
+        file: WorkspaceEditableFile,
+    },
+    /// The reply to [`ClientMessage::RemoteHostFileVersion`]: the host's
+    /// own version, carried through unchanged.
+    RemoteHostFileVersion {
+        id: u64,
+        device_id: String,
+        #[serde(flatten)]
+        version: WorkspaceFileVersion,
+    },
+    /// The reply to [`ClientMessage::RemoteHostFileWrite`]: the host's own
+    /// result, carried through unchanged.
+    RemoteHostFileWrite {
+        id: u64,
+        device_id: String,
+        #[serde(flatten)]
+        result: WorkspaceFileWriteResult,
     },
     /// Everything the Devices panel needs in one reply, already projected for
     /// the connection's role: a local client sees the full rows, a remote peer
@@ -3027,6 +3252,80 @@ pub struct WorkspaceFileContent {
     /// `Some(true)`, saying the line exceeds one window and the rest of it
     /// cannot be read this way — static words, never a path.
     pub note: Option<String>,
+}
+
+/// One file's version for the in-app editor: Paseo's `FileVersion`
+/// (`ready|missing|error`) mapped onto this wire. `ready` carries the
+/// stamp a write must echo back; `missing` is what an open of a file that
+/// is not there answers with (the editor shows it empty and the first
+/// save creates it); `error` is the check that could not run, with the
+/// sentence that stopped it. `workspace_id` names the workspace the path
+/// was confined to — empty for an app-file path outside any workspace,
+/// where `path` is the absolute path in the daemon's own spelling.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum WorkspaceFileVersion {
+    Ready {
+        #[serde(rename = "workspaceId")]
+        workspace_id: String,
+        path: String,
+        size: u64,
+        #[serde(rename = "modifiedAt")]
+        modified_at: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        revision: Option<String>,
+    },
+    Missing {
+        #[serde(rename = "workspaceId")]
+        workspace_id: String,
+        path: String,
+    },
+    Error {
+        #[serde(rename = "workspaceId")]
+        workspace_id: String,
+        path: String,
+        error: String,
+    },
+}
+
+/// The outcome of one editor write: Paseo's `written|conflict|error`.
+/// `written` carries the new stamp; `conflict` carries the fresh version
+/// the write lost to, for the Overwrite/Reload road; `error` carries the
+/// sentence that stopped it.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum WorkspaceFileWriteResult {
+    Written {
+        #[serde(rename = "modifiedAt")]
+        modified_at: i64,
+        size: u64,
+        revision: String,
+    },
+    Conflict {
+        version: WorkspaceFileVersion,
+    },
+    Error {
+        error: String,
+    },
+}
+
+/// One file opened whole for the in-app editor: its text (empty when
+/// missing — the first save creates it), whether its bytes start with a
+/// UTF-8 BOM (the editor restores it byte-for-byte on save), and the
+/// version a write must echo back. Over 1 MiB, binary, or undecodable
+/// bytes never open: `status` is `refused` with the sentence, and the
+/// other fields stay `None` — the same pair discipline
+/// [`WorkspaceFileContent`] keeps.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceEditableFile {
+    pub status: WorkspaceFileContentStatus,
+    pub content: Option<String>,
+    #[serde(rename = "hasBom")]
+    pub has_bom: Option<bool>,
+    pub version: Option<WorkspaceFileVersion>,
+    pub size: Option<u64>,
+    pub error: Option<String>,
 }
 
 /// The outcome of one Files-panel write — a rename, a duplicate, or the
@@ -4050,3 +4349,7 @@ pub struct SessionEventEnvelope {
 #[cfg(test)]
 #[path = "messages_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "file_edit_tests.rs"]
+mod file_edit_tests;
