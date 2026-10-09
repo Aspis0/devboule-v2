@@ -3,63 +3,9 @@
 //! cleanup plan that never includes the agent's chain.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
-use crate::process_tree::JobObject;
-
+use super::fakes::{identity, identity_with, proof, refresh, FakeProbe};
 use super::*;
-
-/// One probe's scripted reality: the members the proof admits, what the OS
-/// says about each, and the port table.
-struct FakeProbe {
-    members: Vec<u32>,
-    identities: HashMap<u32, ProcessIdentity>,
-    ports: Vec<(u16, u32)>,
-}
-
-impl ProcessProbe for FakeProbe {
-    fn members(&self, _job: &JobObject) -> Vec<u32> {
-        self.members.clone()
-    }
-
-    fn identity(&self, pid: u32) -> Option<ProcessIdentity> {
-        self.identities.get(&pid).cloned()
-    }
-
-    fn listening_ports(&self) -> Vec<(u16, u32)> {
-        self.ports.clone()
-    }
-
-    fn proof_kind(&self) -> &'static str {
-        "job_member"
-    }
-}
-
-fn identity(started_at_ms: u64, ppid: u32) -> ProcessIdentity {
-    identity_with(started_at_ms, ppid, "/usr/local/bin/tool")
-}
-
-fn identity_with(started_at_ms: u64, ppid: u32, exe: &str) -> ProcessIdentity {
-    ProcessIdentity {
-        started_at_ms,
-        ppid,
-        exe: Some(exe.to_string()),
-        argv: vec![exe.to_string(), "--serve".to_string()],
-    }
-}
-
-fn proof(id: &str, workspace: Option<&str>) -> SessionProof {
-    SessionProof {
-        id: id.to_string(),
-        workspace_id: workspace.map(str::to_string),
-        label: format!("agent {id}"),
-        job: Arc::new(JobObject::new().expect("a proof handle")),
-    }
-}
-
-fn refresh(index: &ProcessIndex, roots: Vec<SessionProof>, probe: &mut FakeProbe) {
-    index.refresh_with(roots, probe).expect("fake probe works");
-}
 
 #[test]
 fn process_port_returns_only_owned_member() {
@@ -166,11 +112,10 @@ fn ports_and_exe_refresh_on_every_query() {
     assert_eq!(matches[0].0.started_at_ms, 1_000, "identity did not move");
 }
 
-/// The agent exclusion is the recorded (pid, creation time) pair: a member
-/// merely re-parented to the daemon is a stray, not the agent, and stays in
-/// the plan.
+/// Every daemon child in a session's membership is a provider root: a second
+/// one cannot be told apart from a respawned provider, so it is protected too.
 #[test]
-fn a_stray_reparented_to_the_daemon_is_a_target_not_the_agent() {
+fn every_daemon_child_of_a_session_is_a_protected_root() {
     let index = ProcessIndex::new();
     let daemon = std::process::id();
     let mut probe = FakeProbe {
@@ -183,14 +128,17 @@ fn a_stray_reparented_to_the_daemon_is_a_target_not_the_agent() {
     };
     refresh(&index, vec![proof("session-e", None)], &mut probe);
 
-    let plan = index.cleanup_plan("session-e").expect("a live session");
-    // Both are daemon children on sight; the lowest pid is the session's own
-    // spawn, so the pair recorded is (100, 1_000).
-    assert_eq!(plan.excluded.len(), 1);
-    assert_eq!(plan.excluded[0].pid, 100);
-    assert_eq!(plan.excluded[0].reason, "agent_root");
-    let pids: Vec<u32> = plan.targets.iter().map(|target| target.pid).collect();
-    assert_eq!(pids, vec![999], "the stray is cleaned, not protected");
+    let plan = index
+        .cleanup_plan("session-e")
+        .expect("a live session")
+        .expect("a proven chain");
+    let named: Vec<(u32, &str)> = plan
+        .excluded
+        .iter()
+        .map(|skip| (skip.pid, skip.reason))
+        .collect();
+    assert_eq!(named, vec![(100, "agent_root"), (999, "agent_root")]);
+    assert!(plan.targets.is_empty());
 }
 
 /// The recorded pair outlives the shape the entries take later: if the root
@@ -215,7 +163,10 @@ fn the_agent_root_is_excluded_by_its_recorded_creation_time() {
     };
     refresh(&index, vec![proof("session-f", None)], &mut probe);
 
-    let plan = index.cleanup_plan("session-f").expect("a live session");
+    let plan = index
+        .cleanup_plan("session-f")
+        .expect("a live session")
+        .expect("a proven chain");
     assert_eq!(
         plan.excluded.len(),
         1,
@@ -236,14 +187,18 @@ fn cleanup_plan_excludes_the_agent_root_and_unvouched_members() {
         identities: HashMap::from([
             // The root: our own direct child.
             (100, identity(1_000, std::process::id())),
-            (200, identity(2_000, 100)),
+            // An orphan: its parent is not in the membership.
+            (200, identity(2_000, 77)),
             // 300 is a member the OS will not vouch for.
         ]),
         ports: vec![],
     };
     refresh(&index, vec![proof("session-c", None)], &mut probe);
 
-    let plan = index.cleanup_plan("session-c").expect("a live session");
+    let plan = index
+        .cleanup_plan("session-c")
+        .expect("a live session")
+        .expect("a proven chain");
     let pids: Vec<u32> = plan.targets.iter().map(|target| target.pid).collect();
     assert_eq!(pids, vec![200], "a member, never the agent root");
     assert_eq!(
@@ -271,8 +226,11 @@ fn a_credential_shaped_executable_is_masked_in_entries_and_the_plan() {
     let mut probe = FakeProbe {
         members: vec![100, 200],
         identities: HashMap::from([
-            (100, identity_with(1_000, 7, "/usr/local/bin/agent")),
-            (200, identity_with(2_000, 100, "API_KEY=secret")),
+            (
+                100,
+                identity_with(1_000, std::process::id(), "/usr/local/bin/agent"),
+            ),
+            (200, identity_with(2_000, 77, "API_KEY=secret")),
         ]),
         ports: Vec::new(),
     };
@@ -284,7 +242,10 @@ fn a_credential_shaped_executable_is_masked_in_entries_and_the_plan() {
         .find(|entry| entry.pid == 200)
         .expect("entry");
     assert_eq!(spelled.exe.as_deref(), Some("API_KEY=[redacted]"));
-    let plan = index.cleanup_plan("session-a").expect("plan");
+    let plan = index
+        .cleanup_plan("session-a")
+        .expect("a live session")
+        .expect("a proven chain");
     assert!(
         plan.targets
             .iter()

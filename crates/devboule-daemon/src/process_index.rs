@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::process_argv_redact::{redact_argv, redact_exe};
-use crate::process_plan::{excluded_agent_chain, CleanupPlan, PlanTarget};
+use crate::process_plan::{provider_tree, CleanupPlan, PlanTarget, SkippedPlan};
 use crate::process_tree::JobObject;
 
 /// One live session's proof root: the job or group every membership claim
@@ -42,7 +42,8 @@ pub(crate) struct ProcessEntry {
     /// The parent the OS reported at the last refresh: how the agent's own
     /// chain is walked when a cleanup plan decides what to exclude.
     pub(crate) ppid: u32,
-    /// The session's own root: the daemon's direct child. Cleanup skips it.
+    /// The daemon's direct child: a provider root. Cleanup never signals it
+    /// or anything in its tree.
     pub(crate) is_agent: bool,
 }
 
@@ -253,12 +254,14 @@ impl ProcessIndex {
                     },
                 );
             }
-            // Record the root once — the lowest-pid daemon child, which is
-            // the session's own spawn before any stray re-parents here — and
-            // keep that pair for the session's life.
-            let recorded = state
-                .agent_root
-                .filter(|(pid, _)| state.entries.contains_key(pid));
+            // Keep the recorded pair while the same process still holds its
+            // pid and creation time; a reused pid must not inherit it.
+            let recorded = state.agent_root.filter(|(pid, started_at)| {
+                state
+                    .entries
+                    .get(pid)
+                    .is_some_and(|entry| entry.started_at_ms == *started_at)
+            });
             state.agent_root = recorded.or_else(|| {
                 state
                     .entries
@@ -312,15 +315,45 @@ impl ProcessIndex {
         matches
     }
 
-    /// The cleanup plan for one session: the proven members that are not in
-    /// the agent chain — the recorded root by pid and creation time, plus
-    /// any member above it, each exclusion named — plus the members the OS
-    /// refused to vouch for. The plan carries every target's creation time
-    /// so the signal can prove identity again at the moment it acts.
-    pub(crate) fn cleanup_plan(&self, session_id: &str) -> Option<CleanupPlan> {
+    /// The cleanup plan for one session: every proven member except the
+    /// daemon, the session's provider tree, and any other live session's
+    /// provider tree — each exclusion named — plus the members the OS refused
+    /// to vouch for. `None` for an unknown session; `Err` when this session's
+    /// provider tree cannot be proved, so the caller refuses. The plan carries
+    /// every target's creation time so the signal can prove identity again.
+    pub(crate) fn cleanup_plan(
+        &self,
+        session_id: &str,
+    ) -> Option<Result<CleanupPlan, &'static str>> {
         let sessions = self.sessions();
         let state = sessions.get(session_id)?;
-        let excluded = excluded_agent_chain(&state.entries, state.agent_root);
+        let tree = match provider_tree(&state.entries, state.agent_root) {
+            Ok(tree) => tree,
+            Err(reason) => return Some(Err(reason)),
+        };
+        let daemon = std::process::id();
+        let mut named: HashMap<u32, &'static str> = tree
+            .into_iter()
+            .map(|skip| (skip.pid, skip.reason))
+            .collect();
+        if state.entries.contains_key(&daemon) {
+            named.insert(daemon, "daemon");
+        }
+        let mut elsewhere: HashSet<u32> = HashSet::new();
+        for (_, other) in sessions.iter().filter(|(id, _)| id.as_str() != session_id) {
+            match provider_tree(&other.entries, other.agent_root) {
+                Ok(tree) => elsewhere.extend(tree.iter().map(|skip| skip.pid)),
+                Err(_) => elsewhere.extend(other.entries.keys().copied()),
+            }
+        }
+        for pid in state.entries.keys().filter(|pid| elsewhere.contains(pid)) {
+            named.entry(*pid).or_insert("other_session_provider");
+        }
+        let mut excluded: Vec<SkippedPlan> = named
+            .into_iter()
+            .map(|(pid, reason)| SkippedPlan { pid, reason })
+            .collect();
+        excluded.sort_by_key(|skip| skip.pid);
         let excluded_pids: HashSet<u32> = excluded.iter().map(|skip| skip.pid).collect();
         let targets = state
             .entries
@@ -334,11 +367,11 @@ impl ProcessIndex {
             .collect();
         let mut unproven: Vec<u32> = state.unproven.iter().copied().collect();
         unproven.sort_unstable();
-        Some(CleanupPlan {
+        Some(Ok(CleanupPlan {
             targets,
             excluded,
             unproven,
-        })
+        }))
     }
 
     /// The human label a card or a list shows for one live session.
@@ -395,5 +428,13 @@ pub(crate) fn membership(job: &JobObject, pid: u32) -> Membership {
 }
 
 #[cfg(test)]
+#[path = "process_index_fakes.rs"]
+mod fakes;
+
+#[cfg(test)]
 #[path = "process_index_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "process_chain_tests.rs"]
+mod chain_tests;

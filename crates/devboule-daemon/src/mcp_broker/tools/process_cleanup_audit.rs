@@ -88,6 +88,11 @@ pub(super) fn nothing_to_stop(skipped: &[(u32, &'static str)], unproven: &[u32])
     row
 }
 
+/// A cleanup refused before any card: the session's own tree is not proven.
+pub(super) fn refused(reason: &str) -> String {
+    format!("refused: {reason}; nothing stopped")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

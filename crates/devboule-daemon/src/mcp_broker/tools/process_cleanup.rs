@@ -22,6 +22,11 @@ use crate::server::ServerState;
 const DEFAULT_GRACE_MS: u32 = 2_000;
 const MAX_GRACE_MS: u32 = 30_000;
 
+/// The refusal when the session's own provider tree cannot be proved: the
+/// caller is told nothing was stopped, and why.
+const UNPROVEN_SENTENCE: &str =
+    "refused: the caller's own provider process tree cannot be proved; nothing was stopped";
+
 /// The cleanup answer: what is gone, what still answers, what the OS would
 /// not vouch for, and every member no signal was sent to — with its reason.
 fn cleanup_reply(
@@ -109,14 +114,24 @@ pub(in crate::mcp_broker) fn cleanup(
             })?,
     };
     refreshed(state, &id)?;
-    let plan = state
-        .process_index
-        .cleanup_plan(&registration.session_id)
-        .unwrap_or(CleanupPlan {
+    let plan = match state.process_index.cleanup_plan(&registration.session_id) {
+        None => CleanupPlan {
             targets: Vec::new(),
             excluded: Vec::new(),
             unproven: Vec::new(),
-        });
+        },
+        Some(Ok(plan)) => plan,
+        Some(Err(reason)) => {
+            audit_mcp_tool(
+                state,
+                &caller,
+                crate::provider_catalog::MCP_CLEANUP_PROCESSES_TOOL,
+                &registration.session_id,
+                &audit::refused(reason),
+            );
+            return Err(tool_error(&id, UNPROVEN_SENTENCE));
+        }
+    };
     let label = state
         .process_index
         .session_label(&registration.session_id)
@@ -222,10 +237,11 @@ struct Executed {
     late: Vec<(u32, &'static str)>,
 }
 
-/// Run the approved plan, and only it. One more membership read exists to
-/// name what appeared after approval — those are left alone — and every
-/// signal is preceded by a check against the session's job as it is then.
-/// A failure names the step that failed, for the audit row.
+/// Run the approved plan, and only it. A fresh plan names what appeared after
+/// approval and what a protected tree now holds — both left alone — and a
+/// session whose tree cannot be proved any longer signals nothing. Every
+/// signal is still preceded by a check against the session's job as it is
+/// then. A failure names the step that failed, for the audit row.
 fn execute_plan(
     state: &Arc<ServerState>,
     registration: &RegisteredSession,
@@ -240,18 +256,29 @@ fn execute_plan(
         .map(|target| target.pid)
         .chain(plan.excluded.iter().map(|entry| entry.pid))
         .collect();
-    let late = state
+    let fresh = match state.process_index.cleanup_plan(&registration.session_id) {
+        Some(Ok(fresh)) => fresh,
+        _ => return Err(("chain_unproven", tool_error(id, UNPROVEN_SENTENCE))),
+    };
+    let mut late: Vec<(u32, &'static str)> = state
         .process_index
         .session_entries(&registration.session_id)
         .into_iter()
         .filter(|entry| !approved.contains(&entry.pid))
         .map(|entry| (entry.pid, "not_in_approved_plan"))
         .collect();
-    let unproven = state
-        .process_index
-        .cleanup_plan(&registration.session_id)
-        .map(|fresh| fresh.unproven)
-        .unwrap_or_default();
+    let protected: HashSet<u32> = fresh.excluded.iter().map(|skip| skip.pid).collect();
+    let (signal, now_protected): (Vec<PlanTarget>, Vec<PlanTarget>) = plan
+        .targets
+        .iter()
+        .cloned()
+        .partition(|target| !protected.contains(&target.pid));
+    late.extend(
+        now_protected
+            .iter()
+            .map(|target| (target.pid, "protected_at_execution")),
+    );
+    let unproven = fresh.unproven;
     let job = state
         .sessions
         .live_process_roots()
@@ -259,7 +286,7 @@ fn execute_plan(
         .find(|proof| proof.id == registration.session_id)
         .map(|proof| proof.job);
     let termination = terminate_all(
-        &plan.targets,
+        &signal,
         Duration::from_millis(u64::from(grace)),
         &|pid, planned| owned_target_check(job.as_deref(), pid, planned),
     )

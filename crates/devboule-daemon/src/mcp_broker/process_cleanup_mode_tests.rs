@@ -62,39 +62,10 @@ fn live_session(state: &Arc<ServerState>, mode: &str) -> Arc<crate::session::Ses
     runtime
 }
 
-/// The first live child of `parent` whose image is `image`: one Toolhelp
-/// walk. The image filter matters because a console host parented to the same
-/// root appears first and is not what the test wants to clean.
-#[cfg(windows)]
-fn child_with_image(parent: u32, image: &str) -> Option<u32> {
-    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
-        TH32CS_SNAPPROCESS,
-    };
-
-    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
-    assert!(snapshot != INVALID_HANDLE_VALUE, "process snapshot");
-    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
-    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-    let mut found = None;
-    let mut ok = unsafe { Process32FirstW(snapshot, &mut entry) };
-    while ok != 0 {
-        let length = entry.szExeFile.iter().position(|unit| *unit == 0);
-        let name = String::from_utf16_lossy(&entry.szExeFile[..length.unwrap_or(0)]);
-        if entry.th32ParentProcessID == parent && name.eq_ignore_ascii_case(image) {
-            found = Some(entry.th32ProcessID);
-            break;
-        }
-        ok = unsafe { Process32NextW(snapshot, &mut entry) };
-    }
-    unsafe { CloseHandle(snapshot) };
-    found
-}
-
-/// The session's proof: a root that is this test's own direct child (so the
-/// index records it as the agent) and one real member inside it to clean.
-/// Returns (root child, member pid); the caller reaps the root.
+/// A proof root that is this test's own direct child (so the index records it
+/// as the agent), and one real member to clean that lies outside the root's
+/// tree: a shell starts a ping and exits, so the ping has no parent in the
+/// membership. Returns (root child, member pid); the caller reaps the root.
 #[cfg(windows)]
 #[allow(clippy::zombie_processes)]
 fn member_pair() -> (std::process::Child, u32) {
@@ -108,7 +79,7 @@ fn member_pair() -> (std::process::Child, u32) {
     // backslash-escaped quotes `args` would write: it exits 1 at once, and a
     // root that is already dead proves nothing.
     let ping = system_root.join("System32").join("ping.exe");
-    let mut root = std::process::Command::new(system_root.join("System32").join("cmd.exe"))
+    let root = std::process::Command::new(system_root.join("System32").join("cmd.exe"))
         .raw_arg(format!("/C \"\"{}\" -n 60 127.0.0.1\"", ping.display()))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -117,59 +88,69 @@ fn member_pair() -> (std::process::Child, u32) {
         .spawn()
         .expect("our own root spawns");
 
-    // cmd starts its ping after the spawn returns, so the child is awaited,
-    // not assumed.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if let Some(member) = child_with_image(root.id(), "ping.exe") {
-            return (root, member);
-        }
-        if Instant::now() >= deadline {
-            let _ = root.kill();
-            let _ = root.wait();
-            panic!("the root starts its ping within ten seconds");
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    // PowerShell starts the member, prints its pid and exits: the member is
+    // re-parented to a process that is no longer alive.
+    let script = format!(
+        "(Start-Process -FilePath '{}' -ArgumentList '-n 60 127.0.0.1' -WindowStyle Hidden -PassThru).Id",
+        ping.display()
+    );
+    let shell = system_root
+        .join("System32")
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("powershell.exe");
+    let output = std::process::Command::new(shell)
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .expect("PowerShell starts");
+    let member = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<u32>()
+        .expect("PowerShell prints the member pid");
+    (root, member)
 }
 
 #[cfg(not(windows))]
 #[allow(clippy::zombie_processes)]
 fn member_pair() -> (std::process::Child, u32) {
     use std::io::Read;
+    use std::os::unix::process::CommandExt;
 
     use crate::process_tree::lead_own_group;
 
-    // A group led by the root with one real member inside it: the sleeper
-    // writes its own pid out so the test can name it.
-    let pid_file = crate::test_dirs::test_temp_dir("pm-cleanup-member").join("member.pid");
-    let script = format!("sleep 300 & echo $! > \"{}\"; wait", pid_file.display());
-    let mut command = std::process::Command::new("/bin/sh");
-    command
-        .arg("-c")
-        .arg(script)
+    // The root leads its own group; the member joins that group from a shell
+    // that exits at once, so the sleeper is re-parented out of the root's tree.
+    let mut root_command = std::process::Command::new("/bin/sleep");
+    root_command
+        .arg("300")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    lead_own_group(&mut command);
-    let root = command.spawn().expect("our own root spawns");
+    lead_own_group(&mut root_command);
+    let root = root_command.spawn().expect("our own root spawns");
 
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if let Ok(mut handle) = std::fs::File::open(&pid_file) {
-            let mut text = String::new();
-            if handle.read_to_string(&mut text).is_ok() {
-                if let Ok(pid) = text.trim().parse::<u32>() {
-                    return (root, pid);
-                }
-            }
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the member writes its pid within five seconds"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    let pid_file = crate::test_dirs::test_temp_dir("pm-cleanup-member").join("member.pid");
+    let script = format!("sleep 300 & echo $! > \"{}\"", pid_file.display());
+    let status = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(script)
+        .process_group(root.id())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("the shell starts");
+    assert!(status.success(), "the shell writes the member pid");
+    let mut text = String::new();
+    std::fs::File::open(&pid_file)
+        .expect("the member pid file")
+        .read_to_string(&mut text)
+        .expect("the member pid file reads");
+    let member = text.trim().parse::<u32>().expect("the member pid");
+    (root, member)
 }
 
 /// Both pids enter the session's own proof: the job's list on Windows, the
