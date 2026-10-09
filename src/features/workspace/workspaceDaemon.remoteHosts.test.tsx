@@ -241,6 +241,64 @@ describe("remote hosts on the sidebar poll", () => {
     expect(latest().hosts.get("device-one")?.revision).toBe(2);
   });
 
+  it("reads a host's projects one at a time so the link's single read serves them all", async () => {
+    vi.mocked(devicesList).mockResolvedValue(reply([peer("device-one", "One", { online: false })]));
+    const second: Project = { id: "p2", name: "Two", path: "C:/two" };
+    const secondWorkspace: Workspace = {
+      id: "w2",
+      projectId: "p2",
+      title: "dev",
+      isolation: "local",
+      path: "C:/two",
+    };
+    let inFlight = 0;
+    let maxInFlight = 0;
+    vi.mocked(remoteHostList).mockImplementation(async (_deviceId, list) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await Promise.resolve();
+      inFlight -= 1;
+      if (list.kind === "projects") return { list: "projects", rows: [PROJECT, second] };
+      if (list.kind === "workspaces" && list.projectId === "p1") {
+        return { list: "workspaces", rows: [WORKSPACE] };
+      }
+      if (list.kind === "workspaces") return { list: "workspaces", rows: [secondWorkspace] };
+      return { list: "sessions", rows: [] };
+    });
+    await mount(<HostsProbe />);
+    await act(async () => emit({ deviceId: "device-one", state: "online", revision: 1 }));
+    await flush();
+
+    // The held link admits one read at a time; firing the per-project reads
+    // concurrently would leave every project but the first with no section.
+    expect(maxInFlight).toBe(1);
+    const host = latest().hosts.get("device-one");
+    expect(host?.projects.map((project) => project.id)).toEqual(["p1", "p2"]);
+    expect(host?.workspaces.get("p1")?.map((workspace) => workspace.id)).toEqual(["w1"]);
+    expect(host?.workspaces.get("p2")?.map((workspace) => workspace.id)).toEqual(["w2"]);
+  });
+
+  it("waits out the link's busy refusal instead of dropping the section", async () => {
+    vi.mocked(devicesList).mockResolvedValue(reply([peer("device-one", "One", { online: false })]));
+    let workspacesCalls = 0;
+    vi.mocked(remoteHostList).mockImplementation(async (_deviceId, list) => {
+      if (list.kind === "projects") return { list: "projects", rows: [PROJECT] };
+      workspacesCalls += 1;
+      if (workspacesCalls === 1) {
+        throw { code: "operation_conflict", message: "the link is busy" };
+      }
+      return { list: "workspaces", rows: [WORKSPACE] };
+    });
+    await mount(<HostsProbe />);
+    await act(async () => emit({ deviceId: "device-one", state: "online", revision: 1 }));
+    await flush();
+    // The retry waits out a short backoff; the poll's tick covers it.
+    await tick();
+
+    expect(workspacesCalls).toBeGreaterThanOrEqual(2);
+    expect(latest().hosts.get("device-one")?.workspaces.get("p1")).toHaveLength(1);
+  });
+
   it("re-reads a host whose link comes back, even with no new revision", async () => {
     await mount(<HostsProbe />);
     await act(async () => emit({ deviceId: "device-one", state: "online", revision: 1 }));

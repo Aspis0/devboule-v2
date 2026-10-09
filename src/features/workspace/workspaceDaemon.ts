@@ -8,7 +8,16 @@ import {
   remoteHostWatch,
   type RemoteHostStatusChannel,
 } from "../../lib/tauri";
-import type { DaemonStatus, PeerRow, Project, RemoteHostStatus, Workspace } from "../../types/ipc";
+import type {
+  DaemonStatus,
+  PeerRow,
+  Project,
+  RemoteHostList,
+  RemoteHostListBody,
+  RemoteHostStatus,
+  Workspace,
+} from "../../types/ipc";
+import { isCommandError } from "../../lib/commandError";
 
 // One interval for both reads: the daemon status and the sidebar's host list
 // are the same screen, and a second interval is a second thing to start and stop.
@@ -323,10 +332,35 @@ function handleRemoteStatus(status: RemoteHostStatus): void {
 }
 
 /**
+ * Read one of the three allowlisted lists, retrying the one refusal that means
+ * "not now". The peer link admits a single read at a time, so a second request
+ * sent while the first is outstanding comes back `operation_conflict` rather
+ * than waiting its turn; a short bounded retry is how the caller waits instead
+ * of dropping the rows. Every other refusal is the answer and is returned.
+ */
+async function readRemoteList(
+  deviceId: string,
+  list: RemoteHostList,
+  attempts = 4,
+): Promise<RemoteHostListBody> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await remoteHostList(deviceId, list);
+    } catch (error) {
+      const busy = isCommandError(error) && error.code === "operation_conflict";
+      if (!busy || attempt >= attempts) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
+    }
+  }
+}
+
+/**
  * Read one host's projects and each project's workspaces through the held
- * link. A failed read keeps the last successful snapshot: a host that went
- * quiet keeps showing what it last said, and its row carries the offline
- * label rather than an empty section.
+ * link. The reads are sequential: the link serves one read at a time, so a
+ * project list fired concurrently with the one already in flight would be
+ * refused and its section silently missing. A failed read keeps the last
+ * successful snapshot: a host that went quiet keeps showing what it last said,
+ * and its row carries the offline label rather than an empty section.
  */
 async function loadRemoteHost(deviceId: string): Promise<void> {
   if (loadingHosts.has(deviceId)) {
@@ -338,22 +372,22 @@ async function loadRemoteHost(deviceId: string): Promise<void> {
   loadingHosts.add(deviceId);
   const generation = remoteGeneration;
   try {
-    const projects = await remoteHostList(deviceId, { kind: "projects" });
+    const projects = await readRemoteList(deviceId, { kind: "projects" });
     if (generation !== remoteGeneration || projects.list !== "projects") return;
     const workspaces = new Map<string, readonly Workspace[]>();
-    await Promise.all(
-      projects.rows.map(async (project) => {
-        try {
-          const reply = await remoteHostList(deviceId, {
-            kind: "workspaces",
-            projectId: project.id,
-          });
-          if (reply.list === "workspaces") workspaces.set(project.id, reply.rows);
-        } catch {
-          // One project's list failed; the others still land.
-        }
-      }),
-    );
+    for (const project of projects.rows) {
+      if (generation !== remoteGeneration) return;
+      try {
+        const reply = await readRemoteList(deviceId, {
+          kind: "workspaces",
+          projectId: project.id,
+        });
+        if (reply.list === "workspaces") workspaces.set(project.id, reply.rows);
+      } catch {
+        // One project's list failed; the others still land, and the next
+        // revision or reconnect reads the whole host again.
+      }
+    }
     if (generation !== remoteGeneration) return;
     const host = remoteHosts.hosts.get(deviceId);
     if (host === undefined) return;
