@@ -2091,7 +2091,6 @@ fn invalid_claude_effort_is_rejected_before_switcher() {
             provider_id: None,
             model_id: "claude-sonnet-5".to_string(),
             name: "Claude Sonnet 5".to_string(),
-            provider_id: None,
             description: None,
             context_tokens: None,
             current_effort: Some("high".to_string()),

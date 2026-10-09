@@ -248,6 +248,6 @@ describe("every real select lives in a wrapped field", () => {
       }
     }
     expect(unwrapped).toEqual([]);
-    expect(found).toHaveLength(7);
+    expect(found).toHaveLength(8);
   });
 });

@@ -266,6 +266,7 @@ mod tests {
 
     fn model(id: &str, provider: &str) -> SessionModel {
         SessionModel {
+            accepts_images: false,
             model_id: id.to_string(),
             name: id.to_string(),
             provider_id: Some(provider.to_string()),

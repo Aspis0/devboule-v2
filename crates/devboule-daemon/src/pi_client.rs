@@ -2569,18 +2569,6 @@ fn ambiguous_model_error(model_id: &str, providers: &[String]) -> WireError {
     )
 }
 
-/// Names the serving providers so the refusal says what to pick. The profile
-/// form has no provider field yet, so the wording points at the profile.
-fn ambiguous_model_error(model_id: &str, providers: &[String]) -> WireError {
-    WireError::new(
-        ErrorCode::InvalidRequest,
-        format!(
-            "Pi model '{model_id}' is offered by {}; pick one in the profile.",
-            providers.join(" and ")
-        ),
-    )
-}
-
 #[derive(Clone, Debug)]
 struct PiModel {
     id: String,

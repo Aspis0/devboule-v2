@@ -60,7 +60,6 @@ impl ClaudeView {
                         provider_id: None,
                         model_id: model.clone(),
                         name: model,
-                        provider_id: None,
                         description: None,
                         context_tokens: None,
                         current_effort: None,

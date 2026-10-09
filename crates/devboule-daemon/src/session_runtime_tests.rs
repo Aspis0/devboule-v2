@@ -100,7 +100,6 @@ fn model(model_id: &str) -> SessionModel {
         provider_id: None,
         model_id: model_id.to_string(),
         name: model_id.to_string(),
-        provider_id: None,
         description: None,
         context_tokens: None,
         current_effort: None,

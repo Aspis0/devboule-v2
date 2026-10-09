@@ -1302,7 +1302,6 @@ pub(crate) fn catalog_from_config_options(
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or(model_id)
                 .to_string(),
-            provider_id: None,
             model_id: model_id.to_string(),
             description: entry
                 .get("description")
@@ -1578,7 +1577,6 @@ fn session_model_from_vendor(value: &serde_json::Value) -> Option<SessionModel> 
         provider_id: None,
         model_id,
         name,
-        provider_id: None,
         description,
         context_tokens,
         current_effort,

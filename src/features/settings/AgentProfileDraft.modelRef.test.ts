@@ -15,7 +15,7 @@ function item(modelId: string, providerId?: string | null, name?: string): Sessi
   return {
     modelId,
     name: name ?? modelId,
-    providerId: providerId ?? null,
+    providerId: providerId ?? undefined,
   };
 }
 

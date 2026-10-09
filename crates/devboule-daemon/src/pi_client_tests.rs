@@ -4271,8 +4271,8 @@ fn duplicate_ids_share_no_row_and_lookup_names_their_providers() {
 #[test]
 fn each_duplicate_row_keeps_its_own_effort_list() {
     // Current is mimo served by opencode-go with levels [high, low]; the
-    // openrouter row declares only high in its own thinking map, and solo
-    // declares nothing at all.
+    // openrouter row takes its own list from pi's rule (every level its map
+    // does not null out), and solo declares nothing at all.
     let catalog = duplicate_id_catalog();
     let levels_of = |key: &str| -> Option<Vec<String>> {
         match catalog.lookup(key) {
@@ -4289,7 +4289,11 @@ fn each_duplicate_row_keeps_its_own_effort_list() {
     );
     assert_eq!(
         levels_of("openrouter/mimo-v2-6-flash"),
-        Some(vec!["high".to_string()])
+        Some(
+            ["off", "minimal", "low", "medium", "high"]
+                .map(str::to_string)
+                .to_vec()
+        )
     );
     assert_eq!(levels_of("nvidia/solo"), None);
 }

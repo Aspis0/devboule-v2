@@ -800,6 +800,7 @@ mod pi_tests {
 
     fn snapshot_model(id: &str, provider: &str) -> devboule_protocol::SessionModel {
         devboule_protocol::SessionModel {
+            accepts_images: false,
             model_id: id.to_string(),
             name: id.to_string(),
             provider_id: Some(provider.to_string()),
