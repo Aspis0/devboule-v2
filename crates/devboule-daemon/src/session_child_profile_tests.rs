@@ -30,6 +30,7 @@ pub(super) fn facts(mode_id: &str, model: &str, profile_id: &str) -> ChildProfil
         profile_id: profile_id.to_string(),
         mode_id: mode_id.to_string(),
         model: model.to_string(),
+        model_provider: None,
         thinking_option_id: None,
     }
 }

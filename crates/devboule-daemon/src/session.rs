@@ -132,6 +132,10 @@ pub(crate) use acp_client::probe_declarations;
 /// copied there.
 #[cfg(test)]
 pub(crate) use acp_client::{ACP_FIRST_RESPONSE_TIMEOUT, ACP_RESPONSE_TIMEOUT};
+/// The one pi catalog read the profile form's model picker is built on.
+/// Re-exported because the read lives with the pi client (it spawns a child
+/// and drives the handshake) and its only caller is outside `session`.
+pub(crate) use pi_client::probe_models_snapshot;
 #[path = "acp_host.rs"]
 mod acp_host;
 #[path = "acp_pending.rs"]
@@ -3075,9 +3079,10 @@ impl SessionRegistry {
         // asserted on the provider's own wire, Claude's effort validation
         // included where it applies.
         if model_ask_needed(child_runtime.session_manifest().as_ref(), &facts) {
-            if let Err(error) = self.set_model(
+            if let Err(error) = self.set_model_full(
                 &child_session.id,
                 &child_owner,
+                facts.model_provider.as_deref(),
                 Some(&facts.model),
                 facts.thinking_option_id.as_deref(),
             ) {
@@ -3671,6 +3676,21 @@ impl SessionRegistry {
         model_id: Option<&str>,
         effort: Option<&str>,
     ) -> Result<(), WireError> {
+        self.set_model_full(session_id, owner, None, model_id, effort)
+    }
+
+    /// The profile move's switch: the serving provider travels beside the
+    /// bare id, so a pair the catalog serves under two providers lands on
+    /// the one the profile names. The wire switch above stays bare — its
+    /// frame carries no provider — and resolves by the same fallback.
+    pub fn set_model_full(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        model_provider: Option<&str>,
+        model_id: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<(), WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
         if model_id.is_none() && effort.is_none() {
@@ -3716,7 +3736,7 @@ impl SessionRegistry {
                 effort,
             )?;
         }
-        let result = switcher.set_model(model_id, effort);
+        let result = switcher.set_model_full(model_provider, model_id, effort);
         if result.is_ok() {
             if let Some(manifest) = switcher.manifest() {
                 let manifest = runtime.store_session_manifest(manifest);

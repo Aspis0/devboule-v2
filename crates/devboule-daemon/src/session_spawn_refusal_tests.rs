@@ -207,6 +207,7 @@ fn the_pre_card_tick_refusal_never_exceeds_what_the_clients_refuse_at_spawn() {
                 mode,
                 "some-model",
                 None,
+                None,
                 &features,
             );
             let pre_card_refuses =
@@ -233,6 +234,7 @@ fn the_pre_card_tick_refusal_never_exceeds_what_the_clients_refuse_at_spawn() {
     let delivery = crate::profile_delivery::ProfileDelivery::for_child(
         "full-access",
         "some-model",
+        None,
         None,
         &features,
     );
@@ -269,6 +271,7 @@ fn every_clients_creation_time_profile_refusal_is_invalid_request() {
             "no-such-mode",
             "m",
             None,
+            None,
             &serde_json::Map::new(),
         ))
         .expect_err("unknown pi mode"),
@@ -278,6 +281,7 @@ fn every_clients_creation_time_profile_refusal_is_invalid_request() {
         super::pi_client::validate_delivery(&crate::profile_delivery::ProfileDelivery::for_child(
             "ask",
             "m",
+            None,
             None,
             &ticked_features(),
         ))
@@ -291,6 +295,7 @@ fn every_clients_creation_time_profile_refusal_is_invalid_request() {
                 "no-such-mode",
                 "m",
                 None,
+                None,
                 &serde_json::Map::new(),
             ),
         )
@@ -302,6 +307,7 @@ fn every_clients_creation_time_profile_refusal_is_invalid_request() {
             &crate::profile_delivery::ProfileDelivery::for_child(
                 "auto",
                 "m",
+                None,
                 None,
                 &ticked_features(),
             ),
@@ -318,6 +324,7 @@ fn every_clients_creation_time_profile_refusal_is_invalid_request() {
                 "default",
                 "m",
                 None,
+                None,
                 &ticked_features(),
             ),
         )
@@ -330,6 +337,7 @@ fn every_clients_creation_time_profile_refusal_is_invalid_request() {
             &crate::profile_delivery::ProfileDelivery::for_child(
                 "default",
                 "some-model",
+                None,
                 None,
                 &serde_json::Map::new(),
             ),

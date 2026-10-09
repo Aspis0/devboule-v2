@@ -1056,5 +1056,9 @@ pub(crate) struct ChildProfileFacts {
     pub(crate) profile_id: String,
     pub(crate) mode_id: String,
     pub(crate) model: String,
+    /// The provider serving that model, when the profile stores the pair.
+    /// `None` is what older builds wrote: the move falls back to the bare
+    /// id, exactly as it reads those profiles today.
+    pub(crate) model_provider: Option<String>,
     pub(crate) thinking_option_id: Option<String>,
 }

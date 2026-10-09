@@ -3,25 +3,28 @@
 //! author a profile from real vocabulary instead of free text.
 //!
 //! Spec: `reports/remote-agents/SPEC-provider-vocabulary-query.md` §4-§6.
-//! The query lands the wire, the gate, the cache and the one
-//! provider that costs almost nothing: Claude's models come from the catalog
-//! derivation, which reads the CLI's files on disk. The one process a
-//! Claude read can start is the native version probe, and only while the
-//! installed version is still unknown — the same one-shot probe
-//! `providers_list` starts, and once the version is settled a read costs
-//! file reads only. Every other provider answers `absent` — no source could
-//! answer yet — which is the wire value that makes the form completable; a
-//! later upgrade can move three of them to `present` with spawn probes and
-//! change no shape.
+//! The query lands the wire, the gate, the cache and the two providers
+//! with a source: Claude's models come from the catalog derivation, which
+//! reads the CLI's files on disk. The one process a Claude read can start
+//! is the native version probe, and only while the installed version is
+//! still unknown — the same one-shot probe `providers_list` starts, and
+//! once the version is settled a read costs file reads only. Pi's models
+//! come from a throwaway pi process (`pi_models_probe`), read once per
+//! run; its modes are the launcher's own table, which needs no probe.
+//! Every other provider answers `absent` — no source could answer yet —
+//! which is the wire value that makes the form completable; a later
+//! upgrade can move two of them to `present` with spawn probes and change
+//! no shape.
 //!
 //! Two rules govern this module:
 //!
 //! - **The provider dimension is open.** No provider name lives here: the
 //!   per-family probes are `Provider::vocabulary()` impls (Claude's disk
-//!   scrape in `claude_axes`, every other family `absent_axes`), selected
-//!   through the registry by catalog id. Nothing enumerates a provider's
-//!   mode names: Claude's modes come from `claude_view::mode_state`, the
-//!   list the live manifest already serves.
+//!   scrape in `claude_axes`, pi's catalog snapshot in `pi_models_probe`,
+//!   every other family `absent_axes`), selected through the registry by
+//!   catalog id. Nothing enumerates a provider's mode names: Claude's modes
+//!   come from `claude_view::mode_state` and pi's from its own table, each
+//!   the list the live manifest already serves.
 //! - **The permission dimension is closed.** This query is Client-only with
 //!   one explicit `Deny` arm in `peer_allows`; nothing here is reachable
 //!   from an MCP tool.
@@ -296,9 +299,15 @@ pub(crate) fn provider_vocabulary_reply(
     // be `probing` on a cold ACP provider while the models and modes come
     // straight from the cache.
     let features = provider_impl.features(state, &canonical, model);
-    state
-        .provider_vocabulary
-        .store(&canonical, facts, now_ms, models.clone(), modes.clone());
+    // A transient answer is never TTL-cached: pi serves `absent` while its
+    // catalog read is still running, and caching that absence would keep
+    // the editor on free text for the cache's whole TTL after the snapshot
+    // already landed. The probe cache owns pi's answer instead.
+    if !provider_impl.vocabulary_transient(state) {
+        state
+            .provider_vocabulary
+            .store(&canonical, facts, now_ms, models.clone(), modes.clone());
+    }
     vocabulary_reply(
         id,
         &canonical,
@@ -769,5 +778,110 @@ mod tests {
         let runtime_dir = state.sessions.runtime_dir().to_path_buf();
         drop(state);
         let _ = std::fs::remove_dir_all(runtime_dir);
+    }
+}
+
+#[cfg(test)]
+mod pi_tests {
+    use super::*;
+
+    fn state() -> Arc<ServerState> {
+        ServerState::with_paths(
+            "provider-vocabulary-pi".to_string(),
+            crate::paths::RuntimePaths::from_dir(crate::test_dirs::test_temp_dir(
+                "devboule-provider-vocabulary-pi",
+            )),
+        )
+        .expect("state")
+    }
+
+    fn snapshot_model(id: &str, provider: &str) -> devboule_protocol::SessionModel {
+        devboule_protocol::SessionModel {
+            model_id: id.to_string(),
+            name: id.to_string(),
+            provider: Some(provider.to_string()),
+            description: None,
+            context_tokens: None,
+            current_effort: None,
+            efforts: None,
+        }
+    }
+
+    /// Pi's axes from a recorded snapshot, through the real query path: models
+    /// present with the provider's own origin and per-model serving providers,
+    /// modes present with the daemon's — the same items the composer chip
+    /// draws, so the editor and the chip cannot disagree.
+    #[test]
+    fn pi_answers_present_axes_from_its_recorded_snapshot() {
+        let state = state();
+        let key = crate::pi_models_probe::PiModelsKey::new("pi");
+        state.pi_models.record_answer_for_test(
+            &key,
+            vec![
+                snapshot_model("mimo-v2-6-flash", "opencode-go"),
+                snapshot_model("mimo-v2-6-flash", "openrouter"),
+            ],
+        );
+        let reply = provider_vocabulary_reply(&state, 7, "pi", None, false);
+        let DaemonMessage::ProviderVocabulary {
+            provider,
+            models,
+            modes,
+            features,
+            ..
+        } = reply
+        else {
+            panic!("a vocabulary reply, not {reply:?}");
+        };
+        assert_eq!(provider, "pi");
+        assert_eq!(models.state, VocabularyState::Present);
+        assert_eq!(models.origin, Some(VocabularyOrigin::Provider));
+        assert_eq!(
+            models
+                .items
+                .iter()
+                .map(|item| item.provider.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("opencode-go"), Some("openrouter")]
+        );
+        assert_eq!(modes.state, VocabularyState::Present);
+        assert_eq!(modes.origin, Some(VocabularyOrigin::Daemon));
+        assert!(!modes.items.is_empty());
+        // The snapshot answered: the static tick rides beside it, never a
+        // probe signal.
+        let features = features.expect("pi answers features");
+        assert!(!features.probing);
+        assert_eq!(features.state, VocabularyState::Present);
+    }
+
+    /// Before the snapshot lands the models axis stays `absent` and the
+    /// features axis says `probing` — the combination the form polls on —
+    /// and neither answer is TTL-cached: a second ask after the snapshot
+    /// records must serve the present axes, not the absence.
+    #[test]
+    fn pi_transient_answers_are_never_ttl_cached() {
+        let state = state();
+        let first = provider_vocabulary_reply(&state, 7, "pi", None, false);
+        let DaemonMessage::ProviderVocabulary {
+            models, features, ..
+        } = first
+        else {
+            panic!("a vocabulary reply, not {first:?}");
+        };
+        assert_eq!(models.state, VocabularyState::Absent);
+        let features = features.expect("pi answers features");
+        assert!(features.probing);
+        // The worker the first ask started may still be running against a
+        // pi that is not installed: settle the slot deterministically for
+        // the assertion below.
+        let key = crate::pi_models_probe::PiModelsKey::new("pi");
+        state
+            .pi_models
+            .record_answer_for_test(&key, vec![snapshot_model("mimo-v2-6-flash", "opencode-go")]);
+        let second = provider_vocabulary_reply(&state, 8, "pi", None, false);
+        let DaemonMessage::ProviderVocabulary { models, .. } = second else {
+            panic!("a vocabulary reply, not {second:?}");
+        };
+        assert_eq!(models.state, VocabularyState::Present);
     }
 }

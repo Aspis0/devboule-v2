@@ -203,6 +203,19 @@ pub(crate) trait OutOfBandCommands: Send + Sync {
 
 pub(crate) trait ModelSwitcher: Send + Sync {
     fn set_model(&self, model_id: Option<&str>, effort: Option<&str>) -> Result<(), WireError>;
+    /// The same switch with the serving provider named (pi: openrouter,
+    /// opencode-go, …). Providers without a per-model serving dimension
+    /// ignore it; pi resolves the pair, falling back to the bare id for
+    /// profiles older builds wrote.
+    fn set_model_full(
+        &self,
+        provider: Option<&str>,
+        model_id: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<(), WireError> {
+        let _ = provider;
+        self.set_model(model_id, effort)
+    }
     fn set_mode(&self, _mode_id: &str) -> Result<(), WireError> {
         Err(WireError::new(
             ErrorCode::InvalidRequest,

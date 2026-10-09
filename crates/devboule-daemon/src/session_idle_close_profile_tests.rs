@@ -25,6 +25,7 @@ fn profile_document(
             spawn_prompt: String::new(),
             provider: "claude".to_string(),
             model: "claude-opus-4-6".to_string(),
+            model_provider: None,
             mode_id: "default".to_string(),
             thinking_option_id: None,
             features: serde_json::Map::new(),

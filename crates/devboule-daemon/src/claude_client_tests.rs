@@ -225,6 +225,7 @@ fn claude_model(model_id: &str) -> devboule_protocol::SessionModel {
         provider_id: None,
         model_id: model_id.to_string(),
         name: model_id.to_string(),
+        provider: None,
         description: None,
         context_tokens: None,
         current_effort: None,
@@ -2221,6 +2222,7 @@ fn model(id: &str, effort_ids: Option<Vec<&str>>) -> SessionModel {
         provider_id: None,
         model_id: id.to_string(),
         name: id.to_string(),
+        provider: None,
         description: None,
         context_tokens: None,
         current_effort: None,
@@ -2623,7 +2625,7 @@ fn slice_of_kinds(events: &[SessionEvent]) -> Vec<String> {
 #[test]
 fn a_model_is_not_judged_against_a_provisional_catalog_and_the_derived_one_matches_suffixes() {
     fn delivery(model: &str, thinking: Option<&str>) -> ProfileDelivery {
-        ProfileDelivery::for_child("default", model, thinking, &serde_json::Map::new())
+        ProfileDelivery::for_child("default", model, None, thinking, &serde_json::Map::new())
     }
 
     fn derived_with(model_id: &str, efforts: &[&str]) -> ClaudeCatalogSnapshot {

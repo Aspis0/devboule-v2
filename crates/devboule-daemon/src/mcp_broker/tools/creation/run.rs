@@ -263,6 +263,7 @@ pub(in crate::mcp_broker) fn create_agent(
         delivery: crate::profile_delivery::ProfileDelivery::for_child(
             &profile.mode,
             &profile.model,
+            profile.model_provider.as_deref(),
             profile.thinking_option_id.as_deref(),
             &profile.features,
         ),

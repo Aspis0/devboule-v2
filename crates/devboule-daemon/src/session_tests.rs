@@ -302,6 +302,7 @@ fn move_facts(mode_id: &str, model: &str, profile_id: &str) -> ChildProfileFacts
         profile_id: profile_id.to_string(),
         mode_id: mode_id.to_string(),
         model: model.to_string(),
+        model_provider: None,
         thinking_option_id: None,
     }
 }
@@ -2090,6 +2091,7 @@ fn invalid_claude_effort_is_rejected_before_switcher() {
             provider_id: None,
             model_id: "claude-sonnet-5".to_string(),
             name: "Claude Sonnet 5".to_string(),
+            provider: None,
             description: None,
             context_tokens: None,
             current_effort: Some("high".to_string()),

@@ -489,6 +489,26 @@ fn check_profile(
 
     check_required_field(&mut profile.model, "model", position)?;
     check_required_field(&mut profile.mode_id, "mode id", position)?;
+    // The serving provider beside the bare id: trimmed and capped like the
+    // other ids, and optional — `None` is what older builds wrote, matched
+    // by the bare id alone. An empty string is refused for the reason the
+    // thinking option gives below: omitting the field is how a caller says
+    // "none".
+    if let Some(serving) = profile.model_provider.as_deref() {
+        let serving = serving.trim();
+        if serving.is_empty() {
+            return Err(format!(
+                "profile {position} has an empty model provider; omit the field to say it has none"
+            ));
+        }
+        if serving.len() > MAX_PROFILE_FIELD_BYTES {
+            return Err(format!(
+                "the model provider of profile {position} is {} bytes, over the {MAX_PROFILE_FIELD_BYTES}-byte cap",
+                serving.len()
+            ));
+        }
+        profile.model_provider = Some(serving.to_string());
+    }
     // `thinkingOptionId` is optional, and an empty one is refused for the reason
     // `validate_display_name` gives for a name: omitting the field is how a
     // caller says "none", so a caller that sent `""` meant to say something it
@@ -781,6 +801,7 @@ mod tests {
             spawn_prompt: String::new(),
             provider: "claude".to_string(),
             model: "claude-opus-4-6".to_string(),
+            model_provider: None,
             mode_id: "default".to_string(),
             thinking_option_id: None,
             features: serde_json::Map::new(),
@@ -788,6 +809,29 @@ mod tests {
             enabled_for_agents: false,
             idle_close_minutes: None,
         }
+    }
+
+    #[test]
+    fn model_provider_is_trimmed_capped_and_optional() {
+        let registry = crate::session::ProviderRegistry::catalog_default();
+        // Absent is what older builds wrote: admitted, and left absent.
+        let mut bare = profile("p-1", "Bare");
+        let mut ids = std::collections::HashSet::new();
+        check_profile(&mut bare, 1, &mut ids, &registry).expect("absent is admitted");
+        assert_eq!(bare.model_provider, None);
+        // Padded is trimmed to the pair the spawn path resolves.
+        let mut padded = profile("p-2", "Padded");
+        padded.model_provider = Some("  opencode-go  ".to_string());
+        check_profile(&mut padded, 2, &mut ids, &registry).expect("padded is trimmed");
+        assert_eq!(padded.model_provider.as_deref(), Some("opencode-go"));
+        // Over the field cap is refused, like every other id on the row.
+        let mut over = profile("p-3", "Over");
+        over.model_provider = Some("x".repeat(super::MAX_PROFILE_FIELD_BYTES + 1));
+        let refusal = check_profile(&mut over, 3, &mut ids, &registry).expect_err("over the cap");
+        assert!(
+            refusal.contains("over the"),
+            "the refusal names the cap: {refusal}"
+        );
     }
 
     fn document(profiles: Vec<AgentProfile>) -> AgentProfilesDocument {

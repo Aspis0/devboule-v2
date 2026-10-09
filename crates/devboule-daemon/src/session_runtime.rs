@@ -485,6 +485,7 @@ fn replace_claude_catalog(previous: &SessionEvent, incoming: SessionEvent) -> Se
                     provider_id: None,
                     model_id: current_model_id.to_string(),
                     name: current_model_id.to_string(),
+                    provider: None,
                     description: None,
                     context_tokens: None,
                     current_effort: None,

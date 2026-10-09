@@ -3314,7 +3314,11 @@ pub struct ToolPolicyEntry {
 /// the store refuses an enabled pair.
 ///
 /// `model`, `mode_id` and `thinking_option_id` are the provider's own
-/// vocabulary, stored verbatim and bounded by length. The provider catalog
+/// vocabulary, stored verbatim and bounded by length. `model_provider` is
+/// the provider serving the model (pi's per-catalog-entry `provider`), stored
+/// beside the bare `model` id because one id can be served by two providers;
+/// `None` is what older builds wrote, and those still read — matched by the
+/// bare id alone. The provider catalog
 /// answers which providers exist — and `agent_profiles.rs` uses exactly that
 /// predicate — but it publishes no per-provider list of models or modes; the
 /// mode tables it holds serve the preset tests, not a reply. Modes are the
@@ -3348,6 +3352,11 @@ pub struct AgentProfile {
     pub spawn_prompt: String,
     pub provider: String,
     pub model: String,
+    /// The provider serving the model, when the catalog names one per model
+    /// (pi: openrouter, opencode-go, …). Stored beside the bare id; `None`
+    /// is what older builds wrote, matched by the bare id alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_provider: Option<String>,
     pub mode_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_option_id: Option<String>,

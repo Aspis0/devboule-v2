@@ -2304,6 +2304,7 @@ mod delivery_tests {
                 mode,
                 "pi-model",
                 None,
+                None,
                 &serde_json::Map::new(),
             );
             delivery.auto_accept = tick;
@@ -2711,7 +2712,13 @@ mod lifecycle_tests {
     }
 
     fn pi_delivery() -> ProfileDelivery {
-        ProfileDelivery::for_child("ask", "pi-model", Some("low"), &serde_json::Map::new())
+        ProfileDelivery::for_child(
+            "ask",
+            "pi-model",
+            None,
+            Some("low"),
+            &serde_json::Map::new(),
+        )
     }
 
     /// A fake Pi on real pipes. Stdout is deliberately **not** wrapped in
@@ -3255,8 +3262,13 @@ mod lifecycle_tests {
                 log.to_string_lossy().into_owned(),
             )],
         );
-        let delivery =
-            ProfileDelivery::for_child("bypass", "pi-model", Some("low"), &serde_json::Map::new());
+        let delivery = ProfileDelivery::for_child(
+            "bypass",
+            "pi-model",
+            None,
+            Some("low"),
+            &serde_json::Map::new(),
+        );
         let spawned = spawn_process(&state, command, None, delivery)
             .expect("spawn_process assembles the child and the delivery hook");
         let session_id = "pifelifecyclespawn1".to_string();
@@ -3445,8 +3457,13 @@ mod lifecycle_tests {
         let script = dir.join("fake-pi-flood.js");
         std::fs::write(&script, super::FAKE_PI_STDERR_FLOOD).expect("write the fake pi entry");
         let state = ServerState::new("pi-stderr-flood".to_string());
-        let delivery =
-            ProfileDelivery::for_child("bypass", "pi-model", Some("low"), &serde_json::Map::new());
+        let delivery = ProfileDelivery::for_child(
+            "bypass",
+            "pi-model",
+            None,
+            Some("low"),
+            &serde_json::Map::new(),
+        );
         let spawned = spawn_process(
             &state,
             stderr_handshake_command(&script, &log, &[]),
@@ -3478,8 +3495,13 @@ mod lifecycle_tests {
         let script = dir.join("fake-pi-silent.js");
         std::fs::write(&script, super::FAKE_PI_SILENT).expect("write the fake pi entry");
         let state = ServerState::new("pi-stderr-tail".to_string());
-        let delivery =
-            ProfileDelivery::for_child("bypass", "pi-model", Some("low"), &serde_json::Map::new());
+        let delivery = ProfileDelivery::for_child(
+            "bypass",
+            "pi-model",
+            None,
+            Some("low"),
+            &serde_json::Map::new(),
+        );
         match spawn_process(
             &state,
             stderr_handshake_command(&script, &log, &[]),
@@ -3521,8 +3543,13 @@ mod lifecycle_tests {
         std::fs::write(&script, super::FAKE_PI_GRANDCHILD).expect("write the fake pi entry");
         let alive = dir.join("grandchild-alive");
         let state = ServerState::new("pi-grandchild".to_string());
-        let delivery =
-            ProfileDelivery::for_child("bypass", "pi-model", Some("low"), &serde_json::Map::new());
+        let delivery = ProfileDelivery::for_child(
+            "bypass",
+            "pi-model",
+            None,
+            Some("low"),
+            &serde_json::Map::new(),
+        );
         let started = Instant::now();
         let alive_value = alive.to_string_lossy().into_owned();
         match spawn_process(
@@ -3617,8 +3644,13 @@ mod lifecycle_tests {
         let script = dir.join("fake-pi-long.js");
         std::fs::write(&script, super::FAKE_PI_LONG_STDERR).expect("write the fake pi entry");
         let state = ServerState::new("pi-long-tail".to_string());
-        let delivery =
-            ProfileDelivery::for_child("bypass", "pi-model", Some("low"), &serde_json::Map::new());
+        let delivery = ProfileDelivery::for_child(
+            "bypass",
+            "pi-model",
+            None,
+            Some("low"),
+            &serde_json::Map::new(),
+        );
         match spawn_process(
             &state,
             stderr_handshake_command(&script, &log, &[]),
@@ -3676,8 +3708,13 @@ mod lifecycle_tests {
         let script = dir.join("fake-pi-bearer.js");
         std::fs::write(&script, super::FAKE_PI_BEARER_ECHO).expect("write the fake pi entry");
         let state = ServerState::new("pi-bearer-tail".to_string());
-        let delivery =
-            ProfileDelivery::for_child("bypass", "pi-model", Some("low"), &serde_json::Map::new());
+        let delivery = ProfileDelivery::for_child(
+            "bypass",
+            "pi-model",
+            None,
+            Some("low"),
+            &serde_json::Map::new(),
+        );
         let mcp = crate::mcp_broker::McpLaunchConfig::for_test(
             "http://127.0.0.1:4599/mcp",
             super::FAKE_BEARER,
@@ -3734,8 +3771,13 @@ mod lifecycle_tests {
         let script = dir.join("fake-pi-split.js");
         std::fs::write(&script, super::FAKE_PI_SPLIT_TOKEN).expect("write the fake pi entry");
         let state = ServerState::new("pi-split-token".to_string());
-        let delivery =
-            ProfileDelivery::for_child("bypass", "pi-model", Some("low"), &serde_json::Map::new());
+        let delivery = ProfileDelivery::for_child(
+            "bypass",
+            "pi-model",
+            None,
+            Some("low"),
+            &serde_json::Map::new(),
+        );
         let bearer = {
             // Longer than any single pipe read, with room for a stray
             // node line: the margin is computed from the ring, never
@@ -3794,8 +3836,13 @@ mod lifecycle_tests {
         let script = dir.join("fake-pi-huge.js");
         std::fs::write(&script, super::FAKE_PI_HUGE_LINE).expect("write the fake pi entry");
         let state = ServerState::new("pi-huge-line".to_string());
-        let delivery =
-            ProfileDelivery::for_child("bypass", "pi-model", Some("low"), &serde_json::Map::new());
+        let delivery = ProfileDelivery::for_child(
+            "bypass",
+            "pi-model",
+            None,
+            Some("low"),
+            &serde_json::Map::new(),
+        );
         match spawn_process(
             &state,
             stderr_handshake_command(&script, &log, &[]),
@@ -4139,4 +4186,202 @@ fn the_manifest_names_the_provider_that_serves_the_current_model_and_follows_a_s
         panic!("a session manifest");
     };
     assert_eq!(current_model_provider_id.as_deref(), Some("anthropic"));
+}
+
+/// One id served by two providers, plus a solo row: the bare-id hole the
+/// pair key closes, as pi's own wire spells it.
+const PI_DUPLICATE_ID_MODELS: &str = r#"{"data":{"models":[
+{"id":"mimo-v2-6-flash","name":"MiMo V2.6 Flash","provider":"opencode-go","reasoning":true,"thinkingLevelMap":{"high":{},"low":{}}},
+{"id":"mimo-v2-6-flash","name":"MiMo V2.6 Flash","provider":"openrouter","reasoning":true,"thinkingLevelMap":{"high":{}}},
+{"id":"solo","name":"Solo","provider":"nvidia","reasoning":false}
+]}}"#;
+
+fn duplicate_id_catalog() -> PiCatalog {
+    let state = serde_json::json!({
+        "data": {
+            "sessionId": "session-9",
+            "model": {"id": "mimo-v2-6-flash", "provider": "opencode-go"},
+        }
+    });
+    let models: serde_json::Value =
+        serde_json::from_str(PI_DUPLICATE_ID_MODELS).expect("duplicate-id models");
+    let levels = serde_json::json!({"data": {"levels": ["high", "low"]}});
+    super::catalog_from_responses(&state, &models, &levels).expect("catalog")
+}
+
+#[test]
+fn duplicate_model_ids_keep_both_rows_and_name_their_providers() {
+    let catalog = duplicate_id_catalog();
+    assert_eq!(catalog.models.len(), 3);
+    let manifest = super::manifest_from_catalog(&catalog, "ask");
+    let devboule_protocol::SessionEvent::SessionManifest { models, .. } = manifest else {
+        panic!("a session manifest");
+    };
+    assert_eq!(models.len(), 3);
+    let mimo: Vec<(&str, Option<&str>)> = models
+        .iter()
+        .filter(|model| model.model_id == "mimo-v2-6-flash")
+        .map(|model| (model.model_id.as_str(), model.provider.as_deref()))
+        .collect();
+    assert_eq!(
+        mimo,
+        vec![
+            ("mimo-v2-6-flash", Some("opencode-go")),
+            ("mimo-v2-6-flash", Some("openrouter")),
+        ]
+    );
+}
+
+#[test]
+fn resolve_prefers_the_pair_and_falls_back_to_the_bare_id() {
+    let catalog = duplicate_id_catalog();
+    // The exact pair wins, whatever the current model is.
+    let openrouter = catalog
+        .resolve(Some("openrouter"), "mimo-v2-6-flash")
+        .expect("the named pair");
+    assert_eq!(openrouter.provider.as_deref(), Some("openrouter"));
+    // A named pair that matches nothing is nothing — never the other
+    // provider's row.
+    assert!(catalog
+        .resolve(Some("unknown"), "mimo-v2-6-flash")
+        .is_none());
+    assert!(catalog.resolve(None, "ghost").is_none());
+    // A bare id shared by two rows falls back to the current model when it
+    // is among them.
+    let bare = catalog
+        .resolve(None, "mimo-v2-6-flash")
+        .expect("bare fallback");
+    assert_eq!(bare.provider.as_deref(), Some("opencode-go"));
+    // A bare id with one row resolves to it.
+    let solo = catalog.resolve(None, "solo").expect("solo");
+    assert_eq!(solo.provider.as_deref(), Some("nvidia"));
+}
+
+#[test]
+fn bare_fallback_without_a_current_match_is_key_order() {
+    let mut catalog = duplicate_id_catalog();
+    catalog.current_model_id = Some("solo".to_string());
+    catalog.current_provider = Some("nvidia".to_string());
+    let bare = catalog
+        .resolve(None, "mimo-v2-6-flash")
+        .expect("bare fallback");
+    assert_eq!(
+        bare.provider.as_deref(),
+        Some("opencode-go"),
+        "deterministic first in key order, never a guess that moves"
+    );
+}
+
+/// A fake pi that answers the model switch and the levels read, recording
+/// every line it receives.
+const PAIR_WIRE_SCRIPT: &str = r#"
+let buffered = "";
+process.stdin.on("data", (chunk) => {
+  buffered += chunk;
+  let index;
+  while ((index = buffered.indexOf("\n")) >= 0) {
+    const line = buffered.slice(0, index);
+    buffered = buffered.slice(index + 1);
+    const frame = JSON.parse(line);
+    const answer = { id: frame.id, type: "response", success: true, received: line };
+    if (frame.type === "get_available_thinking_levels") {
+      answer.data = { levels: ["high", "low"] };
+    }
+    process.stdout.write(JSON.stringify(answer) + "\n");
+  }
+});
+"#;
+
+fn paired_switcher(pi: &AnsweringPi, catalog: PiCatalog) -> PiSwitcher {
+    PiSwitcher {
+        control: Arc::clone(&pi.control),
+        catalog: Arc::new(Mutex::new(catalog)),
+        mode_id: Arc::new(Mutex::new("ask".to_string())),
+        permission_extension_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        budget: super::ControlBudget::hot(),
+    }
+}
+
+fn pair_catalog() -> PiCatalog {
+    PiCatalog {
+        models: HashMap::from([
+            (
+                super::pi_model_key(Some("opencode-go"), "mimo-v2-6-flash"),
+                super::PiModel {
+                    name: "MiMo V2.6 Flash".to_string(),
+                    provider: Some("opencode-go".to_string()),
+                    context_tokens: None,
+                    efforts: Some(vec![super::effort("high", true)]),
+                    input: super::PiInputKinds::default(),
+                },
+            ),
+            (
+                super::pi_model_key(Some("openrouter"), "mimo-v2-6-flash"),
+                super::PiModel {
+                    name: "MiMo V2.6 Flash".to_string(),
+                    provider: Some("openrouter".to_string()),
+                    context_tokens: None,
+                    efforts: Some(vec![super::effort("high", true)]),
+                    input: super::PiInputKinds::default(),
+                },
+            ),
+        ]),
+        current_model_id: Some("mimo-v2-6-flash".to_string()),
+        current_provider: Some("opencode-go".to_string()),
+        current_effort: None,
+        current_levels: vec!["high".to_string(), "low".to_string()],
+    }
+}
+
+#[test]
+fn set_model_full_writes_the_named_serving_provider() {
+    let pi = fake_pi_answering(PAIR_WIRE_SCRIPT);
+    let switcher = paired_switcher(&pi, pair_catalog());
+    switcher
+        .set_model_full(Some("openrouter"), Some("mimo-v2-6-flash"), None)
+        .expect("the named pair switches");
+    let received: Vec<String> = pi
+        .answers()
+        .iter()
+        .filter_map(|answer| answer["received"].as_str().map(str::to_string))
+        .collect();
+    assert!(
+        received[0].contains("\"provider\":\"openrouter\""),
+        "the wire names the stored provider, not the catalog's other one: {}",
+        received[0]
+    );
+    assert!(received[0].contains("\"modelId\":\"mimo-v2-6-flash\""));
+}
+
+#[test]
+fn set_model_full_refuses_a_pair_the_catalog_does_not_serve() {
+    let pi = fake_pi_answering(PAIR_WIRE_SCRIPT);
+    let switcher = paired_switcher(&pi, pair_catalog());
+    let error = switcher
+        .set_model_full(Some("unknown"), Some("mimo-v2-6-flash"), None)
+        .expect_err("no such pair");
+    assert!(
+        error.message.contains("not in get_available_models"),
+        "a named miss is a typo, not a fallback: {}",
+        error.message
+    );
+}
+
+#[test]
+fn bare_set_model_prefers_the_current_row_among_duplicates() {
+    let pi = fake_pi_answering(PAIR_WIRE_SCRIPT);
+    let switcher = paired_switcher(&pi, pair_catalog());
+    switcher
+        .set_model(Some("mimo-v2-6-flash"), None)
+        .expect("legacy bare id still switches");
+    let received: Vec<String> = pi
+        .answers()
+        .iter()
+        .filter_map(|answer| answer["received"].as_str().map(str::to_string))
+        .collect();
+    assert!(
+        received[0].contains("\"provider\":\"opencode-go\""),
+        "the bare legacy road keeps the current row: {}",
+        received[0]
+    );
 }

@@ -18,21 +18,16 @@ pub(super) fn manifest_arrived(runtime: &SessionRuntime) -> bool {
 /// Whether the model ask has anything to ask: a child already running the
 /// profile's model with no thinking option to deliver asks nothing — there
 /// is no ask to make. Every other combination is asked on the provider's
-/// own wire. The profile names a bare id, so it is compared as the manifest
-/// spells the model: keyed by its provider when the provider reports one.
+/// own wire. The profile's model is compared as the manifest spells it: its
+/// stored provider pair. A profile with no stored pair never matches a pi
+/// child (the manifest spells pi's models as pairs), so the ask is made.
 pub(super) fn model_ask_needed(manifest: Option<&SessionEvent>, facts: &ChildProfileFacts) -> bool {
-    let running = manifest.and_then(|event| match event {
-        SessionEvent::SessionManifest {
-            current_model_id,
-            current_model_provider_id,
-            ..
-        } => current_model_id
-            .as_deref()
-            .map(|id| (id, current_model_provider_id.as_deref())),
+    let running_key = manifest.and_then(|event| match event {
+        SessionEvent::SessionManifest { current_model_id, .. } => current_model_id.as_deref(),
         _ => None,
     });
-    let running_profile_model = running
-        .is_some_and(|(id, provider)| id == crate::pi_view::model_key(provider, &facts.model));
+    let profile_key = crate::pi_view::model_key(facts.model_provider.as_deref(), &facts.model);
+    let running_profile_model = running_key == Some(profile_key.as_str());
     !running_profile_model || facts.thinking_option_id.is_some()
 }
 

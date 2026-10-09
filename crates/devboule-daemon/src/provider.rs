@@ -38,7 +38,7 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use devboule_protocol::{
     ErrorCode, SessionKind, UnattendedState, VocabularyFeatures, VocabularyModels, VocabularyModes,
-    WireError,
+    VocabularyOrigin, VocabularyState, WireError,
 };
 use portable_pty::PtySize;
 
@@ -292,11 +292,22 @@ pub(crate) trait Provider: Send + Sync {
 
     /// The vocabulary axes this family can answer a vocabulary query with.
     /// Answered per impl: Claude's disk scrape
-    /// (`provider_vocabulary::claude_axes`), every other family `absent`
+    /// (`provider_vocabulary::claude_axes`), pi's catalog snapshot
+    /// (`pi_models_probe`), every other family `absent`
     /// (`provider_vocabulary::absent_axes`). The query's cache/request layer
     /// stays on `ServerState`; the reply asks this through the registry, so
     /// these impls are the single source.
     fn vocabulary(&self, state: &Arc<ServerState>) -> (VocabularyModels, VocabularyModes);
+
+    /// Whether this family's vocabulary answer is transient — a probe still
+    /// running, or cooling down after a failure — rather than learned. The
+    /// query path must not TTL-cache a transient answer: caching an `absent`
+    /// served while pi's read is still in flight would keep the editor on
+    /// free text for the cache's whole TTL after the snapshot already
+    /// landed. Only pi answers true, and only until its snapshot answers.
+    fn vocabulary_transient(&self, _state: &Arc<ServerState>) -> bool {
+        false
+    }
 
     /// The features a profile drawn from provider `named` can be given. Three
     /// shapes of answer, and which one a family gives is the rule stated in
@@ -703,6 +714,20 @@ impl Provider for ClaudeProvider {
 /// The Pi family: RPC road, permission extension at spawn.
 struct PiProvider;
 
+impl PiProvider {
+    /// Pi's modes as a vocabulary axis: the launcher's own table, always
+    /// present and always daemon-origin — pi's wire has no mode list to
+    /// report, and the live manifest serves this same table.
+    fn pi_modes() -> VocabularyModes {
+        VocabularyModes::new(
+            VocabularyState::Present,
+            Some(VocabularyOrigin::Daemon),
+            super::pi_client::available_mode_views(),
+        )
+        .expect("a present modes axis always carries its origin")
+    }
+}
+
 impl Provider for PiProvider {
     fn id(&self) -> &'static str {
         "pi"
@@ -814,22 +839,82 @@ impl Provider for PiProvider {
         true
     }
 
-    fn vocabulary(&self, _state: &Arc<ServerState>) -> (VocabularyModels, VocabularyModes) {
-        // No source could answer yet: `absent` is a wire value, never an
-        // empty `present` and never `none` — the app renders it as a
-        // free-text field with the sentence that says why.
-        crate::provider_vocabulary::absent_axes()
+    fn vocabulary(&self, state: &Arc<ServerState>) -> (VocabularyModels, VocabularyModes) {
+        // Pi's catalog is read by starting pi once per run: the snapshot
+        // the probe left behind answers here, and the modes are the
+        // launcher's own table — pi cannot report them, so they are
+        // daemon-origin and need no probe. The first ask claims the slot
+        // and starts the process on a worker; while the read is still
+        // running (or cooling down after a failure) the models axis stays
+        // `absent` and the features axis says `probing`, which is what the
+        // form polls on: the pickers arrive without a reopen.
+        let key = crate::pi_models_probe::PiModelsKey::new("pi");
+        match state.pi_models.peek(&key) {
+            Some(crate::pi_models_probe::PiModelsProbe::Answered(snapshot)) => {
+                let models = crate::pi_models_probe::pi_models_axis(snapshot);
+                (models, Self::pi_modes())
+            }
+            _ => {
+                if let Some(generation) = state.pi_models.claim(&key) {
+                    let worker_cache = std::sync::Arc::clone(&state.pi_models);
+                    let worker_key = key.clone();
+                    let started = std::thread::Builder::new()
+                        .name("pi-models-read".to_string())
+                        .spawn(move || {
+                            crate::pi_models_probe::run_pi_models_probe(
+                                &worker_cache,
+                                worker_key,
+                                generation,
+                            );
+                        });
+                    if started.is_err() {
+                        // No thread to ask with. Settle as unavailable so the
+                        // next ask retries after the cooldown instead of
+                        // polling a slot that will never answer.
+                        state.pi_models.finish(
+                            &key,
+                            generation,
+                            crate::pi_models_probe::PiModelsProbe::Unavailable,
+                        );
+                    }
+                }
+                (
+                    crate::provider_vocabulary::absent_axes().0,
+                    Self::pi_modes(),
+                )
+            }
+        }
+    }
+
+    fn vocabulary_transient(&self, state: &Arc<ServerState>) -> bool {
+        let key = crate::pi_models_probe::PiModelsKey::new("pi");
+        !matches!(
+            state.pi_models.peek(&key),
+            Some(crate::pi_models_probe::PiModelsProbe::Answered(_))
+        )
     }
 
     fn features(
         &self,
-        _state: &Arc<ServerState>,
+        state: &Arc<ServerState>,
         _named: &str,
         _model: Option<&str>,
     ) -> VocabularyFeatures {
         // Pi's permission gate is the extension this family injects at spawn,
         // driven by the delivered mode: the tick is the whole of what a pi
-        // profile can ask for, and `validate_delivery` enforces it.
+        // profile can ask for, and `validate_delivery` enforces it. While
+        // the catalog read is still running the axis says `probing` — the
+        // feature rows are model-gated, so they cannot be drawn until the
+        // models answer lands — and the form polls on exactly this.
+        if self.vocabulary_transient(state) {
+            let key = crate::pi_models_probe::PiModelsKey::new("pi");
+            match state.pi_models.peek(&key) {
+                Some(crate::pi_models_probe::PiModelsProbe::Unavailable) => {
+                    return crate::provider_features::unavailable_axis();
+                }
+                _ => return crate::provider_features::probing_axis(),
+            }
+        }
         crate::provider_features::pi_axis()
     }
 

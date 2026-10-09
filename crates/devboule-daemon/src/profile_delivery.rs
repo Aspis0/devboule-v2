@@ -42,6 +42,10 @@ pub(crate) struct ProfileDelivery {
     /// The model the child must run, exactly as the profile saved it.
     /// `None` for a create that resolved no profile.
     pub(crate) model_id: Option<String>,
+    /// The provider serving that model, when the profile stores the pair.
+    /// `None` is what older builds wrote: the spawn path falls back to the
+    /// bare id, exactly as it reads those profiles today.
+    pub(crate) model_provider: Option<String>,
     /// The thinking option the child must start with. `None` delivers
     /// nothing: a profile with no thinking option promises none.
     pub(crate) thinking_option_id: Option<String>,
@@ -114,6 +118,7 @@ impl ProfileDelivery {
         Self {
             mode_id: None,
             model_id: None,
+            model_provider: None,
             thinking_option_id: None,
             auto_accept: false,
             features: Vec::new(),
@@ -136,12 +141,14 @@ impl ProfileDelivery {
     pub(crate) fn for_child(
         mode_id: &str,
         model_id: &str,
+        model_provider: Option<&str>,
         thinking_option_id: Option<&str>,
         features: &serde_json::Map<String, Value>,
     ) -> Self {
         Self {
             mode_id: Some(mode_id.to_string()),
             model_id: Some(model_id.to_string()),
+            model_provider: model_provider.map(str::to_string),
             thinking_option_id: thinking_option_id.map(str::to_string),
             auto_accept: feature_is_true(features, crate::provider_catalog::AUTO_ACCEPT_FEATURE),
             features: delivered_features(features),
@@ -303,20 +310,37 @@ mod tests {
         let delivery = ProfileDelivery::for_child(
             "bypassPermissions",
             "claude-opus-5",
+            None,
             Some("high"),
             &features(json!({"autoAccept": true})),
         );
         assert_eq!(delivery.mode_id.as_deref(), Some("bypassPermissions"));
         assert_eq!(delivery.model_id.as_deref(), Some("claude-opus-5"));
+        assert_eq!(delivery.model_provider, None);
         assert_eq!(delivery.thinking_option_id.as_deref(), Some("high"));
         assert!(delivery.auto_accept);
+    }
+
+    /// A stored serving provider travels beside the bare id.
+    #[test]
+    fn for_child_carries_the_serving_provider() {
+        let delivery = ProfileDelivery::for_child(
+            "bypass",
+            "mimo-v2-6-flash",
+            Some("opencode-go"),
+            None,
+            &features(json!({})),
+        );
+        assert_eq!(delivery.model_id.as_deref(), Some("mimo-v2-6-flash"));
+        assert_eq!(delivery.model_provider.as_deref(), Some("opencode-go"));
     }
 
     /// No thinking option delivers nothing — a profile that promises none
     /// delivers none, which is fine everywhere.
     #[test]
     fn a_profile_without_a_thinking_option_delivers_none() {
-        let delivery = ProfileDelivery::for_child("ask", "stub-model", None, &features(json!({})));
+        let delivery =
+            ProfileDelivery::for_child("ask", "stub-model", None, None, &features(json!({})));
         assert_eq!(delivery.thinking_option_id, None);
         assert!(!delivery.auto_accept);
     }

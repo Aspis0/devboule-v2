@@ -159,6 +159,7 @@ fn profile(model: &str, features: serde_json::Value) -> ProfileDelivery {
         "auto",
         model,
         None,
+        None,
         features.as_object().expect("an object of features"),
     )
 }

@@ -6556,3 +6556,41 @@ fn a_profile_overlay_can_take_the_agent_command_tools_away() {
         assert!(served.iter().any(|served| served == name), "{name}");
     }
 }
+
+/// The stored serving provider travels through both resolvers beside the
+/// bare id — and a profile that stores none resolves with none, the legacy
+/// road the spawn path still reads.
+#[test]
+fn resolve_carries_the_serving_provider_beside_the_bare_id() {
+    let mut paired = profile(
+        "Paired",
+        "p-paired",
+        "pi",
+        "bypass",
+        serde_json::json!({}),
+        &[],
+        true,
+    );
+    paired["model"] = serde_json::json!("mimo-v2-6-flash");
+    paired["modelProvider"] = serde_json::json!("opencode-go");
+    let legacy = profile(
+        "Legacy",
+        "p-legacy",
+        "pi",
+        "bypass",
+        serde_json::json!({}),
+        &[],
+        true,
+    );
+    let store = profile_store(document(vec![paired, legacy], ""));
+    let resolved = resolve_profile(&store, "Paired").expect("ticked");
+    assert_eq!(resolved.model, "mimo-v2-6-flash");
+    assert_eq!(resolved.model_provider.as_deref(), Some("opencode-go"));
+    let facts = resolve_profile_for_move(&store, "Paired").expect("ticked");
+    assert_eq!(facts.model, "mimo-v2-6-flash");
+    assert_eq!(facts.model_provider.as_deref(), Some("opencode-go"));
+    let old = resolve_profile(&store, "Legacy").expect("ticked");
+    assert_eq!(old.model_provider, None);
+    let old_facts = resolve_profile_for_move(&store, "Legacy").expect("ticked");
+    assert_eq!(old_facts.model_provider, None);
+}

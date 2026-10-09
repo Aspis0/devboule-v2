@@ -164,6 +164,11 @@ pub struct ServerState {
     /// every keystroke in a free-text model field is the cost the vocabulary
     /// cache exists to avoid. `provider_features` owns the rule.
     pub(crate) acp_features: std::sync::Arc<crate::provider_feature_probe::AcpProbeCache>,
+    /// The pi model reads: one catalog snapshot per daemon run, learned by
+    /// starting pi once. Separate from the vocabulary cache above for the
+    /// same reason the ACP reads are: the snapshot has no TTL, and the
+    /// vocabulary query maps it to axes on every ask.
+    pub(crate) pi_models: std::sync::Arc<crate::pi_models_probe::PiModelsProbeCache>,
     /// The only process-launch seam for provider updates. Tests replace this
     /// runner so no npm or network is ever started by the test suite.
     pub(super) npm_install_runner: Arc<dyn NpmInstallRunner>,
@@ -483,6 +488,7 @@ impl ServerState {
             acp_features: std::sync::Arc::new(
                 crate::provider_feature_probe::AcpProbeCache::default(),
             ),
+            pi_models: std::sync::Arc::new(crate::pi_models_probe::PiModelsProbeCache::default()),
             npm_install_runner,
             paths: paths_for_state,
             journal: journal_for_peers,

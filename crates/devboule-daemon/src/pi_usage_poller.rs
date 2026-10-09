@@ -195,8 +195,7 @@ impl PiUsagePoller {
     fn manifest_window(&self, model: &str) -> Option<u64> {
         let catalog = self.catalog.lock().ok()?;
         catalog
-            .models
-            .get(model)
+            .resolve(None, model)
             .and_then(|model| model.context_tokens)
     }
 

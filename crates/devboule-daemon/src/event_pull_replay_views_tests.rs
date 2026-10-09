@@ -54,6 +54,7 @@ fn live_claude_replay_derives_journaled_views() {
             provider_id: None,
             model_id: "claude-test".to_string(),
             name: "Claude Test".to_string(),
+            provider: None,
             description: None,
             context_tokens: None,
             current_effort: None,

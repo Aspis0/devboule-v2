@@ -2167,6 +2167,7 @@ fn agent_profiles_wire_contract_round_trips_with_its_exact_field_names() {
             spawn_prompt: String::new(),
             provider: "claude".to_string(),
             model: "opus".to_string(),
+            model_provider: None,
             mode_id: "default".to_string(),
             thinking_option_id: Some("high".to_string()),
             features,
@@ -2241,6 +2242,7 @@ fn agent_profiles_wire_contract_round_trips_with_its_exact_field_names() {
                     spawn_prompt: String::new(),
                     provider: "pi".to_string(),
                     model: "gpt-5".to_string(),
+                    model_provider: None,
                     mode_id: "ask".to_string(),
                     thinking_option_id: None,
                     features: serde_json::Map::new(),
@@ -2351,6 +2353,7 @@ fn a_profile_spawn_prompt_round_trips_and_its_absence_is_none() {
         spawn_prompt: "Check the diff before you report.".to_string(),
         provider: "claude".to_string(),
         model: "opus".to_string(),
+        model_provider: None,
         mode_id: "default".to_string(),
         thinking_option_id: None,
         features: serde_json::Map::new(),
@@ -2429,6 +2432,7 @@ fn an_idle_close_round_trip_keeps_zero_and_omits_the_default() {
         spawn_prompt: String::new(),
         provider: "claude".to_string(),
         model: "opus".to_string(),
+        model_provider: None,
         mode_id: "default".to_string(),
         thinking_option_id: None,
         features: serde_json::Map::new(),
@@ -4410,4 +4414,62 @@ fn file_upload_frames_round_trip_with_their_wire_words() {
             .contains("name"),
         "an empty name must not add a field"
     );
+}
+
+#[test]
+fn agent_profile_model_provider_travels_beside_the_bare_id() {
+    // The serving provider stored beside the bare model id: one id can be
+    // served by two providers, and the pair is what the spawn path resolves.
+    let paired = serde_json::json!({
+        "id": "p-9",
+        "name": "Scout",
+        "provider": "pi",
+        "model": "mimo-v2-6-flash",
+        "modelProvider": "opencode-go",
+        "modeId": "bypass",
+        "enabledForAgents": true
+    });
+    let profile = serde_json::from_value::<AgentProfile>(paired).expect("paired profile");
+    assert_eq!(profile.model_provider.as_deref(), Some("opencode-go"));
+    let json = serde_json::to_value(&profile).expect("json");
+    assert_eq!(json["modelProvider"], "opencode-go");
+    assert_eq!(json["model"], "mimo-v2-6-flash");
+
+    // Absent is what older builds wrote: those still read, matched by the
+    // bare id alone — and absent serializes as absent, never as null.
+    let bare = serde_json::json!({
+        "id": "p-8",
+        "name": "Old",
+        "provider": "pi",
+        "model": "mimo-v2-6-flash",
+        "modeId": "bypass",
+        "enabledForAgents": true
+    });
+    let legacy = serde_json::from_value::<AgentProfile>(bare).expect("legacy profile");
+    assert_eq!(legacy.model_provider, None);
+    let legacy_json = serde_json::to_value(&legacy).expect("json");
+    assert!(
+        legacy_json.get("modelProvider").is_none(),
+        "absent must stay absent: {legacy_json}"
+    );
+}
+
+#[test]
+fn session_model_carries_its_serving_provider() {
+    // Pi's catalog serves one id under several providers: the manifest item
+    // names which one, so the picker and the row can tell them apart.
+    let served = serde_json::json!({
+        "modelId": "mimo-v2-6-flash",
+        "name": "MiMo V2.6 Flash",
+        "provider": "opencode-go"
+    });
+    let model = serde_json::from_value::<SessionModel>(served).expect("served model");
+    assert_eq!(model.provider.as_deref(), Some("opencode-go"));
+    let json = serde_json::to_value(&model).expect("json");
+    assert_eq!(json["provider"], "opencode-go");
+
+    // Items from providers that name none still read, with nothing claimed.
+    let plain = serde_json::json!({ "modelId": "opus", "name": "Opus" });
+    let unserved = serde_json::from_value::<SessionModel>(plain).expect("plain model");
+    assert_eq!(unserved.provider, None);
 }

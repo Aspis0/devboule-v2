@@ -28,6 +28,10 @@ pub(in crate::mcp_broker) struct ResolvedProfile {
     /// states what the human is being asked to approve, and because nothing may
     /// substitute it.
     pub(in crate::mcp_broker) model: String,
+    /// The provider serving that model, when the profile stores the pair.
+    /// `None` is what older builds wrote: the spawn path falls back to the
+    /// bare id, exactly as it reads those profiles today.
+    pub(in crate::mcp_broker) model_provider: Option<String>,
     pub(in crate::mcp_broker) mode: String,
     /// The provider's thinking option, exactly as saved.
     pub(in crate::mcp_broker) thinking_option_id: Option<String>,
@@ -90,6 +94,7 @@ pub(in crate::mcp_broker) fn resolve_profile(
         name: profile.name.clone(),
         provider: profile.provider.clone(),
         model: profile.model.clone(),
+        model_provider: profile.model_provider.clone(),
         mode: profile.mode_id.clone(),
         thinking_option_id: profile.thinking_option_id.clone(),
         features: profile.features.clone(),
@@ -123,6 +128,7 @@ pub(in crate::mcp_broker) fn resolve_profile_for_move(
             profile_id: profile.id,
             mode_id: profile.mode,
             model: profile.model,
+            model_provider: profile.model_provider,
             thinking_option_id: profile.thinking_option_id,
         }),
         Err(message) => {

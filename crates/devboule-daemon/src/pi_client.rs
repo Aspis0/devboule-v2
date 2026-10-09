@@ -1612,7 +1612,10 @@ pub(super) fn mode_is_known(mode_id: &str) -> bool {
     PI_MODES.iter().any(|mode| mode.id == mode_id)
 }
 
-fn available_mode_views() -> Vec<SessionModeView> {
+/// Pi's mode table as session views: the launcher's own vocabulary, served
+/// to the profile editor as the modes axis (daemon origin) and to the live
+/// manifest as the chip's modes.
+pub(crate) fn available_mode_views() -> Vec<SessionModeView> {
     PI_MODES
         .iter()
         .map(|mode| SessionModeView {
@@ -2157,6 +2160,7 @@ fn pending_pi_delivery_within(
     let mode_id = Arc::clone(&switcher.mode_id);
     let permission_extension_active = Arc::clone(&switcher.permission_extension_active);
     let model_id = delivery.model_id.clone();
+    let model_provider = delivery.model_provider.clone();
     let effort = delivery.thinking_option_id.clone();
     Some(Box::new(move || {
         // Built when the delivery RUNS, not when it is packaged: the
@@ -2170,7 +2174,11 @@ fn pending_pi_delivery_within(
             permission_extension_active,
             budget: ControlBudget::delivery(wait),
         };
-        switcher.set_model(model_id.as_deref(), effort.as_deref())
+        switcher.set_model_full(
+            model_provider.as_deref(),
+            model_id.as_deref(),
+            effort.as_deref(),
+        )
     }))
 }
 
@@ -2245,6 +2253,120 @@ fn perform_handshake(
         catalog,
         deferred,
     })
+}
+
+/// The vocabulary probe's read: what pi's catalog looks like right now,
+/// as the profile editor's model picker draws it. Spawns pi the way a
+/// session would (the catalog's own launch line, contained like a real
+/// child and killed on the way out), runs the handshake's three reads,
+/// and maps the catalog to manifest items — the same items the composer
+/// chip draws, so the editor and the chip cannot disagree about what pi
+/// offers. Stderr is nulled: the probe reads the stdout RPC only, and an
+/// undrained stderr pipe would stall the handshake it came to run. Any
+/// failure is `Unavailable` upstream, never a hung Settings panel.
+///
+/// `mode_id` is handshake plumbing only — the probe keeps the models and
+/// drops the manifest — so it names the mode a session nobody asked for
+/// starts in.
+pub(crate) fn probe_models_snapshot() -> Result<Vec<SessionModel>, WireError> {
+    let command = resolve_command(&crate::paths::RuntimePaths::from_dir(
+        std::env::current_dir().map_err(|error| {
+            WireError::new(
+                ErrorCode::Io,
+                format!("Could not determine Pi working directory: {error}"),
+            )
+        })?,
+    ))?;
+    let mut spawn = Command::new(&command.program);
+    spawn
+        .args(&command.args)
+        .current_dir(&command.cwd)
+        .envs(command.env.iter().map(|(key, value)| (key, value)))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(not(windows))]
+    crate::process_tree::lead_own_group(&mut spawn);
+    let mut child = spawn.spawn().map_err(|error| {
+        WireError::new(
+            ErrorCode::Io,
+            format!("could not start pi to read its models: {error}"),
+        )
+    })?;
+    #[cfg(windows)]
+    let process_job = {
+        use std::os::windows::io::AsRawHandle;
+        let process_job = match JobObject::new() {
+            Ok(job) => job,
+            Err(error) => {
+                terminate_process(&mut child);
+                return Err(WireError::new(
+                    ErrorCode::Io,
+                    format!("could not contain the pi model read: {error}"),
+                ));
+            }
+        };
+        if let Err(error) = process_job.assign(child.as_raw_handle()) {
+            terminate_process(&mut child);
+            return Err(WireError::new(
+                ErrorCode::Io,
+                format!("could not contain the pi model read: {error}"),
+            ));
+        }
+        Some(process_job)
+    };
+    #[cfg(not(windows))]
+    let process_job: Option<JobObject> = match crate::process_tree::contain_spawned(child.id()) {
+        Ok(job) => Some(job),
+        Err(error) => {
+            terminate_process(&mut child);
+            return Err(WireError::new(
+                ErrorCode::Io,
+                format!("could not contain the pi model read: {error}"),
+            ));
+        }
+    };
+    let mut process_job = process_job;
+    let mut teardown = |child: &mut Child| {
+        terminate_process(child);
+        drop(process_job.take());
+    };
+    let stdin = match child.stdin.take() {
+        Some(stdin) => stdin,
+        None => {
+            teardown(&mut child);
+            return Err(WireError::new(ErrorCode::Io, "pi gave no standard input"));
+        }
+    };
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            teardown(&mut child);
+            return Err(WireError::new(ErrorCode::Io, "pi gave no standard output"));
+        }
+    };
+    let stdin = Mutex::new(Some(stdin));
+    let next_id = AtomicU64::new(1);
+    let mut pi_stdout = match PiStdout::spawn(stdout) {
+        Ok(stdout) => stdout,
+        Err(error) => {
+            teardown(&mut child);
+            return Err(WireError::new(
+                ErrorCode::Io,
+                format!("could not read pi's output: {error}"),
+            ));
+        }
+    };
+    let handshake = perform_handshake(&mut pi_stdout, &stdin, &next_id, "ask");
+    teardown(&mut child);
+    let handshake = handshake?;
+    match handshake.manifest {
+        SessionEvent::SessionManifest { models, .. } => Ok(models),
+        _ => Err(WireError::new(
+            ErrorCode::Io,
+            "pi's handshake answered no model catalog",
+        )),
+    }
 }
 
 fn handshake_timeout() -> Duration {
@@ -2351,7 +2473,7 @@ fn session_id_from_value(value: &Value) -> Option<String> {
 
 #[derive(Clone, Debug, Default)]
 struct PiCatalog {
-    models: HashMap<String, PiModel>,
+    models: HashMap<PiModelKey, PiModel>,
     current_model_id: Option<String>,
     current_provider: Option<String>,
     current_effort: Option<String>,
@@ -3446,6 +3568,15 @@ impl ModelSwitcher for PiSwitcher {
     /// switch, the delivery's shared cold deadline for the clone the
     /// profile delivery runs.
     fn set_model(&self, model_id: Option<&str>, effort: Option<&str>) -> Result<(), WireError> {
+        self.set_model_full(None, model_id, effort)
+    }
+
+    fn set_model_full(
+        &self,
+        provider: Option<&str>,
+        model_id: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<(), WireError> {
         let budget = &self.budget;
         let current = self
             .catalog
@@ -3486,7 +3617,16 @@ impl ModelSwitcher for PiSwitcher {
                 "Pi publishes no models; the profile names one, so the creation is refused",
             ));
         }
-        let model = match current.lookup(model_id) {
+        // A named provider is exact: the bare-id fallback could hand a pair
+        // that names nothing to another provider serving the same id.
+        let lookup = match provider {
+            Some(provider) => current
+                .models
+                .get(&model_key(Some(provider), model_id))
+                .map_or(PiLookup::Missing, PiLookup::Found),
+            None => current.lookup(model_id),
+        };
+        let model = match lookup {
             PiLookup::Found(model) => model,
             PiLookup::Ambiguous(providers) => {
                 return Err(ambiguous_model_error(model_id, &providers));
