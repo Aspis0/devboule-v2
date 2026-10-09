@@ -318,6 +318,10 @@ impl PeerLinks {
             self.finish_read();
             return failure;
         }
+        if link.create_inflight() {
+            self.finish_read();
+            return LinkAnswer::Failed(RemoteHostState::Busy, create_busy_sentence());
+        }
         let Some(_permit) = link.try_read_permit() else {
             self.finish_read();
             return LinkAnswer::Failed(
@@ -436,6 +440,10 @@ impl PeerLinks {
             self.finish_read();
             return failure;
         }
+        if link.create_inflight() {
+            self.finish_read();
+            return LinkAnswer::Failed(RemoteHostState::Busy, create_busy_sentence());
+        }
         let Some(_permit) = link.try_read_permit() else {
             self.finish_read();
             return LinkAnswer::Failed(
@@ -477,6 +485,7 @@ impl PeerLinks {
         &self,
         device_id: &str,
         wait: Duration,
+        is_create: bool,
         build: impl FnOnce(u64, std::sync::mpsc::SyncSender<LinkAnswer>) -> LinkCommand,
     ) -> LinkAnswer {
         let link = {
@@ -498,6 +507,33 @@ impl PeerLinks {
         if let Some(failure) = link.failure() {
             self.finish_read();
             return failure;
+        }
+        if is_create {
+            // A create holds the create lane, not the read lane: it queues
+            // behind a short read already running, and a second create is
+            // refused rather than stacked behind a minutes-long handshake.
+            let Some(_create) = link.try_create_permit() else {
+                self.finish_read();
+                return LinkAnswer::Failed(RemoteHostState::Busy, create_busy_sentence());
+            };
+            if !link.queue_operate(build(link.generation(), answer_tx)) {
+                self.finish_read();
+                return LinkAnswer::Failed(
+                    RemoteHostState::Offline,
+                    offline_sentence().to_string(),
+                );
+            }
+            let answer = answer_rx.recv_timeout(wait).unwrap_or_else(|_| {
+                LinkAnswer::Failed(RemoteHostState::Offline, offline_sentence().to_string())
+            });
+            self.finish_read();
+            return answer;
+        }
+        // Anything short fails fast while a create runs instead of queueing
+        // behind the provider handshake and timing out as `offline`.
+        if link.create_inflight() {
+            self.finish_read();
+            return LinkAnswer::Failed(RemoteHostState::Busy, create_busy_sentence());
         }
         let Some(_permit) = link.try_read_permit() else {
             self.finish_read();
@@ -544,17 +580,19 @@ impl PeerLinks {
         rows: Option<u16>,
     ) -> LinkAnswer {
         let wait = self.operate_wait(true);
-        self.operate(device_id, wait, |generation, answer| LinkCommand::Create {
-            generation,
-            workspace_id,
-            kind,
-            provider,
-            mode,
-            display_name,
-            idempotency_key,
-            cols,
-            rows,
-            answer,
+        self.operate(device_id, wait, true, |generation, answer| {
+            LinkCommand::Create {
+                generation,
+                workspace_id,
+                kind,
+                provider,
+                mode,
+                display_name,
+                idempotency_key,
+                cols,
+                rows,
+                answer,
+            }
         })
     }
 
@@ -572,16 +610,18 @@ impl PeerLinks {
         attachment_references: Vec<devboule_protocol::AttachmentReference>,
     ) -> LinkAnswer {
         let wait = self.operate_wait(false);
-        self.operate(device_id, wait, |generation, answer| LinkCommand::Send {
-            generation,
-            session_id,
-            subscription_id,
-            text,
-            attachments,
-            active_turn_behavior,
-            idempotency_key,
-            attachment_references,
-            answer,
+        self.operate(device_id, wait, false, |generation, answer| {
+            LinkCommand::Send {
+                generation,
+                session_id,
+                subscription_id,
+                text,
+                attachments,
+                active_turn_behavior,
+                idempotency_key,
+                attachment_references,
+                answer,
+            }
         })
     }
 
@@ -595,13 +635,15 @@ impl PeerLinks {
         rows: u16,
     ) -> LinkAnswer {
         let wait = self.operate_wait(false);
-        self.operate(device_id, wait, |generation, answer| LinkCommand::Resize {
-            generation,
-            session_id,
-            subscription_id,
-            cols,
-            rows,
-            answer,
+        self.operate(device_id, wait, false, |generation, answer| {
+            LinkCommand::Resize {
+                generation,
+                session_id,
+                subscription_id,
+                cols,
+                rows,
+                answer,
+            }
         })
     }
 
@@ -613,11 +655,13 @@ impl PeerLinks {
         subscription_id: u64,
     ) -> LinkAnswer {
         let wait = self.operate_wait(false);
-        self.operate(device_id, wait, |generation, answer| LinkCommand::Claim {
-            generation,
-            session_id,
-            subscription_id,
-            answer,
+        self.operate(device_id, wait, false, |generation, answer| {
+            LinkCommand::Claim {
+                generation,
+                session_id,
+                subscription_id,
+                answer,
+            }
         })
     }
 
@@ -629,7 +673,7 @@ impl PeerLinks {
         subscription_id: u64,
     ) -> LinkAnswer {
         let wait = self.operate_wait(false);
-        self.operate(device_id, wait, |generation, answer| {
+        self.operate(device_id, wait, false, |generation, answer| {
             LinkCommand::Interrupt {
                 generation,
                 session_id,
@@ -653,7 +697,7 @@ impl PeerLinks {
         idempotency_key: Option<String>,
     ) -> LinkAnswer {
         let wait = self.operate_wait(false);
-        self.operate(device_id, wait, |generation, answer| {
+        self.operate(device_id, wait, false, |generation, answer| {
             LinkCommand::PermissionRespond {
                 generation,
                 session_id,
@@ -676,11 +720,13 @@ impl PeerLinks {
         idempotency_key: Option<String>,
     ) -> LinkAnswer {
         let wait = self.operate_wait(false);
-        self.operate(device_id, wait, |generation, answer| LinkCommand::Close {
-            generation,
-            session_id,
-            idempotency_key,
-            answer,
+        self.operate(device_id, wait, false, |generation, answer| {
+            LinkCommand::Close {
+                generation,
+                session_id,
+                idempotency_key,
+                answer,
+            }
         })
     }
 
@@ -692,18 +738,20 @@ impl PeerLinks {
         subscription_id: u64,
     ) -> LinkAnswer {
         let wait = self.operate_wait(false);
-        self.operate(device_id, wait, |generation, answer| LinkCommand::Stop {
-            generation,
-            session_id,
-            subscription_id,
-            answer,
+        self.operate(device_id, wait, false, |generation, answer| {
+            LinkCommand::Stop {
+                generation,
+                session_id,
+                subscription_id,
+                answer,
+            }
         })
     }
 
     /// Read the host's provider catalog.
     pub(crate) fn operate_providers(&self, device_id: &str) -> LinkAnswer {
         let wait = self.operate_wait(false);
-        self.operate(device_id, wait, |generation, answer| {
+        self.operate(device_id, wait, false, |generation, answer| {
             LinkCommand::Providers { generation, answer }
         })
     }
@@ -732,6 +780,15 @@ pub(crate) fn offline_sentence() -> &'static str {
 
 pub(crate) fn busy_sentence(limit: usize, unit: &str) -> String {
     format!("This daemon is already using all of its {limit} {unit} allowances.")
+}
+
+/// The refusal a roster read, attach or operate call gets while a remote
+/// create is running on the same link. A create runs the host's provider
+/// handshake inline — minutes, not milliseconds — so anything short fails
+/// fast with the one repair (wait for the start to land) instead of
+/// queueing behind it and timing out as `offline`.
+pub(crate) fn create_busy_sentence() -> String {
+    "This daemon is still starting a session on this host.".to_string()
 }
 
 /// The host row a failed dial belongs to, and the sentence that goes with it.

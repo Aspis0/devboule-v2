@@ -1634,3 +1634,103 @@ fn pairing_refuses_a_daemon_that_predates_the_roleless_request() {
         error.message
     );
 }
+
+/// The remote-create road's deadline is the create road's, not the control
+/// plane's: the host runs the provider handshake inline (the link alone
+/// budgets 120 s plus queue margin), and the 30 s default would report a
+/// failure while the host is still starting the session — the measured
+/// defect of 2026-09-21 one order of magnitude later.
+///
+/// The fake daemon speaks the full daemon hello so `remote_hosts` is
+/// agreed; it takes the create and stays quiet. The seam pulls the create
+/// road's window down to 120 ms: the create must time out there, while the
+/// `ping` behind it keeps the default.
+#[cfg(windows)]
+#[test]
+fn a_remote_create_wait_is_the_create_roads_and_the_ping_keeps_the_default() {
+    use crate::transport::connect;
+
+    let short = Duration::from_millis(120);
+    let dir = crate::test_dirs::test_temp_dir("devboule-client-remote-create-deadline");
+    let paths = crate::paths::RuntimePaths::from_dir(&dir);
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut listener = NamedPipeListener::bind(&paths, Arc::clone(&stop)).expect("bind");
+    let server = thread::spawn(move || {
+        let file = listener.accept().expect("accept");
+        let framed = Framed::new(file);
+        let hello = framed.recv::<ClientMessage>().expect("client hello");
+        assert!(matches!(hello, ClientMessage::Hello(_)));
+        let mut daemon_hello =
+            DaemonHello::plugin_backend("remote-create-deadline", std::process::id());
+        daemon_hello.capabilities = devboule_protocol::m3a_daemon_capabilities();
+        framed
+            .send(&DaemonMessage::Hello(daemon_hello))
+            .expect("hello reply");
+        let first = framed
+            .recv_timeout::<ClientMessage>(Duration::from_secs(10))
+            .expect("the remote create request");
+        assert!(
+            matches!(first, ClientMessage::RemoteHostCreate { .. }),
+            "expected the remote create, got {first:?}"
+        );
+        // The host never answers. The ping that follows the abandon is the
+        // only reply on this connection.
+        let ClientMessage::Ping { id } = framed
+            .recv_timeout::<ClientMessage>(Duration::from_secs(10))
+            .expect("the frame after the abandoned create")
+        else {
+            panic!("an abandoned create must be followed by the caller's next request");
+        };
+        framed
+            .send(&DaemonMessage::Pong { id, ts_ms: 12 })
+            .expect("pong");
+    });
+    let connection_deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let connection = loop {
+        match connect(&paths) {
+            Ok(connection) => break connection,
+            Err(_) if std::time::Instant::now() < connection_deadline => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("connect: {error}"),
+        }
+    };
+    let client = super::handshake(
+        connection,
+        devboule_protocol::ClientHello::m3a(
+            super::test_owner("remote-create-deadline").expect("owner"),
+            "remote-create-deadline",
+        ),
+    )
+    .expect("handshake");
+    super::SESSION_CREATE_DEADLINE.with(|slot| slot.set(Some(short)));
+    let started = std::time::Instant::now();
+    let create = client.remote_host_create(
+        "b",
+        Some("w.1".to_string()),
+        SessionKind::Terminal,
+        None,
+        None,
+        None,
+        Some("deadline-key".to_string()),
+        None,
+        None,
+    );
+    let elapsed = started.elapsed();
+    super::SESSION_CREATE_DEADLINE.with(|slot| slot.set(None));
+    let error = create.expect_err("a create the host never answers must time out");
+    let DaemonError::TimedOut(what) = &error else {
+        panic!("expected the timeout the window renders, got {error:?}");
+    };
+    assert_eq!(what, "waiting for a daemon reply");
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "the remote create waited on the default, not its own budget: {elapsed:?}"
+    );
+    assert_eq!(
+        client.ping().expect("the control plane keeps the default"),
+        12
+    );
+    drop(client);
+    server.join().expect("server joins");
+}

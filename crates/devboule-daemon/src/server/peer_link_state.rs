@@ -191,6 +191,13 @@ pub(crate) struct HostLink {
     /// so a second is refused rather than queued behind a link that may never
     /// come back.
     inflight: AtomicBool,
+    /// Whether a remote create is on this link right now. A create runs the
+    /// host's provider handshake inline (up to two minutes), so it holds its
+    /// own lane: reads, attaches and other operate calls are refused `Busy`
+    /// while one runs instead of queueing behind it, and a second create is
+    /// refused rather than stacked. The worker still serves serially; the
+    /// lanes only decide what may wait.
+    inflight_create: AtomicBool,
     /// The live remote-session streams this link carries, by local
     /// subscription id. Cleared when a new transport replaces the old one: the
     /// app reattaches on the online edge, and a generation that is gone must
@@ -240,6 +247,7 @@ impl HostLink {
             leases_changed: Condvar::new(),
             generation: AtomicU64::new(0),
             inflight: AtomicBool::new(false),
+            inflight_create: AtomicBool::new(false),
             subscriptions: Mutex::new(HashMap::new()),
             gapped: Mutex::new(std::collections::HashSet::new()),
             deferred_detaches: Mutex::new(Vec::new()),
@@ -370,6 +378,24 @@ impl HostLink {
             return None;
         }
         Some(ReadPermit { link: self })
+    }
+
+    /// Take the one create slot on this link, or `None` when a create is
+    /// already running. Same drop-guard rule as the read slot: a create the
+    /// caller gave up on still releases its lane when the caller's wait ends.
+    pub(crate) fn try_create_permit(&self) -> Option<CreatePermit<'_>> {
+        if self.inflight_create.swap(true, Ordering::SeqCst) {
+            return None;
+        }
+        Some(CreatePermit { link: self })
+    }
+
+    /// Whether a remote create is running on this link. Reads, attaches and
+    /// other operate calls ask first and fail `Busy` while one is: the
+    /// provider handshake is minutes long and nothing short should queue
+    /// behind it.
+    pub(crate) fn create_inflight(&self) -> bool {
+        self.inflight_create.load(Ordering::SeqCst)
     }
 
     /// Block until a lease exists or the last one has been gone for the grace.
@@ -867,5 +893,17 @@ pub(crate) struct ReadPermit<'a> {
 impl Drop for ReadPermit<'_> {
     fn drop(&mut self) {
         self.link.inflight.store(false, Ordering::SeqCst);
+    }
+}
+
+/// The one create a link runs at a time, released when the caller's create
+/// call returns.
+pub(crate) struct CreatePermit<'a> {
+    link: &'a HostLink,
+}
+
+impl Drop for CreatePermit<'_> {
+    fn drop(&mut self) {
+        self.link.inflight_create.store(false, Ordering::SeqCst);
     }
 }

@@ -12,6 +12,7 @@ use devboule_protocol::{
     SessionKind, WireError,
 };
 
+use super::create_busy_sentence;
 use super::harness::Harness;
 use super::peer_link_test_support::eventually;
 use crate::peer_policy::{peer_allows, PeerDecision, CAP_ADMIN, CAP_VIEW};
@@ -512,4 +513,70 @@ fn a_mode_refused_create_stays_refused_on_the_host() {
         Ok(other) => panic!("expected the peer's SessionCreate, got {other:?}"),
         Err(error) => panic!("the create never reached the peer: {error:?}"),
     }
+}
+
+/// P1-1: a create holds the create lane, not the link. While the host runs
+/// the provider handshake, reads and other operate calls fail fast with the
+/// starting sentence instead of queueing behind minutes of handshake, and a
+/// second create is refused rather than stacked.
+#[test]
+fn a_create_holds_its_own_lane_while_short_calls_fail_busy() {
+    let harness = Harness::start("peer-link-create-lane");
+    harness.responder.hold_reads();
+    harness.watch();
+    eventually("the link comes up", || {
+        harness
+            .statuses()
+            .iter()
+            .any(|(state, _)| *state == RemoteHostState::Online)
+    });
+    std::thread::scope(|scope| {
+        let creating = scope.spawn(|| {
+            harness.links.operate_create(
+                "b",
+                Some("far-workspace".to_string()),
+                SessionKind::Terminal,
+                None,
+                None,
+                None,
+                Some("lane-key".to_string()),
+                None,
+                None,
+            )
+        });
+        // The worker picked the create up and the far end is holding it.
+        match harness.requests.recv_timeout(Duration::from_secs(5)) {
+            Ok(ClientMessage::SessionCreate { .. }) => {}
+            Ok(other) => panic!("expected the peer's SessionCreate, got {other:?}"),
+            Err(error) => panic!("the create never reached the peer: {error:?}"),
+        }
+        match harness.links.read("b", RemoteHostList::Sessions) {
+            LinkAnswer::Failed(RemoteHostState::Busy, sentence) => {
+                assert_eq!(sentence, create_busy_sentence())
+            }
+            other => panic!("a read behind a create must fail busy, got {other:?}"),
+        }
+        match harness.links.operate_create(
+            "b",
+            Some("far-workspace".to_string()),
+            SessionKind::Terminal,
+            None,
+            None,
+            None,
+            Some("lane-key-two".to_string()),
+            None,
+            None,
+        ) {
+            LinkAnswer::Failed(RemoteHostState::Busy, sentence) => {
+                assert_eq!(sentence, create_busy_sentence())
+            }
+            other => panic!("a second create must fail busy, got {other:?}"),
+        }
+        // The held create answers when its own budget lapses, releasing the
+        // lane without wedging the link.
+        match creating.join().expect("the create thread") {
+            LinkAnswer::Failed(RemoteHostState::Offline, _) => {}
+            other => panic!("a held create lapses to offline, got {other:?}"),
+        }
+    });
 }

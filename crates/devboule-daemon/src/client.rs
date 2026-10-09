@@ -2065,6 +2065,11 @@ impl DaemonClient {
     /// lost reply answers with the same session. The worker never retries
     /// itself — an unknown outcome stays unknown until the caller asks
     /// again with the same key.
+    ///
+    /// The deadline is the create road's, not the control plane's: the host
+    /// runs the provider handshake inline (the link alone budgets 120 s
+    /// plus queue margin), and giving up at 30 s would report a failure
+    /// while the host is still starting the session.
     #[allow(clippy::too_many_arguments)]
     pub fn remote_host_create(
         &self,
@@ -2080,18 +2085,21 @@ impl DaemonClient {
     ) -> Result<Session, DaemonError> {
         self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
         let id = self.alloc_id();
-        match self.roundtrip(ClientMessage::RemoteHostCreate {
-            id,
-            device_id: device_id.to_string(),
-            workspace_id,
-            kind,
-            provider,
-            mode,
-            display_name,
-            idempotency_key,
-            cols,
-            rows,
-        })? {
+        match self.roundtrip_with_deadline(
+            ClientMessage::RemoteHostCreate {
+                id,
+                device_id: device_id.to_string(),
+                workspace_id,
+                kind,
+                provider,
+                mode,
+                display_name,
+                idempotency_key,
+                cols,
+                rows,
+            },
+            session_create_deadline(),
+        )? {
             DaemonMessage::RemoteHostSession { session, .. } => Ok(session),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
