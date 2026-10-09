@@ -10,6 +10,7 @@ import {
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import { workspaceDisplayTitles } from "../../lib/workspaceTitles";
 import type { Project, Session, Workspace } from "../../types/ipc";
+import { isAgentKind } from "../../types/ipc";
 import { sessionNeedsApproval } from "./sessionAttention";
 import {
   LOCAL_HOST_ID,
@@ -152,6 +153,12 @@ function workspaceViewFromIndex(
   const unattended = sessionsOfWorkspace.some(
     (session) => session.state.type !== "ended" && session.unattended === "yes",
   );
+  // Actually running a turn, not merely live: the roster's turn status says
+  // so, the same predicate the agent rows read. A live terminal holds its
+  // process, so it still counts — only agents answer to turn status.
+  const running = live.filter(
+    (session) => !isAgentKind(session.kind) || session.activity === "working",
+  );
   // A silent session still holds its process: quiet, never idle — so only a
   // workspace with no live, silent, waiting or unattended session reads idle.
   const settled =
@@ -162,14 +169,14 @@ function workspaceViewFromIndex(
   return {
     ...workspace,
     displayTitle,
-    agents: { working: live.length, waiting: waiting.length },
+    agents: { working: running.length, waiting: waiting.length },
     elapsedMs: shortestElapsed(sessionsOfWorkspace),
     stateDot:
       waiting.length > 0
         ? "attention"
         : unattended
           ? "unattended"
-          : live.length > 0
+          : running.length > 0
             ? "pulse"
             : settled
               ? "idle"

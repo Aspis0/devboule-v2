@@ -41,21 +41,49 @@ describe("workspaceView", () => {
     });
     // Settled, not asking: idle, with neither leaked marker.
     expect(workspaceView(workspace, [ended]).stateDot).toBe("idle");
-    expect(workspaceView(workspace, [ended, session()]).stateDot).toBe("pulse");
+    expect(
+      workspaceView(workspace, [ended, session({ activity: "working" })]).stateDot,
+    ).toBe("pulse");
   });
 
   it.each(["finished", "error"] as const)("does not mark %s as needing approval", (reason) => {
-    expect(workspaceView(workspace, [session({ attention: { reason, atMs: 1 } })]).stateDot).toBe(
-      "pulse",
-    );
+    expect(
+      workspaceView(workspace, [session({ attention: { reason, atMs: 1 }, activity: "working" })])
+        .stateDot,
+    ).toBe("pulse");
   });
+  it("counts only sessions actually running a turn as working", () => {
+    const view = workspaceView(workspace, [
+      session({ id: "running", activity: "working" }),
+      session({ id: "idle", activity: "idle" }),
+      session({ id: "blocked", activity: "blocked" }),
+      session({ id: "unknown", activity: "unknown" }),
+      session({ id: "unstated" }),
+      session({ id: "shell", kind: "terminal" }),
+    ]);
+    // The agent rows read the same predicate: activity "working" alone runs.
+    // A live terminal holds its process, so it still counts.
+    expect(view.agents).toEqual({ working: 2, waiting: 0 });
+    expect(view.stateDot).toBe("pulse");
+  });
+
+  it("leaves live-but-quiet agents without a working count or pulse", () => {
+    const view = workspaceView(workspace, [session({ activity: "idle", elapsedMs: 5_000 })]);
+    expect(view.agents).toEqual({ working: 0, waiting: 0 });
+    expect(view.stateDot).toBeNull();
+  });
+
   it("counts the workspace's working agents and the ones waiting on the user", () => {
     const waiting = session({
       id: "w1",
       state: { type: "silent", generation: 1 },
       attention: { reason: "permission", atMs: 1 },
     });
-    const view = workspaceView(workspace, [session(), session({ id: "s2" }), waiting]);
+    const view = workspaceView(workspace, [
+      session({ activity: "working" }),
+      session({ id: "s2", activity: "working" }),
+      waiting,
+    ]);
     expect(view.agents).toEqual({ working: 2, waiting: 1 });
   });
 
@@ -106,7 +134,7 @@ describe("workspaceView", () => {
     const unattendedSession = session({ unattended: "yes" });
     expect(workspaceView(workspace, [attention, unattendedSession]).stateDot).toBe("attention");
     expect(workspaceView(workspace, [unattendedSession]).stateDot).toBe("unattended");
-    expect(workspaceView(workspace, [session()]).stateDot).toBe("pulse");
+    expect(workspaceView(workspace, [session({ activity: "working" })]).stateDot).toBe("pulse");
     expect(workspaceView(workspace, []).stateDot).toBeNull();
   });
 
