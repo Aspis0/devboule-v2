@@ -21,6 +21,7 @@ const NEVER_PAIRED: &str = crate::provider_catalog::MCP_BROWSER_FILL_LOGIN_TOOL;
 
 fn peer(held: &[&str]) -> McpCaller {
     McpCaller::Peer {
+        scope: crate::peer_policy::PeerScope::PairedUser,
         device_id: "dev-browser".to_string(),
         caps: held.iter().map(|cap| (*cap).to_string()).collect(),
     }
@@ -98,6 +99,7 @@ fn a_saved_login_is_refused_for_a_device_holding_everything() {
     held.push(CAP_BROWSER.to_owned());
     let refused = mcp_peer_door(
         &McpCaller::Peer {
+            scope: crate::peer_policy::PeerScope::PairedUser,
             device_id: "dev-browser".to_string(),
             caps: held.clone(),
         },

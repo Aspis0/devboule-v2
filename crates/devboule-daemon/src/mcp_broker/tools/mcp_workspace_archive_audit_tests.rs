@@ -20,6 +20,7 @@ fn audit_rows(state: &ServerState) -> Vec<(String, String)> {
 
 fn peer_caller() -> McpCaller {
     McpCaller::Peer {
+        scope: crate::peer_policy::PeerScope::PairedUser,
         device_id: "audit-test-peer".to_string(),
         caps: Vec::new(),
     }

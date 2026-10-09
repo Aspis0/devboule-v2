@@ -19,7 +19,7 @@
 //! reaches — is not decided here: it is the owner projection in `server.rs`
 //! plus the origin branch of `check_user_owner`.
 
-use devboule_protocol::{ClientMessage, SessionKind, SessionOrigin};
+use devboule_protocol::{ClientMessage, PeerRole, SessionKind, SessionOrigin};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PeerDecision {
@@ -65,6 +65,16 @@ pub fn peer_scope(hello_claim: Option<bool>, recorded: PeerScope) -> PeerScope {
 }
 
 impl PeerScope {
+    /// The scope a stored projection word names: a session created under the
+    /// machine scope records `Daemon`; a client word — or none, for an origin
+    /// that predates the recording — reads as the paired-user scope.
+    pub fn projected(role: Option<PeerRole>) -> Self {
+        match role {
+            Some(PeerRole::Daemon) => Self::PeerDevice,
+            _ => Self::PairedUser,
+        }
+    }
+
     /// The v30 projection of the migrated dial hint: a peer whose old tag said
     /// `daemon` promised a listener and keeps the machine scope; anything else
     /// reads as a client.
@@ -1178,7 +1188,7 @@ impl ConnPeer {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use devboule_protocol::{OwnerId, PeerRole, PromptAttachment};
+    use devboule_protocol::{OwnerId, PromptAttachment};
 
     fn ping() -> ClientMessage {
         ClientMessage::Ping { id: 1 }

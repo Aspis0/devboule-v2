@@ -32,6 +32,10 @@ pub(super) enum McpCaller {
     Local,
     Peer {
         device_id: String,
+        /// The register the calling session was created under, read back from
+        /// its stored origin. A machine-owned session keeps the machine scope
+        /// even when its pairing row holds no v30 dial hint.
+        scope: crate::peer_policy::PeerScope,
         caps: Vec<String>,
     },
     Unknown,
@@ -47,7 +51,15 @@ pub(super) fn resolve_mcp_caller(state: &ServerState, caller_session_id: &str) -
         SessionOriginKind::Peer => match origin.device_id {
             Some(device_id) => {
                 let caps = state.peer_caps(&device_id);
-                McpCaller::Peer { device_id, caps }
+                McpCaller::Peer {
+                    device_id,
+                    // The scope the session was created under, not a fresh
+                    // guess from the row: a hosted peer's own session must keep
+                    // reaching its own terminals even after the dialect that
+                    // recorded the v30 hint stopped using it.
+                    scope: crate::peer_policy::PeerScope::projected(origin.role),
+                    caps,
+                }
             }
             None => McpCaller::Unknown,
         },
@@ -121,18 +133,12 @@ pub(super) fn caller_conn(
     caller: &McpCaller,
 ) -> Arc<crate::session::ConnHandle> {
     match caller {
-        McpCaller::Peer { device_id, caps } => {
+        McpCaller::Peer {
+            device_id,
+            scope,
+            caps,
+        } => {
             let record = state.peer_get(device_id).ok().flatten();
-            // The row's v30 dial hint is the only scope evidence a session
-            // carries: presence is a property of a live hello, and this
-            // connection is reconstructed from the row. A row that says nothing
-            // stays client-scoped, which is the fail-narrow direction.
-            let scope = crate::peer_policy::PeerScope::legacy(
-                record
-                    .as_ref()
-                    .map(|record| record.legacy_dialable)
-                    .unwrap_or(false),
-            );
             let binding = crate::peer_policy::TransportBinding {
                 kind: record
                     .as_ref()
@@ -156,7 +162,7 @@ pub(super) fn caller_conn(
                 None,
                 Some(crate::peer_policy::ConnPeer::Remote {
                     device_id: device_id.clone(),
-                    scope,
+                    scope: *scope,
                     paired_by_user: record.and_then(|record| record.paired_by_user),
                     binding,
                 }),

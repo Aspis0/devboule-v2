@@ -38,6 +38,7 @@ fn every_cap() -> Vec<String> {
 
 fn peer(held: Vec<String>) -> McpCaller {
     McpCaller::Peer {
+        scope: crate::peer_policy::PeerScope::PairedUser,
         device_id: "dev-fail-closed".to_string(),
         caps: held,
     }

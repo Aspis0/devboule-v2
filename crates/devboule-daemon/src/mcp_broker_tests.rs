@@ -2317,6 +2317,7 @@ fn local_callers_pass_the_door_for_every_tool() {
 fn a_peer_is_refused_the_oracle_search_until_it_holds_search() {
     use crate::provider_catalog::{MCP_NEIGHBORHOOD_TOOL, MCP_ORACLE_SEARCH_TOOL};
     let view_only = McpCaller::Peer {
+        scope: crate::peer_policy::PeerScope::PairedUser,
         device_id: "dev-view".to_string(),
         caps: vec!["view".to_string()],
     };
@@ -2330,6 +2331,7 @@ fn a_peer_is_refused_the_oracle_search_until_it_holds_search() {
         "the refusal names the missing capability: {refused}"
     );
     let searcher = McpCaller::Peer {
+        scope: crate::peer_policy::PeerScope::PairedUser,
         device_id: "dev-search".to_string(),
         caps: vec!["view".to_string(), "search".to_string()],
     };
@@ -3494,6 +3496,7 @@ fn a_creation_card_names_a_device_that_may_answer_it() {
     row.paired_by_user = Some("S-1-5-21-f1".to_string());
     state.peer_upsert(row).expect("store a peer");
     let holder = McpCaller::Peer {
+        scope: crate::peer_policy::PeerScope::PairedUser,
         device_id: "device-f1-note".to_string(),
         caps: vec!["view".to_string(), "answer_permissions".to_string()],
     };
@@ -3505,6 +3508,7 @@ fn a_creation_card_names_a_device_that_may_answer_it() {
         "the note names the grant: {note}"
     );
     let plain = McpCaller::Peer {
+        scope: crate::peer_policy::PeerScope::PairedUser,
         device_id: "device-f1-note".to_string(),
         caps: vec!["view".to_string()],
     };
@@ -6299,6 +6303,7 @@ fn agent_status_reads_a_live_child() {
     // And the door says the same split: a `view` peer may read this count,
     // while the list that carries the details is priced at `answer_permissions`.
     let view_peer = McpCaller::Peer {
+        scope: crate::peer_policy::PeerScope::PairedUser,
         device_id: "c1a-status-view".to_string(),
         caps: vec![crate::peer_policy::CAP_VIEW.to_string()],
     };

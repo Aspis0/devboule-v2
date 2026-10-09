@@ -22,6 +22,7 @@ const PROCESS_TOOLS: [&str; 3] = [
 
 fn peer(held: &[&str]) -> McpCaller {
     McpCaller::Peer {
+        scope: crate::peer_policy::PeerScope::PairedUser,
         device_id: "dev-process".to_string(),
         caps: held.iter().map(|cap| (*cap).to_string()).collect(),
     }

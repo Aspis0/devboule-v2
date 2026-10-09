@@ -161,11 +161,14 @@ fn a_daemon_origin_caller_writes_only_its_own_terminals() {
         "tw-daemon-own",
         devboule_protocol::SessionOrigin::peer("device-tw", devboule_protocol::PeerRole::Daemon),
     );
-    // The stored v30 daemon tag is what reconstructs this session's machine
-    // scope; the origin role word is attribution and is not consulted.
-    let mut device_row = peer_row("device-tw", &["view", "send", "admin", "create_sessions"]);
-    device_row.legacy_dialable = true;
-    state.peer_upsert(device_row).expect("store a peer");
+    // A roleless row on purpose: this session's machine scope comes from the
+    // origin it was created under, not from any v30 dial hint.
+    state
+        .peer_upsert(peer_row(
+            "device-tw",
+            &["view", "send", "admin", "create_sessions"],
+        ))
+        .expect("store a peer");
 
     let token = serve(&state, "tw-daemon-caller");
     allow_terminal_writes(&state, "tw-daemon-caller");
