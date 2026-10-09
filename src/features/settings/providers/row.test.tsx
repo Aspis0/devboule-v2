@@ -144,8 +144,10 @@ describe("ProviderRow", () => {
     expect(chevron().getAttribute("aria-expanded")).toBe("true");
     const details = container.querySelector(".prov-details");
     expect(details?.textContent).toContain("C:\\grok\\grok.exe");
-    expect(details?.textContent).toContain("v0.2.0");
     expect(details?.textContent).toContain("ACP");
+    // The version lives on the row line, never under Advanced.
+    expect(details?.textContent).not.toContain("v0.2.0");
+    expect(container.querySelector(".prov-row .provider-version")?.textContent).toContain("v0.2.0");
     expect(providerVocabularyGet).toHaveBeenCalledTimes(1);
     expect(providerVocabularyGet).toHaveBeenCalledWith("grok", "", false);
     expect(container.textContent).toContain("1 model");
@@ -161,10 +163,14 @@ describe("ProviderRow", () => {
     expect(container.textContent).not.toMatch(/\d+ models?/);
   });
 
-  it("keeps an off row's explanatory details open without reading its vocabulary", async () => {
+  it("keeps an off row's explanation under Advanced, without reading its vocabulary", async () => {
     await renderRow({ enabled: false });
     expect(container.textContent).toContain("Off");
-    expect(container.textContent).toContain("Existing sessions keep running.");
+    expect(container.querySelector(".prov-details")).toBeNull();
+    await act(async () => chevron().click());
+    expect(container.querySelector(".prov-details")?.textContent).toContain(
+      "Existing sessions keep running.",
+    );
     expect(providerVocabularyGet).not.toHaveBeenCalled();
   });
 
@@ -204,10 +210,17 @@ describe("ProviderRow", () => {
     expect(container.textContent).not.toContain("via npx");
   });
 
-  it("shows Updating… in auto-expanded details while its npm run is in flight", async () => {
+  it("shows Updating… on the row line while its npm run is in flight", async () => {
     await renderRow({ busyVerb: "update" });
-    expect(container.querySelector(".prov-details")).not.toBeNull();
-    expect(container.textContent).toContain("Updating…");
+    expect(container.querySelector(".prov-row .prov-busy")?.textContent).toBe("Updating…");
+    expect(container.querySelector(".prov-details")).toBeNull();
+  });
+
+  it("keeps the install path off the row until Advanced opens", async () => {
+    await renderRow();
+    expect(container.querySelector(".prov-row")?.textContent).not.toContain("C:\\grok\\grok.exe");
+    await act(async () => chevron().click());
+    expect(container.querySelector(".prov-details")?.textContent).toContain("C:\\grok\\grok.exe");
   });
 
   it("offers no Update anywhere while another row's npm run holds the daemon", async () => {
@@ -397,16 +410,10 @@ describe("ProviderRow", () => {
     expect(onDismissFailure).toHaveBeenCalledTimes(1);
   });
 
-  it("opens login from the details button and the kebab, omitted without a handler", async () => {
+  it("opens login from the row menu only, and omits it without a handler", async () => {
     const onOpenLogin = vi.fn();
     await renderRow({ onOpenLogin });
-    await act(async () => chevron().click());
-    const detailsLogin = container.querySelector<HTMLButtonElement>(".provider-login");
-    if (!detailsLogin) throw new Error("details Log in did not render");
-    expect(detailsLogin.textContent).toBe("Log in");
-    await act(async () => detailsLogin.click());
-    expect(onOpenLogin).toHaveBeenCalledTimes(1);
-    expect(onOpenLogin.mock.calls[0]?.[0]).toBe(detailsLogin);
+    expect(container.querySelector(".provider-login")).toBeNull();
 
     const kebab = container.querySelector<HTMLButtonElement>(".prov-kebab");
     if (!kebab) throw new Error("kebab did not render");
@@ -416,8 +423,8 @@ describe("ProviderRow", () => {
     ).find((item) => item.textContent === "Log in");
     if (!menuLogin) throw new Error("kebab Log in did not render");
     await act(async () => menuLogin.click());
-    expect(onOpenLogin).toHaveBeenCalledTimes(2);
-    expect(onOpenLogin.mock.calls[1]?.[0]).toBeNull();
+    expect(onOpenLogin).toHaveBeenCalledTimes(1);
+    expect(onOpenLogin.mock.calls[0]?.[0]).toBeNull();
   });
 
   it("shows no login entry points without a login handler", async () => {
@@ -451,7 +458,7 @@ describe("ProviderRow", () => {
     expect(container.textContent).toContain("Confirm opens a terminal tab.");
   });
 
-  it("opens collapsed details for a terminal handoff, with Dismiss", async () => {
+  it("shows a terminal handoff on the row without opening Advanced, with Dismiss", async () => {
     const onDismissNotice = vi.fn();
     await renderRow({
       terminalNotice: {
@@ -460,7 +467,8 @@ describe("ProviderRow", () => {
       },
       onDismissNotice,
     });
-    expect(chevron().getAttribute("aria-expanded")).toBe("true");
+    expect(chevron().getAttribute("aria-expanded")).toBe("false");
+    expect(container.querySelector(".prov-details")).toBeNull();
     expect(container.querySelector('[role="status"]')?.textContent).toContain(
       "Install and login sent to a terminal tab — finish them there.",
     );
@@ -509,14 +517,16 @@ describe("ProviderRow", () => {
     if (!cancel) throw new Error("waiting Cancel did not render");
   });
 
-  it("shows the login hint instead of the button once details open", async () => {
-    // No auto-expand: the hint is for someone who opened details looking
+  it("shows the login hint under Advanced, never on the row", async () => {
+    // No auto-expand: the hint is for someone who opened Advanced looking
     // for the login, not a reason to open every row with one by default.
     await renderRow({ loginHint: "Log in needs an open workspace." });
     expect(container.querySelector(".prov-details")).toBeNull();
     await act(async () => chevron().click());
     expect(container.querySelector(".provider-login")).toBeNull();
-    expect(container.textContent).toContain("Log in needs an open workspace.");
+    expect(container.querySelector(".prov-details")?.textContent).toContain(
+      "Log in needs an open workspace.",
+    );
   });
 
   it("shows neither button nor hint when silence is correct", async () => {

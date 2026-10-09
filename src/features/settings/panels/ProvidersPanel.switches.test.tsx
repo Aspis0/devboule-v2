@@ -85,6 +85,10 @@ describe("tools switch wiring", () => {
     const onSwitch = providerSwitch();
     if (!onSwitch) throw new Error("provider switch did not render");
     expect(container.textContent).toContain("Off");
+    expect(container.textContent).not.toContain("Existing sessions keep running.");
+    const advanced = container.querySelector<HTMLButtonElement>(".prov-chev");
+    if (!advanced) throw new Error("row Advanced toggle did not render");
+    await act(async () => advanced.click());
     expect(container.textContent).toContain("Existing sessions keep running.");
     expect(onSwitch.getAttribute("aria-checked")).toBe("false");
     expect(toolSwitch()?.disabled).toBe(true);

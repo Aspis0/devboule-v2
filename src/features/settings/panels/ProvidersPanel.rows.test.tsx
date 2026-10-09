@@ -111,7 +111,7 @@ describe("provider rows and status", () => {
     expect(container.textContent).not.toMatch(/ready/i);
   });
 
-  it("shows installed and latest versions inside the expanded details", async () => {
+  it("shows installed and latest versions on the row line, without opening Advanced", async () => {
     vi.mocked(providersList).mockResolvedValueOnce({
       providers: [
         installedProvider({ installedVersion: "0.2.0", latestVersion: "0.3.0", tools: [] }),
@@ -119,9 +119,8 @@ describe("provider rows and status", () => {
       unreadableDirs: 0,
     });
     await renderPanel();
-    await act(async () => firstChevron().click());
 
-    const line = container.querySelector(".provider-version");
+    const line = container.querySelector(".prov-row .provider-version");
     if (line === null) throw new Error("provider-version did not render");
     expect(line.textContent).toContain("v0.2.0");
     expect(line.textContent).toContain("v0.3.0 available");
@@ -135,9 +134,10 @@ describe("provider rows and status", () => {
       unreadableDirs: 0,
     });
     await renderPanel();
-    await act(async () => firstChevron().click());
 
-    expect(container.querySelector(".provider-version")?.textContent).toContain("up to date");
+    expect(container.querySelector(".prov-row .provider-version")?.textContent).toContain(
+      "up to date",
+    );
   });
 
   it("fires no vocabulary call on mount and one on expand for a measured row", async () => {

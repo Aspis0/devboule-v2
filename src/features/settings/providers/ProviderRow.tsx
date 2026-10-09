@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { ProviderInfo } from "../../../types/ipc";
 import type { ErrorSentence } from "../../../lib/errorSentence";
 import { providerCanUpdate, providerRowStatus, providerVersionSegments } from "../providerStatus";
@@ -11,7 +11,7 @@ import { CopyableLines, type CopyableLine } from "./CopyableLines";
 import { SHELL_QUERY_LOADING } from "./terminalShell";
 import { ProviderNpmFailure, ProviderWriteError } from "./ProviderNpmFailure";
 
-/** Muted version line for the expanded details; renders nothing without data. */
+/** Muted version line on the row; renders nothing without data. */
 export function ProviderVersionLine({ provider }: { provider: ProviderInfo }) {
   const segments = providerVersionSegments(provider);
   if (segments.length === 0) return null;
@@ -92,8 +92,8 @@ export interface ProviderRowProps {
   /** Absent when the provider documents no login command: no entry points. */
   onOpenLogin?: (trigger: HTMLButtonElement | null) => void;
   /**
-   * Why no Log in button is shown: a no-workspace or no-command sentence.
-   * Null when the button shows or when silence is correct (never both).
+   * Why no Log in item is offered: a no-workspace or no-command sentence,
+   * shown under Advanced. Null when the item shows or when silence is correct.
    */
   loginHint: string | null;
   onConfirmConsent: () => void;
@@ -103,10 +103,12 @@ export interface ProviderRowProps {
 }
 
 /**
- * One installed provider row: h44 — chevron, glyph, name, dot status, the
- * provider and Devboule-tools switches, and kebab. The chevron opens details
- * (path, version, protocol, update); vocabulary mounts only in an expanded,
- * enabled row, so opening a switched-off row never probes its provider.
+ * One installed provider row: glyph, name, a status line (state, version,
+ * npx, a running npm), the provider and Devboule-tools switches, the row menu
+ * (Update, Log in, Refresh, copy path), and the Advanced toggle. Consent and
+ * failure lines sit under the row while they need an answer. Path, protocol,
+ * the model count, and the login hint live under Advanced. The vocabulary
+ * probe mounts only once Advanced is open on an enabled row.
  */
 export function ProviderRow({
   provider,
@@ -144,23 +146,6 @@ export function ProviderRow({
   // remembers where consent came from and returns focus to the kebab on
   // Cancel itself — the panel's restore effect only covers live triggers.
   const [consentFromKebab, setConsentFromKebab] = useState(false);
-  // Consent, failure, write errors, a running npm, and a terminal handoff
-  // live inside the details: arriving any of them opens the row, so a
-  // kebab Update on a collapsed row still reveals its consent card instead
-  // of opening it invisibly.
-  useEffect(() => {
-    if (
-      consent !== null ||
-      npmFailure !== null ||
-      writeError !== null ||
-      providerWriteError !== null ||
-      busyVerb !== null ||
-      terminalNotice !== null
-    ) {
-      setExpanded(true);
-    }
-  }, [consent, npmFailure, writeError, providerWriteError, busyVerb, terminalNotice]);
-  const detailsOpen = expanded || !enabled;
   const status = enabled
     ? providerRowStatus(provider)
     : { tone: "idle" as const, word: "Off", detail: null };
@@ -172,7 +157,6 @@ export function ProviderRow({
   // Provider ids are user-declarable (`user_providers` rows), so the id is
   // sanitised before it becomes a DOM id.
   const detailsId = `prov-details-${provider.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
-  const hasVersion = providerVersionSegments(provider).length > 0;
   // The protocol line names a protocol or renders nothing: on daemons that
   // report no protocol for a wrapper, "via npx" alone is not a protocol
   // and the group note plus the row word already carry provenance.
@@ -183,19 +167,9 @@ export function ProviderRow({
     onOpenUpdate(null);
   }
 
-  function openUpdateFromDetails(trigger: HTMLButtonElement) {
-    setConsentFromKebab(false);
-    onOpenUpdate(trigger);
-  }
-
   function openLoginFromKebab() {
     setConsentFromKebab(true);
     onOpenLogin?.(null);
-  }
-
-  function openLoginFromDetails(trigger: HTMLButtonElement) {
-    setConsentFromKebab(false);
-    onOpenLogin?.(trigger);
   }
 
   function cancelConsent() {
@@ -208,53 +182,36 @@ export function ProviderRow({
   return (
     <div className="prov-row-wrap" ref={rowScopeRef} tabIndex={-1} data-provider-row={provider.id}>
       <div className="prov-row">
-        <button
-          type="button"
-          className={`prov-chev${detailsOpen ? " prov-chev-open" : ""}`}
-          aria-expanded={detailsOpen}
-          {...(detailsOpen ? { "aria-controls": detailsId } : {})}
-          aria-label={`Details for ${provider.id}`}
-          disabled={!enabled}
-          onClick={() => setExpanded((open) => !open)}
-        >
-          <span aria-hidden="true">›</span>
-        </button>
         <span className="prov-glyph">
           <ProviderGlyph providerId={provider.id} />
         </span>
-        <span className="prov-name">{provider.id}</span>
-        <span className="prov-status" title={status.detail ?? undefined}>
-          <span className={`prov-dot prov-dot-${status.tone}`} aria-hidden="true" />
-          <span className="prov-status-word">{status.word}</span>
-          {status.detail !== null ? <span className="sr-only">{status.detail}</span> : null}
-          {viaNpx ? <span className="prov-via">via npx</span> : null}
-          {detailsOpen && enabled ? (
-            <ProviderModelCount
-              key={modelEpoch}
-              providerId={provider.id}
-              supported={vocabularySupported}
-              cache={modelCache}
-              epoch={modelEpoch}
-            />
-          ) : null}
+        <span className="prov-main">
+          <span className="prov-name">{provider.id}</span>
+          <span className="prov-status" title={status.detail ?? undefined}>
+            <span className={`prov-dot prov-dot-${status.tone}`} aria-hidden="true" />
+            <span className="prov-status-word">{status.word}</span>
+            {status.detail !== null ? <span className="sr-only">{status.detail}</span> : null}
+            <ProviderVersionLine provider={provider} />
+            {viaNpx ? <span className="prov-via">via npx</span> : null}
+            {busyVerb !== null ? (
+              <span className="prov-busy" role="status">
+                {busyVerb === "update" ? "Updating…" : "Installing…"}
+              </span>
+            ) : null}
+          </span>
         </span>
         <span className="prov-spacer" aria-hidden="true" />
         {providerSwitchSupported ? (
-          <span className="prov-tools">
-            <span className="prov-tools-label" aria-hidden="true">
-              On
-            </span>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={enabled}
-              aria-label={`On for ${provider.id}`}
-              className={`prov-switch${enabled ? " prov-switch-on" : ""}`}
-              onClick={() => onToggleProvider(!enabled)}
-            >
-              <i aria-hidden="true" />
-            </button>
-          </span>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={enabled}
+            aria-label={`On for ${provider.id}`}
+            className={`prov-switch${enabled ? " prov-switch-on" : ""}`}
+            onClick={() => onToggleProvider(!enabled)}
+          >
+            <i aria-hidden="true" />
+          </button>
         ) : null}
         {toolPolicy === null ? null : (
           <ProviderToolsSwitch
@@ -273,125 +230,108 @@ export function ProviderRow({
           onLogin={canLogin ? openLoginFromKebab : undefined}
           onRefresh={onRefresh}
         />
+        <button
+          type="button"
+          className={`prov-chev${expanded ? " prov-chev-open" : ""}`}
+          aria-expanded={expanded}
+          {...(expanded ? { "aria-controls": detailsId } : {})}
+          aria-label={`Advanced for ${provider.id}`}
+          onClick={() => setExpanded((open) => !open)}
+        >
+          <span aria-hidden="true">›</span>
+        </button>
       </div>
-      {detailsOpen ? (
+      {providerWriteError !== null ? (
+        <div className="prov-row-line" role="alert">
+          {providerWriteError}
+        </div>
+      ) : null}
+      {consent === "waiting" ? (
+        <div
+          className="provider-card-block provider-consent"
+          role="group"
+          aria-label={`Confirm install for ${provider.id}`}
+        >
+          <p className="provider-consent-notice">{SHELL_QUERY_LOADING}</p>
+          <div className="provider-consent-actions">
+            <button
+              type="button"
+              className="provider-refresh provider-consent-cancel"
+              onClick={cancelConsent}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : consent !== null ? (
+        <ProviderConsentBlock
+          providerId={provider.id}
+          verb={consent.verb}
+          lines={consent.lines}
+          copyLines={consent.copyLines}
+          notice={consent.notice}
+          onConfirm={onConfirmConsent}
+          onCancel={cancelConsent}
+        />
+      ) : null}
+      {terminalNotice !== null ? (
+        <div className="prov-row-line" role="status">
+          <span className="prov-terminal-note">{terminalNotice.text}</span>
+          {terminalNotice.lines.length > 0 ? <CopyableLines lines={terminalNotice.lines} /> : null}
+          <button
+            type="button"
+            className="provider-refresh provider-update-error-dismiss"
+            onClick={onDismissNotice}
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+      {npmFailure !== null ? (
+        <ProviderNpmFailure
+          text={npmFailure.text}
+          detail={npmFailure.detail}
+          onDismiss={onDismissFailure}
+        />
+      ) : null}
+      {writeError === null ? null : (
+        <ProviderWriteError
+          error={writeError}
+          providerId={provider.id}
+          onDismiss={onDismissWriteError}
+        />
+      )}
+      {expanded ? (
         <div className="prov-details" id={detailsId}>
           {!enabled ? (
             <div className="prov-detail-line" role="status">
               <span className="prov-terminal-note">Off. Existing sessions keep running.</span>
             </div>
           ) : null}
-          {providerWriteError !== null ? (
-            <div className="prov-detail-line" role="alert">
-              {providerWriteError}
-            </div>
-          ) : null}
           <div className="prov-detail-line">
             <span className="prov-detail-label">Path</span>
             <code className="prov-detail-code">{provider.executable}</code>
           </div>
-          {hasVersion ? (
-            <div className="prov-detail-line">
-              <span className="prov-detail-label">Version</span>
-              <ProviderVersionLine provider={provider} />
-            </div>
-          ) : null}
           {protocolName !== null ? (
             <div className="prov-detail-line">
               <span className="prov-detail-label">Protocol</span>
               <span className="prov-detail-value">{protocolName}</span>
             </div>
           ) : null}
-          {busyVerb !== null ? (
-            <div className="prov-detail-line" role="status">
-              <span className="prov-busy">
-                {busyVerb === "update" ? "Updating…" : "Installing…"}
-              </span>
-            </div>
+          {enabled ? (
+            <ProviderModelCount
+              key={modelEpoch}
+              providerId={provider.id}
+              supported={vocabularySupported}
+              cache={modelCache}
+              epoch={modelEpoch}
+            />
           ) : null}
-          {canUpdate ? (
-            <div className="prov-detail-line">
-              <button
-                type="button"
-                className="provider-refresh provider-update"
-                onClick={(event) => openUpdateFromDetails(event.currentTarget)}
-              >
-                Update
-              </button>
-            </div>
-          ) : null}
-          {canLogin ? (
-            <div className="prov-detail-line">
-              <button
-                type="button"
-                className="provider-refresh provider-login"
-                onClick={(event) => openLoginFromDetails(event.currentTarget)}
-              >
-                Log in
-              </button>
-            </div>
-          ) : loginHint !== null ? (
+          {loginHint !== null ? (
             <div className="prov-detail-line">
               <span className="prov-terminal-note">{loginHint}</span>
             </div>
           ) : null}
-          {consent === "waiting" ? (
-            <div
-              className="provider-card-block provider-consent"
-              role="group"
-              aria-label={`Confirm install for ${provider.id}`}
-            >
-              <p className="provider-consent-notice">{SHELL_QUERY_LOADING}</p>
-              <div className="provider-consent-actions">
-                <button
-                  type="button"
-                  className="provider-refresh provider-consent-cancel"
-                  onClick={cancelConsent}
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          ) : consent !== null ? (
-            <ProviderConsentBlock
-              providerId={provider.id}
-              verb={consent.verb}
-              lines={consent.lines}
-              copyLines={consent.copyLines}
-              notice={consent.notice}
-              onConfirm={onConfirmConsent}
-              onCancel={cancelConsent}
-            />
-          ) : null}
-          {terminalNotice !== null ? (
-            <div className="prov-detail-line" role="status">
-              <span className="prov-terminal-note">{terminalNotice.text}</span>
-              {terminalNotice.lines.length > 0 ? (
-                <CopyableLines lines={terminalNotice.lines} />
-              ) : null}
-              <button
-                type="button"
-                className="provider-refresh provider-update-error-dismiss"
-                onClick={onDismissNotice}
-              >
-                Dismiss
-              </button>
-            </div>
-          ) : null}
-          {npmFailure !== null ? (
-            <ProviderNpmFailure
-              text={npmFailure.text}
-              detail={npmFailure.detail}
-              onDismiss={onDismissFailure}
-            />
-          ) : null}
-          {writeError === null ? null : (
-            <ProviderWriteError
-              error={writeError}
-              providerId={provider.id}
-              onDismiss={onDismissWriteError}
-            />
-          )}
         </div>
       ) : null}
     </div>

@@ -61,23 +61,21 @@ describe("provider update and install", () => {
     });
   }
 
-  function chevron(): HTMLButtonElement {
-    const button = container.querySelector<HTMLButtonElement>(".prov-chev");
-    if (!button) throw new Error("row chevron did not render");
-    return button;
-  }
-
-  async function openConsentFromDetails() {
-    await act(async () => chevron().click());
-    const update = container.querySelector<HTMLButtonElement>(".provider-update");
-    if (!update) throw new Error("Update button did not render in details");
+  async function openConsentFromMenu() {
+    const kebab = container.querySelector<HTMLButtonElement>(".prov-kebab");
+    if (!kebab) throw new Error("kebab did not render");
+    await act(async () => kebab.click());
+    const update = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ).find((item) => item.textContent === "Update");
+    if (!update) throw new Error("Update item did not render");
     await act(async () => update.click());
     const confirm = container.querySelector<HTMLButtonElement>(".provider-consent-confirm");
     if (!confirm) throw new Error("Consent panel did not render");
     return confirm;
   }
 
-  it("offers Update in details and kebab only for updatable rows", async () => {
+  it("offers Update in the row menu only for updatable rows, never as a details button", async () => {
     vi.mocked(providersList).mockResolvedValueOnce({
       providers: [
         npmProvider(),
@@ -93,8 +91,14 @@ describe("provider update and install", () => {
     rows.forEach((row) => {
       expect(row.querySelector(".prov-kebab")).not.toBeNull();
     });
-    await act(async () => chevron().click());
-    expect(container.querySelector(".provider-update")?.textContent).toBe("Update");
+    expect(container.querySelector(".provider-update")).toBeNull();
+    const kebab = container.querySelector<HTMLButtonElement>(".prov-kebab");
+    if (!kebab) throw new Error("kebab did not render");
+    await act(async () => kebab.click());
+    const items = Array.from(container.querySelectorAll('[role="menuitem"]')).map(
+      (item) => item.textContent,
+    );
+    expect(items).toContain("Update");
   });
 
   it("opens consent with the exact npm command and runs nothing until Confirm", async () => {
@@ -103,7 +107,7 @@ describe("provider update and install", () => {
       unreadableDirs: 0,
     });
     await renderPanel();
-    const confirm = await openConsentFromDetails();
+    const confirm = await openConsentFromMenu();
 
     expect(container.textContent).toContain("npm install -g @vibe/grok-cli@latest");
     expect(providerUpdate).not.toHaveBeenCalled();
@@ -122,17 +126,15 @@ describe("provider update and install", () => {
       unreadableDirs: 0,
     });
     await renderPanel();
-    await openConsentFromDetails();
+    await openConsentFromMenu();
 
     const cancel = container.querySelector<HTMLButtonElement>(".provider-consent-cancel");
     if (!cancel) throw new Error("Cancel did not render");
     await act(async () => cancel.click());
     expect(providerUpdate).not.toHaveBeenCalled();
 
-    // Cancel leaves the row expanded, so Update is still in the details.
-    const update = container.querySelector<HTMLButtonElement>(".provider-update");
-    if (!update) throw new Error("Update button did not stay in details");
-    await act(async () => update.click());
+    // Cancel leaves the row in place, so the menu offers Update again.
+    await openConsentFromMenu();
     await act(async () => undefined);
     expect(container.textContent).toContain("npm install -g @vibe/grok-cli@latest");
     await act(async () => {
@@ -143,7 +145,7 @@ describe("provider update and install", () => {
     expect(container.textContent).not.toContain("npm install -g @vibe/grok-cli@latest");
   });
 
-  it("lands focus on the row after Confirm, on both the kebab and details paths", async () => {
+  it("lands focus on the row after Confirm", async () => {
     async function confirmThroughKebab(): Promise<void> {
       const kebab = container.querySelector<HTMLButtonElement>(".prov-kebab");
       if (!kebab) throw new Error("kebab did not render");
@@ -178,8 +180,8 @@ describe("provider update and install", () => {
     await act(async () => root.unmount());
     container.remove();
 
-    // Details path: the Update button unmounts under the actions lock, so
-    // the row takes focus here too instead of <body>.
+    // Second run from a fresh mount: the menu item unmounts under the
+    // actions lock, so the row takes focus here too instead of <body>.
     container = document.createElement("div");
     document.body.appendChild(container);
     vi.mocked(providersList).mockResolvedValueOnce({
@@ -192,7 +194,7 @@ describe("provider update and install", () => {
       }),
     );
     await renderPanel();
-    const confirm = await openConsentFromDetails();
+    const confirm = await openConsentFromMenu();
     await act(async () => confirm.click());
     await act(async () => undefined);
     expect(document.activeElement?.getAttribute("data-provider-row")).toBe("grok");
@@ -206,7 +208,7 @@ describe("provider update and install", () => {
       unreadableDirs: 0,
     });
     await renderPanel();
-    const confirm = await openConsentFromDetails();
+    const confirm = await openConsentFromMenu();
 
     await act(async () => {
       confirm.click();
@@ -225,7 +227,7 @@ describe("provider update and install", () => {
         unreadableDirs: 0,
       });
     await renderPanel();
-    const confirm = await openConsentFromDetails();
+    const confirm = await openConsentFromMenu();
     await act(async () => confirm.click());
     await act(async () => undefined);
 
@@ -242,7 +244,7 @@ describe("provider update and install", () => {
     });
     vi.mocked(providerUpdate).mockResolvedValueOnce({ ok: false, exitCode: 1, log });
     await renderPanel();
-    const confirm = await openConsentFromDetails();
+    const confirm = await openConsentFromMenu();
 
     await act(async () => confirm.click());
     await act(async () => undefined);

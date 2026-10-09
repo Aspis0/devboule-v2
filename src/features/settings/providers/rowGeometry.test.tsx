@@ -55,9 +55,9 @@ describe("providers row geometry (real stylesheets, no app launch)", () => {
     read("src/features/settings/settings.css"),
   ]);
 
-  it("holds installed rows at h44", () => {
+  it("holds installed rows at a 44px minimum, growing with the status line", () => {
     proof.inject([".prov-row"]);
-    expect(getComputedStyle(box("prov-row")).height).toBe("44px");
+    expect(getComputedStyle(box("prov-row")).minHeight).toBe("44px");
   });
 
   it("sets provider names at 14px", () => {
