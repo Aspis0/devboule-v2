@@ -37,12 +37,12 @@ mod platform {
         TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, ResumeThread, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
     #[cfg(feature = "server")]
     use windows_sys::Win32::System::Threading::{
         GetCurrentProcess, GetExitCodeProcess, WaitForSingleObject,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, ResumeThread, PROCESS_QUERY_LIMITED_INFORMATION,
     };
 
     /// Which processes a kill through a job reaches. A whole-job scope owns
@@ -186,11 +186,9 @@ mod platform {
             match self.scope {
                 Scope::Whole => CapturedTree::default(),
                 Scope::Attached { root, created_at } => match self.pids() {
-                    Ok(members) => {
-                        attached::capture(root, created_at, &members, &|| {
-                            self.pids().unwrap_or_default()
-                        })
-                    }
+                    Ok(members) => attached::capture(root, created_at, &members, &|| {
+                        self.pids().unwrap_or_default()
+                    }),
                     Err(error) => {
                         eprintln!(
                             "could not read the terminal's processes, so only its shell is stopped: {error}"
@@ -314,8 +312,7 @@ mod platform {
     /// The root's creation time at spawn, the identity a later open proves
     /// against. `None` when the kernel would not vouch for it even then.
     fn root_creation_time(pid: u32) -> Option<u64> {
-        let handle =
-            unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
         if handle.is_null() {
             return None;
         }

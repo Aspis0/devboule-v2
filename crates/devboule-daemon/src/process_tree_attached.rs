@@ -129,10 +129,7 @@ pub(super) fn capture(
 /// Members that appeared after a capture and whose parent chain leads into
 /// it: the second pass after the first kill, so a child born in the window
 /// does not escape with its parent dead.
-pub(super) fn capture_newcomers(
-    captured: &CapturedTree,
-    job_members: &[u32],
-) -> CapturedTree {
+pub(super) fn capture_newcomers(captured: &CapturedTree, job_members: &[u32]) -> CapturedTree {
     let mut newcomers = CapturedTree::default();
     let Some(parents) = process_parents() else {
         return newcomers;
