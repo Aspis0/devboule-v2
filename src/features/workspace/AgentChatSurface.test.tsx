@@ -284,6 +284,12 @@ describe("AgentChatSurface", () => {
     const rows = [...container.querySelectorAll(".workspace-chat-tool")];
     expect(rows).toHaveLength(4);
     expect(rows[0].querySelector(".workspace-chat-tool-label")?.textContent).toBe("Plan");
+    const planDetails = rows[0].querySelector("details");
+    if (planDetails === null) throw new Error("the plan had nothing to open");
+    await act(async () => {
+      planDetails.open = true;
+      planDetails.dispatchEvent(new Event("toggle"));
+    });
     expect(
       rows[0].querySelector(".workspace-chat-tool-body .plan-markdown-heading-2")?.textContent,
     ).toBe("Steps");
@@ -293,9 +299,9 @@ describe("AgentChatSurface", () => {
     );
     expect(rows[1].classList.contains("is-failed")).toBe(false);
     expect(rows[2].classList.contains("is-cancelled")).toBe(true);
-    expect(rows[1].querySelector(".workspace-chat-tool-body")?.textContent).not.toContain(
-      "Plan rejected.",
-    );
+    // A closed line mounts no body, so the rejection's words are not drawn at all.
+    expect(rows[1].querySelector(".workspace-chat-tool-body")).toBeNull();
+    expect(rows[1].textContent).not.toContain("Plan rejected.");
     expect(rows[1].textContent).toContain("Rejected");
     expect(rows[2].textContent).toContain("Withdrawn");
     expect(rows[3].querySelector(".workspace-chat-tool-summary-text")).toBeNull();
@@ -3785,26 +3791,11 @@ describe("AgentChatSurface", () => {
     // Rows with no output are plain lines: nothing inside the group opens.
     expect(group.querySelectorAll(".workspace-chat-tool-details")).toHaveLength(0);
 
-    // A group's [open] rule must not reach its descendants' summaries, or a
-    // closed inner row's chevron renders rotated (matrix(-1,0,0,-1,0,0)).
-    // Happy DOM resolves no computed transform on a
-    // generated pseudo-element (probed: ""), so the rule source is asserted:
-    // the rotate must hang off the open element's own summary only.
-    expect(workspaceCss.rulesFor(".workspace-chat-tool-details[open] > summary::after")).toContain(
-      "transform: rotate(180deg)",
-    );
-    expect(workspaceCss.rulesFor(".workspace-chat-tool-group[open] > summary::after")).toContain(
-      "transform: rotate(180deg)",
-    );
-    expect(
-      workspaceCss.rulesFor(".workspace-chat-tool-details[open] summary::after"),
-    ).not.toContain("transform: rotate(180deg)");
-    expect(workspaceCss.rulesFor(".workspace-chat-tool-group[open] summary::after")).not.toContain(
-      "transform: rotate(180deg)",
-    );
-    expect(workspaceCss.rulesFor(".workspace-chat-tool-group[open] summary::after")).not.toContain(
-      "transform: rotate(180deg)",
-    );
+    // A line draws no disclosure mark, so an open group has no mark to rotate
+    // and nothing to hand down to a closed row. Pseudo-element styles are not
+    // computed here, so the rule source is what is asserted.
+    expect(workspaceCss.rulesFor(".workspace-chat-tool summary::after")).toBe("");
+    expect(workspaceCss.rulesFor(".workspace-chat-tool-group summary::after")).toBe("");
   });
 
   it("renders a websearch tool row with the query and keeps output in the body", async () => {
@@ -3833,9 +3824,15 @@ describe("AgentChatSurface", () => {
     const row = container.querySelector(".workspace-chat-tool");
     if (row === null) throw new Error("tool row did not render");
     const summary = row.querySelector(".workspace-chat-tool-summary")?.textContent ?? "";
-    expect(summary).toContain("Searched");
+    expect(summary).toContain("Search");
     expect(summary).toContain("how to test");
     expect(summary).not.toContain("result body");
+    const details = row.querySelector("details");
+    if (details === null) throw new Error("the row had nothing to open");
+    await act(async () => {
+      details.open = true;
+      details.dispatchEvent(new Event("toggle"));
+    });
     expect(row.querySelector(".workspace-chat-tool-body")?.textContent).toContain("result body");
   });
 
@@ -3879,6 +3876,12 @@ describe("AgentChatSurface", () => {
     expect(singleFailure?.textContent).toBe("✗ failed");
     expect(singleFailure?.querySelector("[aria-hidden]")?.textContent).toBe("✗ ");
     expect(body.querySelector('.workspace-chat-tool-running[aria-label="Running"]')).not.toBeNull();
+    const located = body.querySelector<HTMLDetailsElement>(".workspace-chat-tool-details");
+    if (located === null) throw new Error("the located row had nothing to open");
+    await act(async () => {
+      located.open = true;
+      located.dispatchEvent(new Event("toggle"));
+    });
     expect(body.querySelector(".workspace-chat-tool-location")?.textContent).toBe("src/lib.rs:12");
   });
 

@@ -83,12 +83,10 @@ describe("tool row computed styles", () => {
       const row = el("div", "workspace-chat-entry workspace-chat-tool");
       const summary = el("div", "workspace-chat-tool-summary");
       const text = el("span", "workspace-chat-tool-text has-summary");
-      const label = el("span", "workspace-chat-tool-label", "Edited");
+      const label = el("span", "workspace-chat-tool-label", "Edit");
       const target = el("span", "workspace-chat-tool-summary-text", "src/summary.ts");
-      const stat = el("span", "workspace-chat-tool-stat", "(+12 −3)");
-      text.append(label, target, stat);
-      const done = el("span", "workspace-chat-tool-done", "✓");
-      summary.append(text, done);
+      text.append(label, target);
+      summary.append(text);
       row.append(summary);
       document.body.append(row);
 
@@ -99,17 +97,13 @@ describe("tool row computed styles", () => {
       expect(unpainted(rowStyle.backgroundColor)).toBe(true);
       expect(noWidth(rowStyle.borderTopWidth)).toBe(true);
       expect(unpainted(getComputedStyle(summary).backgroundColor)).toBe(true);
-      // One font, two greys: the verb in the ink, everything else muted.
-      expect(rowStyle.fontFamily).toContain("JetBrains Mono");
+      // The body font, not the monospace of the output: one font, two greys.
+      expect(rowStyle.fontFamily).toContain("Inter");
       expect(getComputedStyle(label).color).toBe(css.token("--ink"));
-      for (const muted of [target, stat]) {
-        expect(getComputedStyle(muted).color).toBe(css.token("--muted"));
-      }
+      expect(getComputedStyle(target).color).toBe(css.token("--muted"));
       // The floors the palette sets: ink 7 on the transcript ground, muted 6.97.
       expect(contrastRatio(getComputedStyle(label).color, ground!)).toBeGreaterThanOrEqual(7);
-      for (const muted of [target, stat]) {
-        expect(contrastRatio(getComputedStyle(muted).color, ground!)).toBeGreaterThanOrEqual(6.97);
-      }
+      expect(contrastRatio(getComputedStyle(target).color, ground!)).toBeGreaterThanOrEqual(6.97);
       // A long tool name ends in an ellipsis at a width of its own, and the target
       // keeps a share of the line whatever the name does.
       const labelStyle = getComputedStyle(label);
@@ -136,10 +130,9 @@ describe("tool row computed styles", () => {
       const interrupted = el("span", "workspace-chat-tool-interrupted", "Interrupted");
       const location = el("span", "workspace-chat-tool-location", "src/main.ts");
       const exit = el("span", "workspace-command-exit", "exit 1");
-      const done = el("span", "workspace-chat-tool-done", "✓");
       const running = el("span", "workspace-chat-tool-running");
       const failed = el("span", "workspace-chat-tool-failed", "failed");
-      summary.append(interrupted, location, exit, done, running, failed);
+      summary.append(interrupted, location, exit, running, failed);
       const group = el(
         "details",
         "workspace-chat-entry workspace-chat-tool workspace-chat-tool-group",
@@ -164,7 +157,6 @@ describe("tool row computed styles", () => {
           text.className,
         ).toBeGreaterThanOrEqual(4.5);
       }
-      expect(contrastRatio(getComputedStyle(done).color, ground)).toBeGreaterThanOrEqual(3);
       expect(
         contrastRatio(getComputedStyle(running).backgroundColor, ground),
       ).toBeGreaterThanOrEqual(3);
@@ -253,14 +245,13 @@ describe("tool row computed styles", () => {
       const mark = el("span", "workspace-command-dot");
       const failed = el("span", "workspace-chat-tool-failed", "failed");
       const running = el("span", "workspace-chat-tool-running");
-      const done = el("span", "workspace-chat-tool-done", "✓");
-      const exit = el("span", "workspace-command-exit", "exit 0");
-      summary.append(exit, done, running, failed, mark);
+      const exit = el("span", "workspace-command-exit", "exit 2");
+      summary.append(exit, running, failed, mark);
       row.append(summary);
       document.body.append(row);
 
-      const order = [mark, failed, running, done, exit].map((node) => getComputedStyle(node).order);
-      expect(order).toEqual(["1", "2", "3", "4", "5"]);
+      const order = [mark, failed, running, exit].map((node) => getComputedStyle(node).order);
+      expect(order).toEqual(["1", "2", "3", "5"]);
       expect(getComputedStyle(exit).marginInlineStart).toBe("auto");
       const dot = getComputedStyle(running);
       expect(dot.width).toBe("6px");
@@ -272,7 +263,7 @@ describe("tool row computed styles", () => {
     },
   );
 
-  it("keeps the disclosure mark in a strip of the line's own, hidden until the line is reached", () => {
+  it("draws no disclosure mark on a line: opening is the person's act, not a toggle on every row", () => {
     const css = assembleCssProof(sheets, "light");
     injectToolRules(css);
 
@@ -284,14 +275,9 @@ describe("tool row computed styles", () => {
     row.append(details);
     document.body.append(row);
 
-    expect(css.rulesFor(".workspace-chat-tool summary::after")).toContain('content: "▾"');
     // Pseudo-element styles are not computed here, so the rules are read.
-    const mark = css.rulesFor(".workspace-chat-tool summary::after");
-    expect(mark).toContain("position: absolute");
-    expect(mark).toContain("opacity: 0");
-    expect(css.rulesFor(".workspace-chat-tool summary:hover::after")).toContain("opacity: 1");
-    // The strip is the line's own padding, so no row ends sooner than another.
-    expect(getComputedStyle(summary).paddingRight).toBe("16px");
+    expect(css.rulesFor(".workspace-chat-tool summary::after")).toBe("");
+    expect(css.rulesFor(".workspace-chat-tool-details[open] > summary::after")).toBe("");
 
     row.remove();
   });

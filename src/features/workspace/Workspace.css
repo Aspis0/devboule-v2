@@ -712,16 +712,24 @@
   line-height: var(--leading-dense);
 }
 
-/* A tool call is one flat line: a verb, its target, a quiet status at the end.
-   No fill, no border; the output waits under the line, indented and muted. */
+/* A tool call is one flat line in the body font: an icon, a verb, its target,
+   and a status only when it failed. No fill, no border; the output waits
+   behind the line, indented and muted. */
 .workspace-chat-tool,
 .workspace-chat-tool-group {
   margin-top: 0;
   color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: var(--type-mono-sm);
+  font-family: var(--font-ui);
+  font-size: var(--type-meta);
   line-height: var(--leading-body);
   white-space: normal;
+}
+
+.workspace-chat-tool-icon {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  align-self: center;
 }
 
 .workspace-chat-tool summary,
@@ -743,31 +751,6 @@
   gap: var(--space-8);
   min-width: 0;
   padding: var(--space-2) var(--space-16) var(--space-2) 0;
-}
-
-/* The disclosure's mark has a strip of its own at the line's end and shows when
-   the line is reached or open, so a resting line stays a line. */
-.workspace-chat-tool summary::after,
-.workspace-chat-tool-group summary::after {
-  position: absolute;
-  inset-block-start: var(--space-2);
-  inset-inline-end: 0;
-  color: var(--muted);
-  content: "▾";
-  opacity: 0;
-}
-
-.workspace-chat-tool summary:hover::after,
-.workspace-chat-tool summary:focus-visible::after,
-.workspace-chat-tool-group summary:hover::after,
-.workspace-chat-tool-group summary:focus-visible::after {
-  opacity: 1;
-}
-
-.workspace-chat-tool-group[open] > summary::after,
-.workspace-chat-tool-details[open] > summary::after {
-  opacity: 1;
-  transform: rotate(180deg);
 }
 
 .workspace-chat-tool summary:focus-visible,
@@ -803,17 +786,12 @@
   color: var(--muted);
 }
 
-.workspace-chat-tool-group-summary-text,
-.workspace-chat-tool-stat {
+.workspace-chat-tool-group-summary-text {
   min-width: 0;
   overflow: hidden;
   color: var(--muted);
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.workspace-chat-tool-stat {
-  flex: none;
 }
 
 .workspace-chat-tool-group-count {
@@ -826,23 +804,14 @@
   margin-inline: 0 var(--space-8);
 }
 
-/* The status at the end of the line, in the order it reads: mark, state,
-   then the muted fact at the far edge. */
+/* A non-zero exit is the only exit a line shows, as a failure mark and its number. */
 .workspace-command-dot {
   order: 1;
   flex: none;
-  color: var(--tone-live);
-}
-
-.workspace-command-dot::before {
-  content: "✓";
-}
-
-.workspace-command-dot.is-failed {
   color: var(--danger);
 }
 
-.workspace-command-dot.is-failed::before {
+.workspace-command-dot::before {
   content: "✗";
 }
 
@@ -861,12 +830,6 @@
   align-self: center;
   border-radius: var(--radius-full);
   background: var(--tone-live);
-}
-
-.workspace-chat-tool-done {
-  order: 4;
-  flex: none;
-  color: var(--tone-live);
 }
 
 .workspace-command-exit {
@@ -917,6 +880,8 @@
   max-height: calc(var(--type-mono-sm) * var(--leading-body) * 26);
   overflow: auto;
   color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--type-mono-sm);
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }

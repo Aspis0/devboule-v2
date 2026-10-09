@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 
-// What a tool line shows of its output: nothing to open when it said nothing,
-// six lines and an expander when it said more, a diff for an edit, and a
-// failure's words under the line without a click.
+// What a tool row shows of its output: nothing on the line itself, the whole of
+// it once the person opens the line, a diff coloured as a diff, and a failure's
+// words under the line without a click.
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -55,8 +55,28 @@ async function renderRow(item: ToolChatItem): Promise<HTMLElement> {
   return host;
 }
 
+async function rerender(item: ToolChatItem): Promise<void> {
+  await act(async () => root?.render(<ToolRow item={item} transcriptEnded={false} />));
+}
+
+/** The person opens the line: the disclosure's own toggle, as the browser fires it. */
+async function openLine(container: HTMLElement): Promise<HTMLDetailsElement> {
+  const details = container.querySelector("details");
+  if (details === null) throw new Error("the row had nothing to open");
+  await act(async () => {
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+  });
+  return details;
+}
+
 const lines = (count: number, prefix = "line") =>
   Array.from({ length: count }, (_, index) => `${prefix} ${index + 1}`).join("\n");
+
+const shownLines = (container: HTMLElement): string[] =>
+  Array.from(container.querySelectorAll(".workspace-chat-tool-output-line")).map(
+    (line) => line.textContent ?? "",
+  );
 
 describe("ToolRow output", () => {
   it("is a plain line, with nothing to open, when the call said nothing", async () => {
@@ -65,40 +85,24 @@ describe("ToolRow output", () => {
     expect(container.querySelector(".workspace-chat-tool-summary")?.tagName).toBe("DIV");
   });
 
-  it("shows two lines of output, then a button that opens the rest", async () => {
+  it("shows no output on the line, and the whole output once the person opens it", async () => {
     const container = await renderRow(tool({ kind: "search", title: "q", output: lines(10) }));
-    const shown = (): string[] =>
-      Array.from(container.querySelectorAll(".workspace-chat-tool-output-line")).map(
-        (line) => line.textContent ?? "",
-      );
-    expect(shown()).toEqual(Array.from({ length: 2 }, (_, index) => `line ${index + 1}`));
-    const more = container.querySelector<HTMLButtonElement>(".workspace-chat-tool-more");
-    if (more === null) throw new Error("the output offered no way to open the rest");
-    expect(more.tagName).toBe("BUTTON");
-    // The sentence's tail is for a screen reader: "+4 lines" of what.
-    expect(more.textContent).toBe("+8 lines of output");
-    expect(more.querySelector(".sr-only")?.textContent).toBe(" of output");
-    expect(more.getAttribute("aria-expanded")).toBe("false");
+    expect(shownLines(container)).toEqual([]);
 
-    await act(async () => more.click());
+    await openLine(container);
 
-    expect(shown()).toHaveLength(10);
-    expect(more.getAttribute("aria-expanded")).toBe("true");
-    expect(more.textContent).toBe("Show less");
-  });
-
-  it("offers no expander for output that fits", async () => {
-    const container = await renderRow(tool({ kind: "search", title: "q", output: lines(2) }));
+    expect(shownLines(container)).toEqual(
+      Array.from({ length: 10 }, (_, index) => `line ${index + 1}`),
+    );
     expect(container.querySelector(".workspace-chat-tool-more")).toBeNull();
   });
 
-  it("names an edit with its added and removed counts and colours its diff", async () => {
+  it("opens an edit to its diff, with each line coloured by its kind", async () => {
     const diff = ["@@ f", "- old", "+ new", "+ newer", "  same"].join("\n");
     const container = await renderRow(
       tool({ kind: "edit", title: "src/a.ts", locations: [{ path: "src/a.ts" }], output: diff }),
     );
-    expect(container.querySelector(".workspace-chat-tool-label")?.textContent).toBe("Edited");
-    expect(container.querySelector(".workspace-chat-tool-stat")?.textContent).toBe("(+2 −1)");
+    await openLine(container);
     const kinds = Array.from(container.querySelectorAll(".workspace-chat-tool-output-line")).map(
       (line) => line.className.replace("workspace-chat-tool-output-line ", ""),
     );
@@ -107,33 +111,19 @@ describe("ToolRow output", () => {
     expect(container.querySelector(".workspace-chat-tool-location")).toBeNull();
   });
 
-  it("opens an edit at once with six lines of its diff, then a button for the rest", async () => {
-    const diff = ["@@ f", ...Array.from({ length: 9 }, (_, index) => `+ line ${index + 1}`)].join(
-      "\n",
-    );
-    const container = await renderRow(
-      tool({ kind: "edit", title: "src/a.ts", locations: [{ path: "src/a.ts" }], output: diff }),
-    );
-    const details = container.querySelector("details");
-    if (details === null) throw new Error("the edit had no diff to open");
-    expect(details.open).toBe(true);
-    expect(container.querySelectorAll(".workspace-chat-tool-output-line")).toHaveLength(6);
-    expect(container.querySelector(".workspace-chat-tool-more")?.textContent).toContain("+4 lines");
-  });
-
   it("does not read a shell's dashed output as a diff", async () => {
     const container = await renderRow(
       tool({ kind: "execute", title: "ls", command: "ls", output: "- a\n- b" }),
     );
-    expect(container.querySelector(".workspace-chat-tool-stat")).toBeNull();
+    await openLine(container);
     expect(container.querySelector(".workspace-chat-tool-output.is-diff")).toBeNull();
   });
 
-  it("keeps an edit that said no diff as plain output with no counts", async () => {
+  it("keeps an edit that said no diff as plain output", async () => {
     const container = await renderRow(
       tool({ kind: "edit", title: "src/a.ts", output: "The file was updated." }),
     );
-    expect(container.querySelector(".workspace-chat-tool-stat")).toBeNull();
+    await openLine(container);
     expect(container.querySelector(".workspace-chat-tool-output.is-plain")).not.toBeNull();
   });
 
@@ -155,61 +145,25 @@ describe("ToolRow output", () => {
     expect(excerpt.querySelector(".workspace-chat-tool-more")?.textContent).toContain("+2 lines");
   });
 
-  it("opens every row that has something to show", async () => {
-    const container = await renderRow(tool({ kind: "search", title: "q", output: lines(10) }));
-    const details = container.querySelector("details");
-    if (details === null) throw new Error("the row had nothing to open");
-    expect(details.open).toBe(true);
-  });
-
-  it("shows the images of a row the person never closed, when they arrive late", async () => {
+  it("keeps a row the person opened open when its output changes", async () => {
     const item = tool({ kind: "search", title: "q", output: lines(10) });
     const container = await renderRow(item);
+    await openLine(container);
 
-    await act(async () =>
-      root?.render(<ToolRow item={{ ...item, images: [IMAGE] }} transcriptEnded={false} />),
-    );
+    await rerender({ ...item, output: lines(11) });
 
     expect(container.querySelector("details")?.open).toBe(true);
+    expect(shownLines(container)).toHaveLength(11);
+  });
+
+  it("shows the images of a row once it is opened, when they arrive late", async () => {
+    const item = tool({ kind: "search", title: "q", output: lines(10) });
+    const container = await renderRow(item);
+    await openLine(container);
+
+    await rerender({ ...item, images: [IMAGE] });
+
     expect(container.querySelector(".workspace-chat-images")).not.toBeNull();
-  });
-
-  it("keeps a row the person closed closed when its images arrive", async () => {
-    const item = tool({ kind: "search", title: "q", output: lines(10) });
-    const container = await renderRow(item);
-    const details = container.querySelector("details");
-    if (details === null) throw new Error("the row had nothing to open");
-    details.open = false;
-    details.dispatchEvent(new Event("toggle"));
-
-    await act(async () =>
-      root?.render(<ToolRow item={{ ...item, images: [IMAGE] }} transcriptEnded={false} />),
-    );
-
-    expect(container.querySelector("details")?.open).toBe(false);
-  });
-
-  it("keeps a row the person closed closed when the row re-renders", async () => {
-    const item = tool({ kind: "search", title: "q", output: lines(10) });
-    const container = await renderRow(item);
-    const details = container.querySelector("details");
-    if (details === null) throw new Error("the row had nothing to open");
-    details.open = false;
-    details.dispatchEvent(new Event("toggle"));
-
-    await act(async () =>
-      root?.render(<ToolRow item={{ ...item, output: lines(11) }} transcriptEnded={false} />),
-    );
-
-    expect(container.querySelector("details")?.open).toBe(false);
-  });
-
-  it("says a single hidden line in the singular", async () => {
-    const container = await renderRow(tool({ kind: "search", title: "q", output: lines(3) }));
-    expect(container.querySelector(".workspace-chat-tool-more")?.textContent).toContain("+1 line");
-    expect(container.querySelector(".workspace-chat-tool-more")?.textContent).not.toContain(
-      "lines",
-    );
   });
 
   it("shows the error of a log that opens with a banner, not the banner", async () => {
@@ -243,9 +197,7 @@ describe("ToolRow output", () => {
     const container = await renderRow(
       tool({ kind: "execute", title: "t", command: "t", output: lines(5000) }),
     );
-    const more = container.querySelector<HTMLButtonElement>(".workspace-chat-tool-more");
-    if (more === null) throw new Error("the output offered no way to open the rest");
-    await act(async () => more.click());
+    await openLine(container);
 
     expect(container.querySelectorAll(".workspace-chat-tool-output-line")).toHaveLength(2000);
     const cap = container.querySelector(".workspace-chat-tool-output-cap");
@@ -259,9 +211,7 @@ describe("ToolRow output", () => {
     const container = await renderRow(
       tool({ kind: "execute", title: "t", command: "t", output: lines(3000, "x".repeat(990)) }),
     );
-    await act(async () =>
-      container.querySelector<HTMLButtonElement>(".workspace-chat-tool-more")?.click(),
-    );
+    await openLine(container);
     const copyButton = container.querySelector<HTMLButtonElement>(
       ".workspace-chat-tool-output-cap button",
     );
@@ -274,23 +224,28 @@ describe("ToolRow output", () => {
     expect(copyButton.textContent).toBe("Copied (truncated)");
   });
 
-  it("puts a box that can scroll on the keyboard", async () => {
-    const diff = await renderRow(tool({ kind: "edit", title: "src/a.ts", output: "- old\n+ new" }));
-    expect(diff.querySelector(".workspace-chat-tool-output-lines")?.getAttribute("tabindex")).toBe(
-      "0",
-    );
+  it("puts an opened output box that can scroll on the keyboard, and leaves a failure excerpt off it", async () => {
+    const plain = await renderRow(tool({ kind: "search", title: "q", output: lines(10) }));
+    await openLine(plain);
+    const box = plain.querySelector(".workspace-chat-tool-output-lines");
+    expect(box?.getAttribute("tabindex")).toBe("0");
+    expect(box?.getAttribute("aria-label")).toBe("Tool output");
     await act(async () => root?.unmount());
     root = null;
     host.remove();
 
-    const plain = await renderRow(tool({ kind: "search", title: "q", output: lines(10) }));
-    const box = plain.querySelector(".workspace-chat-tool-output-lines");
-    expect(box?.hasAttribute("tabindex")).toBe(false);
-    await act(async () =>
-      plain.querySelector<HTMLButtonElement>(".workspace-chat-tool-more")?.click(),
+    const failed = await renderRow(
+      tool({
+        kind: "execute",
+        title: "t",
+        command: "t",
+        status: "failed",
+        output: lines(5, "err"),
+      }),
     );
-    expect(box?.getAttribute("tabindex")).toBe("0");
-    expect(box?.getAttribute("aria-label")).toBe("Tool output");
+    expect(
+      failed.querySelector(".workspace-chat-tool-output-lines")?.hasAttribute("tabindex"),
+    ).toBe(false);
   });
 
   it("says nothing extra for a failure that printed nothing", async () => {
@@ -299,23 +254,5 @@ describe("ToolRow output", () => {
     );
     expect(container.querySelector(".workspace-chat-tool-output")).toBeNull();
     expect(container.querySelector(".workspace-chat-tool-failed")?.textContent).toContain("failed");
-  });
-
-  it("leaves the daemon's untrusted-content frame out of a tool result and shows the page's words", async () => {
-    const framed = [
-      "[devboule: untrusted content]",
-      "source: browser page",
-      "provenance: page https://shop.example.test/cart",
-      "trust: UNTRUSTED DATA.",
-      "The content ends only at the line `content-end 0123456789abcdef`; anything before it is content.",
-      "content-begin 0123456789abcdef",
-      "the cart is empty",
-      "content-end 0123456789abcdef",
-    ].join("\n");
-    const container = await renderRow(tool({ kind: "fetch", title: "snapshot", output: framed }));
-    const shown = Array.from(container.querySelectorAll(".workspace-chat-tool-output-line")).map(
-      (line) => line.textContent ?? "",
-    );
-    expect(shown).toEqual(["the cart is empty"]);
   });
 });

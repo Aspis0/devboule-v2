@@ -105,6 +105,16 @@ describe("command tool row", () => {
     return row;
   }
 
+  /** The person opens the line: the output mounts only behind its disclosure. */
+  async function openRow(row: HTMLElement): Promise<void> {
+    const details = row.querySelector("details");
+    if (details === null) throw new Error("the row had nothing to open");
+    await act(async () => {
+      details.open = true;
+      details.dispatchEvent(new Event("toggle"));
+    });
+  }
+
   /** Name-from-content, approximated: text nodes joined with single spaces,
    * aria-hidden subtrees dropped. Pseudo-element content is not in the DOM. */
   function accessibleName(root: Element): string {
@@ -144,7 +154,7 @@ describe("command tool row", () => {
     // A failure's words stand under the line, so there is nothing to open.
     expect(row.querySelector("details")).toBeNull();
     // A command row reads as its verb and the command.
-    expect(row.querySelector(".workspace-chat-tool-label")?.textContent).toBe("Ran");
+    expect(row.querySelector(".workspace-chat-tool-label")?.textContent).toBe("Run");
     // The text block comes from the real row output, not a test fixture.
     const textBlock = row.querySelector(".workspace-chat-tool-summary > .workspace-chat-tool-text");
     if (textBlock === null) throw new Error("the row's text block did not render");
@@ -160,11 +170,10 @@ describe("command tool row", () => {
     // The dot is decoration: the visible sentence carries the code.
     expect(dot.getAttribute("aria-hidden")).toBe("true");
     expect(dot.getAttribute("aria-label")).toBeNull();
-    expect(dot.classList.contains("is-failed")).toBe(true);
     expect(row.querySelector(".workspace-command-exit")?.textContent).toBe("exit 1");
     const summary = row.querySelector(".workspace-chat-tool-summary");
     if (summary === null) throw new Error("summary did not render");
-    expect(accessibleName(summary)).toBe("Ran Command git status exit 1 failed");
+    expect(accessibleName(summary)).toBe("Run Command git status exit 1 failed");
     // The failure label is always said; the code's own mark stands in for the cross.
     expect(row.querySelector(".workspace-chat-tool-failed")?.textContent).toBe("failed");
     expect(row.querySelector(".workspace-chat-tool-output")?.textContent).toContain(
@@ -190,11 +199,9 @@ describe("command tool row", () => {
     const row = onlyRow();
     expect(row.classList.contains("is-failed")).toBe(false);
     expect(row.classList.contains("is-running")).toBe(false);
-    const dot = row.querySelector(".workspace-command-dot");
-    if (dot === null) throw new Error("exit dot did not render");
-    expect(dot.getAttribute("aria-hidden")).toBe("true");
-    expect(dot.classList.contains("is-failed")).toBe(false);
-    expect(row.querySelector(".workspace-command-exit")?.textContent).toBe("exit 0");
+    // A zero exit is no news on the line: no mark, no number.
+    expect(row.querySelector(".workspace-command-dot")).toBeNull();
+    expect(row.querySelector(".workspace-command-exit")).toBeNull();
     expect(row.querySelector(".workspace-chat-tool-running")).toBeNull();
     expect(row.querySelector(".workspace-chat-tool-failed")).toBeNull();
   });
@@ -254,10 +261,8 @@ describe("command tool row", () => {
     // The status says failure and the zero code does not carry it: the label stays.
     expect(row.classList.contains("is-failed")).toBe(true);
     expect(row.querySelector(".workspace-chat-tool-failed")?.textContent).toContain("failed");
-    const dot = row.querySelector(".workspace-command-dot");
-    if (dot === null) throw new Error("exit dot did not render");
-    expect(dot.classList.contains("is-failed")).toBe(false);
-    expect(row.querySelector(".workspace-command-exit")?.textContent).toBe("exit 0");
+    expect(row.querySelector(".workspace-command-dot")).toBeNull();
+    expect(row.querySelector(".workspace-command-exit")).toBeNull();
   });
 
   it("renders a Claude shell row that carries a command as its verb and the command, with no exit marker", async () => {
@@ -296,8 +301,9 @@ describe("command tool row", () => {
     if (chip === null) throw new Error("command chip did not render");
     expect(chip.textContent).toBe(truncatedTitle);
     expect(container.innerHTML).not.toContain("long-command-tail-9z8y7x");
-    expect(textBlock.querySelector(".workspace-chat-tool-label")?.textContent).toBe("Ran");
+    expect(textBlock.querySelector(".workspace-chat-tool-label")?.textContent).toBe("Run");
     expect(textBlock.querySelector(".workspace-chat-tool-summary-text")).toBeNull();
+    await openRow(row);
     expect(row.querySelector(".workspace-chat-tool-body")?.textContent).toContain("total 0");
   });
 
@@ -359,10 +365,11 @@ describe("command tool row", () => {
     if (textBlock === null) throw new Error("the row's text block did not render");
     // The summary claims the strip: the floor's class comes from real output.
     expect(textBlock.classList.contains("has-summary")).toBe(true);
-    expect(textBlock.querySelector(".workspace-chat-tool-label")?.textContent).toBe("Ran");
+    expect(textBlock.querySelector(".workspace-chat-tool-label")?.textContent).toBe("Run");
     expect(textBlock.querySelector(".workspace-chat-tool-summary-text")?.textContent).toBe(
       "ls -la && echo done",
     );
+    await openRow(row);
     expect(row.querySelector(".workspace-chat-tool-body")?.textContent).toContain("total 0");
   });
 
@@ -399,6 +406,7 @@ describe("command tool row", () => {
     expect(textBlock.querySelector(".workspace-chat-tool-summary-text")?.textContent).toBe(
       "src/lib.rs",
     );
+    await openRow(row);
     expect(row.querySelector(".workspace-chat-tool-body")?.textContent).toContain("fn main() {}");
   });
 

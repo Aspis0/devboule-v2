@@ -2,6 +2,7 @@ import { browserToolName, isBrowserToolRow } from "../../lib/browserToolName";
 import type { AgentChatItem } from "../../lib/agentSession";
 import { linkTarget } from "../../lib/externalUrl";
 import { carriesCredentials } from "../../lib/urlCredentials";
+import { browserVerb, terminalToolVerb } from "./daemonToolVerb";
 
 export type ToolItem = Extract<AgentChatItem, { role: "tool" }>;
 
@@ -16,12 +17,12 @@ export interface ToolRowModel {
 // able to read prototype members (`__proto__`, `constructor`, `toString`).
 const DISPLAY_NAMES = new Map<string, string>([
   ["plan", "Plan"],
-  ["execute", "Ran"],
+  ["execute", "Run"],
   ["read", "Read"],
-  ["edit", "Edited"],
-  ["delete", "Deleted"],
-  ["search", "Searched"],
-  ["fetch", "Fetched"],
+  ["edit", "Edit"],
+  ["delete", "Delete"],
+  ["search", "Search"],
+  ["fetch", "Fetch"],
   ["think", "Task"],
   // An answered model question: the label names it, the summary (the
   // question itself, as the title) stays visible without a click.
@@ -144,14 +145,23 @@ function parsedUrl(value: string): URL | null {
 }
 
 /**
- * A browser row's own line, or nothing when the row carries only the tool's
- * name: the daemon titles the call with the argument it was given (`click e33`),
- * and a provider that sends the bare name gives a reader nothing to add to the
- * family's label.
+ * A browser row's verb and target: the daemon titles the call with its verb and
+ * the argument it was given (`click e33`). A bare tool name, or a title that
+ * names no verb, keeps the family's label and shows the title as sent.
  */
-function browserSummary(title: string): string | undefined {
+function browserDisplay(title: string): ToolRowModel {
+  if (browserToolName(title.trim()) !== null) return { displayName: "Browser" };
+  const named = browserVerb(title);
+  if (named !== null) {
+    return {
+      displayName: named.verb,
+      ...(named.target === undefined ? {} : { summary: named.target }),
+    };
+  }
   const trimmed = title.trim();
-  return browserToolName(trimmed) === null && trimmed.length > 0 ? trimmed : undefined;
+  return trimmed.length > 0
+    ? { displayName: "Browser", summary: trimmed }
+    : { displayName: "Browser" };
 }
 
 /** The path as a tool row prints it: forward slashes on every OS. Copy and
@@ -164,13 +174,9 @@ export type ToolPhase = "done" | "running" | "cancelled";
 
 export function toolRowDisplay(item: ToolItem, phase: ToolPhase = "done"): ToolRowModel {
   const kind = item.kind?.trim().toLowerCase();
-  if (isBrowserToolRow(kind, item.title)) {
-    const summary = browserSummary(item.title);
-    return {
-      displayName: "Browser",
-      ...(summary === undefined ? {} : { summary }),
-    };
-  }
+  if (isBrowserToolRow(kind, item.title)) return browserDisplay(item.title);
+  const terminal = terminalToolVerb(item.title);
+  if (terminal !== undefined) return { displayName: terminal };
   const label =
     kind === undefined
       ? undefined

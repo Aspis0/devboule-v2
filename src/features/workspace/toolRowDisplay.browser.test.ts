@@ -15,29 +15,35 @@ function tool(overrides: Partial<ToolItem> = {}): ToolItem {
   };
 }
 
-// What the daemon titles a browser row with: the command, then the one argument
-// a reader needs to recognise the call.
-const ROWS: [string, string][] = [
-  ["browser_click", "click e33"],
-  ["browser_new_tab", "new tab news.ycombinator.com"],
-  ["browser_fill", 'fill e3 "WebView2"'],
-  ["browser_act", "act 4 steps"],
-  ["browser_screenshot", "screenshot"],
+// What the daemon titles a browser row with: the command, then the argument a
+// reader needs to recognise the call. The verb is the command, the target the rest.
+const ROWS: [string, string, string, string | undefined][] = [
+  ["browser_click", "click e33", "Click", "e33"],
+  ["browser_new_tab", "new tab news.ycombinator.com", "New tab", "news.ycombinator.com"],
+  ["browser_fill", 'fill e3 "WebView2"', "Fill", 'e3 "WebView2"'],
+  ["browser_act", "act 4 steps", "Act", "4 steps"],
+  ["browser_screenshot", "screenshot", "Screenshot", undefined],
 ];
 
 describe("browser tool rows", () => {
-  for (const [name, title] of ROWS) {
-    it(`labels ${name} as Browser with the row's own summary`, () => {
-      expect(toolRowDisplay(tool({ kind: "browser", title }))).toEqual({
-        displayName: "Browser",
-        summary: title,
-      });
+  for (const [name, title, verb, target] of ROWS) {
+    it(`reads ${name} as its verb and target, not as the Browser family`, () => {
+      expect(toolRowDisplay(tool({ kind: "browser", title }))).toEqual(
+        target === undefined ? { displayName: verb } : { displayName: verb, summary: target },
+      );
     });
   }
 
-  it("gives no row an image: the transcript shows no picture from a tool result", () => {
+  it("gives no row an image or an output: the model is the only reader of a picture", () => {
     const model = toolRowDisplay(tool({ kind: "browser", title: "screenshot" }));
-    expect(Object.keys(model).sort()).toEqual(["displayName", "summary"]);
+    expect(Object.keys(model)).toEqual(["displayName"]);
+  });
+
+  it("keeps the family's label for a title that names no browser verb", () => {
+    expect(toolRowDisplay(tool({ kind: "browser", title: "https://example.test" }))).toEqual({
+      displayName: "Browser",
+      summary: "https://example.test",
+    });
   });
 
   it("recognises the family from the tool name when the provider sent no kind", () => {
@@ -74,7 +80,7 @@ describe("browser tool rows", () => {
     // A search row whose query reads like a tool name is a search row: the
     // provider's own kind is the classification.
     expect(toolRowDisplay(tool({ kind: "search", title: "browser_click" }))).toEqual({
-      displayName: "Searched",
+      displayName: "Search",
       summary: "browser_click",
     });
     // Another MCP server's own tool, whatever it is called.

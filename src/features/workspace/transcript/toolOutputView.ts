@@ -1,7 +1,3 @@
-/** Lines of an ordinary tool's output shown before the expander. */
-export const OUTPUT_PREVIEW_LINES = 2;
-/** An edit shows its diff at once; the rest sits behind the expander. */
-export const DIFF_PREVIEW_LINES = 6;
 /** Lines of a failure's excerpt, shown without a click. */
 export const FAILURE_EXCERPT_LINES = 3;
 /** Lines mounted when an output is opened: a 100k-line log is not 100k nodes. */

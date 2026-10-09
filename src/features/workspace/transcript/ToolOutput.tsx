@@ -31,8 +31,9 @@ export function ToolOutput({ lines, collapsed, tone, expansion }: ToolOutputProp
   const copy = useCopyFeedback({ resetAfterMs: 1500 });
   const [copyTruncated, setCopyTruncated] = useState(false);
   const hidden = lines.length - collapsed.length;
-  const shown = all ? lines.slice(0, OUTPUT_RENDER_CAP) : collapsed;
-  const unmounted = all ? Math.max(0, lines.length - OUTPUT_RENDER_CAP) : 0;
+  const visible = all ? lines : collapsed;
+  const shown = visible.slice(0, OUTPUT_RENDER_CAP);
+  const unmounted = Math.max(0, visible.length - OUTPUT_RENDER_CAP);
   const copyState = copy.stateFor("output");
   return (
     <div className={`workspace-chat-tool-output is-${tone}`}>
@@ -40,7 +41,7 @@ export function ToolOutput({ lines, collapsed, tone, expansion }: ToolOutputProp
       <div
         id={linesId}
         className="workspace-chat-tool-output-lines"
-        {...(tone === "diff" || all
+        {...(tone !== "failure" || all
           ? { tabIndex: 0, role: "region", "aria-label": "Tool output" }
           : {})}
       >

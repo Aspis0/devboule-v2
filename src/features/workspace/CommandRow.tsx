@@ -13,15 +13,13 @@ export function CommandChip({ command }: { command: string }) {
   );
 }
 
-/** The exit dot and the sentence that reads its number: the dot is decoration
- * (`aria-hidden`), and the colour is never the only carrier of the code. */
+/** The failure mark and the sentence that reads its number: the mark is decoration
+ * (`aria-hidden`), and the colour is never the only carrier of the code. A zero
+ * exit is not drawn at all, so the mark always reads as a failure. */
 export function ExitMarker({ exitCode }: { exitCode: number }) {
   return (
     <>
-      <span
-        className={`workspace-command-dot${exitCode === 0 ? "" : " is-failed"}`}
-        aria-hidden="true"
-      />
+      <span className="workspace-command-dot" aria-hidden="true" />
       <span className="workspace-command-exit">exit {exitCode}</span>
     </>
   );

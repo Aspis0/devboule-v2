@@ -13,14 +13,9 @@ import {
 } from "../interruptedTool";
 import { entryFrame } from "./entryFrame";
 import { ChatImageThumbnails } from "./ChatImageThumbnails";
+import { ToolIcon } from "./ToolIcon";
 import { ToolOutput, type OutputExpansion } from "./ToolOutput";
-import {
-  DIFF_PREVIEW_LINES,
-  OUTPUT_PREVIEW_LINES,
-  diffStats,
-  failureExcerpt,
-  outputLines,
-} from "./toolOutputView";
+import { diffStats, failureExcerpt, outputLines } from "./toolOutputView";
 
 export const ToolRow = memo(function ToolRow({
   item,
@@ -40,7 +35,6 @@ export const ToolRow = memo(function ToolRow({
   const model = useMemo(() => toolRowDisplay(item, phase), [item, phase]);
   const linkUrl = model.linkUrl;
   const failed = item.kind !== "plan" && status === "failed";
-  const completed = status === "completed" && !interrupted;
   const isPlan = item.kind === "plan";
   const planDecision =
     isPlan && ["Approved", "Rejected", "Withdrawn"].includes(item.title) ? item.title : undefined;
@@ -52,14 +46,11 @@ export const ToolRow = memo(function ToolRow({
   const isEdit = item.kind === "edit" || item.kind === "delete";
   // A file row's summary is the path itself, so it prints with forward slashes.
   const isPathRow = isEdit || item.kind === "read";
-  const stats = useMemo(() => (isEdit ? diffStats(lines) : null), [isEdit, lines]);
+  const isDiff = useMemo(() => isEdit && diffStats(lines) !== null, [isEdit, lines]);
   // A failure's words stand under its line without a click; every other
-  // output waits in the body.
+  // output waits behind the line.
   const excerpt = useMemo(() => (failed ? failureExcerpt(lines) : []), [failed, lines]);
   const bodyLines = useMemo(() => (failed || isPlan ? [] : lines), [failed, isPlan, lines]);
-  const previewLines = stats === null ? OUTPUT_PREVIEW_LINES : DIFF_PREVIEW_LINES;
-  const collapsed = useMemo(() => bodyLines.slice(0, previewLines), [bodyLines, previewLines]);
-  const hasImages = item.images !== undefined && item.images.length > 0;
   const locations = useMemo(
     () =>
       (item.locations ?? []).filter(
@@ -67,19 +58,19 @@ export const ToolRow = memo(function ToolRow({
       ),
     [item.locations, model.summary],
   );
+  const hasImages = item.images !== undefined && item.images.length > 0;
   const hasBody =
     linkUrl !== undefined ||
     locations.length > 0 ||
     bodyLines.length > 0 ||
     (isPlan && item.output.length > 0) ||
     hasImages;
-  // Rows start open, so a row the person never touched is open when its images
-  // arrive; only the person's own close shuts one, and nothing reopens it.
-  const [closedByPerson, setClosedByPerson] = useState(false);
-  const open = !closedByPerson;
+  // The line starts closed; only the person's own open shows the output.
+  const [opened, setOpened] = useState(false);
   const toolClassName = `${className}${isPlan ? " is-plan" : ""}${running ? " is-running" : ""}${failed ? " is-failed" : ""}${cancelled ? " is-cancelled" : ""}${interrupted ? ` ${INTERRUPTED_TOOL_CLASS}` : ""}`;
   const line: ReactNode = (
     <>
+      <ToolIcon kind={item.kind} title={item.title} />
       <span className={`workspace-chat-tool-text${hasSummary ? " has-summary" : ""}`}>
         <span className="workspace-chat-tool-label" title={model.displayName}>
           {model.displayName}
@@ -98,11 +89,10 @@ export const ToolRow = memo(function ToolRow({
         {planDecision !== undefined ? (
           <span className="workspace-chat-tool-summary-text">{planDecision}</span>
         ) : null}
-        {stats === null ? null : (
-          <span className="workspace-chat-tool-stat">{`(+${stats.added} −${stats.removed})`}</span>
-        )}
       </span>
-      {item.exitCode !== undefined ? <ExitMarker exitCode={item.exitCode} /> : null}
+      {item.exitCode !== undefined && item.exitCode !== 0 ? (
+        <ExitMarker exitCode={item.exitCode} />
+      ) : null}
       {interrupted ? (
         <span className="workspace-chat-tool-interrupted">{INTERRUPTED_TOOL_COPY}</span>
       ) : null}
@@ -115,11 +105,6 @@ export const ToolRow = memo(function ToolRow({
       {running ? (
         <span className="workspace-chat-tool-running" role="img" aria-label="Running" />
       ) : null}
-      {completed && item.exitCode === undefined ? (
-        <span className="workspace-chat-tool-done" aria-hidden="true">
-          ✓
-        </span>
-      ) : null}
     </>
   );
   return (
@@ -127,48 +112,50 @@ export const ToolRow = memo(function ToolRow({
       {hasBody ? (
         <details
           className="workspace-chat-tool-details"
-          open={open}
-          onToggle={(event) => setClosedByPerson(!event.currentTarget.open)}
+          open={opened}
+          onToggle={(event) => setOpened(event.currentTarget.open)}
         >
           <summary className="workspace-chat-tool-summary">{line}</summary>
-          <div className="workspace-chat-tool-body">
-            {linkUrl !== undefined ? (
-              <div className="workspace-chat-tool-link">
-                <ExternalLink href={linkUrl}>{linkUrl}</ExternalLink>
-              </div>
-            ) : null}
-            {locations.length > 0 ? (
-              <div className="workspace-chat-tool-locations">
-                {locations.map((location, index) => (
-                  // The index only breaks ties between identical locations.
-                  <span
-                    className="workspace-chat-tool-location"
-                    key={`${location.path}:${location.line ?? ""}:${index}`}
-                  >
-                    {location.line !== undefined
-                      ? `${toolPathText(location.path)}:${location.line}`
-                      : toolPathText(location.path)}
-                  </span>
-                ))}
-              </div>
-            ) : null}
-            {bodyLines.length > 0 ? (
-              <ToolOutput
-                lines={bodyLines}
-                collapsed={collapsed}
-                tone={stats === null ? "plain" : "diff"}
-                expansion={expansion}
-              />
-            ) : null}
-            {isPlan && item.output.length > 0 ? (
-              <div className="workspace-chat-copy">
-                <MarkdownText text={item.output} />
-              </div>
-            ) : null}
-            {hasImages && item.images !== undefined ? (
-              <ChatImageThumbnails images={item.images} />
-            ) : null}
-          </div>
+          {/* A closed disclosure still holds its children, so the output mounts only once opened. */}
+          {opened ? (
+            <div className="workspace-chat-tool-body">
+              {linkUrl !== undefined ? (
+                <div className="workspace-chat-tool-link">
+                  <ExternalLink href={linkUrl}>{linkUrl}</ExternalLink>
+                </div>
+              ) : null}
+              {locations.length > 0 ? (
+                <div className="workspace-chat-tool-locations">
+                  {locations.map((location, index) => (
+                    // The index only breaks ties between identical locations.
+                    <span
+                      className="workspace-chat-tool-location"
+                      key={`${location.path}:${location.line ?? ""}:${index}`}
+                    >
+                      {location.line !== undefined
+                        ? `${toolPathText(location.path)}:${location.line}`
+                        : toolPathText(location.path)}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              {bodyLines.length > 0 ? (
+                <ToolOutput
+                  lines={bodyLines}
+                  collapsed={bodyLines}
+                  tone={isDiff ? "diff" : "plain"}
+                />
+              ) : null}
+              {isPlan && item.output.length > 0 ? (
+                <div className="workspace-chat-copy">
+                  <MarkdownText text={item.output} />
+                </div>
+              ) : null}
+              {hasImages && item.images !== undefined ? (
+                <ChatImageThumbnails images={item.images} />
+              ) : null}
+            </div>
+          ) : null}
         </details>
       ) : (
         <div className="workspace-chat-tool-summary">{line}</div>

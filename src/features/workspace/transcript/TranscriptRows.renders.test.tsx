@@ -111,7 +111,7 @@ describe("transcript row renders", () => {
 
     await show([first, second, tool("tool-3", "three")]);
 
-    expect(host.textContent).toContain("three");
+    expect(host.textContent).toContain("3 tool calls");
     expect(rendersOf("tool-2")).toBe(before);
   });
 });

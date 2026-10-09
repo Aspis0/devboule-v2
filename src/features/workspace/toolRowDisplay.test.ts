@@ -16,7 +16,7 @@ function tool(overrides: Partial<ToolItem> = {}): ToolItem {
 describe("toolRowDisplay", () => {
   it("labels a shell call with its command", () => {
     expect(toolRowDisplay(tool({ kind: "execute", title: "cargo test" }))).toEqual({
-      displayName: "Ran",
+      displayName: "Run",
       summary: "cargo test",
     });
   });
@@ -40,18 +40,18 @@ describe("toolRowDisplay", () => {
 
   it("labels edit and delete calls with their path", () => {
     expect(toolRowDisplay(tool({ kind: "edit", title: "src/main.rs" }))).toEqual({
-      displayName: "Edited",
+      displayName: "Edit",
       summary: "src/main.rs",
     });
     expect(toolRowDisplay(tool({ kind: "delete", title: "src/old.rs" }))).toEqual({
-      displayName: "Deleted",
+      displayName: "Delete",
       summary: "src/old.rs",
     });
   });
 
   it("labels a search call with its query", () => {
     expect(toolRowDisplay(tool({ kind: "search", title: "how to test" }))).toEqual({
-      displayName: "Searched",
+      displayName: "Search",
       summary: "how to test",
     });
   });
@@ -60,7 +60,7 @@ describe("toolRowDisplay", () => {
     expect(
       toolRowDisplay(tool({ kind: "fetch", title: "https://docs.example.com/guide?q=1" })),
     ).toEqual({
-      displayName: "Fetched",
+      displayName: "Fetch",
       summary: "docs.example.com",
       linkUrl: "https://docs.example.com/guide?q=1",
     });
@@ -68,14 +68,14 @@ describe("toolRowDisplay", () => {
 
   it("shows a fetch's page title as sent when the title is not a URL", () => {
     expect(toolRowDisplay(tool({ kind: "fetch", title: "Rust testing guide" }))).toEqual({
-      displayName: "Fetched",
+      displayName: "Fetch",
       summary: "Rust testing guide",
     });
   });
 
   it("keeps the port in a fetch's summary", () => {
     expect(toolRowDisplay(tool({ kind: "fetch", title: "https://example.com:8443/a" }))).toEqual({
-      displayName: "Fetched",
+      displayName: "Fetch",
       summary: "example.com:8443",
       linkUrl: "https://example.com:8443/a",
     });
@@ -85,7 +85,7 @@ describe("toolRowDisplay", () => {
     // The ASCII form is the lookalike-resistant one: two hosts that a reader
     // would see as the same domain stay distinguishable here.
     expect(toolRowDisplay(tool({ kind: "fetch", title: "https://münich.example/a" }))).toEqual({
-      displayName: "Fetched",
+      displayName: "Fetch",
       summary: "xn--mnich-kva.example",
       linkUrl: "https://xn--mnich-kva.example/a",
     });
@@ -98,7 +98,7 @@ describe("toolRowDisplay", () => {
       "   https://example.com/path",
     ]) {
       expect(toolRowDisplay(tool({ kind: "fetch", title }))).toEqual({
-        displayName: "Fetched",
+        displayName: "Fetch",
         summary: title,
       });
     }
@@ -111,7 +111,7 @@ describe("toolRowDisplay", () => {
       "https://[::1",
     ]) {
       expect(toolRowDisplay(tool({ kind: "fetch", title }))).toEqual({
-        displayName: "Fetched",
+        displayName: "Fetch",
         summary: title,
       });
     }
@@ -123,7 +123,7 @@ describe("toolRowDisplay", () => {
     expect(
       toolRowDisplay(tool({ kind: "fetch", title: `https://example.com:443/${path}` })),
     ).toEqual({
-      displayName: "Fetched",
+      displayName: "Fetch",
       summary: "example.com",
       linkUrl: `https://example.com/${path}`,
     });
@@ -134,7 +134,7 @@ describe("toolRowDisplay", () => {
     // destination would be a link the command refuses.
     const title = `https://example.com/${"é".repeat(2000)}`;
     expect(toolRowDisplay(tool({ kind: "fetch", title }))).toEqual({
-      displayName: "Fetched",
+      displayName: "Fetch",
       summary: title,
     });
   });
@@ -148,7 +148,7 @@ describe("toolRowDisplay", () => {
       "https://:@example.com/path",
     ]) {
       expect(toolRowDisplay(tool({ kind: "fetch", title }))).toEqual({
-        displayName: "Fetched",
+        displayName: "Fetch",
         summary: "example.com",
       });
     }
@@ -156,14 +156,14 @@ describe("toolRowDisplay", () => {
 
   it("shows a fetch's unparsable URL-like title as sent with no link", () => {
     expect(toolRowDisplay(tool({ kind: "fetch", title: "https://" }))).toEqual({
-      displayName: "Fetched",
+      displayName: "Fetch",
       summary: "https://",
     });
   });
 
   it("omits a fetch summary and link when the title is empty", () => {
     expect(toolRowDisplay(tool({ kind: "fetch", title: "" }))).toEqual({
-      displayName: "Fetched",
+      displayName: "Fetch",
     });
   });
 
@@ -238,7 +238,7 @@ describe("toolRowDisplay", () => {
 
   it("omits an empty summary", () => {
     expect(toolRowDisplay(tool({ kind: "execute", title: "" }))).toEqual({
-      displayName: "Ran",
+      displayName: "Run",
     });
   });
 
@@ -253,9 +253,9 @@ describe("toolRowDisplay", () => {
       names("fetch", true),
     ]).toEqual(["Running", "Reading", "Editing", "Searching", "Fetching"]);
     expect([names("execute", false), names("read", false), names("edit", false)]).toEqual([
-      "Ran",
+      "Run",
       "Read",
-      "Edited",
+      "Edit",
     ]);
     // A name that is not a verb has no tense to move.
     expect(names("plan", true)).toBe("Plan");
