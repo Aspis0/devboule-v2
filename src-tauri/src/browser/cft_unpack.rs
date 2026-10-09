@@ -29,7 +29,15 @@ pub(super) fn unpack(archive: &Path, keep: &str, into: &Path) -> Result<(), Inst
             .by_index(index)
             .map_err(|error| InstallError::Transfer(format!("{archive:?}: {error}")))?;
         let Some(relative) = entry.enclosed_name() else {
-            return Err(InstallError::UnsafeEntry(entry.name().to_owned()));
+            // zip 9 decodes the name on demand and `enclosed_name` gives up
+            // when that fails (non-UTF-8, non-CP437 bytes), so the message
+            // falls back to the raw bytes: an undecodable name is refused
+            // exactly like an unsafe one.
+            let name = match entry.name() {
+                Ok(name) => name.into_owned(),
+                Err(_) => String::from_utf8_lossy(entry.name_raw()).into_owned(),
+            };
+            return Err(InstallError::UnsafeEntry(name));
         };
         let Ok(under) = relative.strip_prefix(keep) else {
             continue;

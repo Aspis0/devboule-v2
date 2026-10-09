@@ -111,10 +111,10 @@ url = "=2.5.8"
 # the runtime (blocking builds a runtime of its own). Same version and
 # features the daemon already resolves (`=0.12.28`, covered by the checker's
 # inline exception: 0.13's rustls drags an aws-lc build the CI runner may not
-# carry). Zip 8.6.0 is crates.io max stable; `deflate` only, the CfT zips'
+# carry). Zip 9.0.0 is crates.io max stable; `deflate` only, the CfT zips'
 # method (stored needs no feature).
 reqwest = { version = "=0.12.28", default-features = false, features = ["blocking", "rustls-tls"] }
-zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }
+zip = { version = "=9.0.0", default-features = false, features = ["deflate"] }
 # Direct because `browser/cft_lock.rs` serializes profile ownership and
 # installs across processes with an exclusive OS file lock: `try_lock` only,
 # never blocking. 0.4.3 is crates.io max stable.
