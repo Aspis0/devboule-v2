@@ -25,7 +25,7 @@ use windows_sys::Win32::System::Threading::{
     GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
-use super::{CreationStatus, Membership, ProcessIdentity, FILETIME_EPOCH_MS};
+use super::{unix_ticks_from_filetime, CreationStatus, Membership, ProcessIdentity};
 use crate::process_tree::JobObject;
 
 pub(crate) const PROOF_KIND: &str = "job_member";
@@ -41,7 +41,7 @@ pub(crate) struct Probe {
     parents: HashMap<u32, u32>,
     ports: Vec<(u16, u32)>,
     /// When the parent snapshot was taken, in unix milliseconds.
-    taken_at_ms: u64,
+    taken_at_ticks: u64,
 }
 
 impl Probe {
@@ -49,12 +49,12 @@ impl Probe {
         Self {
             parents: HashMap::new(),
             ports: Vec::new(),
-            taken_at_ms: 0,
+            taken_at_ticks: 0,
         }
     }
 
     pub(crate) fn begin_refresh(&mut self) -> Result<(), String> {
-        self.taken_at_ms = unix_millis_now();
+        self.taken_at_ticks = unix_ticks_now();
         self.parents = process_parents().ok_or("process snapshot unavailable")?;
         self.ports = listener_ports().ok_or("listener table unavailable")?;
         Ok(())
@@ -74,13 +74,13 @@ impl Probe {
         if handle.is_null() {
             return None;
         }
-        let started_at_ms = read_creation_time(handle);
+        let started_at_ticks = read_creation_time(handle);
         let exe = read_exe(handle);
         unsafe { CloseHandle(handle) };
-        let started_at_ms =
-            started_at_ms.filter(|started| snapshot_covers(*started, self.taken_at_ms))?;
+        let started_at_ticks =
+            started_at_ticks.filter(|started| snapshot_covers(*started, self.taken_at_ticks))?;
         Some(ProcessIdentity {
-            started_at_ms,
+            started_at_ticks,
             ppid,
             exe,
             argv: Vec::new(),
@@ -105,7 +105,7 @@ pub(crate) fn creation_status(pid: u32) -> CreationStatus {
         };
     }
     let status = match read_creation_time(handle) {
-        Some(started_at_ms) => CreationStatus::At(started_at_ms),
+        Some(started_at_ticks) => CreationStatus::At(started_at_ticks),
         None => CreationStatus::Unverified,
     };
     unsafe { CloseHandle(handle) };
@@ -131,7 +131,7 @@ pub(crate) fn read_creation_time(handle: HANDLE) -> Option<u64> {
         return None;
     }
     let ticks = ((creation.dwHighDateTime as u64) << 32) | creation.dwLowDateTime as u64;
-    Some((ticks / 10_000).saturating_sub(FILETIME_EPOCH_MS))
+    Some(unix_ticks_from_filetime(ticks))
 }
 
 fn read_exe(handle: HANDLE) -> Option<String> {
@@ -164,19 +164,19 @@ pub(crate) fn process_parents() -> Option<HashMap<u32, u32>> {
     (stop_reason == ERROR_NO_MORE_FILES).then_some(parents)
 }
 
-/// Whether a process created at `started_at_ms` was already running when the
-/// parent snapshot was taken at `taken_at_ms`. A later creation means the pid
+/// Whether a process created at `started_at_ticks` was already running when the
+/// parent snapshot was taken at `taken_at_ticks`. A later creation means the pid
 /// may have been reused since the snapshot, and its ppid is the old process's.
-pub(crate) fn snapshot_covers(started_at_ms: u64, taken_at_ms: u64) -> bool {
-    started_at_ms <= taken_at_ms
+pub(crate) fn snapshot_covers(started_at_ticks: u64, taken_at_ticks: u64) -> bool {
+    started_at_ticks <= taken_at_ticks
 }
 
-/// Unix milliseconds now. A clock read that fails returns zero, which covers
+/// Unix time now in 100 ns ticks. A clock read that fails returns zero, which covers
 /// nothing: every identity is then refused rather than trusted.
-fn unix_millis_now() -> u64 {
+fn unix_ticks_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as u64)
+        .map(|elapsed| (elapsed.as_nanos() / 100) as u64)
         .unwrap_or(0)
 }
 

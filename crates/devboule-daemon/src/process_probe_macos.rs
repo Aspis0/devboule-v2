@@ -34,7 +34,7 @@ struct MacRow {
     pgid: u32,
     ppid: u32,
     command: String,
-    started_at_ms: Option<u64>,
+    started_at_ticks: Option<u64>,
 }
 
 /// The platform probe: `begin_refresh` takes the three helper snapshots the
@@ -81,10 +81,10 @@ impl Probe {
         // A row without a readable start time is a member the OS would not
         // vouch for: no identity, never a target.
         let row = self.rows.get(&pid)?;
-        let started_at_ms = row.started_at_ms?;
+        let started_at_ticks = row.started_at_ticks?;
         let command: Vec<String> = row.command.split_whitespace().map(str::to_string).collect();
         Some(ProcessIdentity {
-            started_at_ms,
+            started_at_ticks,
             ppid: row.ppid,
             exe: command.first().cloned(),
             argv: command,
@@ -105,7 +105,7 @@ pub(crate) fn creation_status(pid: u32) -> CreationStatus {
     if output.trim().is_empty() {
         return CreationStatus::Gone;
     }
-    parse_lstart_ms(output.trim())
+    parse_lstart_ticks(output.trim())
         .map(CreationStatus::At)
         .unwrap_or(CreationStatus::Unverified)
 }
@@ -152,7 +152,7 @@ fn group_membership(output: &str, led: Option<u32>) -> Membership {
 /// One `ps -axo` listing into the row table: pid, parent, group and the
 /// rendered command line. A line without three numeric fields cannot prove
 /// anything and is dropped; a row whose start time never arrives keeps
-/// `started_at_ms = None`, which reads as unproven rather than invisible.
+/// `started_at_ticks = None`, which reads as unproven rather than invisible.
 fn parse_ps_rows(listing: &str) -> HashMap<u32, MacRow> {
     let mut rows = HashMap::new();
     for line in listing.lines() {
@@ -177,7 +177,7 @@ fn parse_ps_rows(listing: &str) -> HashMap<u32, MacRow> {
                 pgid,
                 ppid,
                 command,
-                started_at_ms: None,
+                started_at_ticks: None,
             },
         );
     }
@@ -200,10 +200,11 @@ fn apply_start_times(rows: &mut HashMap<u32, MacRow>, stamps: &str) {
         let Some((pid, stamp)) = line.trim_start().split_once(char::is_whitespace) else {
             continue;
         };
-        if let (Ok(pid), Some(started_at_ms)) = (pid.parse::<u32>(), parse_lstart_ms(stamp.trim()))
+        if let (Ok(pid), Some(started_at_ticks)) =
+            (pid.parse::<u32>(), parse_lstart_ticks(stamp.trim()))
         {
             if let Some(row) = rows.get_mut(&pid) {
-                row.started_at_ms = Some(started_at_ms);
+                row.started_at_ticks = Some(started_at_ticks);
             }
         }
     }
@@ -234,6 +235,12 @@ fn parse_lsof_ports(output: &str) -> Vec<(u16, u32)> {
         }
     }
     ports
+}
+
+/// `lstart` has one-second resolution, so its ticks are coarse: the identity
+/// check treats an equal coarse time as unable to prove the process.
+fn parse_lstart_ticks(stamp: &str) -> Option<u64> {
+    parse_lstart_ms(stamp).map(|ms| ms.saturating_mul(10_000))
 }
 
 /// `lstart` (`Wed Oct  5 10:00:00 2026`, ctime-shaped) as unix milliseconds:

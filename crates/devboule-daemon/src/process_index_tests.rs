@@ -49,7 +49,7 @@ fn process_list_detects_pid_reuse() {
     refresh(&index, vec![proof("session-b", None)], &mut probe);
     let first = index.session_entries("session-b");
     assert_eq!(first.len(), 1);
-    assert_eq!(first[0].started_at_ms, 1_000);
+    assert_eq!(first[0].started_at_ticks, 1_000);
 
     // The same pid comes back with a different creation time: the old entry
     // is the old process, and it must never answer as the new one.
@@ -62,7 +62,7 @@ fn process_list_detects_pid_reuse() {
     let second = index.session_entries("session-b");
     assert_eq!(second.len(), 1);
     assert_eq!(
-        second[0].started_at_ms, 2_000,
+        second[0].started_at_ticks, 2_000,
         "replaced by what the OS says is there now"
     );
     assert_eq!(index.owner_matches(Some(1420), None).len(), 1);
@@ -109,7 +109,10 @@ fn ports_and_exe_refresh_on_every_query() {
         Some("/bin/after"),
         "the exe line is fresh too"
     );
-    assert_eq!(matches[0].0.started_at_ms, 1_000, "identity did not move");
+    assert_eq!(
+        matches[0].0.started_at_ticks, 1_000,
+        "identity did not move"
+    );
 }
 
 /// Every daemon child in a session's membership is a provider root: a second

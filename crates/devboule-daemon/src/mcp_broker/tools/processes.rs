@@ -105,7 +105,7 @@ fn owner_value(
 ) -> Value {
     json!({
         "pid": entry.pid,
-        "startedAt": entry.started_at_ms,
+        "startedAt": entry.started_at_ticks / 10_000,
         "sessionId": session_id,
         "agent": agent,
         "workspaceId": workspace_id,
@@ -128,8 +128,8 @@ fn now_ms() -> u64 {
 fn process_value(entry: &ProcessEntry) -> Value {
     json!({
         "pid": entry.pid,
-        "startedAt": entry.started_at_ms,
-        "elapsed": now_ms().saturating_sub(entry.started_at_ms),
+        "startedAt": entry.started_at_ticks / 10_000,
+        "elapsed": now_ms().saturating_sub(entry.started_at_ticks / 10_000),
         "exe": entry.exe,
         "argvRedacted": entry.argv.join(" "),
         "ports": entry.ports,

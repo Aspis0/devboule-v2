@@ -125,3 +125,21 @@ fn a_process_created_after_the_snapshot_is_not_covered_by_it() {
     assert!(snapshot_covers(900, 1_000));
     assert!(!snapshot_covers(1_001, 1_000));
 }
+
+/// A FILETIME keeps its 100 ns: one tick past the Unix epoch is one tick, not
+/// zero, so two creation times that differ by a tick stay different.
+#[test]
+fn a_file_time_keeps_its_hundred_nanoseconds_after_the_unix_epoch() {
+    assert_eq!(
+        unix_ticks_from_filetime(crate::process_index::FILETIME_EPOCH_TICKS),
+        0
+    );
+    assert_eq!(
+        unix_ticks_from_filetime(crate::process_index::FILETIME_EPOCH_TICKS + 1),
+        1
+    );
+    assert_eq!(
+        unix_ticks_from_filetime(crate::process_index::FILETIME_EPOCH_TICKS + 10_000),
+        10_000
+    );
+}

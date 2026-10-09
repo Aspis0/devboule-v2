@@ -11,7 +11,7 @@
 use std::io;
 use std::time::{Duration, Instant};
 
-use crate::process_index::{CreationStatus, Membership};
+use crate::process_index::{CreationStatus, Membership, CREATION_TICKS_PRECISE};
 use crate::process_plan::PlanTarget;
 use crate::process_tree::JobObject;
 
@@ -35,9 +35,22 @@ pub(crate) enum TargetVerdict {
 pub(crate) fn os_target_check(pid: u32, planned: u64) -> TargetVerdict {
     match crate::process_index::creation_status(pid) {
         CreationStatus::Gone => TargetVerdict::Gone,
-        CreationStatus::At(actual) if actual == planned => TargetVerdict::Confirmed,
-        CreationStatus::At(_) => TargetVerdict::Changed,
+        CreationStatus::At(actual) => creation_verdict(actual, planned, CREATION_TICKS_PRECISE),
         CreationStatus::Unverified => TargetVerdict::Unverified,
+    }
+}
+
+/// The verdict for a creation time read now against the planned one. A
+/// different time is a different process. An equal time confirms the process
+/// only when the platform's times are full resolution: a coarse time cannot
+/// tell a pid reused in the same tick apart, so it stays unverified.
+pub(crate) fn creation_verdict(actual: u64, planned: u64, precise: bool) -> TargetVerdict {
+    if actual != planned {
+        TargetVerdict::Changed
+    } else if precise {
+        TargetVerdict::Confirmed
+    } else {
+        TargetVerdict::Unverified
     }
 }
 

@@ -34,7 +34,7 @@ pub(crate) struct ProcessEntry {
     /// The process's creation time in unix milliseconds. Only ever compared
     /// against itself on this machine: it is the identity that stops a reused
     /// pid from matching an old entry.
-    pub(crate) started_at_ms: u64,
+    pub(crate) started_at_ticks: u64,
     pub(crate) exe: Option<String>,
     /// Already redacted and capped at build time; safe to render.
     pub(crate) argv: Vec<String>,
@@ -50,14 +50,14 @@ pub(crate) struct ProcessEntry {
     /// The parent's creation time, when the parent is alive outside this
     /// membership and the platform keeps parent links across an exit. This is
     /// the only lineage that proves a member is outside the provider tree.
-    pub(crate) outside_parent_started_at_ms: Option<u64>,
+    pub(crate) outside_parent_started_at_ticks: Option<u64>,
 }
 
 /// What the platform said about one pid. `None` means the OS would not
 /// vouch for it — a vanished process, or a query the platform refused.
 #[derive(Clone, Debug)]
 pub(crate) struct ProcessIdentity {
-    pub(crate) started_at_ms: u64,
+    pub(crate) started_at_ticks: u64,
     pub(crate) ppid: u32,
     pub(crate) exe: Option<String>,
     pub(crate) argv: Vec<String>,
@@ -268,11 +268,11 @@ impl ProcessIndex {
                     continue;
                 };
                 state.unproven.remove(&pid);
-                let outside_parent_started_at_ms =
+                let outside_parent_started_at_ticks =
                     if links_survive && !members.contains(&identity.ppid) {
                         probe
                             .identity(identity.ppid)
-                            .map(|parent| parent.started_at_ms)
+                            .map(|parent| parent.started_at_ticks)
                     } else {
                         None
                     };
@@ -280,14 +280,14 @@ impl ProcessIndex {
                     pid,
                     ProcessEntry {
                         pid,
-                        started_at_ms: identity.started_at_ms,
+                        started_at_ticks: identity.started_at_ticks,
                         exe: identity.exe.as_deref().map(redact_exe),
                         argv: redact_argv(&identity.argv),
                         ports,
                         proof,
                         ppid: identity.ppid,
                         is_agent: identity.ppid == daemon_pid,
-                        outside_parent_started_at_ms,
+                        outside_parent_started_at_ticks,
                     },
                 );
             }
@@ -297,7 +297,7 @@ impl ProcessIndex {
                 state
                     .entries
                     .get(pid)
-                    .is_some_and(|entry| entry.started_at_ms == *started_at)
+                    .is_some_and(|entry| entry.started_at_ticks == *started_at)
             });
             state.agent_root = recorded.or_else(|| {
                 state
@@ -305,7 +305,7 @@ impl ProcessIndex {
                     .values()
                     .filter(|entry| entry.is_agent)
                     .min_by_key(|entry| entry.pid)
-                    .map(|entry| (entry.pid, entry.started_at_ms))
+                    .map(|entry| (entry.pid, entry.started_at_ticks))
             });
         }
         Ok(())
@@ -406,7 +406,7 @@ impl ProcessIndex {
             .filter(|entry| !excluded_pids.contains(&entry.pid))
             .map(|entry| PlanTarget {
                 pid: entry.pid,
-                started_at_ms: entry.started_at_ms,
+                started_at_ticks: entry.started_at_ticks,
                 exe: entry.exe.clone(),
             })
             .collect();
@@ -427,13 +427,22 @@ impl ProcessIndex {
     }
 }
 
-/// What the platform says about one pid's creation time at the moment of a
-/// signal — the identity check immediately before anything is signalled.
-/// FILETIME counts 100 ns ticks since 1601; the shift to unix milliseconds
-/// every Windows-side read applies (the two reads — index and terminate —
-/// share it so their identities compare equal).
+/// Creation times are unix time in 100 ns ticks, the unit of a FILETIME. The
+/// shift from FILETIME's 1601 epoch is applied in one place, so the index and
+/// the terminate-time check compare the same numbers.
 #[cfg(windows)]
-pub(crate) const FILETIME_EPOCH_MS: u64 = 11_644_473_600_000;
+pub(crate) const FILETIME_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
+
+/// A FILETIME read as unix ticks, keeping every 100 ns of it.
+#[cfg(windows)]
+pub(crate) fn unix_ticks_from_filetime(filetime: u64) -> u64 {
+    filetime.saturating_sub(FILETIME_EPOCH_TICKS)
+}
+
+/// Whether a creation time read by the platform is full resolution. Windows
+/// reports 100 ns ticks; a coarser platform cannot tell two processes with
+/// the same time apart, so an equal time proves nothing there.
+pub(crate) const CREATION_TICKS_PRECISE: bool = cfg!(windows);
 
 #[derive(Debug)]
 pub(crate) enum CreationStatus {

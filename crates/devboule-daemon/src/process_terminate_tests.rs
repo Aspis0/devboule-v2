@@ -10,9 +10,9 @@ use std::process::{Command, Stdio};
 /// platform reports, so the real check and the Windows arm both confirm it.
 fn real_plan(pid: u32) -> PlanTarget {
     match crate::process_index::creation_status(pid) {
-        CreationStatus::At(started_at_ms) => PlanTarget {
+        CreationStatus::At(started_at_ticks) => PlanTarget {
             pid,
-            started_at_ms,
+            started_at_ticks,
             exe: None,
         },
         CreationStatus::Gone => panic!("our own child must still exist"),
@@ -284,25 +284,25 @@ fn ownership_is_read_from_the_job_at_the_moment_of_the_check() {
     use std::os::windows::io::AsRawHandle;
 
     let mut child = spawn_immune_child();
-    let started_at_ms = real_plan(child.id()).started_at_ms;
+    let started_at_ticks = real_plan(child.id()).started_at_ticks;
     let job = crate::process_tree::JobObject::new().expect("job");
 
     assert!(matches!(
-        owned_target_check(Some(&job), child.id(), started_at_ms),
+        owned_target_check(Some(&job), child.id(), started_at_ticks),
         TargetVerdict::NotOwned
     ));
     job.assign(child.as_raw_handle()).expect("child joins");
     assert!(matches!(
-        owned_target_check(Some(&job), child.id(), started_at_ms),
+        owned_target_check(Some(&job), child.id(), started_at_ticks),
         TargetVerdict::Confirmed
     ));
     assert!(matches!(
-        owned_target_check(None, child.id(), started_at_ms),
+        owned_target_check(None, child.id(), started_at_ticks),
         TargetVerdict::NotOwned
     ));
     assert!(
         matches!(
-            owned_target_check(Some(&job), child.id(), started_at_ms + 1),
+            owned_target_check(Some(&job), child.id(), started_at_ticks + 1),
             TargetVerdict::Changed
         ),
         "a different creation time is the identity verdict, not an ownership one"
@@ -344,4 +344,29 @@ fn the_graceful_ask_tells_a_refusal_from_a_timeout() {
         "and was cut off"
     );
     assert_eq!(ask_outcome(None, limit), GracefulAsk::Unanswered);
+}
+
+/// Two creation times one 100 ns tick apart name two processes: a pid reused a
+/// tick later is not the planned process, so it is never confirmed.
+#[test]
+fn a_creation_time_one_tick_apart_is_a_different_process() {
+    assert!(matches!(
+        creation_verdict(1_001, 1_000, true),
+        TargetVerdict::Changed
+    ));
+}
+
+/// An equal time confirms the process only where the platform's times are at
+/// full resolution. A coarse time cannot tell a reused pid apart, so it stays
+/// unverified and the process is spared.
+#[test]
+fn an_equal_coarse_time_is_unverified_and_an_equal_full_time_confirms() {
+    assert!(matches!(
+        creation_verdict(1_000, 1_000, true),
+        TargetVerdict::Confirmed
+    ));
+    assert!(matches!(
+        creation_verdict(1_000, 1_000, false),
+        TargetVerdict::Unverified
+    ));
 }

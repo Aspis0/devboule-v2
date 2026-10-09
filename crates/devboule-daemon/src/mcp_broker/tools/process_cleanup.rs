@@ -373,7 +373,7 @@ mod tests {
     fn targets_line_names_each_target_by_pid_and_image() {
         let target = |pid: u32, exe: Option<&str>| PlanTarget {
             pid,
-            started_at_ms: 0,
+            started_at_ticks: 0,
             exe: exe.map(str::to_string),
         };
         assert_eq!(

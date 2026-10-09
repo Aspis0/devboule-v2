@@ -107,11 +107,11 @@ fn lstart_lines_with_padded_columns_become_start_times() {
     );
     let first = rows
         .get(&1)
-        .and_then(|row| row.started_at_ms)
+        .and_then(|row| row.started_at_ticks)
         .expect("padded pid parses");
     let second = rows
         .get(&4242)
-        .and_then(|row| row.started_at_ms)
+        .and_then(|row| row.started_at_ticks)
         .expect("padded day parses");
     assert_eq!(
         second - first,
@@ -119,7 +119,7 @@ fn lstart_lines_with_padded_columns_become_start_times() {
         "one second apart, to the millisecond"
     );
     assert_eq!(
-        rows.get(&4300).and_then(|row| row.started_at_ms),
+        rows.get(&4300).and_then(|row| row.started_at_ticks),
         None,
         "an unreadable stamp proves nothing"
     );

@@ -59,7 +59,7 @@ pub(crate) fn terminate_all(
     let mut terminated: Vec<u32> = Vec::new();
     let mut skipped: Vec<(u32, &'static str)> = Vec::new();
     for target in targets {
-        let verdict = check(target.pid, target.started_at_ms);
+        let verdict = check(target.pid, target.started_at_ticks);
         if let Some(reason) = spare_reason(&verdict) {
             skipped.push((target.pid, reason));
             continue;
@@ -68,7 +68,7 @@ pub(crate) fn terminate_all(
             terminated.push(target.pid);
             continue;
         }
-        match arm(target.pid, target.started_at_ms) {
+        match arm(target.pid, target.started_at_ticks) {
             ArmOutcome::Armed(handle) => {
                 let ask = graceful(target.pid);
                 attempted.push((target.clone(), handle, ask));
@@ -99,7 +99,7 @@ pub(crate) fn terminate_all(
             close_handle(handle);
             continue;
         }
-        let verdict = check(target.pid, target.started_at_ms);
+        let verdict = check(target.pid, target.started_at_ticks);
         if let Some(reason) = spare_reason(&verdict) {
             skipped.push((target.pid, reason));
         } else if matches!(verdict, TargetVerdict::Confirmed) {
@@ -168,7 +168,12 @@ fn arm(pid: u32, planned: u64) -> ArmOutcome {
             ArmOutcome::NoAccess
         };
     }
-    let confirmed = creation_time_of(handle).is_some_and(|actual| actual == planned);
+    let confirmed = creation_time_of(handle).is_some_and(|actual| {
+        matches!(
+            creation_verdict(actual, planned, CREATION_TICKS_PRECISE),
+            TargetVerdict::Confirmed
+        )
+    });
     if !confirmed {
         unsafe { CloseHandle(handle) };
         // Whether the pid died or changed, the plan's process is not the
@@ -192,7 +197,7 @@ fn creation_time_of(handle: windows_sys::Win32::Foundation::HANDLE) -> Option<u6
         return None;
     }
     let ticks = ((creation.dwHighDateTime as u64) << 32) | creation.dwLowDateTime as u64;
-    Some((ticks / 10_000).saturating_sub(crate::process_index::FILETIME_EPOCH_MS))
+    Some(crate::process_index::unix_ticks_from_filetime(ticks))
 }
 
 #[cfg(target_os = "macos")]

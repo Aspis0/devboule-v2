@@ -39,13 +39,13 @@ impl ProcessProbe for FakeProbe {
     }
 }
 
-pub(super) fn identity(started_at_ms: u64, ppid: u32) -> ProcessIdentity {
-    identity_with(started_at_ms, ppid, "/usr/local/bin/tool")
+pub(super) fn identity(started_at_ticks: u64, ppid: u32) -> ProcessIdentity {
+    identity_with(started_at_ticks, ppid, "/usr/local/bin/tool")
 }
 
-pub(super) fn identity_with(started_at_ms: u64, ppid: u32, exe: &str) -> ProcessIdentity {
+pub(super) fn identity_with(started_at_ticks: u64, ppid: u32, exe: &str) -> ProcessIdentity {
     ProcessIdentity {
-        started_at_ms,
+        started_at_ticks,
         ppid,
         exe: Some(exe.to_string()),
         argv: vec![exe.to_string(), "--serve".to_string()],

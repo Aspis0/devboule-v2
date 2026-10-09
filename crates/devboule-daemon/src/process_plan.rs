@@ -9,7 +9,7 @@ use crate::process_index::ProcessEntry;
 #[derive(Clone, Debug)]
 pub(crate) struct PlanTarget {
     pub(crate) pid: u32,
-    pub(crate) started_at_ms: u64,
+    pub(crate) started_at_ticks: u64,
     pub(crate) exe: Option<String>,
 }
 
@@ -61,7 +61,7 @@ pub(crate) fn provider_tree(
     if let Some((pid, started_at)) = recorded_root {
         let still_the_same_process = entries
             .get(&pid)
-            .is_some_and(|entry| entry.started_at_ms == started_at);
+            .is_some_and(|entry| entry.started_at_ticks == started_at);
         if still_the_same_process && !roots.contains(&pid) {
             roots.push(pid);
         }
@@ -122,7 +122,7 @@ fn parent_of<'a>(
     child: &ProcessEntry,
 ) -> Option<&'a ProcessEntry> {
     let parent = entries.get(&child.ppid)?;
-    (parent.pid != child.pid && parent.started_at_ms < child.started_at_ms).then_some(parent)
+    (parent.pid != child.pid && parent.started_at_ticks < child.started_at_ticks).then_some(parent)
 }
 
 /// Whether a member is proven outside the provider tree: its parent was alive
@@ -130,25 +130,25 @@ fn parent_of<'a>(
 /// reused parent, or a platform that re-parents orphans — leaves it protected.
 pub(crate) fn outside_the_tree(entry: &ProcessEntry) -> bool {
     entry
-        .outside_parent_started_at_ms
-        .is_some_and(|parent_started_at| parent_started_at < entry.started_at_ms)
+        .outside_parent_started_at_ticks
+        .is_some_and(|parent_started_at| parent_started_at < entry.started_at_ticks)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn entry(pid: u32, started_at_ms: u64, ppid: u32, is_agent: bool) -> ProcessEntry {
+    fn entry(pid: u32, started_at_ticks: u64, ppid: u32, is_agent: bool) -> ProcessEntry {
         ProcessEntry {
             pid,
-            started_at_ms,
+            started_at_ticks,
             exe: None,
             argv: Vec::new(),
             ports: Vec::new(),
             proof: "job_member",
             ppid,
             is_agent,
-            outside_parent_started_at_ms: None,
+            outside_parent_started_at_ticks: None,
         }
     }
 
