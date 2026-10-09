@@ -716,7 +716,48 @@ fn a_parked_trailing_status_is_flushed_within_its_window() {
     }
 }
 
-/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones
+/// The attach frames are app-only. A connection that speaks for a paired
+/// device — the shape an agent's cross-machine tool path resolves to — is
+/// refused before anything is queued, in both directions.
+#[test]
+fn a_peer_connection_cannot_open_or_close_a_remote_stream() {
+    let harness = Harness::start("peer-link-attach-peer-denied");
+    let peer = remote_conn_handle(3, "b");
+    let attach = crate::server::peer_link_dispatch::dispatch_remote_host(
+        &harness.state,
+        &peer,
+        ClientMessage::RemoteHostAttach {
+            id: 1,
+            device_id: "b".to_string(),
+            session_id: "session-1".to_string(),
+            subscription_id: 1,
+        },
+    );
+    match attach {
+        DaemonMessage::Error(error) => {
+            assert!(error.message.contains("cannot open a stream"), "{error:?}");
+        }
+        other => panic!("a peer must not attach, got {other:?}"),
+    }
+    let detach = crate::server::peer_link_dispatch::dispatch_remote_host(
+        &harness.state,
+        &peer,
+        ClientMessage::RemoteHostDetach {
+            id: 2,
+            device_id: "b".to_string(),
+            session_id: "session-1".to_string(),
+            subscription_id: 1,
+        },
+    );
+    match detach {
+        DaemonMessage::Error(error) => {
+            assert!(error.message.contains("cannot close a stream"), "{error:?}");
+        }
+        other => panic!("a peer must not detach, got {other:?}"),
+    }
+}
+
+/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones
 /// must continue it, a replay or a poisoned value moves nothing, and a new
 /// transport re-baselines.
 #[test]

@@ -717,25 +717,6 @@ pub(super) fn peer_entry<'a>(
     Ok(entry)
 }
 
-/// The door for a *human* action relayed from a paired PC: the person at
-/// machine A clicking "send" on machine B's agent. The owner's rule is that
-/// the human controls everything from any paired PC with no confirmation —
-/// Paseo-like — while only AI-originated cross-machine commands ask. This is
-/// the same pairing-user reach the observing door has, named separately so
-/// Slice 4's host-targeted human wrappers call the right rule and the
-/// agent-originated path (which keeps [`check_user_owner`] and its ask card)
-/// cannot drift into it; the frames themselves carry the distinction: the
-/// human wrappers are their own variants, agent tool calls are the plain
-/// ones. Unused until that slice wires it, deliberately.
-#[allow(dead_code)]
-pub(super) fn check_user_owner_human_action(
-    entry: &RegistryEntry,
-    owner: &OwnerId,
-    conn_peer: &Option<ConnPeer>,
-) -> Result<(), WireError> {
-    check_user_owner_with(entry, owner, conn_peer, true)
-}
-
 /// The observing twin of [`peer_entry`], for the read-only attach door.
 pub(super) fn peer_entry_observing<'a>(
     map: &'a HashMap<String, RegistryEntry>,
