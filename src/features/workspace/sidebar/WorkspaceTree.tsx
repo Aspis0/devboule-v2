@@ -6,6 +6,7 @@ import type { WorkspaceProject } from "../workspaceProjects";
 import { keyOfWorkspace } from "../workspaceProjects";
 import type { HostId, WorkspaceKey } from "../hosts/hostIdentity";
 import { avatarStyle } from "./avatars";
+import { hostLabel } from "./hostNames";
 import { AgentRows } from "./AgentRows";
 import type { AgentRowView } from "./agentRowViews";
 import { WorkspaceRow } from "./WorkspaceRow";
@@ -187,7 +188,7 @@ export function WorkspaceTree({
                       workspace={workspace}
                       workspaceKey={key}
                       projectName={project.name}
-                      hostName={hostNames.get(workspace.hostId) ?? workspace.hostId}
+                      hostName={hostLabel(hostNames, workspace.hostId)}
                       selected={selected}
                       agentFocused={agentFocused}
                       stat={key === null ? undefined : stats.get(key)}

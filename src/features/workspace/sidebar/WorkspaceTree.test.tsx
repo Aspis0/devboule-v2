@@ -168,4 +168,15 @@ describe("the tree's identity", () => {
       ),
     ).toEqual(["feat/sidebar", "figures"]);
   });
+
+  it("names an unknown host without leaking its raw id", async () => {
+    const gone = project("p-g", "field", "C:\\field", [
+      { ...workspace("p-g", "w-g", "field work", "C:\\field"), hostId: "peer-gone" as never },
+    ]);
+    await render({ projects: [gone] });
+
+    const host = container.querySelector(".workspace-row-host");
+    expect(host?.textContent).toContain("Unknown host");
+    expect(host?.textContent).not.toContain("peer-gone");
+  });
 });

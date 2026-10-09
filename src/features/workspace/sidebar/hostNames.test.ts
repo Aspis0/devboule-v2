@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { PeerRow } from "../../../types/ipc";
 import { LOCAL_HOST_ID } from "../hosts/hostIdentity";
 import type { PairedDevices } from "../workspaceDaemon";
-import { LOCAL_HOST_NAME, hostNames, peerName } from "./hostNames";
+import { LOCAL_HOST_NAME, hostLabel, hostNames, peerName } from "./hostNames";
 
 function peer(overrides: Partial<PeerRow> = {}): PeerRow {
   return {
@@ -62,5 +62,12 @@ describe("the hosts' short labels", () => {
     expect(
       peerName(peer({ deviceId: "device-x", displayName: "", bindingNodeName: null })),
     ).not.toContain("device-");
+  });
+
+  it("labels an unknown host without its raw id", () => {
+    const names = hostNames(devices([]));
+
+    expect(hostLabel(names, LOCAL_HOST_ID)).toBe("This PC");
+    expect(hostLabel(names, "peer-gone" as never)).toBe("Unknown host");
   });
 });

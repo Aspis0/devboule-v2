@@ -19,6 +19,14 @@ export function peerName(peer: PeerRow): string {
 }
 
 /**
+ * A row's host label: the known short name, never a raw device id. A revoked
+ * or forgotten peer is not in the map, and an id is an identity, not a name.
+ */
+export function hostLabel(names: ReadonlyMap<HostId, string>, hostId: HostId): string {
+  return names.get(hostId) ?? (hostId === LOCAL_HOST_ID ? LOCAL_HOST_NAME : "Unknown host");
+}
+
+/**
  * Every host's short label by id: the local machine first, then one per
  * paired peer that is a machine. A `client` peer views and steers this device
  * and is never dialled as a machine, so it is not a host; a revoked peer is
