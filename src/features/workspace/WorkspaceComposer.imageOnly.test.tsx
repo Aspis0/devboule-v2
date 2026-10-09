@@ -42,18 +42,12 @@ async function renderComposer(
   onSend: (text: string, attachments: readonly PromptAttachment[]) => Promise<boolean>,
   overrides: Partial<ComponentProps<typeof WorkspaceComposer>> = {},
 ) {
-  const mocks = { onSend: vi.fn(), onQueue: vi.fn() };
+  const onQueue = vi.fn();
   root = createRoot(container);
   await act(async () => {
-    root.render(
-      <WorkspaceComposer
-        {...composerProps(mocks, overrides)}
-        onSend={onSend}
-        onQueue={mocks.onQueue}
-      />,
-    );
+    root.render(<WorkspaceComposer {...composerProps({ onSend, onQueue }, overrides)} />);
   });
-  return mocks;
+  return { onQueue };
 }
 
 async function pickImage() {
