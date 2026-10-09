@@ -21,7 +21,7 @@ use crate::device_identity::RemoteState;
 use crate::diagnostics::{DiagnosticsInput, DiagnosticsReport};
 use crate::error::DaemonError;
 use crate::framing::Framed;
-use crate::idempotency::{IdempotencyOutcome, IdempotencyStore};
+use crate::idempotency::{IdempotencyOutcome, IdempotencyStore, ReserveOutcome};
 use crate::journal::{AuditRecord, Journal, PeerMutation, PeerRecord, JOURNAL_SCHEMA_VERSION};
 use crate::lock::SingleInstanceLock;
 use crate::login_shell_env::login_shell_capture_outcome;

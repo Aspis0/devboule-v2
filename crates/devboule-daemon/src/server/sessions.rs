@@ -861,7 +861,19 @@ fn session_create(
     {
         return reply;
     }
+    // The key is held while the provider starts: a retry that arrives
+    // mid-flight — on a reconnected link, a new connection — answers
+    // "still starting" instead of starting a second session (P2-1). A
+    // failed create gives the key back below, so the retry runs again.
+    if let Some(key) = idempotency_key.as_deref() {
+        if let Some(reply) = reserve_create_key(state, owner, id, key, &fingerprint) {
+            return reply;
+        }
+    }
     if !state.session_started() {
+        if let Some(key) = idempotency_key.as_deref() {
+            release_create_key(state, owner, key);
+        }
         return DaemonMessage::Error(
             WireError::new(ErrorCode::ShuttingDown, "daemon is shutting down").with_id(id),
         );
@@ -889,6 +901,9 @@ fn session_create(
             reply
         }
         Err(error) => {
+            if let Some(key) = idempotency_key.as_deref() {
+                release_create_key(state, owner, key);
+            }
             state.session_finished();
             DaemonMessage::Error(error.with_id(id))
         }
@@ -1170,6 +1185,66 @@ pub(super) fn remember(
         reply.clone(),
         Instant::now(),
     );
+}
+
+/// Hold an idempotency key while its create runs. Call after `idempotent_hit`
+/// answered `Miss`: a completed receipt would already have answered `Hit`
+/// or `Conflict` there, and an invalid key would already have been refused.
+///
+/// Returns the reply when the key cannot run: `InFlight` (same payload
+/// already starting — the caller waits or retries, it must not start a
+/// second session) or `Conflict` (same key, different payload). `None`
+/// means this call now holds the key until it remembers the reply or gives
+/// the key back on failure.
+pub(super) fn reserve_create_key(
+    state: &ServerState,
+    owner: &OwnerId,
+    request_id: u64,
+    key: &str,
+    fingerprint: &str,
+) -> Option<DaemonMessage> {
+    if let Err(message) = validate_idempotency_key(key) {
+        return Some(DaemonMessage::Error(
+            WireError::new(ErrorCode::InvalidRequest, message).with_id(request_id),
+        ));
+    }
+    let owner_key = format!("{}.{}", owner.user, owner.client);
+    let mut store = state
+        .idempotency
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    match store.reserve(&owner_key, key, fingerprint, Instant::now()) {
+        ReserveOutcome::Reserved => None,
+        ReserveOutcome::InFlight => Some(DaemonMessage::Error(
+            WireError::new(
+                ErrorCode::OperationConflict,
+                "A session with this retry identity is already starting.",
+            )
+            .with_id(request_id),
+        )),
+        ReserveOutcome::Conflict => Some(DaemonMessage::Error(
+            WireError::new(
+                ErrorCode::IdempotencyConflict,
+                "idempotency key reused with a different payload",
+            )
+            .with_id(request_id),
+        )),
+    }
+}
+
+/// Give back a key whose create did not complete. A failed create must not
+/// hold its key: the retry that should run again would otherwise answer
+/// "still starting" instead of running.
+pub(super) fn release_create_key(state: &ServerState, owner: &OwnerId, key: &str) {
+    if validate_idempotency_key(key).is_err() {
+        return;
+    }
+    let owner_key = format!("{}.{}", owner.user, owner.client);
+    state
+        .idempotency
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .release(&owner_key, key);
 }
 
 fn rewrite_id(message: DaemonMessage, id: u64) -> DaemonMessage {

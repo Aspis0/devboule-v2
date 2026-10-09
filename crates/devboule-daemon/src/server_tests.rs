@@ -5029,6 +5029,93 @@ fn a_peer_send_with_attachments_is_refused_until_the_deposit_counter_lands() {
     let _ = std::fs::remove_dir_all(path);
 }
 
+/// P2-1: a key held by a create running on another connection answers
+/// "still starting" instead of starting a second session. The hold is
+/// simulated by reserving directly on the store — the dispatch below is a
+/// second connection presenting the same key and payload. Creates run on a
+/// worker thread, so the reply is read from the connection's outbound
+/// queue, not from the dispatch return.
+#[test]
+fn a_create_with_a_held_key_answers_still_starting_without_creating() {
+    let (path, state) = temp_state("peer-create-reservation");
+    let owner = OwnerId::new("test-user", "test-client").expect("owner");
+    let owner_key = "test-user.test-client";
+    let peer = remote_conn_with_caps(
+        PeerScope::PeerDevice,
+        Some("S-user-a"),
+        &[
+            crate::peer_policy::CAP_VIEW,
+            crate::peer_policy::CAP_CREATE_SESSIONS,
+        ],
+    );
+    let create = || ClientMessage::SessionCreate {
+        id: 1,
+        workspace_id: Some("missing".to_string()),
+        kind: SessionKind::Terminal,
+        provider: None,
+        mode: None,
+        display_name: None,
+        idempotency_key: Some("held-key".to_string()),
+        cols: None,
+        rows: None,
+    };
+    fn next_error(conn: &Arc<ConnHandle>) -> WireError {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            for reply in conn.outbound.pull_replies() {
+                if let DaemonMessage::Error(error) = reply {
+                    return error;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the worker never answered the create"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    // Another connection holds this key mid-flight. The fingerprint below
+    // is the one `session_create` builds for these exact fields.
+    let fingerprint = "create:terminal::missing::";
+    state
+        .idempotency
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .reserve(
+            owner_key,
+            "held-key",
+            fingerprint,
+            std::time::Instant::now(),
+        );
+    dispatch(&state, &owner, create(), &peer, true, true, true, true);
+    let error = next_error(&peer);
+    assert_eq!(error.code, ErrorCode::OperationConflict, "{error:?}");
+    assert!(
+        error.message.contains("already starting"),
+        "the refusal says to wait, not to retry blind: {error:?}"
+    );
+    assert!(
+        state.sessions.list(&owner).expect("roster").is_empty(),
+        "a held key must not create"
+    );
+    // Same key, different payload: a conflict, not a retry.
+    state
+        .idempotency
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .release(owner_key, "held-key");
+    state
+        .idempotency
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .reserve(owner_key, "held-key", "other", std::time::Instant::now());
+    dispatch(&state, &owner, create(), &peer, true, true, true, true);
+    let error = next_error(&peer);
+    assert_eq!(error.code, ErrorCode::IdempotencyConflict, "{error:?}");
+    drop(state);
+    let _ = std::fs::remove_dir_all(path);
+}
+
 /// §8b A5/R3, H1: a paired device may not name a mode for an ACP session —
 /// at the create, or by switching a live one — while the person at this
 /// machine keeps their own path.

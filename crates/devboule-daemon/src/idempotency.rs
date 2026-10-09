@@ -62,6 +62,32 @@ pub enum IdempotencyOutcome {
     Miss,
 }
 
+/// What reserving an in-flight key answers. A reservation is the receipt
+/// before the receipt: the first create with a key holds it while the
+/// provider starts, so a retry that arrives mid-flight — on a reconnected
+/// link, a new connection, after a restart of nothing but the caller's
+/// patience — is answered "still starting" instead of starting a second
+/// session. Same key, different payload is the same lie as a completed
+/// conflict, and answered the same way.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReserveOutcome {
+    /// Nobody holds this key: the caller now does, until it remembers the
+    /// reply or releases the key.
+    Reserved,
+    /// The same key with the same payload is already running: the caller
+    /// must wait or retry, not start a second one.
+    InFlight,
+    /// The same key with a different payload is running or ran: refused.
+    Conflict,
+}
+
+struct Pending {
+    owner: String,
+    key: String,
+    fingerprint: [u8; 32],
+    since: Instant,
+}
+
 struct Entry {
     owner: String,
     key: String,
@@ -76,6 +102,10 @@ struct Entry {
 
 pub struct IdempotencyStore {
     entries: VecDeque<Entry>,
+    /// Keys with a create running but no reply yet. Bounded by the same
+    /// count cap as the receipts: a caller that mints keys faster than
+    /// creates finish cannot grow this without limit.
+    pending: VecDeque<Pending>,
     ttl: Duration,
     cap: usize,
     /// Sum of `entries[*].bytes`, kept in step with every push and pop.
@@ -86,6 +116,7 @@ impl Default for IdempotencyStore {
     fn default() -> Self {
         Self {
             entries: VecDeque::new(),
+            pending: VecDeque::new(),
             ttl: Duration::from_secs(IDEMPOTENCY_TTL_SECS),
             cap: IDEMPOTENCY_MAX_ENTRIES,
             total_bytes: 0,
@@ -127,6 +158,12 @@ impl IdempotencyStore {
         now: Instant,
     ) {
         self.evict(now);
+        // The reply replaces the reservation either way: a remembered reply
+        // answers retries with the session, and a reply too large to keep
+        // (F16) must not leave the key reserved forever — a retry then runs
+        // again, exactly like a caller that never sent a key.
+        self.pending
+            .retain(|pending| !(pending.owner == owner && pending.key == key));
         // F16: a reply too large to be worth keeping is not kept. Recording
         // the key with no reply would report a `Conflict` on retry (the same
         // key, a fingerprint the store never held), which is a lie about the
@@ -171,6 +208,67 @@ impl IdempotencyStore {
                 break;
             }
         }
+        // A reservation outlives no create: a thread that died mid-flight
+        // must not hold its key past the same TTL, or every later retry
+        // with that key would answer "still starting" forever.
+        while let Some(front) = self.pending.front() {
+            if now.saturating_duration_since(front.since) > self.ttl {
+                self.pending.pop_front();
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Hold `key` for an in-flight create. Call after `check` answered
+    /// `Miss`: a completed receipt for this key would already have
+    /// answered `Hit` or `Conflict` there.
+    pub fn reserve(
+        &mut self,
+        owner: &str,
+        key: &str,
+        fingerprint: &str,
+        now: Instant,
+    ) -> ReserveOutcome {
+        let fingerprint = fingerprint_digest(fingerprint);
+        self.evict(now);
+        if self
+            .entries
+            .iter()
+            .any(|entry| entry.owner == owner && entry.key == key)
+        {
+            // Raced a `remember` on another thread: the receipt is the
+            // answer now, and the reservation is moot.
+            return ReserveOutcome::Conflict;
+        }
+        match self
+            .pending
+            .iter()
+            .find(|pending| pending.owner == owner && pending.key == key)
+        {
+            Some(pending) if pending.fingerprint == fingerprint => ReserveOutcome::InFlight,
+            Some(_) => ReserveOutcome::Conflict,
+            None => {
+                if self.pending.len() >= self.cap {
+                    self.pending.pop_front();
+                }
+                self.pending.push_back(Pending {
+                    owner: owner.to_string(),
+                    key: key.to_string(),
+                    fingerprint,
+                    since: now,
+                });
+                ReserveOutcome::Reserved
+            }
+        }
+    }
+
+    /// Give back a reservation the create did not complete: a failed create
+    /// must not hold its key, or the retry that should run again would
+    /// answer "still starting" instead.
+    pub fn release(&mut self, owner: &str, key: &str) {
+        self.pending
+            .retain(|pending| !(pending.owner == owner && pending.key == key));
     }
 
     /// Drop the oldest replies until the retained frames fit the byte budget
@@ -248,6 +346,92 @@ mod tests {
         assert_eq!(
             store.check("app-1", "k", "a", later),
             IdempotencyOutcome::Miss
+        );
+    }
+
+    /// P2-1: the first create holds its key while the provider starts; a
+    /// retry with the same payload is told the first is still running
+    /// instead of starting a second session.
+    #[test]
+    fn a_reserved_key_answers_in_flight_for_the_same_payload() {
+        let mut store = IdempotencyStore::default();
+        let now = Instant::now();
+        assert_eq!(
+            store.check("app-1", "k", "create:terminal", now),
+            IdempotencyOutcome::Miss
+        );
+        assert_eq!(
+            store.reserve("app-1", "k", "create:terminal", now),
+            ReserveOutcome::Reserved
+        );
+        assert_eq!(
+            store.reserve("app-1", "k", "create:terminal", now),
+            ReserveOutcome::InFlight
+        );
+        assert_eq!(
+            store.reserve("app-1", "k", "create:other", now),
+            ReserveOutcome::Conflict
+        );
+    }
+
+    /// P2-1: completing the create replaces the reservation with the
+    /// receipt, so the retry gets the first session back.
+    #[test]
+    fn remember_replaces_the_reservation_with_the_receipt() {
+        let mut store = IdempotencyStore::default();
+        let now = Instant::now();
+        assert_eq!(
+            store.reserve("app-1", "k", "create:terminal", now),
+            ReserveOutcome::Reserved
+        );
+        store.remember(
+            "app-1".into(),
+            "k".into(),
+            "create:terminal".into(),
+            pong(7),
+            now,
+        );
+        match store.check("app-1", "k", "create:terminal", now) {
+            IdempotencyOutcome::Hit(DaemonMessage::Pong { id, .. }) => assert_eq!(id, 7),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// P2-1: a failed create gives its key back, so the retry that should
+    /// run again is not told "still starting".
+    #[test]
+    fn release_frees_the_key_for_a_retry() {
+        let mut store = IdempotencyStore::default();
+        let now = Instant::now();
+        assert_eq!(
+            store.reserve("app-1", "k", "create:terminal", now),
+            ReserveOutcome::Reserved
+        );
+        store.release("app-1", "k");
+        assert_eq!(
+            store.reserve("app-1", "k", "create:terminal", now),
+            ReserveOutcome::Reserved
+        );
+    }
+
+    /// P2-1: a reservation outlives no create — a thread that died
+    /// mid-flight must not hold its key past the TTL.
+    #[test]
+    fn a_reservation_expires_with_the_ttl() {
+        let mut store = IdempotencyStore {
+            ttl: Duration::from_secs(1),
+            ..IdempotencyStore::default()
+        };
+        let now = Instant::now();
+        assert_eq!(
+            store.reserve("app-1", "k", "create:terminal", now),
+            ReserveOutcome::Reserved
+        );
+        let later = now + Duration::from_secs(2);
+        assert_eq!(
+            store.reserve("app-1", "k", "create:terminal", later),
+            ReserveOutcome::Reserved,
+            "an expired reservation is gone"
         );
     }
 
