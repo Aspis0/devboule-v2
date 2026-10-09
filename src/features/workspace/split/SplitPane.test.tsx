@@ -276,6 +276,7 @@ describe("a workspace with a split", () => {
     const base = ruleBody(".workspace-split-merge");
     expect(base).not.toMatch(/opacity:\s*0/);
     expect(base).not.toMatch(/transition:[^;]*opacity/);
+    expect(base).not.toMatch(/display:\s*none|visibility:\s*hidden/);
   });
 
   it("keeps the merge control at least 24 px tall and named for a screen reader", () => {
