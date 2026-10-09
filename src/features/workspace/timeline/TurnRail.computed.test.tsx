@@ -43,7 +43,7 @@ describe("turn rail computed styles", () => {
     conversation.remove();
   });
 
-  it("insets the permission card and the composer with the rail and leaves the queue track on the composer card", () => {
+  it("insets the permission card with the rail and leaves the field and the track alone", () => {
     railCss.inject([
       ".workspace-conversation",
       ".workspace-conversation.has-turn-rail > .permission-card",

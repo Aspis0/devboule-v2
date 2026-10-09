@@ -493,31 +493,28 @@
   font-size: var(--type-meta);
 }
 
-/* The one lane the transcript, the queued follow-ups and the composer
-   share: a single width rule, so their edges cannot diverge. The lane
-   fills the pane up to the reading cap and carries its own 20 px side
-   padding (border-box), so rows and controls inset alike and the three
-   boxes stay on one axis at every pane width. */
+/* The one lane the transcript and the composer share: a single width rule, so
+   their edges cannot diverge. The lane fills the pane up to the reading cap,
+   and each box pads itself inside it. */
 .workspace-conversation,
 .workspace-composer {
-  --lane-inset: 20px;
   width: 100%;
   max-width: 1060px;
   margin-left: auto;
   margin-right: auto;
-  padding-left: var(--lane-inset);
-  padding-right: var(--lane-inset);
   box-sizing: border-box;
 }
 
 .workspace-conversation {
+  --lane-inset: 20px;
   display: flex;
   flex: 1;
   min-height: 0;
   flex-direction: column;
   gap: var(--space-8);
-  /* The lane's side inset is restated here because this block comes after
-     the shared lane rule and would otherwise reset it. */
+  /* The transcript is where the lane's 20 px side inset lives: rows and the
+     cards inside them inset alike. The composer's field pads itself inside
+     the lane instead. */
   padding: var(--space-4) var(--lane-inset) 0;
   overflow-y: auto;
   overflow-anchor: none;
@@ -1382,8 +1379,8 @@
   opacity: 1;
 }
 
-/* Control bar at the field's foot: pickers on the left, send/stop on the
-   right, with room before the actions for a context ring. */
+/* Control bar at the field's foot. The textarea's flex-grow takes the spare
+   height first, so the auto margin only bites once the textarea is capped. */
 .workspace-composer-bar {
   display: flex;
   align-items: center;

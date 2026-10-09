@@ -242,6 +242,15 @@ describe("the new token blocks", () => {
     expect(sheet.dark.get("--modal-dim")).toBe("rgba(0, 0, 0, 0.5)");
   });
 
+  it("gives the composer field its exact fill and edge per theme", () => {
+    // The field is the one surface whose dark fill is a translucent lift over
+    // whatever holds it, so the pair is pinned rather than merely present.
+    expect(sheet.light.get("--composer-fill")).toBe("#ffffff");
+    expect(sheet.dark.get("--composer-fill")).toBe("rgba(255, 255, 255, 0.045)");
+    expect(sheet.light.get("--composer-line")).toBe("rgba(0, 0, 0, 0.16)");
+    expect(sheet.dark.get("--composer-line")).toBe("rgba(255, 255, 255, 0.18)");
+  });
+
   it("carry the one motion: the working pulse, static under reduced motion", () => {
     const css = readFileSync(CSS_PATH, "utf8");
     expect(css).toContain(".dot-pulse");

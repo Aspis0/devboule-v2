@@ -9,6 +9,10 @@ export interface DirectRingGround {
   file: string;
   match: string;
   ground: string;
+  /** The opaque surface a translucent `ground` is drawn on: the walk
+   * composites the two before reading the ratio. Omit when the ground is
+   * opaque. */
+  over?: string;
 }
 
 const card = "--panel-card";
@@ -118,17 +122,20 @@ export const DIRECT_RING_GROUNDS: readonly DirectRingGround[] = [
   {
     file: "src/features/workspace/Workspace.css",
     match: ".workspace-composer .workspace-send-action:focus-visible",
-    ground: composer,
+    ground: "--composer-fill",
+    over: centre,
   },
   {
     file: "src/features/workspace/Workspace.css",
     match: ".workspace-composer-preview-remove:focus-visible",
-    ground: composer,
+    ground: "--composer-fill",
+    over: centre,
   },
   {
     file: "src/features/workspace/Workspace.css",
     match: ".workspace-composer-file-remove:focus-visible",
-    ground: composer,
+    ground: "--composer-fill",
+    over: centre,
   },
   {
     file: "src/features/workspace/Workspace.css",

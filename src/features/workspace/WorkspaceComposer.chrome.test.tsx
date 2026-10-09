@@ -90,15 +90,19 @@ describe("the composer's box", () => {
 
   it("has no rule on the wrap's top edge, and the field takes the ring on focus", () => {
     expect(workspaceCss.rulesFor(".workspace-composer-wrap")).not.toContain("border-top");
+    // The base wrap padding is the figure the compact override steps down
+    // from; the side 24px is also the field's and the track's only inset.
+    expect(workspaceCss.rulesFor(".workspace-composer-wrap")).toContain("padding: 8px 24px 14px;");
     expect(workspaceCss.rulesFor(".workspace-composer:focus-within")).toContain(
       `border-color: ${workspaceCss.token("--accent")}`,
     );
     expect(workspaceCss.rulesFor(".workspace-composer:focus-within")).not.toContain("box-shadow");
   });
 
-  it("draws no box round the textarea on focus; the wrap's top rule is the focus cue", () => {
+  it("draws no box round the textarea on focus; the field's border is the cue", () => {
     // A textarea matches :focus-visible on a mouse click too, so a ring there
-    // boxed the composer every time the person clicked in to type.
+    // boxed the composer every time the person clicked in to type: the cue is
+    // the field's own border, which .workspace-composer:focus-within takes.
     expect(workspaceCss.rulesFor(".workspace-composer textarea:focus-visible")).toBe("");
   });
 

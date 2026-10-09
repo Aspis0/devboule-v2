@@ -7,8 +7,8 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { contrastRatio } from "./contrast";
-import { DIRECT_RING_GROUNDS } from "./focusRingGrounds";
-import { hex, label, RULES, THEMES, type SheetRule } from "./sheetRules";
+import { DIRECT_RING_GROUNDS, type DirectRingGround } from "./focusRingGrounds";
+import { hex, label, RULES, THEMES, tokens, type SheetRule, type Theme } from "./sheetRules";
 
 const DARK_IN_BOTH_THEMES = new Set(["--code-bg", "--code-control"]);
 const RING_FLOOR = 3;
@@ -24,6 +24,30 @@ function readsAccentDirectly(rule: SheetRule): boolean {
 }
 
 const directRules = RULES.filter(readsAccentDirectly);
+
+/** The colour a registered ground paints: its token value when that is a hex,
+ * else the token composited over the opaque surface `over` names (the dark
+ * composer field is a translucent lift, and a ring on it reads against what
+ * the lift makes, not against the sheet's rgba). */
+function groundHex(entry: DirectRingGround, theme: Theme): string {
+  if (entry.over === undefined) return hex(entry.ground, theme);
+  const channels = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)$/.exec(
+    (tokens[theme].get(entry.ground) ?? "").trim(),
+  );
+  if (channels === null) return hex(entry.ground, theme);
+  const base = hex(entry.over, theme);
+  const alpha = channels[4] === undefined ? 1 : Number(channels[4]);
+  const blend = (channel: string, offset: number): string =>
+    Math.round(alpha * Number(channel) + (1 - alpha) * parseInt(base.slice(offset, offset + 2), 16))
+      .toString(16)
+      .padStart(2, "0");
+  return `#${blend(channels[1]!, 1)}${blend(channels[2]!, 3)}${blend(channels[3]!, 5)}`;
+}
+
+/** How a failure names a ground: the composite is named with its base. */
+function groundLabel(entry: DirectRingGround): string {
+  return entry.over === undefined ? entry.ground : `${entry.ground} over ${entry.over}`;
+}
 
 function entriesFor(rule: SheetRule) {
   const first = rule.selector.split(",")[0]!.trim();
@@ -48,10 +72,10 @@ describe("focus rings that read the accent directly", () => {
         continue;
       }
       for (const theme of THEMES) {
-        const ratio = contrastRatio(hex("--accent", theme), hex(entry.ground, theme));
+        const ratio = contrastRatio(hex("--accent", theme), groundHex(entry, theme));
         if (ratio < RING_FLOOR) {
           failures.push(
-            `${entry.file}: ${entry.match} (${theme}) --accent on ${entry.ground} is ${ratio.toFixed(2)}`,
+            `${entry.file}: ${entry.match} (${theme}) --accent on ${groundLabel(entry)} is ${ratio.toFixed(2)}`,
           );
         }
       }
