@@ -964,16 +964,16 @@ fn check_user_owner_with(
             // The pairing human's sessions: the human's own, including ones
             // this device created for them (owned by the human since P1-2)
             // and ones they started locally. Observing keeps the old
-            // inclusive match; operating additionally requires the owner not
-            // be the connection's own peer identity (`peer_<device>` is
-            // synthetic, never the human — conflating them would let origin
-            // checks pass by name comparison).
-            let peer_identity = format!("peer_{device_id}");
-            let paired_match = paired_by_user
-                .as_deref()
-                .is_some_and(|paired| entry.owner().user == paired);
-            let pairing_human_session =
-                paired_match && (observing || entry.owner().user != peer_identity);
+            // inclusive match; operating requires the pairing-human scope
+            // (`peer_<device>` owners keep the origin rule even when the
+            // recorded pairing user spells the same).
+            let pairing_human_session = if observing {
+                paired_by_user
+                    .as_deref()
+                    .is_some_and(|paired| entry.owner().user == paired)
+            } else {
+                crate::peer_policy::paired_human_scope(conn_peer, entry.owner().user.as_str())
+            };
             if (own_origin && entry.owner().user == owner.user) || pairing_human_session {
                 Ok(())
             } else {

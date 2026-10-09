@@ -98,19 +98,26 @@ pub(super) fn capability_not_supported(id: Option<u64>, capability: &str) -> Dae
 /// of them need (H4, H6).
 ///
 /// 1. A frame from a paired device that *carries* an attachment may not carry
-///    one at all. It is refused here — before `session_send` builds the
-///    idempotency fingerprint, which hashes every attachment by base64-decoding
-///    it, and before anything looks at a session or a store. Refusing after the
-///    fingerprint meant a large base64 field still cost decoder time and memory
-///    on a request that could never succeed. A refusal is also not
-///    idempotent-cached: nothing is remembered for it, so no fingerprint is
-///    computed for it either. The rule is about what the frame carries, not
-///    about the frame's name: `SessionSend` carries attachments only when it
-///    names some (`attachments` may be empty), while a `SessionDeposit` carries
-///    exactly one by construction (`attachment` is a `PromptAttachment`, never
-///    an `Option`). One predicate, so both forms are refused with the same
-///    sentence — `peer_policy::PEER_ATTACHMENTS_UNSUPPORTED` — and the refusal
-///    reads identically whichever frame it arrives on.
+///    one at all — unless it is the pairing human moving their own bytes
+///    into their own session (P1-3/P2-6: human scope). A human send travels
+///    like a local one: the same size/EXIF/limit validation at the handler
+///    and the same owner budget at the store. Anything else is refused here —
+///    before `session_send` builds the idempotency fingerprint, which hashes
+///    every attachment by base64-decoding it, and before anything looks at a
+///    session or a store. Refusing after the fingerprint meant a large base64
+///    field still cost decoder time and memory on a request that could never
+///    succeed. A refusal is also not idempotent-cached: nothing is remembered
+///    for it, so no fingerprint is computed for it either. The rule is about
+///    what the frame carries, not about the frame's name: `SessionSend`
+///    carries attachments only when it names some (`attachments` may be
+///    empty), while a `SessionDeposit` carries exactly one by construction
+///    (`attachment` is a `PromptAttachment`, never an `Option`). One
+///    predicate, so both forms are refused with the same sentence —
+///    `peer_policy::PEER_ATTACHMENTS_UNSUPPORTED` — and the refusal reads
+///    identically whichever frame it arrives on. Staging new bytes
+///    (`SessionDeposit`, the upload frames, the delete) stays refused for
+///    every peer: no remote UI stages them, and the deposit counter that
+///    would account them is still the recorded TODO.
 /// 2. A request that names a session has its scope decided before the mode
 ///    lookup, so the policy gate can never answer "that session exists, and it
 ///    runs this provider" to a peer that may not reach it. An agent message
@@ -149,14 +156,39 @@ pub(super) fn peer_refusal_before_mode(
         _ => false,
     };
     if carries_attachment && !crate::session::session_origin_for(conn_peer).is_local() {
-        let error = WireError::new(
-            ErrorCode::InvalidRequest,
-            crate::peer_policy::PEER_ATTACHMENTS_UNSUPPORTED,
+        // Human scope: the pairing human's own send — inline images and
+        // references alike — travels like a local one. Machine-peer scope
+        // only (client devices keep the refusal); the session lookup below
+        // still runs, so an unreachable target answers the scope denial,
+        // never an existence oracle, exactly as without attachments.
+        let machine_peer = matches!(
+            conn_peer,
+            Some(ConnPeer::Remote {
+                scope: crate::peer_policy::PeerScope::PeerDevice,
+                ..
+            })
         );
-        return Some(DaemonMessage::Error(match request.request_id() {
-            Some(id) => error.with_id(id),
-            None => error,
-        }));
+        let human = machine_peer
+            && match request {
+                ClientMessage::SessionSend { session_id, .. }
+                | ClientMessage::SessionQueueAdd { session_id, .. } => state
+                    .sessions
+                    .session_owner_user(session_id)
+                    .is_some_and(|owner| {
+                        crate::peer_policy::paired_human_scope(conn_peer, owner.as_str())
+                    }),
+                _ => false,
+            };
+        if !human {
+            let error = WireError::new(
+                ErrorCode::InvalidRequest,
+                crate::peer_policy::PEER_ATTACHMENTS_UNSUPPORTED,
+            );
+            return Some(DaemonMessage::Error(match request.request_id() {
+                Some(id) => error.with_id(id),
+                None => error,
+            }));
+        }
     }
     let scope = match request {
         // Attaching is reading: a machine peer reaches the pairing user's
@@ -228,17 +260,45 @@ pub(super) fn peer_mode_refusal_for_conn(
     request: &ClientMessage,
     conn_peer: &Option<ConnPeer>,
 ) -> Option<&'static str> {
+    // Human scope (P1-3): the pairing human choosing a mode for their own
+    // session — at create or by switch — is the human acting, like a local
+    // mode choice. Session frames key on the machine-peer scope (this
+    // slice's topology: the human's other PC); client-scoped devices keep
+    // every peer rule, including R3's ACP vetting. The scope gate already
+    // ordered refusals before this lookup, so an unreachable target never
+    // reaches the comparison below. Agent/tool commands that run unattended
+    // stay carded at the broker, which vets the run, not the frame.
+    let human_session = |session_id: &str| {
+        matches!(
+            conn_peer,
+            Some(ConnPeer::Remote {
+                scope: crate::peer_policy::PeerScope::PeerDevice,
+                ..
+            })
+        ) && state
+            .sessions
+            .session_owner_user(session_id)
+            .is_some_and(|owner| crate::peer_policy::paired_human_scope(conn_peer, owner.as_str()))
+    };
+    // A create has no session yet: human means the pairing is this user's
+    // own — exactly when the create will be human-owned (P1-2).
+    let human_create = match conn_peer {
+        Some(ConnPeer::Remote {
+            paired_by_user: Some(paired),
+            ..
+        }) => state.local_user_sid().as_deref() == Some(paired.as_str()),
+        _ => false,
+    };
     match request {
         // A create names its own kind and mode in the frame, and ACP mode ids
-        // are the agent's own: `peer_policy::mode_refusal` vets the pair.
+        // are the agent's own: `peer_policy::mode_refusal` vets the pair —
+        // unless the pairing human names it for their own session.
         ClientMessage::SessionCreate {
             kind,
             mode: Some(mode),
             ..
-        } => crate::peer_policy::mode_refusal(kind.clone(), mode),
-        // A create that names no mode has nothing to vet: one variant, two
-        // arms, because `Some(mode)` is a mode question and `None` is not.
-        ClientMessage::SessionCreate { mode: None, .. } => None,
+        } if !human_create => crate::peer_policy::mode_refusal(kind.clone(), mode),
+        ClientMessage::SessionCreate { .. } => None,
         // The profile frames are not session frames at all: they name no mode,
         // no session and no create, so there is nothing here to vet. Their
         // refusal for a peer is `peer_allows`'s, and their validation is the
@@ -253,15 +313,17 @@ pub(super) fn peer_mode_refusal_for_conn(
         // what it reads is discovery plus the catalog, never a session.
         ClientMessage::ProviderVocabularyGet { .. } => None,
         // A set-mode asks to *switch* a session into a mode, so the session's
-        // kind decides whether this daemon lets a peer name that mode at all.
+        // kind decides whether this daemon lets a peer name that mode at all —
+        // unless the pairing human switches their own session.
         ClientMessage::SessionSetMode {
             session_id,
             mode_id,
             ..
-        } => state
+        } if !human_session(session_id) => state
             .sessions
             .session_mode_guard(session_id)
             .and_then(|(kind, _)| crate::peer_policy::mode_refusal(kind, mode_id)),
+        ClientMessage::SessionSetMode { .. } => None,
         // A send puts a prompt into a session, so the mode that session is in
         // *now* is what decides.
         ClientMessage::SessionSend { session_id, .. }
@@ -274,9 +336,17 @@ pub(super) fn peer_mode_refusal_for_conn(
         | ClientMessage::SessionQueueEdit { session_id, .. }
         | ClientMessage::SessionQueueRemove { session_id, .. }
         | ClientMessage::SessionQueueMove { session_id, .. }
-        | ClientMessage::SessionAttach { session_id, .. } => {
+        | ClientMessage::SessionAttach { session_id, .. }
+            if !human_session(session_id) =>
+        {
             prompt_into_session_refusal(state, session_id)
         }
+        ClientMessage::SessionSend { .. }
+        | ClientMessage::SessionQueueAdd { .. }
+        | ClientMessage::SessionQueueEdit { .. }
+        | ClientMessage::SessionQueueRemove { .. }
+        | ClientMessage::SessionQueueMove { .. }
+        | ClientMessage::SessionAttach { .. } => None,
         // The twin of `SessionInterrupt`: it takes a running turn away and
         // writes a new one, and interrupting is the act that gate does not
         // vet by mode.
@@ -288,7 +358,8 @@ pub(super) fn peer_mode_refusal_for_conn(
         ClientMessage::AgentMessageSend { to_session, .. }
             if state
                 .sessions
-                .agent_message_target_is_mode_visible(to_session, conn_peer) =>
+                .agent_message_target_is_mode_visible(to_session, conn_peer)
+                && !human_session(to_session) =>
         {
             prompt_into_session_refusal(state, to_session)
         }

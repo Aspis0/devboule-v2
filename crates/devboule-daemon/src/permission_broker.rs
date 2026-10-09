@@ -6,8 +6,8 @@ use std::io;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use devboule_protocol::{
-    NoticeSeverity, PermissionOption, PermissionOutcome, PermissionRequestKind, SessionEvent,
-    SessionOrigin, SessionOriginKind,
+    NoticeSeverity, PeerRole, PermissionOption, PermissionOutcome, PermissionRequestKind,
+    SessionEvent, SessionOrigin, SessionOriginKind,
 };
 
 use super::SessionRuntime;
@@ -888,6 +888,16 @@ impl PermissionBroker {
         tool_call_id: &str,
         runtime: &Arc<SessionRuntime>,
     ) -> Result<bool, PermissionResponseError> {
+        // A session a machine peer created never auto-answers: the human is
+        // on another machine, so every tool command pauses at this host's
+        // card even when the mode would auto-accept locally (owner rule).
+        // The origin role decides — not the owner, which may be the pairing
+        // human's while the creation crossed machines — and client-scoped
+        // (phone) origins keep their existing behavior.
+        let origin = runtime.origin();
+        if origin.kind == SessionOriginKind::Peer && origin.role == Some(PeerRole::Daemon) {
+            return Ok(false);
+        }
         if !matches!(runtime.mode_gate(), crate::provider_catalog::ModeGate::Auto) {
             return Ok(false);
         }
@@ -2547,6 +2557,49 @@ mod tests {
         let sent = sent.lock().expect("sent lock");
         assert_eq!(sent[0].0, 53);
         assert_eq!(sent[0].1["outcome"]["optionId"], "allow");
+    }
+
+    /// Owner rule: a session a machine peer created never auto-answers —
+    /// the human is on another machine, so every tool command pauses at
+    /// this host's card even in an auto-accepting mode. The origin role
+    /// decides: ownership may be the pairing human's while the creation
+    /// crossed machines. A client-scoped (phone) origin keeps its existing
+    /// behavior.
+    #[test]
+    fn machine_peer_sessions_never_auto_answer_while_client_scoped_ones_do() {
+        for (role, answers) in [(PeerRole::Daemon, false), (PeerRole::Client, true)] {
+            let (broker, sent) = test_broker();
+            let runtime = Arc::new(SessionRuntime::new());
+            runtime.set_agent_kind(SessionKind::Pi);
+            runtime.set_origin(SessionOrigin::peer("dev-far", role));
+            runtime.store_session_manifest(SessionEvent::SessionManifest {
+                provider_id: Some("pi".to_string()),
+                current_model_id: None,
+                models: Vec::new(),
+                modes: Some(devboule_protocol::SessionModeStateView {
+                    current_mode_id: "bypass".to_string(),
+                    available_modes: Vec::new(),
+                }),
+                current_model_provider_id: None,
+            });
+            broker
+                .register(53, permission("pi-bypass"), &runtime)
+                .expect("register");
+            assert_eq!(
+                broker.auto_answer("pi-bypass", &runtime).expect("answer"),
+                answers,
+                "origin role {role:?}"
+            );
+            assert_eq!(
+                broker.pending_len(),
+                if answers { 0 } else { 1 },
+                "a refused auto-answer leaves the card pending"
+            );
+            assert_eq!(
+                sent.lock().expect("sent lock").len(),
+                if answers { 1 } else { 0 }
+            );
+        }
     }
 
     #[test]

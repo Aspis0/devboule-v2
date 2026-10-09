@@ -1174,7 +1174,6 @@ impl ConnPeer {
             Self::Remote { device_id, .. } => Some(device_id),
         }
     }
-
     pub fn scope(&self) -> PeerScope {
         match self {
             Self::Remote { scope, .. } => *scope,
@@ -1196,6 +1195,29 @@ impl ConnPeer {
                 binding,
             },
         }
+    }
+}
+
+/// Whether this peer connection acts with the pairing human's scope over a
+/// session owned by `owner_user`: the device was paired by that human, and
+/// that human is not the connection's own synthetic peer identity.
+///
+/// The pairing binds the device to a human, so requests from the human's
+/// own other PC use the human scope (send, answer, close, resize, modes,
+/// attachments) instead of the origin-only peer scope. Agent-originated
+/// cross-machine commands never arrive here as human: they travel the
+/// permission-card path. The `peer_<device>` exclusion keeps the origin
+/// rule for sessions owned by peer identities — that prefix is synthetic
+/// (minted at accept), never a human SID — so origin checks cannot pass by
+/// name comparison.
+pub fn paired_human_scope(conn_peer: &Option<ConnPeer>, owner_user: &str) -> bool {
+    match conn_peer {
+        Some(ConnPeer::Remote {
+            device_id,
+            paired_by_user: Some(paired),
+            ..
+        }) => owner_user == paired.as_str() && owner_user != format!("peer_{device_id}"),
+        _ => false,
     }
 }
 

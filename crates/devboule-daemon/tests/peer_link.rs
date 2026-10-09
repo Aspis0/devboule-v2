@@ -2217,6 +2217,61 @@ fn a_host_creates_and_operates_sessions_on_its_peer_over_loopback() {
         "the answered turn runs to its end on B and A sees it"
     );
 
+    // ---- the host's own sessions accept human writes from A --------------
+    // B's human starts a terminal locally on B; A drives it over the link
+    // under the human scope (P1-3): attach, type, resize, close.
+    let b_own_terminal = request_skipping_pushes(
+        &b,
+        ClientMessage::SessionCreate {
+            id: b.pipe.id(),
+            workspace_id: Some(b_workspace.clone()),
+            kind: SessionKind::Terminal,
+            provider: None,
+            mode: None,
+            display_name: Some("B own shell".to_string()),
+            idempotency_key: None,
+            cols: Some(80),
+            rows: Some(24),
+        },
+        |frame| match frame {
+            DaemonMessage::Session { session, .. } => Some(session.clone()),
+            _ => None,
+        },
+    )
+    .expect("B's own terminal");
+    assert_eq!(
+        attach(&b_own_terminal.id, 13).as_deref(),
+        Some("ok"),
+        "A attaches to B's own terminal under the human scope"
+    );
+    send(&b_own_terminal.id, 13, "echo b-own\r").expect("the human send to B's terminal");
+    assert!(
+        relayed(
+            13,
+            &|envelope| matches!(&envelope.event, SessionEvent::Output { data, .. } if data.contains("b-own"))
+        )
+        .is_some(),
+        "B's own shell answers the human's typing"
+    );
+    let close_own = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostClose {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+            session_id: b_own_terminal.id.clone(),
+            idempotency_key: None,
+        },
+        |frame| match frame {
+            DaemonMessage::Ok { .. } => Some(()),
+            _ => None,
+        },
+    );
+    assert!(close_own.is_some(), "A closes B's own terminal");
+    assert!(
+        !inventory(&b).contains(&b_own_terminal.id),
+        "the close landed on B"
+    );
+
     // ---- drop the link: a create fails instead of duplicating ------------
     for (peer, other) in [(&a, &b_self.device_id), (&b, &a_self.device_id)] {
         let unwatch = request_skipping_pushes(

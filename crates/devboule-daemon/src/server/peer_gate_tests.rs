@@ -188,3 +188,101 @@ fn the_open_root_is_refused_to_a_peer_holding_every_capability() {
         other => panic!("expected a capability refusal, got {other:?}"),
     }
 }
+
+/// P1-3/P2-6: the pairing human's requests use the human scope. A send —
+/// with attachments or without — into the human's own session, a mode
+/// switch on it, and a create naming a mode for it skip the peer-only
+/// refusals; anything else keeps them.
+#[test]
+fn the_pairing_humans_writes_skip_the_peer_only_refusals() {
+    let state = ServerState::new("peer-gate-human-scope".into());
+    let target_owner = OwnerId::new("local-user", "local-process").expect("owner");
+    let runtime = crate::session::insert_test_live_agent_with_kind(
+        &state.sessions,
+        "s.human.target",
+        target_owner,
+        SessionKind::Claude,
+    );
+    runtime.store_session_manifest(devboule_protocol::SessionEvent::SessionManifest {
+        provider_id: Some("claude".to_string()),
+        current_model_id: None,
+        models: Vec::new(),
+        modes: Some(devboule_protocol::SessionModeStateView {
+            current_mode_id: "bypassPermissions".to_string(),
+            available_modes: Vec::new(),
+        }),
+        current_model_provider_id: None,
+    });
+    let owner = OwnerId::new("peer_dev-peer-1", "daemon").expect("peer owner");
+    // The human's own other PC: paired by the session's owner.
+    let human = remote_conn(&[CAP_VIEW, CAP_SEND]);
+    // Another pairing: the same frames stay under the peer rules.
+    let stranger = ConnHandle::with_peer_caps(
+        8,
+        None,
+        Some(ConnPeer::Remote {
+            device_id: "dev-peer-1".to_string(),
+            scope: PeerScope::PeerDevice,
+            paired_by_user: Some("other-user".to_string()),
+            binding: TransportBinding::tailnet("nstable", "node", "user@example.com"),
+        }),
+        [CAP_VIEW.to_string(), CAP_SEND.to_string()].to_vec(),
+        QuitIntent::default(),
+    );
+    let send = |attachments: Vec<devboule_protocol::PromptAttachment>| ClientMessage::SessionSend {
+        id: 1,
+        session_id: "s.human.target".to_string(),
+        subscription_id: 1,
+        text: "hello".to_string(),
+        attachments,
+        active_turn_behavior: None,
+        attachment_references: Vec::new(),
+        idempotency_key: None,
+    };
+    let image = devboule_protocol::PromptAttachment {
+        name: "shot.png".to_string(),
+        mime_type: "image/png".to_string(),
+        data: "aGk=".to_string(),
+    };
+    // Attachments: the human's send travels like a local one; a stranger's
+    // is refused before anything decodes it.
+    assert!(
+        peer_refusal_before_mode(&state, &owner, &send(vec![image.clone()]), &human.conn_peer)
+            .is_none(),
+        "the human's image send reaches the session layer"
+    );
+    let refused = peer_refusal_before_mode(&state, &owner, &send(vec![image]), &stranger.conn_peer)
+        .expect("a stranger's image send is refused");
+    match refused {
+        DaemonMessage::Error(error) => assert_eq!(
+            error.message,
+            crate::peer_policy::PEER_ATTACHMENTS_UNSUPPORTED,
+            "{error:?}"
+        ),
+        other => panic!("expected the attachment refusal, got {other:?}"),
+    }
+    // Modes: the human drives their own session's mode; a stranger is
+    // vetted like any paired device.
+    assert!(
+        peer_mode_refusal_for_conn(&state, &send(Vec::new()), &human.conn_peer).is_none(),
+        "the human sends into any mode of their own session"
+    );
+    assert_eq!(
+        peer_mode_refusal_for_conn(&state, &send(Vec::new()), &stranger.conn_peer),
+        Some(crate::peer_policy::PROMPT_SKIPPING_REFUSED),
+        "a stranger still meets the prompt-skipping refusal"
+    );
+    let set_mode = ClientMessage::SessionSetMode {
+        id: 2,
+        session_id: "s.human.target".to_string(),
+        mode_id: "bypassPermissions".to_string(),
+    };
+    assert!(
+        peer_mode_refusal_for_conn(&state, &set_mode, &human.conn_peer).is_none(),
+        "the human switches their own session's mode"
+    );
+    assert!(
+        peer_mode_refusal_for_conn(&state, &set_mode, &stranger.conn_peer).is_some(),
+        "a stranger may not switch into a prompt-skipping mode"
+    );
+}

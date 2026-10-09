@@ -4214,6 +4214,18 @@ impl SessionRegistry {
         }
     }
 
+    /// The stored owner user behind `session_id`, for the peer gate's human
+    /// scope: a request from the device paired by that human uses the human
+    /// scope instead of the origin-only peer scope. `None` when this daemon
+    /// does not know the session — and the gate then keeps the peer rules.
+    /// Unlike the mode guard this reads through the delivery window: the
+    /// owner was written at the create before the journal row, and the gate
+    /// consults it only after the scope check already ordered the refusal.
+    pub(crate) fn session_owner_user(&self, session_id: &str) -> Option<String> {
+        let map = self.inner.lock().ok()?;
+        map.get(session_id).map(|entry| entry.owner().user.clone())
+    }
+
     /// What the peer gate needs to refuse a session that runs without asking
     /// the user's permission (§8b A4/A5): the session's provider kind and the
     /// mode it is in now, when it has advertised one. `None` for a session
