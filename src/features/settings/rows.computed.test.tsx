@@ -57,4 +57,28 @@ describe("shared row pattern (live stylesheets)", () => {
     document.body.appendChild(region);
     expect(getComputedStyle(region).paddingBottom).toBe("0px");
   });
+  it("lets a long value shrink and cut in one line instead of widening the row", () => {
+    proof.inject([
+      ".settings-row",
+      ".settings-row-text",
+      ".settings-row-control",
+      ".settings-row-value",
+    ]);
+    const row = document.createElement("div");
+    row.className = "settings-row";
+    const text = document.createElement("div");
+    text.className = "settings-row-text";
+    const control = document.createElement("div");
+    control.className = "settings-row-control";
+    const value = document.createElement("span");
+    value.className = "settings-row-value";
+    value.textContent = String.raw`C:\Users\someone\AppData\Local\Devboule\daemon\state\sessions`;
+    control.appendChild(value);
+    row.append(text, control);
+    document.body.appendChild(row);
+    expect(getComputedStyle(control).minWidth).toMatch(/^0(px)?$/);
+    expect(getComputedStyle(value).overflow).toBe("hidden");
+    expect(getComputedStyle(value).textOverflow).toBe("ellipsis");
+    expect(getComputedStyle(value).whiteSpace).toBe("nowrap");
+  });
 });

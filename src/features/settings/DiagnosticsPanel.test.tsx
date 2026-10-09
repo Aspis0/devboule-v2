@@ -293,6 +293,23 @@ describe("diagnostics panel", () => {
     expect(container.textContent).toContain("healthy diagnostics child");
   });
 
+  it("keeps a long real-looking value on one row, with the full text in its title", async () => {
+    const longPath = String.raw`C:\Users\someone\AppData\Local\Devboule\daemon\state\sessions\2026-10-09\transcripts\workspace-7f3c2a9e\agent-claude-sonnet-session-0c8d4f1b\journal\segment-000042.jsonl`;
+    const report = {
+      ...sampleReport,
+      environment: { ...sampleReport.environment, runtimeDir: longPath },
+    } as DaemonDiagnostics;
+    vi.mocked(daemonDiagnostics).mockResolvedValue(report);
+    root = createRoot(container);
+    await act(async () => renderPanel());
+    await act(async () => undefined);
+
+    const value = [...container.querySelectorAll<HTMLElement>(".settings-row-value")].find(
+      (candidate) => candidate.title === longPath,
+    );
+    expect(value?.textContent).toBe(longPath);
+  });
+
   it("groups each report section into a headed house card", async () => {
     vi.mocked(daemonDiagnostics).mockResolvedValue(sampleReport);
     root = createRoot(container);

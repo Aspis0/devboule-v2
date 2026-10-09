@@ -29,7 +29,9 @@
 }
 
 .settings-row-control {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 60%;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -137,6 +139,16 @@
     border-color: var(--ink);
     animation: none;
   }
+}
+
+/* A long value shrinks and cuts with its full text in the title. */
+.settings-row-value {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Over-limit figures: the one warning tone a row control carries. */

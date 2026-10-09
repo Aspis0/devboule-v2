@@ -3,7 +3,7 @@ import { Component, type ReactNode, useEffect, useRef, useState } from "react";
 import { daemonDiagnostics } from "../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import { ErrorText } from "../../components/ErrorText";
-import { SettingsAdvanced, SettingsRow, SettingsSection } from "./rows";
+import { SettingsAdvanced, SettingsRow, SettingsSection, SettingsValue } from "./rows";
 import type { DaemonDiagnostics } from "../../types/ipc";
 import "./diagnostics.css";
 
@@ -198,7 +198,7 @@ function RecordSection({ title, record }: RecordSectionProps) {
           <SettingsRow
             key={key}
             title={humanizeKey(key)}
-            control={<span>{formatValue(value)}</span>}
+            control={<SettingsValue text={formatValue(value)} />}
           />
         ))
       )}
@@ -214,9 +214,11 @@ function ProviderRow({ row, index }: { row: unknown; index: number }) {
     <SettingsRow
       title={name === undefined ? `Provider ${index + 1}` : formatValue(name[1])}
       control={
-        <span>
-          {fields.map(([key, value]) => `${humanizeKey(key)} ${formatValue(value)}`).join(" · ")}
-        </span>
+        <SettingsValue
+          text={fields
+            .map(([key, value]) => `${humanizeKey(key)} ${formatValue(value)}`)
+            .join(" · ")}
+        />
       }
     />
   );

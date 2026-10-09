@@ -63,6 +63,15 @@ export function SettingsSection({
   );
 }
 
+/** A value on the right of a row: one line, cut with the full text in its title. */
+export function SettingsValue({ text }: { text: string }) {
+  return (
+    <span className="settings-row-value" title={text}>
+      {text}
+    </span>
+  );
+}
+
 /** The one collapsed place for detail a row does not need on screen. */
 export function SettingsAdvanced({ children }: { children: ReactNode }) {
   return (
