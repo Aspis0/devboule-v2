@@ -127,7 +127,8 @@
   border-radius: var(--radius-8);
   background: var(--panel-card);
   box-shadow: var(--shadow-pop);
-  transform: translateY(-50%);
+  /* TurnStop sets --card-shift when the card would leave the transcript. */
+  transform: translateY(calc(-50% + var(--card-shift, 0px)));
   /* A card inside a button inherits the UA's centered button text; the
      spec names the title and the time, not their alignment, and the
      transcript's small text is left-aligned. */
