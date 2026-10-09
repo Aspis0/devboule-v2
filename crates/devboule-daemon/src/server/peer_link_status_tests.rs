@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use devboule_protocol::RemoteHostState;
+use devboule_protocol::{RemoteHostState, WorkspaceIsolation};
 
 use super::harness::Harness;
 
@@ -74,7 +74,9 @@ fn a_peer_is_online_over_either_direction() {
         "a link that published a failure is not online"
     );
 
-    let close = harness.state.register_remote_conn(77, "b");
+    let close = harness
+        .state
+        .register_remote_conn(remote_conn_handle(77, "b"));
     assert!(
         harness.state.is_peer_online("b"),
         "an inbound connection alone is a live connection"
@@ -115,9 +117,7 @@ fn a_pushed_workspace_revision_reaches_the_watcher() {
 
     // A push naming another device is dropped: the link's own device id is the
     // only identity this side trusts.
-    harness
-        .responder
-        .push_workspace_changed_from("not-b", 99);
+    harness.responder.push_workspace_changed_from("not-b", 99);
     let quiet = Instant::now() + Duration::from_millis(400);
     while Instant::now() < quiet {
         assert!(
@@ -129,4 +129,140 @@ fn a_pushed_workspace_revision_reaches_the_watcher() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// One connection that looks like an accepted peer to the state: its peer
+/// identity is what the registry records and the push addresses.
+fn remote_conn_handle(id: u64, device_id: &str) -> std::sync::Arc<crate::session::ConnHandle> {
+    crate::session::ConnHandle::with_conn_peer(
+        id,
+        None,
+        Some(crate::peer_policy::ConnPeer::Remote {
+            device_id: device_id.to_string(),
+            scope: crate::peer_policy::PeerScope::PeerDevice,
+            paired_by_user: None,
+            binding: crate::peer_policy::TransportBinding::tailnet("nstable", "node", "user@x"),
+        }),
+    )
+}
+
+/// A workspace change is pushed to the peer connections that negotiated
+/// `hosted_workspaces`, and to no others: a connection that cannot decode the
+/// frame is never sent one.
+#[test]
+fn a_workspace_change_is_pushed_only_to_negotiating_peers() {
+    let harness = Harness::start("peer-link-workspace-push");
+    let negotiating = remote_conn_handle(1, "b");
+    negotiating.set_hosted_workspaces_negotiated(true);
+    harness.state.register_remote_conn(Arc::clone(&negotiating));
+    let plain = remote_conn_handle(2, "c");
+    harness.state.register_remote_conn(Arc::clone(&plain));
+
+    let revision = harness.state.note_workspace_change();
+    assert_eq!(
+        revision, 2,
+        "the first change moves the revision off its seed"
+    );
+
+    let pushed: Vec<(String, u64)> = negotiating
+        .outbound
+        .pull_replies()
+        .into_iter()
+        .filter_map(|reply| match reply {
+            devboule_protocol::DaemonMessage::HostWorkspaceChanged {
+                device_id,
+                revision,
+            } => Some((device_id, revision)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(pushed.len(), 1, "one revision, one push");
+    assert_eq!(pushed[0].1, revision);
+    assert_eq!(
+        pushed[0].0,
+        harness
+            .state
+            .device_identity()
+            .as_ref()
+            .expect("identity")
+            .device_id,
+        "the push names this daemon, the only host the connection is about"
+    );
+    assert!(
+        !plain.outbound.pull_replies().iter().any(|reply| matches!(
+            reply,
+            devboule_protocol::DaemonMessage::HostWorkspaceChanged { .. }
+        )),
+        "a connection that did not negotiate the name is never sent the frame"
+    );
+}
+
+/// The reconnect flag is one-shot: a worker redials once per request and a
+/// taken request is not replayed on the next loop.
+#[test]
+fn a_reconnect_request_is_taken_once() {
+    let link = super::HostLink::new("b".to_string(), Duration::from_secs(1));
+    assert!(!link.take_reconnect_request());
+    link.request_reconnect();
+    assert!(link.take_reconnect_request());
+    assert!(
+        !link.take_reconnect_request(),
+        "a taken request must not redial twice"
+    );
+}
+
+/// The first workspace flips this daemon into a host: every held link is asked
+/// to redial, so the hello it sends states the new presence and the far side
+/// re-resolves the scope from its own record.
+#[test]
+fn the_first_workspace_asks_links_to_redial() {
+    let harness = Harness::start("peer-link-presence-flip");
+    // The state's own link manager this time: the transition hook fans out to
+    // `state.peer_links`, which is where a production daemon keeps its links.
+    harness
+        .state
+        .peer_links
+        .watch(&harness.state, std::sync::Arc::clone(&harness.conn), "b")
+        .expect("the first watch is inside the link cap");
+    harness.wait_online(&harness.conn);
+    assert!(!harness.state.has_hosted_workspace());
+
+    let dir = crate::test_dirs::test_temp_dir("devboule presence flip");
+    let project_dir = dir.join("project");
+    std::fs::create_dir_all(&project_dir).expect("project dir");
+    let project = harness
+        .state
+        .sessions
+        .project_add(project_dir.to_str().expect("utf-8 path"))
+        .expect("project row");
+    harness
+        .state
+        .sessions
+        .workspace_create(&project.id, WorkspaceIsolation::Local, None)
+        .expect("workspace row");
+    assert!(harness.state.has_hosted_workspace());
+
+    // The caller captured the hosting state before the mutation; the hook sees
+    // the flip and asks the link to redial. The test responder served its one
+    // connection already, so the redial finds nothing and the link reports
+    // offline — which is the observable proof the transport was replaced.
+    harness.state.note_workspace_inventory(false);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if harness
+            .statuses()
+            .iter()
+            .any(|(state, _)| *state == RemoteHostState::Offline)
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the flipped link never redialed");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        harness.responder.handshakes.load(Ordering::SeqCst),
+        1,
+        "the redial found the responder's listener gone"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

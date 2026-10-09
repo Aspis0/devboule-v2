@@ -87,10 +87,16 @@ pub(super) fn dispatch_journal(
             Ok(projects) => DaemonMessage::Projects { id, projects },
             Err(error) => DaemonMessage::Error(error.with_id(id)),
         },
-        ClientMessage::ProjectAdd { id, path } => match state.sessions.project_add(&path) {
-            Ok(project) => DaemonMessage::Project { id, project },
-            Err(error) => DaemonMessage::Error(error.with_id(id)),
-        },
+        ClientMessage::ProjectAdd { id, path } => {
+            let was_host = state.has_hosted_workspace();
+            match state.sessions.project_add(&path) {
+                Ok(project) => {
+                    state.note_workspace_inventory(was_host);
+                    DaemonMessage::Project { id, project }
+                }
+                Err(error) => DaemonMessage::Error(error.with_id(id)),
+            }
+        }
         ClientMessage::WorkspacesList { id, project_id } => {
             match state.sessions.workspaces_list(&project_id) {
                 Ok(workspaces) => DaemonMessage::Workspaces { id, workspaces },
@@ -378,29 +384,47 @@ pub(super) fn dispatch_journal(
             project_id,
             isolation,
             branch,
-        } => match state
-            .sessions
-            .workspace_create(&project_id, isolation, branch)
-        {
-            Ok(workspace) => DaemonMessage::Workspace { id, workspace },
-            Err(error) => DaemonMessage::Error(error.with_id(id)),
-        },
+        } => {
+            let was_host = state.has_hosted_workspace();
+            match state
+                .sessions
+                .workspace_create(&project_id, isolation, branch)
+            {
+                Ok(workspace) => {
+                    state.note_workspace_inventory(was_host);
+                    DaemonMessage::Workspace { id, workspace }
+                }
+                Err(error) => DaemonMessage::Error(error.with_id(id)),
+            }
+        }
         ClientMessage::WorkspaceDelete {
             id,
             workspace_id,
             force,
-        } => match state.sessions.workspace_delete(&workspace_id, force) {
-            Ok(()) => DaemonMessage::Ok { id },
-            Err(error) => DaemonMessage::Error(error.with_id(id)),
-        },
+        } => {
+            let was_host = state.has_hosted_workspace();
+            match state.sessions.workspace_delete(&workspace_id, force) {
+                Ok(()) => {
+                    state.note_workspace_inventory(was_host);
+                    DaemonMessage::Ok { id }
+                }
+                Err(error) => DaemonMessage::Error(error.with_id(id)),
+            }
+        }
         ClientMessage::WorkspaceSetTitle {
             id,
             workspace_id,
             title,
-        } => match state.sessions.workspace_set_title(&workspace_id, &title) {
-            Ok(workspace) => DaemonMessage::Workspace { id, workspace },
-            Err(error) => DaemonMessage::Error(error.with_id(id)),
-        },
+        } => {
+            let was_host = state.has_hosted_workspace();
+            match state.sessions.workspace_set_title(&workspace_id, &title) {
+                Ok(workspace) => {
+                    state.note_workspace_inventory(was_host);
+                    DaemonMessage::Workspace { id, workspace }
+                }
+                Err(error) => DaemonMessage::Error(error.with_id(id)),
+            }
+        }
         other => DaemonMessage::Error(WireError::new(
             ErrorCode::InvalidRequest,
             format!("unexpected journal frame {other:?}"),

@@ -97,6 +97,15 @@ fn run(
         } else {
             empty_since = None;
         }
+        if link.take_reconnect_request() {
+            // This daemon's workspace presence changed: the transport is
+            // replaced so the next hello states it. No `offline` edge — the
+            // link is being redialed, not lost.
+            if session.is_some() {
+                link.bump_generation();
+            }
+            session = None;
+        }
         if session.is_none() {
             // No `connecting` here. The watch that started this worker already
             // published it, and a retry must not publish it again: alternating

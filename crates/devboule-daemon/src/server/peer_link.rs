@@ -202,6 +202,20 @@ impl PeerLinks {
         });
     }
 
+    /// Ask every held link to drop its transport and dial again. Called when
+    /// this daemon's own workspace-host presence changes: the hello it sends
+    /// states the new presence, and the far side re-resolves the scope from
+    /// the record it keeps.
+    pub(crate) fn request_reconnect_all(&self) {
+        let links: Vec<Arc<HostLink>> = {
+            let inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+            inner.links.values().cloned().collect()
+        };
+        for link in links {
+            link.request_reconnect();
+        }
+    }
+
     /// Give back one connection's lease. A host nobody watches any more keeps
     /// its link until the grace runs out, so the next watch reuses it.
     pub(crate) fn unwatch(&self, conn_id: u64, device_id: &str) {

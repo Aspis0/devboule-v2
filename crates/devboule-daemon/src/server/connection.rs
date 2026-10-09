@@ -268,9 +268,7 @@ pub(crate) fn handle_client(
     // A revocation must drop a live connection, so the connection registers
     // itself and polls the flag its own revoke sets.
     let close_requested = match &conn.conn_peer {
-        Some(ConnPeer::Remote { device_id, .. }) => {
-            Some(state.register_remote_conn(conn.id, device_id))
-        }
+        Some(ConnPeer::Remote { .. }) => Some(state.register_remote_conn(Arc::clone(&conn))),
         _ => None,
     };
     let loop_result = (|| -> Result<(), DaemonError> {

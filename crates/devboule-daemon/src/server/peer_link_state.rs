@@ -67,6 +67,9 @@ pub(crate) struct HostLink {
     /// The newest workspace revision this host pushed, if any. Reloads are
     /// the app's call, and this is the number its status push carries.
     remote_revision: Mutex<Option<u64>>,
+    /// Set when this daemon's own hosting state changed and the outbound
+    /// hello must be spoken again. One-shot: the worker takes it and redials.
+    reconnect_requested: AtomicBool,
     idle_grace: Duration,
 }
 
@@ -82,6 +85,7 @@ impl HostLink {
             inflight: AtomicBool::new(false),
             published: Mutex::new(None),
             remote_revision: Mutex::new(None),
+            reconnect_requested: AtomicBool::new(false),
             idle_grace,
         })
     }
@@ -97,6 +101,18 @@ impl HostLink {
         if held.is_none_or(|current| revision > current) {
             *held = Some(revision);
         }
+    }
+
+    /// Ask the worker to drop this transport and dial again, so the hello it
+    /// sends states a presence that just changed.
+    pub(crate) fn request_reconnect(&self) {
+        self.reconnect_requested.store(true, Ordering::SeqCst);
+    }
+
+    /// Take the pending reconnect request, if any. One shot by design: the
+    /// worker that takes it performs exactly one redial for it.
+    pub(crate) fn take_reconnect_request(&self) -> bool {
+        self.reconnect_requested.swap(false, Ordering::SeqCst)
     }
 
     /// The newest workspace revision pushed by this host, if one arrived.

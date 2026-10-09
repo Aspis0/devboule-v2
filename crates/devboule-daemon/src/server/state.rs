@@ -55,6 +55,15 @@ pub enum ClientKind {
     Peer,
 }
 
+/// One accepted inbound peer connection, kept for the revoke close flag and
+/// for the workspace-change push: the push goes to the peers that negotiated
+/// `hosted_workspaces`, on the connection they already hold.
+struct RemoteConn {
+    device_id: String,
+    close: Arc<AtomicBool>,
+    conn: Arc<ConnHandle>,
+}
+
 pub struct ServerState {
     pub(super) instance_id: String,
     pub(super) started: Instant,
@@ -194,8 +203,13 @@ pub struct ServerState {
     /// starts. Before that (and with no Tailscale) it says so, with a reason,
     /// rather than pretending the daemon is reachable.
     remote: Mutex<RemoteState>,
-    /// Live remote connections, so revocation can close them immediately.
-    remote_conns: Mutex<HashMap<u64, (String, Arc<AtomicBool>)>>,
+    /// Live remote connections, so revocation can close them immediately and
+    /// a workspace change can be pushed to the peers that negotiated it.
+    remote_conns: Mutex<HashMap<u64, RemoteConn>>,
+    /// The workspace inventory's revision. Bumped by every project/workspace
+    /// create, rename and delete; pushed to peer connections so a watcher can
+    /// reload its snapshots instead of polling forever.
+    workspace_revision: AtomicU64,
     /// The `peers` snapshot the accept path filters on, cached: a burst of
     /// connects would otherwise be a burst of journal RPCs on the writer
     /// thread. The cache is refreshed by every peer mutation and expires on
@@ -498,6 +512,7 @@ impl ServerState {
                 "the remote listener is not running".to_string(),
             )),
             remote_conns: Mutex::new(HashMap::new()),
+            workspace_revision: AtomicU64::new(1),
             peer_table: Mutex::new(PeerTableView::default()),
             peer_table_load: Mutex::new(()),
             peer_stop: Arc::new(AtomicBool::new(false)),
@@ -1713,13 +1728,27 @@ impl ServerState {
             .unwrap_or_default()
     }
 
-    /// Record a live remote connection so a revoke can close it.
-    pub(crate) fn register_remote_conn(&self, conn_id: u64, device_id: &str) -> Arc<AtomicBool> {
+    /// Record a live remote connection so a revoke can close it and a
+    /// workspace change can reach it.
+    pub(crate) fn register_remote_conn(&self, conn: Arc<ConnHandle>) -> Arc<AtomicBool> {
+        let device_id = conn
+            .conn_peer
+            .as_ref()
+            .and_then(crate::peer_policy::ConnPeer::device_id)
+            .unwrap_or_default()
+            .to_string();
         let close = Arc::new(AtomicBool::new(false));
         self.remote_conns
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .insert(conn_id, (device_id.to_string(), Arc::clone(&close)));
+            .insert(
+                conn.id,
+                RemoteConn {
+                    device_id,
+                    close: Arc::clone(&close),
+                    conn,
+                },
+            );
         close
     }
 
@@ -1744,8 +1773,8 @@ impl ServerState {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .values()
-            .filter(|(owner, _)| owner == device_id)
-            .map(|(_, close)| Arc::clone(close))
+            .filter(|entry| entry.device_id == device_id)
+            .map(|entry| Arc::clone(&entry.close))
             .collect();
         for close in &closes {
             close.store(true, Ordering::SeqCst);
@@ -1764,8 +1793,47 @@ impl ServerState {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .values()
-            .any(|(owner, _)| owner == device_id);
+            .any(|entry| entry.device_id == device_id);
         inbound || self.peer_links.is_online(device_id)
+    }
+
+    /// Bump the revision and push it to every live peer connection that
+    /// negotiated `hosted_workspaces`. A connection that did not negotiate the
+    /// name cannot decode the frame, so it is never sent one.
+    pub(crate) fn note_workspace_change(&self) -> u64 {
+        let revision = self.workspace_revision.fetch_add(1, Ordering::SeqCst) + 1;
+        let device_id = self
+            .device_identity()
+            .as_ref()
+            .map(|identity| identity.device_id.clone())
+            .unwrap_or_default();
+        let peers: Vec<Arc<ConnHandle>> = self
+            .remote_conns
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .values()
+            .filter(|entry| entry.conn.hosted_workspaces_negotiated())
+            .map(|entry| Arc::clone(&entry.conn))
+            .collect();
+        for conn in peers {
+            conn.outbound
+                .enqueue_reply(devboule_protocol::DaemonMessage::HostWorkspaceChanged {
+                    device_id: device_id.clone(),
+                    revision,
+                });
+        }
+        revision
+    }
+
+    /// Record one finished project/workspace mutation: bump the revision, and
+    /// when this daemon's hosting state flipped on its first or last
+    /// workspace, ask every outbound link to redial so each hello states the
+    /// new presence and the far side re-resolves the scope from its record.
+    pub(crate) fn note_workspace_inventory(&self, was_host: bool) {
+        if was_host != self.has_hosted_workspace() {
+            self.peer_links.request_reconnect_all();
+        }
+        self.note_workspace_change();
     }
 
     /// The addresses `Status.remote` and `SelfInfo` advertise.
