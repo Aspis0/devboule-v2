@@ -13,8 +13,10 @@
 //!   slot, the models axis answers `absent`, the features axis answers
 //!   `probing`, and the process starts on a worker. The frontend polls while
 //!   the features axis probes, so the pickers arrive without a reopen.
-//! - **One read per provider per run.** A failed read expires after a short
-//!   cooldown, so a later form open can retry; a success stands for the run.
+//! - **One read per provider per run, refreshed past ten minutes.** A
+//!   failed read expires after a short cooldown, so a later form open can
+//!   retry; a success stands until it is ten minutes old, then the next ask
+//!   re-probes behind the stale axes it keeps serving.
 //! - **The snapshot is the chip's own items.** The worker maps the catalog to
 //!   manifest models — the shape the composer chip draws — so the editor and
 //!   the chip cannot disagree about what pi offers.
@@ -49,6 +51,10 @@ pub(crate) enum PiModelsProbe {
 }
 
 const UNAVAILABLE_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+/// A snapshot older than this is served stale while a refresh runs: the
+/// editor's next open re-probes instead of offering a list that may predate
+/// an install or removal.
+const STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 /// Bounded per-provider pi answers. The snapshot has no TTL of its own: pi's
 /// catalog is read once per run (failures cool down and retry), while the
@@ -64,6 +70,9 @@ struct ProbeEntry {
     probe: PiModelsProbe,
     retry_after: Option<std::time::Instant>,
     generation: u64,
+    /// When an `Answered` entry landed. `None` while the read runs or
+    /// after it failed — only answers age.
+    answered_at: Option<std::time::Instant>,
 }
 
 impl PiModelsProbeCache {
@@ -82,9 +91,25 @@ impl PiModelsProbeCache {
             .map(|entry| entry.probe.clone())
     }
 
+    /// Whether the slot holds an answer older than [`STALE_AFTER`]: still
+    /// served, but the next ask re-probes behind it.
+    pub(crate) fn stale(&self, key: &PiModelsKey) -> bool {
+        self.answers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(key)
+            .is_some_and(|entry| {
+                matches!(entry.probe, PiModelsProbe::Answered(_))
+                    && entry
+                        .answered_at
+                        .is_some_and(|at| at.elapsed() > STALE_AFTER)
+            })
+    }
+
     /// Claim the slot and say whether this caller is the one that must run
-    /// the read. A slot already `Running` or `Answered` stays what it is; an
-    /// `Unavailable` one is re-claimable after its cooldown.
+    /// the read. A slot already `Running` or freshly `Answered` stays what
+    /// it is; a stale answer and an `Unavailable` past its cooldown are
+    /// re-claimable, so a later editor open retries.
     pub(crate) fn claim(&self, key: &PiModelsKey) -> Option<u64> {
         let mut answers = self
             .answers
@@ -96,7 +121,16 @@ impl PiModelsProbeCache {
                     .retry_after
                     .is_none_or(|at| at > std::time::Instant::now()) =>
             {
-                return None;
+                // A stale answer is re-claimable: the next ask re-probes
+                // behind the stale axes it keeps serving. Read inline —
+                // the guard is held, so `stale` must not lock again.
+                let stale = matches!(entry.probe, PiModelsProbe::Answered(_))
+                    && entry
+                        .answered_at
+                        .is_some_and(|at| at.elapsed() > STALE_AFTER);
+                if !stale {
+                    return None;
+                }
             }
             _ => {}
         }
@@ -109,6 +143,7 @@ impl PiModelsProbeCache {
                 probe: PiModelsProbe::Running,
                 retry_after: None,
                 generation,
+                answered_at: None,
             },
         );
         Some(generation)
@@ -129,12 +164,17 @@ impl PiModelsProbeCache {
             PiModelsProbe::Unavailable => Some(std::time::Instant::now() + UNAVAILABLE_RETRY_AFTER),
             _ => None,
         };
+        let answered_at = match probe {
+            PiModelsProbe::Answered(_) => Some(std::time::Instant::now()),
+            _ => None,
+        };
         answers.insert(
             key.clone(),
             ProbeEntry {
                 probe,
                 retry_after,
                 generation,
+                answered_at,
             },
         );
     }
@@ -153,8 +193,19 @@ impl PiModelsProbeCache {
                     probe: PiModelsProbe::Answered(models),
                     retry_after: None,
                     generation,
+                    answered_at: Some(std::time::Instant::now()),
                 },
             );
+        }
+    }
+
+    /// Age an answer for the stale-refresh tests.
+    #[cfg(test)]
+    pub(crate) fn age_for_test(&self, key: &PiModelsKey, by: std::time::Duration) {
+        if let Ok(mut answers) = self.answers.lock() {
+            if let Some(entry) = answers.get_mut(key) {
+                entry.answered_at = entry.answered_at.map(|at| at - by);
+            }
         }
     }
 }
@@ -252,6 +303,26 @@ mod tests {
         // A stale generation cannot overwrite the slot.
         cache.finish(&key(), first + 99, PiModelsProbe::Answered(vec![]));
         assert_eq!(cache.peek(&key()), Some(PiModelsProbe::Unavailable));
+    }
+
+    #[test]
+    fn stale_snapshot_is_reclaimable_for_a_refresh() {
+        let cache = PiModelsProbeCache::default();
+        let generation = cache.claim(&key()).expect("claim");
+        cache.finish(
+            &key(),
+            generation,
+            PiModelsProbe::Answered(vec![model("mimo", "opencode-go")]),
+        );
+        // Fresh: no second read for the run.
+        assert!(cache.claim(&key()).is_none());
+        assert!(!cache.stale(&key()));
+        // Older than ten minutes: the editor's next open re-probes while
+        // the stale axes keep serving.
+        cache.age_for_test(&key(), std::time::Duration::from_secs(11 * 60));
+        assert!(cache.stale(&key()));
+        assert!(cache.claim(&key()).is_some());
+        assert_eq!(cache.peek(&key()), Some(PiModelsProbe::Running));
     }
 
     #[test]

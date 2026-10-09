@@ -4261,16 +4261,11 @@ fn duplicate_ids_share_no_row_and_lookup_names_their_providers() {
             panic!("a bare duplicate id is ambiguous")
         }
     }
-    assert!(matches!(
-        catalog.lookup("ghost"),
-        super::PiLookup::Missing
-    ));
+    assert!(matches!(catalog.lookup("ghost"), super::PiLookup::Missing));
     // Image routing answers a row it can name and nothing for an
     // ambiguous id — never a guess at another provider's declaration.
     assert!(catalog.input_kinds("mimo-v2-6-flash").is_none());
-    assert!(catalog
-        .input_kinds("opencode-go/mimo-v2-6-flash")
-        .is_some());
+    assert!(catalog.input_kinds("opencode-go/mimo-v2-6-flash").is_some());
 }
 
 #[test]
@@ -4281,9 +4276,10 @@ fn each_duplicate_row_keeps_its_own_effort_list() {
     let catalog = duplicate_id_catalog();
     let levels_of = |key: &str| -> Option<Vec<String>> {
         match catalog.lookup(key) {
-            super::PiLookup::Found(model) => model.efforts.clone().map(|efforts| {
-                efforts.iter().map(|effort| effort.id.clone()).collect()
-            }),
+            super::PiLookup::Found(model) => model
+                .efforts
+                .clone()
+                .map(|efforts| efforts.iter().map(|effort| effort.id.clone()).collect()),
             super::PiLookup::Ambiguous(_) | super::PiLookup::Missing => None,
         }
     };
@@ -4403,7 +4399,9 @@ fn bare_set_model_refuses_ambiguous_ids_naming_their_providers() {
         .set_model(Some("mimo-v2-6-flash"), None)
         .expect_err("a bare duplicate is refused");
     assert!(
-        error.message.contains("offered by opencode-go and openrouter"),
+        error
+            .message
+            .contains("offered by opencode-go and openrouter"),
         "the refusal names the providers to pick from: {}",
         error.message
     );

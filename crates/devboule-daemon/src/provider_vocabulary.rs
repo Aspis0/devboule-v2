@@ -9,8 +9,9 @@
 //! is the native version probe, and only while the installed version is
 //! still unknown — the same one-shot probe `providers_list` starts, and
 //! once the version is settled a read costs file reads only. Pi's models
-//! come from a throwaway pi process (`pi_models_probe`), read once per
-//! run; its modes are the launcher's own table, which needs no probe.
+//! come from a throwaway pi process (`pi_models_probe`), read once and
+//! re-read past ten minutes; its modes are the launcher's own table, which
+//! needs no probe.
 //! Every other provider answers `absent` — no source could answer yet —
 //! which is the wire value that makes the form completable; a later
 //! upgrade can move two of them to `present` with spawn probes and change
@@ -266,9 +267,12 @@ pub(crate) fn provider_vocabulary_reply(
 
     let facts = discovery_facts(state, &canonical);
     let now_ms = crate::server::unix_millis();
-    if !refresh {
+    let provider_impl = crate::session::catalog_registry().provider_for(&canonical);
+    // A transient family never reads the TTL cache: pi serves `absent`
+    // while its read runs and re-probes past ten minutes, and either answer
+    // served from here would skip the refresh the next editor open is owed.
+    if !refresh && !provider_impl.vocabulary_transient(state) {
         if let Some(entry) = state.provider_vocabulary.get(&canonical, &facts, now_ms) {
-            let provider_impl = crate::session::catalog_registry().provider_for(&canonical);
             return vocabulary_reply(
                 id,
                 &canonical,
@@ -290,7 +294,6 @@ pub(crate) fn provider_vocabulary_reply(
         .provider_vocabulary
         .probes
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let provider_impl = crate::session::catalog_registry().provider_for(&canonical);
     let (models, modes) = provider_impl.vocabulary(state);
     // The features axis is answered beside the other two and cached apart from
     // them: an ACP list comes from a process read that runs once per provider
@@ -858,6 +861,34 @@ mod pi_tests {
     /// features axis says `probing` — the combination the form polls on —
     /// and neither answer is TTL-cached: a second ask after the snapshot
     /// records must serve the present axes, not the absence.
+    #[test]
+    fn stale_snapshot_serves_stale_axes_while_a_refresh_runs() {
+        use crate::pi_models_probe::{PiModelsKey, PiModelsProbe};
+        let state = state();
+        let key = PiModelsKey::new("pi");
+        state
+            .pi_models
+            .record_answer_for_test(&key, vec![snapshot_model("mimo-v2-6-flash", "opencode-go")]);
+        state
+            .pi_models
+            .age_for_test(&key, std::time::Duration::from_secs(11 * 60));
+        // The editor's next open: the stale axes serve at once, and a
+        // refresh runs behind them — the features axis says probing, which
+        // is what the form polls on until the fresh snapshot lands.
+        let reply = provider_vocabulary_reply(&state, 7, "pi", None, false);
+        let DaemonMessage::ProviderVocabulary {
+            models, features, ..
+        } = reply
+        else {
+            panic!("a vocabulary reply");
+        };
+        assert_eq!(models.state, VocabularyState::Present);
+        assert_eq!(models.items.len(), 1);
+        let features = features.expect("pi answers features");
+        assert!(features.probing);
+        assert_eq!(state.pi_models.peek(&key), Some(PiModelsProbe::Running));
+    }
+
     #[test]
     fn pi_transient_answers_are_never_ttl_cached() {
         let state = state();

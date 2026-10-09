@@ -300,11 +300,14 @@ pub(crate) trait Provider: Send + Sync {
     fn vocabulary(&self, state: &Arc<ServerState>) -> (VocabularyModels, VocabularyModes);
 
     /// Whether this family's vocabulary answer is transient — a probe still
-    /// running, or cooling down after a failure — rather than learned. The
-    /// query path must not TTL-cache a transient answer: caching an `absent`
-    /// served while pi's read is still in flight would keep the editor on
-    /// free text for the cache's whole TTL after the snapshot already
-    /// landed. Only pi answers true, and only until its snapshot answers.
+    /// running, cooling down after a failure, or older than the refresh
+    /// window — rather than learned. The query path must not TTL-cache or
+    /// TTL-serve a transient answer: caching an `absent` served while pi's
+    /// read is still in flight would keep the editor on free text for the
+    /// cache's whole TTL after the snapshot already landed, and serving a
+    /// stale snapshot from the TTL cache would skip the refresh the next
+    /// editor open is owed. Only pi answers true, and only until its
+    /// snapshot answers fresh.
     fn vocabulary_transient(&self, _state: &Arc<ServerState>) -> bool {
         false
     }
@@ -726,6 +729,34 @@ impl PiProvider {
         )
         .expect("a present modes axis always carries its origin")
     }
+
+    /// Start the catalog read when this caller won the claim. One process
+    /// per question: a lost claim means a worker already runs.
+    fn start_probe(state: &Arc<ServerState>) {
+        use crate::pi_models_probe::{PiModelsKey, PiModelsProbe};
+        let key = PiModelsKey::new("pi");
+        if let Some(generation) = state.pi_models.claim(&key) {
+            let worker_cache = std::sync::Arc::clone(&state.pi_models);
+            let worker_key = key.clone();
+            let started = std::thread::Builder::new()
+                .name("pi-models-read".to_string())
+                .spawn(move || {
+                    crate::pi_models_probe::run_pi_models_probe(
+                        &worker_cache,
+                        worker_key,
+                        generation,
+                    );
+                });
+            if started.is_err() {
+                // No thread to ask with. Settle as unavailable so the
+                // next ask retries after the cooldown instead of
+                // polling a slot that will never answer.
+                state
+                    .pi_models
+                    .finish(&key, generation, PiModelsProbe::Unavailable);
+            }
+        }
+    }
 }
 
 impl Provider for PiProvider {
@@ -840,44 +871,28 @@ impl Provider for PiProvider {
     }
 
     fn vocabulary(&self, state: &Arc<ServerState>) -> (VocabularyModels, VocabularyModes) {
-        // Pi's catalog is read by starting pi once per run: the snapshot
-        // the probe left behind answers here, and the modes are the
-        // launcher's own table — pi cannot report them, so they are
-        // daemon-origin and need no probe. The first ask claims the slot
-        // and starts the process on a worker; while the read is still
-        // running (or cooling down after a failure) the models axis stays
-        // `absent` and the features axis says `probing`, which is what the
-        // form polls on: the pickers arrive without a reopen.
+        // Pi's catalog is read by starting pi: the snapshot the probe left
+        // behind answers here, re-read past ten minutes behind the stale
+        // axes it keeps serving, and the modes are the launcher's own
+        // table — pi cannot report them, so they are daemon-origin and need
+        // no probe. The first ask claims the slot and starts the process on
+        // a worker; while a read is running the models axis stays `absent`
+        // and the features axis says `probing`, which is what the form
+        // polls on: the pickers arrive without a reopen.
         let key = crate::pi_models_probe::PiModelsKey::new("pi");
         match state.pi_models.peek(&key) {
             Some(crate::pi_models_probe::PiModelsProbe::Answered(snapshot)) => {
+                // Past ten minutes the next ask re-probes behind the stale
+                // axes it keeps serving; the features axis says probing
+                // while that refresh runs, so the form polls it in.
+                if state.pi_models.stale(&key) {
+                    Self::start_probe(state);
+                }
                 let models = crate::pi_models_probe::pi_models_axis(snapshot);
                 (models, Self::pi_modes())
             }
             _ => {
-                if let Some(generation) = state.pi_models.claim(&key) {
-                    let worker_cache = std::sync::Arc::clone(&state.pi_models);
-                    let worker_key = key.clone();
-                    let started = std::thread::Builder::new()
-                        .name("pi-models-read".to_string())
-                        .spawn(move || {
-                            crate::pi_models_probe::run_pi_models_probe(
-                                &worker_cache,
-                                worker_key,
-                                generation,
-                            );
-                        });
-                    if started.is_err() {
-                        // No thread to ask with. Settle as unavailable so the
-                        // next ask retries after the cooldown instead of
-                        // polling a slot that will never answer.
-                        state.pi_models.finish(
-                            &key,
-                            generation,
-                            crate::pi_models_probe::PiModelsProbe::Unavailable,
-                        );
-                    }
-                }
+                Self::start_probe(state);
                 (
                     crate::provider_vocabulary::absent_axes().0,
                     Self::pi_modes(),
@@ -891,7 +906,7 @@ impl Provider for PiProvider {
         !matches!(
             state.pi_models.peek(&key),
             Some(crate::pi_models_probe::PiModelsProbe::Answered(_))
-        )
+        ) || state.pi_models.stale(&key)
     }
 
     fn features(
