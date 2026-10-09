@@ -2113,6 +2113,7 @@ export function Workspace({
           <div className={historyOpen ? "workspace-center-hidden" : "workspace-center-live"}>
             {selectedRemoteHost === null ? null : (
               <RemoteWorkspaceSurface
+                key={`${selectedRemoteHost.hostId}:${selectedRemoteHost.workspaceId}`}
                 deviceId={selectedRemoteHost.hostId}
                 workspaceId={selectedRemoteHost.workspaceId}
                 hostOnline={hostOnlineMap.get(selectedRemoteHost.hostId) === true}

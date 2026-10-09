@@ -137,6 +137,75 @@ describe("the remote workspace surface", () => {
     vi.useRealTimers();
   });
 
+  it("clears a selection the host no longer lists", async () => {
+    vi.useFakeTimers();
+    await render(true);
+    const chip = [...container.querySelectorAll<HTMLButtonElement>("[role='tab']")][0];
+    await act(async () => {
+      chip?.click();
+    });
+    await flush();
+    expect(remoteSessionAttach).toHaveBeenCalledTimes(1);
+
+    vi.mocked(remoteHostList).mockResolvedValue({ list: "sessions", rows: [] });
+    await act(async () => {
+      vi.advanceTimersByTime(5100);
+    });
+    await flush();
+    vi.useRealTimers();
+    expect(container.querySelectorAll("[role='tab']")).toHaveLength(0);
+    // The vanished session cannot stay selected: its stream is given back.
+    expect(remoteSessionDetach).toHaveBeenCalled();
+  });
+
+  it("serializes a fast tab switch with the last selection winning", async () => {
+    vi.mocked(remoteHostList).mockResolvedValue({
+      list: "sessions",
+      rows: [SESSION, { ...SESSION, id: "session-two", title: "Agent two" }],
+    });
+    await render(true);
+    const chips = [...container.querySelectorAll<HTMLButtonElement>("[role='tab']")];
+    await act(async () => {
+      chips[0]?.click();
+      chips[1]?.click();
+    });
+    await flush();
+
+    const calls = vi.mocked(remoteSessionAttach).mock.calls;
+    expect(calls.length).toBeGreaterThanOrEqual(1);
+    expect(calls.at(-1)?.[1]).toBe("session-two");
+  });
+
+  it("bounds the transcript and batches its appends", async () => {
+    await render(true);
+    const chip = [...container.querySelectorAll<HTMLButtonElement>("[role='tab']")][0];
+    await act(async () => {
+      chip?.click();
+    });
+    await flush();
+    const subscription = vi.mocked(remoteSessionAttach).mock.calls.at(-1)?.[2] as number;
+    await act(async () => {
+      for (let index = 0; index < 3000; index += 1) {
+        emit({
+          kind: "event",
+          deviceId: "device-one",
+          sessionId: "session-one",
+          subscriptionId: subscription,
+          envelope: {
+            sessionId: "session-one",
+            generation: 1,
+            event: { type: "output", seq: index, data: `line ${index}` },
+          },
+        });
+      }
+    });
+    await flush();
+    const rendered = container.querySelectorAll(".workspace-remote-transcript p");
+    expect(rendered.length).toBeLessThanOrEqual(2000);
+    expect(rendered.length).toBeGreaterThan(0);
+    expect(container.textContent).toContain("line 2999");
+  });
+
   it("replays a gapped stream on a fresh subscription", async () => {
     await render(true);
     const chip = [...container.querySelectorAll<HTMLButtonElement>("[role='tab']")][0];

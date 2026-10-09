@@ -31,6 +31,10 @@ function lineOf(event: SessionEvent): string | null {
   }
 }
 
+/** How many transcript lines one remote tab keeps; older ones are dropped
+ * from the DOM and memory, exactly like the local transcript's cap. */
+const MAX_REMOTE_LINES = 2000;
+
 /** The bulk transcript events the relay may drop and replay; everything else
  * is a status the tabs must reflect immediately. */
 function isBulkTranscript(event: SessionEvent): boolean {
@@ -73,6 +77,20 @@ export function RemoteWorkspaceSurface({
   const [resyncNonce, setResyncNonce] = useState(0);
   const subscriptionRef = useRef(0);
   const openRef = useRef<string | null>(null);
+  // One operation at a time: the link serves a single attach/detach, so a
+  // tab switch serializes instead of racing `Busy` refusals. The token makes
+  // latest-wins: a failure from an operation the user already replaced never
+  // paints the current surface offline.
+  const chainRef = useRef<Promise<void>>(Promise.resolve());
+  const operationRef = useRef(0);
+  const lastAttachAtRef = useRef(0);
+  // A gap is a data event, not a flapping edge: its reattach is immediate.
+  const forceReattachRef = useRef(false);
+  const reattachTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Line appends are batched per microtask and bounded, so a long replay does
+  // not re-render the whole history once per chunk.
+  const pendingLinesRef = useRef<string[]>([]);
+  const flushScheduledRef = useRef(false);
 
   // The host's own session rows for this workspace. The roster is live, not a
   // one-shot snapshot: it reloads on the online edge, on a working session's
@@ -82,7 +100,13 @@ export function RemoteWorkspaceSurface({
     try {
       const body = await remoteHostList(deviceId, { kind: "sessions" });
       if (body.list !== "sessions") return;
-      setSessions(body.rows.filter((row) => row.workspaceId === workspaceId));
+      const rows = body.rows.filter((row) => row.workspaceId === workspaceId);
+      setSessions(rows);
+      // A session the host no longer lists (exited and reaped, or another
+      // workspace) cannot stay selected: its transcript would outlive it.
+      setOpenSessionId((current) =>
+        current !== null && !rows.some((row) => row.id === current) ? null : current,
+      );
     } catch {
       // Keep the last list; the row's own offline state says why.
     }
@@ -97,47 +121,86 @@ export function RemoteWorkspaceSurface({
   }, [hostOnline, load]);
 
   // Open the session's stream, reattaching with a fresh subscription on the
-  // online edge. A subscription from an older edge is fenced by the daemon,
-  // so the events of the replaced stream can never land here.
+  // online edge. Every operation is serialized on one chain and carries a
+  // token, so a tab switch detaches before the next attach and a stale
+  // failure cannot paint the surface offline.
   useEffect(() => {
+    const target = openSessionId;
     const previous = openRef.current;
-    openRef.current = openSessionId;
-    if (previous !== null && previous !== openSessionId) {
-      const previousSubscription = subscriptionRef.current;
-      void remoteSessionDetach(deviceId, previous, previousSubscription).catch(() => undefined);
-    }
-    if (openSessionId === null) {
-      setStreamState("idle");
-      return;
-    }
-    if (!hostOnline) {
-      setStreamState("offline");
-      return;
-    }
-    subscriptionRef.current = allocRemoteSubscriptionId();
-    const subscriptionId = subscriptionRef.current;
-    setLines([]);
-    setStreamState("streaming");
-    const channel: RemoteEventChannel = createRemoteEventChannel((message: RemoteRelayMessage) => {
-      if (message.deviceId !== deviceId || message.sessionId !== openSessionId) return;
-      if (message.subscriptionId !== subscriptionId) return;
-      if (message.kind === "gap") {
-        // The relay lost bulk events. Close this subscription and re-attach:
-        // the host replays the transcript, so nothing stays silently missing.
-        void remoteSessionDetach(deviceId, openSessionId, subscriptionId).catch(() => undefined);
-        setLines([]);
-        setResyncNonce((value) => value + 1);
+    openRef.current = target;
+    operationRef.current += 1;
+    const token = operationRef.current;
+    const run = chainRef.current.then(async () => {
+      if (token !== operationRef.current) return;
+      if (previous !== null && previous !== target) {
+        await remoteSessionDetach(deviceId, previous, subscriptionRef.current).catch(
+          () => undefined,
+        );
+      }
+      if (token !== operationRef.current) return;
+      if (target === null) {
+        setStreamState("idle");
         return;
       }
-      const line = lineOf(message.envelope.event);
-      if (line !== null) setLines((current) => [...current, line]);
-      // A state, a terminal exit or a permission card changes what the tabs
-      // should say; the roster is re-read rather than left stale.
-      if (!isBulkTranscript(message.envelope.event)) void load();
+      if (!hostOnline) {
+        setStreamState("offline");
+        // Coming back is a fresh edge: the debounce window does not survive
+        // an offline period.
+        lastAttachAtRef.current = 0;
+        return;
+      }
+      // A flapping online edge must not storm attaches: a reattach for the
+      // *same* session inside the debounce window is coalesced into one. A
+      // user switching tabs, and a gap's replay, are never debounced.
+      const sameSession = previous === target;
+      const forced = forceReattachRef.current;
+      forceReattachRef.current = false;
+      const since = Date.now() - lastAttachAtRef.current;
+      if (sameSession && !forced && since < 750) {
+        if (reattachTimerRef.current !== null) clearTimeout(reattachTimerRef.current);
+        reattachTimerRef.current = setTimeout(() => {
+          reattachTimerRef.current = null;
+          setResyncNonce((value) => value + 1);
+        }, 750);
+        return;
+      }
+      lastAttachAtRef.current = Date.now();
+      subscriptionRef.current = allocRemoteSubscriptionId();
+      const subscriptionId = subscriptionRef.current;
+      setLines([]);
+      setStreamState("streaming");
+      const channel: RemoteEventChannel = createRemoteEventChannel(
+        (message: RemoteRelayMessage) => {
+          if (message.deviceId !== deviceId || message.sessionId !== target) return;
+          if (message.subscriptionId !== subscriptionId) return;
+          if (message.kind === "gap") {
+            // The relay lost bulk events. Close this subscription and
+            // re-attach: the host replays the transcript, so nothing stays
+            // silently missing.
+            forceReattachRef.current = true;
+            void remoteSessionDetach(deviceId, target, subscriptionId).catch(() => undefined);
+            setLines([]);
+            setResyncNonce((value) => value + 1);
+            return;
+          }
+          const line = lineOf(message.envelope.event);
+          if (line !== null) appendLine(line);
+          // A state, a terminal exit or a permission card changes what the
+          // tabs should say; the roster is re-read rather than left stale.
+          if (!isBulkTranscript(message.envelope.event)) void load();
+        },
+      );
+      await remoteSessionAttach(deviceId, target, subscriptionId, channel).catch(() => {
+        if (token === operationRef.current) setStreamState("offline");
+      });
     });
-    void remoteSessionAttach(deviceId, openSessionId, subscriptionId, channel).catch(() => {
-      setStreamState("offline");
-    });
+    chainRef.current = run;
+    return () => {
+      if (reattachTimerRef.current !== null) {
+        clearTimeout(reattachTimerRef.current);
+        reattachTimerRef.current = null;
+      }
+    };
   }, [deviceId, hostOnline, load, openSessionId, resyncNonce]);
 
   // Give the stream back when the surface leaves.
@@ -154,6 +217,18 @@ export function RemoteWorkspaceSurface({
   const select = useCallback((sessionId: string) => {
     setOpenSessionId(sessionId);
   }, []);
+
+  function appendLine(line: string): void {
+    pendingLinesRef.current.push(line);
+    if (flushScheduledRef.current) return;
+    flushScheduledRef.current = true;
+    queueMicrotask(() => {
+      flushScheduledRef.current = false;
+      const batch = pendingLinesRef.current;
+      pendingLinesRef.current = [];
+      setLines((current) => [...current, ...batch].slice(-MAX_REMOTE_LINES));
+    });
+  }
 
   return (
     <div className="workspace-remote-surface">
