@@ -22,6 +22,7 @@ import {
   terminalRuns,
 } from "../providers/providerTerminalRuns";
 import { providerLogin, providerNoLoginNote } from "../providers/providerTerminalCommands";
+import { SettingsAdvanced } from "../rows";
 import { ProviderRow } from "../providers/ProviderRow";
 import { ProviderAvailableRow } from "../providers/ProviderAvailableRow";
 import { ProvidersTerminalError } from "../providers/ProvidersTerminalError";
@@ -229,10 +230,12 @@ export function ProvidersPanel() {
       ) : providers.length === 0 ? (
         <div className="provider-empty" role="status">
           <div>{providerEmptySentence(unreadableDirs)}</div>
-          <p>
-            Install an agent CLI such as grok, claude, or gemini and restart Devboule. Until then
-            there is no provider to start a session with.
-          </p>
+          <SettingsAdvanced>
+            <p>
+              Install an agent CLI such as grok, claude, or gemini and restart Devboule. Until then
+              there is no provider to start a session with.
+            </p>
+          </SettingsAdvanced>
         </div>
       ) : (
         <>
@@ -307,12 +310,14 @@ export function ProvidersPanel() {
             </section>
           ) : null}
           {npxProviders.length > 0 ? (
-            <section aria-label="Run on demand (npx)">
-              <h3 className="settings-subheading">Run on demand (npx)</h3>
-              <p className="prov-group-note">
-                These providers start on demand through npx — nothing is installed for them on this
-                machine.
-              </p>
+            <section aria-label="Run on demand">
+              <h3 className="settings-subheading">Run on demand</h3>
+              <SettingsAdvanced>
+                <p>
+                  These providers start on demand through npx — nothing is installed for them on
+                  this machine.
+                </p>
+              </SettingsAdvanced>
               <div className="prov-card" aria-busy={refreshing || npmRun !== null}>
                 {npxProviders.map((provider) => renderInstalledRow(provider, true))}
               </div>

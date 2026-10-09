@@ -218,7 +218,7 @@ describe("providers sections and search", () => {
       (section) => section.getAttribute("aria-label") === "Installed",
     );
     const npx = Array.from(container.querySelectorAll("section")).find(
-      (section) => section.getAttribute("aria-label") === "Run on demand (npx)",
+      (section) => section.getAttribute("aria-label") === "Run on demand",
     );
     if (!installed) throw new Error("Installed section did not render");
     if (!npx) throw new Error("npx section did not render");
@@ -227,7 +227,11 @@ describe("providers sections and search", () => {
     expect(installed.textContent).not.toContain("via npx");
     expect(npx.textContent).toContain("agoragentic-acp");
     expect(npx.textContent).toContain("via npx");
-    expect(npx.textContent).toMatch(/nothing is installed/i);
+    // The explanation sits under the section's Advanced, not on the page.
+    expect(npx.querySelector("[data-settings-advanced]")?.textContent).toMatch(
+      /nothing is installed/i,
+    );
+    expect(npx.querySelector(":scope > p")).toBeNull();
     // Install flow untouched: the not-installed row stays available.
     expect(container.textContent).toContain("Available to install");
     // Order: Installed, then Available with its search, then the long npx
@@ -235,7 +239,7 @@ describe("providers sections and search", () => {
     const order = Array.from(container.querySelectorAll("#settings-panel-providers > section")).map(
       (section) => section.getAttribute("aria-label"),
     );
-    expect(order).toEqual(["Installed", "Available to install", "Run on demand (npx)"]);
+    expect(order).toEqual(["Installed", "Available to install", "Run on demand"]);
   });
 
   it("says when no agent CLI is on PATH", async () => {
@@ -243,6 +247,10 @@ describe("providers sections and search", () => {
     await renderPanel();
 
     expect(container.textContent).toContain("No agent CLI found on PATH");
+    // The install hint is explanation: it waits under Advanced.
+    expect(
+      container.querySelector(".provider-empty [data-settings-advanced]")?.textContent,
+    ).toContain("Install an agent CLI");
   });
 
   it("notes unreadable PATH directories under a non-empty catalog", async () => {
