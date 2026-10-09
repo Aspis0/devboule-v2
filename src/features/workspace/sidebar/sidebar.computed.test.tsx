@@ -183,13 +183,13 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     expect(getComputedStyle(wordmark).whiteSpace).toBe("nowrap");
   });
 
-  it("the search takes its own row, the sidebar's whole width", async () => {
-    // The row is the sidebar's width minus its own 12px a side, and the field
-    // that replaces the trigger fills it: no floor, no cap, the quiet row's
-    // own height.
+  it("the search takes its own row inside the top actions, the sidebar's whole width", async () => {
+    // The actions carry the rail's own 12px a side, and the search row fills
+    // them: no floor, no cap, the quiet row's own height. The field that
+    // replaces the trigger fills the row in turn.
+    expect(rulesFor(".sidebar-actions")).toContain("padding: 0 12px 8px");
     expect(rulesFor(".sidebar-search-row")).toContain("flex: none");
     expect(rulesFor(".sidebar-search-row")).toContain("height: 28px");
-    expect(rulesFor(".sidebar-search-row")).toContain("margin: 0 12px 8px");
     // The field's own row is the whole width: no floor of its own, no cap to
     // shrink it at wide sidebars.
     expect(rulesFor(".sidebar-search")).not.toContain("max-width");
@@ -222,18 +222,14 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     expect(getComputedStyle(input).paddingRight).toBe("0px");
   });
 
-  it("the foot's rows sit on the body rows' 16px column", async () => {
-    // The composed left edge is what the eye sees: container padding plus
-    // the row's own padding must add up to the same 16px column the body
-    // rows start at. (The 994f6c1 pass shipped a 2px footer container, which
-    // put the Daemon row at 10px while body text sat at 16px.)
-    inject([
-      ".sidebar-body",
-      ".workspace-row",
-      ".workspace-sidebar-footer",
-      ".workspace-history-button",
-      ".sidebar-foot",
-    ]);
+  it("the foot's dot sits on the body rows' 16px column", async () => {
+    // The composed left edge is what the eye sees: the foot's padding plus
+    // the status line's own padding must add up to the same 16px column the
+    // body rows start at. (The 994f6c1 pass shipped a 2px footer container,
+    // which put the Daemon row at 10px while body text sat at 16px.) The
+    // foot is an icon row now — add project, settings, the dot — so the
+    // column pins the dot, not a label.
+    inject([".sidebar-body", ".workspace-row", ".workspace-sidebar-footer", ".sidebar-foot"]);
     await renderWorkspace();
 
     const px = (el: HTMLElement, prop: "paddingLeft" | "paddingRight") =>
@@ -242,9 +238,8 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     const body = document.querySelector<HTMLElement>(".sidebar-body");
     const row = document.querySelector<HTMLElement>(".workspace-row");
     const footer = document.querySelector<HTMLElement>(".workspace-sidebar-footer");
-    const historyButton = document.querySelector<HTMLElement>(".workspace-history-button");
     const daemonRow = document.querySelector<HTMLElement>(".sidebar-foot");
-    for (const el of [body, row, footer, historyButton, daemonRow]) {
+    for (const el of [body, row, footer, daemonRow]) {
       if (el === null) throw new Error("a sidebar column element did not render");
     }
 
@@ -254,15 +249,12 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
       px(body!, "paddingLeft"),
       px(row!, "paddingLeft"),
       px(footer!, "paddingLeft"),
-      px(historyButton!, "paddingLeft"),
       px(daemonRow!, "paddingLeft"),
     );
     const bodyColumn = px(body!, "paddingLeft") + px(row!, "paddingLeft");
-    const historyColumn = px(footer!, "paddingLeft") + px(historyButton!, "paddingLeft");
     const daemonColumn = px(footer!, "paddingLeft") + px(daemonRow!, "paddingLeft");
 
     expect(bodyColumn).toBe(16);
-    expect(historyColumn).toBe(bodyColumn);
     expect(daemonColumn).toBe(bodyColumn);
   });
 

@@ -1138,7 +1138,7 @@ describe("the + new-tab menu", () => {
       unreadableDirs: 0,
     });
     ({ container, unmount } = await renderWorkspace());
-    const trigger = container.querySelector<HTMLButtonElement>(".workspace-project-add");
+    const trigger = container.querySelector<HTMLButtonElement>(".workspace-project-new");
     if (trigger === null) throw new Error("new workspace control did not render");
     await act(async () => trigger.click());
     await act(async () => undefined);
@@ -1280,7 +1280,7 @@ describe("the + new-tab menu", () => {
       unreadableDirs: 0,
     });
     ({ container, unmount } = await renderWorkspace());
-    const trigger = container.querySelector<HTMLButtonElement>(".workspace-project-add");
+    const trigger = container.querySelector<HTMLButtonElement>(".workspace-project-new");
     if (trigger === null) throw new Error("new workspace control did not render");
     await act(async () => trigger.click());
     await act(async () => undefined);

@@ -145,7 +145,7 @@ function readDevices(): void {
 
 /**
  * Whether two answers would draw the same thing. The fields compared are every
- * field the two readers use (`peerDeviceNames` and `sidebarHosts`); a field
+ * field the two readers use (`peerDeviceNames` and `hostNames`); a field
  * neither reads cannot change what either shows.
  */
 function sameDevices(a: PairedDevices, b: PairedDevices): boolean {

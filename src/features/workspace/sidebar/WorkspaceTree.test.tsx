@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
 
-// What the tree says about identity: every project keeps its header (and so
-// keeps a create control), two projects that share a name carry the folder
-// that tells them apart, and a row never prints the name its header above it
-// has already printed — the branch speaks instead.
+// What the tree says about identity: every project keeps its header and closes
+// with a New workspace row of its own, two projects that share a name carry
+// the folder that tells them apart, and a row never prints the name its header
+// above it has already printed — the branch speaks instead, or the host with
+// no branch known.
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -79,6 +80,7 @@ function treeProps(over: Partial<WorkspaceTreeProps> = {}): WorkspaceTreeProps {
     agentRows: new Map(),
     activeSessionId: null,
     onOpenAgent: vi.fn(),
+    hostNames: new Map([[LOCAL_HOST_ID, "This PC"]]),
     ...over,
   };
 }
@@ -120,13 +122,19 @@ describe("the tree's identity", () => {
     );
   }
 
-  it("gives every project a header, and so a create control of its own", async () => {
+  it("gives every project a header and closes it with a New workspace row", async () => {
     await render({ projects: [TWIN_A, SOLO] });
 
     expect(heads()).toHaveLength(2);
-    expect(container.querySelectorAll(".workspace-project-add")).toHaveLength(2);
-    // The per-project create row is gone: one heading control per project.
-    expect(container.querySelector(".workspace-new-row")).toBeNull();
+    // No hover-only control in the header: the create row below the rows is
+    // the project's one creation path.
+    expect(container.querySelectorAll(".workspace-project-add")).toHaveLength(0);
+    const rows = [...container.querySelectorAll<HTMLButtonElement>(".workspace-project-new")];
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual([
+      "New workspace in design-sandbox",
+      "New workspace in paperlab-studio",
+    ]);
   });
 
   it("tells two projects sharing a name apart with the folder each sits in", async () => {

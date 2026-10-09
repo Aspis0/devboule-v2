@@ -4,7 +4,7 @@ import { firstGrapheme } from "../../../lib/graphemeBound";
 import type { ErrorSentence } from "../../../lib/errorSentence";
 import type { WorkspaceProject } from "../workspaceProjects";
 import { keyOfWorkspace } from "../workspaceProjects";
-import type { WorkspaceKey } from "../hosts/hostIdentity";
+import type { HostId, WorkspaceKey } from "../hosts/hostIdentity";
 import { avatarStyle } from "./avatars";
 import { AgentRows } from "./AgentRows";
 import type { AgentRowView } from "./agentRowViews";
@@ -39,6 +39,8 @@ export interface WorkspaceTreeProps {
   activeSessionId: string | null;
   /** Opens an agent's tab, or brings it to the front. */
   onOpenAgent: (sessionId: string) => void;
+  /** Each host's short label by id, for the rows' second line. */
+  hostNames: ReadonlyMap<HostId, string>;
 }
 
 const NO_AGENTS: readonly AgentRowView[] = [];
@@ -53,11 +55,11 @@ function parentFolder(path: string): string | null {
 }
 
 /**
- * The project tree: every project keeps its header — name, avatar, its
- * workspace count and the "+" that creates its next workspace — above its rows, and a header whose name a
- * row would only repeat carries the folder the project sits in instead of
- * leaving two identical headers. What a row prints beside its name is decided
- * by the row itself (WorkspaceRow).
+ * The project tree: every project keeps its header — avatar, name, workspace
+ * count — above its rows and a "+ New workspace" row below them, and a header
+ * whose name a row would only repeat carries the folder the project sits in
+ * instead of leaving two identical headers. What a row prints beside its name
+ * is decided by the row itself (WorkspaceRow).
  */
 export function WorkspaceTree({
   projects,
@@ -78,6 +80,7 @@ export function WorkspaceTree({
   agentRows,
   activeSessionId,
   onOpenAgent,
+  hostNames,
 }: WorkspaceTreeProps) {
   // Derived once per project list, not once per render: two headers may hold
   // the same name, and only the folder separates them.
@@ -153,15 +156,6 @@ export function WorkspaceTree({
                   <span className="sr-only">workspaces could not be loaded</span>
                 )}
               </span>
-              <button
-                type="button"
-                className="workspace-project-add"
-                onClick={(event) => onNewWorkspace(event.currentTarget, project.id)}
-                title="New workspace in this project"
-                aria-label={`New workspace in ${project.name}`}
-              >
-                +
-              </button>
             </div>
             {project.workspaceError !== undefined ? (
               <div className="workspace-project-error" role="alert">
@@ -193,6 +187,7 @@ export function WorkspaceTree({
                       workspace={workspace}
                       workspaceKey={key}
                       projectName={project.name}
+                      hostName={hostNames.get(workspace.hostId) ?? workspace.hostId}
                       selected={selected}
                       agentFocused={agentFocused}
                       stat={key === null ? undefined : stats.get(key)}
@@ -211,6 +206,14 @@ export function WorkspaceTree({
                   </Fragment>
                 );
               })}
+              <button
+                type="button"
+                className="workspace-project-new"
+                onClick={(event) => onNewWorkspace(event.currentTarget, project.id)}
+                aria-label={`New workspace in ${project.name}`}
+              >
+                <span aria-hidden="true">+</span> New workspace
+              </button>
             </div>
             {providerMenuAnchorProjectId === project.id ? providerMenu : null}
           </div>

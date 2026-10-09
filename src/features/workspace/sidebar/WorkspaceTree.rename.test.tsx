@@ -90,6 +90,7 @@ describe("the sidebar's workspace rows", () => {
           onOpenAgent={vi.fn()}
           onRenameWorkspace={onRename}
           onDeleteWorkspace={onDeleteWorkspace}
+          hostNames={new Map([[LOCAL_HOST_ID, "This PC"]])}
         />,
       );
     });
@@ -173,7 +174,9 @@ describe("the sidebar's workspace rows", () => {
     const titles = rowButtons().map(
       (row) => row.querySelector(".workspace-row-title")?.textContent,
     );
-    expect(titles).toEqual(["devboule-v2", "devboule-v2 2"]);
+    // The first row's numbered title still matches the project name, so the
+    // row speaks its host instead; the second row keeps its numbered title.
+    expect(titles).toEqual(["This PC", "devboule-v2 2"]);
   });
 
   it("opens Rename from the row's context menu and saves with Enter", async () => {

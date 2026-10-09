@@ -189,7 +189,7 @@ describe("opening History over an active tool tab", () => {
     vi.mocked(sessionResume).mockResolvedValue({ type: "resumed", session: saved });
 
     await act(async () => {
-      document.querySelector<HTMLButtonElement>(".workspace-history-button")?.click();
+      document.querySelector<HTMLButtonElement>('.sidebar-action[aria-label="History"]')?.click();
     });
     await flush();
     await flush();

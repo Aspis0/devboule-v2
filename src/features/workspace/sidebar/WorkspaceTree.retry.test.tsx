@@ -34,6 +34,7 @@ function treeProps(over: Partial<WorkspaceTreeProps> = {}): WorkspaceTreeProps {
     agentRows: new Map(),
     activeSessionId: null,
     onOpenAgent: vi.fn(),
+    hostNames: new Map(),
     ...over,
   };
 }

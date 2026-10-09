@@ -177,7 +177,7 @@ describe("deleting a workspace from the sidebar", () => {
     expect(workspaceDelete).toHaveBeenCalledTimes(1);
     expect(document.querySelector("button.workspace-row")).toBeNull();
     expect(document.body.textContent).toContain("No tabs yet");
-    expect(document.activeElement).toBe(document.querySelector(".workspace-project-add"));
+    expect(document.activeElement).toBe(document.querySelector(".workspace-project-new"));
     expect(document.activeElement).not.toBe(document.body);
   });
 
@@ -225,7 +225,7 @@ describe("deleting a workspace from the sidebar", () => {
     await clickDialogButton("Delete");
     await settle();
 
-    expect(document.querySelector(".workspace-project-add"), "the whole group left").toBeNull();
+    expect(document.querySelector(".workspace-project-new"), "the whole group left").toBeNull();
     expect(document.activeElement).toBe(search);
   });
 });

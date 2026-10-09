@@ -45,19 +45,10 @@ function sidebarProps(overrides: Partial<SidebarProps> = {}): SidebarProps {
     resizeMax: MAX_LEFT_WIDTH,
     historyOpen: false,
     onToggleHistory: vi.fn(),
-    history: {
-      searchValue: "",
-      projects: [],
-      branches: new Map(),
-      onWorkspaceKeysChange: vi.fn(),
-      selectedSessionId: null,
-      onSearchChange: vi.fn(),
-      onReopen: vi.fn(),
-      onReopenAgent: vi.fn(),
-    },
     searchValue: "",
     onSearchChange: vi.fn(),
     onAddProject: vi.fn(),
+    onOpenSettings: vi.fn(),
     addProjectRef: { current: null },
     tree: {
       projects: [],
@@ -78,6 +69,7 @@ function sidebarProps(overrides: Partial<SidebarProps> = {}): SidebarProps {
       agentRows: new Map(),
       activeSessionId: null,
       onOpenAgent: vi.fn(),
+      hostNames: new Map(),
     },
     daemon: CONNECTED,
     daemonNote: null,
@@ -143,24 +135,27 @@ describe("the sidebar's search row", () => {
     return container.querySelector<HTMLInputElement>(".sidebar-search-row .workspace-search input");
   }
 
-  it("leaves the wordmark row to the wordmark and its two buttons", async () => {
+  it("leaves the wordmark row to the wordmark and its collapse button", async () => {
     await render();
 
     const top = container.querySelector<HTMLElement>(".sidebar-top");
     if (top === null) throw new Error("the wordmark row did not render");
     expect(top.querySelector(".sidebar-search")).toBeNull();
     expect(top.querySelector(".sidebar-search-trigger")).toBeNull();
-    expect(top.textContent).toBe("devboule+‹");
+    expect(top.textContent).toBe("devboule‹");
   });
 
-  it("sits under the wordmark row, naming itself and its shortcut", async () => {
+  it("sits in the top actions under the wordmark row, naming itself and its shortcut", async () => {
     await render();
 
-    const row = container.querySelector<HTMLElement>(".sidebar-search-row");
-    if (row === null) throw new Error("the search row did not render");
+    const actions = container.querySelector<HTMLElement>(".sidebar-actions");
+    if (actions === null) throw new Error("the top actions did not render");
     const top = container.querySelector<HTMLElement>(".sidebar-top");
     if (top === null) throw new Error("the wordmark row did not render");
-    expect(top.nextElementSibling).toBe(row);
+    expect(top.nextElementSibling).toBe(actions);
+    const row = container.querySelector<HTMLElement>(".sidebar-search-row");
+    if (row === null) throw new Error("the search row did not render");
+    expect(row.parentElement).toBe(actions);
     expect(row.textContent).toBe(`Search${searchChordLabel()}`);
     expect(trigger().getAttribute("aria-label")).toBe("Search workspaces");
   });

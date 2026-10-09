@@ -1,9 +1,10 @@
 /* sidebar.css — the sidebar region's look (SPEC-regions.md "Sidebar"): the
-   40px wordmark row, the search row under it, project headers with avatars
-   and a hover-revealed "+", one-line workspace rows (avatar, name, one
-   trailing fact) and the quiet "New workspace" row, and the foot. Behaviour
-   class names (workspace-row, workspace-project-add, …) are kept so the suite
-   keeps pinning the same behaviours. */
+   40px wordmark row, the top actions (New workspace, History, Search — one
+   row each), project headers with avatars, workspace rows (avatar, name, one
+   trailing fact, host second line) with a "+ New workspace" row closing each
+   project, and the bottom icon row. Behaviour class names (workspace-row,
+   workspace-project-new, …) are kept so the suite keeps pinning the same
+   behaviours. */
 
 .sidebar-top {
   display: flex;
@@ -44,15 +45,92 @@
   min-width: 0;
 }
 
-/* The search's own row, full width under the wordmark row: the quiet trigger
-   at rest, and the field itself when it opens. flex: none (a column parent's
+/* The top actions, one row each under the wordmark row: New workspace,
+   History, and the search row (the quiet trigger at rest, the field itself
+   when it opens). */
+.sidebar-actions {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: 0 var(--space-12) var(--space-8);
+}
+
+.sidebar-action {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  width: 100%;
+  height: var(--control-default);
+  padding: 0 var(--space-8);
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-6);
+  font-size: var(--type-meta);
+  cursor: pointer;
+}
+
+.sidebar-action:hover,
+.sidebar-action:focus-visible {
+  color: var(--ink);
+  background: var(--fill-hover);
+}
+
+.sidebar-action[aria-current="true"] {
+  color: var(--ink);
+  background: var(--fill-selected);
+}
+
+.sidebar-action-icon {
+  display: grid;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  place-items: center;
+  font-size: var(--type-interface);
+  line-height: 1;
+}
+
+.sidebar-action-label {
+  flex: 1;
+  text-align: left;
+}
+
+.sidebar-action-menu {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-8);
+  background: var(--panel-menu);
+  box-shadow: var(--shadow-pop);
+}
+
+.sidebar-action-menu button {
+  min-height: var(--control-menu);
+  padding: var(--space-4) var(--space-8);
+  border: 0;
+  border-radius: var(--radius-6);
+  color: var(--ink);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sidebar-action-menu button:hover,
+.sidebar-action-menu button:focus-visible {
+  background: var(--fill-hover);
+}
+
+/* The search's own row inside the actions: flex: none (a column parent's
    1 1 would grow it down the sidebar). */
 .sidebar-search-row {
   display: flex;
   flex: none;
   align-items: center;
   height: var(--control-default);
-  margin: 0 var(--space-12) var(--space-8);
+  margin: 0;
 }
 
 .sidebar-search {
@@ -142,58 +220,7 @@
   overflow-y: auto;
 }
 
-/* History's rows keep their own 8px inset; body 4 + panel 4 + row 8 lands
-   them on the same 16px column the tree's rows start on. */
-.workspace-history-panel {
-  padding: 0 var(--space-4);
-}
-
-/* Only a section has a header, so a lone host draws nothing above the tree —
-   its name and health live in Settings. */
-.sidebar-host-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  width: 100%;
-  height: var(--group-row);
-  padding: 0 var(--space-12);
-  text-align: left;
-  color: var(--muted);
-  background: transparent;
-  border-radius: var(--radius-6);
-  cursor: pointer;
-  font-size: var(--type-meta);
-  font-weight: var(--weight-label);
-  line-height: var(--leading-dense);
-}
-
-.sidebar-host-head:hover,
-.sidebar-host-head:focus-visible {
-  color: var(--ink);
-  background: var(--fill-hover);
-}
-
-.sidebar-host-icon {
-  width: 12px;
-  height: 12px;
-  flex: none;
-}
-
-/* Two hosts or more: one section each, the local one first. */
-.sidebar-host-section {
-  margin-bottom: var(--space-4);
-}
-
-.sidebar-host-status {
-  white-space: nowrap;
-}
-
-.sidebar-host-note {
-  margin: 0;
-  padding: var(--space-2) var(--space-12) var(--space-4);
-  color: var(--muted);
-  font-size: var(--type-meta);
-}
+/* The tree starts directly: hosts are a per-row label, never sections. */
 
 .workspace-project {
   margin-top: var(--space-8);
@@ -251,28 +278,25 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* The per-project "+" is revealed by the header's hover, per the spec. */
-.workspace-project-heading .workspace-project-add {
-  width: var(--control-dense);
-  height: var(--control-dense);
-  display: grid;
-  place-items: center;
+/* The row closing each project: always visible, never hover-only. */
+.workspace-project-new {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-4) var(--space-12);
   color: var(--muted);
+  background: transparent;
+  border: 0;
   border-radius: var(--radius-6);
-  font-size: var(--type-interface);
-  line-height: 1;
-  opacity: 0;
+  font-size: var(--type-meta);
+  cursor: pointer;
+  white-space: nowrap;
 }
 
-.workspace-project-heading:hover .workspace-project-add,
-.workspace-project-heading:focus-within .workspace-project-add,
-.workspace-project-add:hover,
-.workspace-project-add:focus-visible {
-  opacity: 1;
-}
-
-.sidebar-project-head .workspace-project-add:hover,
-.sidebar-project-head .workspace-project-add:focus-visible {
+.workspace-project-new:hover,
+.workspace-project-new:focus-visible {
   color: var(--ink);
   background: var(--fill-hover);
 }
@@ -371,6 +395,21 @@
   font-family: var(--font-mono);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The row's host, beside the branch when both show. */
+.workspace-row-host {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-4);
+  white-space: nowrap;
+}
+
+.workspace-row-host-glyph {
+  width: 12px;
+  height: 12px;
+  flex: none;
 }
 
 .workspace-row-totals {
@@ -599,38 +638,41 @@
   color: var(--ink-soft);
 }
 
-/* The foot: the quiet History row above the daemon's status dot. */
+/* The foot: the bottom icon row (add project, settings) with the daemon's
+   status dot. */
 .workspace-sidebar-footer {
   flex: none;
-  padding: var(--space-2) var(--space-8) var(--space-8);
+  padding: var(--space-8);
   border-top: 1px solid var(--line);
 }
 
-.workspace-history-button {
+.sidebar-icon-row {
   display: flex;
   align-items: center;
-  width: 100%;
-  height: var(--control-default);
-  margin-bottom: var(--space-2);
-  padding: 0 var(--space-8);
-  color: var(--muted);
-  text-align: left;
-  background: transparent;
-  border: 0;
-  border-radius: var(--radius-6);
-  cursor: pointer;
-  font-size: var(--type-meta);
+  gap: var(--space-2);
 }
 
-.workspace-history-button:hover,
-.workspace-history-button:focus-visible {
+.sidebar-icon-row .sidebar-icon-button {
+  width: var(--control-default);
+  height: var(--control-default);
+  display: grid;
+  flex: none;
+  place-items: center;
+  border-radius: var(--radius-6);
+  color: var(--muted);
+  font-size: var(--type-interface);
+  line-height: 1;
+}
+
+.sidebar-icon-row .sidebar-icon-button:hover,
+.sidebar-icon-row .sidebar-icon-button:focus-visible {
   color: var(--ink);
   background: var(--fill-hover);
 }
 
-.workspace-history-button[aria-pressed="true"] {
-  color: var(--ink);
-  background: var(--fill-selected);
+.sidebar-icon-glyph {
+  width: 14px;
+  height: 14px;
 }
 
 .sidebar-foot {

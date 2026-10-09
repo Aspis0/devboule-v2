@@ -5,7 +5,6 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { daemonStatus, devicesList } from "../../lib/tauri";
 import type { DaemonStatus, DevicesReply } from "../../types/ipc";
-import { sidebarHosts } from "./sidebar/sidebarHosts";
 import type { PairedDevices } from "./workspaceDaemon";
 import { usePairedDevices, useWorkspaceDaemon } from "./workspaceDaemon";
 
@@ -139,7 +138,10 @@ describe("the device read's slot", () => {
   }
 
   function remoteWords(): readonly string[] {
-    return sidebarHosts("connected", latest()).remotes.map((host) => host.status.word);
+    // What the removed host-section helper read off the same payload: a
+    // stale poll cannot tell, otherwise the peer's own flag decides.
+    const seen = latest();
+    return seen.peers.map((peer) => (seen.stale ? "unknown" : peer.online ? "online" : "offline"));
   }
 
   beforeEach(() => {

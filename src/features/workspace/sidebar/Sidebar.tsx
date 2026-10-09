@@ -1,16 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type {
-  ChangeEvent,
-  KeyboardEvent as ReactKeyboardEvent,
-  MouseEvent,
-  RefObject,
-} from "react";
-import { HistoryPanel } from "../../history/HistoryPanel";
+import type { ChangeEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent } from "react";
 import { searchChordFor, searchChordLabel } from "../../../lib/keymap";
-import type { DaemonStatus, Session } from "../../../types/ipc";
+import { useMenuOpen } from "../../../lib/menuOpen";
+import { moveMenuFocus } from "../strip/menuNav";
+import type { DaemonStatus } from "../../../types/ipc";
 import type { WorkspaceProject } from "../workspaceProjects";
-import type { WorkspaceKey } from "../hosts/hostIdentity";
-import { HostSections } from "./HostSections";
 import { SidebarFooter } from "./SidebarFooter";
 import { WorkspaceTree, type WorkspaceTreeProps } from "./WorkspaceTree";
 import "./sidebar.css";
@@ -23,22 +17,14 @@ export interface SidebarProps {
   onResizeKeyDown: (event: ReactKeyboardEvent<HTMLButtonElement>) => void;
   resizeMin: number;
   resizeMax: number;
+  /** The History page is open in the main area; the sidebar keeps its rows. */
   historyOpen: boolean;
   onToggleHistory: () => void;
-  history: {
-    searchValue: string;
-    projects: readonly WorkspaceProject[];
-    branches: ReadonlyMap<WorkspaceKey, string>;
-    onWorkspaceKeysChange: (keys: readonly WorkspaceKey[]) => void;
-    selectedSessionId: string | null;
-    onSearchChange: (event: ChangeEvent<HTMLInputElement>) => void;
-    onReopen: (session: Session) => void;
-    onReopenAgent: (session: Session) => void;
-  };
   searchValue: string;
   onSearchChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onAddProject: () => void;
-  addProjectRef: RefObject<HTMLButtonElement | null>;
+  onOpenSettings: () => void;
+  addProjectRef: React.RefObject<HTMLButtonElement | null>;
   /** The workspace rows' live facts and the create flows, one level down. */
   tree: WorkspaceTreeProps;
   daemon: DaemonStatus;
@@ -46,10 +32,11 @@ export interface SidebarProps {
 }
 
 /**
- * The sidebar region: the 40px wordmark row (--sidebar-top) with the add and
- * collapse controls, the search row under it, the tree or the History panel,
- * and the foot. The resize handle is this region's other half — a sibling of
- * the aside in the screen's flex row.
+ * The sidebar region: the wordmark row, the top actions (New workspace,
+ * History, Search — one row each), the project tree, and the bottom icon row.
+ * Nothing here collapses or swaps: the History page opens in the main area
+ * while this rail keeps showing the workspaces. The resize handle is this
+ * region's other half — a sibling of the aside in the screen's flex row.
  */
 export function Sidebar({
   width,
@@ -61,18 +48,21 @@ export function Sidebar({
   resizeMax,
   historyOpen,
   onToggleHistory,
-  history,
   searchValue,
   onSearchChange,
   onAddProject,
+  onOpenSettings,
   addProjectRef,
   tree,
   daemon,
   daemonNote,
 }: SidebarProps) {
   const [searchOpen, setSearchOpen] = useState(false);
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchButtonRef = useRef<HTMLButtonElement>(null);
+  const newWorkspaceRef = useRef<HTMLButtonElement>(null);
+  const projectMenuRef = useRef<HTMLDivElement>(null);
   /** Which end of the row takes the focus once the swap commits: the field
    * replaces the trigger, so the trigger's ref is null until it is back. */
   const focusSearchRef = useRef<"field" | "trigger" | null>(null);
@@ -107,16 +97,66 @@ export function Sidebar({
     return () => window.removeEventListener("keydown", onKey);
   }, [collapsed, onCollapsedChange, openSearch]);
 
+  const dismissProjectMenu = useCallback(() => setProjectMenuOpen(false), []);
+  useMenuOpen(projectMenuOpen, dismissProjectMenu);
+
+  useEffect(() => {
+    if (!projectMenuOpen) return;
+    const first = [
+      ...(projectMenuRef.current?.querySelectorAll<HTMLButtonElement>("button") ?? []),
+    ].find((button) => !button.disabled);
+    first?.focus({ preventScroll: true });
+  }, [projectMenuOpen]);
+
+  useEffect(() => {
+    if (!projectMenuOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!(event.target instanceof Node)) return;
+      if (projectMenuRef.current?.contains(event.target)) return;
+      if (newWorkspaceRef.current?.contains(event.target)) return;
+      setProjectMenuOpen(false);
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [projectMenuOpen]);
+
+  const onProjectMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setProjectMenuOpen(false);
+      newWorkspaceRef.current?.focus({ preventScroll: true });
+      return;
+    }
+    if (event.key === "Tab") {
+      event.preventDefault();
+      setProjectMenuOpen(false);
+      newWorkspaceRef.current?.focus({ preventScroll: true });
+      return;
+    }
+    moveMenuFocus(projectMenuRef.current, event);
+  };
+
+  const newWorkspaceProjects: readonly WorkspaceProject[] = tree.projects;
+  const newWorkspace = useCallback(
+    (trigger: HTMLButtonElement) => {
+      // One project takes the click straight to its create flow; several ask
+      // which project the workspace belongs to, in a menu off this row.
+      if (newWorkspaceProjects.length === 1) {
+        tree.onNewWorkspace(trigger, newWorkspaceProjects[0].id);
+        return;
+      }
+      setProjectMenuOpen((open) => !open);
+    },
+    [newWorkspaceProjects, tree],
+  );
+
   const searchField = (
     <label className="workspace-search sidebar-search">
-      <span className="sr-only">{historyOpen ? "Search history" : "Search workspaces"}</span>
+      <span className="sr-only">Search workspaces</span>
       <input
         ref={searchInputRef}
-        value={historyOpen ? history.searchValue : searchValue}
-        onChange={(event) => {
-          if (historyOpen) history.onSearchChange(event);
-          else onSearchChange(event);
-        }}
+        value={searchValue}
+        onChange={onSearchChange}
         onKeyDown={(event) => {
           if (event.key === "Escape") closeSearch();
         }}
@@ -130,7 +170,7 @@ export function Sidebar({
       <aside
         className="workspace-panel workspace-left-panel"
         style={{ width: collapsed ? "30px" : `${width}px` }}
-        aria-label={historyOpen ? "History" : "Workspaces"}
+        aria-label="Workspaces"
       >
         {collapsed ? (
           <button
@@ -151,16 +191,6 @@ export function Sidebar({
               <button
                 type="button"
                 className="workspace-icon-button sidebar-top-button"
-                ref={addProjectRef}
-                onClick={onAddProject}
-                title="New project"
-                aria-label="New project"
-              >
-                +
-              </button>
-              <button
-                type="button"
-                className="workspace-icon-button sidebar-top-button"
                 onClick={() => onCollapsedChange(true)}
                 title="Collapse"
                 aria-label="Collapse workspaces"
@@ -169,60 +199,108 @@ export function Sidebar({
               </button>
             </div>
 
-            <div className="sidebar-search-row">
-              {searchOpen ? (
-                searchField
-              ) : (
-                <button
-                  type="button"
-                  className="sidebar-search-trigger"
-                  ref={searchButtonRef}
-                  onClick={openSearch}
-                  title="Search"
-                  aria-label={historyOpen ? "Search history" : "Search workspaces"}
+            <div className="sidebar-actions">
+              <button
+                type="button"
+                className="sidebar-action"
+                ref={newWorkspaceRef}
+                onClick={(event) => newWorkspace(event.currentTarget)}
+                aria-label="New workspace"
+                aria-haspopup={newWorkspaceProjects.length > 1 ? "menu" : undefined}
+                aria-expanded={newWorkspaceProjects.length > 1 ? projectMenuOpen : undefined}
+              >
+                <span className="sidebar-action-icon" aria-hidden="true">
+                  +
+                </span>
+                <span className="sidebar-action-label">New workspace</span>
+              </button>
+              {projectMenuOpen && newWorkspaceProjects.length > 1 ? (
+                <div
+                  className="sidebar-action-menu"
+                  ref={projectMenuRef}
+                  role="menu"
+                  aria-label="New workspace in project"
+                  onKeyDown={onProjectMenuKeyDown}
                 >
-                  <svg
-                    className="sidebar-search-icon"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.75"
-                    strokeLinecap="round"
-                    aria-hidden="true"
-                    focusable="false"
+                  {newWorkspaceProjects.map((project) => (
+                    <button
+                      key={project.id}
+                      type="button"
+                      role="menuitem"
+                      onClick={(event) => {
+                        setProjectMenuOpen(false);
+                        tree.onNewWorkspace(event.currentTarget, project.id);
+                      }}
+                    >
+                      {project.name}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              <button
+                type="button"
+                className="sidebar-action"
+                onClick={onToggleHistory}
+                aria-label="History"
+                aria-current={historyOpen ? "true" : undefined}
+                aria-controls="workspace-history-panel"
+              >
+                <svg
+                  className="sidebar-action-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.75"
+                  strokeLinecap="round"
+                  aria-hidden="true"
+                  focusable="false"
+                >
+                  <path d="M4 5v5h5" />
+                  <path d="M4.5 10a8 8 0 1 1-1 5" />
+                  <path d="M12 8v4l3 2" />
+                </svg>
+                <span className="sidebar-action-label">History</span>
+              </button>
+              <div className="sidebar-search-row">
+                {searchOpen ? (
+                  searchField
+                ) : (
+                  <button
+                    type="button"
+                    className="sidebar-search-trigger"
+                    ref={searchButtonRef}
+                    onClick={openSearch}
+                    title="Search"
+                    aria-label="Search workspaces"
                   >
-                    <circle cx="11" cy="11" r="7" />
-                    <path d="m20 20-3.6-3.6" />
-                  </svg>
-                  <span className="sidebar-search-trigger-label">Search</span>
-                  <span className="sidebar-search-trigger-hint">{searchChordLabel()}</span>
-                </button>
-              )}
+                    <svg
+                      className="sidebar-search-icon"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.75"
+                      strokeLinecap="round"
+                      aria-hidden="true"
+                      focusable="false"
+                    >
+                      <circle cx="11" cy="11" r="7" />
+                      <path d="m20 20-3.6-3.6" />
+                    </svg>
+                    <span className="sidebar-search-trigger-label">Search</span>
+                    <span className="sidebar-search-trigger-hint">{searchChordLabel()}</span>
+                  </button>
+                )}
+              </div>
             </div>
 
             <div className="workspace-scroll sidebar-body">
-              <HostSections daemon={daemon}>
-                {historyOpen ? (
-                  <div className="workspace-history-panel">
-                    <HistoryPanel
-                      search={history.searchValue}
-                      projects={history.projects}
-                      branches={history.branches}
-                      onWorkspaceKeysChange={history.onWorkspaceKeysChange}
-                      selectedSessionId={history.selectedSessionId}
-                      onReopen={history.onReopen}
-                      onReopenAgent={history.onReopenAgent}
-                    />
-                  </div>
-                ) : (
-                  <WorkspaceTree {...tree} />
-                )}
-              </HostSections>
+              <WorkspaceTree {...tree} />
             </div>
 
             <SidebarFooter
-              historyOpen={historyOpen}
-              onToggleHistory={onToggleHistory}
+              onAddProject={onAddProject}
+              addProjectRef={addProjectRef}
+              onOpenSettings={onOpenSettings}
               daemon={daemon}
               note={daemonNote}
             />

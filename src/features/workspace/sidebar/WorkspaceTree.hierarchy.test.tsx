@@ -89,6 +89,7 @@ async function render(over: Partial<WorkspaceTreeProps> = {}): Promise<void> {
         }
         activeSessionId="a-1"
         onOpenAgent={vi.fn()}
+        hostNames={new Map()}
         {...over}
       />,
     ),
@@ -113,7 +114,14 @@ describe("the project, its workspaces and their agents", () => {
     expect(names()).toEqual(["Tighten handoff", "Draft notes"]);
     const items = container.querySelector(".workspace-project-items");
     const children = [...(items?.children ?? [])].map((child) => child.className);
-    expect(children).toEqual(["workspace-row-wrap", "workspace-agent-rows", "workspace-row-wrap"]);
+    // The agents nest right under their row; the project's New workspace row
+    // closes the list.
+    expect(children).toEqual([
+      "workspace-row-wrap",
+      "workspace-agent-rows",
+      "workspace-row-wrap",
+      "workspace-project-new",
+    ]);
   });
 
   it("moves the agents with the selection", async () => {

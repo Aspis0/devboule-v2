@@ -33,7 +33,7 @@ function focusTargetAfterRemoval(row: HTMLButtonElement): HTMLElement | null {
   return (
     rows[index + 1] ??
     rows[index - 1] ??
-    row.closest(".workspace-project")?.querySelector<HTMLButtonElement>(".workspace-project-add") ??
+    row.closest(".workspace-project")?.querySelector<HTMLButtonElement>(".workspace-project-new") ??
     null
   );
 }
@@ -53,16 +53,17 @@ function focusSurvivor(target: HTMLElement | null, panel: Element | null): void 
 
 /**
  * A workspace named like its project prints the branch instead: the heading
- * above already said this name, and a row pair never says it twice. A workspace
- * with no branch keeps its own name — there is nothing truer to put there.
+ * above already said this name, and a row never says it twice. With no branch
+ * known the row prints its host — the only other short truth about it.
  */
 function rowLabel(
   workspace: WorkspaceView,
   projectName: string,
   branch: string | undefined,
+  hostName: string,
 ): string {
   if (workspace.displayTitle !== projectName) return workspace.displayTitle;
-  return branch ?? workspace.displayTitle;
+  return branch ?? hostName;
 }
 
 /**
@@ -88,6 +89,9 @@ export interface WorkspaceRowProps {
    * and a row the UI cannot name cannot be selected. */
   workspaceKey: WorkspaceKey | null;
   projectName: string;
+  /** The row's host as a short label; the second line, and the title's
+   * fallback when the project heading already said the workspace's name. */
+  hostName: string;
   selected: boolean;
   /** An agent listed under this row is the tab in front: it carries the marker. */
   agentFocused: boolean;
@@ -111,6 +115,7 @@ export const WorkspaceRow = memo(function WorkspaceRow({
   workspace,
   workspaceKey,
   projectName,
+  hostName,
   selected,
   agentFocused,
   stat,
@@ -310,21 +315,24 @@ export const WorkspaceRow = memo(function WorkspaceRow({
   };
 
   const fact = rowFact(workspace);
-  const label = rowLabel(workspace, projectName, branch);
-  // The second line: the branch in mono, unless it already is the name above,
-  // and what is uncommitted. A row with neither stays one line.
+  const label = rowLabel(workspace, projectName, branch, hostName);
+  // The second line: the branch in mono unless it already is the title, and
+  // the host with its glyph unless the title already said it. What is
+  // uncommitted rides on the right.
   const subBranch = branch !== undefined && branch !== label ? branch : null;
+  const subHost = hostName !== label ? hostName : null;
   const totals =
     stat !== undefined && stat.additions + stat.deletions > 0
       ? `+${stat.additions} −${stat.deletions}`
       : null;
-  const twoLines = subBranch !== null || totals !== null;
-  // The visible label leads the name; a branch standing in for the title is
-  // followed by the title, so the row stays findable by what it is called —
-  // and the name says each thing once, never the project's name twice.
+  const twoLines = subBranch !== null || subHost !== null || totals !== null;
+  // The visible label leads the name; a branch or host standing in for the
+  // title is followed by the title, so the row stays findable by what it is
+  // called — and the name says each thing once, never the project's name twice.
   const nameParts = [label];
   if (label !== workspace.displayTitle) nameParts.push(workspace.displayTitle);
   if (!nameParts.includes(projectName)) nameParts.push(projectName);
+  if (subHost !== null && !nameParts.includes(hostName)) nameParts.push(hostName);
   if (fact !== null) nameParts.push(...fact.parts.map((part) => part.text));
   const ariaLabel = nameParts.join(", ");
   const detail = rowDetail(workspace, branch, stat);
@@ -405,7 +413,29 @@ export const WorkspaceRow = memo(function WorkspaceRow({
               </span>
               {twoLines ? (
                 <span className="workspace-row-line workspace-row-sub">
-                  <span className="workspace-row-branch">{subBranch}</span>
+                  {subBranch === null ? null : (
+                    <span className="workspace-row-branch">{subBranch}</span>
+                  )}
+                  {subHost === null ? null : (
+                    <span className="workspace-row-host">
+                      <svg
+                        className="workspace-row-host-glyph"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.75"
+                        strokeLinecap="round"
+                        aria-hidden="true"
+                        focusable="false"
+                      >
+                        <rect x="3" y="4" width="18" height="7" rx="1.5" />
+                        <rect x="3" y="13" width="18" height="7" rx="1.5" />
+                        <circle cx="7" cy="7.5" r="1" fill="currentColor" stroke="none" />
+                        <circle cx="7" cy="16.5" r="1" fill="currentColor" stroke="none" />
+                      </svg>
+                      {subHost}
+                    </span>
+                  )}
                   {totals === null ? null : <span className="workspace-row-totals">{totals}</span>}
                 </span>
               ) : null}

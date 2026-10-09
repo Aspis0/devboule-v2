@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
 
-// What the workspace row prints: its name (or the branch when the heading
-// above already printed that name), at most one trailing fact, and the detail
-// a tooltip carries for every row — reachable without selecting it. The row's
-// menu, its title editor and its delete ask are pinned in WorkspaceTree.rename.
+// What the workspace row prints: its name (or the branch — or the host with
+// no branch known — when the heading above already printed that name), at most
+// one trailing fact, the host on a small second line, and the detail a tooltip
+// carries for every row — reachable without selecting it. The row's menu, its
+// title editor and its delete ask are pinned in WorkspaceTree.rename.
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -58,7 +59,7 @@ describe("the workspace row's one line", () => {
 
   async function render(
     view: WorkspaceView,
-    facts: { stat?: WorkspaceStat; branch?: string; projectName?: string } = {},
+    facts: { stat?: WorkspaceStat; branch?: string; projectName?: string; hostName?: string } = {},
   ): Promise<HTMLElement> {
     root = createRoot(container);
     await act(async () => {
@@ -67,6 +68,7 @@ describe("the workspace row's one line", () => {
           workspace={view}
           workspaceKey={localWorkspaceKey(view.id)}
           projectName={facts.projectName ?? "devboule"}
+          hostName={facts.hostName ?? "This PC"}
           selected={false}
           agentFocused={false}
           stat={facts.stat}
@@ -82,7 +84,7 @@ describe("the workspace row's one line", () => {
     return row;
   }
 
-  it("prints the name and its fact as siblings on the first line, and no second line without a branch or totals", async () => {
+  it("prints the name and its fact on the first line, and the host on the second", async () => {
     const row = await render(workspace({ stateDot: "pulse", agents: { working: 2, waiting: 0 } }));
 
     expect([...row.children].map((child) => child.className)).toEqual([
@@ -94,10 +96,13 @@ describe("the workspace row's one line", () => {
         (child) => child.className,
       ),
     ).toEqual(["workspace-row-title", "workspace-row-fact"]);
-    expect(row.querySelector(".workspace-row-sub")).toBeNull();
-    expect(row.classList.contains("workspace-row-two")).toBe(false);
     expect(row.querySelector(".workspace-row-fact")?.textContent).toBe("2 working");
     expect(row.querySelector(".sidebar-row-dot-pulse")).not.toBeNull();
+    // The host is the row's second line even with no branch and no totals.
+    const sub = row.querySelector(".workspace-row-sub");
+    expect(sub?.querySelector(".workspace-row-host")?.textContent).toContain("This PC");
+    expect(sub?.querySelector(".workspace-row-host-glyph")).not.toBeNull();
+    expect(row.classList.contains("workspace-row-two")).toBe(true);
   });
 
   it("prints the approval and the count beside it, never one instead of the other", async () => {
@@ -147,18 +152,22 @@ describe("the workspace row's one line", () => {
     expect(row.classList.contains("workspace-row-two")).toBe(true);
   });
 
-  it("leaves out a clean tree's zero totals, and keeps one line when the branch is unknown too", async () => {
+  it("leaves out a clean tree's zero totals, keeping only the host's second line", async () => {
     const row = await render(workspace(), { stat: { additions: 0, deletions: 0 } });
 
     expect(row.querySelector(".workspace-row-fact")).toBeNull();
-    expect(row.querySelector(".workspace-row-sub")).toBeNull();
+    expect(row.querySelector(".workspace-row-branch")).toBeNull();
+    expect(row.querySelector(".workspace-row-totals")).toBeNull();
+    expect(row.querySelector(".workspace-row-host")?.textContent).toContain("This PC");
   });
 
   it("does not print a branch twice when it already stands in for the name", async () => {
     const row = await render(workspace({ displayTitle: "devboule" }), { branch: "main" });
 
     expect(row.querySelector(".workspace-row-title")?.textContent).toBe("main");
-    expect(row.querySelector(".workspace-row-sub")).toBeNull();
+    expect(row.querySelector(".workspace-row-branch")).toBeNull();
+    // The host keeps the second line: the row still says where it lives.
+    expect(row.querySelector(".workspace-row-host")?.textContent).toContain("This PC");
   });
 
   it("keeps the last activity right of the name, and the totals on the second line", async () => {
@@ -207,8 +216,8 @@ describe("the workspace row's one line", () => {
     });
 
     expect(row.querySelector(".workspace-row-title")?.textContent).toBe("main");
-    // The title it stands in for stays in the accessible name.
-    expect(row.getAttribute("aria-label")).toBe("main, devboule");
+    // The title it stands in for stays in the accessible name, with the host.
+    expect(row.getAttribute("aria-label")).toBe("main, devboule, This PC");
   });
 
   it("keeps its own name when it differs from the project's", async () => {
@@ -218,20 +227,20 @@ describe("the workspace row's one line", () => {
     });
 
     expect(row.querySelector(".workspace-row-title")?.textContent).toBe("figures");
-    expect(row.getAttribute("aria-label")).toBe("figures, paperlab-studio");
+    expect(row.getAttribute("aria-label")).toBe("figures, paperlab-studio, This PC");
   });
 
-  it("keeps its own name when the project has no branch to speak instead", async () => {
+  it("falls back to the host when the project has no branch to speak instead", async () => {
     const row = await render(workspace({ displayTitle: "devboule" }), { projectName: "devboule" });
 
-    expect(row.querySelector(".workspace-row-title")?.textContent).toBe("devboule");
-    expect(row.getAttribute("aria-label")).toBe("devboule");
+    expect(row.querySelector(".workspace-row-title")?.textContent).toBe("This PC");
+    expect(row.getAttribute("aria-label")).toBe("This PC, devboule");
   });
 
   it("carries the fact in the row's accessible name", async () => {
     const row = await render(workspace({ stateDot: "pulse", agents: { working: 2, waiting: 0 } }));
 
-    expect(row.getAttribute("aria-label")).toBe("devboule-v2, devboule, 2 working");
+    expect(row.getAttribute("aria-label")).toBe("devboule-v2, devboule, This PC, 2 working");
   });
 
   it("hands the branch and the totals to a pointer's tooltip and to a screen reader", async () => {

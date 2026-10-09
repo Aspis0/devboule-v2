@@ -132,8 +132,7 @@
   text-transform: uppercase;
 }
 
-.workspace-icon-button,
-.workspace-project-add {
+.workspace-icon-button {
   display: grid;
   flex: none;
   place-items: center;
