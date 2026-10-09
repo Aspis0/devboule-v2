@@ -1045,14 +1045,10 @@ export function Workspace({
       writeToolTab,
     ],
   );
-  /** The drag belongs to the layer below, which also draws the preview: a
-   * pointer moving inside one destination must not re-render this surface. */
   /** The gap a tab dropped on the row would land in, read from the live chips:
    * the same index the drop itself resolves, so the line shows where it lands. */
   const tabInsertionAt = useCallback(
     (tabId: string, point: TabDropPoint): TabInsertionMark | null => {
-      // The pane-below tab merges on the row instead of reordering, so it has no gap.
-      if (tabId === split?.lowerTabId) return null;
       const strip = document.querySelector<HTMLElement>(".workspace-session-tabs");
       if (strip === null) return null;
       const slots = readTabSlots(strip);
@@ -1061,8 +1057,10 @@ export function Workspace({
       const box = strip.getBoundingClientRect();
       return { x, top: box.top, height: box.height };
     },
-    [split?.lowerTabId],
+    [],
   );
+  /** The drag belongs to the layer below, which also draws the preview: a
+   * pointer moving inside one destination must not re-render this surface. */
   const dragLayerRef = useRef<SplitDragLayerHandle>(null);
   const startTabDrag = useCallback(
     (tabId: string, owner: Element, event: ReactPointerEvent<HTMLDivElement>) => {

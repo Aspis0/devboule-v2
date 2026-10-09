@@ -294,7 +294,7 @@ describe("dragging a browser tab into the centre", () => {
     expect(splitPaneFor(WORKSPACE)).toBeNull();
   });
 
-  it("merges when the pane below's tab is dropped back on the row", async () => {
+  it("reorders the pane below's tab on the row and keeps the split", async () => {
     const record = openBrowserTab(WORKSPACE, "https://example.test/");
     await renderSplitWorkspace();
     await plainClick(makeBrowserTab(WORKSPACE, record.browserId).id);
@@ -304,6 +304,21 @@ describe("dragging a browser tab into the centre", () => {
     expect(splitPaneFor(WORKSPACE)).not.toBeNull();
 
     await dragChipTo({ x: 500, y: STRIP.top + 20 }, record.browserId);
+
+    expect(splitPaneFor(WORKSPACE)).not.toBeNull();
+    expect(document.querySelector(".workspace-split")).not.toBeNull();
+  });
+
+  it("merges the pane below back through its own merge control", async () => {
+    const record = openBrowserTab(WORKSPACE, "https://example.test/");
+    await renderSplitWorkspace();
+    await plainClick(makeBrowserTab(WORKSPACE, record.browserId).id);
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>(".browser-split-down")?.click();
+    });
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>(".workspace-split-merge")?.click();
+    });
 
     expect(splitPaneFor(WORKSPACE)).toBeNull();
     expect(document.querySelector(".workspace-split")).toBeNull();

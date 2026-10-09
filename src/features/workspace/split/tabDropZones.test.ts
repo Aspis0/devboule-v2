@@ -125,12 +125,15 @@ describe("what each drop does", () => {
     ).toEqual({ kind: "select" });
   });
 
-  it("merges when the dragged tab is the one in the pane below", () => {
+  it("merges when the dragged tab is the one in the pane below, dropped on the top edge", () => {
     expect(resolveDropOutcome({ ...base, zone: "top", lowerTabId: base.draggedTabId })).toEqual({
       kind: "merge",
     });
+  });
+
+  it("reorders the strip for the tab in the pane below too, so it stays reorderable", () => {
     expect(resolveDropOutcome({ ...base, zone: "strip", lowerTabId: base.draggedTabId })).toEqual({
-      kind: "merge",
+      kind: "reorder",
     });
   });
 

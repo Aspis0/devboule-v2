@@ -112,9 +112,9 @@ export interface DropContext {
  */
 export function resolveDropOutcome(context: DropContext): DropOutcome {
   const { draggedTabId, lowerTabId, upperTabId, upperCanMoveBelow, zone } = context;
-  if (zone === "strip") {
-    return lowerTabId === draggedTabId ? { kind: "merge" } : { kind: "reorder" };
-  }
+  // The row reorders every tab, the pane below's included; merging back is the
+  // top edge's job, and the pane's own control.
+  if (zone === "strip") return { kind: "reorder" };
   if (zone === "bottom") {
     // A tab the pane below cannot show is a selection, not a split that would
     // be merged away again a frame later.
