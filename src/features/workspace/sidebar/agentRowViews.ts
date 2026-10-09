@@ -1,3 +1,4 @@
+import { useMemo, useState } from "react";
 import type { Session, SessionKind } from "../../../types/ipc";
 import { isAgentKind } from "../../../types/ipc";
 import { localWorkspaceKey, type WorkspaceKey } from "../hosts/hostIdentity";
@@ -61,4 +62,66 @@ export function buildAgentRows(
     else list.push(row);
   }
   return byWorkspace;
+}
+
+/** Field equality for one listed row: every part is a primitive, so a roster
+ * push that changed nothing the rail reads compares equal. */
+function isSameAgentRow(oldRow: AgentRowView, row: AgentRowView): boolean {
+  return (
+    oldRow.id === row.id &&
+    oldRow.kind === row.kind &&
+    oldRow.title === row.title &&
+    oldRow.word === row.word &&
+    oldRow.attention === row.attention &&
+    oldRow.working === row.working &&
+    oldRow.quiet === row.quiet &&
+    oldRow.age === row.age
+  );
+}
+
+type StableRows = {
+  source: ReadonlyMap<WorkspaceKey, readonly AgentRowView[]>;
+  rows: ReadonlyMap<WorkspaceKey, readonly AgentRowView[]>;
+};
+
+/**
+ * The rail's agent rows with a stable identity: roster pushes rebuild every
+ * Session object, so a fresh build differs by identity even when nothing the
+ * rail reads moved. Unchanged workspace lists — and the map itself when every
+ * list is unchanged — are reused from the previous build, so a status-only
+ * event does not rebuild the tree prop. Unchanged rows keep their identity
+ * across roster and branch reads, the same shape History rows use.
+ */
+export function useStableAgentRows(
+  sessions: readonly Session[],
+): ReadonlyMap<WorkspaceKey, readonly AgentRowView[]> {
+  const fresh = useMemo(() => buildAgentRows(sessions), [sessions]);
+  const [stable, setStable] = useState<StableRows | null>(null);
+  let rows: ReadonlyMap<WorkspaceKey, readonly AgentRowView[]>;
+  if (stable !== null && stable.source === fresh) {
+    rows = stable.rows;
+  } else {
+    const prev = stable?.rows;
+    let reused = prev !== undefined && prev.size === fresh.size;
+    const merged = new Map<WorkspaceKey, readonly AgentRowView[]>();
+    for (const [key, list] of fresh) {
+      const old = prev?.get(key);
+      if (
+        old !== undefined &&
+        old.length === list.length &&
+        list.every((row, index) => isSameAgentRow(old[index], row))
+      ) {
+        merged.set(key, old);
+      } else {
+        reused = false;
+        merged.set(key, list);
+      }
+    }
+    // Render-phase update (the React-sanctioned shape for derived state):
+    // the output is discarded and recomputed when stale.
+    const next = reused && prev !== undefined ? prev : merged;
+    setStable({ source: fresh, rows: next });
+    rows = next;
+  }
+  return rows;
 }

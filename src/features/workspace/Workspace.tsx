@@ -104,7 +104,7 @@ import { MIN_LEFT_WIDTH, MIN_RIGHT_WIDTH, useWorkspacePanelResize } from "./work
 import { keyOfWorkspace, useWorkspaceProjects } from "./workspaceProjects";
 import { getLastSelectedWorkspaceKey, setLastSelectedWorkspaceKey } from "./lastSelectedWorkspace";
 import { Sidebar } from "./sidebar/Sidebar";
-import { buildAgentRows } from "./sidebar/agentRowViews";
+import { useStableAgentRows } from "./sidebar/agentRowViews";
 import { hostNames } from "./sidebar/hostNames";
 import type { WorkspaceTreeProps } from "./sidebar/WorkspaceTree";
 import { HistoryPanel } from "../history/HistoryPanel";
@@ -2027,7 +2027,7 @@ export function Workspace({
     [providerAnchor, providerPicker, dismissProviderPicker, openProvidersSettings, pickProvider],
   );
 
-  const agentRows = useMemo(() => buildAgentRows(sessions), [sessions]);
+  const agentRows = useStableAgentRows(sessions);
   // What the daemon's status poll hands out every 2 s is a new object even
   // when nothing changed; the rail compares the fields its dot reads, so an
   // unchanged daemon keeps its identity and the rail's memo holds.
