@@ -312,8 +312,10 @@ describe("the History page", () => {
     if (first === null || meta === null) throw new Error("the row lines did not render");
     expect(first.textContent).toContain("main");
     expect(first.textContent).not.toContain("Alpha");
-    // The project keeps its single naming in the meta line.
+    // The project keeps its single naming in the meta line, and the branch
+    // already spoken above is not repeated below.
     expect(meta.textContent).toContain("Alpha");
+    expect(meta.textContent).not.toContain("main");
   });
 
   it("still groups rows by day", async () => {

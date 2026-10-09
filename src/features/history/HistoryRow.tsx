@@ -170,13 +170,6 @@ export const HistoryRowView = memo(function HistoryRowView({
   // because the meta line ellipsises its tail first.
   const age = historyRelativeTime(row.updatedAtMs, now);
   const readOnly = row.session !== null && !openable;
-  const visibleMeta = [
-    readOnly ? "Read-only" : null,
-    row.project,
-    row.host,
-    row.branch,
-    age ?? (row.session ? stateLabel : null),
-  ].filter(Boolean);
   const trimmed = transcriptWasTrimmed(row.session);
   const title = sessionTitle(row);
   // A workspace named like its project reads as one thing: the first line
@@ -186,6 +179,16 @@ export const HistoryRowView = memo(function HistoryRowView({
     row.workspace !== null && row.workspace === row.project
       ? (row.branch ?? row.host ?? row.workspace)
       : row.workspace;
+  // ...and the branch is shown once: never repeated below the line that
+  // already speaks it.
+  const metaBranch = row.branch !== null && row.branch !== workspaceLabel ? row.branch : null;
+  const visibleMeta = [
+    readOnly ? "Read-only" : null,
+    row.project,
+    row.host,
+    metaBranch,
+    age ?? (row.session ? stateLabel : null),
+  ].filter(Boolean);
   const reopenReason = !openable
     ? row.session === null
       ? "Session details are unavailable, so this session cannot be reopened."
