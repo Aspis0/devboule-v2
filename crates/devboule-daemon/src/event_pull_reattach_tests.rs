@@ -157,7 +157,7 @@ fn live_agent_replay_uses_stored_manifest_state() {
             provider_id: None,
             model_id: "grok-live".to_string(),
             name: "Grok Live".to_string(),
-            provider: None,
+            provider_id: None,
             description: None,
             context_tokens: None,
             current_effort: Some("high".to_string()),

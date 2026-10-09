@@ -2473,7 +2473,7 @@ fn session_id_from_value(value: &Value) -> Option<String> {
 
 #[derive(Clone, Debug, Default)]
 struct PiCatalog {
-    models: HashMap<PiModelKey, PiModel>,
+    models: HashMap<String, PiModel>,
     current_model_id: Option<String>,
     current_provider: Option<String>,
     current_effort: Option<String>,
@@ -2555,6 +2555,18 @@ impl PiCatalog {
         self.current_levels = levels;
         self.current_effort = current_effort;
     }
+}
+
+/// Names the serving providers so the refusal says what to pick. The profile
+/// form names the pair, so the wording points at the profile.
+fn ambiguous_model_error(model_id: &str, providers: &[String]) -> WireError {
+    WireError::new(
+        ErrorCode::InvalidRequest,
+        format!(
+            "Pi model '{model_id}' is offered by {}; pick one in the profile.",
+            providers.join(" and ")
+        ),
+    )
 }
 
 /// Names the serving providers so the refusal says what to pick. The profile

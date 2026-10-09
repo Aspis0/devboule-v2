@@ -217,7 +217,7 @@ mod tests {
         SessionModel {
             model_id: id.to_string(),
             name: id.to_string(),
-            provider: Some(provider.to_string()),
+            provider_id: Some(provider.to_string()),
             description: None,
             context_tokens: None,
             current_effort: None,

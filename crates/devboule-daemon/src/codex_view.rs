@@ -731,7 +731,7 @@ fn manifest_from_catalog(catalog: &CodexCatalog, mode_id: &str) -> SessionEvent 
                 provider_id: None,
                 model_id: model.id.clone(),
                 name: model.name.clone(),
-                provider: None,
+                provider_id: None,
                 description: (!model.description.is_empty()).then(|| model.description.clone()),
                 context_tokens: model.context_window,
                 current_effort: (model.id == catalog.current_model_id)

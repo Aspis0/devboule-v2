@@ -4189,10 +4189,12 @@ fn the_manifest_names_the_provider_that_serves_the_current_model_and_follows_a_s
 }
 
 /// One id served by two providers, plus a solo row: the bare-id hole the
-/// pair key closes, as pi's own wire spells it.
+/// composite key closes, as pi's own wire spells it. The two rows declare
+/// different inputs and thinking maps, so a test can prove each row keeps
+/// its own.
 const PI_DUPLICATE_ID_MODELS: &str = r#"{"data":{"models":[
-{"id":"mimo-v2-6-flash","name":"MiMo V2.6 Flash","provider":"opencode-go","reasoning":true,"thinkingLevelMap":{"high":{},"low":{}}},
-{"id":"mimo-v2-6-flash","name":"MiMo V2.6 Flash","provider":"openrouter","reasoning":true,"thinkingLevelMap":{"high":{}}},
+{"id":"mimo-v2-6-flash","name":"MiMo V2.6 Flash","provider":"opencode-go","reasoning":true,"input":["text","image"],"thinkingLevelMap":{"high":{},"low":{}}},
+{"id":"mimo-v2-6-flash","name":"MiMo V2.6 Flash","provider":"openrouter","reasoning":true,"input":["text"],"thinkingLevelMap":{"high":{}}},
 {"id":"solo","name":"Solo","provider":"nvidia","reasoning":false}
 ]}}"#;
 
@@ -4210,66 +4212,90 @@ fn duplicate_id_catalog() -> PiCatalog {
 }
 
 #[test]
-fn duplicate_model_ids_keep_both_rows_and_name_their_providers() {
+fn duplicate_ids_share_no_row_and_lookup_names_their_providers() {
     let catalog = duplicate_id_catalog();
     assert_eq!(catalog.models.len(), 3);
     let manifest = super::manifest_from_catalog(&catalog, "ask");
-    let devboule_protocol::SessionEvent::SessionManifest { models, .. } = manifest else {
+    let devboule_protocol::SessionEvent::SessionManifest {
+        models,
+        current_model_id,
+        ..
+    } = manifest
+    else {
         panic!("a session manifest");
     };
     assert_eq!(models.len(), 3);
+    // Composite identities with the serving provider on each item.
     let mimo: Vec<(&str, Option<&str>)> = models
         .iter()
-        .filter(|model| model.model_id == "mimo-v2-6-flash")
-        .map(|model| (model.model_id.as_str(), model.provider.as_deref()))
+        .filter(|model| model.provider_id.is_some())
+        .filter(|model| {
+            model.model_id == "opencode-go/mimo-v2-6-flash"
+                || model.model_id == "openrouter/mimo-v2-6-flash"
+        })
+        .map(|model| (model.model_id.as_str(), model.provider_id.as_deref()))
         .collect();
     assert_eq!(
         mimo,
         vec![
-            ("mimo-v2-6-flash", Some("opencode-go")),
-            ("mimo-v2-6-flash", Some("openrouter")),
+            ("opencode-go/mimo-v2-6-flash", Some("opencode-go")),
+            ("openrouter/mimo-v2-6-flash", Some("openrouter")),
         ]
     );
-}
-
-#[test]
-fn resolve_prefers_the_pair_and_falls_back_to_the_bare_id() {
-    let catalog = duplicate_id_catalog();
-    // The exact pair wins, whatever the current model is.
-    let openrouter = catalog
-        .resolve(Some("openrouter"), "mimo-v2-6-flash")
-        .expect("the named pair");
-    assert_eq!(openrouter.provider.as_deref(), Some("openrouter"));
-    // A named pair that matches nothing is nothing — never the other
-    // provider's row.
-    assert!(catalog
-        .resolve(Some("unknown"), "mimo-v2-6-flash")
-        .is_none());
-    assert!(catalog.resolve(None, "ghost").is_none());
-    // A bare id shared by two rows falls back to the current model when it
-    // is among them.
-    let bare = catalog
-        .resolve(None, "mimo-v2-6-flash")
-        .expect("bare fallback");
-    assert_eq!(bare.provider.as_deref(), Some("opencode-go"));
-    // A bare id with one row resolves to it.
-    let solo = catalog.resolve(None, "solo").expect("solo");
-    assert_eq!(solo.provider.as_deref(), Some("nvidia"));
-}
-
-#[test]
-fn bare_fallback_without_a_current_match_is_key_order() {
-    let mut catalog = duplicate_id_catalog();
-    catalog.current_model_id = Some("solo".to_string());
-    catalog.current_provider = Some("nvidia".to_string());
-    let bare = catalog
-        .resolve(None, "mimo-v2-6-flash")
-        .expect("bare fallback");
+    // The running model is the composite key, not the bare id.
     assert_eq!(
-        bare.provider.as_deref(),
-        Some("opencode-go"),
-        "deterministic first in key order, never a guess that moves"
+        current_model_id.as_deref(),
+        Some("opencode-go/mimo-v2-6-flash")
     );
+    // The composite key resolves; the bare id names its providers; a
+    // ghost names nothing.
+    assert!(matches!(
+        catalog.lookup("opencode-go/mimo-v2-6-flash"),
+        super::PiLookup::Found(_)
+    ));
+    match catalog.lookup("mimo-v2-6-flash") {
+        super::PiLookup::Ambiguous(providers) => {
+            assert_eq!(providers, vec!["opencode-go", "openrouter"]);
+        }
+        super::PiLookup::Found(_) | super::PiLookup::Missing => {
+            panic!("a bare duplicate id is ambiguous")
+        }
+    }
+    assert!(matches!(
+        catalog.lookup("ghost"),
+        super::PiLookup::Missing
+    ));
+    // Image routing answers a row it can name and nothing for an
+    // ambiguous id — never a guess at another provider's declaration.
+    assert!(catalog.input_kinds("mimo-v2-6-flash").is_none());
+    assert!(catalog
+        .input_kinds("opencode-go/mimo-v2-6-flash")
+        .is_some());
+}
+
+#[test]
+fn each_duplicate_row_keeps_its_own_effort_list() {
+    // Current is mimo served by opencode-go with levels [high, low]; the
+    // openrouter row declares only high in its own thinking map, and solo
+    // declares nothing at all.
+    let catalog = duplicate_id_catalog();
+    let levels_of = |key: &str| -> Option<Vec<String>> {
+        match catalog.lookup(key) {
+            super::PiLookup::Found(model) => model.efforts.clone().map(|efforts| {
+                efforts.iter().map(|effort| effort.id.clone()).collect()
+            }),
+            super::PiLookup::Ambiguous(_) | super::PiLookup::Missing => None,
+        }
+    };
+    assert_eq!(
+        levels_of("opencode-go/mimo-v2-6-flash"),
+        Some(vec!["high".to_string(), "low".to_string()])
+    );
+    assert_eq!(
+        levels_of("openrouter/mimo-v2-6-flash"),
+        Some(vec!["high".to_string()])
+    );
+    assert_eq!(levels_of("nvidia/solo"), None);
 }
 
 /// A fake pi that answers the model switch and the levels read, recording
@@ -4306,8 +4332,9 @@ fn pair_catalog() -> PiCatalog {
     PiCatalog {
         models: HashMap::from([
             (
-                super::pi_model_key(Some("opencode-go"), "mimo-v2-6-flash"),
+                crate::pi_view::model_key(Some("opencode-go"), "mimo-v2-6-flash"),
                 super::PiModel {
+                    id: "mimo-v2-6-flash".to_string(),
                     name: "MiMo V2.6 Flash".to_string(),
                     provider: Some("opencode-go".to_string()),
                     context_tokens: None,
@@ -4316,8 +4343,9 @@ fn pair_catalog() -> PiCatalog {
                 },
             ),
             (
-                super::pi_model_key(Some("openrouter"), "mimo-v2-6-flash"),
+                crate::pi_view::model_key(Some("openrouter"), "mimo-v2-6-flash"),
                 super::PiModel {
+                    id: "mimo-v2-6-flash".to_string(),
                     name: "MiMo V2.6 Flash".to_string(),
                     provider: Some("openrouter".to_string()),
                     context_tokens: None,
@@ -4368,20 +4396,15 @@ fn set_model_full_refuses_a_pair_the_catalog_does_not_serve() {
 }
 
 #[test]
-fn bare_set_model_prefers_the_current_row_among_duplicates() {
+fn bare_set_model_refuses_ambiguous_ids_naming_their_providers() {
     let pi = fake_pi_answering(PAIR_WIRE_SCRIPT);
     let switcher = paired_switcher(&pi, pair_catalog());
-    switcher
+    let error = switcher
         .set_model(Some("mimo-v2-6-flash"), None)
-        .expect("legacy bare id still switches");
-    let received: Vec<String> = pi
-        .answers()
-        .iter()
-        .filter_map(|answer| answer["received"].as_str().map(str::to_string))
-        .collect();
+        .expect_err("a bare duplicate is refused");
     assert!(
-        received[0].contains("\"provider\":\"opencode-go\""),
-        "the bare legacy road keeps the current row: {}",
-        received[0]
+        error.message.contains("offered by opencode-go and openrouter"),
+        "the refusal names the providers to pick from: {}",
+        error.message
     );
 }

@@ -889,7 +889,7 @@ fn session_manifest_round_trips_with_camel_case_wire_names() {
             provider_id: None,
             model_id: "grok-4.6".to_string(),
             name: "Grok 4.6".to_string(),
-            provider: None,
+            provider_id: None,
             description: Some("SpaceXAI's latest frontier model".to_string()),
             context_tokens: Some(500_000),
             current_effort: Some("xhigh".to_string()),

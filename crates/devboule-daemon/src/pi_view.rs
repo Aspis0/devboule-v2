@@ -31,6 +31,17 @@ fn tool_summary(name: Option<&str>, arguments: Option<&Value>) -> Option<String>
         .map(str::to_string)
 }
 
+/// The identity a Pi model carries on the wire: its provider and its id. The
+/// catalog and the turn's usage name a model the same way, so the meter finds
+/// the manifest row it reads. The key is only compared for equality, never
+/// split, so it relies on pi's provider names being slugs with no `/`.
+pub(crate) fn model_key(provider: Option<&str>, id: &str) -> String {
+    match provider {
+        Some(provider) => format!("{provider}/{id}"),
+        None => id.to_string(),
+    }
+}
+
 pub(crate) fn events_from_line(value: &Value) -> Vec<SessionEvent> {
     let Some(kind) = value.get("type").and_then(Value::as_str) else {
         return Vec::new();
@@ -376,17 +387,6 @@ fn result_exit_code(result: Option<&Value>) -> Option<i32> {
     .into_iter()
     .flatten()
     .find_map(|value| value.as_i64().and_then(|code| i32::try_from(code).ok()))
-}
-
-/// The identity a Pi model carries on the wire: its provider and its id. The
-/// catalog and the turn's usage name a model the same way, so the meter finds
-/// the manifest row it reads. The key is only compared for equality, never
-/// split, so it relies on pi's provider names being slugs with no `/`.
-pub(crate) fn model_key(provider: Option<&str>, id: &str) -> String {
-    match provider {
-        Some(provider) => format!("{provider}/{id}"),
-        None => id.to_string(),
-    }
 }
 
 /// The turn's finish and the context reading it proves: pi's own

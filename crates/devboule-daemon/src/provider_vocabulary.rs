@@ -799,7 +799,7 @@ mod pi_tests {
         devboule_protocol::SessionModel {
             model_id: id.to_string(),
             name: id.to_string(),
-            provider: Some(provider.to_string()),
+            provider_id: Some(provider.to_string()),
             description: None,
             context_tokens: None,
             current_effort: None,
@@ -840,7 +840,7 @@ mod pi_tests {
             models
                 .items
                 .iter()
-                .map(|item| item.provider.as_deref())
+                .map(|item| item.provider_id.as_deref())
                 .collect::<Vec<_>>(),
             vec![Some("opencode-go"), Some("openrouter")]
         );

@@ -194,9 +194,10 @@ impl PiUsagePoller {
     /// captured, never re-read at publish time.
     fn manifest_window(&self, model: &str) -> Option<u64> {
         let catalog = self.catalog.lock().ok()?;
-        catalog
-            .resolve(None, model)
-            .and_then(|model| model.context_tokens)
+        match catalog.lookup(model) {
+            super::PiLookup::Found(model) => model.context_tokens,
+            super::PiLookup::Ambiguous(_) | super::PiLookup::Missing => None,
+        }
     }
 
     /// Drive one poll tick synchronously. Tests only; production ticks on
