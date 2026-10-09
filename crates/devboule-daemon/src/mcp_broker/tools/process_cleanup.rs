@@ -22,6 +22,21 @@ use crate::server::ServerState;
 const DEFAULT_GRACE_MS: u32 = 2_000;
 const MAX_GRACE_MS: u32 = 30_000;
 
+/// macOS signals name a pid, and the check that confirms the process cannot be
+/// bound to the signal: a process can be replaced between the two. Nothing is
+/// signalled on such a platform until a signal carries the verified identity.
+const SIGNALS_BIND_IDENTITY: bool = !cfg!(target_os = "macos");
+
+/// The refusal for a platform whose signals cannot be bound to the confirmed
+/// process: `None` where they can.
+fn platform_refusal(signals_bind_identity: bool) -> Option<&'static str> {
+    (!signals_bind_identity).then_some("signals_cannot_bind_identity")
+}
+
+/// The refusal when this platform cannot bind a signal to a verified process.
+const PLATFORM_SENTENCE: &str =
+    "refused: this platform cannot bind a signal to the verified process; nothing was stopped";
+
 /// The refusal when the session's own provider tree cannot be proved: the
 /// caller is told nothing was stopped, and why.
 const UNPROVEN_SENTENCE: &str =
@@ -113,6 +128,16 @@ pub(in crate::mcp_broker) fn cleanup(
                 )
             })?,
     };
+    if let Some(reason) = platform_refusal(SIGNALS_BIND_IDENTITY) {
+        audit_mcp_tool(
+            state,
+            &caller,
+            crate::provider_catalog::MCP_CLEANUP_PROCESSES_TOOL,
+            &registration.session_id,
+            &audit::refused(reason),
+        );
+        return Err(tool_error(&id, PLATFORM_SENTENCE));
+    }
     refreshed(state, &id)?;
     let plan = match state.process_index.cleanup_plan(&registration.session_id) {
         None => CleanupPlan {
@@ -306,6 +331,17 @@ fn execute_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A platform whose signal names a pid cannot bind it to the process the
+    /// check confirmed: nothing is planned or signalled there.
+    #[test]
+    fn a_platform_that_cannot_bind_signals_refuses_before_planning() {
+        assert_eq!(
+            platform_refusal(false),
+            Some("signals_cannot_bind_identity")
+        );
+        assert_eq!(platform_refusal(true), None);
+    }
 
     /// The card's executable line: unique basenames, at most eight, and a
     /// marker when the plan holds more.
