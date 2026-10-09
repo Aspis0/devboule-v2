@@ -101,3 +101,36 @@ fn a_model_takes_images_only_when_pi_lists_image_input() {
     assert_eq!(accepts("vision"), Some(true));
     assert_eq!(accepts("text-only"), Some(false));
 }
+
+#[test]
+fn a_switch_publishes_the_levels_pi_answered_with() {
+    // The catalog estimated the new model's levels before the switch; pi's
+    // answer after the switch is the list the manifest must publish.
+    let mut catalog = catalog_with_current(
+        "current",
+        r#"{"data":{"models":[
+{"id":"current","name":"Current","provider":"p","reasoning":true},
+{"id":"mimo","name":"MiMo","provider":"openrouter","reasoning":true}
+]}}"#,
+    );
+    catalog.record_switch(
+        "mimo",
+        "openrouter".to_string(),
+        vec!["off".to_string(), "high".to_string()],
+        Some("high".to_string()),
+    );
+    let SessionEvent::SessionManifest { models, .. } =
+        super::manifest_from_catalog(&catalog, "bypass")
+    else {
+        panic!("a catalog builds a manifest");
+    };
+    let mimo = models
+        .iter()
+        .find(|model| model.model_id == "mimo")
+        .expect("mimo");
+    assert_eq!(
+        level_ids(&catalog, "mimo"),
+        Some(vec!["off".to_string(), "high".to_string()])
+    );
+    assert_eq!(mimo.current_effort.as_deref(), Some("high"));
+}

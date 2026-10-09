@@ -2365,6 +2365,29 @@ impl PiCatalog {
     fn input_kinds(&self, model_id: &str) -> Option<&PiInputKinds> {
         self.models.get(model_id).map(|model| &model.input)
     }
+
+    /// Records a switch pi confirmed. The levels pi answered for the new model
+    /// replace what the catalog estimated, because the manifest publishes them.
+    fn record_switch(
+        &mut self,
+        model_id: &str,
+        provider: String,
+        levels: Vec<String>,
+        current_effort: Option<String>,
+    ) {
+        if let Some(model) = self.models.get_mut(model_id) {
+            model.efforts = (!levels.is_empty()).then(|| {
+                levels
+                    .iter()
+                    .map(|level| effort(level, current_effort.as_deref() == Some(level)))
+                    .collect()
+            });
+        }
+        self.current_model_id = Some(model_id.to_string());
+        self.current_provider = Some(provider);
+        self.current_levels = levels;
+        self.current_effort = current_effort;
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -3468,10 +3491,7 @@ impl ModelSwitcher for PiSwitcher {
                 return Err(self.rollback_error(error));
             }
         };
-        catalog.current_model_id = Some(model_id.to_string());
-        catalog.current_provider = Some(provider);
-        catalog.current_levels = levels;
-        catalog.current_effort = current_effort;
+        catalog.record_switch(model_id, provider, levels, current_effort);
         Ok(())
     }
 
