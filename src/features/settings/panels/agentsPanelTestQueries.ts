@@ -19,13 +19,6 @@ export function rowByName(name: string): HTMLElement {
   return row;
 }
 
-/** The one checkbox in a profile row is its "agents may create this" tick. */
-export function tickBox(name: string): HTMLInputElement {
-  const box = rowByName(name).querySelector<HTMLInputElement>("input[type='checkbox']");
-  if (!box) throw new Error(`tick for ${name} did not render`);
-  return box;
-}
-
 export function rowButton(name: string, text: string): HTMLButtonElement {
   const row = rowByName(name);
   const byLabel = row.querySelector<HTMLButtonElement>(`button[aria-label="${text} ${name}"]`);
@@ -131,23 +124,6 @@ export function createButton(): HTMLButtonElement {
   );
   if (!button) throw new Error("Create profile button did not render");
   return button;
-}
-
-export function rowTicks(): HTMLInputElement[] {
-  return Array.from(
-    dom.container.querySelectorAll<HTMLInputElement>(
-      ".agent-profile-list .agent-profile-row input[type='checkbox']",
-    ),
-  );
-}
-
-export function rowTick(name: string): HTMLInputElement {
-  const tick = rowTicks().find(
-    (candidate) =>
-      candidate.closest(".agent-profile-row")?.querySelector(".profile-name")?.textContent === name,
-  );
-  if (!tick) throw new Error(`tick for ${name} did not render`);
-  return tick;
 }
 
 /** Select options' values, in wire order. */

@@ -244,7 +244,9 @@ export function AgentProfileForm({
   // form names the read instead.
   const piModelsHint =
     providerId === "pi" && vocabularyCurrent?.models?.state === "absent"
-      ? (probing ? PI_MODELS_READING_TEXT : PI_MODELS_UNREADABLE_TEXT)
+      ? probing
+        ? PI_MODELS_READING_TEXT
+        : PI_MODELS_UNREADABLE_TEXT
       : undefined;
   const askedAndFailed = vocabularyError !== null || featuresAskFailed(vocabularyCurrent);
   const offeredForSeed = offered === null ? null : [...offered];
