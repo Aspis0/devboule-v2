@@ -768,6 +768,17 @@ export function createRemoteEventChannel(
   return new Channel<RemoteRelayMessage>(onMessage ?? (() => undefined));
 }
 
+// Remote stream subscription ids are process-wide: the daemon routes by
+// subscription id per link, so two surfaces must never mint the same one.
+let nextRemoteSubscriptionId = 1;
+
+/** The next subscription id for a remote stream. */
+export function allocRemoteSubscriptionId(): number {
+  const id = nextRemoteSubscriptionId;
+  nextRemoteSubscriptionId += 1;
+  return id;
+}
+
 export function invokeTyped<K extends CommandName>(
   command: K,
   ...args: CommandArgs[K] extends undefined ? [] : [args: CommandArgs[K]]

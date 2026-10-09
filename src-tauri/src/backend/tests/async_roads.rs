@@ -114,14 +114,15 @@ fn the_blocking_roads_outside_the_bridge_stay_async() {
 /// list for a sharper reason: the login check spawns provider CLIs in the
 /// host's credential context, so it must never run on the UI thread.
 ///
-/// The three `remote_host_*` roads are on the same list for the same kind of
-/// reason: they wait on a link to another machine over the tailnet, which is
-/// every bit as slow as a daemon RPC and can be slower still.
+/// The `remote_host_*` and `remote_session_*` roads are on the same list for
+/// the same kind of reason: they wait on a link to another machine over the
+/// tailnet, which is every bit as slow as a daemon RPC and can be slower
+/// still.
 #[test]
 fn every_wait_goes_through_the_blocking_helper() {
     let scan = command_scan::scan();
     assert_eq!(
-        scan.helper_calls, 88,
+        scan.helper_calls, 90,
         "one helper call per waiting road, plus the thread test below that calls the helper itself"
     );
 }

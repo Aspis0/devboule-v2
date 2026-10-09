@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  allocRemoteSubscriptionId,
   createRemoteEventChannel,
   remoteHostList,
   remoteSessionAttach,
@@ -89,7 +90,7 @@ export function RemoteWorkspaceSurface({
       setStreamState("offline");
       return;
     }
-    subscriptionRef.current += 1;
+    subscriptionRef.current = allocRemoteSubscriptionId();
     const subscriptionId = subscriptionRef.current;
     setLines([]);
     setStreamState("streaming");

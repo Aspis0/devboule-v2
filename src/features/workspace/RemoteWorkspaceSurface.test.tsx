@@ -89,16 +89,19 @@ describe("the remote workspace surface", () => {
     expect(remoteSessionAttach).toHaveBeenCalledWith(
       "device-one",
       "session-one",
-      1,
+      expect.any(Number),
       expect.anything(),
     );
+    // Subscription ids are process-wide now, so the test reads the one the
+    // surface actually used instead of assuming 1.
+    const opened = vi.mocked(remoteSessionAttach).mock.calls.at(-1)?.[2] as number;
 
     await act(async () => {
       emit({
         kind: "event",
         deviceId: "device-one",
         sessionId: "session-one",
-        subscriptionId: 1,
+        subscriptionId: opened,
         envelope: {
           sessionId: "session-one",
           generation: 1,
@@ -117,12 +120,13 @@ describe("the remote workspace surface", () => {
       chip?.click();
     });
     await flush();
+    const first = vi.mocked(remoteSessionAttach).mock.calls.at(-1)?.[2] as number;
     await act(async () => {
       emit({
         kind: "event",
         deviceId: "device-one",
         sessionId: "session-one",
-        subscriptionId: 1,
+        subscriptionId: first,
         envelope: {
           sessionId: "session-one",
           generation: 1,
@@ -138,13 +142,14 @@ describe("the remote workspace surface", () => {
         kind: "gap",
         deviceId: "device-one",
         sessionId: "session-one",
-        subscriptionId: 1,
+        subscriptionId: first,
       });
     });
     await flush();
-    expect(remoteSessionDetach).toHaveBeenCalledWith("device-one", "session-one", 1);
+    expect(remoteSessionDetach).toHaveBeenCalledWith("device-one", "session-one", first);
     expect(remoteSessionAttach).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(remoteSessionAttach).mock.calls.at(-1)?.[2]).toBe(2);
+    const second = vi.mocked(remoteSessionAttach).mock.calls.at(-1)?.[2] as number;
+    expect(second).not.toBe(first);
     expect(container.textContent).not.toContain("before the gap");
 
     await act(async () => {
@@ -152,7 +157,7 @@ describe("the remote workspace surface", () => {
         kind: "event",
         deviceId: "device-one",
         sessionId: "session-one",
-        subscriptionId: 2,
+        subscriptionId: second,
         envelope: {
           sessionId: "session-one",
           generation: 1,
@@ -178,15 +183,16 @@ describe("the remote workspace surface", () => {
 
     await render(true);
     expect(remoteSessionAttach).toHaveBeenCalledTimes(2);
-    const lastCall = vi.mocked(remoteSessionAttach).mock.calls.at(-1);
-    expect(lastCall?.[2]).toBe(2);
+    const first = vi.mocked(remoteSessionAttach).mock.calls[0][2];
+    const second = vi.mocked(remoteSessionAttach).mock.calls[1][2];
+    expect(second).not.toBe(first);
 
     await act(async () => {
       emit({
         kind: "event",
         deviceId: "device-one",
         sessionId: "session-one",
-        subscriptionId: 2,
+        subscriptionId: second,
         envelope: {
           sessionId: "session-one",
           generation: 1,
