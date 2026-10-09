@@ -4272,6 +4272,22 @@ impl SessionRegistry {
     /// It is deliberately not a substitute for the checks the session methods
     /// make: this is the *ordering* the gate needs, and every operation still
     /// authorizes itself again at the point it touches the session.
+    /// The scope a *human* action relayed from a paired PC will use: the
+    /// person at the other machine reaches the pairing user's sessions with
+    /// no confirmation, exactly like the observing door. Agent-originated
+    /// tool calls keep [`Self::session_scope`] and its ask card; the frames
+    /// distinguish the two (dedicated host-targeted wrappers for humans, the
+    /// plain frames for tool calls). Unused until Slice 4 wires it.
+    #[allow(dead_code)]
+    pub(crate) fn session_scope_human_action(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        conn_peer: &Option<ConnPeer>,
+    ) -> Result<(), WireError> {
+        self.session_scope_with(session_id, owner, conn_peer, true)
+    }
+
     /// The observing twin of [`Self::session_scope`], for a read-only attach:
     /// a machine peer may attach to the pairing user's sessions, while every
     /// operating frame keeps the origin-only scope.

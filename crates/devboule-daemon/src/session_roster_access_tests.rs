@@ -457,3 +457,33 @@ fn a_machine_peer_observes_the_pairing_users_sessions_but_does_not_operate_on_th
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The owner's rule, pinned while writes wait for Slice 4: the human door
+/// reaches the pairing user's sessions with no confirmation, while the
+/// agent/operating door keeps the origin-only scope it has today. The frames
+/// Slice 4 adds carry the distinction; the scope model already does.
+#[test]
+fn the_human_action_door_reaches_the_pairing_users_sessions_and_the_agent_door_does_not() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let host = test_owner("S-1-5-21-human", "process-host");
+    let host_session = compose_session_id(&host.session_token(), "human01").expect("id");
+    insert_live(&registry, &host_session, host);
+
+    let peer = remote_conn(PeerScope::PeerDevice, Some("S-1-5-21-human"));
+    let caller = test_owner("peer_dev-phone", "paired-device");
+    assert!(
+        registry
+            .session_scope_human_action(&host_session, &caller, &peer.conn_peer)
+            .is_ok(),
+        "a human action from the paired PC reaches the pairing user's session"
+    );
+    assert!(
+        registry
+            .session_scope(&host_session, &caller, &peer.conn_peer)
+            .is_err(),
+        "the agent/operating door stays origin-only until its ask card path says otherwise"
+    );
+
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
