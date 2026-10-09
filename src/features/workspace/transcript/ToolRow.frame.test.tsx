@@ -71,6 +71,20 @@ describe("ToolRow frame", () => {
     expect(container.textContent).not.toContain("UNTRUSTED");
   });
 
+  it("draws no part of a frame whose header is still arriving, even as a failure's excerpt", async () => {
+    const container = await renderRow(
+      tool({
+        kind: "fetch",
+        title: "snapshot",
+        status: "failed",
+        output: "[devboule: untrusted content]\nsource: browser page\nprovenance: page https://sh",
+      }),
+    );
+    expect(container.textContent).not.toContain("devboule");
+    expect(container.textContent).not.toContain("provenance");
+    expect(container.querySelector(".workspace-chat-tool-output")).toBeNull();
+  });
+
   it("shows only the content once the person opens the line", async () => {
     const container = await renderRow(
       tool({

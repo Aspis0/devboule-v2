@@ -45,9 +45,17 @@ describe("hideUntrustedFrame", () => {
     expect(hideUntrustedFrame(`${HEAD}\ncontent-end 0123456789abcdef`)).toBe("");
   });
 
-  it("leaves a head with no tail of its own alone: it is not provably a frame", () => {
+  it("drops the head of a frame whose tail has not arrived, and keeps the content so far", () => {
     const open = `${HEAD}\n{"title":"cart"}\ncontent-end ffffffffffffffff`;
-    expect(hideUntrustedFrame(open)).toBe(open);
+    expect(hideUntrustedFrame(open)).toBe('{"title":"cart"}\ncontent-end ffffffffffffffff');
+    expect(hideUntrustedFrame(`${HEAD}\nthe cart is`)).toBe("the cart is");
+  });
+
+  it("drops a header that is still streaming in, before its nonce line has arrived", () => {
+    expect(hideUntrustedFrame("[devboule: untrusted content]\nsource: browser page\nprov")).toBe(
+      "",
+    );
+    expect(hideUntrustedFrame("[devboule: untrusted content]\n")).toBe("");
   });
 
   it("drops a fenced result that other text comes before, keeping that text", () => {
