@@ -57,7 +57,6 @@ describe("command row computed styles", () => {
         ".workspace-chat-tool-text",
         ".workspace-command-chip",
         ".workspace-command-dot",
-        ".workspace-command-dot.is-failed",
         ".workspace-command-exit",
       ]);
 
@@ -70,14 +69,13 @@ describe("command row computed styles", () => {
       chip.className = "workspace-command-chip";
       chip.textContent = "pnpm vitest checkout";
       block.append(chip);
-      const dotOk = document.createElement("span");
-      dotOk.className = "workspace-command-dot";
-      const dotFail = document.createElement("span");
-      dotFail.className = "workspace-command-dot is-failed";
+      // A line carries only a non-zero exit, so its one mark is the failure mark.
+      const dot = document.createElement("span");
+      dot.className = "workspace-command-dot";
       const exitText = document.createElement("span");
       exitText.className = "workspace-command-exit";
       exitText.textContent = "exit 1";
-      summary.append(block, dotOk, dotFail, exitText);
+      summary.append(block, dot, exitText);
       row.append(summary);
       document.body.append(row);
 
@@ -90,20 +88,17 @@ describe("command row computed styles", () => {
       expect(["", "0px"]).toContain(chipStyle.borderTopWidth);
       expect(chipStyle.color).toBe(css.token("--muted"));
       expect(contrastRatio(chipStyle.color, ground!)).toBeGreaterThanOrEqual(4.5);
-      expect(getComputedStyle(row).fontFamily).toContain("JetBrains Mono");
+      expect(getComputedStyle(row).fontFamily).toContain("Inter");
       expect(chipStyle.textOverflow).toBe("ellipsis");
       expect(chipStyle.whiteSpace).toBe("nowrap");
       expect(chipStyle.overflow).toBe("hidden");
       expect(chipStyle.minWidth).toBe("12ch");
 
-      // The mark is a glyph in the status colour; the sentence is what carries the code.
-      const dotOkStyle = getComputedStyle(dotOk);
-      expect(dotOkStyle.color).toBe(css.token("--tone-live"));
-      expect(["", "transparent", "rgba(0, 0, 0, 0)"]).toContain(dotOkStyle.backgroundColor);
-      expect(contrastRatio(dotOkStyle.color, ground!)).toBeGreaterThanOrEqual(3);
-      const dotFailStyle = getComputedStyle(dotFail);
-      expect(dotFailStyle.color).toBe(css.token("--danger"));
-      expect(contrastRatio(dotFailStyle.color, ground!)).toBeGreaterThanOrEqual(3);
+      // The mark is a glyph in the danger colour; the sentence is what carries the code.
+      const dotStyle = getComputedStyle(dot);
+      expect(dotStyle.color).toBe(css.token("--danger"));
+      expect(["", "transparent", "rgba(0, 0, 0, 0)"]).toContain(dotStyle.backgroundColor);
+      expect(contrastRatio(dotStyle.color, ground!)).toBeGreaterThanOrEqual(3);
 
       const exitStyle = getComputedStyle(exitText);
       expect(exitStyle.color).toBe(css.token("--muted"));

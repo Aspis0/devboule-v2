@@ -91,6 +91,16 @@ describe("AgentChatSurface question transcript", () => {
     return row?.querySelector(".workspace-chat-tool-summary-text")?.textContent ?? "";
   }
 
+  /** The person opens the line: its answer is output, which mounts only behind the disclosure. */
+  async function openRow(row: Element | null | undefined): Promise<void> {
+    const details = row?.querySelector("details");
+    if (details === null || details === undefined) throw new Error("the row had nothing to open");
+    await act(async () => {
+      details.open = true;
+      details.dispatchEvent(new Event("toggle"));
+    });
+  }
+
   function rowLabel(row: Element | null | undefined): string {
     return row?.querySelector(".workspace-chat-tool-label")?.textContent ?? "";
   }
@@ -108,6 +118,7 @@ describe("AgentChatSurface question transcript", () => {
     // output text alone satisfies neither.
     expect(rowLabel(toolRows[0])).toBe("Question");
     expect(rowSummary(toolRows[0])).toContain(QUESTION);
+    await openRow(toolRows[0]);
     expect(toolRows[0]?.textContent).toContain("Barn red");
   });
 
@@ -132,6 +143,7 @@ describe("AgentChatSurface question transcript", () => {
     expect(toolRows).toHaveLength(1);
     expect(rowLabel(toolRows[0])).toBe("Question");
     expect(rowSummary(toolRows[0])).toContain(QUESTION);
+    await openRow(toolRows[0]);
     expect(toolRows[0]?.textContent).toContain("Barn red");
   });
 
@@ -271,7 +283,9 @@ describe("AgentChatSurface question transcript", () => {
     expect(rowLabel(toolRows[1])).toBe("Question");
     expect(rowSummary(toolRows[0])).toContain(QUESTION);
     expect(rowSummary(toolRows[1])).toContain(secondQuestion);
+    await openRow(toolRows[0]);
     expect(toolRows[0]?.textContent).toContain("Barn red");
+    await openRow(toolRows[1]);
     expect(toolRows[1]?.textContent).toContain("Satin");
   });
 
@@ -296,6 +310,7 @@ describe("AgentChatSurface question transcript", () => {
     expect(toolRows).toHaveLength(1);
     expect(rowLabel(toolRows[0])).toBe("Question");
     expect(rowSummary(toolRows[0])).toContain(QUESTION);
+    await openRow(toolRows[0]);
     expect(toolRows[0]?.textContent).toContain("Barn red");
   });
 });

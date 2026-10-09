@@ -98,14 +98,12 @@ describe("agent-produced images", () => {
 
     const thumbs = container.querySelectorAll(".workspace-chat-image-thumb");
     expect(thumbs).toHaveLength(2);
+    // A screenshot's picture stands under its line, drawn without a click.
     expect(
-      container.querySelector(".workspace-chat-tool-body .workspace-chat-image-thumb"),
+      container.querySelector(".workspace-chat-tool-picture .workspace-chat-image-thumb"),
     ).not.toBeNull();
-    // The image row is open, so the image is not behind a collapsed triangle.
-    const details = container.querySelector<HTMLDetailsElement>("details");
-    expect(details?.open).toBe(true);
-    // A person's collapse stands across the next re-render of the row.
-    if (details !== null) details.open = false;
+    // A screenshot line has no disclosure: its output is never behind a click.
+    expect(container.querySelector("details")).toBeNull();
     await emit({
       type: "agent_tool_update",
       toolCallId: "call-1",
@@ -114,7 +112,7 @@ describe("agent-produced images", () => {
       title: "mcp__devboule__browser_screenshot",
       images: [REF],
     });
-    expect(container.querySelector<HTMLDetailsElement>("details")?.open).toBe(false);
+    expect(container.querySelector("details")).toBeNull();
     // An image-only assistant message renders no empty copy block.
     expect(container.querySelectorAll(".workspace-chat-copy")).toHaveLength(0);
     expect(harness.sessionAttachmentRead).toHaveBeenCalledWith(REF);
