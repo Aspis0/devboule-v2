@@ -1878,6 +1878,13 @@ impl ServerState {
     /// `binding` without Tailscale.
     pub(crate) fn peer_transport(&self) -> Arc<dyn crate::peer_transport::PeerTransport> {
         Arc::clone(self.peer_transport.get_or_init(|| {
+            // Test-only: the loopback two-daemon integration test asks for the
+            // loopback transport; every other run gets the tailnet.
+            #[cfg(any(test, feature = "test-support"))]
+            if std::env::var_os("DEVBOULE_PEER_LOOPBACK").is_some() {
+                return Arc::new(crate::peer_transport::Loopback)
+                    as Arc<dyn crate::peer_transport::PeerTransport>;
+            }
             Arc::new(crate::peer_transport::Tailnet)
                 as Arc<dyn crate::peer_transport::PeerTransport>
         }))

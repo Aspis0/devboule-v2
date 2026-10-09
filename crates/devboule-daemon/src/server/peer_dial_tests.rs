@@ -544,34 +544,43 @@ fn a_dial_advertises_this_devices_workspace_presence() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The dial gate: a peer is dialable when it is a host — the recorded
-/// `hosts_workspaces` fact, or a migrated v30 daemon hint — and not otherwise.
+/// The dial gate: every paired, non-revoked device with an advertised
+/// listener is eligible — the link is how a client that later creates its
+/// first workspace is discovered — while a row that advertises no listener
+/// (port `0`) is refused before a socket is opened.
 #[test]
-fn the_dial_gate_follows_the_hosted_workspace_record() {
+fn the_dial_gate_is_a_listener_not_a_hosted_workspace_record() {
     use super::super::peer_link_worker::peer_row;
 
     let state = ServerState::new("peer-dial-gate".into());
     let keypair = pinned_keypair();
-    let mut row = dial_row("127.0.0.1:1".to_string(), &keypair.public);
+    let mut row = dial_row("127.0.0.1:47831".to_string(), &keypair.public);
     row.legacy_dialable = false;
-    row.hosts_workspaces = true;
-    state.peer_upsert(row.clone()).expect("upsert");
-    assert!(
-        peer_row(&state, "b").is_ok(),
-        "a roleless host is dialable on the recorded fact alone"
-    );
-
     row.hosts_workspaces = false;
     state.peer_upsert(row.clone()).expect("upsert");
     assert!(
-        matches!(peer_row(&state, "b"), Err(DialStep::NoListenPort)),
-        "a client device is not dialled"
+        peer_row(&state, "b").is_ok(),
+        "a paired client with a listener is dialled: that link is the discovery"
     );
 
-    row.legacy_dialable = true;
-    state.peer_upsert(row).expect("upsert");
+    row.address = "127.0.0.1:0".to_string();
+    state.peer_upsert(row.clone()).expect("upsert");
     assert!(
-        peer_row(&state, "b").is_ok(),
-        "the migrated v30 hint stays dialable"
+        matches!(peer_row(&state, "b"), Err(DialStep::NoListenPort)),
+        "a device that advertised no listener has nothing to dial"
+    );
+
+    row.address = "not an address".to_string();
+    state.peer_upsert(row.clone()).expect("upsert");
+    assert!(
+        matches!(peer_row(&state, "b"), Err(DialStep::Address)),
+        "a stored address that is not ip:port is refused as one"
+    );
+
+    let revoked = state.peer_revoke("b", 7).expect("revoke");
+    assert_eq!(revoked, crate::journal::PeerMutation::Updated);
+    assert!(
+        matches!(peer_row(&state, "b"), Err(DialStep::Revoked)),
+        "a revoked row is never dialled"
     );
 }

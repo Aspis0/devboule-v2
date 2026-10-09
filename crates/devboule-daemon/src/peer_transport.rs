@@ -687,8 +687,19 @@ pub fn is_tailnet_or_test_loopback(address: &IpAddr) -> bool {
     if is_tailnet_address(address) {
         return true;
     }
+    // The unit tests' in-process responder dials 127.0.0.1 unconditionally.
     #[cfg(test)]
     if address.is_loopback() {
+        return true;
+    }
+    // The loopback two-daemon integration test runs the real binary (not
+    // cfg(test)) with the `test-support` feature, and asks for loopback by
+    // name. The environment check keeps every other test process — including
+    // the integration file's own `dial_peer`, whose refusal of loopback is
+    // pinned — on the production rule. A shipped build compiles neither
+    // branch.
+    #[cfg(all(not(test), feature = "test-support"))]
+    if address.is_loopback() && std::env::var_os("DEVBOULE_PEER_LOOPBACK").is_some() {
         return true;
     }
     false
@@ -803,6 +814,52 @@ pub trait PeerTransport: Send + Sync {
 
     /// Step 5, after the static key authenticated the peer.
     fn binding(&self, peer: &SocketAddr) -> Result<TransportBinding, BindingError>;
+}
+
+/// The loopback transport: the held link, pairing and presence machinery over
+/// 127.0.0.1, with a pinned binding. Compiled only for the tests (and the
+/// `test-support` feature CI's test builds enable), and selected only when
+/// `DEVBOULE_PEER_LOOPBACK` is set, so a dev build that happens to enable the
+/// feature still refuses loopback peers unless a test asks for them.
+#[cfg(any(test, feature = "test-support"))]
+pub struct Loopback;
+
+#[cfg(any(test, feature = "test-support"))]
+impl PeerTransport for Loopback {
+    fn listen(
+        &self,
+        _paths: &crate::paths::RuntimePaths,
+        stop: Arc<AtomicBool>,
+    ) -> io::Result<PeerListener> {
+        Tailnet::bind_peer_listener(
+            &[IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)],
+            peer_port(),
+            stop,
+        )
+    }
+
+    fn pre_noise_filter(&self, peer: &SocketAddr, peers: &PeerTable) -> Result<(), RejectReason> {
+        // The same shape as the tailnet filter, without the address-range
+        // rule: a known peer goes down the Noise path, everything else is a
+        // pairing candidate. Accepting *every* source here would route the
+        // loopback pairing initiator into the Noise handler before the magic
+        // peek, and the pairing would time out instead of parking.
+        if peers.revoked_address(&peer.ip()) {
+            return Err(RejectReason::Revoked);
+        }
+        if peers.by_address(&peer.ip()).is_some() {
+            return Ok(());
+        }
+        Err(RejectReason::UnknownSource)
+    }
+
+    fn binding(&self, _peer: &SocketAddr) -> Result<TransportBinding, BindingError> {
+        Ok(TransportBinding::tailnet(
+            "nloopback",
+            "loopback",
+            "user@example.com",
+        ))
+    }
 }
 
 /// The tailnet transport: addresses from Tailscale's own `status`, binding from

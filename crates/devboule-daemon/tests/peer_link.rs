@@ -410,11 +410,19 @@ impl NoisePeer {
         })
     }
 
-    /// Complete the hello exactly as the app does, so the daemon sees a normal
-    /// post-handshake client.
+    /// Complete the hello exactly as a dialing daemon does: a peer owner and
+    /// the workspace presence a v32 peer must state, so the daemon sees a
+    /// normal post-handshake peer.
     fn hello(&self) -> Result<(), String> {
+        let sid = devboule_daemon::current_user_sid().expect("current user SID");
+        let owner =
+            OwnerId::new(sid, format!("peer-remote-{}", std::process::id())).expect("owner");
         self.framed
-            .send(&ClientMessage::Hello(hello("remote")))
+            .send(&ClientMessage::Hello(ClientHello::peer(
+                owner,
+                "devboule-peer-test",
+                true,
+            )))
             .map_err(|error| format!("{error}"))?;
         match self.framed.recv_timeout::<DaemonMessage>(RECV_TIMEOUT) {
             Ok(DaemonMessage::Hello(_)) => Ok(()),
@@ -1305,4 +1313,274 @@ fn a_paired_daemon_delivers_an_agent_message_and_replays_its_receipt_once() {
     }
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(count_incoming(), 1, "the replay is one delivery, not two");
+}
+
+/// One daemon creates a project and a workspace through its pipe, and the two
+/// ids come back for the remote reads to look for.
+fn create_project_and_workspace(peer: &Peer, tag: &str) -> (String, String) {
+    let dir = peer.dir.join(format!("project-{tag}"));
+    std::fs::create_dir_all(&dir).expect("project dir");
+    let id = peer.pipe.id();
+    let project = request_skipping_pushes(
+        peer,
+        ClientMessage::ProjectAdd {
+            id,
+            path: dir.to_string_lossy().into_owned(),
+        },
+        |frame| match frame {
+            DaemonMessage::Project { project, .. } => Some(project.clone()),
+            _ => None,
+        },
+    )
+    .expect("the project row");
+    let id = peer.pipe.id();
+    let workspace = request_skipping_pushes(
+        peer,
+        ClientMessage::WorkspaceCreate {
+            id,
+            project_id: project.id.clone(),
+            isolation: WorkspaceIsolation::Local,
+            branch: None,
+        },
+        |frame| match frame {
+            DaemonMessage::Workspace { workspace, .. } => Some(workspace.clone()),
+            _ => None,
+        },
+    )
+    .expect("the workspace row");
+    (project.id, workspace.id)
+}
+
+/// Wait for a daemon's listener to be bound, then hand back its advertised
+/// `ip:port`. The listener starts on its own thread at boot, so a test that
+/// reads `SelfInfo` immediately after the pipe opens can see the port before
+/// the bind lands.
+fn wait_until_listening(peer: &Peer) -> String {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(address) = peer.peer_address() {
+            return address;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the listener never came up: {}",
+            peer.remote_label()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// One peer row from this daemon's own DevicesList, or `None` when the row is
+/// gone.
+fn peer_row(peer: &Peer, device_id: &str) -> Option<devboule_protocol::PeerRow> {
+    let id = peer.pipe.id();
+    let peers = request_skipping_pushes(
+        peer,
+        ClientMessage::DevicesList { id },
+        |frame| match frame {
+            DaemonMessage::Devices { peers, .. } => Some(peers.clone()),
+            _ => None,
+        },
+    )
+    .expect("the device list");
+    peers.into_iter().find(|row| row.device_id == device_id)
+}
+
+/// The loopback two-daemon test the design asks for: two real daemons on one
+/// machine with separate data directories, identities and loopback ports,
+/// paired, each watching the other. Each side reads the other's workspace
+/// through the held link, each Devices panel reports the other online, a
+/// workspace change is pushed with its revision, and dropping both links turns
+/// both offline. No Tailscale, and it never skips: a failure to bind loopback
+/// is a failure, not an excuse.
+/// Send one request and read until `wanted` accepts a frame. A connection
+/// that watches a host is interleaved with `RemoteHostStatus` pushes, so a
+/// test that expects one reply must skip them rather than assume the next
+/// frame is its answer.
+fn request_skipping_pushes<T>(
+    peer: &Peer,
+    message: ClientMessage,
+    wanted: impl FnMut(&DaemonMessage) -> Option<T>,
+) -> Option<T> {
+    peer.pipe.framed.send(&message).ok()?;
+    peer.pipe
+        .recv_until(Instant::now() + Duration::from_secs(30), wanted)
+}
+
+#[test]
+fn two_daemons_on_loopback_see_each_others_workspaces_and_presence() {
+    let _guard = lock_tests();
+
+    let (port_a, port_b) = two_free_ports();
+    let a = Peer::spawn_with_env("loop-a", port_a, &[("DEVBOULE_PEER_LOOPBACK", "1")]);
+    let b = Peer::spawn_with_env("loop-b", port_b, &[("DEVBOULE_PEER_LOOPBACK", "1")]);
+    let _address_a = wait_until_listening(&a);
+    let address_b = wait_until_listening(&b);
+    let a_self = a.self_info();
+    let b_self = b.self_info();
+    assert_ne!(a_self.device_id, b_self.device_id, "distinct identities");
+
+    // ---- pair, confirmed on the displaying device --------------------------
+    pair_devices(&a, &b, &address_b, &b_self.device_id);
+
+    // ---- each creates a project and a workspace ---------------------------
+    // Before either watches: a client that has just become a host is exactly
+    // the device the links must discover, and no link exists yet to carry the
+    // notification — which is why the dial cannot be gated on the record.
+    let (a_project, a_workspace) = create_project_and_workspace(&a, "a");
+    let (b_project, b_workspace) = create_project_and_workspace(&b, "b");
+
+    // ---- each device watches the other ------------------------------------
+    for (peer, other) in [(&a, &b_self.device_id), (&b, &a_self.device_id)] {
+        let id = peer.pipe.id();
+        let reply = request_skipping_pushes(
+            peer,
+            ClientMessage::RemoteHostWatch {
+                id,
+                device_id: other.clone(),
+            },
+            |frame| match frame {
+                DaemonMessage::Ok { .. } => Some(()),
+                _ => None,
+            },
+        );
+        assert!(reply.is_some(), "the watch to {other} never answered");
+    }
+    for (peer, other) in [(&a, &b_self.device_id), (&b, &a_self.device_id)] {
+        let online =
+            peer.pipe.recv_until(
+                Instant::now() + Duration::from_secs(30),
+                |frame| match frame {
+                    DaemonMessage::RemoteHostStatus {
+                        device_id, state, ..
+                    } if device_id == other
+                        && *state == devboule_protocol::RemoteHostState::Online =>
+                    {
+                        Some(())
+                    }
+                    _ => None,
+                },
+            );
+        assert!(online.is_some(), "the link to {other} never came online");
+    }
+
+    // ---- a change while the link is up reaches the watcher with its revision
+    let (_b_project_two, _b_workspace_two) = create_project_and_workspace(&b, "b2");
+    let revision = a.pipe.recv_until(
+        Instant::now() + Duration::from_secs(30),
+        |frame| match frame {
+            DaemonMessage::RemoteHostStatus {
+                device_id,
+                revision: Some(revision),
+                ..
+            } if device_id == &b_self.device_id => Some(*revision),
+            _ => None,
+        },
+    );
+    assert!(
+        revision.is_some(),
+        "the host's workspace revision never reached the watcher
+--- A stderr ---
+{}
+--- B stderr ---
+{}",
+        a.stderr_contents(),
+        b.stderr_contents()
+    );
+
+    // ---- each reads the other's project and workspace over the link -------
+    for (peer, other, project_id, workspace_id) in [
+        (&a, &b_self.device_id, &b_project, &b_workspace),
+        (&b, &a_self.device_id, &a_project, &a_workspace),
+    ] {
+        let id = peer.pipe.id();
+        let projects = request_skipping_pushes(
+            peer,
+            ClientMessage::RemoteHostList {
+                id,
+                device_id: other.clone(),
+                list: devboule_protocol::RemoteHostList::Projects,
+            },
+            |frame| match frame {
+                DaemonMessage::RemoteHostList {
+                    body: devboule_protocol::RemoteHostListBody::Projects { rows },
+                    ..
+                } => Some(rows.clone()),
+                _ => None,
+            },
+        )
+        .expect("the host's projects");
+        assert!(
+            projects.iter().any(|project| project.id == *project_id),
+            "the host's project is in its own list: {projects:?}"
+        );
+        let id = peer.pipe.id();
+        let workspaces = request_skipping_pushes(
+            peer,
+            ClientMessage::RemoteHostList {
+                id,
+                device_id: other.clone(),
+                list: devboule_protocol::RemoteHostList::Workspaces {
+                    project_id: project_id.clone(),
+                },
+            },
+            |frame| match frame {
+                DaemonMessage::RemoteHostList {
+                    body: devboule_protocol::RemoteHostListBody::Workspaces { rows },
+                    ..
+                } => Some(rows.clone()),
+                _ => None,
+            },
+        )
+        .expect("the host's workspaces");
+        assert!(
+            workspaces
+                .iter()
+                .any(|workspace| workspace.id == *workspace_id),
+            "the host's workspace is in its own list: {workspaces:?}"
+        );
+    }
+
+    // ---- both Devices panels read the other online ------------------------
+    for (peer, other) in [(&a, &b_self.device_id), (&b, &a_self.device_id)] {
+        let row = peer_row(peer, other).expect("the peer row");
+        assert!(
+            row.online,
+            "the Devices panel must read the other device online: {row:?}"
+        );
+        assert!(
+            row.hosts_workspaces,
+            "the peer hosts its own workspace and the record must say so"
+        );
+    }
+
+    // ---- drop both links: the idle grace closes them, both read offline ---
+    for (peer, other) in [(&a, &b_self.device_id), (&b, &a_self.device_id)] {
+        let id = peer.pipe.id();
+        let reply = request_skipping_pushes(
+            peer,
+            ClientMessage::RemoteHostUnwatch {
+                id,
+                device_id: other.clone(),
+            },
+            |frame| match frame {
+                DaemonMessage::Ok { .. } => Some(()),
+                _ => None,
+            },
+        );
+        assert!(reply.is_some(), "the unwatch to {other} never answered");
+    }
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        let a_online = peer_row(&a, &b_self.device_id).is_some_and(|row| row.online);
+        let b_online = peer_row(&b, &a_self.device_id).is_some_and(|row| row.online);
+        if !a_online && !b_online {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the links never closed: A sees B online={a_online}, B sees A online={b_online}"
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
 }

@@ -269,12 +269,18 @@ pub(crate) fn peer_row(state: &Arc<ServerState>, device_id: &str) -> Result<Peer
     if row.is_revoked() {
         return Err(DialStep::Revoked);
     }
-    if !row.hosts_workspaces && !row.legacy_dialable {
-        // A peer recorded as a client has no host lists to serve; refusing
-        // here keeps the app from dialling whatever owns an ephemeral port
-        // now. The recorded host fact is the gate: a roleless host is dialable
-        // the moment its pairing (or an authenticated hello) says so, and a
-        // migrated v30 daemon keeps its hint.
+    // Every paired, non-revoked device is eligible for an authenticated
+    // connection (design decision, section 1): the link is how a client
+    // device that later creates its first workspace is discovered, so the
+    // recorded hosting fact cannot gate the dial without making that
+    // discovery impossible. The presence word on the authenticated hello,
+    // recorded one-way, decides the scope and which rows a sidebar draws;
+    // `legacy_dialable` only matters for the dialect the hello speaks.
+    let address: std::net::SocketAddr = row.address.parse().map_err(|_| DialStep::Address)?;
+    if address.port() == 0 {
+        // A row with port `0` is the record of a device that never advertised
+        // a listener (a phone, or a pairing that predates the port field).
+        // Connecting anyway would reach whatever owns an ephemeral port now.
         return Err(DialStep::NoListenPort);
     }
     Ok(row)
