@@ -675,6 +675,14 @@ impl PeerTransport for TestTransport {
     }
 }
 
+/// Whether the environment asks for the loopback transport by name. Split out
+/// so the rule is one testable function: only the exact value `1` counts, so a
+/// stray `0` or an empty value cannot switch a debug build onto loopback.
+#[cfg(all(any(test, feature = "test-support"), debug_assertions))]
+pub(crate) fn loopback_requested_from(value: Option<&str>) -> bool {
+    value == Some("1")
+}
+
 /// Whether `address` is a tailnet address, or loopback in this crate's own unit
 /// tests.
 ///
@@ -694,12 +702,16 @@ pub fn is_tailnet_or_test_loopback(address: &IpAddr) -> bool {
     }
     // The loopback two-daemon integration test runs the real binary (not
     // cfg(test)) with the `test-support` feature, and asks for loopback by
-    // name. The environment check keeps every other test process — including
+    // name. Only a debug build compiles this branch at all: a release build,
+    // even one that enables `test-support`, has no switch to flip, and the
+    // variable must be exactly `1` so an accidental value cannot enable it.
+    // The environment check also keeps every other test process — including
     // the integration file's own `dial_peer`, whose refusal of loopback is
-    // pinned — on the production rule. A shipped build compiles neither
-    // branch.
-    #[cfg(all(not(test), feature = "test-support"))]
-    if address.is_loopback() && std::env::var_os("DEVBOULE_PEER_LOOPBACK").is_some() {
+    // pinned — on the production rule.
+    #[cfg(all(not(test), feature = "test-support", debug_assertions))]
+    if address.is_loopback()
+        && loopback_requested_from(std::env::var("DEVBOULE_PEER_LOOPBACK").ok().as_deref())
+    {
         return true;
     }
     false

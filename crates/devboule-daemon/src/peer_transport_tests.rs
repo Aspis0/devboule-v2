@@ -1266,6 +1266,20 @@ fn upsert_paired_row(
         .expect("upsert the peer row");
 }
 
+/// Only the exact value `1` asks for loopback; a `0`, an empty value, or no
+/// variable at all leaves the production rule in force.
+#[test]
+#[cfg(all(any(test, feature = "test-support"), debug_assertions))]
+fn only_an_explicit_one_requests_loopback() {
+    assert!(crate::peer_transport::loopback_requested_from(Some("1")));
+    assert!(!crate::peer_transport::loopback_requested_from(Some("0")));
+    assert!(!crate::peer_transport::loopback_requested_from(Some("")));
+    assert!(!crate::peer_transport::loopback_requested_from(Some(
+        "true"
+    )));
+    assert!(!crate::peer_transport::loopback_requested_from(None));
+}
+
 /// The identity projection one peer connection sees: the machine scope
 /// withholds the public key, the paired-user scope returns it.
 fn projected_self_info(framed: &crate::framing::Framed) -> devboule_protocol::SelfInfo {
