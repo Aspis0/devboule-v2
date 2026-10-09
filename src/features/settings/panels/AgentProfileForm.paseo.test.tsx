@@ -204,6 +204,16 @@ describe("Settings agents panel — profile editor pickers", () => {
     expect(editor.textContent).not.toContain("did not publish its models");
   });
 
+  it("hides effort until a model is chosen", async () => {
+    vi.mocked(providerVocabularyGet).mockResolvedValue(piVocabulary());
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
+    await openForm();
+    await act(async () => undefined);
+    const editor = form();
+    // No model chosen yet: neither picker nor free text.
+    expect(editor.querySelector('[aria-label="Effort"]')).toBeNull();
+  });
+
   it("keeps everything else under one collapsed Advanced section", async () => {
     vi.mocked(providerVocabularyGet).mockResolvedValue(piVocabulary());
     await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);

@@ -462,7 +462,7 @@ export function AgentProfileForm({
               </select>
             </label>
           ) : null}
-          {!showEffortPicker && !dropEffort ? (
+          {!showEffortPicker && !dropEffort && (!modelsPresent || model !== "") ? (
             <label className="device-field">
               Effort
               <input
