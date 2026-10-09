@@ -113,6 +113,30 @@ describe("the remote workspace surface", () => {
     expect(container.textContent).toContain("hello remote");
   });
 
+  it("keeps the roster live: a status word and a periodic re-read", async () => {
+    vi.useFakeTimers();
+    await render(true);
+    expect(container.textContent).not.toContain("waiting");
+
+    // The host's next roster read reports the session waiting for approval;
+    // the interval picks it up without any local action.
+    vi.mocked(remoteHostList).mockResolvedValue({
+      list: "sessions",
+      rows: [
+        {
+          ...SESSION,
+          attention: { reason: "permission", atMs: 1 },
+        },
+      ],
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(5100);
+    });
+    await flush();
+    expect(container.textContent).toContain("waiting");
+    vi.useRealTimers();
+  });
+
   it("replays a gapped stream on a fresh subscription", async () => {
     await render(true);
     const chip = [...container.querySelectorAll<HTMLButtonElement>("[role='tab']")][0];

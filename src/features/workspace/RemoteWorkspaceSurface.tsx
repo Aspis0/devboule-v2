@@ -31,6 +31,26 @@ function lineOf(event: SessionEvent): string | null {
   }
 }
 
+/** The bulk transcript events the relay may drop and replay; everything else
+ * is a status the tabs must reflect immediately. */
+function isBulkTranscript(event: SessionEvent): boolean {
+  return (
+    event.type === "output" ||
+    event.type === "agent_message" ||
+    event.type === "agent_user_message" ||
+    event.type === "agent_stderr" ||
+    event.type === "agent_thought"
+  );
+}
+
+/** The one word a tab's live status prints, from the host's own row. */
+function statusWord(session: Session): string | null {
+  if (session.attention !== undefined) return "waiting";
+  if (session.state.type === "ended") return "ended";
+  if (session.activity === "working") return "working";
+  return null;
+}
+
 /**
  * The remote workspace's surface: the host's sessions for this workspace as
  * tabs and the opened one's transcript. Read-only by design — every frame
@@ -54,23 +74,27 @@ export function RemoteWorkspaceSurface({
   const subscriptionRef = useRef(0);
   const openRef = useRef<string | null>(null);
 
-  // The host's own session rows for this workspace, reloaded on the online
-  // edge so a reconnect shows the roster as it is now.
+  // The host's own session rows for this workspace. The roster is live, not a
+  // one-shot snapshot: it reloads on the online edge, on a working session's
+  // important events, and on a short interval while the host answers — an
+  // agent created, exited or moved into approval elsewhere updates the tabs.
+  const load = useCallback(async () => {
+    try {
+      const body = await remoteHostList(deviceId, { kind: "sessions" });
+      if (body.list !== "sessions") return;
+      setSessions(body.rows.filter((row) => row.workspaceId === workspaceId));
+    } catch {
+      // Keep the last list; the row's own offline state says why.
+    }
+  }, [deviceId, workspaceId]);
   useEffect(() => {
-    let live = true;
-    void (async () => {
-      try {
-        const body = await remoteHostList(deviceId, { kind: "sessions" });
-        if (!live || body.list !== "sessions") return;
-        setSessions(body.rows.filter((row) => row.workspaceId === workspaceId));
-      } catch {
-        // Keep the last list; the row's own offline state says why.
-      }
-    })();
-    return () => {
-      live = false;
-    };
-  }, [deviceId, hostOnline, workspaceId]);
+    void load();
+  }, [load, hostOnline]);
+  useEffect(() => {
+    if (!hostOnline) return;
+    const timer = setInterval(() => void load(), 5000);
+    return () => clearInterval(timer);
+  }, [hostOnline, load]);
 
   // Open the session's stream, reattaching with a fresh subscription on the
   // online edge. A subscription from an older edge is fenced by the daemon,
@@ -107,11 +131,14 @@ export function RemoteWorkspaceSurface({
       }
       const line = lineOf(message.envelope.event);
       if (line !== null) setLines((current) => [...current, line]);
+      // A state, a terminal exit or a permission card changes what the tabs
+      // should say; the roster is re-read rather than left stale.
+      if (!isBulkTranscript(message.envelope.event)) void load();
     });
     void remoteSessionAttach(deviceId, openSessionId, subscriptionId, channel).catch(() => {
       setStreamState("offline");
     });
-  }, [deviceId, hostOnline, openSessionId, resyncNonce]);
+  }, [deviceId, hostOnline, load, openSessionId, resyncNonce]);
 
   // Give the stream back when the surface leaves.
   useEffect(
@@ -141,6 +168,9 @@ export function RemoteWorkspaceSurface({
             onClick={() => select(session.id)}
           >
             {session.title.trim() === "" ? session.id : session.title}
+            {statusWord(session) === null ? null : (
+              <span className="workspace-remote-status">{statusWord(session)}</span>
+            )}
           </button>
         ))}
         {hostOnline ? null : <span className="workspace-remote-offline">offline</span>}
