@@ -199,22 +199,8 @@
   flex-direction: column;
 }
 
-.settings-card {
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-}
-
-.settings-card-copy {
-  min-width: 0;
-}
-
-.settings-card-title,
 .settings-card-meta {
   display: block;
-}
-
-.settings-card-meta {
   margin-top: 2px;
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
@@ -224,63 +210,6 @@
 .settings-stack-spaced {
   gap: 8px;
   margin-top: var(--space-16);
-}
-
-.settings-card {
-  display: flex;
-  align-items: center;
-  gap: var(--space-12);
-  padding: 10px 0;
-}
-
-.settings-card-title {
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.settings-card-value {
-  flex: none;
-  margin-left: auto;
-  color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: var(--type-mono-sm);
-}
-
-.settings-dashed-action {
-  display: flex;
-  align-items: center;
-  gap: var(--space-8);
-  padding: var(--space-12) var(--space-16);
-  color: var(--silence);
-  background: transparent;
-  border: 1px dashed var(--border-strong);
-  border-radius: 12px;
-  font-size: var(--type-small);
-  text-align: left;
-}
-
-.settings-dashed-action > span {
-  font-size: 14px;
-  line-height: 1;
-}
-
-.settings-dashed-action:hover,
-.settings-dashed-action:focus-visible {
-  color: var(--accent-text);
-  border-color: var(--terracotta);
-}
-
-.settings-value-row {
-  justify-content: space-between;
-  font-size: var(--type-small);
-}
-
-.settings-value-row .settings-card-value {
-  color: var(--ink-soft);
-}
-
-.settings-value-row .settings-value-danger {
-  color: var(--danger-deep);
 }
 
 .settings-device-action {

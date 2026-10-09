@@ -139,6 +139,21 @@ describe("Settings static contracts", () => {
     }
   });
 
+  it("keeps no rule for the retired card family in the shell sheet", () => {
+    // The card, value-row and dashed-box classes lost their last consumer when
+    // the pages moved to the row pattern. A rule kept for them styles nothing.
+    const shell = settingsCss("settings.css").replace(/\/\*[\s\S]*?\*\//g, "");
+    const retired = [
+      /\.settings-card(?![\w-])/,
+      /\.settings-card-(copy|title|value)\b/,
+      /\.settings-value-(row|danger)\b/,
+      /\.settings-dashed-action\b/,
+    ];
+    for (const selector of retired) {
+      expect(shell, `retired selector ${selector} still styled`).not.toMatch(selector);
+    }
+  });
+
   it("carries mono only where the house allows it", () => {
     // F6: every settings sheet scanned, @-blocks included, against an
     // explicit allowlist. No mono may ever be
@@ -152,7 +167,7 @@ describe("Settings static contracts", () => {
       "diagnostics.css",
     ] as const;
     const allowlist = new Map<string, readonly string[]>([
-      ["settings.css", [".settings-card-meta", ".settings-card-value"]],
+      ["settings.css", [".settings-card-meta"]],
       ["rows.css", []],
       ["settingsSwitch.css", []],
       [

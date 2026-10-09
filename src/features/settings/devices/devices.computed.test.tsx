@@ -458,7 +458,6 @@ describe("devices card geometry (real stylesheets, no app launch)", () => {
         // Legacy meta lines still rendered by other slices' panels
         // (the Projects page's rows): declared, not refactored.
         ".settings-card-meta",
-        ".settings-card-value",
       ],
       "src/features/settings/providers.css": [
         ".prov-detail-code",
