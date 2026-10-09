@@ -10,10 +10,13 @@ use std::time::{Duration, Instant};
 
 use devboule_protocol::{caps, ClientMessage, DaemonMessage, RemoteHostList, RemoteHostState};
 
-use super::peer_link::{offline_sentence, sentence_for, state_for, unsupported_sentence};
+use super::peer_link::{
+    needs_pairing_sentence, offline_sentence, sentence_for, state_for, unsupported_sentence,
+};
 use super::peer_link_state::{HostLink, LinkAnswer, LinkCommand};
 use super::peer_link_worker::{peer_row, LinkSession, PROBE_ID_BASE};
 use super::ServerState;
+use crate::error::DaemonError;
 
 /// Write one read and wait for its answer, answering the caller through the
 /// channel it was queued with.
@@ -95,6 +98,13 @@ fn wait_for_reply(
 ) -> LinkAnswer {
     let deadline = Instant::now() + read_deadline;
     while Instant::now() < deadline {
+        // A revoke that lands mid-read stops the wait at once (P2-5).
+        if link.is_revoked() {
+            return LinkAnswer::Failed(
+                RemoteHostState::NeedsPairing,
+                needs_pairing_sentence().to_string(),
+            );
+        }
         let left = deadline.saturating_duration_since(Instant::now());
         let Ok(message) = session.framed.recv_timeout(left) else {
             return LinkAnswer::Failed(RemoteHostState::Offline, offline_sentence().to_string());
@@ -214,9 +224,30 @@ pub(crate) fn serve_attach(
     }
     let deadline = Instant::now() + read_deadline;
     while Instant::now() < deadline {
+        // A revoke that lands mid-attach stops the wait at once (P2-5):
+        // the subscription is already dropped below, so no event relays
+        // after this either way.
+        if link.is_revoked() {
+            link.remove_subscription(subscription_id);
+            let _ = answer.send(LinkAnswer::Failed(
+                RemoteHostState::NeedsPairing,
+                needs_pairing_sentence().to_string(),
+            ));
+            return;
+        }
         let left = deadline.saturating_duration_since(Instant::now());
-        let Ok(message) = session.framed.recv_timeout(left) else {
-            break;
+        // Sliced like the operate wait so a mid-attach revoke is observed
+        // promptly; a quiet slice loops, a dead transport breaks to the
+        // offline answer below.
+        let slice = left.min(Duration::from_millis(50));
+        let message = match session.framed.recv_timeout(slice) {
+            Ok(message) => message,
+            // A quiet slice loops; a dead transport breaks below. Both the
+            // control plane's timeout and the socket's timed-out read are
+            // silence.
+            Err(DaemonError::TimedOut(_)) => continue,
+            Err(DaemonError::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut => continue,
+            Err(_) => break,
         };
         if let DaemonMessage::Pong { id, .. } = &message {
             if *id >= PROBE_ID_BASE {

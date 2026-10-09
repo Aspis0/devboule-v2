@@ -225,6 +225,12 @@ pub(crate) struct HostLink {
     /// Set when this daemon's own hosting state changed and the outbound
     /// hello must be spoken again. One-shot: the worker takes it and redials.
     reconnect_requested: AtomicBool,
+    /// Set when the pairing row was revoked while calls were in flight. A
+    /// wait loop that observes it answers `NeedsPairing` at once instead of
+    /// holding the caller until the worker's next turn (a create would hold
+    /// for its whole budget). Sticky: a revoked link never un-revokes, it
+    /// retires.
+    revoked: AtomicBool,
     /// A weak self-reference, so a parked trailing status can be flushed by a
     /// timer thread without the worker's loop being the only clock.
     me: Mutex<std::sync::Weak<HostLink>>,
@@ -255,6 +261,7 @@ impl HostLink {
             status_coalescer: Mutex::new(super::remote_status::StatusCoalescer::new(status_window)),
             remote_revision: Mutex::new(None),
             reconnect_requested: AtomicBool::new(false),
+            revoked: AtomicBool::new(false),
             me: Mutex::new(std::sync::Weak::new()),
             flushing: AtomicBool::new(false),
             idle_grace,
@@ -301,6 +308,16 @@ impl HostLink {
     /// worker that takes it performs exactly one redial for it.
     pub(crate) fn take_reconnect_request(&self) -> bool {
         self.reconnect_requested.swap(false, Ordering::SeqCst)
+    }
+
+    /// Record that the pairing row is gone: in-flight waits stop at once.
+    pub(crate) fn mark_revoked(&self) {
+        self.revoked.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether the pairing row was revoked under a running call.
+    pub(crate) fn is_revoked(&self) -> bool {
+        self.revoked.load(Ordering::SeqCst)
     }
 
     /// Drop the baseline. Called when a new transport replaces the old one: a

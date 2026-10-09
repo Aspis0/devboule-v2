@@ -17,10 +17,13 @@ use std::time::{Duration, Instant};
 
 use devboule_protocol::{caps, ClientMessage, DaemonMessage, RemoteHostState};
 
-use super::peer_link::{offline_sentence, sentence_for, state_for, unsupported_sentence};
+use super::peer_link::{
+    needs_pairing_sentence, offline_sentence, sentence_for, state_for, unsupported_sentence,
+};
 use super::peer_link_state::{HostLink, LinkAnswer, LinkCommand};
 use super::peer_link_worker::{peer_row, LinkSession, PROBE_ID_BASE};
 use super::ServerState;
+use crate::error::DaemonError;
 
 /// The hello capability the far daemon must advertise for a session operate
 /// call. A daemon that predates the session frames cannot deserialize the
@@ -82,9 +85,31 @@ fn wait_for_operate_reply(
 ) -> LinkAnswer {
     let deadline = Instant::now() + read_deadline;
     while Instant::now() < deadline {
+        // A revoke that lands mid-call stops the wait at once: the pairing
+        // is gone, so no answer from this host can be trusted, and holding
+        // the caller (up to the whole create budget) would only delay the
+        // `NeedsPairing` the row already decides.
+        if link.is_revoked() {
+            return LinkAnswer::Failed(
+                RemoteHostState::NeedsPairing,
+                needs_pairing_sentence().to_string(),
+            );
+        }
         let left = deadline.saturating_duration_since(Instant::now());
-        let Ok(message) = session.framed.recv_timeout(left) else {
-            return LinkAnswer::Failed(RemoteHostState::Offline, offline_sentence().to_string());
+        // The socket wait is sliced so a mid-call revoke is observed
+        // promptly instead of at the deadline. A quiet slice just loops;
+        // a dead transport still fails fast.
+        let slice = left.min(Duration::from_millis(50));
+        let message = match session.framed.recv_timeout(slice) {
+            Ok(message) => message,
+            // A quiet slice just loops: the control plane's own timeout
+            // and the socket's timed-out read are both silence, on the
+            // pipe and on the Noise transport alike.
+            Err(DaemonError::TimedOut(_)) => continue,
+            Err(DaemonError::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut => continue,
+            Err(_) => {
+                return LinkAnswer::Failed(RemoteHostState::Offline, offline_sentence().to_string())
+            }
         };
         if let DaemonMessage::Pong { id, .. } = &message {
             if *id >= PROBE_ID_BASE {

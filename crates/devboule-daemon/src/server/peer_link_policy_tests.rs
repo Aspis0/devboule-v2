@@ -580,3 +580,63 @@ fn a_create_holds_its_own_lane_while_short_calls_fail_busy() {
         }
     });
 }
+
+/// P2-5: a revoke that lands mid-create stops the wait at once. The worker
+/// would otherwise hold the caller for the whole create budget after the
+/// pairing is already gone.
+#[test]
+fn a_revoke_aborts_an_in_flight_create_with_needs_pairing() {
+    let harness = Harness::start("peer-link-revoke-mid-create");
+    harness.responder.hold_reads();
+    harness.watch();
+    eventually("the link comes up", || {
+        harness
+            .statuses()
+            .iter()
+            .any(|(state, _)| *state == RemoteHostState::Online)
+    });
+    std::thread::scope(|scope| {
+        let creating = scope.spawn(|| {
+            harness.links.operate_create(
+                "b",
+                Some("far-workspace".to_string()),
+                SessionKind::Terminal,
+                None,
+                None,
+                None,
+                Some("revoked-key".to_string()),
+                None,
+                None,
+            )
+        });
+        // The worker picked the create up and the far end is holding it.
+        match harness.requests.recv_timeout(Duration::from_secs(5)) {
+            Ok(ClientMessage::SessionCreate { .. }) => {}
+            Ok(other) => panic!("expected the peer's SessionCreate, got {other:?}"),
+            Err(error) => panic!("the create never reached the peer: {error:?}"),
+        }
+        harness.links.revoke("b");
+        match creating.join().expect("the create thread") {
+            LinkAnswer::Failed(state, _) => assert_eq!(
+                state,
+                RemoteHostState::NeedsPairing,
+                "a revoked create answers the pairing state, not a timeout"
+            ),
+            other => panic!("a revoked create must not answer: {other:?}"),
+        }
+        // And the link stays down for the next call without dialing.
+        match harness.links.operate_send(
+            "b",
+            "far-session".to_string(),
+            1,
+            "hi".to_string(),
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+        ) {
+            LinkAnswer::Failed(state, _) => assert_eq!(state, RemoteHostState::NeedsPairing),
+            other => panic!("a revoked link answers the pairing state: {other:?}"),
+        }
+    });
+}

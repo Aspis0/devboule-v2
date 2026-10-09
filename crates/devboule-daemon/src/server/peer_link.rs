@@ -360,6 +360,7 @@ impl PeerLinks {
         let Some(link) = link else {
             return;
         };
+        link.mark_revoked();
         link.clear_subscriptions();
         link.publish(RemoteHostStatus {
             device_id: device_id.to_string(),

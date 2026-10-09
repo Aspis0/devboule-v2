@@ -820,6 +820,9 @@ fn session_create(
     // survives a later revoke instead of orphaning (P1-2). The origin tag
     // still records the creating device.
     let human_owner = super::connection::session_create_owner(state, conn_peer, owner);
+    // Whether the override moved the session to the pairing human: only a
+    // human-owned session survives a revoke below (P2-5).
+    let human_owned = human_owner.user != owner.user;
     let owner = &human_owner;
     // A session starts inside a workspace. A create that names none is refused
     // before anything is journaled or spawned, so it never starts in the
@@ -897,6 +900,21 @@ fn session_create(
         initial_size,
     ) {
         Ok(session) => {
+            // P2-5: a revoke that won the race against this create must not
+            // orphan a peer-owned session — one the hosting human cannot
+            // see (pre-P1-2 rows, or a pairing that is not this user's).
+            // Human-owned sessions survive: they belong to the pairing
+            // human, who lists and drives them. The torn-down create keeps
+            // no receipt and gives its key back, so a retry runs again
+            // instead of answering the destroyed session.
+            if let Some(refused) =
+                teardown_revoked_peer_create(state, owner, conn_peer, &session.id, human_owned, id)
+            {
+                if let Some(key) = idempotency_key.as_deref() {
+                    release_create_key(state, owner, key);
+                }
+                return refused;
+            }
             let reply = DaemonMessage::Session { id, session };
             remember(
                 state,
@@ -1237,6 +1255,47 @@ pub(super) fn reserve_create_key(
             .with_id(request_id),
         )),
     }
+}
+
+/// P2-5: tear down a just-created session when its device's pairing row is
+/// gone or revoked — but only a peer-owned one. Human-owned sessions
+/// survive revocation (P1-2): they belong to the pairing human. Returns the
+/// refusal when it tore down, so the create answers revoked instead of a
+/// session that no longer exists.
+pub(super) fn teardown_revoked_peer_create(
+    state: &Arc<ServerState>,
+    owner: &OwnerId,
+    conn_peer: &Option<ConnPeer>,
+    session_id: &str,
+    human_owned: bool,
+    id: u64,
+) -> Option<DaemonMessage> {
+    if human_owned {
+        return None;
+    }
+    let device_id = conn_peer.as_ref().and_then(|peer| peer.device_id())?;
+    let row_gone = state
+        .peer_get(device_id)
+        .ok()
+        .flatten()
+        .is_none_or(|row| row.is_revoked());
+    if !row_gone {
+        return None;
+    }
+    if state
+        .sessions
+        .close(session_id, owner, conn_peer)
+        .unwrap_or(false)
+    {
+        state.session_finished();
+    }
+    Some(DaemonMessage::Error(
+        WireError::new(
+            ErrorCode::Unauthorized,
+            "This device was revoked while the session was starting.",
+        )
+        .with_id(id),
+    ))
 }
 
 /// Give back a key whose create did not complete. A failed create must not

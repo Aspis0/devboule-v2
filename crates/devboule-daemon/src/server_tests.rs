@@ -5121,6 +5121,106 @@ fn a_create_with_a_held_key_answers_still_starting_without_creating() {
     let _ = std::fs::remove_dir_all(path);
 }
 
+/// P2-5: a revoke that wins the race against a create tears down the
+/// peer-owned session instead of orphaning it — and a human-owned one
+/// survives, because it belongs to the pairing human.
+#[test]
+fn a_revoke_won_mid_create_tears_down_only_peer_owned_sessions() {
+    let (path, state) = temp_state("peer-create-revoke-race");
+    let device = "dev-peer-1";
+    state
+        .peer_upsert(crate::journal::PeerRecord {
+            device_id: device.to_string(),
+            display_name: "peer".to_string(),
+            legacy_dialable: false,
+            hosts_workspaces: true,
+            public_key: vec![9; 32],
+            paired_by_user: Some("S-user-a".to_string()),
+            binding_kind: "tailscale".to_string(),
+            binding_stable_id: None,
+            binding_node_name: None,
+            binding_login_name: None,
+            address: "100.64.0.2:1".to_string(),
+            paired_at: 1,
+            revoked_at: None,
+            caps: vec!["view".to_string()],
+        })
+        .expect("upsert the row");
+    let peer_owner = OwnerId::new("peer_dev-peer-1", "daemon").expect("peer owner");
+    crate::session::insert_test_live_agent(&state.sessions, "s.peer.owned", peer_owner.clone());
+    state.sessions.set_test_origin(
+        "s.peer.owned",
+        devboule_protocol::SessionOrigin::peer(device, devboule_protocol::PeerRole::Daemon),
+    );
+    let peer = remote_conn_with_caps(
+        PeerScope::PeerDevice,
+        Some("S-user-a"),
+        &[crate::peer_policy::CAP_VIEW],
+    );
+    // Row live: nothing tears down.
+    assert!(
+        super::sessions::teardown_revoked_peer_create(
+            &state,
+            &peer_owner,
+            &peer.conn_peer,
+            "s.peer.owned",
+            false,
+            1
+        )
+        .is_none(),
+        "a live row tears nothing down"
+    );
+    state.peer_revoke(device, 2).expect("revoke");
+    // Human-owned: survives the revoke.
+    assert!(
+        super::sessions::teardown_revoked_peer_create(
+            &state,
+            &peer_owner,
+            &peer.conn_peer,
+            "s.peer.owned",
+            true,
+            1
+        )
+        .is_none(),
+        "a human-owned session survives its device's revoke"
+    );
+    assert!(
+        state
+            .sessions
+            .list(&peer_owner)
+            .expect("roster")
+            .iter()
+            .any(|row| row.id == "s.peer.owned"),
+        "the survivor is still listed"
+    );
+    // Peer-owned: torn down with a revoked error, not orphaned.
+    match super::sessions::teardown_revoked_peer_create(
+        &state,
+        &peer_owner,
+        &peer.conn_peer,
+        "s.peer.owned",
+        false,
+        1,
+    ) {
+        Some(DaemonMessage::Error(error)) => {
+            assert_eq!(error.code, ErrorCode::Unauthorized, "{error:?}");
+            assert!(error.message.contains("revoked"), "{error:?}");
+        }
+        other => panic!("a revoked peer-owned create must tear down: {other:?}"),
+    }
+    assert!(
+        state
+            .sessions
+            .list(&peer_owner)
+            .expect("roster")
+            .iter()
+            .all(|row| row.id != "s.peer.owned"),
+        "the torn-down session is gone"
+    );
+    drop(state);
+    let _ = std::fs::remove_dir_all(path);
+}
+
 /// §8b A5/R3, H1: a paired device may not name a mode for an ACP session —
 /// at the create, or by switching a live one — while the person at this
 /// machine keeps their own path.
