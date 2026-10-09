@@ -126,6 +126,19 @@ describe("the turn rail preview card", () => {
       rail.unmount();
     });
 
+    it("closes the preview when the transcript scrolls", () => {
+      const rail = readyPreview([300], 680);
+      const dot = rail.dots()[0]!;
+      act(() => dot.focus());
+      expect(openStop(dot).hasAttribute("data-preview-open")).toBe(true);
+
+      act(() => {
+        rail.conversation.dispatchEvent(new Event("scroll"));
+      });
+      expect(openStop(dot).hasAttribute("data-preview-open")).toBe(false);
+      rail.unmount();
+    });
+
     it("drops a preview whose dot unmounts with the rail", () => {
       const rail = readyPreview([300], 680);
       const dot = rail.dots()[0]!;

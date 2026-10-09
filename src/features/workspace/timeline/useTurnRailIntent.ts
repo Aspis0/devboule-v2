@@ -102,12 +102,16 @@ export function useTurnRailIntent({
     conversation.addEventListener("pointerdown", pressReleased);
     conversation.addEventListener("focusin", onFocusIn);
     conversation.addEventListener("keydown", onKeyDown);
+    // A card is anchored to a dot that moves with the transcript, so the scroll
+    // itself closes it; the scroll the rail performs for a jump has already closed it.
+    conversation.addEventListener("scroll", closePreview, { passive: true });
     return () => {
       conversation.removeEventListener("wheel", releasePin);
       conversation.removeEventListener("touchstart", pressReleased);
       conversation.removeEventListener("pointerdown", pressReleased);
       conversation.removeEventListener("focusin", onFocusIn);
       conversation.removeEventListener("keydown", onKeyDown);
+      conversation.removeEventListener("scroll", closePreview);
     };
   }, [shown, scrollRef, releasePin, closePreview]);
 }
