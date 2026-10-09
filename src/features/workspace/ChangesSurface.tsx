@@ -406,11 +406,17 @@ export const ChangesSurface = memo(function ChangesSurface({
         </div>
       ) : !reply.isGit ? (
         <>
-          <div className="workspace-changes-state">
-            {reply.gitMissing === true
-              ? "git is not installed. Install Git for Windows, or put git on PATH, then refresh."
-              : "This workspace folder is not a git repository."}
-          </div>
+          {/* With an error on the reply, the alert above is the whole answer:
+              a folder that is not a repository is only claimed without one. */}
+          {reply.gitMissing === true ? (
+            <div className="workspace-changes-state">
+              git is not installed. Install Git for Windows, or put git on PATH, then refresh.
+            </div>
+          ) : reply.error === null ? (
+            <div className="workspace-changes-state">
+              This workspace folder is not a git repository.
+            </div>
+          ) : null}
           <div className="workspace-changes-refresh-line">
             <RefreshButton onRefresh={refresh} />
           </div>

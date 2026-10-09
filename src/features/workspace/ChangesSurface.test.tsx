@@ -153,6 +153,19 @@ describe("ChangesSurface", () => {
     expect(container.textContent).not.toContain("No uncommitted changes");
   });
 
+  it("does not claim 'not a repository' when a reply carries an error, as an older daemon sends", async () => {
+    // A daemon before gitMissing answers a missing git as is_git false plus an
+    // error. The alert says what failed; the panel must not add a claim on top.
+    vi.mocked(workspaceGitStatus).mockResolvedValue(
+      statusReply({ isGit: false, error: "git could not be run" }),
+    );
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("git could not be run");
+    expect(container.textContent).not.toContain("not a git repository");
+    expect(container.querySelector('button[aria-label="Refresh"]')).not.toBeNull();
+  });
+
   it("names a missing git program in one quiet line, not as an error", async () => {
     vi.mocked(workspaceGitStatus).mockResolvedValue(
       statusReply({ isGit: false, gitMissing: true }),
