@@ -43,7 +43,7 @@ export const TranscriptRow = memo(function TranscriptRow({
     const depthCopy = isSubagent && measuredDepth === null ? " · depth unavailable" : "";
     return (
       <ThoughtRow
-        label={isSubagent ? `Subagent thought${depthCopy}` : "Thought"}
+        label={isSubagent ? `Subagent thinking${depthCopy}` : "Thinking"}
         className={className}
         style={style}
         text={item.text}

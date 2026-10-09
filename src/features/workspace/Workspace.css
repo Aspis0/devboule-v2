@@ -647,32 +647,44 @@
   line-height: var(--leading-body);
 }
 
+/* Opened, the thought is a box: its header is the trigger, its text sits below
+   in muted ink, so it never reads as the answer. */
+.workspace-chat-thought.is-expanded {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+}
+
 /* Descendant on purpose: `font: inherit` needs a nameable parent, and the
    trigger never renders outside `.workspace-chat-thought`. */
-.workspace-chat-thought .workspace-chat-thought-trigger {
+.workspace-chat-thought .workspace-chat-thought-trigger,
+.workspace-chat-thought .workspace-chat-thought-line {
   display: flex;
   width: 100%;
   min-width: 0;
   align-items: center;
   gap: var(--space-6);
-  padding: 0 var(--space-2);
+  padding: var(--space-2) var(--space-8);
   border: 0;
   background: transparent;
   color: var(--muted);
-  cursor: pointer;
   font: inherit;
   text-align: left;
 }
 
+.workspace-chat-thought .workspace-chat-thought-trigger {
+  cursor: pointer;
+}
+
+.workspace-chat-thought-icon,
 .workspace-chat-thought-chevron {
   width: 12px;
   height: 12px;
   flex: none;
-  transition: transform 120ms ease;
 }
 
-.workspace-chat-thought-trigger[aria-expanded="true"] .workspace-chat-thought-chevron {
-  transform: rotate(90deg);
+.workspace-chat-thought-chevron {
+  margin-inline-start: auto;
 }
 
 .workspace-chat-thought-trigger:focus-visible {
@@ -684,37 +696,13 @@
   flex: none;
 }
 
-.workspace-chat-thought-line {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-6);
-  padding: 0 var(--space-2);
-}
-
-.workspace-chat-thought-preview {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* A single line has no box to open, so the whole text wraps in the row. */
-.workspace-chat-thought-text {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.workspace-chat-thought-preview::before,
-.workspace-chat-thought-text::before {
-  content: "·";
-  margin-inline-end: var(--space-6);
-}
-
-.workspace-chat-thought .workspace-chat-copy {
-  margin-top: var(--space-4);
-  color: var(--silence);
+.workspace-chat-thought-body {
+  padding: 0 var(--space-8) var(--space-8);
+  color: var(--muted);
   font-size: var(--type-meta);
   line-height: var(--leading-body);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .workspace-chat-system {

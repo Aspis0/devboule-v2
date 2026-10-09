@@ -652,17 +652,12 @@ describe("AgentChatSurface", () => {
       throw new Error("both thought rows did not render");
     }
     expect(completedRow.querySelector(".workspace-chat-thought-label")?.textContent).toBe(
-      "Thought",
+      "Thinking",
     );
-    expect(completedRow.querySelector(".workspace-chat-thought-trigger")).toBeNull();
-    expect(completedRow.querySelector(".workspace-chat-thought-text")?.textContent).toBe(
-      "Checking the config loader",
-    );
-    expect(streamingRow.querySelector(".workspace-chat-thought-status")?.textContent).toBe(
-      "Thinking…",
-    );
+    expect(completedRow.textContent).not.toContain("Checking the config loader");
+    expect(streamingRow.querySelector(".workspace-chat-thought-status")?.textContent).toBe("…");
     expect(streamingRow.querySelector(".workspace-chat-thought-label")?.textContent).toBe(
-      "Subagent thought · depth unavailable",
+      "Subagent thinking · depth unavailable",
     );
     const button = streamingRow.querySelector<HTMLButtonElement>(".workspace-chat-thought-trigger");
     if (button === null) throw new Error("streaming thought toggle did not render");
