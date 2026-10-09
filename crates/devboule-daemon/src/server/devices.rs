@@ -175,7 +175,7 @@ pub(super) fn dispatch_devices(
     // never sees the word. This is the one place the projection leaves the
     // daemon, so no other reply path can leak it. A v30 connection is the only
     // one that keeps it, and it is also the only one whose decoder requires it.
-    if conn.negotiated_protocol() <= LEGACY_DEVICES_DIALECT {
+    if keeps_projected_roles(conn.negotiated_protocol()) {
         reply
     } else {
         strip_projected_roles(reply)
@@ -183,9 +183,15 @@ pub(super) fn dispatch_devices(
 }
 
 /// The last app/daemon dialect whose `devices`/pairing DTOs carried a required
-/// `role` field. Everything at or below it is handed the projection; nothing
-/// above it is.
-const LEGACY_DEVICES_DIALECT: u32 = 30;
+/// `role` field. Protocol 31 (the settings-profiles dialect) still requires
+/// it, so only a negotiated 32 or later is handed the roleless shape.
+const LEGACY_DEVICES_DIALECT: u32 = 31;
+
+/// Whether the negotiated dialect still carries the required role word in the
+/// devices family.
+fn keeps_projected_roles(negotiated: u32) -> bool {
+    negotiated <= LEGACY_DEVICES_DIALECT
+}
 
 /// Drop the v30 role projection from one devices-family reply. The rows are
 /// built once with the word a v30 decoder requires; this is where a v32
@@ -451,6 +457,17 @@ fn no_tailnet_address() -> WireError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every dialect through 31 requires the role word in its device frames —
+    /// a v31 app fails to decode a roleless row — and the roleless dialect is
+    /// 32. The gate is the one place that decides which shape leaves.
+    #[test]
+    fn the_devices_projection_stops_at_the_roleless_dialect() {
+        assert!(keeps_projected_roles(30));
+        assert!(keeps_projected_roles(31));
+        assert!(!keeps_projected_roles(32));
+        assert!(!keeps_projected_roles(33));
+    }
 
     /// The address a human must type on the other device is composed by
     /// `SocketAddr`, so an IPv6 tailnet address arrives bracketed and parses
