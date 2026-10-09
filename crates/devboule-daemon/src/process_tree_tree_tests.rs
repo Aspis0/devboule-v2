@@ -131,19 +131,45 @@ fn agent_terminal_kill_takes_a_child_its_shell_detached() {
 
 #[test]
 fn attached_stop_spares_a_child_its_root_detached() {
-    let mut root = spawn_cmd(&["start", "/b", "ping", "-n", "60", "127.0.0.1"]);
-    let job = JobObject::attached(root.id()).expect("attached job");
+    // The root stays alive through the stop, so the capture holds the root
+    // and the detached survivor is spared by the parent-link walk alone.
+    // (`timeout` cannot be the sleeper: it refuses redirected stdin, so the
+    // root would already be gone and the test would prove nothing.)
+    let mut root = spawn_cmd(&[
+        "powershell",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Start-Sleep",
+        "-Seconds",
+        "60",
+    ]);
+    let root_pid = root.id();
+    let _root_guard = KillOnDrop::of(root_pid);
+    let job = JobObject::attached(root_pid).expect("attached job");
     job.assign(root.as_raw_handle()).expect("assign root");
-    root.wait().expect("reap root");
+    let mut launcher = spawn_cmd(&["start", "/b", "ping", "-n", "60", "127.0.0.1"]);
+    job.assign(launcher.as_raw_handle())
+        .expect("assign launcher");
+    launcher.wait().expect("reap launcher");
     let ping = wait_for_ping(&job);
     let _ping_guard = KillOnDrop::of(ping);
+    assert!(
+        job.pids().expect("read job members").contains(&root_pid),
+        "the root must be alive for this test to prove the exclusion"
+    );
 
     let tree = job.capture_tree();
     job.kill_tree(&tree).expect("attached stop");
 
+    let members = job.pids().expect("read job members");
     assert!(
-        job.pids().expect("read job members").contains(&ping),
+        members.contains(&ping),
         "stopping the terminal ended a process its root had already detached"
+    );
+    assert!(
+        !members.contains(&root_pid),
+        "the stop left the live root behind"
     );
 }
 

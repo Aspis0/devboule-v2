@@ -91,11 +91,13 @@ pub(super) fn capture(
         }
     }
     let Some(root_held) = Held::open(root) else {
+        eprintln!("could not open the terminal's shell, so only its shell is stopped");
         return tree;
     };
     // The spawn-time identity: a reused PID opens as its successor, so a root
     // whose clock disagrees with the spawn's is not the shell.
     if expected_root_created_at != Some(root_held.created_at) {
+        eprintln!("the terminal's shell is not the spawned process, so only its shell is stopped");
         return tree;
     }
     tree.members.push(root_held);
