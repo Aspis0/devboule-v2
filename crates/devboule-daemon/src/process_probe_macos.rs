@@ -21,6 +21,9 @@ use crate::process_tree::JobObject;
 
 pub(crate) const PROOF_KIND: &str = "process_group";
 
+/// launchd adopts an orphan, so a live parent says nothing about its lineage.
+pub(crate) const PARENT_LINKS_SURVIVE_EXIT: bool = false;
+
 /// One helper's hard budget and output cap. A wedged `ps`/`lsof` is killed
 /// with the budget — and that kill is reported as an error, not as silence.
 const HELPER_BUDGET: Duration = Duration::from_secs(5);

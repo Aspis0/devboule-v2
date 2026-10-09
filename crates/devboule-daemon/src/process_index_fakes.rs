@@ -32,6 +32,11 @@ impl ProcessProbe for FakeProbe {
     fn proof_kind(&self) -> &'static str {
         "job_member"
     }
+
+    /// Modelled on Windows: a member's ppid keeps the dead parent's number.
+    fn parent_links_survive_exit(&self) -> bool {
+        true
+    }
 }
 
 pub(super) fn identity(started_at_ms: u64, ppid: u32) -> ProcessIdentity {

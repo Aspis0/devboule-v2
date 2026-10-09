@@ -13,7 +13,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::process_argv_redact::{redact_argv, redact_exe};
-use crate::process_plan::{provider_tree, CleanupPlan, PlanTarget, SkippedPlan};
+use crate::process_plan::{
+    outside_the_tree, provider_tree, CleanupPlan, PlanTarget, SkippedPlan, MEMBER_UNPROVEN,
+};
 use crate::process_tree::JobObject;
 
 /// One live session's proof root: the job or group every membership claim
@@ -45,6 +47,10 @@ pub(crate) struct ProcessEntry {
     /// The daemon's direct child: a provider root. Cleanup never signals it
     /// or anything in its tree.
     pub(crate) is_agent: bool,
+    /// The parent's creation time, when the parent is alive outside this
+    /// membership and the platform keeps parent links across an exit. This is
+    /// the only lineage that proves a member is outside the provider tree.
+    pub(crate) outside_parent_started_at_ms: Option<u64>,
 }
 
 /// What the platform said about one pid. `None` means the OS would not
@@ -73,6 +79,12 @@ pub(crate) trait ProcessProbe {
     fn identity(&self, pid: u32) -> Option<ProcessIdentity>;
     fn listening_ports(&self) -> Vec<(u16, u32)>;
     fn proof_kind(&self) -> &'static str;
+    /// Whether a member keeps its parent link after the parent exits. Windows
+    /// does; Unix re-parents the orphan to init, so a link to a live parent
+    /// there proves nothing about the provider tree.
+    fn parent_links_survive_exit(&self) -> bool {
+        false
+    }
 }
 
 /// The real, platform-backed probe.
@@ -108,6 +120,10 @@ impl ProcessProbe for SystemProbe {
     fn proof_kind(&self) -> &'static str {
         platform::PROOF_KIND
     }
+
+    fn parent_links_survive_exit(&self) -> bool {
+        platform::PARENT_LINKS_SURVIVE_EXIT
+    }
 }
 
 #[cfg(windows)]
@@ -127,6 +143,7 @@ mod platform {
     use crate::process_tree::JobObject;
 
     pub(crate) const PROOF_KIND: &str = "process_group";
+    pub(crate) const PARENT_LINKS_SURVIVE_EXIT: bool = false;
 
     pub(crate) struct Probe;
 
@@ -214,6 +231,7 @@ impl ProcessIndex {
             per_pid_ports.entry(pid).or_default().push(port);
         }
         let daemon_pid = std::process::id();
+        let links_survive = probe.parent_links_survive_exit();
         let mut sessions = self.sessions();
         sessions.retain(|id, _| roots.iter().any(|root| &root.id == id));
         for root in roots {
@@ -232,7 +250,7 @@ impl ProcessIndex {
             state.agent = root.label.clone();
             state.entries.retain(|pid, _| members.contains(pid));
             state.unproven.retain(|pid| members.contains(pid));
-            for pid in members {
+            for &pid in &members {
                 let ports = per_pid_ports.get(&pid).cloned().unwrap_or_default();
                 let Some(identity) = probe.identity(pid) else {
                     state.entries.remove(&pid);
@@ -240,6 +258,14 @@ impl ProcessIndex {
                     continue;
                 };
                 state.unproven.remove(&pid);
+                let outside_parent_started_at_ms =
+                    if links_survive && !members.contains(&identity.ppid) {
+                        probe
+                            .identity(identity.ppid)
+                            .map(|parent| parent.started_at_ms)
+                    } else {
+                        None
+                    };
                 state.entries.insert(
                     pid,
                     ProcessEntry {
@@ -251,6 +277,7 @@ impl ProcessIndex {
                         proof,
                         ppid: identity.ppid,
                         is_agent: identity.ppid == daemon_pid,
+                        outside_parent_started_at_ms,
                     },
                 );
             }
@@ -327,6 +354,9 @@ impl ProcessIndex {
     ) -> Option<Result<CleanupPlan, &'static str>> {
         let sessions = self.sessions();
         let state = sessions.get(session_id)?;
+        if !state.unproven.is_empty() {
+            return Some(Err(MEMBER_UNPROVEN));
+        }
         let tree = match provider_tree(&state.entries, state.agent_root) {
             Ok(tree) => tree,
             Err(reason) => return Some(Err(reason)),
@@ -348,6 +378,11 @@ impl ProcessIndex {
         }
         for pid in state.entries.keys().filter(|pid| elsewhere.contains(pid)) {
             named.entry(*pid).or_insert("other_session_provider");
+        }
+        for entry in state.entries.values() {
+            if !named.contains_key(&entry.pid) && !outside_the_tree(entry) {
+                named.insert(entry.pid, "lineage_unproven");
+            }
         }
         let mut excluded: Vec<SkippedPlan> = named
             .into_iter()

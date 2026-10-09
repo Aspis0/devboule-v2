@@ -63,9 +63,9 @@ fn live_session(state: &Arc<ServerState>, mode: &str) -> Arc<crate::session::Ses
 }
 
 /// A proof root that is this test's own direct child (so the index records it
-/// as the agent), and one real member to clean that lies outside the root's
-/// tree: a shell starts a ping and exits, so the ping has no parent in the
-/// membership. Returns (root child, member pid); the caller reaps the root.
+/// as the agent), and one real member that lies outside the root's tree: a
+/// ping started by a PowerShell that stays alive outside the job. Returns
+/// (root child, member pid); the caller reaps the root.
 #[cfg(windows)]
 #[allow(clippy::zombie_processes)]
 fn member_pair() -> (std::process::Child, u32) {
@@ -88,29 +88,46 @@ fn member_pair() -> (std::process::Child, u32) {
         .spawn()
         .expect("our own root spawns");
 
-    // PowerShell starts the member, prints its pid and exits: the member is
-    // re-parented to a process that is no longer alive.
+    // The member's parent is a PowerShell that stays alive outside the job:
+    // a live parent that predates the member is the lineage the planner can
+    // prove. The shell writes the member's pid to a file and then sleeps.
+    let pid_file = crate::test_dirs::test_temp_dir("pm-cleanup-member")
+        .join(format!("member-{}.pid", root.id()));
+    let _ = std::fs::remove_file(&pid_file);
     let script = format!(
-        "(Start-Process -FilePath '{}' -ArgumentList '-n 60 127.0.0.1' -WindowStyle Hidden -PassThru).Id",
-        ping.display()
+        "$p = Start-Process -FilePath '{}' -ArgumentList '-n 60 127.0.0.1' -WindowStyle Hidden -PassThru; Set-Content -Path '{}' -Value $p.Id; Start-Sleep -Seconds 60",
+        ping.display(),
+        pid_file.display()
     );
     let shell = system_root
         .join("System32")
         .join("WindowsPowerShell")
         .join("v1.0")
         .join("powershell.exe");
-    let output = std::process::Command::new(shell)
+    // The shell is not waited on: it exits on its own after its sleep.
+    std::process::Command::new(shell)
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .creation_flags(CREATE_NO_WINDOW)
-        .output()
+        .spawn()
         .expect("PowerShell starts");
-    let member = String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .parse::<u32>()
-        .expect("PowerShell prints the member pid");
-    (root, member)
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let member = std::fs::read_to_string(&pid_file)
+            .ok()
+            .and_then(|text| text.trim().parse::<u32>().ok());
+        if let Some(member) = member {
+            return (root, member);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the shell writes the member pid within twenty seconds"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 #[cfg(not(windows))]
@@ -236,6 +253,7 @@ fn audit_outcome(state: &Arc<ServerState>) -> String {
 
 /// In an automatic mode the card approves itself — and the audit row still
 /// records what it approved.
+#[cfg(windows)]
 #[test]
 fn an_automatic_cleanup_records_its_approval() {
     let state = ServerState::new("pm-cleanup-auto".to_string());
@@ -266,6 +284,7 @@ fn an_automatic_cleanup_records_its_approval() {
 
 /// In an asking mode the person answers first: the card exists before
 /// anything is signalled, and the row names the person as the approver.
+#[cfg(windows)]
 #[test]
 fn an_asking_cleanup_shows_the_card_first() {
     let state = ServerState::new("pm-cleanup-ask".to_string());
@@ -308,6 +327,26 @@ fn an_asking_cleanup_shows_the_card_first() {
         outcome.contains("approved by person") && !outcome.contains("automatic"),
         "the row names the person, not the mode: {outcome}"
     );
+
+    let _ = root.kill();
+    let _ = root.wait();
+}
+
+/// Without a proven lineage a member is spared, and the row says why: on Unix
+/// the orphan is re-parented, so its parent link proves nothing.
+#[cfg(not(windows))]
+#[test]
+fn an_orphan_is_spared_where_lineage_cannot_be_proven() {
+    let state = ServerState::new("pm-cleanup-spared".to_string());
+    live_session(&state, "bypassPermissions");
+    let (mut root, member) = member_pair();
+    prove_members(&state, root.id(), member);
+
+    let reply = run_cleanup(&state);
+
+    assert!(terminated_pids(&reply).is_empty());
+    let outcome = audit_outcome(&state);
+    assert!(outcome.contains("lineage_unproven"), "{outcome}");
 
     let _ = root.kill();
     let _ = root.wait();

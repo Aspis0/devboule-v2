@@ -30,6 +30,10 @@ use crate::process_tree::JobObject;
 
 pub(crate) const PROOF_KIND: &str = "job_member";
 
+/// Windows keeps a dead parent's number in the child's ppid, so a live parent
+/// that started before the child is real proof of the child's lineage.
+pub(crate) const PARENT_LINKS_SURVIVE_EXIT: bool = true;
+
 /// The platform probe: one `begin_refresh` snapshot answers the whole
 /// refresh — every pid's parent from a single Toolhelp walk (not one walk
 /// per member) and both listener tables.

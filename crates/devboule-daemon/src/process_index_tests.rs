@@ -180,41 +180,23 @@ fn the_agent_root_is_excluded_by_its_recorded_creation_time() {
 }
 
 #[test]
-fn cleanup_plan_excludes_the_agent_root_and_unvouched_members() {
+fn cleanup_plan_refuses_an_unvouched_member_and_names_nothing_to_signal() {
     let index = ProcessIndex::new();
     let mut probe = FakeProbe {
-        members: vec![100, 200, 300],
+        members: vec![100, 300],
         identities: HashMap::from([
             // The root: our own direct child.
             (100, identity(1_000, std::process::id())),
-            // An orphan: its parent is not in the membership.
-            (200, identity(2_000, 77)),
             // 300 is a member the OS will not vouch for.
         ]),
         ports: vec![],
     };
     refresh(&index, vec![proof("session-c", None)], &mut probe);
 
-    let plan = index
-        .cleanup_plan("session-c")
-        .expect("a live session")
-        .expect("a proven chain");
-    let pids: Vec<u32> = plan.targets.iter().map(|target| target.pid).collect();
-    assert_eq!(pids, vec![200], "a member, never the agent root");
-    assert_eq!(
-        plan.excluded
-            .iter()
-            .map(|entry| entry.pid)
-            .collect::<Vec<u32>>(),
-        vec![100],
-        "and the root's exclusion says why"
-    );
-    assert_eq!(plan.excluded[0].reason, "agent_root");
-    assert_eq!(
-        plan.unproven,
-        vec![300],
-        "an unvouched member is reported, not acted on"
-    );
+    assert!(matches!(
+        index.cleanup_plan("session-c"),
+        Some(Err(reason)) if reason == crate::process_plan::MEMBER_UNPROVEN
+    ));
 }
 
 /// An executable the process spelled as a credential never reaches an entry,

@@ -31,6 +31,10 @@ pub(crate) struct CleanupPlan {
 /// signals nothing rather than guess which members are the caller's own.
 pub(crate) const CHAIN_UNPROVEN: &str = "caller_chain_unproven";
 
+/// Refusal when a session member's identity cannot be read: it could be the
+/// link between a target and the provider root, so nothing is signalled.
+pub(crate) const MEMBER_UNPROVEN: &str = "member_unproven";
+
 /// Bounds the parent walk: the membership is finite, but parent links come
 /// from the OS and are not trusted to terminate.
 const MAX_CHAIN_DEPTH: usize = 64;
@@ -111,13 +115,23 @@ pub(crate) fn provider_tree(
 }
 
 /// The member that is this entry's parent, when the link can be real: the
-/// parent is a member, is not the entry itself, and was created no later.
+/// parent is a member, is not the entry itself, and was created strictly
+/// before it. Equal creation times are not proof, so they are not a link.
 fn parent_of<'a>(
     entries: &'a HashMap<u32, ProcessEntry>,
     child: &ProcessEntry,
 ) -> Option<&'a ProcessEntry> {
     let parent = entries.get(&child.ppid)?;
-    (parent.pid != child.pid && parent.started_at_ms <= child.started_at_ms).then_some(parent)
+    (parent.pid != child.pid && parent.started_at_ms < child.started_at_ms).then_some(parent)
+}
+
+/// Whether a member is proven outside the provider tree: its parent was alive
+/// outside the membership, and created before it. Anything less — a missing or
+/// reused parent, or a platform that re-parents orphans — leaves it protected.
+pub(crate) fn outside_the_tree(entry: &ProcessEntry) -> bool {
+    entry
+        .outside_parent_started_at_ms
+        .is_some_and(|parent_started_at| parent_started_at < entry.started_at_ms)
 }
 
 #[cfg(test)]
@@ -134,6 +148,7 @@ mod tests {
             proof: "job_member",
             ppid,
             is_agent,
+            outside_parent_started_at_ms: None,
         }
     }
 
