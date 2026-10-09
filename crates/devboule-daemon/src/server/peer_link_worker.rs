@@ -258,10 +258,14 @@ fn open(state: &Arc<ServerState>, link: &HostLink) -> Result<LinkSession, DialSt
         .device_identity()
         .as_ref()
         .map_err(|_| DialStep::Identity)?;
-    let hello = ClientHello::m3a(
-        OwnerId::new(format!("peer_{}", identity.device_id), "daemon")
-            .map_err(|_| DialStep::Identity)?,
+    let hello = ClientHello::peer(
+        OwnerId::new(
+            format!("peer_{}", identity.device_id),
+            crate::peer_policy::PEER_OWNER_TAG,
+        )
+        .map_err(|_| DialStep::Identity)?,
         "devboule-daemon",
+        state.has_hosted_workspace(),
     );
     // The key is borrowed here and gone before the first application byte.
     // The handshake's own step is the link's step, so the error travels as it

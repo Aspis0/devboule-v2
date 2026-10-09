@@ -444,3 +444,101 @@ fn the_outbound_cap_caps_concurrent_dials() {
         }
     });
 }
+
+/// A fake responder that completes the handshake, answers the hello, and hands
+/// the hello's workspace-host word back to the test so the dialer's own
+/// statement can be asserted.
+fn spawn_presence_recording_responder(
+    static_private: [u8; 32],
+) -> (SocketAddr, std::sync::mpsc::Receiver<Option<bool>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind the presence responder");
+    let address = listener.local_addr().expect("presence responder address");
+    let (seen_tx, seen) = std::sync::mpsc::channel::<Option<bool>>();
+    std::thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("accept one dial");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let session = responder_handshake(
+            &stream,
+            deadline,
+            &static_private,
+            PEER_PROLOGUE,
+            None,
+            PEER_NOISE_PATTERN,
+        )
+        .expect("fake responder handshake");
+        let (reader, writer, closer) = split_session(&stream, session).expect("split");
+        let framed = Framed::from_stream(reader, writer, closer);
+        let hello: ClientMessage = framed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the dial's hello");
+        let ClientMessage::Hello(hello) = hello else {
+            panic!("the dialer's first frame must be a hello");
+        };
+        seen_tx
+            .send(hello.workspace_host)
+            .expect("report the presence");
+        framed
+            .send(&DaemonMessage::Hello(DaemonHello {
+                protocol_version: PROTOCOL_VERSION,
+                min_protocol_version: PROTOCOL_MIN_VERSION,
+                daemon_version: "test".to_string(),
+                instance_id: "presence-responder".to_string(),
+                pid: std::process::id(),
+                capabilities: Vec::new(),
+                workspace_host: None,
+            }))
+            .expect("hello reply");
+        let _request: ClientMessage = framed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the dial's request");
+        framed
+            .send(&DaemonMessage::Sessions {
+                id: 7,
+                sessions: Vec::new(),
+            })
+            .expect("send the canned reply");
+    });
+    (address, seen)
+}
+
+/// A dialing daemon states its own workspace presence on the hello: the peer
+/// may show it, and this daemon's slice-1 scope decision never trusts it, but
+/// the wire must carry the truth about the sender.
+#[test]
+fn a_dial_advertises_this_devices_workspace_presence() {
+    let state = ServerState::new("peer-dial-presence".into());
+    let dir = crate::test_dirs::test_temp_dir("devboule peer-dial presence");
+    let project_dir = dir.join("project");
+    std::fs::create_dir_all(&project_dir).expect("project dir");
+    let project = state
+        .sessions
+        .project_add(project_dir.to_str().expect("utf-8 path"))
+        .expect("project row");
+    state
+        .sessions
+        .workspace_create(
+            &project.id,
+            devboule_protocol::WorkspaceIsolation::Local,
+            None,
+        )
+        .expect("workspace row");
+    assert!(
+        state.has_hosted_workspace(),
+        "the fixture hosts a workspace"
+    );
+
+    let keypair = pinned_keypair();
+    let (address, seen) =
+        spawn_presence_recording_responder(keypair.private.clone().try_into().expect("32 bytes"));
+    state
+        .peer_upsert(dial_row(address.to_string(), &keypair.public))
+        .expect("upsert the row");
+    let _ = call_peer(&state, "b", ClientMessage::SessionsList { id: 7 });
+    assert_eq!(
+        seen.recv_timeout(Duration::from_secs(5))
+            .expect("the responder saw the hello"),
+        Some(true),
+        "a dialing daemon states its own workspace presence"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

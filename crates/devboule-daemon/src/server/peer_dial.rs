@@ -358,10 +358,17 @@ pub fn call_peer(
         .device_identity()
         .as_ref()
         .map_err(|error| DialError::at(DialStep::Identity, error.to_string()))?;
-    let hello = ClientHello::m3a(
-        OwnerId::new(format!("peer_{}", identity.device_id), "daemon")
-            .map_err(|error| DialError::at(DialStep::Identity, error))?,
+    // The owner label is diagnostic and one stable word, not a role; the
+    // workspace-host presence is this daemon's own statement about itself, on
+    // the wire whether or not the far side trusts it for anything.
+    let hello = ClientHello::peer(
+        OwnerId::new(
+            format!("peer_{}", identity.device_id),
+            crate::peer_policy::PEER_OWNER_TAG,
+        )
+        .map_err(|error| DialError::at(DialStep::Identity, error))?,
         "devboule-daemon",
+        state.has_hosted_workspace(),
     );
     let framed = connect_and_handshake(identity.private_key(), &row.public_key, &row.address)?;
     // Ask again, now. Connecting and shaking hands can take fifteen seconds,

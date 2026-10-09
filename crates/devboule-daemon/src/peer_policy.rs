@@ -35,8 +35,10 @@ pub enum PeerDecision {
 /// **states** it hosts workspaces reaches the sessions it created on this
 /// machine, and every other paired device reaches the sessions of the person
 /// who paired it. It is service presence, never a pairing choice and never
-/// stored: the v30 dialect cannot state presence, so its remaining dial hint
-/// (`legacy_dialable`, preserved by the peers migration) is the fallback.
+/// taken from anything the peer says about itself: the record keeps the one
+/// transport fact (`legacy_dialable`, preserved by the peers migration) that
+/// the v30 dialect could verify, and a later slice records hosted-workspace
+/// presence through a locally confirmed channel before changing either.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PeerScope {
     /// A device with no hosted workspace: the person who paired it, and only
@@ -46,17 +48,20 @@ pub enum PeerScope {
     PeerDevice,
 }
 
-/// The scope a peer connection gets: its own workspace-host presence when the
-/// hello states it, the v30 dial hint when it cannot (a v30 hello is the only
-/// dialect allowed to omit the bit). Presence wins over the hint in both
-/// directions — a new-style device with no workspace reads as a client even
-/// when it was paired as a daemon before the roleless dialect.
-pub fn resolve_peer_scope(presence: Option<bool>, fallback: PeerScope) -> PeerScope {
-    match presence {
-        Some(true) => PeerScope::PeerDevice,
-        Some(false) => PeerScope::PairedUser,
-        None => fallback,
-    }
+/// The scope a peer connection reaches: what this daemon recorded for the
+/// device, and nothing the peer claims about itself now.
+///
+/// `hello_claim` is the peer's `workspaceHost` word as it arrived in the
+/// authenticated hello. It is display evidence, **never** an input here: a
+/// machine peer could claim `false` and be handed the broader paired-user
+/// scope (the full device projection and the paired user's sessions), and a
+/// claim of `true` must not be trusted before locally confirmed state says the
+/// device hosts anything. The recorded scope therefore passes through
+/// unchanged, and taking the claim as a parameter keeps that refusal one
+/// testable rule instead of an absence.
+pub fn peer_scope(hello_claim: Option<bool>, recorded: PeerScope) -> PeerScope {
+    let _ = hello_claim;
+    recorded
 }
 
 impl PeerScope {
@@ -1126,9 +1131,9 @@ pub const PEER_AUDIT_ROLE: &str = "paired-device";
 /// pipe connection carries `None`, and its kernel-derived identity stays in
 /// `ConnHandle.peer`.
 ///
-/// `scope` is the connection's session register, initially the v30 dial hint
-/// from the row and replaced from the hello's workspace-host presence before
-/// any request is served ([`resolve_peer_scope`]).
+/// `scope` is the connection's session register, decided from the recorded
+/// pairing alone ([`peer_scope`]); the peer's own hello claim never changes
+/// it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConnPeer {
     Remote {
@@ -3447,19 +3452,23 @@ pub(crate) mod tests {
         };
         assert_eq!(peer.device_id(), Some("dev-1"));
         assert_eq!(peer.scope(), PeerScope::PeerDevice);
-        // The scope is re-resolved from a hello that states presence, and a
-        // hello that states "no workspace" narrows a machine peer back to the
-        // paired user.
-        let narrowed = peer.with_scope(resolve_peer_scope(Some(false), PeerScope::PeerDevice));
-        assert_eq!(narrowed.scope(), PeerScope::PairedUser);
-        assert_eq!(
-            resolve_peer_scope(None, PeerScope::legacy(true)),
-            PeerScope::PeerDevice
-        );
-        assert_eq!(
-            resolve_peer_scope(None, PeerScope::legacy(false)),
-            PeerScope::PairedUser
-        );
+        // The forged claims: a machine peer saying "no workspace" would be the
+        // broader paired-user scope under the old rule, and a client peer
+        // saying "workspace" would be trusted as a machine. Neither happens.
+        for forged in [Some(false), Some(true), None] {
+            assert_eq!(
+                peer_scope(forged, PeerScope::PeerDevice),
+                PeerScope::PeerDevice,
+                "a claim may not narrow a machine peer: {forged:?}"
+            );
+            assert_eq!(
+                peer_scope(forged, PeerScope::PairedUser),
+                PeerScope::PairedUser,
+                "a claim may not widen a client peer: {forged:?}"
+            );
+        }
+        assert_eq!(PeerScope::legacy(true), PeerScope::PeerDevice);
+        assert_eq!(PeerScope::legacy(false), PeerScope::PairedUser);
     }
 
     #[test]

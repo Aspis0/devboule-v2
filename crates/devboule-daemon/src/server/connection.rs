@@ -148,15 +148,15 @@ pub(crate) fn handle_client(
         .capabilities
         .iter()
         .any(|capability| capability.as_str() == caps::REMOTE_HOSTS);
-    // The session register this connection reaches, resolved from the hello
-    // it just sent and bound to the device id the Noise handshake verified —
-    // never to the hello's owner label, and never to anything the far side can
-    // set outside the authenticated connection. A hello that states the bit
-    // wins over the row's migrated dial hint; a hello that cannot state it (a
-    // v30 one, today) keeps that hint.
+    // The session register this connection reaches is what this daemon
+    // **recorded** for the device when its pairing was confirmed. The peer's
+    // own `workspaceHost` claim is not trusted here: a machine peer could
+    // claim "no workspace" to be handed the broader paired-user scope, and a
+    // device could claim "workspace" before any locally confirmed state
+    // established that it hosts one. The claim may be shown to a person; it
+    // never widens or narrows scope. See `peer_policy::peer_scope`.
     let conn_peer = conn_peer.map(|peer| {
-        let scope =
-            crate::peer_policy::resolve_peer_scope(client_hello.workspace_host, peer.scope());
+        let scope = crate::peer_policy::peer_scope(client_hello.workspace_host, peer.scope());
         peer.with_scope(scope)
     });
     // The hello owner is diagnostic only. All idempotency and session access
