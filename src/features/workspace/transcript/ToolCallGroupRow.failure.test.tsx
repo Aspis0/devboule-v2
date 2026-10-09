@@ -75,7 +75,11 @@ describe("a group that holds a failure", () => {
   it("stands the failed call's line and excerpt under the closed group line", async () => {
     const container = await renderGroup(turn());
     const group = container.querySelector<HTMLDetailsElement>("details.workspace-chat-tool-group");
-    if (group === null) throw new Error("the group did not render");
+    const summary = group?.querySelector("summary");
+    if (group === null || summary === null || summary === undefined) {
+      throw new Error("the group did not render");
+    }
+    await act(async () => summary.click());
     expect(group.open).toBe(false);
 
     const failures = container.querySelector(".workspace-chat-tool-group-failures");
@@ -102,14 +106,10 @@ describe("a group that holds a failure", () => {
     ).toBeNull();
   });
 
-  it("does not show the failure twice once the group is open", async () => {
+  it("does not show the failure twice while the group is open", async () => {
     const container = await renderGroup(turn());
     const group = container.querySelector<HTMLDetailsElement>("details.workspace-chat-tool-group");
-    const summary = group?.querySelector("summary");
-    if (group === null || summary === null || summary === undefined) {
-      throw new Error("the group did not render");
-    }
-    await act(async () => summary.click());
+    if (group === null) throw new Error("the group did not render");
 
     expect(group.open).toBe(true);
     expect(container.querySelector(".workspace-chat-tool-group-failures")).toBeNull();
@@ -135,11 +135,11 @@ describe("a group that holds a failure", () => {
     expect(failureLines()).toHaveLength(5);
 
     await act(async () => summary.click());
-    expect(group.open).toBe(true);
+    expect(group.open).toBe(false);
     expect(failureLines()).toHaveLength(5);
 
     await act(async () => summary.click());
-    expect(group.open).toBe(false);
+    expect(group.open).toBe(true);
     expect(failureLines()).toHaveLength(5);
   });
 

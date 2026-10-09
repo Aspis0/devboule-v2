@@ -3787,9 +3787,6 @@ describe("AgentChatSurface", () => {
     if (group === null) throw new Error("tool group did not render");
     const groupSummary = group.querySelector("summary");
     if (groupSummary === null) throw new Error("group summary did not render");
-    await act(async () => {
-      groupSummary.click();
-    });
     expect(group.open).toBe(true);
     const innerRows = group.querySelectorAll<HTMLDetailsElement>(
       ".workspace-chat-tool-group-body > .workspace-chat-tool",
@@ -3874,7 +3871,11 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    // Both calls form one group; its failure stands outside it, the running call inside.
+    // Both calls form one group; closed, its failure stands outside it, the running call inside.
+    const groupSummary = container.querySelector<HTMLElement>(
+      "details.workspace-chat-tool-group > summary",
+    );
+    await act(async () => groupSummary?.click());
     const failure = container.querySelector(".workspace-chat-tool-group-failures");
     const body = container.querySelector(".workspace-chat-tool-group-body");
     if (failure === null || body === null) throw new Error("the group did not render");
@@ -3926,7 +3927,7 @@ describe("AgentChatSurface", () => {
     }
   });
 
-  it("renders three consecutive tools as one collapsed group with the overview summary", async () => {
+  it("renders three consecutive tools as one open group with the overview summary", async () => {
     root = createRoot(container);
     await act(async () => {
       root.render(<AgentChatSurface daemonState="connected" sessionId="tool-group-agent" />);
@@ -3962,8 +3963,8 @@ describe("AgentChatSurface", () => {
     const groups = container.querySelectorAll("details.workspace-chat-tool-group");
     expect(groups).toHaveLength(1);
     const group = groups[0];
-    expect(group.hasAttribute("open")).toBe(false);
-    expect(group.querySelector("summary")?.getAttribute("aria-expanded")).toBe("false");
+    expect(group.hasAttribute("open")).toBe(true);
+    expect(group.querySelector("summary")?.getAttribute("aria-expanded")).toBe("true");
     expect(group.querySelector(".workspace-chat-tool-group-count")?.textContent).toBe(
       "3 tool calls",
     );
@@ -4001,12 +4002,13 @@ describe("AgentChatSurface", () => {
     if (group === null) throw new Error("tool group did not render");
     const summary = group.querySelector("summary");
     if (summary === null) throw new Error("tool group summary did not render");
-    await act(async () => summary.click());
     expect(group.open).toBe(true);
-    expect(summary.getAttribute("aria-expanded")).toBe("true");
     await act(async () => summary.click());
     expect(group.open).toBe(false);
     expect(summary.getAttribute("aria-expanded")).toBe("false");
+    await act(async () => summary.click());
+    expect(group.open).toBe(true);
+    expect(summary.getAttribute("aria-expanded")).toBe("true");
   });
 
   it("keeps parent and subagent tools in separate runs with the subagent frame", async () => {
@@ -4132,7 +4134,6 @@ describe("AgentChatSurface", () => {
     if (group === null) throw new Error("tool group did not render");
     const summary = group.querySelector("summary");
     if (summary === null) throw new Error("tool group summary did not render");
-    await act(async () => summary.click());
     expect(group.open).toBe(true);
     const conversation = container.querySelector<HTMLElement>(".workspace-conversation");
     if (conversation === null) throw new Error("conversation did not render");

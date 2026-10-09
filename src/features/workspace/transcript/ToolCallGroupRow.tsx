@@ -16,7 +16,8 @@ export function ToolCallGroupRow({
   group: ToolCallGroup;
   transcriptEnded: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  // A group opens on its own, so each call's quiet line shows without a first click.
+  const [open, setOpen] = useState(true);
   // A failed call mounts twice, inside the open group and outside the closed
   // one, so each call's "show all" state lives here where both mounts see it.
   const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(() => new Set());
