@@ -30,6 +30,7 @@ use super::{
 use crate::acp_view::PromptCapabilityState;
 use crate::atomic::atomic_write;
 use crate::paths::RuntimePaths;
+use crate::pi_view::model_key;
 use crate::process_tree::{JobObject, ProcessHandle};
 use crate::profile_delivery::ProfileDelivery;
 use crate::server::ServerState;
@@ -2357,25 +2358,57 @@ struct PiCatalog {
     current_levels: Vec<String>,
 }
 
+/// What a name means in the catalog. A key names one model; a bare id names one
+/// only when a single provider serves it, so a profile that names just the id
+/// is never handed to whichever provider happened to be listed last.
+enum PiLookup<'a> {
+    Found(&'a PiModel),
+    Ambiguous,
+    Missing,
+}
+
 impl PiCatalog {
+    fn lookup(&self, name: &str) -> PiLookup<'_> {
+        if let Some(model) = self.models.get(name) {
+            return PiLookup::Found(model);
+        }
+        let mut same_id = self.models.values().filter(|model| model.id == name);
+        match (same_id.next(), same_id.next()) {
+            (Some(model), None) => PiLookup::Found(model),
+            (Some(_), Some(_)) => PiLookup::Ambiguous,
+            (None, _) => PiLookup::Missing,
+        }
+    }
+
+    /// The key of the model the session runs now, or `None` before the first
+    /// state read names one.
+    fn current_key(&self) -> Option<String> {
+        self.current_model_id
+            .as_deref()
+            .map(|id| model_key(self.current_provider.as_deref(), id))
+    }
+
     /// The content kinds a model declared in `get_available_models`. The read
     /// side for a future image sender: nothing sends one yet, so in production
     /// this is only the precondition this slice installs.
     #[cfg_attr(not(test), allow(dead_code))]
     fn input_kinds(&self, model_id: &str) -> Option<&PiInputKinds> {
-        self.models.get(model_id).map(|model| &model.input)
+        match self.lookup(model_id) {
+            PiLookup::Found(model) => Some(&model.input),
+            PiLookup::Ambiguous | PiLookup::Missing => None,
+        }
     }
 
     /// Records a switch pi confirmed. The levels pi answered for the new model
     /// replace what the catalog estimated, because the manifest publishes them.
     fn record_switch(
         &mut self,
-        model_id: &str,
+        wire_id: &str,
         provider: String,
         levels: Vec<String>,
         current_effort: Option<String>,
     ) {
-        if let Some(model) = self.models.get_mut(model_id) {
+        if let Some(model) = self.models.get_mut(&model_key(Some(&provider), wire_id)) {
             model.efforts = (!levels.is_empty()).then(|| {
                 levels
                     .iter()
@@ -2383,7 +2416,7 @@ impl PiCatalog {
                     .collect()
             });
         }
-        self.current_model_id = Some(model_id.to_string());
+        self.current_model_id = Some(wire_id.to_string());
         self.current_provider = Some(provider);
         self.current_levels = levels;
         self.current_effort = current_effort;
@@ -2392,6 +2425,7 @@ impl PiCatalog {
 
 #[derive(Clone, Debug)]
 struct PiModel {
+    id: String,
     name: String,
     provider: Option<String>,
     context_tokens: Option<u64>,
@@ -2494,7 +2528,10 @@ fn catalog_from_responses(
         let Some(id) = model.get("id").and_then(Value::as_str) else {
             continue;
         };
-        let efforts = if catalog.current_model_id.as_deref() == Some(id) {
+        let provider = model.get("provider").and_then(Value::as_str);
+        let is_current = catalog.current_model_id.as_deref() == Some(id)
+            && catalog.current_provider.as_deref() == provider;
+        let efforts = if is_current {
             Some(
                 catalog
                     .current_levels
@@ -2506,17 +2543,15 @@ fn catalog_from_responses(
             listed_thinking_levels(model)
         };
         catalog.models.insert(
-            id.to_string(),
+            model_key(provider, id),
             PiModel {
+                id: id.to_string(),
                 name: model
                     .get("name")
                     .and_then(Value::as_str)
                     .unwrap_or(id)
                     .to_string(),
-                provider: model
-                    .get("provider")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
+                provider: provider.map(str::to_string),
                 context_tokens: model.get("contextWindow").and_then(Value::as_u64),
                 efforts,
                 input: input_kinds_from_model(model),
@@ -2565,17 +2600,20 @@ fn effort(id: &str, default: bool) -> SessionModelEffort {
 fn manifest_from_catalog(catalog: &PiCatalog, mode_id: &str) -> SessionEvent {
     let mut ids = catalog.models.keys().cloned().collect::<Vec<_>>();
     ids.sort();
+    let current_key = catalog.current_key();
     let models = ids
         .into_iter()
-        .filter_map(|id| {
-            let model = catalog.models.get(&id)?;
+        .filter_map(|key| {
+            let model = catalog.models.get(&key)?;
             Some(SessionModel {
                 accepts_images: model.input.image == PromptCapabilityState::Supported,
                 model_id: id.clone(),
+                model_id: key.clone(),
                 name: model.name.clone(),
+                provider_id: model.provider.clone(),
                 description: None,
                 context_tokens: model.context_tokens,
-                current_effort: (catalog.current_model_id.as_deref() == Some(id.as_str()))
+                current_effort: (current_key.as_deref() == Some(key.as_str()))
                     .then(|| catalog.current_effort.clone())
                     .flatten(),
                 efforts: model.efforts.clone(),
@@ -2584,7 +2622,7 @@ fn manifest_from_catalog(catalog: &PiCatalog, mode_id: &str) -> SessionEvent {
         .collect();
     SessionEvent::SessionManifest {
         provider_id: Some("pi".to_string()),
-        current_model_id: catalog.current_model_id.clone(),
+        current_model_id: current_key,
         current_model_provider_id: catalog.current_provider.clone(),
         models,
         modes: Some(SessionModeStateView {
@@ -2900,7 +2938,7 @@ impl super::StaticImageSink for PiStaticPrompt {
                 .catalog
                 .lock()
                 .map_err(|_| WireError::new(ErrorCode::Io, "Pi model catalog is unavailable."))?;
-            static_route_runs(&catalog, catalog.current_model_id.as_deref())
+            static_route_runs(&catalog, catalog.current_key().as_deref())
         };
         if !static_images {
             return Ok(None);
@@ -3394,18 +3432,30 @@ impl ModelSwitcher for PiSwitcher {
                 "Pi publishes no models; the profile names one, so the creation is refused",
             ));
         }
-        let model = current.models.get(model_id).ok_or_else(|| {
-            WireError::new(
-                ErrorCode::InvalidRequest,
-                format!("Pi model '{model_id}' is not in get_available_models."),
-            )
-        })?;
+        let model = match current.lookup(model_id) {
+            PiLookup::Found(model) => model,
+            PiLookup::Ambiguous => {
+                return Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    format!(
+                        "Pi model '{model_id}' is served by more than one provider; name it as provider/model."
+                    ),
+                ))
+            }
+            PiLookup::Missing => {
+                return Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    format!("Pi model '{model_id}' is not in get_available_models."),
+                ))
+            }
+        };
         let provider = model.provider.clone().ok_or_else(|| {
             WireError::new(
                 ErrorCode::InvalidRequest,
                 format!("Pi model '{model_id}' has no provider."),
             )
         })?;
+        let wire_id = model.id.clone();
         if let Some(effort) = effort {
             if let Some(efforts) = &model.efforts {
                 let available = efforts
@@ -3424,7 +3474,7 @@ impl ModelSwitcher for PiSwitcher {
         }
         let model_request = self.control.request_within(
             "set_model",
-            serde_json::json!({"provider": provider, "modelId": model_id}),
+            serde_json::json!({"provider": provider, "modelId": wire_id}),
             budget,
         );
         if let Err(error) = model_request {
@@ -3491,7 +3541,7 @@ impl ModelSwitcher for PiSwitcher {
                 return Err(self.rollback_error(error));
             }
         };
-        catalog.record_switch(model_id, provider, levels, current_effort);
+        catalog.record_switch(&wire_id, provider, levels, current_effort);
         Ok(())
     }
 
@@ -4676,3 +4726,7 @@ mod local_command_window_tests;
 #[cfg(test)]
 #[path = "pi_model_levels_tests.rs"]
 mod model_levels_tests;
+/// Which provider serves a model, and which model a name means.
+#[cfg(test)]
+#[path = "pi_model_identity_tests.rs"]
+mod model_identity_tests;

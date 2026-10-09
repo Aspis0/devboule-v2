@@ -18,15 +18,22 @@ pub(super) fn manifest_arrived(runtime: &SessionRuntime) -> bool {
 /// Whether the model ask has anything to ask: a child already running the
 /// profile's model with no thinking option to deliver asks nothing — there
 /// is no ask to make. Every other combination is asked on the provider's
-/// own wire.
+/// own wire. The profile names a bare id, so it is compared as the manifest
+/// spells the model: keyed by its provider when the provider reports one.
 pub(super) fn model_ask_needed(manifest: Option<&SessionEvent>, facts: &ChildProfileFacts) -> bool {
-    let current_model_id = manifest.and_then(|event| match event {
+    let running = manifest.and_then(|event| match event {
         SessionEvent::SessionManifest {
-            current_model_id, ..
-        } => current_model_id.as_deref(),
+            current_model_id,
+            current_model_provider_id,
+            ..
+        } => current_model_id
+            .as_deref()
+            .map(|id| (id, current_model_provider_id.as_deref())),
         _ => None,
     });
-    current_model_id != Some(facts.model.as_str()) || facts.thinking_option_id.is_some()
+    let running_profile_model = running
+        .is_some_and(|(id, provider)| id == crate::pi_view::model_key(provider, &facts.model));
+    !running_profile_model || facts.thinking_option_id.is_some()
 }
 
 impl super::SessionRegistry {

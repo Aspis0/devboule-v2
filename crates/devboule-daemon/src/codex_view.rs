@@ -728,6 +728,7 @@ fn manifest_from_catalog(catalog: &CodexCatalog, mode_id: &str) -> SessionEvent 
             .iter()
             .map(|model| SessionModel {
                 accepts_images: true,
+                provider_id: None,
                 model_id: model.id.clone(),
                 name: model.name.clone(),
                 description: (!model.description.is_empty()).then(|| model.description.clone()),

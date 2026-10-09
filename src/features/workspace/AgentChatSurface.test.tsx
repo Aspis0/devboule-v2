@@ -1099,6 +1099,65 @@ describe("AgentChatSurface", () => {
     expect(container.querySelector(".workspace-composer")?.textContent).toContain("Claude Opus");
   });
 
+  it("names a pi model with the provider that serves it, in the chip and its rows", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.emit?.({
+        type: "session_manifest",
+        providerId: "pi",
+        currentModelId: "opencode-go/nemotron",
+        currentModelProviderId: "opencode-go",
+        models: [
+          {
+            modelId: "openrouter/nemotron",
+            name: "NVIDIA: Nemotron 3 Ultra (free)",
+            providerId: "openrouter",
+          },
+          {
+            modelId: "opencode-go/nemotron",
+            name: "NVIDIA: Nemotron 3 Ultra (free)",
+            providerId: "opencode-go",
+          },
+        ],
+      });
+    });
+
+    const chip = container.querySelector('[data-testid="provider-model-chip"]');
+    expect(chip?.textContent).toContain("opencode-go · NVIDIA: Nemotron 3 Ultra (free)");
+  });
+
+  it("names the one pi model with its provider in the static label", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.emit?.({
+        type: "session_manifest",
+        providerId: "pi",
+        currentModelId: "opencode-go/glm-5.3-flash",
+        currentModelProviderId: "opencode-go",
+        models: [
+          {
+            modelId: "opencode-go/glm-5.3-flash",
+            name: "GLM-5.3 Flash",
+            providerId: "opencode-go",
+          },
+        ],
+      });
+    });
+
+    const label = container.querySelector(".workspace-picker-static");
+    expect(label?.textContent).toBe("opencode-go · GLM-5.3 Flash");
+  });
+
   it("keeps the mode chip hidden when the manifest carries no modes", async () => {
     root = createRoot(container);
     await act(async () => {

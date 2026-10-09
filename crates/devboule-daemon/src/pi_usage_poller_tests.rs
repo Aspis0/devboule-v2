@@ -49,7 +49,7 @@ fn a_tick_publishes_a_changed_reading_and_skips_an_unchanged_one() {
     );
     assert_eq!(
         context_usages(&events),
-        [(Some("m".to_string()), 1000, Some(4000), true)],
+        [(Some("p/m".to_string()), 1000, Some(4000), true)],
         "the first reading, live, with the stats window: {events:?}"
     );
     // The same stats again: nothing publishes.
@@ -71,7 +71,7 @@ fn a_tick_publishes_a_changed_reading_and_skips_an_unchanged_one() {
     );
     assert_eq!(
         context_usages(&events),
-        [(Some("m".to_string()), 1200, Some(4000), true)],
+        [(Some("p/m".to_string()), 1200, Some(4000), true)],
         "the changed reading: {events:?}"
     );
 }
@@ -115,7 +115,7 @@ fn the_window_comes_from_the_stats_then_the_manifest_then_nowhere() {
             stats_body(1000, Some(12345)),
             "the stats-window reading"
         ),
-        (Some("m".to_string()), 1000, Some(12345), true),
+        (Some("p/m".to_string()), 1000, Some(12345), true),
         "the stats window is taken as-is"
     );
     assert_eq!(
@@ -124,12 +124,12 @@ fn the_window_comes_from_the_stats_then_the_manifest_then_nowhere() {
             stats_body(1000, None),
             "the manifest-window reading"
         ),
-        (Some("m".to_string()), 1000, Some(4000), true),
+        (Some("p/m".to_string()), 1000, Some(4000), true),
         "no stats window: the manifest window of the same model"
     );
     assert_eq!(
         reading_of(None, stats_body(1000, None), "the unknown-window reading"),
-        (Some("m".to_string()), 1000, None, true),
+        (Some("p/m".to_string()), 1000, None, true),
         "no window anywhere: the used tokens stay, the max is absent"
     );
 }
@@ -185,7 +185,7 @@ fn a_closed_run_polls_no_more() {
     );
     assert_eq!(
         context_usages(&events),
-        [(Some("m".to_string()), 1200, Some(4000), true)],
+        [(Some("p/m".to_string()), 1200, Some(4000), true)],
         "the fresh run polls: {events:?}"
     );
 }
@@ -234,7 +234,7 @@ fn a_reply_in_flight_across_a_close_never_publishes() {
     );
     assert_eq!(
         context_usages(&events),
-        [(Some("m".to_string()), 1200, Some(4000), true)],
+        [(Some("p/m".to_string()), 1200, Some(4000), true)],
         "the fresh reading: {events:?}"
     );
 }
@@ -500,7 +500,7 @@ fn a_timed_out_poll_is_not_a_give_up() {
     );
     assert_eq!(
         context_usages(&events),
-        [(Some("m".to_string()), 1000, Some(4000), true)],
+        [(Some("p/m".to_string()), 1000, Some(4000), true)],
         "the timeout was no give-up: {events:?}"
     );
 }
@@ -539,7 +539,7 @@ fn a_compaction_null_publishes_nothing_and_keeps_polling() {
     );
     assert_eq!(
         context_usages(&events),
-        [(Some("m".to_string()), 900, Some(4000), true)],
+        [(Some("p/m".to_string()), 900, Some(4000), true)],
         "the next real answer publishes: {events:?}"
     );
 }
@@ -685,7 +685,7 @@ fn a_durable_turn_end_reading_resets_the_dedup() {
     );
     assert_eq!(
         context_usages(&events),
-        [(Some("m".to_string()), 1000, Some(4000), true)],
+        [(Some("p/m".to_string()), 1000, Some(4000), true)],
         "the durable reading reset the key: {events:?}"
     );
 }
@@ -750,7 +750,7 @@ fn live_readings_are_not_journalled_and_replay_restores_the_turn_end_reading() {
         .expect("replay");
     assert_eq!(
         context_usages(&replay.events),
-        [(Some("m".to_string()), 25_851, None, false)],
+        [(Some("p/m".to_string()), 25_851, None, false)],
         "replay restores the turn_end reading alone: {:?}",
         context_usages(&replay.events)
     );

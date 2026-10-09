@@ -538,6 +538,7 @@ pub(super) fn turn_end(usage_total: u64, stop_reason: &str) -> Value {
         "message": {
             "role": "assistant",
             "content": [],
+            "provider": "p",
             "model": "m",
             "usage": {"totalTokens": usage_total},
             "stopReason": stop_reason,

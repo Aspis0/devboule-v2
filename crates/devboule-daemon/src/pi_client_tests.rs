@@ -2182,8 +2182,9 @@ mod delivery_tests {
         let pi = fake_pi_answering(FAKE_PI_DELIVERS);
         let catalog = PiCatalog {
             models: HashMap::from([(
-                "pi-model".to_string(),
+                "pi-provider/pi-model".to_string(),
                 PiModel {
+                    id: "pi-model".to_string(),
                     name: "Pi Model".to_string(),
                     provider: Some("pi-provider".to_string()),
                     context_tokens: None,
@@ -2679,8 +2680,9 @@ mod lifecycle_tests {
     fn delivery_catalog() -> PiCatalog {
         PiCatalog {
             models: HashMap::from([(
-                "pi-model".to_string(),
+                "pi-provider/pi-model".to_string(),
                 PiModel {
+                    id: "pi-model".to_string(),
                     name: "Pi Model".to_string(),
                     provider: Some("pi-provider".to_string()),
                     context_tokens: None,

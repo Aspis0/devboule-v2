@@ -187,7 +187,7 @@ impl PiUsagePoller {
         self.catalog
             .lock()
             .ok()
-            .map(|catalog| catalog.current_model_id.clone())
+            .map(|catalog| catalog.current_key())
     }
 
     /// The manifest window of the model the reading was read under —

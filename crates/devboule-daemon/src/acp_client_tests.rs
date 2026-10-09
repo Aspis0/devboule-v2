@@ -355,6 +355,7 @@ fn poisoned_manifest_lock_preserves_the_prior_model_catalog() {
         models: vec![
             SessionModel {
                 accepts_images: true,
+                provider_id: None,
                 model_id: "old-model".to_string(),
                 name: "Old model".to_string(),
                 description: None,
@@ -364,6 +365,7 @@ fn poisoned_manifest_lock_preserves_the_prior_model_catalog() {
             },
             SessionModel {
                 accepts_images: true,
+                provider_id: None,
                 model_id: "new-model".to_string(),
                 name: "New model".to_string(),
                 description: None,

@@ -683,6 +683,8 @@ export interface SessionModelEffort {
 export interface SessionModel {
   modelId: string;
   name: string;
+  /** The provider that serves this row, when the agent reports one (pi). */
+  providerId?: string;
   description?: string;
   contextTokens?: number;
   currentEffort?: string;

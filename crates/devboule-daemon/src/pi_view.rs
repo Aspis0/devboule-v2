@@ -378,6 +378,17 @@ fn result_exit_code(result: Option<&Value>) -> Option<i32> {
     .find_map(|value| value.as_i64().and_then(|code| i32::try_from(code).ok()))
 }
 
+/// The identity a Pi model carries on the wire: its provider and its id. The
+/// catalog and the turn's usage name a model the same way, so the meter finds
+/// the manifest row it reads. The key is only compared for equality, never
+/// split, so it relies on pi's provider names being slugs with no `/`.
+pub(crate) fn model_key(provider: Option<&str>, id: &str) -> String {
+    match provider {
+        Some(provider) => format!("{provider}/{id}"),
+        None => id.to_string(),
+    }
+}
+
 /// The turn's finish and the context reading it proves: pi's own
 /// `usage.totalTokens` is the same sum Codex and grok report, so the meter
 /// shows it as-is (`live: false` — the number is the end of this turn).
@@ -392,10 +403,11 @@ fn turn_end(value: &Value) -> Vec<SessionEvent> {
     let Some(message) = value.get("message") else {
         return Vec::new();
     };
+    let provider = message.get("provider").and_then(Value::as_str);
     let model_id = message
         .get("model")
         .and_then(Value::as_str)
-        .map(str::to_string);
+        .map(|model| model_key(provider, model));
     let usage_value = message.get("usage");
     let mut events = vec![SessionEvent::AgentFinished {
         stop_reason: message
@@ -861,9 +873,9 @@ mod tests {
                     live,
                 },
             ] if stop_reason == "stop"
-                && model_id.as_deref() == Some("z-ai/glm-5.3-flash")
+                && model_id.as_deref() == Some("openrouter/z-ai/glm-5.3-flash")
                 && usage.as_ref().and_then(|value| value.total_tokens) == Some(25851)
-                && context_model.as_deref() == Some("z-ai/glm-5.3-flash")
+                && context_model.as_deref() == Some("openrouter/z-ai/glm-5.3-flash")
                 && *used_tokens == 25_851
                 && max_tokens.is_none()
                 && !live

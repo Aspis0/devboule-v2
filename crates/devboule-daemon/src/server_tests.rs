@@ -2213,6 +2213,7 @@ impl crate::claude_catalog::CatalogSource for FixedClaudeCatalog {
     fn derive(&self) -> Result<Vec<devboule_protocol::SessionModel>, String> {
         Ok(vec![devboule_protocol::SessionModel {
             accepts_images: true,
+            provider_id: None,
             model_id: "derived-only-model".to_string(),
             name: "Derived only".to_string(),
             description: None,
@@ -2438,6 +2439,7 @@ fn the_vocabulary_cache_never_feeds_the_live_catalog_path() {
             origin: Some(devboule_protocol::VocabularyOrigin::Daemon),
             items: vec![devboule_protocol::SessionModel {
                 accepts_images: true,
+                provider_id: None,
                 model_id: marker.clone(),
                 name: marker.clone(),
                 description: None,

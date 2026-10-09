@@ -1591,12 +1591,16 @@ pub struct SessionModelEffort {
     pub default: Option<bool>,
 }
 
-/// One model in a live ACP session's declared catalog.
+/// One model in a live ACP session's declared catalog. `model_id` is the
+/// identity; a provider that serves one id under several providers (pi) names
+/// each row by provider and id, and `provider_id` says which provider serves it.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionModel {
     pub model_id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

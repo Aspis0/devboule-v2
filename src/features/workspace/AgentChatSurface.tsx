@@ -51,6 +51,7 @@ import { useConversationScrollStick } from "./useConversationScrollStick";
 import { setPreferredEffort, setPreferredMode, setPreferredModel } from "../../lib/agentPrefs";
 import { forgetCreatedSession, mayApplyPicks } from "./createdSessions";
 import { rememberedSwitch } from "./rememberedPicks";
+import { modelLabel } from "./modelLabel";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 import { sendChatImagesByReference } from "./chatImageTransport";
 import { useFileAttachments } from "./useFileAttachments";
@@ -335,7 +336,7 @@ function confirmedEffort(model: SessionModel | null): string | null {
 function pendingModelSentence(manifest: SessionManifest | null, modelId: string): string | null {
   if (manifest === null) return null;
   const model = manifest.models.find((entry) => entry.modelId === modelId);
-  return `switching to ${model?.name ?? modelId}…`;
+  return `switching to ${model === undefined ? modelId : modelLabel(model)}…`;
 }
 
 /** The sentence for an effort switch, or null when the model offers no such effort. */
@@ -716,12 +717,16 @@ export const AgentChatSurface = memo(function AgentChatSurface({
       : null;
   // The single-model label: the static, non-interactive half of the
   // provider·model pair, carrying both names the manifest line carried.
+  // A model that names its serving provider carries it in its own label; the
+  // agent's id stays in front only for an agent whose models name none.
   const staticModelLabel =
     manifest === null || (stripModel === null && manifest.providerId === undefined)
       ? null
-      : [manifest.providerId, stripModel?.name]
-          .filter((part): part is string => part !== undefined && part !== null && part !== "")
-          .join(" · ");
+      : stripModel?.providerId !== undefined
+        ? modelLabel(stripModel)
+        : [manifest.providerId, stripModel?.name]
+            .filter((part): part is string => part !== undefined && part !== null && part !== "")
+            .join(" · ");
   const osGone =
     observedType(observedState) === "ended" || observedType(observedState) === "recovered";
   // A turn runs when this view sent one or the daemon says the agent is working:
@@ -952,7 +957,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
                 label="Model"
                 options={manifest.models.map((model) => ({
                   id: model.modelId,
-                  name: model.name,
+                  name: modelLabel(model),
                   description: modelOptionDescription(model),
                 }))}
                 currentId={manifest.currentModelId ?? null}

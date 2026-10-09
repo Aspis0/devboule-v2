@@ -8,6 +8,7 @@ import { scrollRowIntoView } from "../../lib/scrollRowIntoView";
 import { isImeComposition } from "../../lib/imeComposition";
 import { useProviderConsent } from "../workspace/useProviderConsent";
 import { requiresConsent } from "../workspace/workspaceSessions";
+import { modelLabel as modelDisplayLabel } from "../workspace/modelLabel";
 import { confirmedEffort, manifestModel } from "./designMessageModel";
 
 interface DesignAgentPickerProps {
@@ -65,7 +66,7 @@ export function DesignAgentPicker({
     ? "Session closed"
     : sessionErrored
       ? "Session error"
-      : (currentModel?.name ??
+      : ((currentModel !== null ? modelDisplayLabel(currentModel) : undefined) ??
         manifest?.currentModelId ??
         (agentState === null ? "No agent running" : "No model selected"));
   const modelButtonLabel = modelLabel === "No model selected" ? "No model" : modelLabel;
@@ -388,19 +389,25 @@ export function DesignAgentPicker({
               {manifest.models.length > 1 ? (
                 <select
                   aria-label="Model"
-                  title={currentModel?.name ?? manifest?.currentModelId ?? undefined}
+                  title={
+                    (currentModel !== null ? modelDisplayLabel(currentModel) : undefined) ??
+                    manifest?.currentModelId ??
+                    undefined
+                  }
                   value={manifest.currentModelId ?? ""}
                   disabled={pendingSwitch}
                   onChange={(event) => onModelSelect(event.target.value)}
                 >
                   {manifest.models.map((model) => (
                     <option key={model.modelId} value={model.modelId}>
-                      {model.name}
+                      {modelDisplayLabel(model)}
                     </option>
                   ))}
                 </select>
               ) : (
-                <span className="design-agent-picker-model-name">{manifest.models[0].name}</span>
+                <span className="design-agent-picker-model-name">
+                  {modelDisplayLabel(manifest.models[0])}
+                </span>
               )}
               {efforts.length > 0 ? (
                 <label className="design-agent-picker-effort">

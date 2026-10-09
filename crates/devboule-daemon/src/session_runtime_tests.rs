@@ -97,6 +97,7 @@ fn a_replaced_generation_tells_the_other_observer_by_event_identity() {
 fn model(model_id: &str) -> SessionModel {
     SessionModel {
         accepts_images: true,
+        provider_id: None,
         model_id: model_id.to_string(),
         name: model_id.to_string(),
         description: None,

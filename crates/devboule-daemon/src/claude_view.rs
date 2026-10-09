@@ -293,6 +293,7 @@ impl ClaudeView {
         let models = match &model {
             Some(model) => vec![SessionModel {
                 accepts_images: true,
+                provider_id: None,
                 model_id: model.clone(),
                 name: model.clone(),
                 description: None,
@@ -360,6 +361,7 @@ impl ClaudeView {
             .as_ref()
             .map(|model_id| SessionModel {
                 accepts_images: true,
+                provider_id: None,
                 model_id: model_id.clone(),
                 name: model_id.clone(),
                 description: None,

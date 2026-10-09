@@ -289,6 +289,7 @@ pub(crate) fn fallback_models() -> Vec<SessionModel> {
         .iter()
         .map(|(model_id, name)| SessionModel {
             accepts_images: true,
+            provider_id: None,
             model_id: (*model_id).to_string(),
             name: (*name).to_string(),
             description: Some("Claude model alias; the full catalog was unavailable.".to_string()),
@@ -434,6 +435,7 @@ fn parse_model_record(record: &[u8]) -> Option<SessionModel> {
 
     Some(SessionModel {
         accepts_images: true,
+        provider_id: None,
         model_id,
         name: display_name,
         description,
@@ -952,6 +954,7 @@ mod tests {
     fn model(model_id: &str) -> SessionModel {
         SessionModel {
             accepts_images: true,
+            provider_id: None,
             model_id: model_id.to_string(),
             name: model_id.to_string(),
             description: None,
@@ -999,6 +1002,7 @@ mod tests {
             models: vec![
                 SessionModel {
                     accepts_images: true,
+                    provider_id: None,
                     model_id: "claude-sonnet-5".to_string(),
                     name: "Claude Sonnet 5".to_string(),
                     description: None,
@@ -1008,6 +1012,7 @@ mod tests {
                 },
                 SessionModel {
                     accepts_images: true,
+                    provider_id: None,
                     model_id: "claude-opus-5".to_string(),
                     name: "Claude Opus 5".to_string(),
                     description: None,
@@ -1025,6 +1030,7 @@ mod tests {
             current_model_id: Some("claude-opus-5".to_string()),
             models: vec![SessionModel {
                 accepts_images: true,
+                provider_id: None,
                 model_id: "claude-opus-5".to_string(),
                 name: "claude-opus-5".to_string(),
                 description: None,
@@ -1052,6 +1058,7 @@ mod tests {
             current_model_id: Some("claude-opus-5[1m]".to_string()),
             models: vec![SessionModel {
                 accepts_images: true,
+                provider_id: None,
                 model_id: "claude-opus-5[1m]".to_string(),
                 name: "claude-opus-5[1m]".to_string(),
                 description: None,
@@ -1065,6 +1072,7 @@ mod tests {
         let stored = runtime.store_claude_catalog(manifest_with_current(
             vec![SessionModel {
                 accepts_images: true,
+                provider_id: None,
                 model_id: "claude-opus-5".to_string(),
                 name: "Claude Opus 5".to_string(),
                 description: None,
@@ -1110,6 +1118,7 @@ mod tests {
         let stored = runtime.store_claude_catalog(manifest_with_current(
             vec![SessionModel {
                 accepts_images: true,
+                provider_id: None,
                 model_id: "claude-sonnet-5".to_string(),
                 name: "Claude Sonnet 5".to_string(),
                 description: None,
@@ -1143,6 +1152,7 @@ mod tests {
         let stored = runtime.store_claude_catalog(manifest_with_current(
             vec![SessionModel {
                 accepts_images: true,
+                provider_id: None,
                 model_id: "claude-sonnet-5".to_string(),
                 name: "Claude Sonnet 5".to_string(),
                 description: None,

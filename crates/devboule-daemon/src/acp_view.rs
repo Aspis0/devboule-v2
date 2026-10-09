@@ -1296,6 +1296,7 @@ pub(crate) fn catalog_from_config_options(
         }
         models.push(SessionModel {
             accepts_images: false,
+            provider_id: None,
             name: entry
                 .get("name")
                 .and_then(serde_json::Value::as_str)
@@ -1573,6 +1574,7 @@ fn session_model_from_vendor(value: &serde_json::Value) -> Option<SessionModel> 
     };
     Some(SessionModel {
         accepts_images: false,
+        provider_id: None,
         model_id,
         name,
         description,

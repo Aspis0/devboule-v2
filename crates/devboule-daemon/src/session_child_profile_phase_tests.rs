@@ -64,6 +64,28 @@ fn model_ask_needed_asks_when_the_model_differs_or_thinking_is_set() {
     );
 }
 
+/// A pi child names its running model by provider and id; a profile names the
+/// bare id. Already running that model is no ask, and the same id under another
+/// provider is one.
+#[test]
+fn model_ask_needed_matches_a_provider_keyed_manifest_by_its_bare_profile_id() {
+    let manifest = SessionEvent::SessionManifest {
+        provider_id: Some("pi".to_string()),
+        current_model_id: Some("opencode-go/glm-5.3-flash".to_string()),
+        models: Vec::new(),
+        modes: None,
+        current_model_provider_id: Some("opencode-go".to_string()),
+    };
+    assert!(
+        !model_ask_needed(Some(&manifest), &facts("bypass", "glm-5.3-flash", "p-1")),
+        "running the profile's model under its provider: no ask"
+    );
+    assert!(
+        model_ask_needed(Some(&manifest), &facts("bypass", "minimax-m3", "p-1")),
+        "a different model is an ask"
+    );
+}
+
 /// Mutant: the display-name arm dropped from the scan, or the id arm —
 /// both ways of addressing the child must resolve, and every miss must
 /// name its own reason.
