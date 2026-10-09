@@ -135,7 +135,7 @@ fn attached_stop_spares_a_child_its_root_detached() {
     // and the detached survivor is spared by the parent-link walk alone.
     // (`timeout` cannot be the sleeper: it refuses redirected stdin, so the
     // root would already be gone and the test would prove nothing.)
-    let mut root = spawn_cmd(&[
+    let root = spawn_cmd(&[
         "powershell",
         "-NoProfile",
         "-NonInteractive",
