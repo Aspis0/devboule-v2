@@ -8,9 +8,9 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use devboule_protocol::{
-    Capability, ClientMessage, DaemonHello, DaemonMessage, Project, SessionEvent,
-    SessionEventEnvelope, WireError, Workspace, WorkspaceIsolation, PROTOCOL_MIN_VERSION,
-    PROTOCOL_VERSION,
+    Capability, ClientMessage, DaemonHello, DaemonMessage, Project, Session, SessionEvent,
+    SessionEventEnvelope, SessionState, WireError, Workspace, WorkspaceIsolation,
+    PROTOCOL_MIN_VERSION, PROTOCOL_VERSION,
 };
 
 use crate::framing::Framed;
@@ -392,10 +392,12 @@ fn serve(
                     .clone();
                 let reply = match refusal {
                     Some(error) => DaemonMessage::Error(error.with_id(id)),
-                    None => match list_reply(&request, id) {
-                        Some(reply) => reply,
-                        None => return,
-                    },
+                    None => {
+                        match list_reply(&request, id).or_else(|| operate_reply(&request, id)) {
+                            Some(reply) => reply,
+                            None => return,
+                        }
+                    }
                 };
                 if framed.send(&reply).is_err() {
                     return;
@@ -409,7 +411,16 @@ fn request_id(request: &ClientMessage) -> Option<u64> {
     match request {
         ClientMessage::ProjectsList { id }
         | ClientMessage::WorkspacesList { id, .. }
-        | ClientMessage::SessionsList { id } => Some(*id),
+        | ClientMessage::SessionsList { id }
+        | ClientMessage::SessionCreate { id, .. }
+        | ClientMessage::SessionSend { id, .. }
+        | ClientMessage::SessionResize { id, .. }
+        | ClientMessage::SessionClaim { id, .. }
+        | ClientMessage::SessionInterrupt { id, .. }
+        | ClientMessage::SessionPermissionRespond { id, .. }
+        | ClientMessage::SessionClose { id, .. }
+        | ClientMessage::SessionStop { id, .. }
+        | ClientMessage::ProvidersList { id } => Some(*id),
         _ => None,
     }
 }
@@ -437,6 +448,62 @@ fn list_reply(request: &ClientMessage, id: u64) -> Option<DaemonMessage> {
         ClientMessage::SessionsList { .. } => DaemonMessage::Sessions {
             id,
             sessions: Vec::new(),
+        },
+        _ => return None,
+    })
+}
+
+/// The far side's answer to one operate call: the session it created, the
+/// send's turn state, an `Ok` for the supervisor verbs, and its own provider
+/// catalog. The created row echoes the call's workspace and kind, so a test
+/// can pin that the link carried them through unchanged.
+fn operate_reply(request: &ClientMessage, id: u64) -> Option<DaemonMessage> {
+    Some(match request {
+        ClientMessage::SessionCreate {
+            workspace_id,
+            kind,
+            provider,
+            display_name,
+            ..
+        } => DaemonMessage::Session {
+            id,
+            session: Session {
+                id: "far-session".to_string(),
+                workspace_id: workspace_id.clone(),
+                cwd: None,
+                kind: kind.clone(),
+                title: display_name
+                    .clone()
+                    .unwrap_or_else(|| "far session".to_string()),
+                provider: provider.clone(),
+                peer_session_id: None,
+                state: SessionState::Live { generation: 1 },
+                elapsed_ms: None,
+                created_at_ms: 1,
+                origin: Default::default(),
+                display_name: display_name.clone(),
+                created_by: None,
+                profile_id: None,
+                context_id: None,
+                unattended: Default::default(),
+                labels: Default::default(),
+                resumable: false,
+            },
+        },
+        ClientMessage::SessionSend { .. } => DaemonMessage::SessionSend {
+            id,
+            turn_active: true,
+        },
+        ClientMessage::SessionResize { .. }
+        | ClientMessage::SessionClaim { .. }
+        | ClientMessage::SessionInterrupt { .. }
+        | ClientMessage::SessionPermissionRespond { .. }
+        | ClientMessage::SessionClose { .. }
+        | ClientMessage::SessionStop { .. } => DaemonMessage::Ok { id },
+        ClientMessage::ProvidersList { .. } => DaemonMessage::Providers {
+            id,
+            providers: Vec::new(),
+            unreadable_dirs: 0,
         },
         _ => return None,
     })

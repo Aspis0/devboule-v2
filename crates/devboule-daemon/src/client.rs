@@ -2060,6 +2060,239 @@ impl DaemonClient {
         }
     }
 
+    /// Create one session in a workspace on a paired host. The idempotency
+    /// key travels with the host's own create: an explicit retry after a
+    /// lost reply answers with the same session. The worker never retries
+    /// itself — an unknown outcome stays unknown until the caller asks
+    /// again with the same key.
+    #[allow(clippy::too_many_arguments)]
+    pub fn remote_host_create(
+        &self,
+        device_id: &str,
+        workspace_id: Option<String>,
+        kind: SessionKind,
+        provider: Option<String>,
+        mode: Option<String>,
+        display_name: Option<String>,
+        idempotency_key: Option<String>,
+        cols: Option<u16>,
+        rows: Option<u16>,
+    ) -> Result<Session, DaemonError> {
+        self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::RemoteHostCreate {
+            id,
+            device_id: device_id.to_string(),
+            workspace_id,
+            kind,
+            provider,
+            mode,
+            display_name,
+            idempotency_key,
+            cols,
+            rows,
+        })? {
+            DaemonMessage::RemoteHostSession { session, .. } => Ok(session),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Send text into one session on a paired host.
+    #[allow(clippy::too_many_arguments)]
+    pub fn remote_host_send(
+        &self,
+        device_id: &str,
+        session_id: &str,
+        subscription_id: u64,
+        text: &str,
+        attachments: Vec<PromptAttachment>,
+        active_turn_behavior: Option<ActiveTurnBehavior>,
+        idempotency_key: Option<String>,
+        attachment_references: Vec<AttachmentReference>,
+    ) -> Result<bool, DaemonError> {
+        self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::RemoteHostSend {
+            id,
+            device_id: device_id.to_string(),
+            session_id: session_id.to_string(),
+            subscription_id,
+            text: text.to_string(),
+            attachments,
+            active_turn_behavior,
+            idempotency_key,
+            attachment_references,
+        })? {
+            DaemonMessage::RemoteHostSent { turn_active, .. } => Ok(turn_active),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Resize one terminal on a paired host.
+    pub fn remote_host_resize(
+        &self,
+        device_id: &str,
+        session_id: &str,
+        subscription_id: u64,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), DaemonError> {
+        self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::RemoteHostResize {
+            id,
+            device_id: device_id.to_string(),
+            session_id: session_id.to_string(),
+            subscription_id,
+            cols,
+            rows,
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Claim one terminal's resize right on a paired host.
+    pub fn remote_host_claim(
+        &self,
+        device_id: &str,
+        session_id: &str,
+        subscription_id: u64,
+    ) -> Result<(), DaemonError> {
+        self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::RemoteHostClaim {
+            id,
+            device_id: device_id.to_string(),
+            session_id: session_id.to_string(),
+            subscription_id,
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Interrupt one session on a paired host.
+    pub fn remote_host_interrupt(
+        &self,
+        device_id: &str,
+        session_id: &str,
+        subscription_id: u64,
+    ) -> Result<(), DaemonError> {
+        self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::RemoteHostInterrupt {
+            id,
+            device_id: device_id.to_string(),
+            session_id: session_id.to_string(),
+            subscription_id,
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Answer one permission card on a paired host. The card was created
+    /// and is resolved there; this side cannot auto-approve it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn remote_host_permission_respond(
+        &self,
+        device_id: &str,
+        session_id: &str,
+        subscription_id: u64,
+        request_id: &str,
+        outcome: PermissionOutcome,
+        option_id: Option<String>,
+        answer: Option<String>,
+        idempotency_key: Option<String>,
+    ) -> Result<(), DaemonError> {
+        self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::RemoteHostPermissionRespond {
+            id,
+            device_id: device_id.to_string(),
+            session_id: session_id.to_string(),
+            subscription_id,
+            request_id: request_id.to_string(),
+            outcome,
+            option_id,
+            answer,
+            idempotency_key,
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Close one session on a paired host.
+    pub fn remote_host_close(
+        &self,
+        device_id: &str,
+        session_id: &str,
+        idempotency_key: Option<String>,
+    ) -> Result<(), DaemonError> {
+        self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::RemoteHostClose {
+            id,
+            device_id: device_id.to_string(),
+            session_id: session_id.to_string(),
+            idempotency_key,
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Stop one session's process on a paired host, keeping the session.
+    pub fn remote_host_stop(
+        &self,
+        device_id: &str,
+        session_id: &str,
+        subscription_id: u64,
+    ) -> Result<(), DaemonError> {
+        self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::RemoteHostStop {
+            id,
+            device_id: device_id.to_string(),
+            session_id: session_id.to_string(),
+            subscription_id,
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Read a paired host's provider catalog, for the create picker.
+    pub fn remote_host_providers(
+        &self,
+        device_id: &str,
+    ) -> Result<(Vec<ProviderInfo>, u32), DaemonError> {
+        self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::RemoteHostProviders {
+            id,
+            device_id: device_id.to_string(),
+        })? {
+            DaemonMessage::RemoteHostProviders {
+                providers,
+                unreadable_dirs,
+                ..
+            } => Ok((providers, unreadable_dirs)),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     pub fn on_remote_host_status(&self, handler: RemoteHostStatusHandler) {
         *self
             .inner
@@ -3205,6 +3438,9 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::SessionUploadProgress { id, .. }
         | DaemonMessage::SessionAttachment { id, .. }
         | DaemonMessage::RemoteHostList { id, .. }
+        | DaemonMessage::RemoteHostSession { id, .. }
+        | DaemonMessage::RemoteHostSent { id, .. }
+        | DaemonMessage::RemoteHostProviders { id, .. }
         | DaemonMessage::InvokeResult { id, .. } => Some(*id),
     }
 }

@@ -462,7 +462,16 @@ pub fn peer_allows(caps: &[String], request: &ClientMessage) -> PeerDecision {
         | ClientMessage::RemoteHostUnwatch { .. }
         | ClientMessage::RemoteHostList { .. }
         | ClientMessage::RemoteHostAttach { .. }
-        | ClientMessage::RemoteHostDetach { .. } => PeerDecision::Deny("remote_hosts"),
+        | ClientMessage::RemoteHostDetach { .. }
+        | ClientMessage::RemoteHostCreate { .. }
+        | ClientMessage::RemoteHostSend { .. }
+        | ClientMessage::RemoteHostResize { .. }
+        | ClientMessage::RemoteHostClaim { .. }
+        | ClientMessage::RemoteHostInterrupt { .. }
+        | ClientMessage::RemoteHostPermissionRespond { .. }
+        | ClientMessage::RemoteHostClose { .. }
+        | ClientMessage::RemoteHostStop { .. }
+        | ClientMessage::RemoteHostProviders { .. } => PeerDecision::Deny("remote_hosts"),
         // Being the place agents' browser commands run is the local app's job.
         // A paired device reaches a browser only through the per-device grant
         // the MCP tools check (a later slice), never by registering as a host
@@ -1621,6 +1630,80 @@ pub(crate) mod tests {
                 device_id: "b".to_string(),
                 list: devboule_protocol::RemoteHostList::Sessions,
             },
+            // The operate frames (Slice 4): the same local-only door as
+            // the three reads above — a peer that could drive another
+            // machine's sessions through this daemon would turn it into a
+            // proxy for someone who never paired with it.
+            ClientMessage::RemoteHostCreate {
+                id: 4,
+                device_id: "b".to_string(),
+                workspace_id: Some("w.1".to_string()),
+                kind: SessionKind::Terminal,
+                provider: None,
+                mode: None,
+                display_name: None,
+                idempotency_key: None,
+                cols: None,
+                rows: None,
+            },
+            ClientMessage::RemoteHostSend {
+                id: 5,
+                device_id: "b".to_string(),
+                session_id: "s.a.1".to_string(),
+                subscription_id: 1,
+                text: "hi".to_string(),
+                attachments: Vec::new(),
+                active_turn_behavior: None,
+                attachment_references: Vec::new(),
+                idempotency_key: None,
+            },
+            ClientMessage::RemoteHostResize {
+                id: 6,
+                device_id: "b".to_string(),
+                session_id: "s.a.1".to_string(),
+                subscription_id: 1,
+                cols: 80,
+                rows: 24,
+            },
+            ClientMessage::RemoteHostClaim {
+                id: 7,
+                device_id: "b".to_string(),
+                session_id: "s.a.1".to_string(),
+                subscription_id: 1,
+            },
+            ClientMessage::RemoteHostInterrupt {
+                id: 8,
+                device_id: "b".to_string(),
+                session_id: "s.a.1".to_string(),
+                subscription_id: 1,
+            },
+            ClientMessage::RemoteHostPermissionRespond {
+                id: 9,
+                device_id: "b".to_string(),
+                session_id: "s.a.1".to_string(),
+                subscription_id: 1,
+                request_id: "card-1".to_string(),
+                outcome: devboule_protocol::PermissionOutcome::AllowOnce,
+                option_id: None,
+                answer: None,
+                idempotency_key: None,
+            },
+            ClientMessage::RemoteHostClose {
+                id: 10,
+                device_id: "b".to_string(),
+                session_id: "s.a.1".to_string(),
+                idempotency_key: None,
+            },
+            ClientMessage::RemoteHostStop {
+                id: 11,
+                device_id: "b".to_string(),
+                session_id: "s.a.1".to_string(),
+                subscription_id: 1,
+            },
+            ClientMessage::RemoteHostProviders {
+                id: 12,
+                device_id: "b".to_string(),
+            },
             // The browser host, all three frames: local-only like the link
             // above, refused to a peer by name.
             ClientMessage::BrowserHostRegister {
@@ -1881,6 +1964,15 @@ pub(crate) mod tests {
             ClientMessage::RemoteHostWatch { .. } => Some("remote_hosts"),
             ClientMessage::RemoteHostUnwatch { .. } => Some("remote_hosts"),
             ClientMessage::RemoteHostList { .. } => Some("remote_hosts"),
+            ClientMessage::RemoteHostCreate { .. } => Some("remote_hosts"),
+            ClientMessage::RemoteHostSend { .. } => Some("remote_hosts"),
+            ClientMessage::RemoteHostResize { .. } => Some("remote_hosts"),
+            ClientMessage::RemoteHostClaim { .. } => Some("remote_hosts"),
+            ClientMessage::RemoteHostInterrupt { .. } => Some("remote_hosts"),
+            ClientMessage::RemoteHostPermissionRespond { .. } => Some("remote_hosts"),
+            ClientMessage::RemoteHostClose { .. } => Some("remote_hosts"),
+            ClientMessage::RemoteHostStop { .. } => Some("remote_hosts"),
+            ClientMessage::RemoteHostProviders { .. } => Some("remote_hosts"),
             ClientMessage::BrowserHostRegister { .. } => Some("browser.host"),
             ClientMessage::BrowserHostUnregister { .. } => Some("browser.host"),
             ClientMessage::BrowserExecuteResponse { .. } => Some("browser.host"),
@@ -2778,6 +2870,15 @@ pub(crate) mod tests {
             ClientMessage::RemoteHostWatch { .. } => local("remote_hosts"),
             ClientMessage::RemoteHostAttach { .. } => local("remote_hosts"),
             ClientMessage::RemoteHostDetach { .. } => local("remote_hosts"),
+            ClientMessage::RemoteHostCreate { .. } => local("remote_hosts"),
+            ClientMessage::RemoteHostSend { .. } => local("remote_hosts"),
+            ClientMessage::RemoteHostResize { .. } => local("remote_hosts"),
+            ClientMessage::RemoteHostClaim { .. } => local("remote_hosts"),
+            ClientMessage::RemoteHostInterrupt { .. } => local("remote_hosts"),
+            ClientMessage::RemoteHostPermissionRespond { .. } => local("remote_hosts"),
+            ClientMessage::RemoteHostClose { .. } => local("remote_hosts"),
+            ClientMessage::RemoteHostStop { .. } => local("remote_hosts"),
+            ClientMessage::RemoteHostProviders { .. } => local("remote_hosts"),
             ClientMessage::RemoteHostUnwatch { .. } => local("remote_hosts"),
             ClientMessage::RemoteHostList { .. } => local("remote_hosts"),
             ClientMessage::BrowserHostRegister { .. } => local("browser.host"),
@@ -2793,7 +2894,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 91;
+    pub(crate) const VARIANT_COUNT: usize = 100;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -2889,6 +2990,15 @@ pub(crate) mod tests {
             ClientMessage::RemoteHostWatch { .. } => "RemoteHostWatch",
             ClientMessage::RemoteHostAttach { .. } => "RemoteHostAttach",
             ClientMessage::RemoteHostDetach { .. } => "RemoteHostDetach",
+            ClientMessage::RemoteHostCreate { .. } => "RemoteHostCreate",
+            ClientMessage::RemoteHostSend { .. } => "RemoteHostSend",
+            ClientMessage::RemoteHostResize { .. } => "RemoteHostResize",
+            ClientMessage::RemoteHostClaim { .. } => "RemoteHostClaim",
+            ClientMessage::RemoteHostInterrupt { .. } => "RemoteHostInterrupt",
+            ClientMessage::RemoteHostPermissionRespond { .. } => "RemoteHostPermissionRespond",
+            ClientMessage::RemoteHostClose { .. } => "RemoteHostClose",
+            ClientMessage::RemoteHostStop { .. } => "RemoteHostStop",
+            ClientMessage::RemoteHostProviders { .. } => "RemoteHostProviders",
             ClientMessage::RemoteHostUnwatch { .. } => "RemoteHostUnwatch",
             ClientMessage::RemoteHostList { .. } => "RemoteHostList",
             ClientMessage::BrowserHostRegister { .. } => "BrowserHostRegister",
@@ -3321,6 +3431,76 @@ pub(crate) mod tests {
                 id: 3,
                 device_id: "b".to_string(),
                 list: devboule_protocol::RemoteHostList::Sessions,
+            },
+            ClientMessage::RemoteHostCreate {
+                id: 4,
+                device_id: "b".to_string(),
+                workspace_id: Some("w.1".to_string()),
+                kind: SessionKind::Terminal,
+                provider: None,
+                mode: None,
+                display_name: None,
+                idempotency_key: None,
+                cols: None,
+                rows: None,
+            },
+            ClientMessage::RemoteHostSend {
+                id: 5,
+                device_id: "b".to_string(),
+                session_id: "s.a.1".to_string(),
+                subscription_id: 1,
+                text: "hi".to_string(),
+                attachments: Vec::new(),
+                active_turn_behavior: None,
+                attachment_references: Vec::new(),
+                idempotency_key: None,
+            },
+            ClientMessage::RemoteHostResize {
+                id: 6,
+                device_id: "b".to_string(),
+                session_id: "s.a.1".to_string(),
+                subscription_id: 1,
+                cols: 80,
+                rows: 24,
+            },
+            ClientMessage::RemoteHostClaim {
+                id: 7,
+                device_id: "b".to_string(),
+                session_id: "s.a.1".to_string(),
+                subscription_id: 1,
+            },
+            ClientMessage::RemoteHostInterrupt {
+                id: 8,
+                device_id: "b".to_string(),
+                session_id: "s.a.1".to_string(),
+                subscription_id: 1,
+            },
+            ClientMessage::RemoteHostPermissionRespond {
+                id: 9,
+                device_id: "b".to_string(),
+                session_id: "s.a.1".to_string(),
+                subscription_id: 1,
+                request_id: "card-1".to_string(),
+                outcome: devboule_protocol::PermissionOutcome::AllowOnce,
+                option_id: None,
+                answer: None,
+                idempotency_key: None,
+            },
+            ClientMessage::RemoteHostClose {
+                id: 10,
+                device_id: "b".to_string(),
+                session_id: "s.a.1".to_string(),
+                idempotency_key: None,
+            },
+            ClientMessage::RemoteHostStop {
+                id: 11,
+                device_id: "b".to_string(),
+                session_id: "s.a.1".to_string(),
+                subscription_id: 1,
+            },
+            ClientMessage::RemoteHostProviders {
+                id: 12,
+                device_id: "b".to_string(),
             },
             ClientMessage::BrowserHostRegister {
                 id: 1,

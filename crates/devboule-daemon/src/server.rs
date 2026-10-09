@@ -112,6 +112,9 @@ mod remote_status;
 #[path = "server/peer_link_read.rs"]
 mod peer_link_read;
 
+#[path = "server/peer_link_operate.rs"]
+mod peer_link_operate;
+
 #[path = "server/peer_link_worker.rs"]
 mod peer_link_worker;
 

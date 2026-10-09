@@ -528,6 +528,134 @@ pub enum ClientMessage {
         session_id: String,
         subscription_id: u64,
     },
+    /// Create a session in one workspace on a paired host. Local-only: the
+    /// daemon maps it to the peer's own `SessionCreate` on the held link,
+    /// carrying the caller's idempotency key through, so a retry the user
+    /// explicitly makes answers with the same session instead of minting a
+    /// second one. The provider catalog and the process belong to the target
+    /// host; the peer's `create_sessions` grant, the mode policy and the
+    /// workspace check decide the answer, exactly as they do for a local
+    /// create. A `SessionCreate` that also carries an initial prompt needs
+    /// `send` on top; this frame carries no prompt, so it needs no `send`.
+    RemoteHostCreate {
+        id: u64,
+        device_id: String,
+        workspace_id: Option<String>,
+        kind: SessionKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        idempotency_key: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cols: Option<u16>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rows: Option<u16>,
+    },
+    /// Send text into one session on a paired host. Local-only: the daemon
+    /// maps it to the peer's own `SessionSend` on the held link, carrying
+    /// the idempotency key through. The peer's `send` grant and the target
+    /// session's scope decide the answer, exactly as they do for a local
+    /// send. A frame that carries attachments is refused by the peer's own
+    /// gate, like a local peer send that carries them.
+    RemoteHostSend {
+        id: u64,
+        device_id: String,
+        session_id: String,
+        subscription_id: SubscriptionId,
+        text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<PromptAttachment>,
+        #[serde(
+            rename = "activeTurnBehavior",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        active_turn_behavior: Option<ActiveTurnBehavior>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        idempotency_key: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachment_references: Vec<AttachmentReference>,
+    },
+    /// Resize one terminal on a paired host. Local-only: the daemon maps it
+    /// to the peer's own `SessionResize` on the held link. The peer's
+    /// `admin` grant and the resize claim decide the answer, exactly as they
+    /// do for a local resize.
+    RemoteHostResize {
+        id: u64,
+        device_id: String,
+        session_id: String,
+        subscription_id: SubscriptionId,
+        cols: u16,
+        rows: u16,
+    },
+    /// Claim one terminal's resize right on a paired host. Local-only: the
+    /// daemon maps it to the peer's own `SessionClaim` on the held link.
+    RemoteHostClaim {
+        id: u64,
+        device_id: String,
+        session_id: String,
+        subscription_id: SubscriptionId,
+    },
+    /// Interrupt one session on a paired host. Local-only: the daemon maps
+    /// it to the peer's own `SessionInterrupt` on the held link.
+    RemoteHostInterrupt {
+        id: u64,
+        device_id: String,
+        session_id: String,
+        subscription_id: SubscriptionId,
+    },
+    /// Answer one permission card on a paired host. Local-only: the daemon
+    /// maps it to the peer's own `SessionPermissionRespond` on the held
+    /// link, carrying the idempotency key through. The peer's
+    /// `answer_permissions` grant and the target session's scope decide the
+    /// answer, exactly as they do for a local answer. The card itself was
+    /// created and is resolved on the target host; this side cannot
+    /// auto-approve it.
+    RemoteHostPermissionRespond {
+        id: u64,
+        device_id: String,
+        session_id: String,
+        subscription_id: SubscriptionId,
+        request_id: String,
+        outcome: PermissionOutcome,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        option_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answer: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        idempotency_key: Option<String>,
+    },
+    /// Close one session on a paired host. Local-only: the daemon maps it
+    /// to the peer's own `SessionClose` on the held link, carrying the
+    /// idempotency key through.
+    RemoteHostClose {
+        id: u64,
+        device_id: String,
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        idempotency_key: Option<String>,
+    },
+    /// Stop one session's process on a paired host, keeping the session.
+    /// Local-only: the daemon maps it to the peer's own `SessionStop` on
+    /// the held link.
+    RemoteHostStop {
+        id: u64,
+        device_id: String,
+        session_id: String,
+        subscription_id: SubscriptionId,
+    },
+    /// Read the target host's provider catalog, for the create picker: what
+    /// providers that machine offers, not this one's. Local-only: the daemon
+    /// maps it to the peer's own `ProvidersList` on the held link. A read,
+    /// so it carries no idempotency key and the reply is the host's own rows.
+    RemoteHostProviders {
+        id: u64,
+        device_id: String,
+    },
     /// Register this connection as the browser host: the place that runs
     /// browser commands for agents. The reply is
     /// [`DaemonMessage::BrowserHostRegistered`], and from then on the daemon
@@ -1464,6 +1592,15 @@ impl ClientMessage {
             | Self::RemoteHostList { id, .. }
             | Self::RemoteHostAttach { id, .. }
             | Self::RemoteHostDetach { id, .. }
+            | Self::RemoteHostCreate { id, .. }
+            | Self::RemoteHostSend { id, .. }
+            | Self::RemoteHostResize { id, .. }
+            | Self::RemoteHostClaim { id, .. }
+            | Self::RemoteHostInterrupt { id, .. }
+            | Self::RemoteHostPermissionRespond { id, .. }
+            | Self::RemoteHostClose { id, .. }
+            | Self::RemoteHostStop { id, .. }
+            | Self::RemoteHostProviders { id, .. }
             | Self::BrowserHostRegister { id, .. }
             | Self::BrowserHostUnregister { id, .. }
             | Self::BrowserExecuteResponse { id, .. }
@@ -1551,6 +1688,18 @@ impl ClientMessage {
             | Self::SessionPermissionRespond {
                 idempotency_key, ..
             }
+            | Self::RemoteHostCreate {
+                idempotency_key, ..
+            }
+            | Self::RemoteHostSend {
+                idempotency_key, ..
+            }
+            | Self::RemoteHostPermissionRespond {
+                idempotency_key, ..
+            }
+            | Self::RemoteHostClose {
+                idempotency_key, ..
+            }
             | Self::SessionResume {
                 idempotency_key, ..
             }
@@ -1612,6 +1761,11 @@ impl ClientMessage {
             | Self::RemoteHostList { .. }
             | Self::RemoteHostAttach { .. }
             | Self::RemoteHostDetach { .. }
+            | Self::RemoteHostResize { .. }
+            | Self::RemoteHostClaim { .. }
+            | Self::RemoteHostInterrupt { .. }
+            | Self::RemoteHostStop { .. }
+            | Self::RemoteHostProviders { .. }
             | Self::BrowserHostRegister { .. }
             | Self::BrowserHostUnregister { .. }
             | Self::BrowserExecuteResponse { .. }
@@ -1692,6 +1846,15 @@ impl ClientMessage {
             Self::RemoteHostList { .. } => "RemoteHostList",
             Self::RemoteHostAttach { .. } => "RemoteHostAttach",
             Self::RemoteHostDetach { .. } => "RemoteHostDetach",
+            Self::RemoteHostCreate { .. } => "RemoteHostCreate",
+            Self::RemoteHostSend { .. } => "RemoteHostSend",
+            Self::RemoteHostResize { .. } => "RemoteHostResize",
+            Self::RemoteHostClaim { .. } => "RemoteHostClaim",
+            Self::RemoteHostInterrupt { .. } => "RemoteHostInterrupt",
+            Self::RemoteHostPermissionRespond { .. } => "RemoteHostPermissionRespond",
+            Self::RemoteHostClose { .. } => "RemoteHostClose",
+            Self::RemoteHostStop { .. } => "RemoteHostStop",
+            Self::RemoteHostProviders { .. } => "RemoteHostProviders",
             Self::BrowserHostRegister { .. } => "BrowserHostRegister",
             Self::BrowserHostUnregister { .. } => "BrowserHostUnregister",
             Self::BrowserExecuteResponse { .. } => "BrowserExecuteResponse",
@@ -1791,6 +1954,7 @@ impl ClientMessage {
             | Self::WorkspaceFilesList { .. }
             | Self::WorkspaceFileRead { .. }
             | Self::RemoteHostList { .. }
+            | Self::RemoteHostProviders { .. }
             // An answer to a call the daemon made: it changes no durable state,
             // and a row per answer would be a disk sink a busy host drives.
             | Self::BrowserExecuteResponse { .. }
@@ -1888,6 +2052,14 @@ impl ClientMessage {
             | Self::RemoteHostUnwatch { .. }
             | Self::RemoteHostAttach { .. }
             | Self::RemoteHostDetach { .. }
+            | Self::RemoteHostCreate { .. }
+            | Self::RemoteHostSend { .. }
+            | Self::RemoteHostResize { .. }
+            | Self::RemoteHostClaim { .. }
+            | Self::RemoteHostInterrupt { .. }
+            | Self::RemoteHostPermissionRespond { .. }
+            | Self::RemoteHostClose { .. }
+            | Self::RemoteHostStop { .. }
             // Registering or leaving decides which process runs the agents'
             // browser commands, which is the fact an audit row would name.
             | Self::BrowserHostRegister { .. }
@@ -2239,6 +2411,34 @@ pub enum DaemonMessage {
         device_id: String,
         session_id: String,
         subscription_id: u64,
+    },
+    /// The reply to [`ClientMessage::RemoteHostCreate`]: the session the
+    /// paired host created, named by `device_id` because one connection can
+    /// hold several hosts and two machines may mint the same session id.
+    /// A refusal is not an arm here: it comes back as the remote's own
+    /// [`WireError`], code and reason intact.
+    RemoteHostSession {
+        id: u64,
+        device_id: String,
+        session: Session,
+    },
+    /// The reply to [`ClientMessage::RemoteHostSend`]: whether a turn is
+    /// running on the host's session when it answers, like the local
+    /// [`ClientMessage::SessionSend`] reply it carries through.
+    RemoteHostSent {
+        id: u64,
+        device_id: String,
+        turn_active: bool,
+    },
+    /// The reply to [`ClientMessage::RemoteHostProviders`]: the paired
+    /// host's own provider catalog, for the create picker. The rows are the
+    /// host's, in the host's order; nothing on this side filters them.
+    RemoteHostProviders {
+        id: u64,
+        device_id: String,
+        providers: Vec<ProviderInfo>,
+        #[serde(default)]
+        unreadable_dirs: u32,
     },
     /// Everything the Devices panel needs in one reply, already projected for
     /// the connection's role: a local client sees the full rows, a remote peer

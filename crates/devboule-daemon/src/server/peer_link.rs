@@ -14,7 +14,7 @@ use std::time::Duration;
 use devboule_protocol::{RemoteHostList, RemoteHostState, RemoteHostStatus};
 
 use super::peer_dial::DialStep;
-use super::peer_link_state::{HostLink, LinkAnswer};
+use super::peer_link_state::{HostLink, LinkAnswer, LinkCommand};
 use super::ServerState;
 use crate::session::ConnHandle;
 
@@ -451,6 +451,227 @@ impl PeerLinks {
     fn finish_read(&self) {
         let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         inner.pending_reads = inner.pending_reads.saturating_sub(1);
+    }
+
+    /// Run one operate call over the host's link, waiting on its worker.
+    ///
+    /// The same budgets a read meets: the cross-link pending cap, the link's
+    /// published failure, and the one-call-at-a-time slot. Called from a
+    /// worker thread of the *local* connection, never from that connection's
+    /// reader.
+    fn operate(
+        &self,
+        device_id: &str,
+        build: impl FnOnce(u64, std::sync::mpsc::SyncSender<LinkAnswer>) -> LinkCommand,
+    ) -> LinkAnswer {
+        let link = {
+            let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+            if inner.pending_reads >= MAX_PENDING_READS {
+                return LinkAnswer::Failed(
+                    RemoteHostState::Busy,
+                    busy_sentence(MAX_PENDING_READS, "reads"),
+                );
+            }
+            inner.pending_reads += 1;
+            inner.links.get(device_id).cloned()
+        };
+        let (answer_tx, answer_rx) = std::sync::mpsc::sync_channel(1);
+        let Some(link) = link else {
+            self.finish_read();
+            return LinkAnswer::Failed(RemoteHostState::Offline, offline_sentence().to_string());
+        };
+        if let Some(failure) = link.failure() {
+            self.finish_read();
+            return failure;
+        }
+        let Some(_permit) = link.try_read_permit() else {
+            self.finish_read();
+            return LinkAnswer::Failed(
+                RemoteHostState::Busy,
+                busy_sentence(1, "read in flight on this link"),
+            );
+        };
+        if !link.queue_operate(build(link.generation(), answer_tx)) {
+            self.finish_read();
+            return LinkAnswer::Failed(RemoteHostState::Offline, offline_sentence().to_string());
+        }
+        let answer = answer_rx
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap_or_else(|_| {
+                LinkAnswer::Failed(RemoteHostState::Offline, offline_sentence().to_string())
+            });
+        self.finish_read();
+        answer
+    }
+
+    /// Create one session on the host. The idempotency key travels with the
+    /// peer's own `SessionCreate`; the worker never retries itself.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn operate_create(
+        &self,
+        device_id: &str,
+        workspace_id: Option<String>,
+        kind: devboule_protocol::SessionKind,
+        provider: Option<String>,
+        mode: Option<String>,
+        display_name: Option<String>,
+        idempotency_key: Option<String>,
+        cols: Option<u16>,
+        rows: Option<u16>,
+    ) -> LinkAnswer {
+        self.operate(device_id, |generation, answer| LinkCommand::Create {
+            generation,
+            workspace_id,
+            kind,
+            provider,
+            mode,
+            display_name,
+            idempotency_key,
+            cols,
+            rows,
+            answer,
+        })
+    }
+
+    /// Send text into one session on the host.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn operate_send(
+        &self,
+        device_id: &str,
+        session_id: String,
+        subscription_id: u64,
+        text: String,
+        attachments: Vec<devboule_protocol::PromptAttachment>,
+        active_turn_behavior: Option<devboule_protocol::ActiveTurnBehavior>,
+        idempotency_key: Option<String>,
+        attachment_references: Vec<devboule_protocol::AttachmentReference>,
+    ) -> LinkAnswer {
+        self.operate(device_id, |generation, answer| LinkCommand::Send {
+            generation,
+            session_id,
+            subscription_id,
+            text,
+            attachments,
+            active_turn_behavior,
+            idempotency_key,
+            attachment_references,
+            answer,
+        })
+    }
+
+    /// Resize one terminal on the host.
+    pub(crate) fn operate_resize(
+        &self,
+        device_id: &str,
+        session_id: String,
+        subscription_id: u64,
+        cols: u16,
+        rows: u16,
+    ) -> LinkAnswer {
+        self.operate(device_id, |generation, answer| LinkCommand::Resize {
+            generation,
+            session_id,
+            subscription_id,
+            cols,
+            rows,
+            answer,
+        })
+    }
+
+    /// Claim one terminal's resize right on the host.
+    pub(crate) fn operate_claim(
+        &self,
+        device_id: &str,
+        session_id: String,
+        subscription_id: u64,
+    ) -> LinkAnswer {
+        self.operate(device_id, |generation, answer| LinkCommand::Claim {
+            generation,
+            session_id,
+            subscription_id,
+            answer,
+        })
+    }
+
+    /// Interrupt one session on the host.
+    pub(crate) fn operate_interrupt(
+        &self,
+        device_id: &str,
+        session_id: String,
+        subscription_id: u64,
+    ) -> LinkAnswer {
+        self.operate(device_id, |generation, answer| LinkCommand::Interrupt {
+            generation,
+            session_id,
+            subscription_id,
+            answer,
+        })
+    }
+
+    /// Answer one permission card on the host.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn operate_permission_respond(
+        &self,
+        device_id: &str,
+        session_id: String,
+        subscription_id: u64,
+        request_id: String,
+        outcome: devboule_protocol::PermissionOutcome,
+        option_id: Option<String>,
+        answer_text: Option<String>,
+        idempotency_key: Option<String>,
+    ) -> LinkAnswer {
+        self.operate(device_id, |generation, answer| {
+            LinkCommand::PermissionRespond {
+                generation,
+                session_id,
+                subscription_id,
+                request_id,
+                outcome,
+                option_id,
+                answer_text,
+                idempotency_key,
+                answer,
+            }
+        })
+    }
+
+    /// Close one session on the host.
+    pub(crate) fn operate_close(
+        &self,
+        device_id: &str,
+        session_id: String,
+        idempotency_key: Option<String>,
+    ) -> LinkAnswer {
+        self.operate(device_id, |generation, answer| LinkCommand::Close {
+            generation,
+            session_id,
+            idempotency_key,
+            answer,
+        })
+    }
+
+    /// Stop one session's process on the host, keeping the session.
+    pub(crate) fn operate_stop(
+        &self,
+        device_id: &str,
+        session_id: String,
+        subscription_id: u64,
+    ) -> LinkAnswer {
+        self.operate(device_id, |generation, answer| LinkCommand::Stop {
+            generation,
+            session_id,
+            subscription_id,
+            answer,
+        })
+    }
+
+    /// Read the host's provider catalog.
+    pub(crate) fn operate_providers(&self, device_id: &str) -> LinkAnswer {
+        self.operate(device_id, |generation, answer| LinkCommand::Providers {
+            generation,
+            answer,
+        })
     }
 }
 

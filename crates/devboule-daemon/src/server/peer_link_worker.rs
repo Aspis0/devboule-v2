@@ -24,6 +24,10 @@ use devboule_protocol::{
 
 use super::peer_dial::{connect_and_handshake, DialStep};
 use super::peer_link::{sentence_for, state_for, LinkTuning};
+use super::peer_link_operate::{
+    serve_claim, serve_close, serve_create, serve_interrupt, serve_permission_respond,
+    serve_providers, serve_resize, serve_send, serve_stop,
+};
 use super::peer_link_read::{serve_attach, serve_detach, serve_read};
 use super::peer_link_state::{HostLink, LinkAnswer, LinkCommand};
 use super::ServerState;
@@ -159,6 +163,40 @@ fn run(
                     }
                     LinkCommand::Detach { .. } => {
                         serve_detach(&link, open, command, reads, tuning.read_deadline);
+                    }
+                    LinkCommand::Create { .. } => {
+                        serve_create(&state, &link, open, command, reads, tuning.read_deadline);
+                    }
+                    LinkCommand::Send { .. } => {
+                        serve_send(&state, &link, open, command, reads, tuning.read_deadline);
+                    }
+                    LinkCommand::Resize { .. } => {
+                        serve_resize(&state, &link, open, command, reads, tuning.read_deadline);
+                    }
+                    LinkCommand::Claim { .. } => {
+                        serve_claim(&state, &link, open, command, reads, tuning.read_deadline);
+                    }
+                    LinkCommand::Interrupt { .. } => {
+                        serve_interrupt(&state, &link, open, command, reads, tuning.read_deadline);
+                    }
+                    LinkCommand::PermissionRespond { .. } => {
+                        serve_permission_respond(
+                            &state,
+                            &link,
+                            open,
+                            command,
+                            reads,
+                            tuning.read_deadline,
+                        );
+                    }
+                    LinkCommand::Close { .. } => {
+                        serve_close(&state, &link, open, command, reads, tuning.read_deadline);
+                    }
+                    LinkCommand::Stop { .. } => {
+                        serve_stop(&state, &link, open, command, reads, tuning.read_deadline);
+                    }
+                    LinkCommand::Providers { .. } => {
+                        serve_providers(&state, &link, open, command, reads, tuning.read_deadline);
                     }
                     LinkCommand::Revoke => {
                         // The row is gone: the transport and every stream on
@@ -418,7 +456,16 @@ pub(super) fn refuse_reads_until(queue: &Receiver<LinkCommand>, step: DialStep, 
         match queue.recv_timeout(left) {
             Ok(LinkCommand::Read { answer, .. })
             | Ok(LinkCommand::Attach { answer, .. })
-            | Ok(LinkCommand::Detach { answer, .. }) => {
+            | Ok(LinkCommand::Detach { answer, .. })
+            | Ok(LinkCommand::Create { answer, .. })
+            | Ok(LinkCommand::Send { answer, .. })
+            | Ok(LinkCommand::Resize { answer, .. })
+            | Ok(LinkCommand::Claim { answer, .. })
+            | Ok(LinkCommand::Interrupt { answer, .. })
+            | Ok(LinkCommand::PermissionRespond { answer, .. })
+            | Ok(LinkCommand::Close { answer, .. })
+            | Ok(LinkCommand::Stop { answer, .. })
+            | Ok(LinkCommand::Providers { answer, .. }) => {
                 let _ = answer.send(LinkAnswer::Failed(state_for(step), sentence_for(step)));
             }
             // A revoke during a backoff is served by the next loop turn,

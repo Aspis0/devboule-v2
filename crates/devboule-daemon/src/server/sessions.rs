@@ -739,6 +739,15 @@ pub(super) fn dispatch_session(
         | ClientMessage::RemoteHostList { .. }
         | ClientMessage::RemoteHostAttach { .. }
         | ClientMessage::RemoteHostDetach { .. }
+        | ClientMessage::RemoteHostCreate { .. }
+        | ClientMessage::RemoteHostSend { .. }
+        | ClientMessage::RemoteHostResize { .. }
+        | ClientMessage::RemoteHostClaim { .. }
+        | ClientMessage::RemoteHostInterrupt { .. }
+        | ClientMessage::RemoteHostPermissionRespond { .. }
+        | ClientMessage::RemoteHostClose { .. }
+        | ClientMessage::RemoteHostStop { .. }
+        | ClientMessage::RemoteHostProviders { .. }
         // Nor are the browser-host frames: `dispatch_immediate` answers them.
         | ClientMessage::BrowserHostRegister { .. }
         | ClientMessage::BrowserHostUnregister { .. }

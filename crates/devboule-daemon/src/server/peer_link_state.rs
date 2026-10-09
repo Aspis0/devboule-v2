@@ -19,12 +19,24 @@ use devboule_protocol::{
 use crate::session::ConnHandle;
 
 /// What one read on a link came back with.
+///
+/// Boxed where a body dwarfs the rest: a session row travels per create,
+/// and the union is carried per call.
 #[derive(Debug)]
 pub(crate) enum LinkAnswer {
     /// The remote daemon's own body, carried through unchanged.
     Body(RemoteHostListBody),
     /// The far side accepted an attach or a detach.
     Accepted,
+    /// The session the host created, carried through unchanged.
+    Created(Box<devboule_protocol::Session>),
+    /// The host's answer to a send: whether a turn runs when it answers.
+    Sent(bool),
+    /// The host's own provider catalog, for the create picker.
+    Providers {
+        providers: Vec<devboule_protocol::ProviderInfo>,
+        unreadable_dirs: u32,
+    },
     /// The remote refused; its own error code and reason, intact.
     Refused(WireError),
     /// The link could not carry the read: the state the host row should show,
@@ -56,6 +68,87 @@ pub(crate) enum LinkCommand {
         generation: u64,
         session_id: String,
         subscription_id: u64,
+        answer: SyncSender<LinkAnswer>,
+    },
+    /// Create one session on the far side. The idempotency key travels with
+    /// the peer's own `SessionCreate`, so an explicit retry answers with
+    /// the same session instead of minting a second one.
+    Create {
+        generation: u64,
+        workspace_id: Option<String>,
+        kind: devboule_protocol::SessionKind,
+        provider: Option<String>,
+        mode: Option<String>,
+        display_name: Option<String>,
+        idempotency_key: Option<String>,
+        cols: Option<u16>,
+        rows: Option<u16>,
+        answer: SyncSender<LinkAnswer>,
+    },
+    /// Send text into one session on the far side.
+    Send {
+        generation: u64,
+        session_id: String,
+        subscription_id: u64,
+        text: String,
+        attachments: Vec<devboule_protocol::PromptAttachment>,
+        active_turn_behavior: Option<devboule_protocol::ActiveTurnBehavior>,
+        idempotency_key: Option<String>,
+        attachment_references: Vec<devboule_protocol::AttachmentReference>,
+        answer: SyncSender<LinkAnswer>,
+    },
+    /// Resize one terminal on the far side.
+    Resize {
+        generation: u64,
+        session_id: String,
+        subscription_id: u64,
+        cols: u16,
+        rows: u16,
+        answer: SyncSender<LinkAnswer>,
+    },
+    /// Claim one terminal's resize right on the far side.
+    Claim {
+        generation: u64,
+        session_id: String,
+        subscription_id: u64,
+        answer: SyncSender<LinkAnswer>,
+    },
+    /// Interrupt one session on the far side.
+    Interrupt {
+        generation: u64,
+        session_id: String,
+        subscription_id: u64,
+        answer: SyncSender<LinkAnswer>,
+    },
+    /// Answer one permission card on the far side.
+    PermissionRespond {
+        generation: u64,
+        session_id: String,
+        subscription_id: u64,
+        request_id: String,
+        outcome: devboule_protocol::PermissionOutcome,
+        option_id: Option<String>,
+        answer_text: Option<String>,
+        idempotency_key: Option<String>,
+        answer: SyncSender<LinkAnswer>,
+    },
+    /// Close one session on the far side.
+    Close {
+        generation: u64,
+        session_id: String,
+        idempotency_key: Option<String>,
+        answer: SyncSender<LinkAnswer>,
+    },
+    /// Stop one session's process on the far side, keeping the session.
+    Stop {
+        generation: u64,
+        session_id: String,
+        subscription_id: u64,
+        answer: SyncSender<LinkAnswer>,
+    },
+    /// Read the far side's provider catalog.
+    Providers {
+        generation: u64,
         answer: SyncSender<LinkAnswer>,
     },
     /// The row was revoked: drop the transport now, streams included.
@@ -407,6 +500,20 @@ impl HostLink {
                     answer,
                 })
                 .is_ok(),
+            None => false,
+        }
+    }
+
+    /// Queue one operate command for this link's worker. `false` means
+    /// nobody is holding the link any more, and the caller answers with
+    /// the offline sentence rather than queueing behind a retry.
+    pub(crate) fn queue_operate(&self, command: LinkCommand) -> bool {
+        let slot = self
+            .worker
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        match slot.as_ref() {
+            Some((_, commands)) => commands.try_send(command).is_ok(),
             None => false,
         }
     }

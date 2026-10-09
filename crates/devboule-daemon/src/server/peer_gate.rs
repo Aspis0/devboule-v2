@@ -401,6 +401,15 @@ pub(super) fn peer_mode_refusal_for_conn(
         ClientMessage::RemoteHostList { .. } => None,
         ClientMessage::RemoteHostAttach { .. } => None,
         ClientMessage::RemoteHostDetach { .. } => None,
+        ClientMessage::RemoteHostCreate { .. } => None,
+        ClientMessage::RemoteHostSend { .. } => None,
+        ClientMessage::RemoteHostResize { .. } => None,
+        ClientMessage::RemoteHostClaim { .. } => None,
+        ClientMessage::RemoteHostInterrupt { .. } => None,
+        ClientMessage::RemoteHostPermissionRespond { .. } => None,
+        ClientMessage::RemoteHostClose { .. } => None,
+        ClientMessage::RemoteHostStop { .. } => None,
+        ClientMessage::RemoteHostProviders { .. } => None,
         // The browser-host frames name no session or mode either; a peer is
         // refused them by `peer_allows` before this is asked.
         ClientMessage::BrowserHostRegister { .. } => None,
@@ -668,6 +677,15 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::RemoteHostList { .. }
         | ClientMessage::RemoteHostAttach { .. }
         | ClientMessage::RemoteHostDetach { .. }
+        | ClientMessage::RemoteHostCreate { .. }
+        | ClientMessage::RemoteHostSend { .. }
+        | ClientMessage::RemoteHostResize { .. }
+        | ClientMessage::RemoteHostClaim { .. }
+        | ClientMessage::RemoteHostInterrupt { .. }
+        | ClientMessage::RemoteHostPermissionRespond { .. }
+        | ClientMessage::RemoteHostClose { .. }
+        | ClientMessage::RemoteHostStop { .. }
+        | ClientMessage::RemoteHostProviders { .. }
         // Likewise the browser host's three: they name this machine's own
         // browser, never a session; their peer refusal is `peer_allows`'s.
         | ClientMessage::BrowserHostRegister { .. }

@@ -1,0 +1,586 @@
+//! One operate call over a live link: create, send, resize, claim,
+//! interrupt, permission answer, close, stop, and the provider catalog.
+//!
+//! Each function maps one local-only `RemoteHost*` frame to the peer's own
+//! session frame on the held link — the same trust floor the attach path
+//! stands on: the peer's capability grant, the target session's scope and the
+//! target daemon's normal request handler decide every answer. Nothing here
+//! names a session on this machine, and a refusal comes back as the remote's
+//! own typed error with its reason intact.
+//!
+//! The link's worker owns the transport and calls in here. Nothing else
+//! touches a socket for an operate call, and nothing here opens one: a call
+//! that cannot be written is refused before a byte leaves.
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use devboule_protocol::{caps, ClientMessage, DaemonMessage, RemoteHostState};
+
+use super::peer_link::{offline_sentence, sentence_for, state_for, unsupported_sentence};
+use super::peer_link_state::{HostLink, LinkAnswer, LinkCommand};
+use super::peer_link_worker::{peer_row, LinkSession, PROBE_ID_BASE};
+use super::ServerState;
+
+/// The hello capability the far daemon must advertise for a session operate
+/// call. A daemon that predates the session frames cannot deserialize the
+/// request, so the refusal happens here, before anything is written — the
+/// same check the attach path makes.
+fn sessions_advertised(session: &LinkSession) -> bool {
+    session
+        .hello
+        .capabilities
+        .iter()
+        .any(|agreed| agreed.as_str() == caps::SESSIONS)
+}
+
+/// The two checks every operate call makes before writing: the pairing row is
+/// live (a revoke that landed while the link was up stops the next call, not
+/// only the next reconnect) and the call was queued against the link that is
+/// still there.
+fn operate_ready(
+    state: &Arc<ServerState>,
+    link: &HostLink,
+    session: &LinkSession,
+    generation: u64,
+    answer: &std::sync::mpsc::SyncSender<LinkAnswer>,
+) -> bool {
+    if let Err(step) = peer_row(state, &link.device_id) {
+        let _ = answer.send(LinkAnswer::Failed(state_for(step), sentence_for(step)));
+        return false;
+    }
+    if generation != link.generation() {
+        let _ = answer.send(LinkAnswer::Failed(
+            RemoteHostState::Offline,
+            offline_sentence().to_string(),
+        ));
+        return false;
+    }
+    if !sessions_advertised(session) {
+        let _ = answer.send(LinkAnswer::Failed(
+            RemoteHostState::Unsupported,
+            unsupported_sentence().to_string(),
+        ));
+        return false;
+    }
+    true
+}
+
+/// Read frames until the operate call's id answers, a refusal arrives for it,
+/// or the deadline passes. A push that lands mid-call (a workspace revision,
+/// another stream's event, a keepalive pong) is handled before the call's own
+/// answer is matched; it names no request, so it must never be mistaken for
+/// the reply. A frame for another id is dropped rather than returned: after a
+/// reconnect the remote is one link behind, and its old reply must not be
+/// handed to a caller as this call's answer.
+fn wait_for_operate_reply(
+    link: &HostLink,
+    session: &mut LinkSession,
+    request_id: u64,
+    read_deadline: Duration,
+    mut matched: impl FnMut(DaemonMessage) -> Option<LinkAnswer>,
+) -> LinkAnswer {
+    let deadline = Instant::now() + read_deadline;
+    while Instant::now() < deadline {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let Ok(message) = session.framed.recv_timeout(left) else {
+            return LinkAnswer::Failed(RemoteHostState::Offline, offline_sentence().to_string());
+        };
+        if let DaemonMessage::Pong { id, .. } = &message {
+            if *id >= PROBE_ID_BASE {
+                session.outstanding_since = None;
+                session.misses = 0;
+                continue;
+            }
+        }
+        super::peer_link_worker::record_workspace_change(
+            link,
+            session.hello.protocol_version,
+            &message,
+        );
+        if let DaemonMessage::SubscriptionEvent {
+            subscription_id,
+            envelope,
+        } = &message
+        {
+            link.forward_event(*subscription_id, envelope);
+            continue;
+        }
+        if let DaemonMessage::Error(error) = &message {
+            if error.id == Some(request_id) {
+                // The remote's own refusal, reason intact.
+                return LinkAnswer::Refused(error.clone());
+            }
+            continue;
+        }
+        if let Some(answer) = matched(message) {
+            return answer;
+        }
+    }
+    LinkAnswer::Failed(RemoteHostState::Offline, offline_sentence().to_string())
+}
+
+/// Whether a reply frame answers this call.
+fn reply_id(message: &DaemonMessage) -> Option<u64> {
+    match message {
+        DaemonMessage::Session { id, .. }
+        | DaemonMessage::SessionSend { id, .. }
+        | DaemonMessage::Providers { id, .. }
+        | DaemonMessage::Ok { id } => Some(*id),
+        _ => None,
+    }
+}
+
+/// Create one session on the far side. The caller's idempotency key travels
+/// with the peer's own `SessionCreate`, so an explicit retry after a lost
+/// reply answers with the same session instead of minting a second one. The
+/// worker never retries itself: an unknown outcome stays unknown until the
+/// user asks again with the same key.
+pub(crate) fn serve_create(
+    state: &Arc<ServerState>,
+    link: &HostLink,
+    session: &mut LinkSession,
+    command: LinkCommand,
+    request_id: u64,
+    read_deadline: Duration,
+) {
+    let LinkCommand::Create {
+        generation,
+        workspace_id,
+        kind,
+        provider,
+        mode,
+        display_name,
+        idempotency_key,
+        cols,
+        rows,
+        answer,
+    } = command
+    else {
+        return;
+    };
+    if !operate_ready(state, link, session, generation, &answer) {
+        return;
+    }
+    if session
+        .framed
+        .send(&ClientMessage::SessionCreate {
+            id: request_id,
+            workspace_id,
+            kind,
+            provider,
+            mode,
+            display_name,
+            idempotency_key,
+            cols,
+            rows,
+        })
+        .is_err()
+    {
+        let _ = answer.send(LinkAnswer::Failed(
+            RemoteHostState::Offline,
+            offline_sentence().to_string(),
+        ));
+        return;
+    }
+    let _ = answer.send(wait_for_operate_reply(
+        link,
+        session,
+        request_id,
+        read_deadline,
+        |message| match message {
+            DaemonMessage::Session {
+                id,
+                session: created,
+                ..
+            } if id == request_id => Some(LinkAnswer::Created(Box::new(created))),
+            _ if reply_id(&message) == Some(request_id) => Some(LinkAnswer::Failed(
+                RemoteHostState::Offline,
+                offline_sentence().to_string(),
+            )),
+            _ => None,
+        },
+    ));
+}
+
+/// Send text into one session on the far side.
+pub(crate) fn serve_send(
+    state: &Arc<ServerState>,
+    link: &HostLink,
+    session: &mut LinkSession,
+    command: LinkCommand,
+    request_id: u64,
+    read_deadline: Duration,
+) {
+    let LinkCommand::Send {
+        generation,
+        session_id,
+        subscription_id,
+        text,
+        attachments,
+        active_turn_behavior,
+        idempotency_key,
+        attachment_references,
+        answer,
+    } = command
+    else {
+        return;
+    };
+    if !operate_ready(state, link, session, generation, &answer) {
+        return;
+    }
+    if session
+        .framed
+        .send(&ClientMessage::SessionSend {
+            id: request_id,
+            session_id,
+            subscription_id,
+            text,
+            attachments,
+            active_turn_behavior,
+            idempotency_key,
+            attachment_references,
+        })
+        .is_err()
+    {
+        let _ = answer.send(LinkAnswer::Failed(
+            RemoteHostState::Offline,
+            offline_sentence().to_string(),
+        ));
+        return;
+    }
+    let _ = answer.send(wait_for_operate_reply(
+        link,
+        session,
+        request_id,
+        read_deadline,
+        |message| match message {
+            DaemonMessage::SessionSend { id, turn_active } if id == request_id => {
+                Some(LinkAnswer::Sent(turn_active))
+            }
+            _ if reply_id(&message) == Some(request_id) => Some(LinkAnswer::Failed(
+                RemoteHostState::Offline,
+                offline_sentence().to_string(),
+            )),
+            _ => None,
+        },
+    ));
+}
+
+/// One `Ok`-shaped operate call: resize, claim, interrupt, permission answer,
+/// close and stop all answer `Ok` on the peer, so they share the wait. The
+/// request is built by the caller; this function only carries it.
+#[allow(clippy::too_many_arguments)]
+fn serve_ok_shaped(
+    state: &Arc<ServerState>,
+    link: &HostLink,
+    session: &mut LinkSession,
+    generation: u64,
+    answer: &std::sync::mpsc::SyncSender<LinkAnswer>,
+    request: ClientMessage,
+    request_id: u64,
+    read_deadline: Duration,
+) {
+    if !operate_ready(state, link, session, generation, answer) {
+        return;
+    }
+    if session.framed.send(&request).is_err() {
+        let _ = answer.send(LinkAnswer::Failed(
+            RemoteHostState::Offline,
+            offline_sentence().to_string(),
+        ));
+        return;
+    }
+    let _ = answer.send(wait_for_operate_reply(
+        link,
+        session,
+        request_id,
+        read_deadline,
+        |message| match message {
+            DaemonMessage::Ok { id } if id == request_id => Some(LinkAnswer::Accepted),
+            _ if reply_id(&message) == Some(request_id) => Some(LinkAnswer::Failed(
+                RemoteHostState::Offline,
+                offline_sentence().to_string(),
+            )),
+            _ => None,
+        },
+    ));
+}
+
+/// Resize one terminal on the far side.
+pub(crate) fn serve_resize(
+    state: &Arc<ServerState>,
+    link: &HostLink,
+    session: &mut LinkSession,
+    command: LinkCommand,
+    request_id: u64,
+    read_deadline: Duration,
+) {
+    let LinkCommand::Resize {
+        generation,
+        session_id,
+        subscription_id,
+        cols,
+        rows,
+        answer,
+    } = command
+    else {
+        return;
+    };
+    let request = ClientMessage::SessionResize {
+        id: request_id,
+        session_id,
+        subscription_id,
+        cols,
+        rows,
+    };
+    serve_ok_shaped(
+        state,
+        link,
+        session,
+        generation,
+        &answer,
+        request,
+        request_id,
+        read_deadline,
+    );
+}
+
+/// Claim one terminal's resize right on the far side.
+pub(crate) fn serve_claim(
+    state: &Arc<ServerState>,
+    link: &HostLink,
+    session: &mut LinkSession,
+    command: LinkCommand,
+    request_id: u64,
+    read_deadline: Duration,
+) {
+    let LinkCommand::Claim {
+        generation,
+        session_id,
+        subscription_id,
+        answer,
+    } = command
+    else {
+        return;
+    };
+    let request = ClientMessage::SessionClaim {
+        id: request_id,
+        session_id,
+        subscription_id,
+    };
+    serve_ok_shaped(
+        state,
+        link,
+        session,
+        generation,
+        &answer,
+        request,
+        request_id,
+        read_deadline,
+    );
+}
+
+/// Interrupt one session on the far side.
+pub(crate) fn serve_interrupt(
+    state: &Arc<ServerState>,
+    link: &HostLink,
+    session: &mut LinkSession,
+    command: LinkCommand,
+    request_id: u64,
+    read_deadline: Duration,
+) {
+    let LinkCommand::Interrupt {
+        generation,
+        session_id,
+        subscription_id,
+        answer,
+    } = command
+    else {
+        return;
+    };
+    let request = ClientMessage::SessionInterrupt {
+        id: request_id,
+        session_id,
+        subscription_id,
+    };
+    serve_ok_shaped(
+        state,
+        link,
+        session,
+        generation,
+        &answer,
+        request,
+        request_id,
+        read_deadline,
+    );
+}
+
+/// Answer one permission card on the far side. The card was created and is
+/// resolved on the target host; the answer carries the idempotency key
+/// through so a retried answer does not resolve twice.
+pub(crate) fn serve_permission_respond(
+    state: &Arc<ServerState>,
+    link: &HostLink,
+    session: &mut LinkSession,
+    command: LinkCommand,
+    request_id: u64,
+    read_deadline: Duration,
+) {
+    let LinkCommand::PermissionRespond {
+        generation,
+        session_id,
+        subscription_id,
+        request_id: card_id,
+        outcome,
+        option_id,
+        answer_text,
+        idempotency_key,
+        answer,
+    } = command
+    else {
+        return;
+    };
+    let request = ClientMessage::SessionPermissionRespond {
+        id: request_id,
+        session_id,
+        subscription_id,
+        request_id: card_id,
+        outcome,
+        option_id,
+        answer: answer_text,
+        idempotency_key,
+    };
+    serve_ok_shaped(
+        state,
+        link,
+        session,
+        generation,
+        &answer,
+        request,
+        request_id,
+        read_deadline,
+    );
+}
+
+/// Close one session on the far side.
+pub(crate) fn serve_close(
+    state: &Arc<ServerState>,
+    link: &HostLink,
+    session: &mut LinkSession,
+    command: LinkCommand,
+    request_id: u64,
+    read_deadline: Duration,
+) {
+    let LinkCommand::Close {
+        generation,
+        session_id,
+        idempotency_key,
+        answer,
+    } = command
+    else {
+        return;
+    };
+    let request = ClientMessage::SessionClose {
+        id: request_id,
+        session_id,
+        idempotency_key,
+    };
+    serve_ok_shaped(
+        state,
+        link,
+        session,
+        generation,
+        &answer,
+        request,
+        request_id,
+        read_deadline,
+    );
+}
+
+/// Stop one session's process on the far side, keeping the session.
+pub(crate) fn serve_stop(
+    state: &Arc<ServerState>,
+    link: &HostLink,
+    session: &mut LinkSession,
+    command: LinkCommand,
+    request_id: u64,
+    read_deadline: Duration,
+) {
+    let LinkCommand::Stop {
+        generation,
+        session_id,
+        subscription_id,
+        answer,
+    } = command
+    else {
+        return;
+    };
+    let request = ClientMessage::SessionStop {
+        id: request_id,
+        session_id,
+        subscription_id,
+    };
+    serve_ok_shaped(
+        state,
+        link,
+        session,
+        generation,
+        &answer,
+        request,
+        request_id,
+        read_deadline,
+    );
+}
+
+/// Read the far side's provider catalog, for the create picker.
+pub(crate) fn serve_providers(
+    state: &Arc<ServerState>,
+    link: &HostLink,
+    session: &mut LinkSession,
+    command: LinkCommand,
+    request_id: u64,
+    read_deadline: Duration,
+) {
+    let LinkCommand::Providers {
+        generation, answer, ..
+    } = command
+    else {
+        return;
+    };
+    if !operate_ready(state, link, session, generation, &answer) {
+        return;
+    }
+    if session
+        .framed
+        .send(&ClientMessage::ProvidersList { id: request_id })
+        .is_err()
+    {
+        let _ = answer.send(LinkAnswer::Failed(
+            RemoteHostState::Offline,
+            offline_sentence().to_string(),
+        ));
+        return;
+    }
+    let _ = answer.send(wait_for_operate_reply(
+        link,
+        session,
+        request_id,
+        read_deadline,
+        |message| match message {
+            DaemonMessage::Providers {
+                id,
+                providers,
+                unreadable_dirs,
+            } if id == request_id => Some(LinkAnswer::Providers {
+                providers,
+                unreadable_dirs,
+            }),
+            _ if reply_id(&message) == Some(request_id) => Some(LinkAnswer::Failed(
+                RemoteHostState::Offline,
+                offline_sentence().to_string(),
+            )),
+            _ => None,
+        },
+    ));
+}

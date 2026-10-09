@@ -338,8 +338,13 @@ impl PluginSession {
                         // The host list is the app's own sidebar read of
                         // another machine; a plugin backend has no sidebar and
                         // never dials a peer. Listed with its id so the match
-                        // stays exhaustive on purpose.
+                        // stays exhaustive on purpose. The operate replies are
+                        // the same read's siblings: a plugin backend never
+                        // creates or drives a session on another machine.
                         | DaemonMessage::RemoteHostList { id, .. }
+                        | DaemonMessage::RemoteHostSession { id, .. }
+                        | DaemonMessage::RemoteHostSent { id, .. }
+                        | DaemonMessage::RemoteHostProviders { id, .. }
                         // The browser host answers to the desktop app alone; a
                         // plugin backend never registers one or is sent a command.
                         | DaemonMessage::BrowserHostRegistered { id, .. }

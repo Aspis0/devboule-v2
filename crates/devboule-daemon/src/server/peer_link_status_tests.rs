@@ -8,7 +8,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use devboule_protocol::{
-    ClientMessage, DaemonMessage, RemoteHostState, RemoteHostStatus, WorkspaceIsolation,
+    ClientMessage, DaemonMessage, PermissionOutcome, RemoteHostState, RemoteHostStatus,
+    SessionKind, WorkspaceIsolation,
 };
 
 use super::harness::Harness;
@@ -754,6 +755,103 @@ fn a_peer_connection_cannot_open_or_close_a_remote_stream() {
             assert!(error.message.contains("cannot close a stream"), "{error:?}");
         }
         other => panic!("a peer must not detach, got {other:?}"),
+    }
+}
+
+/// The operate frames are app-only too. A connection that speaks for a
+/// paired device — the shape an agent's cross-machine tool path resolves
+/// to — is refused before anything is queued: human-originated requests
+/// arrive on the local app connection only, and agent-originated
+/// cross-machine commands travel the permission-card path instead.
+#[test]
+fn a_peer_connection_cannot_operate_a_remote_host() {
+    let harness = Harness::start("peer-link-operate-peer-denied");
+    let peer = remote_conn_handle(3, "b");
+    let dispatch = |request| {
+        crate::server::peer_link_dispatch::dispatch_remote_host(&harness.state, &peer, request)
+    };
+    for request in [
+        ClientMessage::RemoteHostCreate {
+            id: 1,
+            device_id: "b".to_string(),
+            workspace_id: Some("w.1".to_string()),
+            kind: SessionKind::Terminal,
+            provider: None,
+            mode: None,
+            display_name: None,
+            idempotency_key: None,
+            cols: None,
+            rows: None,
+        },
+        ClientMessage::RemoteHostSend {
+            id: 2,
+            device_id: "b".to_string(),
+            session_id: "session-1".to_string(),
+            subscription_id: 1,
+            text: "hi".to_string(),
+            attachments: Vec::new(),
+            active_turn_behavior: None,
+            attachment_references: Vec::new(),
+            idempotency_key: None,
+        },
+        ClientMessage::RemoteHostResize {
+            id: 3,
+            device_id: "b".to_string(),
+            session_id: "session-1".to_string(),
+            subscription_id: 1,
+            cols: 80,
+            rows: 24,
+        },
+        ClientMessage::RemoteHostClaim {
+            id: 4,
+            device_id: "b".to_string(),
+            session_id: "session-1".to_string(),
+            subscription_id: 1,
+        },
+        ClientMessage::RemoteHostInterrupt {
+            id: 5,
+            device_id: "b".to_string(),
+            session_id: "session-1".to_string(),
+            subscription_id: 1,
+        },
+        ClientMessage::RemoteHostPermissionRespond {
+            id: 6,
+            device_id: "b".to_string(),
+            session_id: "session-1".to_string(),
+            subscription_id: 1,
+            request_id: "card-1".to_string(),
+            outcome: PermissionOutcome::AllowOnce,
+            option_id: None,
+            answer: None,
+            idempotency_key: None,
+        },
+        ClientMessage::RemoteHostClose {
+            id: 7,
+            device_id: "b".to_string(),
+            session_id: "session-1".to_string(),
+            idempotency_key: None,
+        },
+        ClientMessage::RemoteHostStop {
+            id: 8,
+            device_id: "b".to_string(),
+            session_id: "session-1".to_string(),
+            subscription_id: 1,
+        },
+        ClientMessage::RemoteHostProviders {
+            id: 9,
+            device_id: "b".to_string(),
+        },
+    ] {
+        let name = request.name();
+        match dispatch(request) {
+            DaemonMessage::Error(error) => {
+                assert!(
+                    error.message.contains("cannot operate a remote host"),
+                    "{name}: {error:?}"
+                );
+            }
+            other => panic!("a peer must not {name}, got {other:?}"),
+        }
     }
 }
 

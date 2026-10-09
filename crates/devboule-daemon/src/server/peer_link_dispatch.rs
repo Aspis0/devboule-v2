@@ -23,6 +23,53 @@ pub(super) fn dispatch_remote_host(
     conn: &Arc<ConnHandle>,
     request: ClientMessage,
 ) -> DaemonMessage {
+    /// The app-only door every operate frame passes: a peer connection —
+    /// which is what an agent's cross-machine path resolves to — cannot
+    /// open, drive or close a stream through this daemon. Human-originated
+    /// requests arrive on the local app connection only; agent-originated
+    /// cross-machine commands travel the permission-card path instead.
+    fn app_only(conn: &Arc<ConnHandle>, id: u64) -> Option<DaemonMessage> {
+        if conn.conn_peer.is_some() {
+            return Some(DaemonMessage::Error(
+                WireError::new(
+                    ErrorCode::InvalidRequest,
+                    "a peer cannot operate a remote host through this daemon",
+                )
+                .with_id(id),
+            ));
+        }
+        None
+    }
+    /// One operate answer back to the app: the host's own body, or its own
+    /// refusal with reason intact, or the link's state sentence when the
+    /// link could not carry the call.
+    fn operate_answer(
+        id: u64,
+        device_id: &str,
+        answer: LinkAnswer,
+        map: impl FnOnce(u64, &str, LinkAnswer) -> Option<DaemonMessage>,
+    ) -> DaemonMessage {
+        match answer {
+            LinkAnswer::Refused(error) => DaemonMessage::Error(error.with_id(id)),
+            LinkAnswer::Failed(state, sentence) => DaemonMessage::Error(
+                WireError::new(
+                    if state == RemoteHostState::Busy {
+                        ErrorCode::OperationConflict
+                    } else {
+                        ErrorCode::Io
+                    },
+                    sentence,
+                )
+                .with_id(id),
+            ),
+            other => map(id, device_id, other).unwrap_or_else(|| {
+                DaemonMessage::Error(
+                    WireError::new(ErrorCode::Internal, "the host answered out of kind")
+                        .with_id(id),
+                )
+            }),
+        }
+    }
     match request {
         ClientMessage::RemoteHostWatch { id, device_id } => {
             let sentence = busy_sentence(MAX_HELD_LINKS, "held links");
@@ -90,6 +137,12 @@ pub(super) fn dispatch_remote_host(
                 LinkAnswer::Body(_) => DaemonMessage::Error(
                     WireError::new(ErrorCode::Internal, "an attach is not a list read").with_id(id),
                 ),
+                LinkAnswer::Created(_) | LinkAnswer::Sent(_) | LinkAnswer::Providers { .. } => {
+                    DaemonMessage::Error(
+                        WireError::new(ErrorCode::Internal, "an attach is not an operate call")
+                            .with_id(id),
+                    )
+                }
             }
         }
         ClientMessage::RemoteHostDetach {
@@ -127,6 +180,12 @@ pub(super) fn dispatch_remote_host(
                 LinkAnswer::Body(_) => DaemonMessage::Error(
                     WireError::new(ErrorCode::Internal, "a detach is not a list read").with_id(id),
                 ),
+                LinkAnswer::Created(_) | LinkAnswer::Sent(_) | LinkAnswer::Providers { .. } => {
+                    DaemonMessage::Error(
+                        WireError::new(ErrorCode::Internal, "a detach is not an operate call")
+                            .with_id(id),
+                    )
+                }
             }
         }
         ClientMessage::RemoteHostList {
@@ -156,7 +215,235 @@ pub(super) fn dispatch_remote_host(
                 )
                 .with_id(id),
             ),
+            LinkAnswer::Created(_) | LinkAnswer::Sent(_) | LinkAnswer::Providers { .. } => {
+                DaemonMessage::Error(
+                    WireError::new(ErrorCode::Internal, "a list read is not an operate call")
+                        .with_id(id),
+                )
+            }
         },
+        ClientMessage::RemoteHostCreate {
+            id,
+            device_id,
+            workspace_id,
+            kind,
+            provider,
+            mode,
+            display_name,
+            idempotency_key,
+            cols,
+            rows,
+        } => {
+            if let Some(refused) = app_only(conn, id) {
+                return refused;
+            }
+            let answer = state.peer_links.operate_create(
+                &device_id,
+                workspace_id,
+                kind,
+                provider,
+                mode,
+                display_name,
+                idempotency_key,
+                cols,
+                rows,
+            );
+            operate_answer(
+                id,
+                &device_id,
+                answer,
+                |id, device_id, answer| match answer {
+                    LinkAnswer::Created(session) => Some(DaemonMessage::RemoteHostSession {
+                        id,
+                        device_id: device_id.to_string(),
+                        session: *session,
+                    }),
+                    _ => None,
+                },
+            )
+        }
+        ClientMessage::RemoteHostSend {
+            id,
+            device_id,
+            session_id,
+            subscription_id,
+            text,
+            attachments,
+            active_turn_behavior,
+            idempotency_key,
+            attachment_references,
+        } => {
+            if let Some(refused) = app_only(conn, id) {
+                return refused;
+            }
+            let answer = state.peer_links.operate_send(
+                &device_id,
+                session_id,
+                subscription_id,
+                text,
+                attachments,
+                active_turn_behavior,
+                idempotency_key,
+                attachment_references,
+            );
+            operate_answer(
+                id,
+                &device_id,
+                answer,
+                |id, device_id, answer| match answer {
+                    LinkAnswer::Sent(turn_active) => Some(DaemonMessage::RemoteHostSent {
+                        id,
+                        device_id: device_id.to_string(),
+                        turn_active,
+                    }),
+                    _ => None,
+                },
+            )
+        }
+        ClientMessage::RemoteHostResize {
+            id,
+            device_id,
+            session_id,
+            subscription_id,
+            cols,
+            rows,
+        } => {
+            if let Some(refused) = app_only(conn, id) {
+                return refused;
+            }
+            let answer = state.peer_links.operate_resize(
+                &device_id,
+                session_id,
+                subscription_id,
+                cols,
+                rows,
+            );
+            operate_answer(id, &device_id, answer, |id, _, answer| match answer {
+                LinkAnswer::Accepted => Some(DaemonMessage::Ok { id }),
+                _ => None,
+            })
+        }
+        ClientMessage::RemoteHostClaim {
+            id,
+            device_id,
+            session_id,
+            subscription_id,
+        } => {
+            if let Some(refused) = app_only(conn, id) {
+                return refused;
+            }
+            let answer = state
+                .peer_links
+                .operate_claim(&device_id, session_id, subscription_id);
+            operate_answer(id, &device_id, answer, |id, _, answer| match answer {
+                LinkAnswer::Accepted => Some(DaemonMessage::Ok { id }),
+                _ => None,
+            })
+        }
+        ClientMessage::RemoteHostInterrupt {
+            id,
+            device_id,
+            session_id,
+            subscription_id,
+        } => {
+            if let Some(refused) = app_only(conn, id) {
+                return refused;
+            }
+            let answer =
+                state
+                    .peer_links
+                    .operate_interrupt(&device_id, session_id, subscription_id);
+            operate_answer(id, &device_id, answer, |id, _, answer| match answer {
+                LinkAnswer::Accepted => Some(DaemonMessage::Ok { id }),
+                _ => None,
+            })
+        }
+        ClientMessage::RemoteHostPermissionRespond {
+            id,
+            device_id,
+            session_id,
+            subscription_id,
+            request_id,
+            outcome,
+            option_id,
+            answer: answer_text,
+            idempotency_key,
+        } => {
+            if let Some(refused) = app_only(conn, id) {
+                return refused;
+            }
+            let answer = state.peer_links.operate_permission_respond(
+                &device_id,
+                session_id,
+                subscription_id,
+                request_id,
+                outcome,
+                option_id,
+                answer_text,
+                idempotency_key,
+            );
+            operate_answer(id, &device_id, answer, |id, _, answer| match answer {
+                LinkAnswer::Accepted => Some(DaemonMessage::Ok { id }),
+                _ => None,
+            })
+        }
+        ClientMessage::RemoteHostClose {
+            id,
+            device_id,
+            session_id,
+            idempotency_key,
+        } => {
+            if let Some(refused) = app_only(conn, id) {
+                return refused;
+            }
+            let answer = state
+                .peer_links
+                .operate_close(&device_id, session_id, idempotency_key);
+            operate_answer(id, &device_id, answer, |id, _, answer| match answer {
+                LinkAnswer::Accepted => Some(DaemonMessage::Ok { id }),
+                _ => None,
+            })
+        }
+        ClientMessage::RemoteHostStop {
+            id,
+            device_id,
+            session_id,
+            subscription_id,
+        } => {
+            if let Some(refused) = app_only(conn, id) {
+                return refused;
+            }
+            let answer = state
+                .peer_links
+                .operate_stop(&device_id, session_id, subscription_id);
+            operate_answer(id, &device_id, answer, |id, _, answer| match answer {
+                LinkAnswer::Accepted => Some(DaemonMessage::Ok { id }),
+                _ => None,
+            })
+        }
+        ClientMessage::RemoteHostProviders { id, device_id } => {
+            if let Some(refused) = app_only(conn, id) {
+                return refused;
+            }
+            let answer = state.peer_links.operate_providers(&device_id);
+            operate_answer(
+                id,
+                &device_id,
+                answer,
+                |id, device_id, answer| match answer {
+                    LinkAnswer::Providers {
+                        providers,
+                        unreadable_dirs,
+                    } => Some(DaemonMessage::RemoteHostProviders {
+                        id,
+                        device_id: device_id.to_string(),
+                        providers,
+                        unreadable_dirs,
+                    }),
+                    _ => None,
+                },
+            )
+        }
         other => DaemonMessage::Error(WireError::new(
             ErrorCode::InvalidRequest,
             format!("{} is not a remote-host frame", other.name()),
@@ -174,5 +461,14 @@ pub(super) fn is_remote_host(request: &ClientMessage) -> bool {
             | ClientMessage::RemoteHostList { .. }
             | ClientMessage::RemoteHostAttach { .. }
             | ClientMessage::RemoteHostDetach { .. }
+            | ClientMessage::RemoteHostCreate { .. }
+            | ClientMessage::RemoteHostSend { .. }
+            | ClientMessage::RemoteHostResize { .. }
+            | ClientMessage::RemoteHostClaim { .. }
+            | ClientMessage::RemoteHostInterrupt { .. }
+            | ClientMessage::RemoteHostPermissionRespond { .. }
+            | ClientMessage::RemoteHostClose { .. }
+            | ClientMessage::RemoteHostStop { .. }
+            | ClientMessage::RemoteHostProviders { .. }
     )
 }
