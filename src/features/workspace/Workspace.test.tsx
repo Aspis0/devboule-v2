@@ -1629,7 +1629,6 @@ describe("Workspace sessions", () => {
     const picker = document.querySelector('[aria-label="Choose agent"]');
     expect(picker?.textContent).toContain("No agent CLI is installed on this machine.");
     expect(picker?.textContent).toContain("Run on demand (npx)");
-    expect(document.querySelector('[aria-label="Confirm agent"]')).toBeNull();
     expect(sessionCreate).not.toHaveBeenCalled();
   });
 

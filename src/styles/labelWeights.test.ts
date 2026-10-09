@@ -41,7 +41,6 @@ describe("workspace chrome labels", () => {
     ".workspace-vertical-label",
     ".workspace-chat-label",
     ".workspace-menu-label",
-    ".workspace-consent-provider .workspace-surface-name",
     ".workspace-generation-heading",
   ]) {
     it(`${selector} paints at or below 500`, () => {

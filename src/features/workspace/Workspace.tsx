@@ -97,7 +97,6 @@ import { Sidebar } from "./sidebar/Sidebar";
 import { buildAgentRows } from "./sidebar/agentRowViews";
 import { StatusBar, agentStateOf, type FocusedAgent } from "./statusBar/StatusBar";
 import { useWorkspaceStats } from "./sidebar/useWorkspaceStats";
-import { useProviderConsent } from "./useProviderConsent";
 import { focusIsWhereTheFlowLeftIt, useStripFocus } from "./strip/stripFocus";
 import { AnchoredPopover } from "./popoverPlace";
 import {
@@ -114,7 +113,6 @@ import {
 } from "../../components/PermissionCard";
 import {
   peerDeviceNames,
-  requiresConsent,
   sessionCreateFromProvider,
   sessionCreatorTooltip,
   sessionTitle,
@@ -1408,8 +1406,6 @@ export function Workspace({
   const providerAnchorElRef = useRef<HTMLElement | null>(null);
   /** The workspace the open choice was made under: switching it must end the choice. */
   const choiceWorkspaceRef = useRef<WorkspaceKey | null>(selectedKey);
-  const consentConfirmRef = useRef<HTMLButtonElement>(null);
-  const consentRestoreRef = useRef<HTMLButtonElement | null>(null);
   const [providerError, setProviderError] = useState<ErrorSentence | null>(null);
   // A provider choice is a create in waiting: between the click and the
   // chosen provider's create, the strip must not start another session —
@@ -1448,26 +1444,10 @@ export function Workspace({
     },
     [endProviderChoice, selectedWorkspaceId, startAgentSession],
   );
-  const handleConsentConfirmed = useCallback((provider: ProviderInfo) => {
-    setProviderPicker(null);
-    setProviderAnchor(null);
-    const afterChoice = afterProviderChoiceRef.current;
-    afterProviderChoiceRef.current = null;
-    afterChoice?.(provider);
-  }, []);
-  const {
-    pending: consentProvider,
-    request: requestConsent,
-    confirm: consentConfirm,
-    cancel: cancelProviderConsent,
-    inFlight: consentInFlight,
-    commandLine: consentCommandLine,
-  } = useProviderConsent({ onConfirmed: handleConsentConfirmed });
   /**
    * One provider-choice flow for every button that starts an agent: 0 capable
-   * providers fall straight through, one needs consent when it is an npx
-   * wrapper, two or more open the picker. What happens after the choice is
-   * the caller's `afterChoice`; the picker and consent card never read it.
+   * providers open the empty picker, one falls straight through, two or more
+   * open the picker. What happens after the choice is the caller's `afterChoice`.
    */
   const chooseProvider = useCallback(
     async (
@@ -1502,7 +1482,7 @@ export function Workspace({
         setProviderPicker([]);
         return;
       }
-      if (capable.length === 1 && !requiresConsent(capable[0])) {
+      if (capable.length === 1) {
         // The in-flight guard must hold until the afterChoice callback has
         // fully settled: the callback releases it (defect: releasing here let
         // a second click mint a second workspace while the first create was
@@ -1513,17 +1493,9 @@ export function Workspace({
       afterProviderChoiceRef.current = afterChoice;
       providerAnchorElRef.current = trigger ?? addButtonRef.current;
       setProviderAnchor(anchor);
-      if (capable.length === 1) {
-        // With a single npx provider no picker opens, so this triggering
-        // button is the only focus anchor; the consent effect restores it on
-        // cancel (and the picker path sets its own anchor in pickProvider).
-        consentRestoreRef.current = trigger ?? null;
-        requestConsent(capable[0]);
-        return;
-      }
       setProviderPicker(capable);
     },
-    [endProviderChoice, loadChatProviders, requestConsent, selectedKey],
+    [endProviderChoice, loadChatProviders, selectedKey],
   );
   const handleNewWorkspace = useCallback(
     (trigger: HTMLButtonElement, projectId: string) => {
@@ -1620,7 +1592,7 @@ export function Workspace({
   );
   const dismissNewTabMenu = useCallback(() => setNewTabMenuOpen(false), []);
   // The menu's Agent entry: the flow the "+" owned before the menu, focused
-  // from the "+" itself so a cancelled consent card hands focus back to it.
+  // from the "+" itself so a dismissed picker hands focus back to it.
   const handleNewTabAgent = useCallback(() => {
     dismissNewTabMenu();
     const trigger = addButtonRef.current;
@@ -1664,35 +1636,13 @@ export function Workspace({
     dismissNewTabMenu();
     if (selectedKey !== null) openBrowserFor(selectedKey);
   }, [dismissNewTabMenu, openBrowserFor, selectedKey]);
-  const consentCancel = useCallback(() => {
-    // The picker stays anchored behind the consent card; cancelling only
-    // removes the card and returns to the option list.
-    endProviderChoice();
-    cancelProviderConsent();
-  }, [cancelProviderConsent, endProviderChoice]);
-  useEffect(() => {
-    if (consentProvider !== null) {
-      consentConfirmRef.current?.focus({ preventScroll: true });
-    } else {
-      consentRestoreRef.current?.focus({ preventScroll: true });
-      consentRestoreRef.current = null;
-    }
-  }, [consentProvider]);
-  const pickProvider = useCallback(
-    (provider: ProviderInfo, trigger: HTMLButtonElement) => {
-      if (requiresConsent(provider)) {
-        consentRestoreRef.current = trigger;
-        requestConsent(provider);
-        return;
-      }
-      setProviderPicker(null);
-      setProviderAnchor(null);
-      const afterChoice = afterProviderChoiceRef.current;
-      afterProviderChoiceRef.current = null;
-      afterChoice?.(provider);
-    },
-    [requestConsent],
-  );
+  const pickProvider = useCallback((provider: ProviderInfo) => {
+    setProviderPicker(null);
+    setProviderAnchor(null);
+    const afterChoice = afterProviderChoiceRef.current;
+    afterProviderChoiceRef.current = null;
+    afterChoice?.(provider);
+  }, []);
   const dismissProviderPicker = useCallback(() => {
     afterProviderChoiceRef.current = null;
     // Escape and outside clicks: the choice ends with NO choice, which the
@@ -1702,43 +1652,29 @@ export function Workspace({
     setProviderPicker(null);
     setProviderAnchor(null);
   }, [endProviderChoice, noteChoiceDismissed]);
-  const dismissPickerFlow = useCallback(() => {
-    // One close for every way the flow dies without a choice: window resize,
-    // an ancestor scroll, a lost anchor, a workspace switch. The card goes
-    // too, and dismissing arms the focus rule exactly like Escape does.
-    if (consentProvider !== null) consentCancel();
-    dismissProviderPicker();
-  }, [consentCancel, consentProvider, dismissProviderPicker]);
-  // The provider choice (and its consent gate) dismisses when the band
-  // opens, like every other menu: the flow is transient and the band is
-  // the outside press.
-  useMenuOpen(providerPicker !== null || consentProvider !== null, dismissPickerFlow);
+  // The provider choice dismisses when the band opens, like every other menu:
+  // the flow is transient and the band is the outside press.
+  useMenuOpen(providerPicker !== null, dismissProviderPicker);
   // The empty picker's one action. Settings opens on its Providers tab, where
   // the install guidance lives; dismissing first ends the choice so the
   // navigate-away can never leave a flow running under the user left behind.
   const openProvidersSettings = useCallback(() => {
-    dismissPickerFlow();
+    dismissProviderPicker();
     selectSurface("settings");
-  }, [dismissPickerFlow, selectSurface]);
+  }, [dismissProviderPicker, selectSurface]);
   // A choice opened under one workspace must never create in another: a
   // pointer click on the row dismisses through the outside rule, but a
   // keyboard- or state-driven switch has no click to catch — the flow ends
   // here, in the workspace it was opened under, never the one now selected.
   useEffect(() => {
     if (!providerChoosing) return;
-    if (choiceWorkspaceRef.current !== selectedKey) dismissPickerFlow();
-  }, [providerChoosing, selectedKey, dismissPickerFlow]);
+    if (choiceWorkspaceRef.current !== selectedKey) dismissProviderPicker();
+  }, [providerChoosing, selectedKey, dismissProviderPicker]);
   useEffect(() => {
-    if (providerAnchor === null && consentProvider === null) return;
+    if (providerAnchor === null) return;
     const onKey = (event: KeyboardEvent) => {
       if (isImeComposition(event)) return;
-      if (event.key === "Escape") {
-        if (consentProvider !== null) {
-          consentCancel();
-        } else {
-          dismissProviderPicker();
-        }
-      }
+      if (event.key === "Escape") dismissProviderPicker();
     };
     const onPointer = (event: MouseEvent) => {
       const root = providerPickerRef.current;
@@ -1752,18 +1688,14 @@ export function Workspace({
         return;
       }
       if (root !== null && event.target instanceof Node && !root.contains(event.target)) {
-        if (consentProvider !== null) {
-          consentCancel();
-        } else {
-          dismissProviderPicker();
-        }
+        dismissProviderPicker();
       }
     };
     // Open over a viewport that then moved is stale: close it (the brief
     // picked closing over repositioning). Dismissing arms the focus rule,
     // so focus the unmount dropped comes back to "+".
     const onResize = () => {
-      dismissPickerFlow();
+      dismissProviderPicker();
     };
     window.addEventListener("keydown", onKey);
     window.addEventListener("mousedown", onPointer);
@@ -1773,7 +1705,7 @@ export function Workspace({
       window.removeEventListener("mousedown", onPointer);
       window.removeEventListener("resize", onResize);
     };
-  }, [consentCancel, consentProvider, dismissProviderPicker, dismissPickerFlow, providerAnchor]);
+  }, [dismissProviderPicker, providerAnchor]);
   const handleSessionClosed = useCallback(() => {
     void refreshSessions();
   }, [refreshSessions]);
@@ -1940,96 +1872,52 @@ export function Workspace({
   );
 
   // One instance of the provider choice UI, anchored where the flow was
-  // opened. It renders only the choice and consent; what happens afterwards
-  // was fixed when the flow started.
+  // opened. What happens afterwards was fixed when the flow started.
   const providerMenu =
-    providerAnchor === null || (providerPicker === null && consentProvider === null) ? null : (
+    providerAnchor === null || providerPicker === null ? null : (
       <AnchoredPopover
         containerRef={providerPickerRef}
         anchorRef={providerAnchorElRef}
-        onDismiss={dismissPickerFlow}
+        onDismiss={dismissProviderPicker}
         className="workspace-surface-menu"
-        role={consentProvider !== null ? "group" : "listbox"}
-        aria-label={consentProvider !== null ? "Confirm agent" : "Choose agent"}
+        role="listbox"
+        aria-label="Choose agent"
       >
-        {consentProvider !== null ? (
-          <>
-            <div className="workspace-menu-label">This agent downloads third-party code</div>
-            <div className="workspace-surface-options">
-              <div className="workspace-consent-provider">
-                <span className="workspace-surface-name">{consentProvider.id}</span>
-                <span className="workspace-consent-spec" id="workspace-consent-command">
-                  {consentCommandLine}
-                </span>
-              </div>
-              <p className="workspace-consent-notice" id="workspace-consent-warning">
-                npx will download and run third-party code on first use.
-              </p>
-            </div>
-            <div className="workspace-consent-actions">
-              <button type="button" className="workspace-secondary-action" onClick={consentCancel}>
-                Cancel
-              </button>
-              {/*
-                Focus moves here when the card opens, so this button's accessible
-                description is the whole of what a screen-reader user hears before
-                approving. Without it they hear "Confirm" and nothing about the
-                command or the download — which is not consent. The command comes
-                first because it is the specific thing being approved.
-              */}
-              <button
-                ref={consentConfirmRef}
-                type="button"
-                className="workspace-primary-action"
-                onClick={consentConfirm}
-                disabled={consentInFlight}
-                aria-describedby="workspace-consent-command workspace-consent-warning"
-              >
-                Confirm
-              </button>
-            </div>
-          </>
+        <div className="workspace-menu-label">Choose agent</div>
+        {providerPicker!.length === 0 ? (
+          // The gate's empty state: no agent CLI is installed, so the flow
+          // stops here instead of creating a session that cannot start.
+          <div className="workspace-provider-empty">
+            <p className="workspace-provider-empty-text">
+              No agent CLI is installed on this machine. Install one — for example grok, claude, or
+              gemini — then choose Refresh in Settings → Providers. Run on demand (npx) agents are
+              listed in Settings → Providers too, and they are not offered here.
+            </p>
+            <button
+              type="button"
+              className="workspace-empty-action"
+              onClick={openProvidersSettings}
+            >
+              Install instructions
+            </button>
+          </div>
         ) : (
-          <>
-            <div className="workspace-menu-label">Choose agent</div>
-            {providerPicker!.length === 0 ? (
-              // The gate's empty state: no agent CLI is installed, so the flow
-              // stops here instead of creating a session that cannot start.
-              <div className="workspace-provider-empty">
-                <p className="workspace-provider-empty-text">
-                  No agent CLI is installed on this machine. Install one — for example grok, claude,
-                  or gemini — then choose Refresh in Settings → Providers. Run on demand (npx)
-                  agents are listed in Settings → Providers too, and they are not offered here.
-                </p>
+          <div className="workspace-provider-group">
+            <div className="workspace-menu-label">Installed</div>
+            <div className="workspace-surface-options">
+              {providerPicker!.map((provider) => (
                 <button
                   type="button"
-                  className="workspace-empty-action"
-                  onClick={openProvidersSettings}
+                  role="option"
+                  className="workspace-surface-option"
+                  key={provider.id}
+                  onClick={() => pickProvider(provider)}
                 >
-                  Install instructions
+                  <span className="workspace-surface-name">{provider.id}</span>
                 </button>
-              </div>
-            ) : (
-              <div className="workspace-provider-group">
-                <div className="workspace-menu-label">Installed</div>
-                <div className="workspace-surface-options">
-                  {providerPicker!.map((provider) => (
-                    <button
-                      type="button"
-                      role="option"
-                      className="workspace-surface-option"
-                      key={provider.id}
-                      onClick={(event) => {
-                        pickProvider(provider, event.currentTarget);
-                      }}
-                    >
-                      <span className="workspace-surface-name">{provider.id}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-          </>
+              ))}
+            </div>
+          </div>
         )}
       </AnchoredPopover>
     );

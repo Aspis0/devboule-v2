@@ -1543,7 +1543,6 @@ describe("the + new-tab menu", () => {
     expect(picker?.textContent).toContain("No agent CLI is installed on this machine.");
     expect(picker?.textContent).toContain("Run on demand (npx)");
     expect(picker?.textContent).not.toContain("codex-acp");
-    expect(document.querySelector('[aria-label="Confirm agent"]')).toBeNull();
     expect(sessionCreate).not.toHaveBeenCalled();
   });
 
