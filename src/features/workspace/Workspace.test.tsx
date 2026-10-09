@@ -986,6 +986,60 @@ describe("Workspace sessions", () => {
     expect(container.querySelector('[data-testid="mock-composer"]')).toBe(composer);
   });
 
+  it("hides the side panel and its handle while the History page is up, and restores it", async () => {
+    vi.mocked(workspaceFilesList).mockResolvedValue({
+      path: "",
+      entries: [],
+      capped: false,
+      skipped: 0,
+      error: null,
+    });
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    // The panel's own tab stands where the person left it across the trip.
+    const filesTab = container.querySelector<HTMLButtonElement>(
+      'button[role="tab"][data-panel-tab="files"]',
+    );
+    if (filesTab === null) throw new Error("the side panel tab row did not render");
+    await act(async () => filesTab.click());
+    await act(async () => undefined);
+    const body = container.querySelector("#workspace-side-panel");
+    if (body === null) throw new Error("the side panel body did not render");
+    const panelHidden = (): boolean | undefined =>
+      container
+        .querySelector(".workspace-right-panel")
+        ?.classList.contains("workspace-panel-hidden");
+    const handleHidden = (): boolean | undefined =>
+      container
+        .querySelector(".workspace-center-panel + .workspace-resize-handle")
+        ?.classList.contains("workspace-panel-hidden");
+    expect(panelHidden()).toBe(false);
+    expect(handleHidden()).toBe(false);
+
+    await toggleHistoryPanel();
+    expect(container.querySelector("#workspace-history-panel")).not.toBeNull();
+    expect(panelHidden()).toBe(true);
+    // The handle steps out with the panel: nothing dangles off the page.
+    expect(handleHidden()).toBe(true);
+    // Mounted behind the page, untouched: the tab, the scroll and the body
+    // all come back the way they were left.
+    expect(container.querySelector("#workspace-side-panel")).toBe(body);
+    expect(container.querySelector('[data-panel-tab="files"]')?.getAttribute("aria-selected")).toBe(
+      "true",
+    );
+
+    await toggleHistoryPanel();
+    expect(container.querySelector("#workspace-history-panel")).toBeNull();
+    expect(panelHidden()).toBe(false);
+    expect(handleHidden()).toBe(false);
+    expect(container.querySelector("#workspace-side-panel")).toBe(body);
+  });
+
   it("opening a History agent switches workspace, opens its tab and clears History search", async () => {
     vi.mocked(workspacesList).mockResolvedValue([workspace, secondWorkspace]);
     const agent: Session = {

@@ -2479,9 +2479,12 @@ export function Workspace({
           ) : null}
         </main>
 
+        {/* The History page owns the main area: the side panel and its
+            handle step out of the layout while it is up — mounted, so the
+            panel comes back exactly as it was left, tab and all. */}
         <button
           type="button"
-          className="workspace-resize-handle"
+          className={`workspace-resize-handle${historyOpen ? " workspace-panel-hidden" : ""}`}
           onMouseDown={(event) => startDrag("right", event)}
           onDoubleClick={() => setRightCollapsed((collapsed) => !collapsed)}
           onKeyDown={(event) => handleResizeKey("right", event)}
@@ -2494,7 +2497,9 @@ export function Workspace({
         />
 
         <aside
-          className="workspace-panel workspace-right-panel"
+          className={`workspace-panel workspace-right-panel${
+            historyOpen ? " workspace-panel-hidden" : ""
+          }`}
           style={{ width: rightCollapsed ? "30px" : `${rightWidth}px` }}
           aria-label="Workspace side panel"
         >

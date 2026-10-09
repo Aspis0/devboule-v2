@@ -69,6 +69,13 @@
   display: none;
 }
 
+/* The History page hides the side panel and its handle the same way: the
+   page holds the main area, and the panel waits mounted behind it — its
+   tab, scroll and drafts come back untouched. */
+.workspace-panel-hidden {
+  display: none;
+}
+
 .workspace-collapsed-panel {
   display: flex;
   flex: 1;
