@@ -27,6 +27,9 @@ interface WorkspaceNewTabMenuProps {
   creating: boolean;
   /** No workspace is selected: every entry waits, and the menu says why in plain words. */
   workspaceSelected: boolean;
+  /** A remote workspace hosts agents and terminals only: the browser entry
+   * is hidden. True for the local strip, which keeps all three. */
+  showBrowser?: boolean;
   onAgent: () => void;
   onTerminal: () => void;
   onBrowser: () => void;
@@ -90,6 +93,7 @@ export function WorkspaceNewTabMenu({
   triggerRef,
   creating,
   workspaceSelected,
+  showBrowser = true,
   onAgent,
   onTerminal,
   onBrowser,
@@ -166,7 +170,9 @@ export function WorkspaceNewTabMenu({
   const entries: NewTabEntry[] = [
     { label: "Agent", glyph: AGENT_GLYPH, disabled: waiting, onSelect: onAgent },
     { label: "Terminal", glyph: TERMINAL_GLYPH, disabled: waiting, onSelect: onTerminal },
-    { label: "Browser", glyph: BROWSER_GLYPH, disabled: waiting, onSelect: onBrowser },
+    ...(showBrowser
+      ? [{ label: "Browser", glyph: BROWSER_GLYPH, disabled: waiting, onSelect: onBrowser }]
+      : []),
   ];
 
   return (
