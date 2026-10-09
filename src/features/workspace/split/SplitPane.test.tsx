@@ -140,7 +140,7 @@ describe("a workspace with a split", () => {
     // The share is written at the geometry's precision, not rounded to a whole
     // percent: a rounded one hands the pane below the pixels the floor took.
     expect(panes[0]?.style.height).toBe("42%");
-    expect(splitSizeAtPane(boundsOf(700).min)).toBe("26.571%");
+    expect(splitSizeAtPane(boundsOf(700).min)).toBe("39.857%");
     // The divider owns the height: the pane below takes what the top leaves.
     expect(ruleBody(".workspace-split-top")).toMatch(/flex:\s*none/);
     expect(ruleBody(".workspace-split-bottom")).toMatch(/flex:\s*1 1 0/);
@@ -162,7 +162,7 @@ describe("a workspace with a split", () => {
     render({ split: splitAt(0.5) });
     stubArea(700);
     await areaMeasured();
-    // 700 px: the top pane's 186 px floor is 26.6%, the lower pane's floor
+    // 700 px: the top pane's 279 px floor is 39.9%, the lower pane's floor
     // leaves 71.9% — so the advertised bounds are the pixels, not 20/80.
     const bounds = splitBoundsFor(700);
     expect(separator().getAttribute("aria-valuemin")).toBe(String(Math.round(bounds.min * 100)));
@@ -234,18 +234,18 @@ describe("a workspace with a split", () => {
     });
     act(() => {
       window.dispatchEvent(new PointerEvent("pointermove", { clientY: 420, bubbles: true }));
-      window.dispatchEvent(new PointerEvent("pointermove", { clientY: 300, bubbles: true }));
+      window.dispatchEvent(new PointerEvent("pointermove", { clientY: 400, bubbles: true }));
     });
     // The pane follows the pointer through the drag's own state, so the store
     // is written once, at the end.
     expect(onResize).not.toHaveBeenCalled();
-    expect(separator().getAttribute("aria-valuenow")).toBe("25");
+    expect(separator().getAttribute("aria-valuenow")).toBe("38");
 
     act(() => {
-      window.dispatchEvent(new PointerEvent("pointerup", { clientY: 300, bubbles: true }));
+      window.dispatchEvent(new PointerEvent("pointerup", { clientY: 400, bubbles: true }));
     });
     expect(onResize).toHaveBeenCalledTimes(1);
-    expect(onResize).toHaveBeenCalledWith(expect.closeTo(0.25, 5));
+    expect(onResize).toHaveBeenCalledWith(expect.closeTo(0.375, 5));
     vi.restoreAllMocks();
   });
 
@@ -344,7 +344,7 @@ describe("a pane too small to read at full size", () => {
   it("leaves the floor to the geometry, so the two cannot disagree", () => {
     // A `min-height` here would be a second answer to a question splitGeometry
     // already answers, and the one the stylesheet would win: at a 300px area
-    // the geometry hands the pane above 108px and this floor would take 186.
+    // the geometry hands the pane above 103px and this floor would take 279.
     expect(ruleBody(".workspace-split-top")).not.toMatch(/min-height/);
     expect(ruleBody(".workspace-split-bottom")).not.toMatch(/min-height/);
     // What the stylesheet does own is that the three rows add up to the split's

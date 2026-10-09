@@ -22,11 +22,9 @@ export const SPLIT_KEY_STEP = 0.02;
 export const COMPACT_MAX_HEIGHT = 340;
 export const COMPACT_MAX_WIDTH = 440;
 
-/** The smallest top pane worth keeping: its 36px pane header, two 17.55px
- * transcript rows with the compact 6px gap, and the 108px compact composer —
- * the floor a chat is readable at. splitGeometry.test.ts derives the same sum
- * from the sheets, so a taller term moves this number with it. */
-export const MIN_TOP_PANE_PX = 186;
+/** The smallest top pane worth keeping: the compact pane toolbar, a goal row,
+ * two transcript bubbles and the 108px compact composer (splitGeometry.test.ts). */
+export const MIN_TOP_PANE_PX = 279;
 
 /** The smallest pane below worth keeping: the split header, the page's own
  * chrome, and 120 px of page to read. */

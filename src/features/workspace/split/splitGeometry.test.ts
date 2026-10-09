@@ -26,15 +26,17 @@ import {
 const TOP = 100;
 const HEIGHT = 800;
 
-// The top floor's three terms are the sheet's own numbers, so a taller header,
-// a wider row or a taller composer fails this file instead of quietly eating a
-// transcript row.
+// Every term of the top floor is the sheet's own number, so a taller header, a
+// taller bubble or a taller composer fails this file instead of quietly eating
+// a transcript entry.
 const rootDir = resolve(import.meta.dirname, "../../../..");
 const sheet = (path: string): string => readFileSync(resolve(rootDir, path), "utf8");
 const css = assembleCssProof([
   sheet("src/styles/tokens.css"),
   sheet("src/features/workspace/Workspace.css"),
   sheet("src/features/workspace/split/SplitPane.css"),
+  sheet("src/features/workspace/paneHeader/GoalLine.css"),
+  sheet("src/features/workspace/timeline/timeline.css"),
 ]);
 
 /** A selector's declaration as a px number: the assembled sheet has the tokens
@@ -60,8 +62,8 @@ describe("where the pointer leaves the divider", () => {
   });
 
   it("stops where the pane below would stop being usable, not at a fraction", () => {
-    // 800 px tall: the top pane's 186 px floor is 23.25% and the lower pane's
-    // 192 px plus the divider's 5 is 24.6%, so the pointer cannot reach the
+    // 800 px tall: the top pane's 279 px floor is 34.875% and the lower pane's
+    // 192 px plus the divider's 5 is 24.625%, so the pointer cannot reach the
     // fraction bounds at all.
     const lowest = splitSizeFromPointer(TOP + HEIGHT - 1, TOP, HEIGHT);
     const highest = splitSizeFromPointer(TOP + 1, TOP, HEIGHT);
@@ -104,7 +106,9 @@ describe("the divider's bounds in a split area of a given height", () => {
   });
 
   it("widens with the window, so a tall workspace keeps the fraction bounds", () => {
-    expect(splitBoundsFor(1000)).toEqual({ min: MIN_SPLIT_SIZE, max: MAX_SPLIT_SIZE });
+    // Past MIN_TOP_PANE_PX / MIN_SPLIT_SIZE: both floors fit inside the
+    // fraction bounds, so nothing tightens them.
+    expect(splitBoundsFor(1400)).toEqual({ min: MIN_SPLIT_SIZE, max: MAX_SPLIT_SIZE });
   });
 
   it("collapses to one place when the area is too short for both floors, and keeps the lower pane's", () => {
@@ -125,19 +129,24 @@ describe("the divider's bounds in a split area of a given height", () => {
 });
 
 describe("the top pane's floor", () => {
-  it("covers the pane header, two transcript rows and the compact composer", () => {
-    // The pane header at its base height: --control-bar (36px). The compact
-    // pane steps its toolbar down to --control-dense (24px, SplitPane.css), so
-    // the floor is a few pixels over what a compact pane needs rather than
-    // short of it.
-    const header = px(".workspace-split-header", "height");
-    // Two one-line rows at the compact ramp: --type-small 13px on
-    // --leading-dense 1.35, plus the compact content gap --space-6 between
-    // them (SplitPane.css's compact block).
-    const row =
-      px(".workspace-split-pane .workspace-chat-entry", "font-size") *
-      Number(css.token("--leading-dense"));
+  it("covers the pane header, a goal row, two transcript bubbles and the compact composer", () => {
+    // The header a top pane renders is the pane toolbar; a pane at this floor
+    // is inside the compact query, which steps the toolbar down to
+    // --control-dense (SplitPane.css's compact block).
+    const header = px(".workspace-split-pane .workspace-terminal-toolbar", "height");
+    // A goal is optional: the floor covers the case that renders one.
+    const goal = px(".goal-line", "min-height");
+    // The transcript's own padding above the first entry, and the compact gap
+    // the content puts between two entries.
+    const top = px(".workspace-conversation", "padding");
     const gap = px(".workspace-split-pane .workspace-conversation-content", "gap");
+    // One line inside a user bubble: the bubble's 12px padding twice plus
+    // --type-interface on --leading-body.
+    const bubble =
+      2 * px(".workspace-chat-bubble", "padding") +
+      px(".workspace-chat-bubble", "font-size") * Number(css.token("--leading-body"));
+    // The widest rhythm between two entries: a user row to what follows it.
+    const between = px(".workspace-chat-user + .workspace-chat-entry", "margin-top");
     // The compact composer: wrap padding top + the field's own floor + wrap
     // padding bottom (4 + 96 + 8).
     const wrap = css.rulesFor(".workspace-split-pane .workspace-composer-wrap");
@@ -146,7 +155,9 @@ describe("the top pane's floor", () => {
     const composer =
       Number(padding[1]) + px(".workspace-composer", "min-height") + Number(padding[2]);
     expect(composer).toBe(108);
-    expect(MIN_TOP_PANE_PX).toBeGreaterThanOrEqual(Math.ceil(header + 2 * row + gap + composer));
+    expect(MIN_TOP_PANE_PX).toBeGreaterThanOrEqual(
+      Math.ceil(header + goal + top + gap + 2 * bubble + between + composer),
+    );
   });
 });
 
