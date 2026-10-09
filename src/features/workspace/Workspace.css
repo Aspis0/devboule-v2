@@ -53,6 +53,22 @@
   background: var(--ground-center);
 }
 
+/* The live session content fills the panel exactly as the panel itself did. */
+.workspace-center-live {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Hidden behind the History page, but mounted: drafts and picker state
+   survive the trip. display:none drops it from the tab order and the
+   accessibility tree. */
+.workspace-center-hidden {
+  display: none;
+}
+
 .workspace-collapsed-panel {
   display: flex;
   flex: 1;

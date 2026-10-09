@@ -946,6 +946,46 @@ describe("Workspace sessions", () => {
     expect(container.textContent).not.toContain("No tabs yet");
   });
 
+  it("keeps the open pane mounted across History navigation, drafts intact", async () => {
+    vi.mocked(workspacesList).mockResolvedValue([workspace, secondWorkspace]);
+    const agent: Session = {
+      id: "agent-w2",
+      workspaceId: "workspace-2",
+      kind: "acp",
+      title: "Feature agent",
+      createdAtMs: Date.now(),
+      state: { type: "live", generation: 1 },
+      elapsedMs: 0,
+    };
+    vi.mocked(sessionsList).mockResolvedValue([
+      terminal("session-1", "shell one", "workspace-1"),
+      agent,
+    ]);
+    vi.mocked(journalUsage).mockResolvedValue(historyUsage);
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+    await toggleHistoryPanel();
+    const row = container.querySelector<HTMLButtonElement>('[data-agent-id="agent-w2"]');
+    if (!row) throw new Error("History agent row did not render");
+    await act(async () => row.click());
+    const composer = container.querySelector('[data-testid="mock-composer"]');
+    if (!composer) throw new Error("composer did not render");
+
+    // Opening History keeps the pane subtree mounted behind the page: the
+    // same node, so an unsent composer draft and picker state survive the
+    // trip there and back.
+    await toggleHistoryPanel();
+    expect(container.querySelector("#workspace-history-panel")).not.toBeNull();
+    expect(container.querySelector('[data-testid="mock-composer"]')).toBe(composer);
+    await toggleHistoryPanel();
+    expect(container.querySelector("#workspace-history-panel")).toBeNull();
+    expect(container.querySelector('[data-testid="mock-composer"]')).toBe(composer);
+  });
+
   it("opening a History agent switches workspace, opens its tab and clears History search", async () => {
     vi.mocked(workspacesList).mockResolvedValue([workspace, secondWorkspace]);
     const agent: Session = {

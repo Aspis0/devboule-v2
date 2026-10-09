@@ -2067,21 +2067,11 @@ export function Workspace({
         />
 
         <main className="workspace-center-panel" ref={centerRef}>
-          {historyOpen ? (
-            <HistoryPanel
-              search={historySearch}
-              onSearchChange={handleHistorySearchChange}
-              projects={projects}
-              branches={workspaceBranches}
-              onWorkspaceKeysChange={handleHistoryWorkspaceKeys}
-              selectedSessionId={panes.upperToolId === null ? selectedSessionId : null}
-              onReopen={handleReopenSession}
-              onReopenAgent={handleReopenAgent}
-              hosts={historyHosts}
-              hostFilter={historyHost}
-              onHostFilterChange={setHistoryHost}
-            />
-          ) : (
+          {/* The session subtree stays mounted behind the History page: an
+              unsent composer draft and picker state survive the trip there
+              and back. display:none drops it from the tab order and the
+              accessibility tree while the page is up. */}
+          <div className={historyOpen ? "workspace-center-hidden" : "workspace-center-live"}>
             <>
               <SessionStrip
                 tabs={composedTabs}
@@ -2429,7 +2419,22 @@ export function Workspace({
                 )}
               </SplitPane>
             </>
-          )}
+          </div>
+          {historyOpen ? (
+            <HistoryPanel
+              search={historySearch}
+              onSearchChange={handleHistorySearchChange}
+              projects={projects}
+              branches={workspaceBranches}
+              onWorkspaceKeysChange={handleHistoryWorkspaceKeys}
+              selectedSessionId={panes.upperToolId === null ? selectedSessionId : null}
+              onReopen={handleReopenSession}
+              onReopenAgent={handleReopenAgent}
+              hosts={historyHosts}
+              hostFilter={historyHost}
+              onHostFilterChange={setHistoryHost}
+            />
+          ) : null}
         </main>
 
         <button
