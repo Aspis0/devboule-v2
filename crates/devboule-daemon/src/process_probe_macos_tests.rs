@@ -115,8 +115,8 @@ fn lstart_lines_with_padded_columns_become_start_times() {
         .expect("padded day parses");
     assert_eq!(
         second - first,
-        1_000,
-        "one second apart, to the millisecond"
+        10_000_000,
+        "one second apart, in 100 ns ticks"
     );
     assert_eq!(
         rows.get(&4300).and_then(|row| row.started_at_ticks),

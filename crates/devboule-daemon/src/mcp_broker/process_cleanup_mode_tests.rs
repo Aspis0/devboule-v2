@@ -215,7 +215,9 @@ pub(super) fn join_session(state: &Arc<ServerState>, pid: u32) {
     unsafe { CloseHandle(handle) };
 }
 
-pub(super) fn run_cleanup(state: &Arc<ServerState>) -> Value {
+/// The cleanup's answer as the caller sees it: a reply, or the refusal the tool
+/// returns as an error.
+pub(super) fn call_cleanup(state: &Arc<ServerState>) -> Result<Value, Value> {
     let id = json!("pm-cleanup");
     let message = json!({"params": {"arguments": {}}});
     cleanup(
@@ -226,8 +228,11 @@ pub(super) fn run_cleanup(state: &Arc<ServerState>) -> Value {
         id,
         &message,
     )
-    .expect("cleanup does not panic")
-    .expect("cleanup replies")
+    .map(|reply| reply.expect("cleanup replies"))
+}
+
+pub(super) fn run_cleanup(state: &Arc<ServerState>) -> Value {
+    call_cleanup(state).expect("cleanup does not refuse")
 }
 
 pub(super) fn terminated_pids(reply: &Value) -> Vec<u64> {
@@ -347,27 +352,34 @@ fn an_asking_cleanup_shows_the_card_first() {
     let _ = root.wait();
 }
 
-/// Without a proven lineage a member is spared, and the row says why: on Unix
-/// the orphan is re-parented, so its parent link proves nothing.
+/// A platform whose signals cannot be bound to the verified process refuses
+/// before it plans: the orphan is not signalled, and the refusal is the row.
 #[cfg(not(windows))]
 #[test]
-fn an_orphan_is_spared_where_lineage_cannot_be_proven() {
-    let state = ServerState::new("pm-cleanup-spared".to_string());
+fn a_cleanup_refuses_before_planning_where_signals_cannot_bind() {
+    let state = ServerState::new("pm-cleanup-refused".to_string());
     live_session(&state, "bypassPermissions");
     let (mut root, member) = member_pair();
     prove_members(&state, root.id(), member);
 
-    let reply = run_cleanup(&state);
+    let error = call_cleanup(&state).expect_err("the refusal comes back as an error");
 
-    assert!(terminated_pids(&reply).is_empty());
+    assert!(
+        error.to_string().contains("cannot bind a signal"),
+        "{error}"
+    );
     let outcome = audit_outcome(&state);
-    assert!(outcome.contains("lineage_unproven"), "{outcome}");
+    assert!(
+        outcome.starts_with("refused: signals_cannot_bind_identity"),
+        "{outcome}"
+    );
 
     let _ = root.kill();
     let _ = root.wait();
 }
 
 /// A cleanup whose plan holds nothing to stop still leaves its row.
+#[cfg(windows)]
 #[test]
 fn a_cleanup_with_nothing_to_stop_still_records_a_row() {
     let state = ServerState::new("pm-cleanup-empty".to_string());

@@ -20,7 +20,7 @@ fn real_plan(pid: u32) -> PlanTarget {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 fn spawn_immune_child() -> std::process::Child {
     let mut command = Command::new("/bin/sh");
     command
@@ -55,11 +55,13 @@ fn spawn_immune_child() -> std::process::Child {
         .expect("our own child spawns")
 }
 
-/// The wait is real: a child that ignores the graceful signal holds the full
-/// grace, then the forced phase takes it and the report says so.
-#[cfg(not(windows))]
+/// macOS reads creation times in whole seconds, so an equal time cannot tell
+/// this process from a pid reused within the same second. The identity check
+/// therefore spares it before any signal: no grace is spent, nothing is sent,
+/// and the child keeps running.
+#[cfg(target_os = "macos")]
 #[test]
-fn cleanup_waits_then_reports_survivors() {
+fn a_coarse_identity_is_spared_without_a_signal() {
     let mut child = spawn_immune_child();
     let plan = real_plan(child.id());
 
@@ -68,27 +70,21 @@ fn cleanup_waits_then_reports_survivors() {
         .expect("termination is bounded");
     let elapsed = started.elapsed();
 
-    assert!(
-        elapsed >= Duration::from_millis(300),
-        "the graceful phase waits its grace before forcing: {elapsed:?}"
-    );
-    assert!(
-        elapsed < Duration::from_secs(10),
-        "bounded overall: {elapsed:?}"
-    );
     assert_eq!(
-        termination.terminated,
-        vec![child.id()],
-        "forced after the grace"
+        termination.skipped,
+        vec![(child.id(), "identity_unverifiable")],
+        "an equal coarse time proves nothing"
+    );
+    assert!(termination.terminated.is_empty(), "nothing was stopped");
+    assert!(
+        child.try_wait().expect("the child's status").is_none(),
+        "no signal reached the child"
     );
     assert!(
-        termination.still_running.is_empty(),
-        "the forced phase took it"
+        elapsed < Duration::from_millis(300),
+        "a spared target spends no grace: {elapsed:?}"
     );
-    assert!(
-        termination.skipped.is_empty(),
-        "the real check confirmed everything"
-    );
+    let _ = child.kill();
     let _ = child.wait();
 }
 
