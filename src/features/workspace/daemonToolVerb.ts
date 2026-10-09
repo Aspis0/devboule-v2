@@ -1,3 +1,5 @@
+import { browserToolName, isBrowserToolRow } from "../../lib/browserToolName";
+
 /**
  * The verb a tool line reads as, for the daemon's own tools. A terminal tool
  * arrives as `devboule_<name>` (or with Claude's `mcp__devboule__` qualifier);
@@ -56,4 +58,19 @@ export function browserVerb(title: string): { verb: string; target?: string } | 
   const target = trimmed.slice(named.length).trim();
   const verb = named.charAt(0).toUpperCase() + named.slice(1);
   return target.length > 0 ? { verb, target } : { verb };
+}
+
+/**
+ * Whether a row keeps its output out of the transcript: every browser call, and
+ * a terminal capture. Their text is for the agent; the person reads a screenshot.
+ */
+export function rowShowsNoOutput(kind: string | undefined, title: string): boolean {
+  return isBrowserToolRow(kind, title) || terminalToolVerb(title) === "Capture terminal";
+}
+
+/** A browser screenshot, bare or with its verb and target: the one call that shows a picture. */
+export function isScreenshotRow(kind: string | undefined, title: string): boolean {
+  if (!isBrowserToolRow(kind, title)) return false;
+  const named = browserToolName(title.trim()) ?? title.trim();
+  return /^(?:browser_)?screenshot(?:[ _]all)?(?:\s|$)/.test(named);
 }

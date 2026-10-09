@@ -867,6 +867,16 @@
   white-space: nowrap;
 }
 
+/* A screenshot stands under its line, smaller than a message's own pictures. */
+.workspace-chat-tool-picture {
+  margin: 0 0 var(--space-4) var(--space-16);
+}
+
+.workspace-chat-tool-picture .workspace-chat-image-thumb img {
+  max-width: 160px;
+  max-height: 100px;
+}
+
 /* What an open line shows under it: indented, muted, never a panel. */
 .workspace-chat-tool-body {
   display: flex;

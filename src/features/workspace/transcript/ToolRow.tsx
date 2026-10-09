@@ -13,6 +13,7 @@ import {
 } from "../interruptedTool";
 import { entryFrame } from "./entryFrame";
 import { ChatImageThumbnails } from "./ChatImageThumbnails";
+import { isScreenshotRow, rowShowsNoOutput } from "../daemonToolVerb";
 import { ToolIcon } from "./ToolIcon";
 import { ToolOutput, type OutputExpansion } from "./ToolOutput";
 import { diffStats, failureExcerpt, outputLines } from "./toolOutputView";
@@ -42,7 +43,13 @@ export const ToolRow = memo(function ToolRow({
   // the row's display title, which for some providers is the line itself.
   const commandRow = item.command !== undefined;
   const hasSummary = model.summary !== undefined || planDecision !== undefined;
-  const lines = useMemo(() => outputLines(hideUntrustedFrame(item.output)), [item.output]);
+  // A browser call or a terminal capture prints nothing; a screenshot's picture is the one exception.
+  const quiet = rowShowsNoOutput(item.kind, item.title);
+  const screenshot = isScreenshotRow(item.kind, item.title);
+  const lines = useMemo(
+    () => (quiet ? [] : outputLines(hideUntrustedFrame(item.output))),
+    [item.output, quiet],
+  );
   const isEdit = item.kind === "edit" || item.kind === "delete";
   // A file row's summary is the path itself, so it prints with forward slashes.
   const isPathRow = isEdit || item.kind === "read";
@@ -59,12 +66,15 @@ export const ToolRow = memo(function ToolRow({
     [item.locations, model.summary],
   );
   const hasImages = item.images !== undefined && item.images.length > 0;
+  // A screenshot's picture stands under its line; any other picture waits behind it.
+  const picture = screenshot && hasImages;
+  const bodyImages = hasImages && !picture && !quiet;
   const hasBody =
     linkUrl !== undefined ||
     locations.length > 0 ||
     bodyLines.length > 0 ||
     (isPlan && item.output.length > 0) ||
-    hasImages;
+    bodyImages;
   // The line starts closed; only the person's own open shows the output.
   const [opened, setOpened] = useState(false);
   const toolClassName = `${className}${isPlan ? " is-plan" : ""}${running ? " is-running" : ""}${failed ? " is-failed" : ""}${cancelled ? " is-cancelled" : ""}${interrupted ? ` ${INTERRUPTED_TOOL_CLASS}` : ""}`;
@@ -151,7 +161,7 @@ export const ToolRow = memo(function ToolRow({
                   <MarkdownText text={item.output} />
                 </div>
               ) : null}
-              {hasImages && item.images !== undefined ? (
+              {bodyImages && item.images !== undefined ? (
                 <ChatImageThumbnails images={item.images} />
               ) : null}
             </div>
@@ -160,6 +170,11 @@ export const ToolRow = memo(function ToolRow({
       ) : (
         <div className="workspace-chat-tool-summary">{line}</div>
       )}
+      {picture && item.images !== undefined ? (
+        <div className="workspace-chat-tool-picture">
+          <ChatImageThumbnails images={item.images} noun="Screenshot" />
+        </div>
+      ) : null}
       {excerpt.length > 0 ? (
         <ToolOutput lines={lines} collapsed={excerpt} tone="failure" expansion={expansion} />
       ) : null}

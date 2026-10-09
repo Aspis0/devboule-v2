@@ -66,7 +66,14 @@ function ChatImageThumbnail({
 }
 
 /** The row of one user message's image references, in echo order. */
-export function ChatImageThumbnails({ images }: { images: readonly AttachmentReference[] }) {
+export function ChatImageThumbnails({
+  images,
+  noun = "Attached image",
+}: {
+  images: readonly AttachmentReference[];
+  /** What the picture is, for a screen reader: "Screenshot 1 of 1". */
+  noun?: string;
+}) {
   const [open, setOpen] = useState<{
     index: number;
     firstIndex: number;
@@ -75,7 +82,7 @@ export function ChatImageThumbnails({ images }: { images: readonly AttachmentRef
   } | null>(null);
 
   if (images.length === 0) return null;
-  const labels = images.map((_, position) => `Attached image ${position + 1} of ${images.length}`);
+  const labels = images.map((_, position) => `${noun} ${position + 1} of ${images.length}`);
 
   return (
     <div className="workspace-chat-images">
