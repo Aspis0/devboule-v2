@@ -60,6 +60,26 @@
   opacity: 0.72;
 }
 
+.settings-advanced summary {
+  cursor: pointer;
+  padding: 6px 0;
+  font-size: 12px;
+  opacity: 0.72;
+}
+
+.settings-advanced-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 0 10px;
+  font-size: 12px;
+  opacity: 0.84;
+}
+
+.settings-advanced-body p {
+  margin: 0;
+}
+
 .settings-section {
   display: flex;
   flex-direction: column;

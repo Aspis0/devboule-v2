@@ -42,28 +42,25 @@ afterEach(async () => {
 });
 
 describe("SendBehaviorSetting", () => {
-  it("heads the card with the same block-level shell label as Appearance", async () => {
-    // N1/N2: the head must be one block element with the shell's
-    // subheading class — an inline span takes no vertical padding and
-    // keeps no UA margin, so the two cards diverge.
+  it("is one shared row: the title, the two choices, no heading", async () => {
     await renderSetting();
-    const head = container.querySelector("h3.settings-subheading");
-    expect(head?.textContent).toBe("Default send");
+    const row = container.querySelector("[data-settings-row]");
+    expect(row?.querySelector(".settings-row-title")?.textContent).toBe(
+      "Enter while the agent runs",
+    );
+    expect(container.querySelector("h2, h3")).toBeNull();
+    expect(container.querySelector("[data-settings-row-description]")).toBeNull();
   });
 
-  it("offers Queue and Steer in the Editing page's card, Queue checked by default", async () => {
+  it("offers Queue and Steer, Queue checked by default", async () => {
     await renderSetting();
-    // The card every other This-machine setting uses — not the page-heading
-    // class a page-level title wears (review F17).
-    const card = container.querySelector(".machine-card");
-    expect(card).not.toBeNull();
-    expect(card?.textContent).toContain("Default send");
-    expect(container.querySelector("h2")).toBeNull();
     expect(radios()).toHaveLength(2);
     expect(radioFor("queue").checked).toBe(true);
     expect(radioFor("interrupt-and-send").checked).toBe(false);
     // The alternate key is the act the composer's button names, and the copy
     // has to say so: under the queue default it interrupts the running turn.
+    // The copy sits under the collapsed Advanced disclosure.
+    expect(container.querySelector("[data-settings-advanced]")).not.toBeNull();
     expect(container.textContent).toContain(
       "When the agent is running, Enter queues. Command/Ctrl+Enter interrupts the running turn and sends.",
     );

@@ -5,16 +5,13 @@ import {
   subscribeSendBehavior,
   type SendBehavior,
 } from "../../lib/sendBehavior";
-import "./general.css";
+import { SettingsAdvanced, SettingsRow } from "./rows";
 
-/** This app's two send behaviours, offered in the row form every other
- * Editing-page setting uses. The copy says what the
- * alternate key actually does: under the queue default it is not a second
- * submit — it interrupts the running turn and sends (decision 3), the same act
- * the composer's "Send and interrupt" button names. The value lives in the
- * sendBehavior store, so a change here re-renders every mounted surface that
- * reads it. */
-
+/** The two send behaviours. Their full effect sits under Advanced: under the
+ * queue default the alternate key is not a second submit — it interrupts the
+ * running turn and sends, the act the composer's "Send and interrupt" button
+ * names. The value lives in the sendBehavior store, so a change here
+ * re-renders every mounted surface that reads it. */
 const OPTIONS: readonly { value: SendBehavior; label: string; description: string }[] = [
   {
     value: "queue",
@@ -33,27 +30,35 @@ export function SendBehaviorSetting() {
   const behavior = useSyncExternalStore(subscribeSendBehavior, getSendBehavior);
 
   return (
-    <div className="machine-card" aria-labelledby="send-behavior-heading">
-      <h3 className="settings-subheading" id="send-behavior-heading">
-        Default send
-      </h3>
-      <div className="machine-choices" role="radiogroup" aria-label="Default send">
+    <>
+      <SettingsRow
+        title="Enter while the agent runs"
+        control={
+          <div
+            className="settings-choices"
+            role="radiogroup"
+            aria-label="Enter while the agent runs"
+          >
+            {OPTIONS.map((option) => (
+              <label className="settings-choice" key={option.value}>
+                <input
+                  type="radio"
+                  name="send-behavior"
+                  value={option.value}
+                  checked={behavior === option.value}
+                  onChange={() => setSendBehavior(option.value)}
+                />
+                <span>{option.label}</span>
+              </label>
+            ))}
+          </div>
+        }
+      />
+      <SettingsAdvanced>
         {OPTIONS.map((option) => (
-          <label className="machine-choice" key={option.value}>
-            <input
-              type="radio"
-              name="send-behavior"
-              value={option.value}
-              checked={behavior === option.value}
-              onChange={() => setSendBehavior(option.value)}
-            />
-            <span className="machine-row-copy">
-              <span className="machine-row-title">{option.label}</span>
-              <span className="machine-row-desc">{option.description}</span>
-            </span>
-          </label>
+          <p key={option.value}>{option.description}</p>
         ))}
-      </div>
-    </div>
+      </SettingsAdvanced>
+    </>
   );
 }

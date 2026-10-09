@@ -484,7 +484,7 @@ describe("Settings menu shell", () => {
     await act(async () => openPage("Editing").click());
     await act(async () => undefined);
     content = container.querySelector("[data-settings-content]");
-    expect(content?.textContent).toContain("Default send");
+    expect(content?.textContent).toContain("Enter while the agent runs");
     expect(content?.textContent).not.toContain("not available yet");
   });
 
@@ -529,7 +529,7 @@ describe("Settings menu shell", () => {
     ["paired", "Paired devices", "#settings-panel-devices"],
     ["diagnostics", "Diagnostics", "#settings-panel-diagnostics"],
     ["layout", "Layout", "[data-settings-row]"],
-    ["editing", "Editing", ".machine-card"],
+    ["editing", "Editing", "[data-settings-row]"],
     ["shortcuts", "Shortcuts", "#settings-panel-shortcuts"],
     ["notifications", "Notifications", ".machine-card"],
   ])("mounts the %s panel", async (_id, label, selector) => {

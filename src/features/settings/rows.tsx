@@ -63,6 +63,16 @@ export function SettingsSection({
   );
 }
 
+/** The one collapsed place for detail a row does not need on screen. */
+export function SettingsAdvanced({ children }: { children: ReactNode }) {
+  return (
+    <details className="settings-advanced" data-settings-advanced>
+      <summary>Advanced</summary>
+      <div className="settings-advanced-body">{children}</div>
+    </details>
+  );
+}
+
 /**
  * The byte counter that stays out of the way: nothing renders until the
  * value reaches the last tenth of the cap. Over the cap the save refuses

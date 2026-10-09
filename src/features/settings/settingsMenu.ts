@@ -51,7 +51,7 @@ export const SETTINGS_MENU: readonly SettingsMenuGroup[] = [
       {
         id: "editing",
         label: "Editing",
-        intro: "How composing and editing messages behaves.",
+        intro: "",
       },
       {
         id: "shortcuts",
