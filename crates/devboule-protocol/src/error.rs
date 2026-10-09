@@ -2,8 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::messages::PeerRole;
-
 /// Machine-readable failure. Serialized as a snake_case string.
 ///
 /// Mirrored by the `ErrorCode` union in `src/types/ipc.ts`. Alignment is
@@ -133,7 +131,7 @@ impl WireError {
     }
 
     /// The same error, stripped of everything a paired device has no business
-    /// reading. `None` (a local pipe connection) is the person's own screen,
+    /// reading. `false` (a local pipe connection) is the person's own screen,
     /// so it is returned unchanged.
     ///
     /// Three things in a daemon message are local facts: absolute paths into
@@ -153,8 +151,8 @@ impl WireError {
     /// variant would have to remember to join (`DESIGN-remote-agents.md`
     /// §8 R7). A message-only redactor plus a dropped struct is the whole
     /// contract; the local pipe still sees every field.
-    pub fn redacted_for(self, role: Option<&PeerRole>) -> Self {
-        if role.is_none() {
+    pub fn redacted_for(self, remote: bool) -> Self {
+        if !remote {
             return self;
         }
         Self {
@@ -422,7 +420,7 @@ mod tests {
                  fingerprint {digest} (os error 5)"
             ),
         );
-        let redacted = error.clone().redacted_for(Some(&PeerRole::Client));
+        let redacted = error.clone().redacted_for(true);
         assert!(
             !redacted.message.contains("C:\\Users"),
             "{}",
@@ -465,7 +463,7 @@ mod tests {
             ErrorCode::Io,
             "Could not store an attached file: C:\\Users\\gualt\\tmp\\a.png",
         );
-        let kept = error.clone().redacted_for(None);
+        let kept = error.clone().redacted_for(false);
         assert_eq!(kept, error);
         assert!(kept.message.contains("C:\\Users\\gualt\\tmp\\a.png"));
     }
@@ -478,18 +476,18 @@ mod tests {
     #[test]
     fn a_posix_path_and_a_unc_path_are_both_redacted() {
         let posix = WireError::new(ErrorCode::Io, "could not write /home/gualt/runtime/a.png")
-            .redacted_for(Some(&PeerRole::Daemon));
+            .redacted_for(true);
         assert_eq!(posix.message, "could not write <path>");
 
         let unc = WireError::new(ErrorCode::Io, "could not write \\\\host\\share\\b.png")
-            .redacted_for(Some(&PeerRole::Daemon));
+            .redacted_for(true);
         assert_eq!(unc.message, "could not write <path>");
 
         let both = WireError::new(
             ErrorCode::Io,
             "could not write \"/home/gualt/runtime/a.png\" and \"\\\\host\\\\share\\\\b.png\"",
         )
-        .redacted_for(Some(&PeerRole::Daemon));
+        .redacted_for(true);
         assert_eq!(both.message, "could not write \"<path>\" and \"<path>\"");
 
         // Greedy is the safe direction: the tail after an unquoted path is
@@ -498,7 +496,7 @@ mod tests {
             ErrorCode::Io,
             "could not write /home/gualt/runtime/a.png and 31337 bytes",
         )
-        .redacted_for(Some(&PeerRole::Daemon));
+        .redacted_for(true);
         assert_eq!(greedy.message, "could not write <path>");
     }
 
@@ -510,7 +508,7 @@ mod tests {
             ErrorCode::InvalidRequest,
             "id s.9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08.01 is not known",
         );
-        let redacted = error.redacted_for(Some(&PeerRole::Client));
+        let redacted = error.redacted_for(true);
         assert!(
             !redacted.message.contains("<digest>"),
             "{}",
@@ -567,15 +565,18 @@ mod tests {
         for detail in details {
             let error = WireError::new(ErrorCode::WorkspaceUnavailable, "Worktree removal refused")
                 .with_details(detail.clone());
-            let local = error.clone().redacted_for(None);
+            let local = error.clone().redacted_for(false);
             assert_eq!(
                 local.details,
                 Some(detail.clone()),
                 "the pipe keeps the fields it wrote"
             );
-            for role in [PeerRole::Client, PeerRole::Daemon] {
-                let remote = error.clone().redacted_for(Some(&role));
-                assert_eq!(remote.details, None, "{role} must not see {detail:?}");
+            {
+                let remote = error.clone().redacted_for(true);
+                assert_eq!(
+                    remote.details, None,
+                    "a remote reader must not see {detail:?}"
+                );
                 assert_eq!(remote.message, "Worktree removal refused");
                 assert_eq!(remote.code, ErrorCode::WorkspaceUnavailable);
                 assert_eq!(remote.id, None);
@@ -589,7 +590,6 @@ mod tests {
     /// `"<path>v2\runtime\a.png"` if it did.
     #[test]
     fn a_path_run_ends_at_a_bracket_quote_comma_or_newline() {
-        let role = Some(&PeerRole::Daemon);
         for (text, expected) in [
             ("write (C:\\work\\a.png) now", "write (<path>) now"),
             ("write \"C:\\work\\a.png\" now", "write \"<path>\" now"),
@@ -607,7 +607,7 @@ mod tests {
                 "write \"<path>\" now",
             ),
         ] {
-            let redacted = WireError::new(ErrorCode::Io, text).redacted_for(role);
+            let redacted = WireError::new(ErrorCode::Io, text).redacted_for(true);
             assert_eq!(redacted.message, expected, "for {text:?}");
         }
     }

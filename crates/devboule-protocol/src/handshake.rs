@@ -31,6 +31,18 @@ pub struct ClientHello {
     /// capability grant and therefore does not belong in `grants`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugin_payload_bytes: Option<u64>,
+    /// Whether this daemon holds at least one workspace, on a peer-to-peer
+    /// hello. Present in v32 and absent in v30 — the only legal absence,
+    /// because a v30 peer has no way to state it.
+    ///
+    /// The far daemon binds the bit to the device id its Noise handshake
+    /// verified and uses it to choose that connection's session scope. It is
+    /// service presence, not a role and not a grant: the receiving daemon
+    /// never accepts it from a caller-supplied owner label, and a device with
+    /// no workspace still pairs, still connects and still receives the sends
+    /// its grant allows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_host: Option<bool>,
 }
 
 impl ClientHello {
@@ -44,6 +56,18 @@ impl ClientHello {
             owner,
             grants: BTreeMap::new(),
             plugin_payload_bytes: None,
+            workspace_host: None,
+        }
+    }
+
+    /// A daemon's hello to another daemon over a peer link. Same wire type as
+    /// [`Self::m3a`], with the one field a peer conversation needs that an
+    /// app's does not: this daemon's workspace-host presence, computed from
+    /// its own workspace database.
+    pub fn peer(owner: OwnerId, client_name: impl Into<String>, workspace_host: bool) -> Self {
+        Self {
+            workspace_host: Some(workspace_host),
+            ..Self::m3a(owner, client_name)
         }
     }
 
@@ -65,6 +89,7 @@ impl ClientHello {
             owner,
             grants,
             plugin_payload_bytes: Some(plugin_payload_bytes as u64),
+            workspace_host: None,
         }
     }
 }
@@ -81,9 +106,21 @@ pub struct DaemonHello {
     pub instance_id: String,
     pub pid: u32,
     pub capabilities: Vec<Capability>,
+    /// This daemon's workspace-host presence, on a peer-to-peer hello. Absent
+    /// in a v30 hello and on the plugin-backend hello, which serves no
+    /// workspace database of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_host: Option<bool>,
 }
 
 impl DaemonHello {
+    /// State this daemon's workspace-host presence for a peer to bind to its
+    /// verified device id.
+    pub fn with_workspace_host(mut self, workspace_host: bool) -> Self {
+        self.workspace_host = Some(workspace_host);
+        self
+    }
+
     /// Plugin-backend first reply after a successful hello. Same type as
     /// the daemon's hello so a pipe client can reuse framing.
     pub fn plugin_backend(instance_id: impl Into<String>, pid: u32) -> Self {
@@ -94,6 +131,7 @@ impl DaemonHello {
             instance_id: instance_id.into(),
             pid,
             capabilities: crate::plugin_backend_capabilities(),
+            workspace_host: None,
         }
     }
 }
@@ -177,6 +215,7 @@ mod tests {
             owner: owner(),
             grants: BTreeMap::new(),
             plugin_payload_bytes: None,
+            workspace_host: None,
         }
     }
 
@@ -188,6 +227,7 @@ mod tests {
             instance_id: "1-abc".to_string(),
             pid: 42,
             capabilities: crate::m3a_daemon_capabilities(),
+            workspace_host: None,
         }
     }
 
@@ -199,6 +239,40 @@ mod tests {
             .capabilities
             .iter()
             .any(|capability| capability.as_str() == crate::caps::PING));
+    }
+
+    /// The workspace-host presence bit rides both v32 hellos and is absent
+    /// from a v30 one: absence is the v30 dialect's only legal state, and the
+    /// daemon's peer path is what reads it — and, from the first dialect that
+    /// sends the bit, requires it.
+    #[test]
+    fn the_workspace_host_bit_is_present_in_a_v32_hello_and_absent_in_a_v30_one() {
+        let hosted = ClientHello::peer(owner(), "devboule-daemon", true);
+        let value = serde_json::to_value(&hosted).expect("json");
+        assert_eq!(value["workspaceHost"], true);
+        assert_eq!(value["protocolVersion"], PROTOCOL_VERSION);
+        let plain = ClientHello::m3a(owner(), "devboule-app");
+        let plain_value = serde_json::to_value(&plain).expect("json");
+        assert!(
+            plain_value.get("workspaceHost").is_none(),
+            "an app hello carries no host presence: {plain_value}"
+        );
+        // An older hello decodes with the bit absent, which is the one state a
+        // negotiated v30 peer can be in. The version is spelled, not derived:
+        // `PROTOCOL_VERSION - 1` is the dialect a queued branch owns, not v30.
+        let v30_json = serde_json::json!({
+            "protocolVersion": 30,
+            "minProtocolVersion": PROTOCOL_MIN_VERSION,
+            "clientName": "devboule-daemon",
+            "clientVersion": "0.1.0",
+            "capabilities": [],
+            "owner": {"user": "S-1-5-21-1-2-3-1001", "client": "peer_1"},
+        });
+        let decoded: ClientHello = serde_json::from_value(v30_json).expect("a v30 hello decodes");
+        assert_eq!(decoded.workspace_host, None);
+        let hosted_daemon =
+            DaemonHello::with_workspace_host(daemon(PROTOCOL_VERSION, PROTOCOL_MIN_VERSION), false);
+        assert_eq!(hosted_daemon.workspace_host, Some(false));
     }
 
     /// The deposit name is the whole of what tells a client this daemon accepts

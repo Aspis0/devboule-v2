@@ -12,7 +12,6 @@ fn the_pairing_code_is_never_debug_formatted() {
         id: 1,
         address: "100.64.0.2:47831".to_string(),
         code: PairingSecret::new("ABCD2345"),
-        role: PeerRole::Client,
     };
     let rendered = format!("{complete:?}");
     assert!(
@@ -326,13 +325,13 @@ fn origin_on_the_wire_is_present_exactly_when_the_state_is_present() {
 }
 
 #[test]
-fn the_devices_wire_contract_round_trips_with_its_exact_field_names() {
-    // The field names are asserted on the serialised JSON, not on the
-    // struct.
+fn the_v32_devices_wire_contract_carries_no_role() {
+    // Pairing asks no role, so the device frames carry none: a `role` key in
+    // any of them is the removed choice coming back on the wire.
     let pending = PendingPairing {
         device_id: "dev-2".to_string(),
         display_name: "Phone".to_string(),
-        role: PeerRole::Client,
+        role: None,
         key_fingerprint: "ab".repeat(16),
         address: "100.64.0.2:47831".to_string(),
         expires_at: 1_700_000_000_000,
@@ -341,7 +340,6 @@ fn the_devices_wire_contract_round_trips_with_its_exact_field_names() {
     for key in [
         "deviceId",
         "displayName",
-        "role",
         "keyFingerprint",
         "address",
         "expiresAt",
@@ -351,7 +349,10 @@ fn the_devices_wire_contract_round_trips_with_its_exact_field_names() {
             "PendingPairing is missing {key}"
         );
     }
-    assert_eq!(pending_json["role"], "client");
+    assert!(
+        pending_json.get("role").is_none(),
+        "a roleless pairing must carry no role: {pending_json}"
+    );
     assert_eq!(
         serde_json::from_value::<PendingPairing>(pending_json.clone()).expect("back"),
         pending
@@ -360,7 +361,7 @@ fn the_devices_wire_contract_round_trips_with_its_exact_field_names() {
     let row = PeerRow {
         device_id: "dev-1".to_string(),
         display_name: "MacBook".to_string(),
-        role: PeerRole::Daemon,
+        role: None,
         public_key: "AAAA".to_string(),
         key_fingerprint: "cd".repeat(16),
         binding_kind: "tailnet".to_string(),
@@ -377,7 +378,6 @@ fn the_devices_wire_contract_round_trips_with_its_exact_field_names() {
     for key in [
         "deviceId",
         "displayName",
-        "role",
         "publicKey",
         "keyFingerprint",
         "bindingKind",
@@ -392,14 +392,211 @@ fn the_devices_wire_contract_round_trips_with_its_exact_field_names() {
     ] {
         assert!(row_json.get(key).is_some(), "PeerRow is missing {key}");
     }
+    assert!(
+        row_json.get("role").is_none(),
+        "a roleless pairing must carry no role: {row_json}"
+    );
     // Present as `null`, not absent: the panel distinguishes the two.
     assert!(row_json["revokedAt"].is_null());
-    assert_eq!(row_json["role"], "daemon");
     assert_eq!(
         serde_json::from_value::<PeerRow>(row_json.clone()).expect("back"),
         row
     );
 
+    // The pairing requests are roleless too, and a v30 app's role-bearing
+    // frame still decodes — the key is ignored, never reinterpreted.
+    let start_json = serde_json::to_value(ClientMessage::PairingStart { id: 1 }).expect("json");
+    assert_eq!(start_json["type"], "pairing_start");
+    assert!(
+        start_json.get("role").is_none(),
+        "a v32 pairing request carries no role: {start_json}"
+    );
+    let old_start = serde_json::json!({"type": "pairing_start", "id": 1, "role": "daemon"});
+    assert_eq!(
+        serde_json::from_value::<ClientMessage>(old_start).expect("the old role is ignored"),
+        ClientMessage::PairingStart { id: 1 }
+    );
+    let complete_json = serde_json::to_value(ClientMessage::PairingComplete {
+        id: 2,
+        address: "100.64.0.2:47831".to_string(),
+        code: PairingSecret::new("ABCD2345"),
+    })
+    .expect("json");
+    for key in ["id", "address", "code"] {
+        assert!(
+            complete_json.get(key).is_some(),
+            "pairing_complete is missing {key}"
+        );
+    }
+    assert!(complete_json.get("role").is_none());
+    let old_complete = serde_json::json!({
+        "type": "pairing_complete",
+        "id": 2,
+        "address": "100.64.0.2:47831",
+        "code": "ABCD2345",
+        "role": "client"
+    });
+    assert_eq!(
+        serde_json::from_value::<ClientMessage>(old_complete).expect("the old role is ignored"),
+        ClientMessage::PairingComplete {
+            id: 2,
+            address: "100.64.0.2:47831".to_string(),
+            code: PairingSecret::new("ABCD2345"),
+        }
+    );
+}
+
+/// The projection a v30 app still reads: the same two DTOs with the one role
+/// word its decoder requires. The daemon fills it only while serialising for a
+/// connection that negotiated v30, so a v32 reply carries no such key and a
+/// v30 reply carries exactly the word the old decoder requires.
+#[test]
+fn the_v30_projection_carries_the_legacy_role_word_and_nothing_else() {
+    let roleless = PeerRow {
+        device_id: "dev-1".to_string(),
+        display_name: "MacBook".to_string(),
+        role: None,
+        public_key: "AAAA".to_string(),
+        key_fingerprint: "cd".repeat(16),
+        binding_kind: "tailnet".to_string(),
+        binding_node_name: Some("host.tailnet.ts.net.".to_string()),
+        binding_login_name: Some("user@example.com".to_string()),
+        address: "100.64.0.1:47831".to_string(),
+        paired_at: 1_700_000_000_000,
+        revoked_at: None,
+        caps: vec!["view".to_string()],
+        paired_by_user: Some("S-1-5-21-1".to_string()),
+        online: true,
+    };
+    let projected = PeerRow {
+        role: Some(crate::projected_role(true)),
+        ..roleless.clone()
+    };
+    let projected_json = serde_json::to_value(&projected).expect("json");
+    assert_eq!(projected_json["role"], "daemon");
+    assert_eq!(projected_json["caps"], serde_json::json!(["view"]));
+    // The word is the whole projection: dropping it gives the v32 row back.
+    let mut stripped = projected.clone();
+    stripped.role = None;
+    assert_eq!(stripped, roleless);
+    assert!(serde_json::to_value(&stripped)
+        .expect("json")
+        .get("role")
+        .is_none());
+    assert_eq!(crate::projected_role(false), PeerRole::Client);
+
+    let pending = PendingPairing {
+        device_id: "dev-2".to_string(),
+        display_name: "Phone".to_string(),
+        role: Some(crate::projected_role(false)),
+        key_fingerprint: "ab".repeat(16),
+        address: "100.64.0.2:47831".to_string(),
+        expires_at: 1_700_000_000_000,
+    };
+    let pending_json = serde_json::to_value(&pending).expect("json");
+    assert_eq!(pending_json["role"], "client");
+    assert_eq!(pending_json["deviceId"], "dev-2");
+}
+
+/// A v30 `devices` payload still decodes on the roleless DTOs: the old app's
+/// role word is read into the projection field and is never anything else.
+#[test]
+fn a_v30_devices_payload_decodes_with_its_role_and_needs_no_second_shape() {
+    let payload = serde_json::json!({
+        "type": "devices",
+        "id": 4,
+        "selfInfo": {
+            "deviceId": "dev-1",
+            "displayName": "MacBook",
+            "publicKey": "AAAA",
+            "keyFingerprint": "cd".repeat(16),
+            "addresses": ["100.64.0.1"],
+            "port": 47831,
+            "daemonVersion": "0.1.0",
+            "protocolVersion": 30
+        },
+        "peers": [{
+            "deviceId": "dev-2",
+            "displayName": "Phone",
+            "role": "daemon",
+            "publicKey": "BBBB",
+            "keyFingerprint": "ef".repeat(16),
+            "bindingKind": "tailnet",
+            "bindingNodeName": null,
+            "bindingLoginName": null,
+            "address": "100.64.0.2:47831",
+            "pairedAt": 1_700_000_000_000i64,
+            "revokedAt": null,
+            "caps": ["view"],
+            "pairedByUser": null,
+            "online": true
+        }],
+        "pending": [{
+            "deviceId": "dev-3",
+            "displayName": "Tablet",
+            "role": "client",
+            "keyFingerprint": "aa".repeat(16),
+            "address": "100.64.0.3:47831",
+            "expiresAt": 1_700_000_000_000i64
+        }]
+    });
+    let DaemonMessage::Devices { peers, pending, .. } =
+        serde_json::from_value(payload).expect("a v30 devices payload decodes")
+    else {
+        panic!("not a devices frame");
+    };
+    assert_eq!(peers[0].role, Some(PeerRole::Daemon));
+    assert_eq!(pending[0].role, Some(PeerRole::Client));
+}
+
+/// The hosted-workspace name is a wire-compatibility capability between two
+/// daemons and never a grant a paired device can hold.
+#[test]
+fn hosted_workspaces_is_a_wire_capability_and_never_a_peer_grant() {
+    assert!(
+        !crate::PEER_CAPS.contains(&crate::caps::HOSTED_WORKSPACES),
+        "a wire capability must not join the editable peer grants"
+    );
+    assert!(!crate::PEER_DEFAULT_CAPS.contains(&crate::caps::HOSTED_WORKSPACES));
+    for hello in [
+        crate::m3a_client_capabilities(),
+        crate::m3a_daemon_capabilities(),
+    ] {
+        assert!(
+            hello
+                .iter()
+                .any(|capability| capability.as_str() == crate::caps::HOSTED_WORKSPACES),
+            "both hello advertisements carry the hosted-workspace name"
+        );
+    }
+}
+
+#[test]
+fn the_devices_wire_contract_round_trips_with_its_exact_field_names() {
+    let pending = PendingPairing {
+        device_id: "dev-2".to_string(),
+        display_name: "Phone".to_string(),
+        role: None,
+        key_fingerprint: "ab".repeat(16),
+        address: "100.64.0.2:47831".to_string(),
+        expires_at: 1_700_000_000_000,
+    };
+    let row = PeerRow {
+        device_id: "dev-1".to_string(),
+        display_name: "MacBook".to_string(),
+        role: None,
+        public_key: "AAAA".to_string(),
+        key_fingerprint: "cd".repeat(16),
+        binding_kind: "tailnet".to_string(),
+        binding_node_name: Some("host.tailnet.ts.net.".to_string()),
+        binding_login_name: Some("user@example.com".to_string()),
+        address: "100.64.0.1:47831".to_string(),
+        paired_at: 1_700_000_000_000,
+        revoked_at: None,
+        caps: vec!["view".to_string()],
+        paired_by_user: Some("S-1-5-21-1".to_string()),
+        online: true,
+    };
     let self_info = SelfInfo {
         device_id: "dev-1".to_string(),
         display_name: "MacBook".to_string(),
@@ -556,22 +753,18 @@ fn the_devices_wire_contract_round_trips_with_its_exact_field_names() {
             &["id"],
         ),
         (
-            ClientMessage::PairingStart {
-                id: 1,
-                role: PeerRole::Daemon,
-            },
+            ClientMessage::PairingStart { id: 1 },
             "pairing_start",
-            &["id", "role"],
+            &["id"],
         ),
         (
             ClientMessage::PairingComplete {
                 id: 1,
                 address: "100.64.0.2:47831".to_string(),
                 code: PairingSecret::new("ABCD2345"),
-                role: PeerRole::Client,
             },
             "pairing_complete",
-            &["id", "address", "code", "role"],
+            &["id", "address", "code"],
         ),
         (
             ClientMessage::PairingConfirm {
@@ -3426,15 +3619,18 @@ fn reply_status(message: &DaemonMessage) -> WorkspaceGitStatus {
 /// dialect that added it is the one this crate speaks.
 #[test]
 fn workspace_git_status_without_git_missing_decodes_for_older_daemons() {
-    assert_eq!(crate::PROTOCOL_VERSION, 31);
+    assert_eq!(crate::PROTOCOL_VERSION, 32);
     let older = r#"{"type":"workspace_git","id":7,"status":{"isGit":false,"dirty":false,"branch":null,"totals":{"additions":0,"deletions":0},"rows":[],"error":null}}"#;
-    let DaemonMessage::WorkspaceGit { status, .. } =
-        serde_json::from_str::<DaemonMessage>(older).expect("parse an older reply")
-    else {
-        panic!("not a workspace git reply");
-    };
-    assert!(!status.git_missing);
-    assert!(!status.is_git);
+    // The same payload, with the key the v30 dialect added, still decodes.
+    let current = r#"{"type":"workspace_git","id":7,"status":{"isGit":false,"dirty":false,"branch":null,"totals":{"additions":0,"deletions":0},"rows":[],"error":null,"gitMissing":true}}"#;
+    for payload in [older, current] {
+        let DaemonMessage::WorkspaceGit { status, .. } =
+            serde_json::from_str::<DaemonMessage>(payload).expect("parse a reply")
+        else {
+            panic!("not a workspace git reply");
+        };
+        assert!(!status.is_git);
+    }
 }
 
 /// The workspace git-log frame and its reply, pinned to the exact words

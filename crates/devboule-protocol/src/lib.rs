@@ -125,21 +125,21 @@ pub use ids::{
     OwnerId,
 };
 pub use messages::{
-    clamp_display_name, derive_session_title, validate_display_name, validate_workspace_title,
-    AgentMessageState, AgentProfile, AgentProfilesDocument, AttachmentReference, ClientMessage,
-    DaemonMessage, DaemonStatusBody, DelegationSource, JournalLimits, JournalRetention,
-    JournalSessionUsage, JournalStats, JournalUsage, PairingSecret, PeerAgent, PeerRole,
-    PeerRosterScope, PeerRow, PendingPairing, PromptAttachment, ProviderInfo, RemoteState,
-    RemoteStateKind, RetentionLimit, RetentionPatch, RetentionSource, SelfInfo,
-    SessionEventEnvelope, StoredAttachment, ToolDescriptor, ToolPolicyEntry, Unreclaimable,
-    VocabularyFeature, VocabularyFeatureControl, VocabularyFeatureOption, VocabularyFeatures,
-    VocabularyModels, VocabularyModes, VocabularyOrigin, VocabularySource, VocabularyState,
-    WorkspaceDirectory, WorkspaceFileContent, WorkspaceFileContentKind, WorkspaceFileContentStatus,
-    WorkspaceFileEntry, WorkspaceFileKind, WorkspaceFileMutation, WorkspaceFilePreview,
-    WorkspaceFilePreviewStatus, WorkspaceGitCommitEntry, WorkspaceGitDiffLine,
-    WorkspaceGitDiffLineKind, WorkspaceGitDiffStatus, WorkspaceGitFileDiff, WorkspaceGitFileStatus,
-    WorkspaceGitLog, WorkspaceGitRow, WorkspaceGitStatus, WorkspaceGitTotals, PEER_CAPS,
-    PEER_DEFAULT_CAPS,
+    clamp_display_name, derive_session_title, projected_role, validate_display_name,
+    validate_workspace_title, AgentMessageState, AgentProfile, AgentProfilesDocument,
+    AttachmentReference, ClientMessage, DaemonMessage, DaemonStatusBody, DelegationSource,
+    JournalLimits, JournalRetention, JournalSessionUsage, JournalStats, JournalUsage,
+    PairingSecret, PeerAgent, PeerRole, PeerRosterScope, PeerRow, PendingPairing, PromptAttachment,
+    ProviderInfo, RemoteState, RemoteStateKind, RetentionLimit, RetentionPatch, RetentionSource,
+    SelfInfo, SessionEventEnvelope, StoredAttachment, ToolDescriptor, ToolPolicyEntry,
+    Unreclaimable, VocabularyFeature, VocabularyFeatureControl, VocabularyFeatureOption,
+    VocabularyFeatures, VocabularyModels, VocabularyModes, VocabularyOrigin, VocabularySource,
+    VocabularyState, WorkspaceDirectory, WorkspaceFileContent, WorkspaceFileContentKind,
+    WorkspaceFileContentStatus, WorkspaceFileEntry, WorkspaceFileKind, WorkspaceFileMutation,
+    WorkspaceFilePreview, WorkspaceFilePreviewStatus, WorkspaceGitCommitEntry,
+    WorkspaceGitDiffLine, WorkspaceGitDiffLineKind, WorkspaceGitDiffStatus, WorkspaceGitFileDiff,
+    WorkspaceGitFileStatus, WorkspaceGitLog, WorkspaceGitRow, WorkspaceGitStatus,
+    WorkspaceGitTotals, PEER_CAPS, PEER_DEFAULT_CAPS,
 };
 pub use plugin::WorkspaceRootBody;
 pub use project::{Project, Workspace, WorkspaceIsolation};
@@ -216,7 +216,19 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// older reader ignores the key. The floor stays put.
 /// Protocol 31 adds `modelProvider` to `AgentProfile`, which an older daemon's
 /// strict profile parser refuses, so the bump marks that boundary.
-pub const PROTOCOL_VERSION: u32 = 31;
+///
+/// Protocol 32 is the roleless-pairing dialect. Pairing stops asking which
+/// grade of device the other one is: `PeerRow`, `PendingPairing` and the two
+/// pairing requests lose the stored role, and a paired device is a client
+/// until a workspace is created on it. Each v32 peer hello may carry
+/// `workspaceHost` — the sending daemon's own service presence — which is
+/// display evidence only: the receiver never lets it widen (or narrow) the
+/// scope its own pairing record grants. The `hosted_workspaces` capability
+/// decides whether the announcement may be spoken. Neither is a grant: the
+/// floor stays put at 16 because every v30 DTO still decodes on the
+/// compatibility path, and a v30/v31 reader is still handed the one projected
+/// role word its decoder requires.
+pub const PROTOCOL_VERSION: u32 = 32;
 /// Oldest dialect this crate still accepts. Protocols 17, 18 and 20 added only
 /// optional fields, so a v16 peer still interoperates — it just shows no
 /// command chip, turn time, cache, cost or chat-image thumbnails until
@@ -478,6 +490,17 @@ pub mod caps {
     /// between two daemons. A connection that did not negotiate it is refused
     /// the frames and is never sent a request.
     pub const BROWSER_HOST: &str = "browser.host";
+
+    /// The workspace-host presence bit on the v32 peer hellos.
+    ///
+    /// Peer-to-peer only, like the held link's own frames: a daemon states in
+    /// its hello whether it holds at least one workspace, which is what picks
+    /// the session scope the far daemon grants the connection. It is a wire
+    /// compatibility name and nothing else — never one of [`crate::PEER_CAPS`],
+    /// so no paired device can be granted it and it authorizes no read or
+    /// write. A peer that never negotiated the name cannot have spoken the
+    /// announcement, so the far side keeps its v30 projection.
+    pub const HOSTED_WORKSPACES: &str = "hosted_workspaces";
 }
 
 /// How long the daemon remembers an idempotency key, in seconds.
@@ -916,6 +939,10 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     // The live meter: the daemon publishes a reading to a connection only when
     // both ends offered the name, so it must be in the daemon's list too.
     capabilities.push(Capability::new(caps::SESSION_PLAN_USAGE));
+    // The workspace-host presence bit: both daemons speak it in their v31
+    // hello, so the name must be offered by both ends of a peer connection
+    // for the announcement to survive the intersection. It grants nothing.
+    capabilities.push(Capability::new(caps::HOSTED_WORKSPACES));
     capabilities
 }
 
@@ -1023,6 +1050,9 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // keeps it, and a reading that lands while attached reaches the screen only
     // when it was agreed.
     capabilities.push(Capability::new(caps::SESSION_PLAN_USAGE));
+    // Same pairing, for the workspace-host presence bit: the name must be in
+    // both lists or a peer connection could never speak the announcement.
+    capabilities.push(Capability::new(caps::HOSTED_WORKSPACES));
     capabilities
 }
 
@@ -1079,6 +1109,7 @@ mod tests {
             instance_id: "d".to_string(),
             pid: 1,
             capabilities: m3a_daemon_capabilities(),
+            workspace_host: None,
         };
         let negotiated = negotiate(&older_hello, &daemon_hello).expect("a v22 client connects");
         assert!(!negotiated
@@ -1100,6 +1131,7 @@ mod tests {
             instance_id: "d".to_string(),
             pid: 1,
             capabilities: m3a_daemon_capabilities(),
+            workspace_host: None,
         };
         let owner = OwnerId::new("S-1-5-21-1", "client").expect("owner");
         // The app offers the name, because the app is the one place that runs

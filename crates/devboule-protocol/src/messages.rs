@@ -14,9 +14,18 @@ use crate::session::{
     SubscriptionId,
 };
 
-/// The role a device is paired as, on the wire as `"client"` or `"daemon"`.
+/// The role a device was paired as under protocol 30: `"client"` or
+/// `"daemon"`.
 ///
-/// One definition for the wire and for the daemon's policy check
+/// Protocol 32 stopped asking: pairing records a device and nothing about
+/// which grade of device it is, because a device is a client until it hosts a
+/// workspace. The word survives in three places and no more — the v30
+/// devices projection ([`PeerRow::role`] and [`PendingPairing::role`], filled
+/// only while serialising for a client that negotiated v30), a historical
+/// audit `role` and a session's stored `origin_role`, all of which are
+/// attribution a person reads and nothing authorizes from.
+///
+/// One definition for the wire and for the daemon's retired policy checks
 /// (`devboule-daemon/src/peer_policy.rs` re-exports this type) so a rename
 /// cannot leave the two disagreeing.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
@@ -46,6 +55,22 @@ impl PeerRole {
 impl std::fmt::Display for PeerRole {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(self.as_str())
+    }
+}
+
+/// The role word a v30 reader is shown for a paired device.
+///
+/// `daemon` is the only grade of the old topology that opened a link, so the
+/// projection is exactly the dial hint the peers-table migration preserved: a
+/// device paired as a daemon before the roleless dialect, or paired through
+/// the v30 compatibility codec with that tag, reads as `daemon`; everything
+/// else reads as `client`, which is what a device is until it hosts a
+/// workspace. Pure display projection — nothing stores or authorises from it.
+pub fn projected_role(legacy_dialable: bool) -> PeerRole {
+    if legacy_dialable {
+        PeerRole::Daemon
+    } else {
+        PeerRole::Client
     }
 }
 
@@ -1094,21 +1119,23 @@ pub enum ClientMessage {
     PeerAgentsList {
         id: u64,
     },
-    /// Show a pairing code on **this** device. `role` is the role this device
-    /// will have in the pairing.
+    /// Show a pairing code on **this** device. No role is asked or sent: the
+    /// code-displaying device always confirms a v32 pairing itself, and what
+    /// the paired device becomes is decided later by whether it hosts a
+    /// workspace. An ignored `role` key from a v30 app still decodes, because
+    /// serde ignores keys the struct does not name.
     PairingStart {
         id: u64,
-        role: PeerRole,
     },
-    /// Type a code shown by another device. `role` is this device's role, and
-    /// `address` is the other device's `ip:port`.
+    /// Type a code shown by another device. `address` is the other device's
+    /// `ip:port`. No role is asked or sent, for the reason `PairingStart`
+    /// gives.
     PairingComplete {
         id: u64,
         address: String,
         code: PairingSecret,
-        role: PeerRole,
     },
-    /// Answer a Client-role pairing parked on this device.
+    /// Answer a pairing parked on this device.
     PairingConfirm {
         id: u64,
         device_id: String,
@@ -3107,15 +3134,26 @@ pub struct SelfInfo {
 
 /// One paired device as the Devices panel sees it.
 ///
-/// `role` is the *peer's* role. `binding_kind` is `"tailnet"` today.
-/// `address` is the `ip:port` recorded at pairing; the `whois` check at
-/// connect time is the backstop, not the source of truth.
+/// The pairing stores no role: it records a device, not a grade of device, and
+/// a paired device behaves as a client until it hosts a workspace. `role` is
+/// the one exception on the wire, and it is an **output projection only**: it
+/// is present exactly when this row is serialised for a client that negotiated
+/// the v30 dialect, whose decoder requires the word, and is `None` (absent on
+/// the wire) for v32. The daemon never reads it, never stores it and never
+/// authorises from it.
+///
+/// `binding_kind` is `"tailnet"` today. `address` is the `ip:port` recorded at
+/// pairing; the `whois` check at connect time is the backstop, not the source
+/// of truth.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PeerRow {
     pub device_id: String,
     pub display_name: String,
-    pub role: PeerRole,
+    /// The v30 projection of the paired device's role, and nothing else. See
+    /// the note on this struct and [`projected_role`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<PeerRole>,
     /// The pinned Noise static public key, base64.
     pub public_key: String,
     pub key_fingerprint: String,
@@ -3179,13 +3217,17 @@ pub struct PeerAgent {
     pub depth: u32,
 }
 
-/// A Client-role pairing parked on this device, awaiting a local decision.
+/// A pairing parked on this device, awaiting a local decision.
+///
+/// `role` follows [`PeerRow::role`]: a v30 projection the daemon fills only
+/// while serialising for a client that negotiated v30, never stored.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingPairing {
     pub device_id: String,
     pub display_name: String,
-    pub role: PeerRole,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<PeerRole>,
     pub key_fingerprint: String,
     pub address: String,
     /// Unix milliseconds: when the parked socket is closed and the pairing is
