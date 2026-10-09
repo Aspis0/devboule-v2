@@ -1584,3 +1584,225 @@ fn two_daemons_on_loopback_see_each_others_workspaces_and_presence() {
         std::thread::sleep(Duration::from_millis(500));
     }
 }
+
+/// Slice 3 end to end: a client device opens a remote agent's stream, sees its
+/// events tagged with the host, keeps the stream while the host is away, and
+/// resumes on a fresh subscription when the host comes back.
+///
+/// Only B hosts here. That is not an accident of the harness: a machine peer's
+/// session scope is the sessions it created on the host, while a client's is
+/// the paired user's — and opening the host's own agents is the client's act.
+#[test]
+fn a_client_attaches_to_a_remote_terminal_and_resumes_after_the_host_returns() {
+    let _guard = lock_tests();
+
+    let (port_a, port_b) = two_free_ports();
+    let a = Peer::spawn_with_env("s3-attach-a", port_a, &[("DEVBOULE_PEER_LOOPBACK", "1")]);
+    let b = Peer::spawn_with_env("s3-attach-b", port_b, &[("DEVBOULE_PEER_LOOPBACK", "1")]);
+    let _address_a = wait_until_listening(&a);
+    let address_b = wait_until_listening(&b);
+    let a_self = a.self_info();
+    let b_self = b.self_info();
+    pair_devices(&a, &b, &address_b, &b_self.device_id);
+
+    // B hosts a workspace and a terminal in it; A stays a client.
+    let (_b_project, b_workspace) = create_project_and_workspace(&b, "b");
+    let session = match b.pipe.expect(ClientMessage::SessionCreate {
+        id: b.pipe.id(),
+        workspace_id: Some(b_workspace),
+        kind: SessionKind::Terminal,
+        provider: None,
+        mode: None,
+        display_name: None,
+        idempotency_key: None,
+        cols: Some(80),
+        rows: Some(24),
+    }) {
+        DaemonMessage::Session { session, .. } => session,
+        other => panic!("expected Session, got {other:?}"),
+    };
+
+    // A watches B and opens the terminal's stream.
+    let watch = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostWatch {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+        },
+        |frame| match frame {
+            DaemonMessage::Ok { .. } => Some(()),
+            _ => None,
+        },
+    );
+    assert!(watch.is_some(), "the watch never answered");
+    let online = a.pipe.recv_until(
+        Instant::now() + Duration::from_secs(30),
+        |frame| match frame {
+            DaemonMessage::RemoteHostStatus {
+                device_id, state, ..
+            } if device_id == &b_self.device_id
+                && *state == devboule_protocol::RemoteHostState::Online =>
+            {
+                Some(())
+            }
+            _ => None,
+        },
+    );
+    assert!(online.is_some(), "the link to B never came online");
+
+    let attach = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostAttach {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+            session_id: session.id.clone(),
+            subscription_id: 1,
+        },
+        |frame| match frame {
+            DaemonMessage::Ok { .. } => Some("ok".to_string()),
+            DaemonMessage::Error(error) => Some(error.message.clone()),
+            _ => None,
+        },
+    );
+    assert_eq!(attach.as_deref(), Some("ok"), "the attach must be accepted");
+
+    // The transcript replays, tagged with B's device id and the subscription.
+    let replayed = a.pipe.recv_until(
+        Instant::now() + Duration::from_secs(30),
+        |frame| match frame {
+            DaemonMessage::RemoteHostEvent {
+                device_id,
+                session_id,
+                subscription_id,
+                envelope,
+            } if device_id == &b_self.device_id
+                && session_id == &session.id
+                && *subscription_id == 1 =>
+            {
+                Some(envelope.clone())
+            }
+            _ => None,
+        },
+    );
+    assert!(
+        replayed.is_some(),
+        "the remote event never reached the attaching client"
+    );
+
+    // The host goes away: give the lease back and wait for the row to say so.
+    let unwatch = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostUnwatch {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+        },
+        |frame| match frame {
+            DaemonMessage::Ok { .. } => Some(()),
+            _ => None,
+        },
+    );
+    assert!(unwatch.is_some(), "the unwatch never answered");
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        let online = peer_row(&a, &b_self.device_id).is_some_and(|row| row.online);
+        if !online {
+            break;
+        }
+        assert!(Instant::now() < deadline, "B never went offline");
+        std::thread::sleep(Duration::from_millis(500));
+    }
+
+    // A fresh attach while the host is away is refused, not queued.
+    let refused = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostAttach {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+            session_id: session.id.clone(),
+            subscription_id: 2,
+        },
+        |frame| match frame {
+            DaemonMessage::Ok { .. } => Some("ok".to_string()),
+            DaemonMessage::Error(..) => Some("error".to_string()),
+            _ => None,
+        },
+    );
+    assert_eq!(
+        refused.as_deref(),
+        Some("error"),
+        "an offline host cannot be attached"
+    );
+
+    // The host comes back: watch again and reattach with a fresh subscription,
+    // which replays the transcript for the new stream.
+    let watch = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostWatch {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+        },
+        |frame| match frame {
+            DaemonMessage::Ok { .. } => Some(()),
+            _ => None,
+        },
+    );
+    assert!(watch.is_some(), "the second watch never answered");
+    let online = a.pipe.recv_until(
+        Instant::now() + Duration::from_secs(30),
+        |frame| match frame {
+            DaemonMessage::RemoteHostStatus {
+                device_id, state, ..
+            } if device_id == &b_self.device_id
+                && *state == devboule_protocol::RemoteHostState::Online =>
+            {
+                Some(())
+            }
+            _ => None,
+        },
+    );
+    assert!(online.is_some(), "the link to B never came back");
+
+    let attach = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostAttach {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+            session_id: session.id.clone(),
+            subscription_id: 2,
+        },
+        |frame| match frame {
+            DaemonMessage::Ok { .. } => Some("ok".to_string()),
+            DaemonMessage::Error(error) => Some(error.message.clone()),
+            _ => None,
+        },
+    );
+    assert_eq!(
+        attach.as_deref(),
+        Some("ok"),
+        "the reattach must be accepted"
+    );
+
+    let resumed = a.pipe.recv_until(
+        Instant::now() + Duration::from_secs(30),
+        |frame| match frame {
+            DaemonMessage::RemoteHostEvent {
+                device_id,
+                session_id,
+                subscription_id,
+                ..
+            } if device_id == &b_self.device_id
+                && session_id == &session.id
+                && *subscription_id == 2 =>
+            {
+                Some(())
+            }
+            _ => None,
+        },
+    );
+    assert!(
+        resumed.is_some(),
+        "the reattached stream never replayed the transcript"
+    );
+
+    let _ = a_self;
+}
