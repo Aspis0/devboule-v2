@@ -759,6 +759,7 @@ export function AgentProfilesPanel() {
               onSeedChange={setCreateDraft}
               onDirty={markDirty}
               formError={error}
+              onPairRefusal={(sentence) => setError({ sentence, detail: null })}
               onCancel={requestClose}
             />
           ) : (
@@ -782,6 +783,7 @@ export function AgentProfilesPanel() {
               onSeedChange={(draft) => setEditorDraft({ id: dialog.id, ...draft })}
               onDirty={markDirty}
               formError={error}
+              onPairRefusal={(sentence) => setError({ sentence, detail: null })}
               onCancel={requestClose}
             />
           )

@@ -259,6 +259,7 @@ describe("the feature controls, as the form draws them", () => {
           vocabularySupported: true,
           busy: false,
           onCreate,
+          onPairRefusal: vi.fn(),
           onCancel: vi.fn(),
         }),
       ),

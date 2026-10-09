@@ -28,11 +28,12 @@ import {
   MAX_PROFILE_SPAWN_PROMPT_BYTES,
   type ProfileFormSeed,
   matchModelItem,
+  modelKeyOf,
   modelOptionLabel,
-  modelRefOf,
   offeredFeatures,
   featuresAreProbing,
   featuresAskFailed,
+  pairRefusal,
   parseModelRef,
   rustTrim,
   utf8Bytes,
@@ -92,6 +93,7 @@ export function AgentProfileForm({
   hideHeading = false,
   formError = null,
   onCancel,
+  onPairRefusal,
 }: {
   /** "create" opens with empty fields; "edit" seeds from the stored row. */
   mode: "create" | "edit";
@@ -126,6 +128,11 @@ export function AgentProfileForm({
    * sentences render here, above the buttons, instead of behind the scrim.
    */
   formError?: ErrorSentence | null;
+  /**
+   * An ambiguous pair refused before any write: the panel shows the
+   * sentence the same way a draft refusal shows.
+   */
+  onPairRefusal: (sentence: string) => void;
   onCancel: () => void;
 }) {
   const [name, setName] = useState(seed.name);
@@ -213,7 +220,8 @@ export function AgentProfileForm({
     vocabularyKnown,
     vocabularyError !== null && vocabularyCurrent === null,
     "models",
-    (item) => ({ value: modelRefOf(item), label: modelOptionLabel(item) }),
+    // The value is the catalog's own composite identity, never re-encoded.
+    (item) => ({ value: item.modelId, label: modelOptionLabel(item) }),
   );
   const modesView = vocabularyAxisView(
     vocabularyCurrent?.modes,
@@ -272,17 +280,15 @@ export function AgentProfileForm({
       ? [...providers.map((provider) => provider.id), providerId]
       : providers.map((provider) => provider.id);
 
-  // An edit keeps a stored model the catalog no longer lists visible and
-  // selected, labelled as the saved one. A legacy bare id the catalog lists
-  // under any serving provider needs no such row: it already matches.
+  // An edit keeps a stored model no row resolves visible and selected,
+  // labelled as the saved one: unknown to the catalog, a stale pair with
+  // surviving alternates, or an ambiguous legacy bare id. None of those
+  // selects a row that would not run.
   const storedModelOption =
-    mode === "edit" &&
-    model !== "" &&
-    matchedModel === undefined &&
-    !modelsView.items.some((item) => parseModelRef(item.value).model === model)
+    mode === "edit" && model !== "" && matchedModel === undefined
       ? [
           {
-            value: modelRefOf({ modelId: model, provider: modelProvider ?? undefined }),
+            value: modelKeyOf(modelProvider, model),
             label: `${model} (the value saved on this profile)`,
           },
         ]
@@ -301,7 +307,7 @@ export function AgentProfileForm({
     modelsPresent && matchedModel !== undefined && (modelEfforts?.length ?? 0) === 0;
 
   function changeModelRef(ref: string) {
-    const parsed = parseModelRef(ref);
+    const parsed = parseModelRef(ref, modelItems);
     const next = matchModelItem(modelItems, parsed.model, parsed.modelProvider);
     const effort = effortKept(next, thinkingOptionId) ? thinkingOptionId : "";
     setModel(parsed.model);
@@ -336,6 +342,13 @@ export function AgentProfileForm({
     // A model that publishes no levels cannot carry one: the spawn would
     // refuse it, so the save drops it instead of sending work it cannot keep.
     if (dropEffort) draft.thinkingOptionId = "";
+    // An ambiguous pair never reaches the store: the daemon would refuse it
+    // at spawn, so the form names the providers here instead.
+    const ambiguous = pairRefusal(modelItems, model, modelProvider, providerId);
+    if (ambiguous !== null) {
+      onPairRefusal(ambiguous);
+      return;
+    }
     if (mode === "create") {
       onCreate(draft);
     } else {
@@ -422,9 +435,7 @@ export function AgentProfileForm({
             value={
               modelsView.freeText
                 ? model
-                : matchedModel !== undefined
-                  ? modelRefOf(matchedModel)
-                  : model
+                : (matchedModel?.modelId ?? modelKeyOf(modelProvider, model))
             }
             busy={busy}
             freeText={modelsView.freeText}
@@ -433,7 +444,7 @@ export function AgentProfileForm({
             items={[...modelsView.items, ...storedModelOption]}
             onChange={(next) => {
               if (modelsView.freeText) {
-                const parsed = parseModelRef(next);
+                const parsed = parseModelRef(next, modelItems);
                 setModel(parsed.model);
                 setModelProvider(parsed.modelProvider);
                 userChanged({ model: parsed.model, modelProvider: parsed.modelProvider });

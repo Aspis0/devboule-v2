@@ -19,9 +19,10 @@ import {
   makeVocabulary,
   renderAgentsPanel,
   makeProvider,
+  storedProfile,
   typeText,
 } from "./agentsPanelTestHarness";
-import { openForm, form, createButton } from "./agentsPanelTestQueries";
+import { openForm, form, createButton, openRowEditor } from "./agentsPanelTestQueries";
 
 function piVocabulary() {
   return makeVocabulary({
@@ -31,18 +32,24 @@ function piVocabulary() {
       origin: "provider",
       items: [
         {
-          modelId: "mimo-v2-6-flash",
+          modelId: "opencode-go/mimo-v2-6-flash",
           name: "MiMo V2.6 Flash",
-          provider: "opencode-go",
+          provider_id: "opencode-go",
           efforts: [
             { id: "Low", label: "Low" },
             { id: "High", label: "High", default: true },
           ],
         },
         {
-          modelId: "nemotron-3-ultra",
+          modelId: "nvidia/nemotron-3-ultra",
           name: "Nemotron 3 Ultra",
-          provider: "nvidia",
+          provider_id: "nvidia",
+        },
+        {
+          modelId: "openrouter/mimo-v2-6-flash",
+          name: "MiMo V2.6 Flash",
+          provider_id: "openrouter",
+          efforts: [{ id: "High", label: "High" }],
         },
       ],
     },
@@ -252,5 +259,73 @@ describe("Settings agents panel — profile editor pickers", () => {
     // Collapsed until opened: the safety ticks are not in the main form.
     expect(advanced.textContent).toContain("Advanced");
     expect(editor.textContent).not.toContain("No peer contact");
+  });
+
+  it("selects the exact stored pair, never a same-id row", async () => {
+    vi.mocked(providerVocabularyGet).mockResolvedValue(piVocabulary());
+    const profile = storedProfile("p-pair", {
+      name: "Scout",
+      provider: "pi",
+      model: "mimo-v2-6-flash",
+      modelProvider: "openrouter",
+      modeId: "bypass",
+    });
+    await renderAgentsPanel({ profiles: [profile], standingInstructions: "" }, VOCABULARY_DAEMON);
+    const editor = await openRowEditor("Scout");
+    await act(async () => undefined);
+    // Two rows share the id: the openrouter one is selected, not the first.
+    const model = editor.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
+    if (!model) throw new Error("model picker did not render");
+    expect(model.value).toBe("openrouter/mimo-v2-6-flash");
+  });
+
+  it("shows the saved value when the stored pair vanished but alternates remain", async () => {
+    vi.mocked(providerVocabularyGet).mockResolvedValue(piVocabulary());
+    const profile = storedProfile("p-stale", {
+      name: "Scout",
+      provider: "pi",
+      model: "mimo-v2-6-flash",
+      modelProvider: "gone-provider",
+      modeId: "bypass",
+    });
+    await renderAgentsPanel({ profiles: [profile], standingInstructions: "" }, VOCABULARY_DAEMON);
+    const editor = await openRowEditor("Scout");
+    await act(async () => undefined);
+    // No row is dressed as the selection: the saved value reads as saved.
+    const model = editor.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
+    if (!model) throw new Error("model picker did not render");
+    expect(model.value).toBe("gone-provider/mimo-v2-6-flash");
+    const saved = Array.from(model.options).find(
+      (option) => option.value === "gone-provider/mimo-v2-6-flash",
+    );
+    expect(saved?.text).toContain("the value saved on this profile");
+  });
+
+  it("refuses saving a legacy ambiguous bare id, naming the providers", async () => {
+    vi.mocked(providerVocabularyGet).mockResolvedValue(piVocabulary());
+    const profile = storedProfile("p-bare", {
+      name: "Scout",
+      provider: "pi",
+      model: "mimo-v2-6-flash",
+      modeId: "bypass",
+    });
+    await renderAgentsPanel({ profiles: [profile], standingInstructions: "" }, VOCABULARY_DAEMON);
+    const editor = await openRowEditor("Scout");
+    await act(async () => undefined);
+    // The bare id names two rows: the editor shows the saved value, and
+    // the save names the providers to pick from instead of sending a bare
+    // id the spawn would refuse.
+    const model = editor.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
+    if (!model) throw new Error("model picker did not render");
+    expect(model.value).toBe("mimo-v2-6-flash");
+    const save = Array.from(editor.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent === "Save",
+    );
+    if (!save) throw new Error("Save did not render");
+    await act(async () => save.click());
+    await act(async () => undefined);
+    expect(agentProfilesSet).not.toHaveBeenCalled();
+    const alert = editor.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("offered by opencode-go and openrouter");
   });
 });

@@ -428,42 +428,85 @@ export function profileFeaturesFromDraft(
 }
 
 /**
- * The model picker's option value for one catalog item: the serving
- * provider and the model id together, because one id can be served by two
- * providers and a bare id cannot tell them apart. Items with no serving
- * provider keep the bare id, which is also what profiles older builds
- * wrote always carry.
+ * The composite identity the catalog uses for one row: "provider/id",
+ * or the bare id when no provider serves it under several names. Keys are
+ * compared whole, never split on read — providers are slugs with no `/`.
  */
-export function modelRefOf(item: Pick<SessionModel, "modelId" | "provider">): string {
-  const provider = item.provider ?? "";
-  return provider === "" ? item.modelId : `${provider}\0${item.modelId}`;
-}
-
-/** The pair a picker value carries back: the id, and the serving provider. */
-export function parseModelRef(ref: string): { model: string; modelProvider: string | null } {
-  const separator = ref.indexOf("\0");
-  if (separator < 0) return { model: ref, modelProvider: null };
-  const provider = ref.slice(0, separator);
-  return { model: ref.slice(separator + 1), modelProvider: provider === "" ? null : provider };
+export function modelKeyOf(modelProvider: string | null, id: string): string {
+  return modelProvider === null || modelProvider === "" ? id : `${modelProvider}/${id}`;
 }
 
 /**
- * The catalog item a stored pair names: the exact pair first, then the
- * bare id alone, so a legacy profile still opens against a catalog that
- * lists its id under any serving provider.
+ * The bare id behind a catalog item's composite identity: the provider
+ * prefix off when the item names one, the id itself otherwise.
+ */
+export function bareModelIdOf(item: Pick<SessionModel, "modelId" | "provider_id">): string {
+  const serving = item.provider_id ?? "";
+  const prefix = serving === "" ? "" : `${serving}/`;
+  return prefix !== "" && item.modelId.startsWith(prefix)
+    ? item.modelId.slice(prefix.length)
+    : item.modelId;
+}
+
+/**
+ * The pair a picker value carries back: the bare id, and the serving
+ * provider. A value splits only onto a row the catalog actually lists —
+ * a legacy bare id that happens to contain a `/` never becomes a
+ * provider the catalog never named.
+ */
+export function parseModelRef(
+  ref: string,
+  items: readonly SessionModel[],
+): { model: string; modelProvider: string | null } {
+  const separator = ref.indexOf("/");
+  if (separator > 0) {
+    const provider = ref.slice(0, separator);
+    const rest = ref.slice(separator + 1);
+    if (items.some((item) => item.modelId === ref && (item.provider_id ?? "") === provider)) {
+      return { model: rest, modelProvider: provider };
+    }
+  }
+  return { model: ref, modelProvider: null };
+}
+
+/**
+ * The catalog item a stored pair names: the exact composite identity. A
+ * legacy bare id matches the one row that carries it, and nothing when
+ * several do or none does — the editor then shows the saved value instead
+ * of selecting a row that would not run, and the save names the choice.
  */
 export function matchModelItem(
   items: readonly SessionModel[],
   model: string,
   modelProvider: string | null,
 ): SessionModel | undefined {
-  if (modelProvider !== null) {
-    const paired = items.find(
-      (item) => item.modelId === model && (item.provider ?? null) === modelProvider,
-    );
-    if (paired !== undefined) return paired;
-  }
-  return items.find((item) => item.modelId === model);
+  const exact = items.find((item) => item.modelId === modelKeyOf(modelProvider, model));
+  if (exact !== undefined) return exact;
+  if (modelProvider !== null) return undefined;
+  const same = items.filter((item) => bareModelIdOf(item) === model);
+  return same.length === 1 ? same[0] : undefined;
+}
+
+/**
+ * The refusal a save earns when the stored model names an id several
+ * providers serve without naming one of them — or names a pair no row
+ * carries while alternates do. Mirrors the daemon's own ambiguous refusal
+ * so the form says it before the spawn would.
+ */
+export function pairRefusal(
+  items: readonly SessionModel[],
+  model: string,
+  modelProvider: string | null,
+  providerId: string,
+): string | null {
+  if (model === "" || providerId !== "pi") return null;
+  const same = items.filter(
+    (item) => bareModelIdOf(item) === model && (item.provider_id ?? "") !== "",
+  );
+  if (same.length === 0) return null;
+  const providers = [...new Set(same.map((item) => item.provider_id as string))].sort();
+  if (modelProvider !== null && providers.includes(modelProvider)) return null;
+  return `Pi model '${model}' is offered by ${providers.join(" and ")}; pick one in the profile.`;
 }
 
 /**
@@ -471,10 +514,10 @@ export function matchModelItem(
  * first when the catalog names one, so two rows for one id read apart.
  */
 export function modelOptionLabel(
-  item: Pick<SessionModel, "modelId" | "name" | "provider">,
+  item: Pick<SessionModel, "modelId" | "name" | "provider_id">,
 ): string {
-  const base =
-    item.name && item.name !== item.modelId ? `${item.name} (${item.modelId})` : item.modelId;
-  const provider = item.provider ?? "";
-  return provider === "" ? base : `${provider} · ${base}`;
+  const bare = bareModelIdOf(item);
+  const base = item.name && item.name !== bare ? `${item.name} (${bare})` : bare;
+  const serving = item.provider_id ?? "";
+  return serving === "" ? base : `${serving} · ${base}`;
 }
