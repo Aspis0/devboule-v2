@@ -100,7 +100,11 @@ export const TranscriptRow = memo(function TranscriptRow({
       {item.images !== undefined && item.images.length > 0 ? (
         <ChatImageThumbnails images={item.images} />
       ) : null}
-      {item.text.length > 0 ? <MessageCopyButton text={item.text} /> : null}
+      {item.text.length > 0 ? (
+        <div className="workspace-chat-message-footer">
+          <MessageCopyButton text={item.text} />
+        </div>
+      ) : null}
     </div>
   );
 });

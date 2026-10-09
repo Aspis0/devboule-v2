@@ -131,9 +131,21 @@
 }
 
 .workspace-chat-user:hover .timeline-copy-chip,
-.workspace-chat-user:focus-within .timeline-copy-chip,
-.workspace-chat-assistant:hover .timeline-copy-chip,
-.workspace-chat-assistant:focus-within .timeline-copy-chip {
+.workspace-chat-user:focus-within .timeline-copy-chip {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* An answer's footer holds its copy icon alone, under the text at the start
+   edge, always drawn: the one action an answer offers never waits for a hover. */
+.workspace-chat-message-footer {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: var(--space-2);
+}
+
+.workspace-chat-message-footer .timeline-copy-chip {
+  position: static;
   opacity: 1;
   pointer-events: auto;
 }

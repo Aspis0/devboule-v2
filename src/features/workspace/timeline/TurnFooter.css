@@ -1,6 +1,5 @@
-/* The turn's own metadata: one muted line, and the token ledger behind a
-   disclosure that shares that line's row rather than sitting under it, so a
-   closed turn takes exactly one line of the transcript's rhythm. */
+/* The turn's details: one muted row holding only the disclosure's arrow, so a
+   closed turn takes a line of the transcript's rhythm and nothing more. */
 .turn-footer {
   display: flex;
   flex: none;
@@ -11,11 +10,6 @@
   font-family: var(--font-ui);
   font-size: var(--type-meta);
   line-height: var(--leading-body);
-}
-
-.turn-footer-line {
-  min-width: 0;
-  overflow-wrap: anywhere;
 }
 
 .turn-footer-detail-trigger {

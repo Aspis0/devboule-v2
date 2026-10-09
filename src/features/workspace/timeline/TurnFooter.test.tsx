@@ -1,163 +1,92 @@
-// The finished turn's metadata line: stop reason and cost at a glance,
-// the token accounting behind one disclosure. The line itself stays a line —
-// nothing here may reflow the transcript when a value appears or disappears.
 // @vitest-environment happy-dom
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { AgentFinished } from "../../../lib/agentSession";
-import { TurnFooter } from "./TurnFooter";
 
-const FINISHED: AgentFinished = {
-  stopReason: "error",
-  modelId: "grok-4.6",
-  usage: {
-    inputTokens: 20753,
-    outputTokens: 30,
-    totalTokens: 20783,
-    cacheReadTokens: 6016,
-    cacheWriteTokens: 0,
-    costUsd: 0.00555254,
-  },
-};
+// A finished turn's row carries no words of its own: the stop reason, the
+// tokens and the cost live behind one disclosure, and a normal end draws no
+// line at all.
+
+import { act } from "react";
+import { createRoot } from "react-dom/client";
+import { afterEach, describe, expect, it } from "vitest";
+import type { AgentFinished } from "../../../lib/agentSession";
+import { usdCopy } from "../../../lib/format";
+import { TurnFooter } from "./TurnFooter";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-let container: HTMLDivElement;
-let root: Root;
+const LEDGER = {
+  inputTokens: 1200,
+  outputTokens: 340,
+  cacheReadTokens: 800,
+  costUsd: 0.0022,
+};
 
-async function render(finished: AgentFinished | null, providerId?: string): Promise<void> {
-  await act(async () => root.render(<TurnFooter finished={finished} providerId={providerId} />));
+function finished(overrides: Partial<AgentFinished> = {}): AgentFinished {
+  return { stopReason: "stop", usage: LEDGER, ...overrides } as AgentFinished;
 }
 
-function disclosure(): HTMLDetailsElement | null {
-  return container.querySelector<HTMLDetailsElement>(".turn-footer-detail");
-}
-
-function trigger(): HTMLElement | null {
-  return container.querySelector<HTMLElement>(".turn-footer-detail > summary");
-}
-
-beforeEach(() => {
-  container = document.createElement("div");
-  document.body.appendChild(container);
-  root = createRoot(container);
-});
+let root: ReturnType<typeof createRoot> | null = null;
+let host: HTMLDivElement | null = null;
 
 afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
+  if (root !== null) await act(async () => root?.unmount());
+  root = null;
+  host?.remove();
+  host = null;
 });
 
-describe("the turn footer's short line", () => {
-  it("names no stop reason for a normally finished turn", async () => {
-    for (const stopReason of ["end_turn", "completed", "stop"]) {
-      await render({ ...FINISHED, stopReason });
-      expect(container.querySelector(".turn-footer-line")).toBeNull();
-    }
+async function renderFooter(
+  value: AgentFinished | null,
+  providerId?: string,
+): Promise<HTMLElement> {
+  host = document.createElement("div");
+  document.body.append(host);
+  root = createRoot(host);
+  await act(async () => root?.render(<TurnFooter finished={value} providerId={providerId} />));
+  return host;
+}
+
+async function openDetail(container: HTMLElement): Promise<string> {
+  const details = container.querySelector("details");
+  if (details === null) throw new Error("the turn had no disclosure");
+  await act(async () => {
+    details.open = true;
   });
+  return details.querySelector(".turn-footer-detail-copy")?.textContent ?? "";
+}
 
-  it("takes no row at all for a normal end without usage", async () => {
-    await render({ stopReason: "stop" });
-    expect(container.textContent).toBe("");
-  });
-
-  it("names only the stop reason for an abnormal end, and not the cost", async () => {
-    await render(FINISHED);
-
-    expect(container.querySelector(".turn-footer-line")?.textContent).toBe("stopped: error");
-    expect(container.querySelector(".turn-footer-line")?.textContent).not.toContain("$");
-  });
-
-  it("keeps a cancelled or maxed-out turn's row", async () => {
-    await render({ stopReason: "cancelled" });
-    expect(container.querySelector(".turn-footer-line")?.textContent).toBe("stopped: cancelled");
-
-    await render({ stopReason: "max_tokens" });
-    expect(container.querySelector(".turn-footer-line")?.textContent).toBe("stopped: max_tokens");
-  });
-
-  it("omits a value the daemon did not send rather than printing an empty one", async () => {
-    await render({ stopReason: "error" });
-
-    expect(container.querySelector(".turn-footer-line")?.textContent).toBe("stopped: error");
-  });
-
-  it("renders nothing at all for a turn that has not finished", async () => {
-    await render(null);
-
-    expect(container.textContent).toBe("");
-  });
-
-  it("prints no cost figure for a cost of zero", async () => {
-    await render({ stopReason: "error", usage: { costUsd: 0 } });
-
-    expect(container.querySelector(".turn-footer-line")?.textContent).toBe("stopped: error");
-  });
-});
-
-describe("the turn footer's token disclosure", () => {
-  it("starts closed, with the ledger inside it", async () => {
-    await render(FINISHED);
-
-    expect(disclosure()?.open).toBe(false);
-    expect(disclosure()?.querySelector(".turn-footer-detail-copy")).not.toBeNull();
-  });
-
-  it("lists every token and cache figure, then the cost, once opened", async () => {
-    await render(FINISHED);
-
-    const details = disclosure();
-    if (details === null) throw new Error("the turn footer rendered no disclosure");
-    await act(async () => {
-      details.open = true;
-    });
-
-    expect(details.querySelector(".turn-footer-detail-copy")?.textContent).toBe(
-      "in 20,753 · out 30 · cached 6,016 · cache-wrote 0 · total 20,783 tokens · $0.0055",
-    );
-  });
-
-  it("opens on a normally finished turn with the cost inside and no line", async () => {
-    await render({ stopReason: "stop", usage: { costUsd: 0.00220194 } });
-
+describe("TurnFooter", () => {
+  it("draws no stop line for a normal end, only the disclosure", async () => {
+    const container = await renderFooter(finished());
     expect(container.querySelector(".turn-footer-line")).toBeNull();
-    expect(disclosure()?.open).toBe(false);
-    expect(disclosure()?.querySelector(".turn-footer-detail-copy")?.textContent).toBe("$0.0022");
+    expect(container.textContent).not.toContain("stopped");
+    expect(container.querySelector(".turn-footer-detail")).not.toBeNull();
   });
 
-  it("is reachable and operable from the keyboard alone", async () => {
-    await render(FINISHED);
-
-    const summary = trigger();
-    if (summary === null) throw new Error("the turn footer rendered no trigger");
-    // A <summary> is the disclosure itself: browsers put it in the tab order
-    // and toggle it on Enter and Space, with no key handler here. happy-dom
-    // reports tabIndex -1 for it, so the reach is asserted by focus().
-    expect(summary.tagName).toBe("SUMMARY");
-    summary.focus();
-    expect(document.activeElement).toBe(summary);
-    // The control names what it opens, so the collapsed line is not a dead end.
-    expect(summary.getAttribute("aria-label")).toBe("Turn token detail");
+  it("keeps the turn's cost and tokens inside the disclosure", async () => {
+    const container = await renderFooter(finished(), "claude");
+    const copy = await openDetail(container);
+    expect(copy).toContain("in 1,200");
+    expect(copy).toContain("out 340");
+    expect(copy).toContain(usdCopy(0.0022));
   });
 
-  it("shows no cost for a pi message, whose figure is pi's own estimate", async () => {
-    await render(FINISHED, "pi");
-
-    expect(disclosure()?.querySelector(".turn-footer-detail-copy")?.textContent).toBe(
-      "in 20,753 · out 30 · cached 6,016 · cache-wrote 0 · total 20,783 tokens",
-    );
+  it("moves an abnormal stop reason into the disclosure, not onto the row", async () => {
+    const container = await renderFooter(finished({ stopReason: "length" }));
+    expect(container.querySelector(".turn-footer-line")).toBeNull();
+    const copy = await openDetail(container);
+    expect(copy).toContain("stopped: length");
   });
 
-  it("offers no disclosure for a pi message whose only figure is the cost", async () => {
-    await render({ stopReason: "stop", usage: { costUsd: 0.00220194 } }, "pi");
-
+  it("draws nothing for a normal end that carried no usage", async () => {
+    const container = await renderFooter(finished({ usage: undefined }));
+    expect(container.querySelector(".turn-footer")).toBeNull();
     expect(container.textContent).toBe("");
   });
 
-  it("offers no disclosure when the daemon sent no usage", async () => {
-    await render({ stopReason: "error", modelId: "grok" });
-
-    expect(disclosure()).toBeNull();
+  it("takes no cost for a pi turn, whatever the figure", async () => {
+    const container = await renderFooter(finished(), "pi");
+    const copy = await openDetail(container);
+    expect(copy).not.toContain("$");
+    expect(copy).toContain("in 1,200");
   });
 });

@@ -13,14 +13,19 @@ function isNormalEnd(stopReason: string): boolean {
   return stopReason === "stop" || stopReason === "end_turn" || stopReason === "completed";
 }
 
-/** The token ledger, which is the same count spelled out in five places, then what it cost. */
+/**
+ * The turn's details, in the order a reader asks: why it stopped when that was
+ * abnormal, the token ledger, then what it cost.
+ */
 function detailCopy(finished: AgentFinished, providerId: string | undefined): string | null {
   const usage = finished.usage;
-  if (usage === undefined) return null;
+  const stop = stopCopy(finished);
+  if (usage === undefined) return stop;
   // pi's cost is its own estimate from a static price list, not what the provider
   // billed, so a pi turn shows none.
   const cost = providerId === "pi" || usage.costUsd === undefined ? null : usdCopy(usage.costUsd);
   const details = [
+    stop,
     usage.inputTokens === undefined ? null : `in ${usage.inputTokens.toLocaleString()}`,
     usage.outputTokens === undefined ? null : `out ${usage.outputTokens.toLocaleString()}`,
     usage.cacheReadTokens === undefined ? null : `cached ${usage.cacheReadTokens.toLocaleString()}`,
@@ -35,14 +40,9 @@ function detailCopy(finished: AgentFinished, providerId: string | undefined): st
 }
 
 /**
- * The finished turn's metadata: a stop line for an abnormal end, and one
- * disclosure carrying the ledger and the cost.
- *
- * The line is what a reader glances at when something went wrong; the
- * disclosure answers "what did that turn spend", and it is a <details> so the
- * keyboard drives it without a key handler and a screen reader gets the native
- * disclosure for free. A normally finished turn takes no line, only the arrow
- * when the daemon sent usage.
+ * The finished turn's details behind one disclosure. The row carries no words of
+ * its own: a <details> keeps the keyboard driving it without a key handler, and a
+ * screen reader gets the native disclosure for free.
  */
 export function TurnFooter({
   finished,
@@ -52,18 +52,14 @@ export function TurnFooter({
   providerId?: string;
 }) {
   if (finished === null) return null;
-  const stop = stopCopy(finished);
-  const ledger = detailCopy(finished, providerId);
-  if (stop === null && ledger === null) return null;
+  const detail = detailCopy(finished, providerId);
+  if (detail === null) return null;
   return (
     <div className="turn-footer">
-      {stop === null ? null : <div className="turn-footer-line">{stop}</div>}
-      {ledger === null ? null : (
-        <details className="turn-footer-detail">
-          <summary className="turn-footer-detail-trigger" aria-label="Turn token detail" />
-          <div className="turn-footer-detail-copy">{ledger}</div>
-        </details>
-      )}
+      <details className="turn-footer-detail">
+        <summary className="turn-footer-detail-trigger" aria-label="Turn token detail" />
+        <div className="turn-footer-detail-copy">{detail}</div>
+      </details>
     </div>
   );
 }

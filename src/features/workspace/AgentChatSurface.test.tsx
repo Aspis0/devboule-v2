@@ -446,8 +446,11 @@ describe("AgentChatSurface", () => {
     });
 
     expect(container.textContent).toContain("Hello");
-    expect(container.querySelector(".turn-footer-line")?.textContent).toBe("stopped: error");
-    // The ledger behind the line's disclosure: rendered, closed.
+    expect(container.querySelector(".turn-footer-line")).toBeNull();
+    expect(container.querySelector(".turn-footer-detail-copy")?.textContent).toContain(
+      "stopped: error",
+    );
+    // The stop reason and the ledger sit behind the disclosure: rendered, closed.
     expect(container.querySelector(".turn-footer-detail")?.hasAttribute("open")).toBe(false);
     expect(container.textContent).toContain("total 3 tokens");
 
@@ -486,7 +489,7 @@ describe("AgentChatSurface", () => {
     // 0.00555254 truncates at four decimals — the copy never bills more
     // than the provider did.
     expect(container.querySelector(".turn-footer-detail-copy")?.textContent).toContain("$0.0055");
-    expect(container.querySelector(".turn-footer-line")?.textContent).not.toContain("$");
+    expect(container.querySelector(".turn-footer-line")).toBeNull();
 
     await act(async () => {
       channelHarness.emit?.({
@@ -496,9 +499,13 @@ describe("AgentChatSurface", () => {
         usage: { inputTokens: 25848, outputTokens: 3, totalTokens: 25851 },
       });
     });
-    expect(container.querySelector(".turn-footer-line")?.textContent).not.toContain("cached");
-    expect(container.querySelector(".turn-footer-line")?.textContent).not.toContain("cache-wrote");
-    expect(container.querySelector(".turn-footer-line")?.textContent).not.toContain("$");
+    expect(container.querySelector(".turn-footer-detail-copy")?.textContent).not.toContain(
+      "cached",
+    );
+    expect(container.querySelector(".turn-footer-detail-copy")?.textContent).not.toContain(
+      "cache-wrote",
+    );
+    expect(container.querySelector(".turn-footer-line")).toBeNull();
 
     // A cost the provider said is zero shows no figure at all — "$0" would
     // read like the provider said nothing.
@@ -511,7 +518,7 @@ describe("AgentChatSurface", () => {
       });
     });
     expect(container.textContent).toContain("in 2");
-    expect(container.querySelector(".turn-footer-line")?.textContent).not.toContain("$");
+    expect(container.querySelector(".turn-footer-line")).toBeNull();
 
     await act(async () => root?.unmount());
     expect(sessionDetach).not.toHaveBeenCalled();
