@@ -1503,6 +1503,55 @@ fn peer_record(device_id: &str) -> PeerRecord {
     }
 }
 
+/// The hosting record is one-way: it is written for a peer that claims to
+/// host, idempotent when it already says so, and refused for a revoked row.
+/// A later claim of "no workspace" is the connection layer's business, and it
+/// must never clear the column here.
+#[test]
+fn a_peer_is_recorded_as_a_workspace_host_one_way() {
+    let (dir, path) = tmp_journal();
+    let journal = Journal::open(&path).expect("open");
+    let mut record = peer_record("dev-1");
+    record.hosts_workspaces = false;
+    journal.peer_upsert(record).expect("upsert");
+    assert!(
+        !journal
+            .peer_get("dev-1")
+            .expect("get")
+            .expect("row")
+            .hosts_workspaces
+    );
+
+    assert_eq!(
+        journal.peer_note_workspaces("dev-1").expect("note"),
+        PeerMutation::Updated
+    );
+    assert!(
+        journal
+            .peer_get("dev-1")
+            .expect("get")
+            .expect("row")
+            .hosts_workspaces
+    );
+    // Idempotent: recording it again is still an update, not a revoke.
+    assert_eq!(
+        journal.peer_note_workspaces("dev-1").expect("note"),
+        PeerMutation::Updated
+    );
+    assert_eq!(
+        journal.peer_note_workspaces("dev-missing").expect("note"),
+        PeerMutation::NotFound
+    );
+
+    journal.peer_revoke("dev-1", 7).expect("revoke");
+    assert_eq!(
+        journal.peer_note_workspaces("dev-1").expect("note"),
+        PeerMutation::Revoked
+    );
+    drop(journal);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 fn audit_record(device_id: &str, action: &str) -> AuditRecord {
     AuditRecord {
         device_id: device_id.to_string(),

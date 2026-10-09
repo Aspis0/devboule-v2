@@ -944,9 +944,10 @@ fn a_paired_daemon_dials_its_peer_and_reads_the_reply() {
     // peer is named on the wire, `peer_<device_id>`. The responder replaces
     // the owner with the identity the Noise handshake authenticated; nothing
     // authorizes on it.
-    let dial_hello = ClientHello::m3a(
+    let dial_hello = ClientHello::peer(
         OwnerId::new(format!("peer_{}", a_self.device_id), "daemon").expect("owner"),
         "devboule-daemon",
+        true,
     );
 
     // ---- pair as Daemon peers: a Daemon pairing needs no confirmation window
@@ -1039,9 +1040,10 @@ fn the_device_that_displayed_the_code_can_dial_its_peer_back() {
         "the responder's row records the initiator's advertised listener port"
     );
 
-    let dial_hello = ClientHello::m3a(
+    let dial_hello = ClientHello::peer(
         OwnerId::new(format!("peer_{}", b_self.device_id), "daemon").expect("owner"),
         "devboule-daemon",
+        true,
     );
     let reply = dial_peer(
         &b.static_private(),
@@ -1095,9 +1097,10 @@ fn a_dial_refuses_an_address_that_is_not_on_the_tailnet() {
     let (pinned_key, _stored_address) = a
         .stored_row_for(&b_self.device_id)
         .expect("A holds a row for B");
-    let dial_hello = ClientHello::m3a(
+    let dial_hello = ClientHello::peer(
         OwnerId::new(format!("peer_{}", a_self.device_id), "daemon").expect("owner"),
         "devboule-daemon",
+        true,
     );
 
     // A loopback address is well formed and something is even listening there
@@ -1211,9 +1214,10 @@ fn a_paired_daemon_delivers_an_agent_message_and_replays_its_receipt_once() {
     let (pinned_key, stored_address) = a
         .stored_row_for(&b_self.device_id)
         .expect("A holds a row for B");
-    let dial_hello = ClientHello::m3a(
+    let dial_hello = ClientHello::peer(
         OwnerId::new(format!("peer_{}", a_self.device_id), "daemon").expect("owner"),
         "devboule-daemon",
+        true,
     );
     for _ in 0..2 {
         let reply = dial_peer(

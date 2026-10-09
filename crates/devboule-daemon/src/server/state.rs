@@ -1677,6 +1677,21 @@ impl ServerState {
         Ok(outcome)
     }
 
+    /// Record a peer as a workspace host, one-way. Called when an
+    /// authenticated hello states hosting; the table is invalidated so the
+    /// next scope resolution reads it.
+    pub(crate) fn peer_note_workspaces(&self, device_id: &str) -> Result<PeerMutation, String> {
+        let journal = self
+            .journal
+            .as_ref()
+            .ok_or_else(|| "the journal is unavailable".to_string())?;
+        let outcome = journal
+            .peer_note_workspaces(device_id)
+            .map_err(|error| error.to_string())?;
+        self.invalidate_peer_table();
+        Ok(outcome)
+    }
+
     /// The capability set of one paired device, read from its `peers` row.
     ///
     /// Resolved once per connection, not once per request: the journal is the

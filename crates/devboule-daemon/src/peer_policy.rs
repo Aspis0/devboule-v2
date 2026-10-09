@@ -47,20 +47,23 @@ pub enum PeerScope {
     PeerDevice,
 }
 
-/// The scope a peer connection reaches: what this daemon recorded for the
-/// device, and nothing the peer claims about itself now.
+/// The scope a peer connection reaches: the recorded pairing fact, narrowed by
+/// the peer's own presence claim and never widened by it.
 ///
 /// `hello_claim` is the peer's `workspaceHost` word as it arrived in the
-/// authenticated hello. It is display evidence, **never** an input here: a
-/// machine peer could claim `false` and be handed the broader paired-user
-/// scope (the full device projection and the paired user's sessions), and a
-/// claim of `true` must not be trusted before locally confirmed state says the
-/// device hosts anything. The recorded scope therefore passes through
-/// unchanged, and taking the claim as a parameter keeps that refusal one
-/// testable rule instead of an absence.
+/// authenticated hello. A claim of `true` says the peer hosts workspaces now,
+/// which is the machine scope — strictly less access on this daemon than the
+/// paired-user scope, so it is applied and recorded. A claim of `false` — or an
+/// absent word — never turns a recorded host into a client: that is the
+/// direction the hostile review found, where a machine peer could claim "no
+/// workspace" and be handed the broader paired-user scope (the full device
+/// projection and the paired user's sessions). The durable record is updated
+/// on the same one-way rule by the connection layer.
 pub fn peer_scope(hello_claim: Option<bool>, recorded: PeerScope) -> PeerScope {
-    let _ = hello_claim;
-    recorded
+    match hello_claim {
+        Some(true) => PeerScope::PeerDevice,
+        _ => recorded,
+    }
 }
 
 impl PeerScope {
@@ -3463,21 +3466,32 @@ pub(crate) mod tests {
         };
         assert_eq!(peer.device_id(), Some("dev-1"));
         assert_eq!(peer.scope(), PeerScope::PeerDevice);
-        // The forged claims: a machine peer saying "no workspace" would be the
-        // broader paired-user scope under the old rule, and a client peer
-        // saying "workspace" would be trusted as a machine. Neither happens.
-        for forged in [Some(false), Some(true), None] {
+        // A denied claim is the forged direction the review found: a machine
+        // peer saying "no workspace" must not be handed the broader
+        // paired-user scope. An absent word changes nothing.
+        for denied in [Some(false), None] {
             assert_eq!(
-                peer_scope(forged, PeerScope::PeerDevice),
+                peer_scope(denied, PeerScope::PeerDevice),
                 PeerScope::PeerDevice,
-                "a claim may not narrow a machine peer: {forged:?}"
+                "a denied claim may not widen a machine peer: {denied:?}"
             );
             assert_eq!(
-                peer_scope(forged, PeerScope::PairedUser),
+                peer_scope(denied, PeerScope::PairedUser),
                 PeerScope::PairedUser,
-                "a claim may not widen a client peer: {forged:?}"
+                "a denied claim changes nothing for a client peer: {denied:?}"
             );
         }
+        // A claim of hosting is the one direction allowed: it narrows a client
+        // to the machine scope, which is how a device that later creates its
+        // first workspace is re-scoped on its next connection.
+        assert_eq!(
+            peer_scope(Some(true), PeerScope::PairedUser),
+            PeerScope::PeerDevice
+        );
+        assert_eq!(
+            peer_scope(Some(true), PeerScope::PeerDevice),
+            PeerScope::PeerDevice
+        );
         assert_eq!(PeerScope::recorded(true), PeerScope::PeerDevice);
         assert_eq!(PeerScope::recorded(false), PeerScope::PairedUser);
     }

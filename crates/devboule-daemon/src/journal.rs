@@ -956,6 +956,10 @@ enum JournalCmd {
         caps: Vec<String>,
         reply: mpsc::Sender<Result<PeerMutation, JournalError>>,
     },
+    PeerNoteWorkspaces {
+        device_id: String,
+        reply: mpsc::Sender<Result<PeerMutation, JournalError>>,
+    },
     AuditAppend {
         record: AuditRecord,
         at: Option<i64>,
@@ -1568,6 +1572,17 @@ impl Journal {
         self.rpc(|reply| JournalCmd::PeerSetCaps {
             device_id: device_id.to_string(),
             caps,
+            reply,
+        })
+    }
+
+    /// Record that a peer hosts workspaces. One-way on purpose: the column is
+    /// never cleared by a peer's later claim, because clearing it would widen
+    /// that connection's session scope. A revoked row is refused like every
+    /// other peer mutation.
+    pub fn peer_note_workspaces(&self, device_id: &str) -> Result<PeerMutation, JournalError> {
+        self.rpc(|reply| JournalCmd::PeerNoteWorkspaces {
+            device_id: device_id.to_string(),
             reply,
         })
     }
@@ -2505,6 +2520,13 @@ fn journal_loop(
                 }
                 let _ = reply.send(result);
             }
+            JournalCmd::PeerNoteWorkspaces { device_id, reply } => {
+                let result = note_peer_workspaces(&conn, &device_id);
+                if let Err(error) = &result {
+                    on_write_error(error);
+                }
+                let _ = reply.send(result);
+            }
             JournalCmd::AuditAppend { record, at, reply } => {
                 let result = append_audit(&conn, &record, at.unwrap_or_else(|| now_ms() as i64));
                 if let Err(error) = &result {
@@ -2898,6 +2920,31 @@ fn set_peer_caps(
     } else {
         PeerMutation::NotFound
     })
+}
+
+/// Record a peer as a workspace host, idempotently. The row is read before the
+/// write so "already recorded" and "revoked" stay distinct outcomes.
+fn note_peer_workspaces(conn: &Connection, device_id: &str) -> Result<PeerMutation, JournalError> {
+    let row: Option<(Option<i64>, bool)> = conn
+        .query_row(
+            "SELECT revoked_at, hosts_workspaces FROM peers WHERE device_id = ?1",
+            [device_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((revoked_at, hosts)) = row else {
+        return Ok(PeerMutation::NotFound);
+    };
+    if revoked_at.is_some() {
+        return Ok(PeerMutation::Revoked);
+    }
+    if !hosts {
+        conn.execute(
+            "UPDATE peers SET hosts_workspaces = 1 WHERE device_id = ?1",
+            [device_id],
+        )?;
+    }
+    Ok(PeerMutation::Updated)
 }
 
 fn append_audit(conn: &Connection, record: &AuditRecord, at: i64) -> Result<(), JournalError> {

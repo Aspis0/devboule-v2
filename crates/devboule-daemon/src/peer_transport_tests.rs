@@ -1266,9 +1266,10 @@ fn a_connected_peer_is_a_client_for_the_idle_exit() {
     let (reader, writer, closer) = split_session(&stream, session).expect("split");
     let framed = crate::framing::Framed::from_stream(reader, writer, closer);
     framed
-        .send(&ClientMessage::Hello(ClientHello::m3a(
+        .send(&ClientMessage::Hello(ClientHello::peer(
             OwnerId::new("peer_phone", "devboule-daemon").expect("owner"),
             "devboule-daemon",
+            true,
         )))
         .expect("the peer hello");
     // The daemon's own hello is the barrier: it is written from inside

@@ -148,17 +148,37 @@ pub(crate) fn handle_client(
         .capabilities
         .iter()
         .any(|capability| capability.as_str() == caps::REMOTE_HOSTS);
+    // A v32 peer states its workspace-host presence: the field is required on
+    // every dialect from 32 on, and absence is legal only for a negotiated
+    // v30/v31 hello. Accepting an absent bit would leave the scope to the
+    // record alone with no way to learn the peer's transition.
+    if conn_peer.is_some() && agreed.protocol_version >= 32 && client_hello.workspace_host.is_none()
+    {
+        framed.send(&DaemonMessage::Error(WireError::new(
+            ErrorCode::ProtocolVersionMismatch,
+            "a v32 peer hello must state its workspace presence",
+        )))?;
+        return Ok(());
+    }
     // The session register this connection reaches is what this daemon
-    // **recorded** for the device when its pairing was confirmed. The peer's
-    // own `workspaceHost` claim is not trusted here: a machine peer could
-    // claim "no workspace" to be handed the broader paired-user scope, and a
-    // device could claim "workspace" before any locally confirmed state
-    // established that it hosts one. The claim may be shown to a person; it
-    // never widens or narrows scope. See `peer_policy::peer_scope`.
+    // **recorded** for the device when its pairing was confirmed, narrowed by
+    // the peer's own presence claim. The claim may never widen: a machine peer
+    // claiming "no workspace" must not be handed the broader paired-user
+    // scope. A claim of "hosts" is applied and recorded, because that is the
+    // machine scope — the narrower one — and it is how a client device that
+    // later creates its first workspace is re-scoped on its next connection.
+    // See `peer_policy::peer_scope`.
     let conn_peer = conn_peer.map(|peer| {
         let scope = crate::peer_policy::peer_scope(client_hello.workspace_host, peer.scope());
         peer.with_scope(scope)
     });
+    if client_hello.workspace_host == Some(true) {
+        if let Some(ConnPeer::Remote { device_id, .. }) = &conn_peer {
+            if let Err(error) = state.peer_note_workspaces(device_id) {
+                eprintln!("daemon could not record a peer as a workspace host: {error}");
+            }
+        }
+    }
     // The hello owner is diagnostic only. All idempotency and session access
     // below use the identity decided above.
     //
@@ -213,6 +233,12 @@ pub(crate) fn handle_client(
         .any(|capability| capability.as_str() == caps::SESSION_RESUME_OUTCOMES);
     conn.set_resume_outcomes_negotiated(resume_outcomes_ok);
     conn.set_remote_hosts_negotiated(remote_hosts_ok);
+    conn.set_hosted_workspaces_negotiated(
+        agreed
+            .capabilities
+            .iter()
+            .any(|capability| capability.as_str() == caps::HOSTED_WORKSPACES),
+    );
     conn.set_browser_host_negotiated(
         agreed
             .capabilities
