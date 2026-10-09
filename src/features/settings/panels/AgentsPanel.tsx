@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { agentProfilesGet, agentProfilesSet, providersList } from "../../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../../lib/errorSentence";
+import { isInstalled } from "../../../lib/providerPredicates";
 import { ErrorText } from "../../../components/ErrorText";
 import {
   DELEGATION_CAPABILITY,
@@ -472,7 +473,7 @@ export function AgentProfilesPanel() {
   const installedProviders = useMemo(
     () =>
       (catalog?.providers ?? []).filter(
-        (provider) => provider.installed !== false && provider.enabled !== false,
+        (provider) => isInstalled(provider) && provider.enabled !== false,
       ),
     [catalog],
   );

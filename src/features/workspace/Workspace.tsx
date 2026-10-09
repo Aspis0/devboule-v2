@@ -1998,7 +1998,8 @@ export function Workspace({
               <div className="workspace-provider-empty">
                 <p className="workspace-provider-empty-text">
                   No agent CLI is installed on this machine. Install one — for example grok, claude,
-                  or gemini — then choose Refresh in Settings → Providers.
+                  or gemini — then choose Refresh in Settings → Providers. Run on demand (npx)
+                  agents are listed in Settings → Providers too, and they are not offered here.
                 </p>
                 <button
                   type="button"
@@ -2009,37 +2010,24 @@ export function Workspace({
                 </button>
               </div>
             ) : (
-              [
-                {
-                  label: "Installed",
-                  providers: providerPicker!.filter((provider) => !requiresConsent(provider)),
-                },
-                {
-                  label: "Available to install",
-                  providers: providerPicker!.filter((provider) => requiresConsent(provider)),
-                },
-              ]
-                .filter((group) => group.providers.length > 0)
-                .map((group) => (
-                  <div className="workspace-provider-group" key={group.label}>
-                    <div className="workspace-menu-label">{group.label}</div>
-                    <div className="workspace-surface-options">
-                      {group.providers.map((provider) => (
-                        <button
-                          type="button"
-                          role="option"
-                          className="workspace-surface-option"
-                          key={provider.id}
-                          onClick={(event) => {
-                            pickProvider(provider, event.currentTarget);
-                          }}
-                        >
-                          <span className="workspace-surface-name">{provider.id}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ))
+              <div className="workspace-provider-group">
+                <div className="workspace-menu-label">Installed</div>
+                <div className="workspace-surface-options">
+                  {providerPicker!.map((provider) => (
+                    <button
+                      type="button"
+                      role="option"
+                      className="workspace-surface-option"
+                      key={provider.id}
+                      onClick={(event) => {
+                        pickProvider(provider, event.currentTarget);
+                      }}
+                    >
+                      <span className="workspace-surface-name">{provider.id}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
             )}
           </>
         )}

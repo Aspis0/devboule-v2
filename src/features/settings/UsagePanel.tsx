@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ErrorText } from "../../components/ErrorText";
 import { providerEmptySentence } from "../../lib/providerEmptySentence";
+import { isInstalled } from "../../lib/providerPredicates";
 import { usePlanUsage } from "../../lib/planUsageStore";
 import { useTrackedRequest } from "../../lib/trackedRequest";
 import { providersList } from "../../lib/tauri";
@@ -128,9 +129,7 @@ export function UsagePanel() {
   }, []);
 
   const installed =
-    catalogState.status === "ready"
-      ? catalogState.value.providers.filter((provider) => provider.installed !== false)
-      : null;
+    catalogState.status === "ready" ? catalogState.value.providers.filter(isInstalled) : null;
   const unreadableDirs = catalogState.status === "ready" ? catalogState.value.unreadableDirs : 0;
 
   return (

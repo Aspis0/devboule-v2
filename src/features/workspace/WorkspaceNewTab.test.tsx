@@ -802,7 +802,7 @@ describe("the + new-tab menu", () => {
     expect(sessionCreate).not.toHaveBeenCalled();
   });
 
-  it("closes the provider picker and its consent card on window resize", async () => {
+  it("closes the provider picker on window resize", async () => {
     vi.mocked(providersList).mockResolvedValue({
       providers: [grokProvider, claudeProvider],
       unreadableDirs: 0,
@@ -820,25 +820,6 @@ describe("the + new-tab menu", () => {
 
     expect(document.querySelector('[aria-label="Choose agent"]')).toBeNull();
     expect(sessionCreate).not.toHaveBeenCalled();
-
-    // The consent card over the same flow closes too, and the focus rule
-    // takes back the focus its unmount dropped.
-    vi.mocked(providersList).mockResolvedValue({
-      providers: [startedNpxProvider],
-      unreadableDirs: 0,
-    });
-    await openMenu(container);
-    await act(async () => menuItem(container, "Agent").click());
-    await act(async () => undefined);
-    expect(document.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
-
-    await act(async () => {
-      window.dispatchEvent(new Event("resize"));
-    });
-
-    expect(document.querySelector('[aria-label="Confirm agent"]')).toBeNull();
-    expect(sessionCreate).not.toHaveBeenCalled();
-    expect(document.activeElement).toBe(addButton(container));
   });
 
   it("a successful Terminal create does not take focus back to + because of an earlier provider error", async () => {
@@ -1546,7 +1527,8 @@ describe("the + new-tab menu", () => {
     expect(sessionCreate).not.toHaveBeenCalled();
   });
 
-  it("runs the npx consent flow before creating a session from Agent", async () => {
+  it("an npx-only catalog never starts a session from Agent: the empty picker points to Settings", async () => {
+    // Started or not, a run-on-demand provider is listed in Settings only.
     vi.mocked(providersList).mockResolvedValue({
       providers: [startedNpxProvider],
       unreadableDirs: 0,
@@ -1557,60 +1539,43 @@ describe("the + new-tab menu", () => {
     await act(async () => menuItem(container, "Agent").click());
     await act(async () => undefined);
 
-    expect(document.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
+    const picker = document.querySelector('[aria-label="Choose agent"]');
+    expect(picker?.textContent).toContain("No agent CLI is installed on this machine.");
+    expect(picker?.textContent).toContain("Run on demand (npx)");
+    expect(picker?.textContent).not.toContain("codex-acp");
+    expect(document.querySelector('[aria-label="Confirm agent"]')).toBeNull();
     expect(sessionCreate).not.toHaveBeenCalled();
+  });
 
-    const confirm = document.querySelector<HTMLButtonElement>(".workspace-primary-action");
-    if (confirm === null) throw new Error("Confirm button did not render");
-    await act(async () => confirm.click());
+  it("keeps an installed provider whose last start failed in the picker", async () => {
+    vi.mocked(providersList).mockResolvedValue({
+      providers: [{ ...claudeProvider, authentication: "failed: exit 1" }, grokProvider],
+      unreadableDirs: 0,
+    });
+    ({ container, unmount } = await renderWorkspace());
+
+    await openMenu(container);
+    await act(async () => menuItem(container, "Agent").click());
     await act(async () => undefined);
 
-    expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "acp", "codex-acp");
+    const menu = document.querySelector('[aria-label="Choose agent"]');
+    if (menu === null) throw new Error("provider popover did not render");
+    const options = Array.from(menu.querySelectorAll("button")).map((button) => button.textContent);
+    expect(options).toEqual(["claude", "grok"]);
   });
 
   it("names the creation in the status bar while the session is starting", async () => {
-    vi.mocked(providersList).mockResolvedValue({
-      providers: [startedNpxProvider],
-      unreadableDirs: 0,
-    });
+    vi.mocked(providersList).mockResolvedValue({ providers: [claudeProvider], unreadableDirs: 0 });
     vi.mocked(sessionCreate).mockImplementationOnce(() => new Promise<never>(() => undefined));
     ({ container, unmount } = await renderWorkspace());
 
     await openMenu(container);
     await act(async () => menuItem(container, "Agent").click());
     await act(async () => undefined);
-    const confirm = document.querySelector<HTMLButtonElement>(".workspace-primary-action");
-    if (confirm === null) throw new Error("Confirm button did not render");
-    await act(async () => confirm.click());
-    await act(async () => undefined);
 
     const bar = container.querySelector(".workspace-status-bar");
     expect(bar?.querySelector(".status-bar-state")?.textContent).toBe("Starting…");
     expect(bar?.querySelector('[role="status"]')?.textContent).toBe("Starting…");
-  });
-
-  it("returns focus to the + button when the single-npx consent is cancelled", async () => {
-    // With one npx provider no picker opens, so the consent card is the only
-    // stop between the menu's Agent entry and Escape; cancelling must hand
-    // focus back to the + button rather than dropping it on the body.
-    vi.mocked(providersList).mockResolvedValue({
-      providers: [startedNpxProvider],
-      unreadableDirs: 0,
-    });
-    ({ container, unmount } = await renderWorkspace());
-
-    await openMenu(container);
-    await act(async () => menuItem(container, "Agent").click());
-    await act(async () => undefined);
-
-    expect(document.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
-    await act(async () => {
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    });
-
-    expect(document.querySelector('[aria-label="Confirm agent"]')).toBeNull();
-    expect(sessionCreate).not.toHaveBeenCalled();
-    expect(document.activeElement).toBe(addButton(container));
   });
 
   it("gates before create: with no chat-capable provider the empty picker opens and no session_create runs", async () => {

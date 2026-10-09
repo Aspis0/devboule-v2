@@ -160,7 +160,7 @@ describe("workspace session controller", () => {
     expect(requiresConsent(providers[2])).toBe(false);
   });
 
-  it("workspace picker shows installed CLIs and run-on-demand providers only once started OK", () => {
+  it("workspace picker lists installed, non-npx providers whatever their start history", () => {
     const installed = {
       id: "grok",
       executable: "grok.exe",
@@ -169,23 +169,22 @@ describe("workspace session controller", () => {
       protocol: "acp" as const,
       origin: "user-binary" as const,
     };
-    const neverStarted = {
+    const failedInstalled = { ...installed, id: "qwen", authentication: "failed: exit 1" };
+    const npx = {
       id: "codex-acp",
       executable: "@agentclientprotocol/codex-acp@1.10.0",
       acpAvailable: true,
-      authentication: "unknown" as const,
+      authentication: "ok" as const,
       protocol: "acp" as const,
       origin: "npx-wrapper" as const,
     };
-    const startedOk = { ...neverStarted, id: "gemini-acp", authentication: "ok" };
-    const failedStart = { ...neverStarted, id: "qwen-acp", authentication: "failed: exit 1" };
     const notInstalled = { ...installed, id: "claude-remote", installed: false };
 
     expect(
-      workspacePickerProviders([installed, neverStarted, startedOk, failedStart, notInstalled]).map(
+      workspacePickerProviders([installed, failedInstalled, npx, notInstalled]).map(
         (provider) => provider.id,
       ),
-    ).toEqual(["grok", "gemini-acp"]);
+    ).toEqual(["grok", "qwen"]);
   });
 
   it("hides switched-off providers from the new-session picker", () => {

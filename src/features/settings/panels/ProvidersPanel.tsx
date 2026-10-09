@@ -9,11 +9,8 @@ import { errorSentence, type ErrorSentence } from "../../../lib/errorSentence";
 import { ErrorText } from "../../../components/ErrorText";
 import { useAppStore } from "../../../store/appStore";
 import { providerEmptySentence } from "../../../lib/providerEmptySentence";
-import {
-  isInstalled,
-  isRunOnDemand,
-  sharedSessionController,
-} from "../../workspace/workspaceSessions";
+import { sharedSessionController } from "../../workspace/workspaceSessions";
+import { isInstalled, isRunOnDemand } from "../../../lib/providerPredicates";
 import { hasTerminalInput, requestTerminalInput } from "../../terminal/pendingTerminalInput";
 import { useSettingsDaemon } from "../settingsDaemon";
 import {

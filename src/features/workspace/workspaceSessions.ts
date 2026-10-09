@@ -22,6 +22,7 @@ import { isAgentKind } from "../../types/ipc";
 import { localWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
 import { boundByGraphemes } from "../../lib/graphemeBound";
 import { errorSentence } from "../../lib/errorSentence";
+import { isInstalled, isRunOnDemand } from "../../lib/providerPredicates";
 import { lastFittedGrid } from "../terminal/lastFittedGrid";
 import { fireAttentionToast, forgetAttentionFor, markAttentionSeen } from "./attentionNotice";
 import { createOpenSessionTabs, openTabsStorage } from "./openSessionTabs";
@@ -919,26 +920,13 @@ export function chatCapableProviders(providers: ProviderInfo[]): ProviderInfo[] 
   );
 }
 
-/** Registry agents that start through npx on demand: nothing is installed for them here. */
-export function isRunOnDemand(provider: ProviderInfo): boolean {
-  return provider.origin === "npx-wrapper";
-}
-
-/** Settings > Providers' "Installed" test: the daemon sends `installed: false` only on synthetic rows. */
-export function isInstalled(provider: ProviderInfo): boolean {
-  return provider.installed !== false;
-}
-
 /**
- * The workspace picker's list: installed CLIs, plus run-on-demand providers
- * that started OK. The full catalog stays in Settings > Providers.
+ * The workspace picker's list: installed local CLIs. Run-on-demand (npx)
+ * providers live only in Settings > Providers.
  */
 export function workspacePickerProviders(providers: ProviderInfo[]): ProviderInfo[] {
-  // The daemon keeps only the latest start's result, so "ok" means the last
-  // start completed, not that it ever did.
   return chatCapableProviders(providers).filter(
-    (provider) =>
-      isInstalled(provider) && (!isRunOnDemand(provider) || provider.authentication === "ok"),
+    (provider) => isInstalled(provider) && !isRunOnDemand(provider),
   );
 }
 
