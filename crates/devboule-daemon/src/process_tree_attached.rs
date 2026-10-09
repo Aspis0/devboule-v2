@@ -64,7 +64,12 @@ impl Drop for Held {
 /// The root and its live descendants that are members of the job. A child must
 /// have been created no earlier than its parent, so a PID the OS reused for an
 /// unrelated process is not followed through a stale parent link.
-pub(super) fn capture(root: u32, job_members: &[u32]) -> CapturedTree {
+pub(super) fn capture(
+    root: u32,
+    expected_root_created_at: Option<u64>,
+    job_members: &[u32],
+    fresh_members: &dyn Fn() -> Vec<u32>,
+) -> CapturedTree {
     let mut tree = CapturedTree::default();
     let Some(parents) = process_parents() else {
         eprintln!("the process snapshot is unavailable, so only the terminal's shell is stopped");
@@ -80,6 +85,11 @@ pub(super) fn capture(root: u32, job_members: &[u32]) -> CapturedTree {
     let Some(root_held) = Held::open(root) else {
         return tree;
     };
+    // The spawn-time identity: a reused PID opens as its successor, so a root
+    // whose clock disagrees with the spawn's is not the shell.
+    if expected_root_created_at != Some(root_held.created_at) {
+        return tree;
+    }
     tree.members.push(root_held);
     let mut next = 0;
     while next < tree.members.len() {
@@ -92,6 +102,11 @@ pub(super) fn capture(root: u32, job_members: &[u32]) -> CapturedTree {
             let Some(held) = Held::open(child) else {
                 continue;
             };
+            // The snapshot predates the open: a PID reused in between opens as
+            // its successor, so membership and the clock are re-proved here.
+            if !fresh_members().contains(&held.pid) {
+                continue;
+            }
             if held.created_at < parent_created_at {
                 continue;
             }

@@ -19,6 +19,7 @@ mod platform {
 
     #[cfg(feature = "server")]
     use super::attached::{self, CapturedTree};
+    use crate::process_index::read_creation_time;
 
     // `CloseHandle` and `HANDLE` serve `JobObject` in every build. The
     // remaining names are used only by `ProcessHandle`, which is behind
@@ -36,7 +37,9 @@ mod platform {
         TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
-    use windows_sys::Win32::System::Threading::ResumeThread;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, ResumeThread, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
     #[cfg(feature = "server")]
     use windows_sys::Win32::System::Threading::{
         GetCurrentProcess, GetExitCodeProcess, WaitForSingleObject,
@@ -50,7 +53,7 @@ mod platform {
     #[derive(Debug)]
     enum Scope {
         Whole,
-        Attached { root: u32 },
+        Attached { root: u32, created_at: Option<u64> },
     }
 
     /// An owned Job Object. Every job is created empty for exactly one child
@@ -77,7 +80,10 @@ mod platform {
         /// A job for a terminal's shell. It records membership and kills nothing
         /// on close, so a process the shell detached outlives the terminal.
         pub fn attached(root: u32) -> io::Result<Self> {
-            Self::create(Scope::Attached { root })
+            Self::create(Scope::Attached {
+                root,
+                created_at: root_creation_time(root),
+            })
         }
 
         /// A terminal's job by opener: an agent's terminal owns the whole job so
@@ -177,8 +183,12 @@ mod platform {
         pub fn capture_tree(&self) -> CapturedTree {
             match self.scope {
                 Scope::Whole => CapturedTree::default(),
-                Scope::Attached { root } => match self.pids() {
-                    Ok(members) => attached::capture(root, &members),
+                Scope::Attached { root, created_at } => match self.pids() {
+                    Ok(members) => {
+                        attached::capture(root, created_at, &members, &|| {
+                            self.pids().unwrap_or_default()
+                        })
+                    }
                     Err(error) => {
                         eprintln!(
                             "could not read the terminal's processes, so only its shell is stopped: {error}"
@@ -285,6 +295,19 @@ mod platform {
             return Err(io::Error::last_os_error());
         }
         Ok(())
+    }
+
+    /// The root's creation time at spawn, the identity a later open proves
+    /// against. `None` when the kernel would not vouch for it even then.
+    fn root_creation_time(pid: u32) -> Option<u64> {
+        let handle =
+            unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return None;
+        }
+        let created_at = read_creation_time(handle);
+        unsafe { CloseHandle(handle) };
+        created_at
     }
 
     impl Drop for JobObject {
