@@ -33,6 +33,10 @@ fn platform_refusal(signals_bind_identity: bool) -> Option<&'static str> {
     (!signals_bind_identity).then_some("signals_cannot_bind_identity")
 }
 
+/// The refusal when the plan holds more processes than the card can list.
+const TOO_MANY_SENTENCE: &str =
+    "refused: the plan holds more processes than the card can list exactly; nothing was stopped";
+
 /// The refusal when this platform cannot bind a signal to a verified process.
 const PLATFORM_SENTENCE: &str =
     "refused: this platform cannot bind a signal to the verified process; nothing was stopped";
@@ -67,36 +71,36 @@ fn cleanup_reply(
     )
 }
 
-/// The exe names the card shows for the plan: unique basenames, at most
-/// eight, with a marker when the plan holds more.
-fn executables_line(targets: &[PlanTarget]) -> String {
-    const SHOWN: usize = 8;
-    let mut names: Vec<String> = Vec::new();
-    let mut overflowed = false;
-    for target in targets {
-        let name = target
-            .exe
-            .as_deref()
-            .map(|exe| {
-                std::path::Path::new(exe)
-                    .file_name()
-                    .map(|base| base.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| exe.to_string())
-            })
-            .unwrap_or_else(|| "unknown".to_string());
-        if names.contains(&name) {
-            continue;
-        }
-        if names.len() == SHOWN {
-            overflowed = true;
-            break;
-        }
-        names.push(name);
-    }
-    if overflowed {
-        names.push("…".to_string());
-    }
-    names.join(", ")
+/// The most targets a card lists one by one. A larger plan is refused: a
+/// person must not approve a list that is shown only in part.
+const LISTED_TARGET_LIMIT: usize = 32;
+
+fn exact_list_fits(count: usize) -> bool {
+    count <= LISTED_TARGET_LIMIT
+}
+
+/// The card's exact target line: every target's pid and image basename, in
+/// pid order, so two processes of the same image are two entries.
+fn targets_line(targets: &[PlanTarget]) -> String {
+    let mut ordered: Vec<&PlanTarget> = targets.iter().collect();
+    ordered.sort_by_key(|target| target.pid);
+    ordered
+        .iter()
+        .map(|target| {
+            let image = target
+                .exe
+                .as_deref()
+                .map(|exe| {
+                    std::path::Path::new(exe)
+                        .file_name()
+                        .map(|base| base.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| exe.to_string())
+                })
+                .unwrap_or_else(|| "unknown".to_string());
+            format!("{} {image}", target.pid)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// `devboule_cleanup_processes`: the caller's own session's proven members,
@@ -178,12 +182,22 @@ pub(in crate::mcp_broker) fn cleanup(
         return cleanup_reply(id, Vec::new(), Vec::new(), plan.unproven, skipped);
     }
     let count = plan.targets.len();
+    if !exact_list_fits(count) {
+        audit_mcp_tool(
+            state,
+            &caller,
+            crate::provider_catalog::MCP_CLEANUP_PROCESSES_TOOL,
+            &registration.session_id,
+            &audit::refused("too_many_to_list"),
+        );
+        return Err(tool_error(&id, TOO_MANY_SENTENCE));
+    }
     let count_text = count.to_string();
-    let executables = executables_line(&plan.targets);
+    let targets = targets_line(&plan.targets);
     let facts: [(&str, &str); 3] = [
         ("session", label.as_str()),
         ("processes", count_text.as_str()),
-        ("executables", executables.as_str()),
+        ("targets", targets.as_str()),
     ];
     let subject = format!("stop {count} processes of {label}");
     let approval = match ensure_write_approved(
@@ -235,13 +249,7 @@ pub(in crate::mcp_broker) fn cleanup(
         &caller,
         crate::provider_catalog::MCP_CLEANUP_PROCESSES_TOOL,
         &registration.session_id,
-        &audit::finished(
-            approval,
-            count,
-            &executables,
-            &termination,
-            &executed.unproven,
-        ),
+        &audit::finished(approval, count, &targets, &termination, &executed.unproven),
     );
     skipped.extend(executed.late);
     skipped.extend(termination.skipped);
@@ -343,31 +351,26 @@ mod tests {
         assert_eq!(platform_refusal(true), None);
     }
 
-    /// The card's executable line: unique basenames, at most eight, and a
-    /// marker when the plan holds more.
+    /// The card names every target by pid and image: two processes with the
+    /// same image are two entries, in pid order.
     #[test]
-    fn executables_line_shows_unique_basenames_capped_with_a_marker() {
-        let target = |exe: Option<&str>| PlanTarget {
-            pid: 1,
+    fn targets_line_names_each_target_by_pid_and_image() {
+        let target = |pid: u32, exe: Option<&str>| PlanTarget {
+            pid,
             started_at_ms: 0,
             exe: exe.map(str::to_string),
         };
         assert_eq!(
-            executables_line(&[target(Some("/a/node")), target(Some("/b/node"))]),
-            "node"
+            targets_line(&[target(12, Some("/b/node")), target(9, Some("/a/node"))]),
+            "9 node, 12 node"
         );
-        assert_eq!(
-            executables_line(&[target(None), target(Some("/x/sh.exe"))]),
-            "unknown, sh.exe"
-        );
-        let many: Vec<PlanTarget> = (0..12).map(|_| target(Some("/bin/tool"))).collect();
-        assert_eq!(executables_line(&many), "tool", "the same exe counts once");
-        let distinct: Vec<PlanTarget> = (0..10)
-            .map(|index| target(Some(&format!("/bin/p{index}"))))
-            .collect();
-        assert_eq!(
-            executables_line(&distinct),
-            "p0, p1, p2, p3, p4, p5, p6, p7, …"
-        );
+        assert_eq!(targets_line(&[target(7, None)]), "7 unknown");
+    }
+
+    /// A plan the card cannot list in full is refused, never shown in part.
+    #[test]
+    fn a_plan_too_large_to_list_exactly_is_refused() {
+        assert!(exact_list_fits(LISTED_TARGET_LIMIT));
+        assert!(!exact_list_fits(LISTED_TARGET_LIMIT + 1));
     }
 }

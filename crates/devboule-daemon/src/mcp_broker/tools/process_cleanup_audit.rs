@@ -30,13 +30,13 @@ fn approver(approval: Approval) -> &'static str {
 pub(super) fn finished(
     approval: Approval,
     planned: usize,
-    executables: &str,
+    targets: &str,
     termination: &Termination,
     unproven: &[u32],
 ) -> String {
     let partial = !termination.still_running.is_empty() || !termination.skipped.is_empty();
     let mut row = format!(
-        "{}; {}: {planned} planned ({executables}); terminated {}",
+        "{}; {}: {planned} planned ({targets}); terminated {}",
         if partial { "partial" } else { "ok" },
         approver(approval),
         list(&termination.terminated),
