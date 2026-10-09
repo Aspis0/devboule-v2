@@ -9,6 +9,7 @@ const DOT_LABELS: Record<WorkspaceStateDot, string> = {
   pulse: "running",
   attention: "needs attention",
   unattended: "running unattended",
+  idle: "idle",
 };
 
 export interface RowFact {
@@ -22,7 +23,9 @@ export interface RowFact {
 /**
  * The one fact the row prints right of the name: what the workspace is doing,
  * else when it last spoke — and nothing when it has neither, so a quiet row
- * prints its name alone. What is uncommitted rides the row's second line.
+ * prints its name alone. An idle row keeps its age beside the marker, the
+ * way an agent row keeps its quiet age beside what it is doing. What is
+ * uncommitted rides the row's second line.
  */
 export function rowFact(workspace: WorkspaceView): RowFact | null {
   const { working, waiting } = workspace.agents;
@@ -32,6 +35,10 @@ export function rowFact(workspace: WorkspaceView): RowFact | null {
   if (parts.length === 0) {
     if (workspace.stateDot !== null) {
       parts.push({ text: DOT_LABELS[workspace.stateDot], attention: false });
+      if (workspace.stateDot === "idle") {
+        const age = compactAge(workspace.elapsedMs);
+        if (age !== null) parts.push({ text: age, attention: false });
+      }
     } else {
       const age = compactAge(workspace.elapsedMs);
       if (age !== null) parts.push({ text: age, attention: false });

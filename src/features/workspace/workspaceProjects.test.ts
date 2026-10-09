@@ -39,7 +39,8 @@ describe("workspaceView", () => {
       attention: { reason: "permission", atMs: 1 },
       unattended: "yes",
     });
-    expect(workspaceView(workspace, [ended]).stateDot).toBeNull();
+    // Settled, not asking: idle, with neither leaked marker.
+    expect(workspaceView(workspace, [ended]).stateDot).toBe("idle");
     expect(workspaceView(workspace, [ended, session()]).stateDot).toBe("pulse");
   });
 
@@ -106,6 +107,25 @@ describe("workspaceView", () => {
     expect(workspaceView(workspace, [attention, unattendedSession]).stateDot).toBe("attention");
     expect(workspaceView(workspace, [unattendedSession]).stateDot).toBe("unattended");
     expect(workspaceView(workspace, [session()]).stateDot).toBe("pulse");
+    expect(workspaceView(workspace, []).stateDot).toBeNull();
+  });
+
+  it("marks settled-only workspaces idle, and leaves silent and empty ones dotless", () => {
+    const ended = session({
+      state: { type: "ended", generation: 1, code: 0, integrity: { kind: "complete" } },
+    });
+    const recovered = session({
+      state: {
+        type: "recovered",
+        generation: 2,
+        integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
+      },
+    });
+    const silent = session({ state: { type: "silent", generation: 1 } });
+    expect(workspaceView(workspace, [ended]).stateDot).toBe("idle");
+    expect(workspaceView(workspace, [recovered]).stateDot).toBe("idle");
+    // A silent session still holds its process: quiet, never idle.
+    expect(workspaceView(workspace, [silent]).stateDot).toBeNull();
     expect(workspaceView(workspace, []).stateDot).toBeNull();
   });
 });

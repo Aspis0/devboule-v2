@@ -200,7 +200,33 @@ describe("the workspace row's one line", () => {
       ]),
     );
 
-    expect(row.querySelector(".workspace-row-fact")?.textContent).toBe("4m");
+    // Settled reads idle, in the chips' quiet tone, with its age beside it.
+    const fact = row.querySelector(".workspace-row-fact");
+    expect(fact?.textContent).toContain("idle");
+    expect(fact?.textContent).toContain("4m");
+    expect(row.querySelector(".sidebar-row-dot-idle")).not.toBeNull();
+  });
+
+  it("reads a settled workspace with no reported silence as idle alone", async () => {
+    const row = await render(
+      workspaceView(workspace(), [
+        rosterSession({
+          state: { type: "ended", generation: 1, code: 0, integrity: { kind: "complete" } },
+          elapsedMs: null,
+        }),
+      ]),
+    );
+
+    expect(row.querySelector(".workspace-row-fact")?.textContent).toBe("idle");
+    expect(row.querySelector(".sidebar-row-dot-idle")).not.toBeNull();
+  });
+
+  it("leaves a silent-only workspace dotless", async () => {
+    const row = await render(
+      workspaceView(workspace(), [rosterSession({ state: { type: "silent", generation: 1 } })]),
+    );
+
+    expect(row.querySelector('[class*="sidebar-row-dot"]')).toBeNull();
   });
 
   it("prints no time for a workspace whose roster carries no activity fact", async () => {

@@ -52,7 +52,7 @@ export interface WorkspaceView extends HostWorkspace {
    */
   elapsedMs: number | null;
   /** The row's state dot, in the tab chips' vocabulary. */
-  stateDot: "pulse" | "attention" | "unattended" | null;
+  stateDot: "pulse" | "attention" | "unattended" | "idle" | null;
 }
 
 /** The UI's name for a workspace: it is never the value the daemon is sent. */
@@ -152,6 +152,13 @@ function workspaceViewFromIndex(
   const unattended = sessionsOfWorkspace.some(
     (session) => session.state.type !== "ended" && session.unattended === "yes",
   );
+  // A silent session still holds its process: quiet, never idle — so only a
+  // workspace with no live, silent, waiting or unattended session reads idle.
+  const settled =
+    sessionsOfWorkspace.length > 0 &&
+    !sessionsOfWorkspace.some(
+      (session) => session.state.type === "live" || session.state.type === "silent",
+    );
   return {
     ...workspace,
     displayTitle,
@@ -164,7 +171,9 @@ function workspaceViewFromIndex(
           ? "unattended"
           : live.length > 0
             ? "pulse"
-            : null,
+            : settled
+              ? "idle"
+              : null,
   };
 }
 
