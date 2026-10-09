@@ -49,9 +49,13 @@ export const ToolRow = memo(function ToolRow({
   const noOutputRow = rowShowsNoOutput(item.kind, item.title);
   const quiet = noOutputRow && !failed;
   const screenshot = isScreenshotRow(item.kind, item.title);
+  // The line starts closed; only the person's own open shows the output.
+  const [opened, setOpened] = useOpenedRow(item.id);
+  // The output is split only for a line the person opened, or for a failure's excerpt.
+  const needsLines = (opened || failed) && !quiet;
   const lines = useMemo(
-    () => (quiet ? [] : outputLines(hideUntrustedFrame(item.output))),
-    [item.output, quiet],
+    () => (needsLines ? outputLines(hideUntrustedFrame(item.output)) : []),
+    [item.output, needsLines],
   );
   const isEdit = item.kind === "edit" || item.kind === "delete";
   // A file row's summary is the path itself, so it prints with forward slashes.
@@ -76,14 +80,14 @@ export const ToolRow = memo(function ToolRow({
   // A screenshot's picture stands under its line; any other picture waits behind it.
   const picture = screenshot && hasImages;
   const bodyImages = hasImages && !picture && !noOutputRow;
+  // Decided from the raw output, so a closed line does not split it to know it has some.
+  const bodyOutput = !isPlan && (noOutputRow ? failed : !failed) && item.output.trim().length > 0;
   const hasBody =
     linkUrl !== undefined ||
     locations.length > 0 ||
-    bodyLines.length > 0 ||
+    bodyOutput ||
     (isPlan && item.output.length > 0) ||
     bodyImages;
-  // The line starts closed; only the person's own open shows the output.
-  const [opened, setOpened] = useOpenedRow(item.id);
   const toolClassName = `${className}${isPlan ? " is-plan" : ""}${running ? " is-running" : ""}${failed ? " is-failed" : ""}${cancelled ? " is-cancelled" : ""}${interrupted ? ` ${INTERRUPTED_TOOL_CLASS}` : ""}`;
   const line: ReactNode = (
     <>
