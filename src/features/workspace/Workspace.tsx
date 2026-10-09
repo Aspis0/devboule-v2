@@ -32,6 +32,7 @@ import { SIDE_PANEL_BODY_ID, SidePanelTabs, sidePanelTabId } from "./panel/SideP
 import { useMenuOpen } from "../../lib/menuOpen";
 import { TerminalSurface } from "../terminal/TerminalSurface";
 import { AgentChatSurface } from "./AgentChatSurface";
+import { RemoteWorkspaceSurface } from "./RemoteWorkspaceSurface";
 import { pendingPlanId } from "./pendingPlanId";
 import {
   composeStripTabs,
@@ -311,6 +312,15 @@ export function Workspace({
   // What the daemon is sent: the selection's own id, never its key.
   const selectedWorkspaceId =
     selectedKey === null ? null : parseWorkspaceKey(selectedKey).workspaceId;
+
+  // The selected workspace's host, when it is not this machine: the surface
+  // switches to the read-only remote view for it, and the local strip and
+  // chat panes keep their state for when a local workspace is selected again.
+  const selectedRemoteHost = useMemo(() => {
+    if (selectedKey === null) return null;
+    const parsed = parseWorkspaceKey(selectedKey);
+    return parsed.hostId === LOCAL_HOST_ID ? null : parsed;
+  }, [selectedKey]);
   const {
     leftWidth,
     rightWidth,
@@ -2101,353 +2111,364 @@ export function Workspace({
               and back. display:none drops it from the tab order and the
               accessibility tree while the page is up. */}
           <div className={historyOpen ? "workspace-center-hidden" : "workspace-center-live"}>
-            <>
-              <SessionStrip
-                tabs={composedTabs}
-                activeTabId={activeTabId}
-                selectTab={selectTab}
-                tabSelection={tabSelection}
-                tabClose={tabClose}
-                addButtonRef={addButtonRef}
-                newTab={{
-                  open: newTabMenuOpen,
-                  creating: sessionCreating || providerChoosing,
-                  workspaceSelected: selectedKey !== null,
-                  onToggle: () => setNewTabMenuOpen((open) => !open),
-                  onAgent: handleNewTabAgent,
-                  onTerminal: handleNewTabTerminal,
-                  onBrowser: handleNewTabBrowser,
-                  onCloseMenu: dismissNewTabMenu,
-                }}
-                providerMenu={providerAnchor?.kind === "strip" ? providerMenu : null}
-                peerNames={peerNames}
-                resolveCreator={resolveCreator}
-                takeBackAvailable={takeBackAvailable}
-                onTakeBack={takeBack}
-                overviewSessions={overviewSessions}
-                workspaceName={workspaceName}
-                onOpenSession={handleOpenOverviewSession}
-                selectedSessionId={selectedSessionId}
-                onMoveTab={moveStripTab}
-                onStripPointerDown={startTabDrag}
+            {selectedRemoteHost === null ? null : (
+              <RemoteWorkspaceSurface
+                deviceId={selectedRemoteHost.hostId}
+                workspaceId={selectedRemoteHost.workspaceId}
+                hostOnline={hostOnlineMap.get(selectedRemoteHost.hostId) === true}
               />
-              <SplitDragLayer
-                ref={dragLayerRef}
-                hasTab={hasLiveTab}
-                markAt={tabInsertionAt}
-                scrollStrip={scrollStripAt}
-                onDrop={dropTab}
-                boxes={() => ({
-                  area: centerRef.current,
-                  strip: document.querySelector<HTMLElement>(".workspace-session-tabs"),
-                })}
-              />
-              {/* What a pane act did, for a keyboard that cannot see the pane move. */}
-              <div className="workspace-sr-only" role="status" aria-live="polite">
-                {paneAnnouncement}
-              </div>
-              <DaemonRestartNotice
-                instanceId={daemon.instanceId}
-                hasRecovered={sessions.some(isRecoveredSession)}
-              />
-
-              {closeFailures.length > 0 ? (
-                // A close that did not go through — or a target that went stale
-                // between the ask and the click — is named here, one line per
-                // session. The store owns it: a later clean close or a
-                // session_not_found for the same session and generation clears its
-                // line. The heading stays neutral because the list can mix
-                // archives with deletes; each line names its own verb.
-                <div className="workspace-session-error" role="alert">
-                  <span className="workspace-session-error-text">
-                    These closes didn&apos;t go through:
-                  </span>
-                  {closeFailures.map((failure) => (
-                    <span
-                      className="workspace-session-error-text"
-                      key={failure.id}
-                      title={failure.detail ?? undefined}
-                      aria-describedby={
-                        failure.detail !== null ? `close-failure-${failure.id}-detail` : undefined
-                      }
-                    >
-                      {failure.message}
-                      {failure.detail !== null ? (
-                        <span
-                          id={`close-failure-${failure.id}-detail`}
-                          className="error-detail-sr-only"
-                        >
-                          {failure.detail}
-                        </span>
-                      ) : null}
-                    </span>
-                  ))}
-                  <button
-                    type="button"
-                    className="workspace-session-error-dismiss"
-                    onClick={() => closeActions.clearFailures()}
-                    aria-label="Dismiss error"
-                    title="Dismiss error"
-                  >
-                    ×
-                  </button>
+            )}
+            {selectedRemoteHost === null ? (
+              <>
+                <SessionStrip
+                  tabs={composedTabs}
+                  activeTabId={activeTabId}
+                  selectTab={selectTab}
+                  tabSelection={tabSelection}
+                  tabClose={tabClose}
+                  addButtonRef={addButtonRef}
+                  newTab={{
+                    open: newTabMenuOpen,
+                    creating: sessionCreating || providerChoosing,
+                    workspaceSelected: selectedKey !== null,
+                    onToggle: () => setNewTabMenuOpen((open) => !open),
+                    onAgent: handleNewTabAgent,
+                    onTerminal: handleNewTabTerminal,
+                    onBrowser: handleNewTabBrowser,
+                    onCloseMenu: dismissNewTabMenu,
+                  }}
+                  providerMenu={providerAnchor?.kind === "strip" ? providerMenu : null}
+                  peerNames={peerNames}
+                  resolveCreator={resolveCreator}
+                  takeBackAvailable={takeBackAvailable}
+                  onTakeBack={takeBack}
+                  overviewSessions={overviewSessions}
+                  workspaceName={workspaceName}
+                  onOpenSession={handleOpenOverviewSession}
+                  selectedSessionId={selectedSessionId}
+                  onMoveTab={moveStripTab}
+                  onStripPointerDown={startTabDrag}
+                />
+                <SplitDragLayer
+                  ref={dragLayerRef}
+                  hasTab={hasLiveTab}
+                  markAt={tabInsertionAt}
+                  scrollStrip={scrollStripAt}
+                  onDrop={dropTab}
+                  boxes={() => ({
+                    area: centerRef.current,
+                    strip: document.querySelector<HTMLElement>(".workspace-session-tabs"),
+                  })}
+                />
+                {/* What a pane act did, for a keyboard that cannot see the pane move. */}
+                <div className="workspace-sr-only" role="status" aria-live="polite">
+                  {paneAnnouncement}
                 </div>
-              ) : null}
+                <DaemonRestartNotice
+                  instanceId={daemon.instanceId}
+                  hasRecovered={sessions.some(isRecoveredSession)}
+                />
 
-              {sessionsError !== null &&
-              (sessionsError.workspaceKey === null ||
-                sessionsError.workspaceKey === selectedKey) ? (
-                // The one render of the create/list failure: the spec's inline error
-                // line (12, --danger, triangle), shown over the workspace the
-                // failure belongs to. The daemon's own words ride in the tooltip
-                // and the described-by node — never painted beside the sentence.
-                <div
-                  className="workspace-error-line"
-                  role="alert"
-                  title={sessionsError.detail ?? undefined}
-                  aria-describedby={
-                    sessionsError.detail !== null ? "workspace-session-error-detail" : undefined
+                {closeFailures.length > 0 ? (
+                  // A close that did not go through — or a target that went stale
+                  // between the ask and the click — is named here, one line per
+                  // session. The store owns it: a later clean close or a
+                  // session_not_found for the same session and generation clears its
+                  // line. The heading stays neutral because the list can mix
+                  // archives with deletes; each line names its own verb.
+                  <div className="workspace-session-error" role="alert">
+                    <span className="workspace-session-error-text">
+                      These closes didn&apos;t go through:
+                    </span>
+                    {closeFailures.map((failure) => (
+                      <span
+                        className="workspace-session-error-text"
+                        key={failure.id}
+                        title={failure.detail ?? undefined}
+                        aria-describedby={
+                          failure.detail !== null ? `close-failure-${failure.id}-detail` : undefined
+                        }
+                      >
+                        {failure.message}
+                        {failure.detail !== null ? (
+                          <span
+                            id={`close-failure-${failure.id}-detail`}
+                            className="error-detail-sr-only"
+                          >
+                            {failure.detail}
+                          </span>
+                        ) : null}
+                      </span>
+                    ))}
+                    <button
+                      type="button"
+                      className="workspace-session-error-dismiss"
+                      onClick={() => closeActions.clearFailures()}
+                      aria-label="Dismiss error"
+                      title="Dismiss error"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ) : null}
+
+                {sessionsError !== null &&
+                (sessionsError.workspaceKey === null ||
+                  sessionsError.workspaceKey === selectedKey) ? (
+                  // The one render of the create/list failure: the spec's inline error
+                  // line (12, --danger, triangle), shown over the workspace the
+                  // failure belongs to. The daemon's own words ride in the tooltip
+                  // and the described-by node — never painted beside the sentence.
+                  <div
+                    className="workspace-error-line"
+                    role="alert"
+                    title={sessionsError.detail ?? undefined}
+                    aria-describedby={
+                      sessionsError.detail !== null ? "workspace-session-error-detail" : undefined
+                    }
+                  >
+                    <ErrorTriangleIcon />
+                    <span className="workspace-error-line-text">{sessionsError.sentence}</span>
+                    {sessionsError.detail !== null ? (
+                      <span id="workspace-session-error-detail" className="error-detail-sr-only">
+                        {sessionsError.detail}
+                      </span>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="workspace-session-error-dismiss"
+                      onClick={dismissSessionsError}
+                      aria-label="Dismiss error"
+                      title="Dismiss error"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ) : null}
+
+                {delegationState.error !== null ? (
+                  // The refusal (or failed read) reported where the delegation control
+                  // lives — the roster row's take-back included — never only on the
+                  // Settings tab (a refused consent control may not be
+                  // silent on the surface it was clicked on). No dismiss button: the
+                  // sentence is the store's standing answer, and the next successful
+                  // read or write clears it.
+                  <div className="workspace-session-error" role="alert">
+                    <span className="workspace-session-error-text">
+                      <ErrorText
+                        sentence={delegationState.error.sentence}
+                        detail={delegationState.error.detail}
+                        id="workspace-delegation-error"
+                      />
+                    </span>
+                  </div>
+                ) : null}
+
+                <SplitPane
+                  split={split}
+                  onResize={resizeSplit}
+                  onMerge={mergeSplit}
+                  lowerLabel={lowerLabel}
+                  lower={
+                    lowerTool?.kind === "browser" ? (
+                      <BrowserTab
+                        key={lowerTool.id}
+                        browserId={lowerTool.browserId}
+                        url={browserRecordFor(lowerTool.browserId)?.url ?? BROWSER_START_URL}
+                        workspaceKey={lowerTool.workspaceKey}
+                      />
+                    ) : null
                   }
                 >
-                  <ErrorTriangleIcon />
-                  <span className="workspace-error-line-text">{sessionsError.sentence}</span>
-                  {sessionsError.detail !== null ? (
-                    <span id="workspace-session-error-detail" className="error-detail-sr-only">
-                      {sessionsError.detail}
-                    </span>
-                  ) : null}
-                  <button
-                    type="button"
-                    className="workspace-session-error-dismiss"
-                    onClick={dismissSessionsError}
-                    aria-label="Dismiss error"
-                    title="Dismiss error"
-                  >
-                    ×
-                  </button>
-                </div>
-              ) : null}
-
-              {delegationState.error !== null ? (
-                // The refusal (or failed read) reported where the delegation control
-                // lives — the roster row's take-back included — never only on the
-                // Settings tab (a refused consent control may not be
-                // silent on the surface it was clicked on). No dismiss button: the
-                // sentence is the store's standing answer, and the next successful
-                // read or write clears it.
-                <div className="workspace-session-error" role="alert">
-                  <span className="workspace-session-error-text">
-                    <ErrorText
-                      sentence={delegationState.error.sentence}
-                      detail={delegationState.error.detail}
-                      id="workspace-delegation-error"
-                    />
-                  </span>
-                </div>
-              ) : null}
-
-              <SplitPane
-                split={split}
-                onResize={resizeSplit}
-                onMerge={mergeSplit}
-                lowerLabel={lowerLabel}
-                lower={
-                  lowerTool?.kind === "browser" ? (
+                  {paneTool?.kind === "browser" ? (
                     <BrowserTab
-                      key={lowerTool.id}
-                      browserId={lowerTool.browserId}
-                      url={browserRecordFor(lowerTool.browserId)?.url ?? BROWSER_START_URL}
-                      workspaceKey={lowerTool.workspaceKey}
+                      key={paneTool.id}
+                      browserId={paneTool.browserId}
+                      url={browserRecordFor(paneTool.browserId)?.url ?? BROWSER_START_URL}
+                      workspaceKey={paneTool.workspaceKey}
+                      onSplitDown={
+                        lowerTabId === null && visibleSessions.length > 0
+                          ? () => splitTabDown(paneTool)
+                          : undefined
+                      }
                     />
-                  ) : null
-                }
-              >
-                {paneTool?.kind === "browser" ? (
-                  <BrowserTab
-                    key={paneTool.id}
-                    browserId={paneTool.browserId}
-                    url={browserRecordFor(paneTool.browserId)?.url ?? BROWSER_START_URL}
-                    workspaceKey={paneTool.workspaceKey}
-                    onSplitDown={
-                      lowerTabId === null && visibleSessions.length > 0
-                        ? () => splitTabDown(paneTool)
-                        : undefined
-                    }
-                  />
-                ) : paneTool !== null ? (
-                  <div
-                    id={WORKSPACE_TERMINAL_PANEL_ID}
-                    className={`workspace-conversation workspace-scroll workspace-tool-pane${
-                      paneTool.kind === "diff" ? " workspace-tool-pane-diff" : ""
-                    }`}
-                    role="tabpanel"
-                    aria-label={paneTool.kind === "diff" ? "Diff" : "File"}
-                  >
-                    {paneTool.kind === "diff" ? (
-                      <ToolDiffPane
-                        key={paneTool.id}
-                        workspaceKey={paneTool.workspaceKey}
-                        path={paneTool.path}
-                        refreshNonce={toolRefreshNonce}
-                        cache={toolContentCache.diffs}
-                      />
-                    ) : (
-                      <WorkspaceFileTab
-                        key={paneTool.id}
-                        workspaceKey={paneTool.workspaceKey}
-                        path={paneTool.path}
-                        refreshNonce={toolRefreshNonce}
-                        cache={toolContentCache.fileCells}
-                      />
-                    )}
-                  </div>
-                ) : paneSession !== null ? (
-                  <>
-                    {isAgentKind(paneSession.kind) ? (
-                      <AgentChatSurface
-                        key={paneSession.id}
-                        id={WORKSPACE_TERMINAL_PANEL_ID}
-                        sessionId={paneSession.id}
-                        fileLinks={chatFileLinks}
-                        observedState={paneSession.state}
-                        initialGoal={paneSession.goal}
-                        activity={paneSession.activity}
-                        daemonState={daemon.state}
-                        daemonInstanceId={daemon.instanceId}
-                        sessionRoster={sessions}
-                        onOpenSubagent={handleOpenSubagent}
-                        subagentAttention={subagentAttention}
-                        onRefreshSubagents={refreshSessions}
-                        onOpenTasks={openTasksTab}
-                        onAgentChange={reportPaneAgent}
-                        deviceNames={peerNames}
-                        hasPendingPermission={hasPendingPermission}
-                        pendingPlanToolCallId={pendingPlanToolCallId}
-                        // The daemon owns this session's follow-up queue (see
-                        // `queueSupported`): the surface renders its snapshots, and
-                        // Enter mid-turn queues instead of interrupting.
-                        queueSupported={queueSupported}
-                        gifWebpSupported={gifWebpSupported}
-                        fileUploadSupported={fileUploadSupported}
-                        auxiliary={
-                          selectedPermission !== null ? (
-                            <WorkspacePermissionCard
-                              // Session and tool call: a new identity mounts a new
-                              // card, so its terminal flag starts from the queue item.
-                              key={`${paneSession.id}\n${selectedPermission.request.toolCallId}`}
-                              sessionId={paneSession.id}
-                              subscriptionId={selectedPermission.subscriptionId}
-                              request={selectedPermission.request}
-                              capabilities={daemon.capabilities}
-                              daemonState={daemon.state}
-                              origin={paneSession.origin}
-                              deviceNames={peerNames}
-                              resolution={selectedPermission.resolution ?? null}
-                              creatorId={paneSession.createdBy ?? null}
-                              stale={selectedPermission.stale === true}
-                              onStale={markPermissionStale}
-                              onResolved={dismissResolvedPermission}
+                  ) : paneTool !== null ? (
+                    <div
+                      id={WORKSPACE_TERMINAL_PANEL_ID}
+                      className={`workspace-conversation workspace-scroll workspace-tool-pane${
+                        paneTool.kind === "diff" ? " workspace-tool-pane-diff" : ""
+                      }`}
+                      role="tabpanel"
+                      aria-label={paneTool.kind === "diff" ? "Diff" : "File"}
+                    >
+                      {paneTool.kind === "diff" ? (
+                        <ToolDiffPane
+                          key={paneTool.id}
+                          workspaceKey={paneTool.workspaceKey}
+                          path={paneTool.path}
+                          refreshNonce={toolRefreshNonce}
+                          cache={toolContentCache.diffs}
+                        />
+                      ) : (
+                        <WorkspaceFileTab
+                          key={paneTool.id}
+                          workspaceKey={paneTool.workspaceKey}
+                          path={paneTool.path}
+                          refreshNonce={toolRefreshNonce}
+                          cache={toolContentCache.fileCells}
+                        />
+                      )}
+                    </div>
+                  ) : paneSession !== null ? (
+                    <>
+                      {isAgentKind(paneSession.kind) ? (
+                        <AgentChatSurface
+                          key={paneSession.id}
+                          id={WORKSPACE_TERMINAL_PANEL_ID}
+                          sessionId={paneSession.id}
+                          fileLinks={chatFileLinks}
+                          observedState={paneSession.state}
+                          initialGoal={paneSession.goal}
+                          activity={paneSession.activity}
+                          daemonState={daemon.state}
+                          daemonInstanceId={daemon.instanceId}
+                          sessionRoster={sessions}
+                          onOpenSubagent={handleOpenSubagent}
+                          subagentAttention={subagentAttention}
+                          onRefreshSubagents={refreshSessions}
+                          onOpenTasks={openTasksTab}
+                          onAgentChange={reportPaneAgent}
+                          deviceNames={peerNames}
+                          hasPendingPermission={hasPendingPermission}
+                          pendingPlanToolCallId={pendingPlanToolCallId}
+                          // The daemon owns this session's follow-up queue (see
+                          // `queueSupported`): the surface renders its snapshots, and
+                          // Enter mid-turn queues instead of interrupting.
+                          queueSupported={queueSupported}
+                          gifWebpSupported={gifWebpSupported}
+                          fileUploadSupported={fileUploadSupported}
+                          auxiliary={
+                            selectedPermission !== null ? (
+                              <WorkspacePermissionCard
+                                // Session and tool call: a new identity mounts a new
+                                // card, so its terminal flag starts from the queue item.
+                                key={`${paneSession.id}\n${selectedPermission.request.toolCallId}`}
+                                sessionId={paneSession.id}
+                                subscriptionId={selectedPermission.subscriptionId}
+                                request={selectedPermission.request}
+                                capabilities={daemon.capabilities}
+                                daemonState={daemon.state}
+                                origin={paneSession.origin}
+                                deviceNames={peerNames}
+                                resolution={selectedPermission.resolution ?? null}
+                                creatorId={paneSession.createdBy ?? null}
+                                stale={selectedPermission.stale === true}
+                                onStale={markPermissionStale}
+                                onResolved={dismissResolvedPermission}
+                              />
+                            ) : undefined
+                          }
+                          onPermissionRequest={handlePermissionRequest}
+                          onPermissionResolved={handlePermissionResolved}
+                          // The recovered notice rides the header's own row instead of
+                          // adding one: banner, state word and Reopen share the pane
+                          // header on a recovered transcript, and a live pane shows
+                          // nothing (the bar renders null off a recovered state).
+                          headerTrailing={
+                            <RecoveredSessionBar
+                              key={`recovered-bar-${paneSession.id}`}
+                              session={paneSession}
+                              onReopened={handleReopenSession}
+                              onResumeFailed={handleResumeFailed}
                             />
-                          ) : undefined
-                        }
-                        onPermissionRequest={handlePermissionRequest}
-                        onPermissionResolved={handlePermissionResolved}
-                        // The recovered notice rides the header's own row instead of
-                        // adding one: banner, state word and Reopen share the pane
-                        // header on a recovered transcript, and a live pane shows
-                        // nothing (the bar renders null off a recovered state).
-                        headerTrailing={
-                          <RecoveredSessionBar
-                            key={`recovered-bar-${paneSession.id}`}
-                            session={paneSession}
-                            onReopened={handleReopenSession}
-                            onResumeFailed={handleResumeFailed}
-                          />
-                        }
-                      />
-                    ) : (
-                      <TerminalSurface
-                        key={paneSession.id}
-                        id={WORKSPACE_TERMINAL_PANEL_ID}
-                        workspaceKey={selectedKey}
-                        sessionId={paneSession.id}
-                        observedState={paneSession.state}
-                        cwd={paneSession.cwd}
-                        activity={paneSession.activity}
-                        attention={activeSessionAttention(paneSession)}
-                        autoFocus={terminalAutoFocus}
-                        autoFocusGuard={mayTakeTerminalFocus}
-                        onAutoFocusTaken={takeTerminalFocus}
-                        onClosed={handleSessionClosed}
-                        onExited={handleSessionClosed}
-                        onCloseTab={() => tabClose.closeSingle(paneSession.id)}
-                        headerMenuSeam={{
-                          workspaceKey: paneWorkspaceKey,
-                          closeEntries: buildTabCloseEntries(
-                            composedTabs.findIndex((tab) => tab.id === paneSession.id),
-                            composedTabs.length,
-                          ),
-                          onCloseEntry: (key) => tabClose.activatePaneEntry(paneSession.id, key),
-                        }}
-                        onPermissionRequest={handlePermissionRequest}
-                        onPermissionResolved={handlePermissionResolved}
-                      />
-                    )}
-                  </>
-                ) : (
-                  <div
-                    id={WORKSPACE_TERMINAL_PANEL_ID}
-                    className="workspace-conversation workspace-scroll workspace-session-empty"
-                    role="tabpanel"
-                    aria-label="Terminal output"
-                  >
-                    {/* The empty state never carries the error: the failure has its
+                          }
+                        />
+                      ) : (
+                        <TerminalSurface
+                          key={paneSession.id}
+                          id={WORKSPACE_TERMINAL_PANEL_ID}
+                          workspaceKey={selectedKey}
+                          sessionId={paneSession.id}
+                          observedState={paneSession.state}
+                          cwd={paneSession.cwd}
+                          activity={paneSession.activity}
+                          attention={activeSessionAttention(paneSession)}
+                          autoFocus={terminalAutoFocus}
+                          autoFocusGuard={mayTakeTerminalFocus}
+                          onAutoFocusTaken={takeTerminalFocus}
+                          onClosed={handleSessionClosed}
+                          onExited={handleSessionClosed}
+                          onCloseTab={() => tabClose.closeSingle(paneSession.id)}
+                          headerMenuSeam={{
+                            workspaceKey: paneWorkspaceKey,
+                            closeEntries: buildTabCloseEntries(
+                              composedTabs.findIndex((tab) => tab.id === paneSession.id),
+                              composedTabs.length,
+                            ),
+                            onCloseEntry: (key) => tabClose.activatePaneEntry(paneSession.id, key),
+                          }}
+                          onPermissionRequest={handlePermissionRequest}
+                          onPermissionResolved={handlePermissionResolved}
+                        />
+                      )}
+                    </>
+                  ) : (
+                    <div
+                      id={WORKSPACE_TERMINAL_PANEL_ID}
+                      className="workspace-conversation workspace-scroll workspace-session-empty"
+                      role="tabpanel"
+                      aria-label="Terminal output"
+                    >
+                      {/* The empty state never carries the error: the failure has its
                 one line under the strip, and this pane stays what the spec
                 says it is (SPEC-regions "Empty and error"). */}
-                    {sessionsLoading || projectsLoading ? (
-                      <div role="status" className="workspace-empty-note">
-                        Loading sessions…
-                      </div>
-                    ) : selectedKey === null && projects.length === 0 ? (
-                      // No project at all: the one action is the same add-project
-                      // flow the sidebar's "+" opens.
-                      <div className="workspace-empty-state" role="status">
-                        <p className="workspace-empty-title">No project yet</p>
-                        <button
-                          type="button"
-                          className="workspace-empty-action"
-                          onClick={openProjectDialog}
-                        >
-                          New project
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="workspace-empty-state" role="status">
-                        <p className="workspace-empty-title">No tabs yet</p>
-                        {/* The spec's one outline action: the same agent flow as
+                      {sessionsLoading || projectsLoading ? (
+                        <div role="status" className="workspace-empty-note">
+                          Loading sessions…
+                        </div>
+                      ) : selectedKey === null && projects.length === 0 ? (
+                        // No project at all: the one action is the same add-project
+                        // flow the sidebar's "+" opens.
+                        <div className="workspace-empty-state" role="status">
+                          <p className="workspace-empty-title">No project yet</p>
+                          <button
+                            type="button"
+                            className="workspace-empty-action"
+                            onClick={openProjectDialog}
+                          >
+                            New project
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="workspace-empty-state" role="status">
+                          <p className="workspace-empty-title">No tabs yet</p>
+                          {/* The spec's one outline action: the same agent flow as
                     "+ → Agent", from the "+" itself. It waits while a create or
                     a provider choice is in flight, and without a selected
                     workspace it says why. */}
-                        <button
-                          type="button"
-                          className="workspace-empty-action"
-                          onClick={handleNewTabAgent}
-                          disabled={selectedKey === null || addDisabled}
-                          aria-describedby={selectedKey === null ? EMPTY_PANE_REASON_ID : undefined}
-                        >
-                          Open an agent
-                        </button>
-                        {selectedKey === null ? (
-                          <p id={EMPTY_PANE_REASON_ID} className="workspace-empty-note">
-                            {NO_WORKSPACE_SENTENCE}
-                          </p>
-                        ) : null}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </SplitPane>
-            </>
+                          <button
+                            type="button"
+                            className="workspace-empty-action"
+                            onClick={handleNewTabAgent}
+                            disabled={selectedKey === null || addDisabled}
+                            aria-describedby={
+                              selectedKey === null ? EMPTY_PANE_REASON_ID : undefined
+                            }
+                          >
+                            Open an agent
+                          </button>
+                          {selectedKey === null ? (
+                            <p id={EMPTY_PANE_REASON_ID} className="workspace-empty-note">
+                              {NO_WORKSPACE_SENTENCE}
+                            </p>
+                          ) : null}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </SplitPane>
+              </>
+            ) : null}
           </div>
           {historyOpen ? (
             <HistoryPanel
