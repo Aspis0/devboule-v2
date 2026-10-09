@@ -259,6 +259,11 @@ const remoteHostReaders = new Set<() => void>();
 let remoteStatusChannel: RemoteHostStatusChannel | null = null;
 const watchedHosts = new Set<string>();
 const loadingHosts = new Set<string>();
+// A host whose rows changed while a load was already running. The running
+// load's snapshot is older than the change, so it is followed by exactly one
+// more read; without this the newer revision is lost and the snapshot stays
+// stale until some unrelated push happens along.
+const dirtyHosts = new Set<string>();
 // Bumped when the mount cycle ends, so a read that left before it cannot
 // write into the cycle that replaced it.
 let remoteGeneration = 0;
@@ -293,15 +298,26 @@ function handleRemoteStatus(status: RemoteHostStatus): void {
   const host = remoteHosts.hosts.get(status.deviceId);
   if (host === undefined) return;
   const online = status.state === "online";
-  const revision = status.revision ?? host.revision;
-  const revisionMoved = revision !== host.revision;
+  // Offline drops the baseline: a reconnect re-baselines the host's counter,
+  // and a value this link saw before must not make the first push after the
+  // reconnect look like a repeat. A link that comes back is a fresh edge
+  // whatever the host's counter says, and its snapshot is re-read below.
+  const revision = online ? (status.revision ?? host.revision) : null;
+  const revisionMoved = online && revision !== host.revision;
+  const cameOnline = online && !host.online;
   if (online === host.online && !revisionMoved) return;
   const next = new Map(remoteHosts.hosts);
   next.set(status.deviceId, { ...host, online, revision });
   publishRemoteHosts({ hosts: next });
-  // A fresh link and a moved revision both mean the rows may have changed; the
-  // host's own push is the only signal, so the read happens here.
-  if (online && (revisionMoved || host.projects.length === 0)) {
+  // A link that comes back, a moved revision, and a host that is a host with
+  // nothing cached yet all mean the rows may have changed; the host's own
+  // push is the only signal, so the read happens here — and only for a device
+  // that says it hosts workspaces, never for a project-only peer.
+  if (
+    online &&
+    host.hostsWorkspaces &&
+    (cameOnline || revisionMoved || host.projects.length === 0)
+  ) {
     void loadRemoteHost(status.deviceId);
   }
 }
@@ -313,7 +329,12 @@ function handleRemoteStatus(status: RemoteHostStatus): void {
  * label rather than an empty section.
  */
 async function loadRemoteHost(deviceId: string): Promise<void> {
-  if (loadingHosts.has(deviceId)) return;
+  if (loadingHosts.has(deviceId)) {
+    // The change that asked for this read is newer than the one in flight;
+    // the running load commits its snapshot and then reads once more.
+    dirtyHosts.add(deviceId);
+    return;
+  }
   loadingHosts.add(deviceId);
   const generation = remoteGeneration;
   try {
@@ -347,6 +368,9 @@ async function loadRemoteHost(deviceId: string): Promise<void> {
     // The status push and the next poll decide when to try again.
   } finally {
     loadingHosts.delete(deviceId);
+    if (generation === remoteGeneration && dirtyHosts.delete(deviceId)) {
+      void loadRemoteHost(deviceId);
+    }
   }
 }
 
@@ -422,6 +446,7 @@ function resetRemoteHosts(): void {
   }
   watchedHosts.clear();
   loadingHosts.clear();
+  dirtyHosts.clear();
   remoteGeneration += 1;
   // A fresh mount cycle gets a fresh channel: the old one belongs to the
   // window that just left.

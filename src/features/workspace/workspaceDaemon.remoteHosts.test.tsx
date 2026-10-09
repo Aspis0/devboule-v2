@@ -120,6 +120,19 @@ function latest(): RemoteHosts {
   return hostsSeen[hostsSeen.length - 1] ?? { hosts: new Map() };
 }
 
+interface Pending<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+}
+
+function pending<T>(): Pending<T> {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
 describe("remote hosts on the sidebar poll", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -226,6 +239,49 @@ describe("remote hosts on the sidebar poll", () => {
     await flush();
     expect(vi.mocked(remoteHostList).mock.calls.length).toBeGreaterThan(afterFirst);
     expect(latest().hosts.get("device-one")?.revision).toBe(2);
+  });
+
+  it("re-reads a host whose link comes back, even with no new revision", async () => {
+    await mount(<HostsProbe />);
+    await act(async () => emit({ deviceId: "device-one", state: "online", revision: 1 }));
+    await flush();
+    const afterFirst = vi.mocked(remoteHostList).mock.calls.length;
+    expect(latest().hosts.get("device-one")?.projects).toHaveLength(1);
+
+    await act(async () => emit({ deviceId: "device-one", state: "offline" }));
+    await flush();
+    // Offline drops the baseline but keeps the rows: a host that restarted
+    // resets its counter, and the next online edge must reload regardless.
+    const offline = latest().hosts.get("device-one");
+    expect(offline?.revision).toBeNull();
+    expect(offline?.projects).toHaveLength(1);
+
+    await act(async () => emit({ deviceId: "device-one", state: "online" }));
+    await flush();
+    expect(vi.mocked(remoteHostList).mock.calls.length).toBeGreaterThan(afterFirst);
+    expect(latest().hosts.get("device-one")?.projects).toHaveLength(1);
+  });
+
+  it("does not lose a revision that lands while a load is running", async () => {
+    vi.mocked(devicesList).mockResolvedValue(reply([peer("device-one", "One", { online: false })]));
+    await mount(<HostsProbe />);
+    const firstProjects = pending<{ list: "projects"; rows: Project[] }>();
+    vi.mocked(remoteHostList).mockReturnValueOnce(firstProjects.promise);
+    await act(async () => emit({ deviceId: "device-one", state: "online", revision: 1 }));
+    await flush();
+    const duringLoad = vi.mocked(remoteHostList).mock.calls.length;
+    expect(duringLoad).toBeGreaterThan(0);
+
+    // The newer revision arrives while the first read is still running. The
+    // running snapshot is older than the change, so it must be followed by one
+    // more read instead of latching the stale one.
+    await act(async () => emit({ deviceId: "device-one", state: "online", revision: 2 }));
+    firstProjects.resolve({ list: "projects", rows: [PROJECT] });
+    await flush();
+
+    expect(vi.mocked(remoteHostList).mock.calls.length).toBeGreaterThan(duringLoad);
+    expect(latest().hosts.get("device-one")?.revision).toBe(2);
+    expect(latest().hosts.get("device-one")?.projects).toHaveLength(1);
   });
 
   it("keeps the last rows when the host goes offline", async () => {
