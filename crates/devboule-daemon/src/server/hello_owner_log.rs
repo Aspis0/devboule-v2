@@ -11,6 +11,9 @@ use devboule_protocol::OwnerId;
 
 use crate::device_identity::redact;
 
+/// One entry per authenticated peer seen by this process. Peers are devices the
+/// person paired, so the set is bounded by them; it is never reset, because a
+/// reset on reconnect would bring the flood back.
 static LOGGED_PEERS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
