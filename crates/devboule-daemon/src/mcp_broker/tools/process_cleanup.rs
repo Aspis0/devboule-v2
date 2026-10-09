@@ -142,7 +142,16 @@ pub(in crate::mcp_broker) fn cleanup(
         );
         return Err(tool_error(&id, PLATFORM_SENTENCE));
     }
-    refreshed(state, &id)?;
+    if let Err(error) = refreshed(state, &id) {
+        audit_mcp_tool(
+            state,
+            &caller,
+            crate::provider_catalog::MCP_CLEANUP_PROCESSES_TOOL,
+            &registration.session_id,
+            &audit::refused("refresh_unavailable"),
+        );
+        return Err(error);
+    }
     let plan = match state.process_index.cleanup_plan(&registration.session_id) {
         None => CleanupPlan {
             targets: Vec::new(),
@@ -249,7 +258,14 @@ pub(in crate::mcp_broker) fn cleanup(
         &caller,
         crate::provider_catalog::MCP_CLEANUP_PROCESSES_TOOL,
         &registration.session_id,
-        &audit::finished(approval, count, &targets, &termination, &executed.unproven),
+        &audit::finished(
+            approval,
+            count,
+            &targets,
+            &termination,
+            &executed.unproven,
+            &executed.late,
+        ),
     );
     skipped.extend(executed.late);
     skipped.extend(termination.skipped);

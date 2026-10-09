@@ -24,17 +24,27 @@ fn approver(approval: Approval) -> &'static str {
     }
 }
 
-/// What a finished cleanup left. `ok` when every planned process is gone,
-/// `partial` when any survived or was spared; each list is named only when
-/// it holds something.
+/// What a finished cleanup left. `ok` when every planned process is gone and
+/// nothing was spared or unproven; `partial` otherwise. `late` holds the
+/// members the approval did not cover or that became protected before their
+/// signal, and each list is named only when it holds something.
 pub(super) fn finished(
     approval: Approval,
     planned: usize,
     targets: &str,
     termination: &Termination,
     unproven: &[u32],
+    late: &[(u32, &'static str)],
 ) -> String {
-    let partial = !termination.still_running.is_empty() || !termination.skipped.is_empty();
+    let mut spared: Vec<(u32, &'static str)> = termination
+        .skipped
+        .iter()
+        .copied()
+        .chain(late.iter().copied())
+        .collect();
+    spared.sort_by_key(|(pid, _)| *pid);
+    let partial =
+        !termination.still_running.is_empty() || !spared.is_empty() || !unproven.is_empty();
     let mut row = format!(
         "{}; {}: {planned} planned ({targets}); terminated {}",
         if partial { "partial" } else { "ok" },
@@ -50,13 +60,12 @@ pub(super) fn finished(
             list(&termination.still_running)
         ));
     }
-    let spared = termination
-        .skipped
-        .iter()
-        .map(|(pid, reason)| format!("{pid}:{reason}"))
-        .collect::<Vec<_>>();
     if !spared.is_empty() {
-        row.push_str(&format!("; skipped {}", list(&spared)));
+        let named = spared
+            .iter()
+            .map(|(pid, reason)| format!("{pid}:{reason}"))
+            .collect::<Vec<_>>();
+        row.push_str(&format!("; skipped {}", list(&named)));
     }
     if !unproven.is_empty() {
         row.push_str(&format!("; unproven {}", list(unproven)));
@@ -110,12 +119,50 @@ mod tests {
     /// survived and which were spared with their reason.
     #[test]
     fn a_partial_row_says_what_stopped_what_was_forced_and_what_failed() {
-        let row = finished(Approval::Mode, 4, "node", &termination(), &[14]);
+        let row = finished(Approval::Mode, 4, "node", &termination(), &[14], &[]);
         assert_eq!(
             row,
             "partial; approved by automatic mode: 4 planned (node); terminated [10, 11] \
              (forced [11]); still running [12]; skipped [13:no_longer_in_session]; unproven [14]"
         );
+    }
+
+    /// A member that became protected, or fell outside the approved plan, after
+    /// the approval is named in the row: it never reads ok while something was
+    /// spared.
+    #[test]
+    fn a_skip_after_approval_makes_the_row_partial_and_names_it() {
+        let clean = Termination {
+            terminated: vec![10],
+            forced: Vec::new(),
+            still_running: Vec::new(),
+            skipped: Vec::new(),
+        };
+        assert_eq!(
+            finished(
+                Approval::Mode,
+                1,
+                "node",
+                &clean,
+                &[],
+                &[(7, "protected_at_execution")]
+            ),
+            "partial; approved by automatic mode: 1 planned (node); terminated [10]; \
+             skipped [7:protected_at_execution]"
+        );
+    }
+
+    /// An unproven member makes the row partial, even when nothing was spared.
+    #[test]
+    fn an_unproven_member_makes_the_row_partial() {
+        let clean = Termination {
+            terminated: vec![10],
+            forced: Vec::new(),
+            still_running: Vec::new(),
+            skipped: Vec::new(),
+        };
+        let row = finished(Approval::Person, 1, "node", &clean, &[14], &[]);
+        assert!(row.starts_with("partial;"), "{row}");
     }
 
     #[test]
@@ -127,7 +174,7 @@ mod tests {
             skipped: Vec::new(),
         };
         assert_eq!(
-            finished(Approval::Person, 1, "node", &clean, &[]),
+            finished(Approval::Person, 1, "node", &clean, &[], &[]),
             "ok; approved by person: 1 planned (node); terminated [10]"
         );
     }
