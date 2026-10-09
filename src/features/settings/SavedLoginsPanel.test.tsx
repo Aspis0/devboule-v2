@@ -130,6 +130,13 @@ describe("Saved logins panel", () => {
     await act(async () => undefined);
   }
 
+  it("keeps the confirmation region mounted, so a later message is announced", async () => {
+    await render();
+    const region = container.querySelector<HTMLElement>('p.settings-status[role="status"]');
+    expect(region, "the status region must exist before any save").not.toBeNull();
+    expect(region?.textContent).toBe("");
+  });
+
   it("lists what the machine saved and shows no password field at all", async () => {
     await render();
 

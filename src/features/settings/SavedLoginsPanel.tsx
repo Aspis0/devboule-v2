@@ -169,11 +169,10 @@ export function SavedLoginsPanel() {
           <ErrorText sentence={error.sentence} detail={error.detail} id="saved-logins-error" />
         </p>
       )}
-      {done === "" ? null : (
-        <p className="settings-status" role="status">
-          {done}
-        </p>
-      )}
+      {/* Mounted even when empty: a live region created with its text is not announced. */}
+      <p className="settings-status" role="status">
+        {done}
+      </p>
 
       {listError === null && logins === null ? <div role="status">Loading…</div> : null}
 

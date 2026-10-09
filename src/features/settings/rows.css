@@ -151,3 +151,8 @@
   font-size: 12px;
   color: var(--danger);
 }
+
+/* A status line kept mounted for announcements takes no room while empty. */
+.settings-status:empty {
+  padding: 0;
+}

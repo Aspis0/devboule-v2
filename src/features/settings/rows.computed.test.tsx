@@ -49,4 +49,12 @@ describe("shared row pattern (live stylesheets)", () => {
     document.body.appendChild(line);
     expect(getComputedStyle(line).color).toBe(proof.token("--danger"));
   });
+  it("takes no height for an empty status line that stays mounted", () => {
+    proof.inject([".settings-status", ".settings-status:empty"]);
+    const region = document.createElement("p");
+    region.className = "settings-status";
+    region.setAttribute("role", "status");
+    document.body.appendChild(region);
+    expect(getComputedStyle(region).paddingBottom).toBe("0px");
+  });
 });
