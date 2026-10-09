@@ -2060,6 +2060,7 @@ fn a_model_without_accepts_images_decodes_as_taking_no_images() {
         current_effort: None,
         efforts: None,
         accepts_images: true,
+        provider_id: None,
     };
     let wire = serde_json::to_value(&newer).expect("encode");
     assert_eq!(wire["acceptsImages"], true);

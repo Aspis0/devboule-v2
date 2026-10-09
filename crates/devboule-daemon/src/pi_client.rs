@@ -2662,7 +2662,6 @@ fn manifest_from_catalog(catalog: &PiCatalog, mode_id: &str) -> SessionEvent {
             let model = catalog.models.get(&key)?;
             Some(SessionModel {
                 accepts_images: model.input.image == PromptCapabilityState::Supported,
-                model_id: id.clone(),
                 model_id: key.clone(),
                 name: model.name.clone(),
                 provider_id: model.provider.clone(),

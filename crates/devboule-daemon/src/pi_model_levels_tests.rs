@@ -35,7 +35,7 @@ fn reasoning_model_without_a_level_map_offers_the_levels_pi_offers() {
 ]}}"#,
     );
     assert_eq!(
-        level_ids(&catalog, "xiaomi/mimo-v2.6-flash"),
+        level_ids(&catalog, "openrouter/xiaomi/mimo-v2.6-flash"),
         Some(
             ["off", "minimal", "low", "medium", "high"]
                 .map(String::from)
@@ -54,7 +54,7 @@ fn a_level_map_nulls_levels_out_and_names_xhigh() {
 ]}}"#,
     );
     assert_eq!(
-        level_ids(&catalog, "mapped"),
+        level_ids(&catalog, "p/mapped"),
         Some(
             ["off", "low", "medium", "high", "xhigh"]
                 .map(String::from)
@@ -72,7 +72,7 @@ fn a_model_that_does_not_reason_offers_no_control() {
 {"id":"plain","name":"Plain","provider":"p","reasoning":false}
 ]}}"#,
     );
-    assert_eq!(level_ids(&catalog, "plain"), None);
+    assert_eq!(level_ids(&catalog, "p/plain"), None);
 }
 
 #[test]
@@ -98,8 +98,8 @@ fn a_model_takes_images_only_when_pi_lists_image_input() {
             .find(|model| model.model_id == id)
             .map(|model| model.accepts_images)
     };
-    assert_eq!(accepts("vision"), Some(true));
-    assert_eq!(accepts("text-only"), Some(false));
+    assert_eq!(accepts("p/vision"), Some(true));
+    assert_eq!(accepts("p/text-only"), Some(false));
 }
 
 #[test]
@@ -126,10 +126,10 @@ fn a_switch_publishes_the_levels_pi_answered_with() {
     };
     let mimo = models
         .iter()
-        .find(|model| model.model_id == "mimo")
+        .find(|model| model.model_id == "openrouter/mimo")
         .expect("mimo");
     assert_eq!(
-        level_ids(&catalog, "mimo"),
+        level_ids(&catalog, "openrouter/mimo"),
         Some(vec!["off".to_string(), "high".to_string()])
     );
     assert_eq!(mimo.current_effort.as_deref(), Some("high"));

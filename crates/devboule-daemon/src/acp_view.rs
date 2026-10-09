@@ -2985,6 +2985,7 @@ mod tests {
             current_effort: None,
             efforts: None,
             accepts_images: false,
+            provider_id: None,
         };
         let manifest = SessionEvent::SessionManifest {
             provider_id: None,
