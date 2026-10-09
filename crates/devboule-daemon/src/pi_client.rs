@@ -2494,10 +2494,9 @@ fn catalog_from_responses(
         .and_then(|model| model.get("id"))
         .and_then(Value::as_str)
         .map(str::to_string);
-    catalog.current_provider = current_model
+    let state_provider = current_model
         .and_then(|model| model.get("provider"))
-        .and_then(Value::as_str)
-        .map(str::to_string);
+        .and_then(Value::as_str);
     catalog.current_effort = state_response
         .get("data")
         .and_then(|data| data.get("thinkingLevel"))
@@ -2524,6 +2523,10 @@ fn catalog_from_responses(
                 "Pi model response had no models.",
             )
         })?;
+    catalog.current_provider = catalog
+        .current_model_id
+        .as_deref()
+        .and_then(|id| current_provider_in(models, id, state_provider));
     for model in models {
         let Some(id) = model.get("id").and_then(Value::as_str) else {
             continue;
@@ -2586,6 +2589,34 @@ fn listed_thinking_levels(model: &Value) -> Option<Vec<SessionModelEffort>> {
         .map(|level| effort(level, false))
         .collect::<Vec<_>>();
     (!levels.is_empty()).then_some(levels)
+}
+
+/// Pi's state and its model list spelled each provider alike in every live
+/// capture, so the state's spelling is taken as is. Only when no row carries it
+/// and exactly one row holds the id does that row's spelling name the running
+/// model, so its key is then a key of the list.
+fn current_provider_in(
+    models: &[Value],
+    current_id: &str,
+    state_provider: Option<&str>,
+) -> Option<String> {
+    let rows: Vec<&Value> = models
+        .iter()
+        .filter(|model| model.get("id").and_then(Value::as_str) == Some(current_id))
+        .collect();
+    if rows
+        .iter()
+        .any(|row| row.get("provider").and_then(Value::as_str) == state_provider)
+    {
+        return state_provider.map(str::to_string);
+    }
+    match rows.as_slice() {
+        [only] => only
+            .get("provider")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        _ => state_provider.map(str::to_string),
+    }
 }
 
 fn effort(id: &str, default: bool) -> SessionModelEffort {

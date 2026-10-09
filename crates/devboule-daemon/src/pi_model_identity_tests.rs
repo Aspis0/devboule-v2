@@ -109,3 +109,41 @@ fn a_bare_id_held_by_one_provider_still_resolves() {
 fn an_unknown_name_is_missing_not_ambiguous() {
     assert!(matches!(nemotron_twice().lookup("nope"), PiLookup::Missing));
 }
+
+#[test]
+fn a_state_spelling_the_list_lacks_takes_the_listed_provider() {
+    // get_state says "opencode" for a model the list files under "opencode-go".
+    let divergent = catalog(
+        ("minimax-m3", "opencode"),
+        json!([{"id": "minimax-m3", "name": "MiniMax-M3", "provider": "opencode-go"}]),
+    );
+    assert_eq!(
+        divergent.current_key().as_deref(),
+        Some("opencode-go/minimax-m3"),
+        "the running model must key to the row the list publishes"
+    );
+    let (current, models) = manifest_parts(&divergent);
+    assert_eq!(current.as_deref(), Some("opencode-go/minimax-m3"));
+    assert!(
+        models
+            .iter()
+            .any(|model| Some(model.model_id.as_str()) == current.as_deref()),
+        "the manifest's current model must be one of its listed models"
+    );
+}
+
+#[test]
+fn an_unmatched_state_spelling_with_two_rows_is_not_guessed() {
+    let unmatched = catalog(
+        ("nemotron", "opencode"),
+        json!([
+            {"id": "nemotron", "name": "Nemotron (free)", "provider": "openrouter"},
+            {"id": "nemotron", "name": "Nemotron", "provider": "opencode-go"},
+        ]),
+    );
+    assert_eq!(
+        unmatched.current_key().as_deref(),
+        Some("opencode/nemotron"),
+        "two rows hold the id, so neither is the running model and none is picked"
+    );
+}
