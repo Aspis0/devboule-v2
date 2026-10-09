@@ -51,7 +51,6 @@ describe("turn rail computed styles", () => {
       ".workspace-composer-track",
       ".workspace-agent-shell.has-turn-rail .workspace-composer-track",
       ".workspace-composer",
-      ".workspace-agent-shell.has-turn-rail .workspace-composer",
     ]);
     const build = (
       withRail: boolean,
@@ -97,17 +96,16 @@ describe("turn rail computed styles", () => {
     expect(getComputedStyle(off.composer).paddingLeft).toBe("14px");
     off.shell.remove();
 
-    // The card takes the gutter as margin, the composer meets transcript
-    // text at the gutter's inset beside the lane's own 20 px; the track
-    // keeps the lane rule in both states.
+    // The card takes the gutter as margin; the track keeps the lane rule in
+    // both states, and the field keeps its 14 px inset with the rail open.
     // Separate trees per state with classes set at build: happy-dom keeps a
     // stale computed style for deeper descendants after a later class add.
     const on = build(true);
     expect(getComputedStyle(on.aux).marginLeft).toBe("32px");
     expect(getComputedStyle(on.track).paddingLeft).toBe("20px");
     expect(getComputedStyle(on.track).maxWidth).toBe("1060px");
-    // happy-dom keeps the calc() unresolved; a browser resolves it to 52 px.
-    expect(getComputedStyle(on.composer).paddingLeft).toBe("calc(20px + 32px)");
+    expect(getComputedStyle(on.composer).paddingLeft).toBe("14px");
+    expect(getComputedStyle(on.composer).paddingRight).toBe("14px");
     on.shell.remove();
   });
 

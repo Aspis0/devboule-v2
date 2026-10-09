@@ -102,11 +102,12 @@ describe("the composer's box", () => {
     expect(workspaceCss.rulesFor(".workspace-composer textarea:focus-visible")).toBe("");
   });
 
-  it("insets its text by the lane inset plus the rail's gutter, on the transcript's axis", () => {
-    expect(workspaceCss.rulesFor(".workspace-composer")).toContain("--lane-inset: 20px");
-    expect(
-      workspaceCss.rulesFor(".workspace-agent-shell.has-turn-rail .workspace-composer"),
-    ).toContain("padding-left: calc(var(--lane-inset) + 32px)");
+  it("keeps the field's 14px inset on both sides whether or not the turn rail is open", () => {
+    // The field is the alignment now: no rail-specific inset on the composer.
+    expect(workspaceCss.rulesFor(".workspace-agent-shell.has-turn-rail .workspace-composer")).toBe(
+      "",
+    );
+    expect(workspaceCss.rulesFor(".workspace-composer")).toContain("padding: 14px 14px 10px;");
   });
 
   it("outlines the composer in dashed accent while a file is dragged over it, and clears it on leave", async () => {

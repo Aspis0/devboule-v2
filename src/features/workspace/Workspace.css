@@ -1337,12 +1337,6 @@
   border-radius: var(--radius-12);
 }
 
-.workspace-agent-shell.has-turn-rail .workspace-composer {
-  /* The rail's 32 px gutter sits inside the lane's inset, so the composer
-     text meets the transcript text on the same axis. */
-  padding-left: calc(var(--lane-inset) + 32px);
-}
-
 .workspace-composer:focus-within {
   border-color: var(--ring);
 }
