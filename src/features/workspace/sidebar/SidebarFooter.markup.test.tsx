@@ -78,7 +78,7 @@ describe("the sidebar foot's status dot", () => {
       );
     });
 
-    const row = container.querySelector<HTMLElement>('.sidebar-icon-row[role="toolbar"]');
+    const row = container.querySelector<HTMLElement>('.sidebar-icon-row[role="group"]');
     if (row === null) throw new Error("the icon row did not render");
     const add = row.querySelector<HTMLButtonElement>('button[aria-label="New project"]');
     const settings = row.querySelector<HTMLButtonElement>('button[aria-label="Settings"]');

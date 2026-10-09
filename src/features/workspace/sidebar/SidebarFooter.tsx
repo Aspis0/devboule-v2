@@ -51,7 +51,9 @@ export function SidebarFooter({
   const tooltip = [daemonLabel(daemon), note].filter((part) => part !== null).join(" · ");
   return (
     <div className="workspace-sidebar-footer">
-      <div className="sidebar-icon-row" role="toolbar" aria-label="Sidebar">
+      {/* A group, not a toolbar: the buttons keep their own tab stops, so no
+          toolbar keyboard pattern is claimed. */}
+      <div className="sidebar-icon-row" role="group" aria-label="Sidebar">
         <button
           type="button"
           className="workspace-icon-button sidebar-icon-button"
