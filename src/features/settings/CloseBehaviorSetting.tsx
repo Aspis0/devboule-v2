@@ -7,7 +7,7 @@ import {
   closeChoiceFromStored,
   type CloseBehaviorChoice,
 } from "./closeBehaviorChoice";
-import "./general.css";
+import { SettingsRow } from "./rows";
 
 const CHOICES: readonly { value: CloseBehaviorChoice; label: string }[] = [
   { value: "ask", label: "Ask every time" },
@@ -71,38 +71,31 @@ export function CloseBehaviorSetting() {
   );
 
   return (
-    <div className="machine-card" aria-label="When I close the window">
-      <div className="machine-row">
-        <span className="machine-row-copy">
-          <span className="machine-row-title">When I close the window</span>
-          <span className="machine-row-desc">
-            Devboule can keep running in the notification area so agents and paired devices stay
-            connected.
-          </span>
-        </span>
-        <div className="machine-segment" role="radiogroup" aria-label="When I close the window">
-          {CHOICES.map((option) => (
-            <label
-              className={`machine-segment-option${choice === option.value ? " machine-segment-option-checked" : ""}`}
-              key={option.value}
-            >
-              <input
-                type="radio"
-                name="close-behavior"
-                value={option.value}
-                checked={choice === option.value}
-                onChange={() => handleChange(option.value)}
-              />
-              <span>{option.label}</span>
-            </label>
-          ))}
-        </div>
-      </div>
+    <>
+      <SettingsRow
+        title="When I close the window"
+        control={
+          <div className="settings-choices" role="radiogroup" aria-label="When I close the window">
+            {CHOICES.map((option) => (
+              <label className="settings-choice" key={option.value}>
+                <input
+                  type="radio"
+                  name="close-behavior"
+                  value={option.value}
+                  checked={choice === option.value}
+                  onChange={() => handleChange(option.value)}
+                />
+                <span>{option.label}</span>
+              </label>
+            ))}
+          </div>
+        }
+      />
       {error !== null && (
-        <p role="alert" className="machine-error">
+        <p role="alert" className="settings-status">
           {error}
         </p>
       )}
-    </div>
+    </>
   );
 }

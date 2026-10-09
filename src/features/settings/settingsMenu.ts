@@ -46,7 +46,7 @@ export const SETTINGS_MENU: readonly SettingsMenuGroup[] = [
       {
         id: "layout",
         label: "Layout",
-        intro: "What happens when the app window closes.",
+        intro: "",
       },
       {
         id: "editing",

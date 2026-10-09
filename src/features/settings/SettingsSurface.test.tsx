@@ -528,7 +528,7 @@ describe("Settings menu shell", () => {
     ["projects", "Projects", "#settings-panel-projects"],
     ["paired", "Paired devices", "#settings-panel-devices"],
     ["diagnostics", "Diagnostics", "#settings-panel-diagnostics"],
-    ["layout", "Layout", ".machine-card"],
+    ["layout", "Layout", "[data-settings-row]"],
     ["editing", "Editing", ".machine-card"],
     ["shortcuts", "Shortcuts", "#settings-panel-shortcuts"],
     ["notifications", "Notifications", ".machine-card"],
