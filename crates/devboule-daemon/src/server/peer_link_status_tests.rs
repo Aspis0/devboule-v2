@@ -402,7 +402,59 @@ fn a_busy_link_still_closes_a_detached_stream_and_stops_the_peer() {
     }
 }
 
-/// A new transport fences the old generation's subscriptions: the app/// A new transport fences the old generation's subscriptions: the app
+/// A dropped app connection takes its remote streams with it: nothing relays
+/// to the dead connection, and the host is asked to stop.
+#[test]
+fn a_dropped_connection_takes_its_remote_streams_with_it() {
+    let harness = Harness::start("peer-link-conn-cleanup");
+    harness.watch();
+    harness.wait_online(&harness.conn);
+    assert!(matches!(
+        harness
+            .links
+            .attach("b", "session-1", 7, Arc::clone(&harness.conn)),
+        super::LinkAnswer::Accepted
+    ));
+    eventually("the stream relays", || {
+        harness
+            .conn
+            .outbound
+            .pull_replies()
+            .into_iter()
+            .any(|reply| matches!(reply, DaemonMessage::RemoteHostEvent { .. }))
+    });
+
+    harness.links.release_connection(harness.conn.id);
+    harness.responder.push_session_event(7, "after-cleanup");
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(
+        !harness
+            .conn
+            .outbound
+            .pull_replies()
+            .into_iter()
+            .any(|reply| matches!(reply, DaemonMessage::RemoteHostEvent { .. })),
+        "a dropped connection must not receive its old stream"
+    );
+
+    // And the host is told to stop: the parked detach reaches it.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match harness.requests.recv_timeout(Duration::from_millis(100)) {
+            Ok(ClientMessage::SessionDetach {
+                subscription_id, ..
+            }) => {
+                assert_eq!(subscription_id, 7);
+                break;
+            }
+            Ok(_) => continue,
+            Err(_) if Instant::now() < deadline => continue,
+            Err(_) => panic!("the cleanup detach never reached the peer"),
+        }
+    }
+}
+
+/// A new transport fences the old generation's subscriptions: the app/// A new transport fences the old generation's subscriptions: the app/// A new transport fences the old generation's subscriptions: the app
 /// reattaches on the online edge, and a stale attach never relays into the
 /// link that replaced it.
 #[test]

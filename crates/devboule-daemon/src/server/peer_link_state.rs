@@ -474,6 +474,31 @@ impl HostLink {
             .clear();
     }
 
+    /// Drop every live stream one local connection opened, parking a peer
+    /// detach for each so the host stops streaming too. Called when that
+    /// connection goes away: a dead app must not keep a remote session
+    /// attached, and its bounded queue must not keep filling.
+    pub(crate) fn remove_subscriptions_for(&self, conn_id: u64) {
+        let dropped: Vec<(u64, String)> = {
+            let mut subscriptions = self
+                .subscriptions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let dropped: Vec<(u64, String)> = subscriptions
+                .iter()
+                .filter(|(_, subscription)| subscription.conn.id == conn_id)
+                .map(|(id, subscription)| (*id, subscription.session_id.clone()))
+                .collect();
+            for (id, _) in &dropped {
+                subscriptions.remove(id);
+            }
+            dropped
+        };
+        for (subscription_id, session_id) in dropped {
+            self.defer_detach(session_id, subscription_id);
+        }
+    }
+
     /// Park a peer detach for the worker's next idle turn. The local
     /// subscription is already gone by the time this runs, so no event is
     /// relayed in the meantime.

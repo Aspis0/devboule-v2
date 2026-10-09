@@ -245,15 +245,20 @@ impl PeerLinks {
     /// Give back every lease one connection held. A dropped window takes its
     /// hosts with it; the links linger only for the grace.
     pub(crate) fn release_connection(&self, conn_id: u64) {
-        let held: Vec<Arc<HostLink>> = {
+        let links: Vec<Arc<HostLink>> = {
             let inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-            inner
-                .links
-                .values()
-                .filter(|link| link.leased_by(conn_id))
-                .cloned()
-                .collect()
+            inner.links.values().cloned().collect()
         };
+        for link in &links {
+            // A dropped window takes its remote streams with it, wherever it
+            // holds the host: the lease may be shared with another window, so
+            // the subscription pass is not conditional on `leased_by`.
+            link.remove_subscriptions_for(conn_id);
+        }
+        let held: Vec<Arc<HostLink>> = links
+            .into_iter()
+            .filter(|link| link.leased_by(conn_id))
+            .collect();
         for link in held {
             link.release(conn_id);
         }
