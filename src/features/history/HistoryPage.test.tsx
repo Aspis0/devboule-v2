@@ -290,6 +290,28 @@ describe("the History page", () => {
     expect(last).toEqual([`${LOCAL_HOST_ID}:workspace-rust`]);
   });
 
+  it("titles a same-named workspace by its branch, not the project name twice", async () => {
+    const solo = [
+      {
+        ...projects()[0],
+        workspaces: [
+          { ...projects()[0].workspaces[0], title: "Alpha", displayTitle: "Alpha" },
+        ],
+      },
+    ];
+    await renderPage({ projects: solo });
+
+    const row = container.querySelector<HTMLElement>(".history-row");
+    if (row === null) throw new Error("the history row did not render");
+    const first = row.querySelector<HTMLElement>(".history-row-title-line");
+    const meta = row.querySelector<HTMLElement>(".history-row-meta");
+    if (first === null || meta === null) throw new Error("the row lines did not render");
+    expect(first.textContent).toContain("main");
+    expect(first.textContent).not.toContain("Alpha");
+    // The project keeps its single naming in the meta line.
+    expect(meta.textContent).toContain("Alpha");
+  });
+
   it("still groups rows by day", async () => {
     await renderPage();
 

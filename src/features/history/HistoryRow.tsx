@@ -179,6 +179,13 @@ export const HistoryRowView = memo(function HistoryRowView({
   ].filter(Boolean);
   const trimmed = transcriptWasTrimmed(row.session);
   const title = sessionTitle(row);
+  // A workspace named like its project reads as one thing: the first line
+  // speaks its branch (or host), the project keeps its single naming in
+  // the meta line below.
+  const workspaceLabel =
+    row.workspace !== null && row.workspace === row.project
+      ? (row.branch ?? row.host ?? row.workspace)
+      : row.workspace;
   const reopenReason = !openable
     ? row.session === null
       ? "Session details are unavailable, so this session cannot be reopened."
@@ -232,7 +239,7 @@ export const HistoryRowView = memo(function HistoryRowView({
         data-agent-id={row.id}
         aria-label={[
           title,
-          row.workspace,
+          workspaceLabel,
           row.project,
           row.host,
           row.branch,
@@ -240,6 +247,7 @@ export const HistoryRowView = memo(function HistoryRowView({
           reopenReason,
         ]
           .filter(Boolean)
+          .filter((part, index, all) => all.indexOf(part) === index)
           .join(", ")}
         aria-current={selected ? "true" : undefined}
         aria-disabled={!openable}
@@ -252,10 +260,10 @@ export const HistoryRowView = memo(function HistoryRowView({
       />
       <div className="history-row-copy">
         <div className="history-row-title-line">
-          {row.workspace === null ? null : (
+          {workspaceLabel === null ? null : (
             <>
               <span className="history-row-workspace" aria-hidden="true">
-                {row.workspace}
+                {workspaceLabel}
               </span>
               <span className="history-row-sep" aria-hidden="true">
                 {" › "}
