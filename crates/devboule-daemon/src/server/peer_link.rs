@@ -165,6 +165,7 @@ impl PeerLinks {
                 device_id: device_id.to_string(),
                 state: RemoteHostState::Connecting,
                 last_failure: None,
+                revision: None,
             });
             super::peer_link_worker::spawn(state, link, self.tuning.clone());
         }
@@ -197,6 +198,7 @@ impl PeerLinks {
             device_id: device_id.to_string(),
             state,
             last_failure: None,
+            revision: None,
         });
     }
 

@@ -352,6 +352,9 @@ impl PluginSession {
                         // it must not be matched against a pending one.
                         | DaemonMessage::DelegationChanged { .. }
                         | DaemonMessage::RemoteHostStatus { .. }
+                        // The inventory push answers no request either: it is
+                        // a broadcast on a peer link, never a plugin reply.
+                        | DaemonMessage::HostWorkspaceChanged { .. }
                         | DaemonMessage::BrowserExecuteRequest(_) => None,
                     };
                     if message_id == Some(id) {

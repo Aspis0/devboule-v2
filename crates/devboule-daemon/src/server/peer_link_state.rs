@@ -64,6 +64,9 @@ pub(crate) struct HostLink {
     /// The last status handed to the watchers, so an unchanged poll is not a
     /// flood: one change, one push.
     published: Mutex<Option<RemoteHostStatus>>,
+    /// The newest workspace revision this host pushed, if any. Reloads are
+    /// the app's call, and this is the number its status push carries.
+    remote_revision: Mutex<Option<u64>>,
     idle_grace: Duration,
 }
 
@@ -78,8 +81,30 @@ impl HostLink {
             generation: AtomicU64::new(0),
             inflight: AtomicBool::new(false),
             published: Mutex::new(None),
+            remote_revision: Mutex::new(None),
             idle_grace,
         })
+    }
+
+    /// Record a workspace revision the host pushed over this link. Only a
+    /// monotonically newer number is kept: a replayed or out-of-order frame
+    /// must not make a watcher reload backwards.
+    pub(crate) fn set_remote_revision(&self, revision: u64) {
+        let mut held = self
+            .remote_revision
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if held.is_none_or(|current| revision > current) {
+            *held = Some(revision);
+        }
+    }
+
+    /// The newest workspace revision pushed by this host, if one arrived.
+    pub(crate) fn remote_revision(&self) -> Option<u64> {
+        *self
+            .remote_revision
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
     }
 
     pub(crate) fn generation(&self) -> u64 {
@@ -309,6 +334,7 @@ fn status_message(status: &RemoteHostStatus) -> DaemonMessage {
         device_id: status.device_id.clone(),
         state: status.state,
         last_failure: status.last_failure.clone(),
+        revision: status.revision,
     }
 }
 

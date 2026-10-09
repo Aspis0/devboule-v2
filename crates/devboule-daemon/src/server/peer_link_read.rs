@@ -68,7 +68,13 @@ pub(crate) fn serve_read(
         ));
         return;
     }
-    let _ = answer.send(wait_for_reply(session, &list, request_id, read_deadline));
+    let _ = answer.send(wait_for_reply(
+        link,
+        session,
+        &list,
+        request_id,
+        read_deadline,
+    ));
 }
 
 /// Read frames until this read's id answers, a refusal arrives for it, or the
@@ -78,6 +84,7 @@ pub(crate) fn serve_read(
 /// the remote is one link behind, and its old reply must not be handed to a
 /// caller as this read's answer.
 fn wait_for_reply(
+    link: &HostLink,
     session: &mut LinkSession,
     list: &RemoteHostList,
     request_id: u64,
@@ -96,6 +103,10 @@ fn wait_for_reply(
                 continue;
             }
         }
+        // A workspace push that lands mid-read is recorded and shown before
+        // the read's own answer is matched; it names no request, so it must
+        // never be mistaken for the reply.
+        super::peer_link_worker::record_workspace_change(link, &message);
         if reply_id(&message) != Some(request_id) {
             continue;
         }

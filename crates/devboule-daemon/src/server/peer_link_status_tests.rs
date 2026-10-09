@@ -5,7 +5,7 @@
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use devboule_protocol::RemoteHostState;
 
@@ -85,4 +85,48 @@ fn a_peer_is_online_over_either_direction() {
         !harness.state.is_peer_online("b"),
         "a closed connection is not online"
     );
+}
+
+/// A host that pushes a workspace revision is seen by its watchers: the link
+/// records the number and re-publishes a status carrying it, which is what
+/// tells the sidebar to reload that host's snapshots.
+#[test]
+fn a_pushed_workspace_revision_reaches_the_watcher() {
+    let harness = Harness::start("peer-link-workspace-revision");
+    harness.watch();
+    harness.wait_online(&harness.conn);
+
+    harness.responder.push_workspace_changed(7);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if harness
+            .statuses_with_revision()
+            .iter()
+            .any(|(state, revision)| *state == RemoteHostState::Online && *revision == Some(7))
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the pushed revision never reached the watcher"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // A push naming another device is dropped: the link's own device id is the
+    // only identity this side trusts.
+    harness
+        .responder
+        .push_workspace_changed_from("not-b", 99);
+    let quiet = Instant::now() + Duration::from_millis(400);
+    while Instant::now() < quiet {
+        assert!(
+            !harness
+                .statuses_with_revision()
+                .iter()
+                .any(|(_, revision)| *revision == Some(99)),
+            "a frame for another device must not move this link's revision"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }

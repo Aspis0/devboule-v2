@@ -2840,6 +2840,7 @@ fn client_read_loop(inner: Arc<ClientInner>) {
                     device_id,
                     state,
                     last_failure,
+                    revision,
                 } = &message
                 {
                     let handler = inner
@@ -2852,6 +2853,7 @@ fn client_read_loop(inner: Arc<ClientInner>) {
                             device_id: device_id.clone(),
                             state: *state,
                             last_failure: last_failure.clone(),
+                            revision: *revision,
                         });
                     }
                     continue;
@@ -3024,6 +3026,9 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         // The host-status push is a broadcast for the same reason, and it is
         // handed to the watch handler before this match runs.
         | DaemonMessage::RemoteHostStatus { .. }
+        // The inventory push is a broadcast too: it answers no request, and
+        // the link's own reader decides what to do with it.
+        | DaemonMessage::HostWorkspaceChanged { .. }
         // A command for the browser host answers no request either; the
         // reader queues it for the host before this match runs.
         | DaemonMessage::BrowserExecuteRequest(_) => None,

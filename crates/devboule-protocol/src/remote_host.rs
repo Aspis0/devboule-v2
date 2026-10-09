@@ -130,4 +130,11 @@ pub struct RemoteHostStatus {
     /// Absent when there is nothing to explain (`connecting`, `online`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_failure: Option<String>,
+    /// The host's workspace revision, on a push that reports one: the host
+    /// pushed [`crate::DaemonMessage::HostWorkspaceChanged`] over the link,
+    /// and this is the number it carried. A watcher reloads that host's
+    /// project/workspace snapshots when the number moves or the link comes
+    /// back. Absent on a state change with nothing new to reload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u64>,
 }

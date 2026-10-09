@@ -171,12 +171,15 @@ fn keepalive(
     session: &mut LinkSession,
     tuning: &LinkTuning,
 ) -> Keepalive {
-    if let Ok(DaemonMessage::Pong { id, .. }) = session.framed.recv_timeout(tuning.poll) {
-        if id >= PROBE_ID_BASE {
-            session.outstanding_since = None;
-            session.misses = 0;
-            return Keepalive::Alive;
+    if let Ok(message) = session.framed.recv_timeout(tuning.poll) {
+        if let DaemonMessage::Pong { id, .. } = &message {
+            if *id >= PROBE_ID_BASE {
+                session.outstanding_since = None;
+                session.misses = 0;
+                return Keepalive::Alive;
+            }
         }
+        record_workspace_change(link, &message);
     }
     if let Some(sent) = session.outstanding_since {
         if sent.elapsed() >= tuning.pong_timeout {
@@ -223,6 +226,25 @@ fn keepalive(
         }
     }
     Keepalive::Alive
+}
+
+/// Record one pushed workspace revision and tell the watchers, which is what
+/// makes the sidebar reload that host's snapshots. A frame naming another
+/// device is dropped: the link's own device id is the only identity this side
+/// trusts, and a peer cannot make this daemon act for a third one.
+pub(crate) fn record_workspace_change(link: &HostLink, message: &DaemonMessage) {
+    let DaemonMessage::HostWorkspaceChanged {
+        device_id,
+        revision,
+    } = message
+    else {
+        return;
+    };
+    if device_id != &link.device_id {
+        return;
+    }
+    link.set_remote_revision(*revision);
+    link.publish(status(link, RemoteHostState::Online, None));
 }
 
 /// The peer's row, read now, with the dialable facts already judged.
@@ -302,6 +324,7 @@ fn status(
         device_id: link.device_id.clone(),
         state,
         last_failure,
+        revision: link.remote_revision(),
     }
 }
 

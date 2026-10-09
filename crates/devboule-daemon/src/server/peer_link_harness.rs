@@ -146,6 +146,23 @@ impl Harness {
             .collect()
     }
 
+    /// The pushed workspace revisions this connection has been told about,
+    /// with the state each status carried. Kept beside `statuses_for` so the
+    /// existing tuple stays for the state-only tests.
+    pub(crate) fn statuses_with_revision(&self) -> Vec<(RemoteHostState, Option<u64>)> {
+        self.conn
+            .outbound
+            .pull_replies()
+            .into_iter()
+            .filter_map(|reply| match reply {
+                devboule_protocol::DaemonMessage::RemoteHostStatus {
+                    state, revision, ..
+                } => Some((state, revision)),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Block until the link reports itself online to `conn`.
     ///
     /// A read queued before the handshake finished is refused `offline`: it was

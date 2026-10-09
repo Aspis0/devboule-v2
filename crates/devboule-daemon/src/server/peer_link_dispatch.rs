@@ -37,6 +37,7 @@ pub(super) fn dispatch_remote_host(
                             device_id: device_id.clone(),
                             state: RemoteHostState::Busy,
                             last_failure: Some(sentence.clone()),
+                            revision: None,
                         });
                     DaemonMessage::Error(
                         WireError::new(ErrorCode::OperationConflict, sentence).with_id(id),

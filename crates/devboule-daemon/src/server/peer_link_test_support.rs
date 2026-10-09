@@ -69,6 +69,9 @@ pub(crate) struct Responder {
     /// The refusal every read gets, once set: the far side saying no, with its
     /// own reason.
     pub(crate) refusal: Arc<Mutex<Option<WireError>>>,
+    /// Frames the far side pushes on its own, drained on the serve loop's next
+    /// poll. This is how a test makes the host announce a workspace change.
+    pushes: Arc<Mutex<Vec<DaemonMessage>>>,
     stop: mpsc::Sender<()>,
 }
 
@@ -98,6 +101,23 @@ impl Responder {
     pub(crate) fn stop(&self) {
         let _ = self.stop.send(());
     }
+
+    /// Queue one workspace-change push for the serve loop to send.
+    pub(crate) fn push_workspace_changed(&self, revision: u64) {
+        self.push_workspace_changed_from("b", revision);
+    }
+
+    /// The same push naming another device, for the frames a receiver must
+    /// drop rather than act on.
+    pub(crate) fn push_workspace_changed_from(&self, device_id: &str, revision: u64) {
+        self.pushes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(DaemonMessage::HostWorkspaceChanged {
+                device_id: device_id.to_string(),
+                revision,
+            });
+    }
 }
 
 /// Start a responder that serves every request on one handshake until stopped.
@@ -119,6 +139,7 @@ pub(crate) fn spawn(
     let hello_delay_ms = Arc::new(AtomicU64::new(0));
     let answer_with_wrong_id = Arc::new(AtomicBool::new(false));
     let refusal = Arc::new(Mutex::new(None));
+    let pushes = Arc::new(Mutex::new(Vec::new()));
     let (requests_tx, requests_rx) = mpsc::channel();
     let (stop_tx, stop_rx) = mpsc::channel();
     let knobs = (
@@ -130,6 +151,7 @@ pub(crate) fn spawn(
         Arc::clone(&hello_delay_ms),
         Arc::clone(&answer_with_wrong_id),
         Arc::clone(&refusal),
+        Arc::clone(&pushes),
     );
     std::thread::spawn(move || {
         // One connection and no more. A held link is one handshake, and a reconnect
@@ -156,6 +178,7 @@ pub(crate) fn spawn(
                 thread_hello_delay,
                 thread_wrong_id,
                 thread_refusal,
+                thread_pushes,
             ) = knobs.clone();
             thread_handshakes.fetch_add(1, Ordering::SeqCst);
             let Ok((reader, writer, closer)) = split_session(&stream, session) else {
@@ -187,10 +210,13 @@ pub(crate) fn spawn(
             serve(
                 &framed,
                 &requests_tx,
-                &thread_refusal,
-                &thread_answers_pings,
-                &thread_holds_reads,
-                &thread_wrong_id,
+                &Serving {
+                    refusal: Arc::clone(&thread_refusal),
+                    answers_pings: Arc::clone(&thread_answers_pings),
+                    holds_reads: Arc::clone(&thread_holds_reads),
+                    wrong_id: Arc::clone(&thread_wrong_id),
+                    pushes: Arc::clone(&thread_pushes),
+                },
                 &stop_rx,
             );
             thread_closes.fetch_add(1, Ordering::SeqCst);
@@ -208,6 +234,7 @@ pub(crate) fn spawn(
             hello_delay_ms,
             answer_with_wrong_id,
             refusal,
+            pushes,
             stop: stop_tx,
         },
         requests_rx,
@@ -233,6 +260,16 @@ fn idle_poll(error: &crate::error::DaemonError) -> bool {
     }
 }
 
+/// The knobs the serve loop reads. Bundled so the loop's signature stays one
+/// frame, one request channel, one knob set, one stop channel.
+struct Serving {
+    refusal: Arc<Mutex<Option<WireError>>>,
+    answers_pings: Arc<AtomicBool>,
+    holds_reads: Arc<AtomicBool>,
+    wrong_id: Arc<AtomicBool>,
+    pushes: Arc<Mutex<Vec<DaemonMessage>>>,
+}
+
 /// The serving loop. A `Ping` is answered only while `answers_pings` is set,
 /// which is how a test makes a host stop answering without stopping the socket.
 ///
@@ -242,15 +279,24 @@ fn idle_poll(error: &crate::error::DaemonError) -> bool {
 fn serve(
     framed: &Framed,
     requests: &mpsc::Sender<ClientMessage>,
-    refusal: &Mutex<Option<WireError>>,
-    answers_pings: &AtomicBool,
-    holds_reads: &AtomicBool,
-    wrong_id: &AtomicBool,
+    knobs: &Serving,
     stop: &mpsc::Receiver<()>,
 ) {
     loop {
         if stop.try_recv().is_ok() {
             return;
+        }
+        let queued = {
+            let mut held = knobs
+                .pushes
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            std::mem::take(&mut *held)
+        };
+        for frame in queued {
+            if framed.send(&frame).is_err() {
+                return;
+            }
         }
         let message = match framed.recv_timeout::<ClientMessage>(Duration::from_millis(5)) {
             Ok(message) => message,
@@ -259,7 +305,7 @@ fn serve(
         };
         match message {
             ClientMessage::Ping { id } => {
-                if answers_pings.load(Ordering::SeqCst) {
+                if knobs.answers_pings.load(Ordering::SeqCst) {
                     let _ = framed.send(&DaemonMessage::Pong { id, ts_ms: 1 });
                 }
             }
@@ -270,15 +316,16 @@ fn serve(
                 let Some(id) = request_id(&request) else {
                     return;
                 };
-                if holds_reads.load(Ordering::SeqCst) {
+                if knobs.holds_reads.load(Ordering::SeqCst) {
                     continue;
                 }
                 // One frame that belongs to another request goes out first: the
                 // link must drop it rather than hand it to this caller.
-                if wrong_id.swap(false, Ordering::SeqCst) {
+                if knobs.wrong_id.swap(false, Ordering::SeqCst) {
                     let _ = framed.send(&list_reply(&request, id + 1_000));
                 }
-                let refusal = refusal
+                let refusal = knobs
+                    .refusal
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
                     .clone();

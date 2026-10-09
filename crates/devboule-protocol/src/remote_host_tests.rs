@@ -100,6 +100,7 @@ fn the_status_push_is_camel_cased_for_the_webview() {
         device_id: "b".to_string(),
         state: RemoteHostState::NeedsPairing,
         last_failure: Some("This device is no longer paired with this daemon.".to_string()),
+        revision: None,
     };
     assert_eq!(
         serde_json::to_value(&status).expect("json"),
@@ -113,4 +114,45 @@ fn the_status_push_is_camel_cased_for_the_webview() {
         serde_json::to_value(RemoteHostState::IdentityMissing).expect("json"),
         serde_json::json!("identity_missing")
     );
+}
+
+#[test]
+fn the_status_push_carries_the_host_revision_when_it_has_one() {
+    let status = RemoteHostStatus {
+        device_id: "b".to_string(),
+        state: RemoteHostState::Online,
+        last_failure: None,
+        revision: Some(7),
+    };
+    assert_eq!(
+        serde_json::to_value(&status).expect("json"),
+        serde_json::json!({
+            "deviceId": "b",
+            "state": "online",
+            "revision": 7,
+        })
+    );
+}
+
+#[test]
+fn the_workspace_change_push_names_the_host_and_its_revision() {
+    let message = DaemonMessage::HostWorkspaceChanged {
+        device_id: "a".to_string(),
+        revision: 12,
+    };
+    assert_eq!(
+        serde_json::to_value(&message).expect("json"),
+        serde_json::json!({
+            "type": "host_workspace_changed",
+            "deviceId": "a",
+            "revision": 12,
+        })
+    );
+    let back: DaemonMessage = serde_json::from_value(serde_json::json!({
+        "type": "host_workspace_changed",
+        "deviceId": "a",
+        "revision": 12,
+    }))
+    .expect("back");
+    assert_eq!(back, message);
 }

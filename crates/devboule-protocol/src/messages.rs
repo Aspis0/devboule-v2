@@ -2090,6 +2090,19 @@ pub enum DaemonMessage {
         state: crate::RemoteHostState,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         last_failure: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        revision: Option<u64>,
+    },
+    /// The host's workspace inventory moved, pushed over a peer link to the
+    /// peers whose hello negotiated `hosted_workspaces`. It answers no request
+    /// and carries no list: a watcher that sees a new revision reloads the
+    /// allowlisted project and workspace snapshots through the normal reads,
+    /// so a dropped push costs a stale row, never a wrong one. `device_id` is
+    /// the sending host's own id; a receiver that does not know it drops the
+    /// frame.
+    HostWorkspaceChanged {
+        device_id: String,
+        revision: u64,
     },
     /// The reply to [`ClientMessage::BrowserHostRegister`]. `host_id` is
     /// stamped with the connection and a per-daemon counter, so a
