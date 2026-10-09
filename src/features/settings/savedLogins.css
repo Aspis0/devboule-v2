@@ -1,45 +1,17 @@
-/* Saved logins page: one card per entry, the add/change form above them.
-   Tokens only — the cards, buttons and alerts themselves are the shell's. */
+/* Saved logins page: the add/change form and the inline delete confirm. The
+   rows and the section head come from rows.css; no card is drawn here. */
 
-#settings-panel-saved-logins > section {
-  margin-bottom: var(--space-12);
-}
-
-#settings-panel-saved-logins > section,
 .saved-login-form {
-  max-width: 720px;
-  padding: var(--space-12) var(--space-14);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-12);
-  background: var(--panel-card);
-}
-
-.saved-login-row {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
-}
-
-.saved-login-head {
-  display: flex;
-  align-items: baseline;
   gap: var(--space-8);
-}
-
-.saved-login-label {
-  font-weight: 500;
-}
-
-.saved-login-meta {
-  color: var(--ink-soft);
-  font-size: var(--type-small);
+  padding: var(--space-4) 0 var(--space-12);
 }
 
 .saved-login-field {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
-  margin-bottom: var(--space-12);
 }
 
 .saved-login-field input,
@@ -52,36 +24,17 @@
   font: inherit;
 }
 
-.saved-login-hint {
-  color: var(--silence);
-  font-size: var(--type-meta);
-}
-
 .saved-login-actions {
   display: flex;
   gap: var(--space-8);
-  margin-top: var(--space-8);
 }
 
 .saved-login-confirm {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
-  margin-top: var(--space-8);
-  padding: var(--space-8);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-8);
+  padding: var(--space-4) 0 var(--space-8);
   color: var(--ink-soft);
-  font-size: var(--type-small);
-}
-
-.saved-login-confirm .saved-login-actions {
-  margin-top: var(--space-4);
-}
-
-.saved-logins-empty,
-.saved-logins-notice {
-  color: var(--silence);
   font-size: var(--type-small);
 }
 

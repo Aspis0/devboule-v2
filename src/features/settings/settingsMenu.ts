@@ -71,8 +71,7 @@ export const SETTINGS_MENU: readonly SettingsMenuGroup[] = [
       {
         id: "saved-logins",
         label: "Saved logins",
-        intro:
-          "Logins this machine may fill in for an agent. The password stays in this machine's credential store; an agent never reads it.",
+        intro: "",
       },
     ],
   },

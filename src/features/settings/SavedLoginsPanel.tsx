@@ -10,6 +10,7 @@ import { useTrackedRequest } from "../../lib/trackedRequest";
 import type { SavedLogin } from "../../types/ipc";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import { ErrorText } from "../../components/ErrorText";
+import { SettingsAdvanced, SettingsRow, SettingsSection } from "./rows";
 import "./savedLogins.css";
 
 /**
@@ -168,50 +169,65 @@ export function SavedLoginsPanel() {
           <ErrorText sentence={error.sentence} detail={error.detail} id="saved-logins-error" />
         </p>
       )}
-      <p className="saved-logins-notice" role="status">
-        {done}
-      </p>
+      {done === "" ? null : (
+        <p className="settings-status" role="status">
+          {done}
+        </p>
+      )}
 
       {listError === null && logins === null ? <div role="status">Loading…</div> : null}
 
-      {editing === null ? null : (
-        <LoginForm
-          key={formKey(editing)}
-          draft={editing === "new" ? EMPTY_DRAFT : draftOf(editing)}
-          editing={editing !== "new"}
-          busy={busy}
-          onSubmit={(event) => void submit(event)}
-          onCancel={() => setEditing(null)}
-        />
-      )}
+      <SettingsSection
+        label="Saved logins"
+        action={
+          editing === null ? (
+            <button
+              type="button"
+              className="settings-add"
+              aria-label="Add a login"
+              title="Add a login"
+              disabled={busy}
+              onClick={() => begin("new")}
+            >
+              +
+            </button>
+          ) : null
+        }
+      >
+        {editing === null ? null : (
+          <LoginForm
+            key={formKey(editing)}
+            draft={editing === "new" ? EMPTY_DRAFT : draftOf(editing)}
+            editing={editing !== "new"}
+            busy={busy}
+            onSubmit={(event) => void submit(event)}
+            onCancel={() => setEditing(null)}
+          />
+        )}
 
-      {logins !== null && logins.length === 0 && editing === null ? (
-        <p className="saved-logins-empty">No saved logins yet.</p>
-      ) : null}
+        {logins !== null && logins.length === 0 && editing === null ? (
+          <p className="settings-status">No saved logins yet.</p>
+        ) : null}
 
-      {logins?.map((login) => (
-        <LoginRow
-          key={login.id}
-          login={login}
-          busy={busy}
-          armed={armed === login.id}
-          onEdit={() => begin(login)}
-          onArm={() => setArmed(armed === login.id ? null : login.id)}
-          onDisarm={() => setArmed(null)}
-          onConfirm={() => void remove(login)}
-        />
-      ))}
-
-      {editing === null ? (
-        <button
-          type="button"
-          className="settings-device-action"
-          disabled={busy}
-          onClick={() => begin("new")}
-        >
-          Add a login
-        </button>
-      ) : null}
+        {logins?.map((login) => (
+          <LoginRow
+            key={login.id}
+            login={login}
+            busy={busy}
+            armed={armed === login.id}
+            onEdit={() => begin(login)}
+            onArm={() => setArmed(armed === login.id ? null : login.id)}
+            onDisarm={() => setArmed(null)}
+            onConfirm={() => void remove(login)}
+          />
+        ))}
+      </SettingsSection>
+      <SettingsAdvanced>
+        <p>
+          Logins this machine may fill in for an agent. The password stays in this machine&apos;s
+          credential store; an agent never reads it.
+        </p>
+      </SettingsAdvanced>
     </div>
   );
 }
@@ -239,20 +255,32 @@ function LoginRow({
   }, [armed]);
   return (
     <section className="saved-login-row">
-      <div className="saved-login-head">
-        <span className="saved-login-label">{login.label}</span>
-        <span className="saved-login-meta">Password saved</span>
-      </div>
-      <span className="saved-login-meta">{login.origins.join(", ")}</span>
-      {login.username === "" ? null : <span className="saved-login-meta">{login.username}</span>}
-      <div className="saved-login-actions">
-        <button type="button" className="settings-device-action" disabled={busy} onClick={onEdit}>
-          Edit
-        </button>
-        <button type="button" className="settings-device-action" disabled={busy} onClick={onArm}>
-          Delete
-        </button>
-      </div>
+      <SettingsRow
+        title={login.label}
+        description={[login.username, login.origins.join(", "), "Password saved"]
+          .filter((part) => part !== "")
+          .join(" · ")}
+        control={
+          <div className="saved-login-actions">
+            <button
+              type="button"
+              className="settings-device-action"
+              disabled={busy}
+              onClick={onEdit}
+            >
+              Edit
+            </button>
+            <button
+              type="button"
+              className="settings-device-action"
+              disabled={busy}
+              onClick={onArm}
+            >
+              Delete
+            </button>
+          </div>
+        }
+      />
       {armed ? (
         <div className="saved-login-confirm" role="alert" tabIndex={-1} ref={confirmRef}>
           <span>
@@ -318,10 +346,6 @@ function LoginForm({
           spellCheck={false}
           required
         />
-        <span className="saved-login-hint">
-          One exact site per line, written as https://example.com. A password is only ever used on
-          the site it was saved for.
-        </span>
       </label>
       <label className="saved-login-field">
         <span>Username</span>
@@ -331,11 +355,20 @@ function LoginForm({
         <span>Password</span>
         {/* A browser must not fill this in: a password the app does not know
             about is one it cannot offer, so it has to be typed here. */}
-        <input name="password" type="password" autoComplete="new-password" />
-        {editing ? (
-          <span className="saved-login-hint">Leave empty to keep the saved password.</span>
-        ) : null}
+        <input
+          name="password"
+          type="password"
+          autoComplete="new-password"
+          placeholder={editing ? "Keep saved" : undefined}
+        />
       </label>
+      <SettingsAdvanced>
+        <p>
+          One exact site per line, written as https://example.com. A password is only ever used on
+          the site it was saved for.
+        </p>
+        {editing ? <p>Leave empty to keep the saved password.</p> : null}
+      </SettingsAdvanced>
       <div className="saved-login-actions">
         <button type="submit" className="settings-device-action" disabled={busy}>
           {busy ? "Saving…" : "Save"}

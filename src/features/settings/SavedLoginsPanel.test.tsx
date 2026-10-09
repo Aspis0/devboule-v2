@@ -60,7 +60,9 @@ let container!: HTMLDivElement;
 
 async function press(label: string, within?: ParentNode): Promise<HTMLButtonElement> {
   const scope = within ?? container;
-  const button = [...scope.querySelectorAll("button")].find((one) => one.textContent === label);
+  const button = [...scope.querySelectorAll("button")].find(
+    (one) => one.textContent === label || one.getAttribute("aria-label") === label,
+  );
   if (button === undefined) throw new Error(`no button labelled ${label}`);
   await act(async () => button.click());
   return button;
@@ -144,7 +146,7 @@ describe("Saved logins panel", () => {
     await render();
 
     expect(container.textContent).toContain("No saved logins yet.");
-    expect(container.textContent).toContain("Add a login");
+    expect(container.querySelector('[aria-label="Add a login"]')).not.toBeNull();
   });
 
   it("shows the vault's own refusal, not the daemon's sentence for its code", async () => {
