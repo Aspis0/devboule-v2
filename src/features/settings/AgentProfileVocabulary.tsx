@@ -165,6 +165,24 @@ export const ACP_MODE_SUGGESTION_TEXT =
  * sentence-orthogonality test holds them pairwise), though the sentences
  * deliberately share tail clauses.
  */
+/**
+ * A control whose list is still being read: a disabled picker with a
+ * spinner, never a free-text field a guess could be saved from.
+ */
+export function WaitingPicker({ label, text }: { label: string; text: string }) {
+  return (
+    <label className="device-field">
+      {label}
+      <span className="settings-waiting-control">
+        <span className="settings-waiting-spinner" role="status" aria-label={text} />
+        <select aria-label={label} disabled value="">
+          <option value="">{text}…</option>
+        </select>
+      </span>
+    </label>
+  );
+}
+
 export function VocabularyField({
   label,
   value,
@@ -172,6 +190,7 @@ export function VocabularyField({
   freeText,
   hint,
   suggestion,
+  waitingLabel,
   items,
   onChange,
   onSettle,
@@ -185,6 +204,11 @@ export function VocabularyField({
   hint?: ReactNode;
   /** The ACP mode suggestion, only where it applies; labelled a suggestion. */
   suggestion?: ReactNode;
+  /**
+   * The read is still running: a disabled picker with a spinner, never a
+   * free-text field a guess could be saved from. The label names the read.
+   */
+  waitingLabel?: string;
   items: readonly { value: string; label: string }[];
   onChange: (next: string) => void;
   /** The field's value stopped changing and the answer must follow it. A select
@@ -192,6 +216,9 @@ export function VocabularyField({
    *  typing a model id does not start one provider read per character. */
   onSettle?: (next: string) => void;
 }) {
+  if (waitingLabel !== undefined) {
+    return <WaitingPicker label={label} text={waitingLabel} />;
+  }
   if (freeText) {
     return (
       <>

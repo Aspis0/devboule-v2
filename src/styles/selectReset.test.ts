@@ -155,7 +155,7 @@ describe("settings field controls share one size", () => {
 });
 
 describe("selects paint the primary ink in both themes", () => {
-  it.each(["light", "dark"] as const)("all six selects read --ink (%s)", (theme) => {
+  it.each(["light", "dark"] as const)("all seven selects read --ink (%s)", (theme) => {
     const css = assembleCssProof(SHEETS.map(read), theme);
     css.inject([
       "body",
@@ -179,6 +179,7 @@ describe("selects paint the primary ink in both themes", () => {
       buildSettingsSelect("Vocabulary"),
       host,
       buildSettingsSelect("Effort"),
+      buildSettingsSelect("Waiting"),
     ];
     for (const select of selects) {
       expect(getComputedStyle(select).color).toBe(expected);
@@ -247,6 +248,6 @@ describe("every real select lives in a wrapped field", () => {
       }
     }
     expect(unwrapped).toEqual([]);
-    expect(found).toHaveLength(6);
+    expect(found).toHaveLength(7);
   });
 });

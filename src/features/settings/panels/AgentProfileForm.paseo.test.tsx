@@ -154,7 +154,7 @@ describe("Settings agents panel — profile editor pickers", () => {
     expect(created).not.toHaveProperty("idleCloseMinutes");
   });
 
-  it("says it is reading pi's list while the probe runs, never that pi published nothing", async () => {
+  it("shows disabled pickers with a spinner while pi is being probed, never free text", async () => {
     vi.mocked(providerVocabularyGet).mockResolvedValue(
       makeVocabulary({
         provider: "pi",
@@ -174,10 +174,18 @@ describe("Settings agents panel — profile editor pickers", () => {
     await openForm();
     await act(async () => undefined);
     const editor = form();
-    expect(editor.textContent).toContain("Reading pi's model list");
+    // Never free text while the daemon is still enumerating: both
+    // controls wait as disabled pickers with a spinner.
+    expect(editor.querySelector('input[aria-label="Model"]')).toBeNull();
+    const model = editor.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
+    if (!model) throw new Error("waiting model picker did not render");
+    expect(model.disabled).toBe(true);
+    expect(model.textContent).toContain("Reading pi's model list");
+    expect(editor.querySelector('[role="status"]')).not.toBeNull();
+    const effort = editor.querySelector<HTMLSelectElement>('select[aria-label="Effort"]');
+    if (!effort) throw new Error("waiting effort picker did not render");
+    expect(effort.disabled).toBe(true);
     expect(editor.textContent).not.toContain("did not publish its models");
-    // No picker yet: the model stays typeable while the read runs.
-    expect(editor.querySelector('input[aria-label="Model"]')).not.toBeNull();
   });
 
   it("says the read failed when pi's list could not be answered", async () => {

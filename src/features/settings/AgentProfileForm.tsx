@@ -19,6 +19,7 @@ import {
   PI_MODELS_UNREADABLE_TEXT,
   VOCABULARY_UNAVAILABLE_TEXT,
   VocabularyField,
+  WaitingPicker,
   vocabularyAxisView,
 } from "./AgentProfileVocabulary";
 import {
@@ -239,7 +240,10 @@ export function AgentProfileForm({
   // `absent` with the features axis probing, and after a failure with it
   // answered-unavailable. Either way the generic absent sentence would
   // claim pi published nothing — the one thing that is false — so the
-  // form names the read instead.
+  // form names the read instead. While the read runs, both controls wait
+  // as disabled pickers, never free text.
+  const modelsWaiting =
+    providerId === "pi" && vocabularyCurrent?.models?.state === "absent" && probing;
   const piModelsHint =
     providerId === "pi" && vocabularyCurrent?.models?.state === "absent"
       ? probing
@@ -425,6 +429,7 @@ export function AgentProfileForm({
             busy={busy}
             freeText={modelsView.freeText}
             hint={piModelsHint ?? modelsView.hint}
+            waitingLabel={modelsWaiting ? PI_MODELS_READING_TEXT : undefined}
             items={[...modelsView.items, ...storedModelOption]}
             onChange={(next) => {
               if (modelsView.freeText) {
@@ -438,6 +443,7 @@ export function AgentProfileForm({
             }}
             onSettle={modelsView.freeText ? settleModel : undefined}
           />
+          {modelsWaiting ? <WaitingPicker label="Effort" text={PI_MODELS_READING_TEXT} /> : null}
           {showEffortPicker ? (
             <label className="device-field">
               Effort
