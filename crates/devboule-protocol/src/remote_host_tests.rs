@@ -156,3 +156,27 @@ fn the_workspace_change_push_names_the_host_and_its_revision() {
     .expect("back");
     assert_eq!(back, message);
 }
+
+#[test]
+fn a_peer_hello_keeps_its_presence_and_service_in_step() {
+    let owner = OwnerId::new("peer_a", "devboule-daemon").expect("owner");
+    let hosting = ClientHello::peer(owner.clone(), "devboule-daemon", true);
+    assert_eq!(hosting.workspace_host, Some(true));
+    assert!(
+        hosting
+            .capabilities
+            .iter()
+            .any(|capability| capability.as_str() == crate::caps::HOSTED_WORKSPACES),
+        "a host advertises the service it speaks"
+    );
+
+    let client = ClientHello::peer(owner, "devboule-daemon", false);
+    assert_eq!(client.workspace_host, Some(false));
+    assert!(
+        !client
+            .capabilities
+            .iter()
+            .any(|capability| capability.as_str() == crate::caps::HOSTED_WORKSPACES),
+        "a client does not advertise a service it does not provide"
+    );
+}

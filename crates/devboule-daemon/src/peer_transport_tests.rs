@@ -1342,6 +1342,50 @@ fn a_presence_word_that_denies_the_advertised_service_is_refused() {
     join_bounded(accept, "the peer accept loop");
 }
 
+/// A v31 peer carries no presence on the wire, so the recorded scope is the
+/// only fact and a cranked word on the hello changes nothing. That is the
+/// documented compatibility limit: an older peer cannot follow this daemon's
+/// transition, and this side does not guess one for it.
+#[test]
+fn a_v31_peer_uses_its_recorded_scope_and_cannot_rescope() {
+    use devboule_protocol::{ClientHello, DaemonMessage, OwnerId};
+
+    let transport = Arc::new(TestTransport::default());
+    let (address, state, stop, accept) = spawn_accept_loop(
+        transport,
+        Arc::new(PairingDisabled) as Arc<dyn PairingHook>,
+        "peer-v31-scope",
+    );
+    let (client_private, client_public) = keypair(PEER_NOISE_PATTERN);
+    upsert_paired_row(&state, address, client_public, true);
+    let mut hello = ClientHello::m3a(
+        OwnerId::new("peer_phone", "devboule-daemon").expect("owner"),
+        "devboule-daemon",
+    );
+    hello.protocol_version = 31;
+    // A crafted word no v31 daemon sends; it must not be read as presence.
+    hello.workspace_host = Some(false);
+    let (stream, framed, reply) = open_raw_peer(address, &client_private, hello);
+    assert!(matches!(reply, DaemonMessage::Hello(_)), "{reply:?}");
+    assert!(
+        projected_self_info(&framed).public_key.is_empty(),
+        "the recorded machine scope stands for a v31 peer"
+    );
+    assert!(
+        state
+            .peer_get("phone")
+            .expect("row")
+            .expect("row")
+            .hosts_workspaces,
+        "a v31 hello does not move the record"
+    );
+
+    drop(framed);
+    drop(stream);
+    stop_accept_loop(&state, &stop);
+    join_bounded(accept, "the peer accept loop");
+}
+
 /// A silent peer socket — the half-open shape — is closed by the reader's
 /// deadline, so its registry entry stops keeping the device online after the
 /// outbound link has already timed out. The socket here stays open the whole

@@ -131,7 +131,16 @@ impl DaemonHello {
         self.workspace_host = Some(workspace_host);
         // Same rule as [`ClientHello::peer`]: the bit and the service name are
         // one fact, and a daemon with no workspace does not advertise it.
-        if !workspace_host {
+        if workspace_host {
+            if !self
+                .capabilities
+                .iter()
+                .any(|capability| capability.as_str() == crate::caps::HOSTED_WORKSPACES)
+            {
+                self.capabilities
+                    .push(crate::Capability::new(crate::caps::HOSTED_WORKSPACES));
+            }
+        } else {
             self.capabilities
                 .retain(|capability| capability.as_str() != crate::caps::HOSTED_WORKSPACES);
         }
