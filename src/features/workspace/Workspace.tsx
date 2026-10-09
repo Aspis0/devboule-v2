@@ -694,6 +694,8 @@ export function Workspace({
       orderStripTabs(
         composeStripTabs(visibleSessions, visibleToolTabs),
         (selectedKey === null ? undefined : stripOrders.get(selectedKey)) ?? [],
+        // A recovered session names the one it replaces as its context.
+        (tab) => (tab.type === "session" ? (tab.session.contextId ?? null) : null),
       ),
     [visibleSessions, visibleToolTabs, selectedKey, stripOrders],
   );

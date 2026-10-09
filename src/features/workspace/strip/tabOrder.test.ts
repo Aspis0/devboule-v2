@@ -97,3 +97,37 @@ describe("insertionEdge", () => {
     expect(insertionEdge([{ id: "b", left: 0, right: 100 }], "b", 0)).toBeNull();
   });
 });
+
+describe("orderStripTabs across a recovered session", () => {
+  // A recovered session comes back as a new session that names the old one as
+  // its predecessor; the remembered place belongs to the new session then.
+  type Tab = { id: string; predecessor?: string };
+  const predecessorOf = (tab: Tab): string | null => tab.predecessor ?? null;
+
+  it("gives a remembered place to the successor of a session no longer open", () => {
+    const tabs: Tab[] = [{ id: "s-2" }, { id: "new-9", predecessor: "old-1" }];
+    expect(orderStripTabs(tabs, ["old-1", "s-2"], predecessorOf).map((tab) => tab.id)).toEqual([
+      "new-9",
+      "s-2",
+    ]);
+  });
+
+  it("leaves a predecessor that is still open to its own tab", () => {
+    const tabs: Tab[] = [{ id: "new-9", predecessor: "old-1" }, { id: "old-1" }];
+    expect(orderStripTabs(tabs, ["old-1"], predecessorOf).map((tab) => tab.id)).toEqual([
+      "old-1",
+      "new-9",
+    ]);
+  });
+
+  it("lets only one successor claim the same remembered place", () => {
+    const tabs: Tab[] = [
+      { id: "new-a", predecessor: "old-1" },
+      { id: "new-b", predecessor: "old-1" },
+    ];
+    expect(orderStripTabs(tabs, ["old-1"], predecessorOf).map((tab) => tab.id)).toEqual([
+      "new-a",
+      "new-b",
+    ]);
+  });
+});

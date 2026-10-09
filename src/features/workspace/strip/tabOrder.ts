@@ -2,7 +2,8 @@
 // tabs — so a browser tab could never sit beside an agent. This keeps one
 // ordered list of tab ids per workspace across every kind. The remembered order
 // is applied over what the workspace composes, so a tab the order does not name
-// yet (or a restored session with a new id) lands at the end, where it always did.
+// yet lands at the end, where it always did. A recovered session is a new id
+// whose predecessor is the id the order remembers: it takes that place.
 
 /** One chip as the drop reads it: its id and the horizontal box it occupies. */
 export interface TabSlot {
@@ -11,13 +12,44 @@ export interface TabSlot {
   right: number;
 }
 
-export function orderStripTabs<T extends { id: string }>(tabs: T[], order: readonly string[]): T[] {
+/**
+ * The remembered order over the composed tabs. A tab is ranked by its own id;
+ * a tab whose id is not remembered takes the place of its predecessor when the
+ * predecessor is no longer open, and only the first such tab claims it.
+ */
+export function orderStripTabs<T extends { id: string }>(
+  tabs: T[],
+  order: readonly string[],
+  predecessorOf: (tab: T) => string | null = () => null,
+): T[] {
   if (order.length === 0) return tabs;
   const rank = new Map(order.map((id, index) => [id, index]));
-  const ranked = tabs.filter((tab) => rank.has(tab.id));
-  const unranked = tabs.filter((tab) => !rank.has(tab.id));
-  ranked.sort((left, right) => (rank.get(left.id) ?? 0) - (rank.get(right.id) ?? 0));
-  return [...ranked, ...unranked];
+  const open = new Set(tabs.map((tab) => tab.id));
+  const claimed = new Set<number>();
+  const ranked: Array<{ tab: T; rank: number }> = [];
+  const pending: T[] = [];
+  for (const tab of tabs) {
+    const own = rank.get(tab.id);
+    if (own === undefined) {
+      pending.push(tab);
+      continue;
+    }
+    claimed.add(own);
+    ranked.push({ tab, rank: own });
+  }
+  const unranked: T[] = [];
+  for (const tab of pending) {
+    const predecessor = predecessorOf(tab);
+    const place = predecessor === null || open.has(predecessor) ? undefined : rank.get(predecessor);
+    if (place === undefined || claimed.has(place)) {
+      unranked.push(tab);
+      continue;
+    }
+    claimed.add(place);
+    ranked.push({ tab, rank: place });
+  }
+  ranked.sort((left, right) => left.rank - right.rank);
+  return [...ranked.map((entry) => entry.tab), ...unranked];
 }
 
 /** The same ids with `movedId` taken out and put back at `index`, clamped to
