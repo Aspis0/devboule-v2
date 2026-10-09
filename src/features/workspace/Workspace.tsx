@@ -2393,46 +2393,46 @@ export function Workspace({
                     {/* The empty state never carries the error: the failure has its
                 one line under the strip, and this pane stays what the spec
                 says it is (SPEC-regions "Empty and error"). */}
-                {sessionsLoading || projectsLoading ? (
-                  <div role="status" className="workspace-empty-note">
-                    Loading sessions…
-                  </div>
-                ) : selectedKey === null && projects.length === 0 ? (
-                  // No project at all: the one action is the same add-project
-                  // flow the sidebar's "+" opens.
-                  <div className="workspace-empty-state" role="status">
-                    <p className="workspace-empty-title">No project yet</p>
-                    <button
-                      type="button"
-                      className="workspace-empty-action"
-                      onClick={openProjectDialog}
-                    >
-                      New project
-                    </button>
-                  </div>
-                ) : (
-                  <div className="workspace-empty-state" role="status">
-                    <p className="workspace-empty-title">No tabs yet</p>
-                    {/* The spec's one outline action: the same agent flow as
+                    {sessionsLoading || projectsLoading ? (
+                      <div role="status" className="workspace-empty-note">
+                        Loading sessions…
+                      </div>
+                    ) : selectedKey === null && projects.length === 0 ? (
+                      // No project at all: the one action is the same add-project
+                      // flow the sidebar's "+" opens.
+                      <div className="workspace-empty-state" role="status">
+                        <p className="workspace-empty-title">No project yet</p>
+                        <button
+                          type="button"
+                          className="workspace-empty-action"
+                          onClick={openProjectDialog}
+                        >
+                          New project
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="workspace-empty-state" role="status">
+                        <p className="workspace-empty-title">No tabs yet</p>
+                        {/* The spec's one outline action: the same agent flow as
                     "+ → Agent", from the "+" itself. It waits while a create or
                     a provider choice is in flight, and without a selected
                     workspace it says why. */}
-                    <button
-                      type="button"
-                      className="workspace-empty-action"
-                      onClick={handleNewTabAgent}
-                      disabled={selectedKey === null || addDisabled}
-                      aria-describedby={selectedKey === null ? EMPTY_PANE_REASON_ID : undefined}
-                    >
-                      Open an agent
-                    </button>
-                    {selectedKey === null ? (
-                      <p id={EMPTY_PANE_REASON_ID} className="workspace-empty-note">
-                        {NO_WORKSPACE_SENTENCE}
-                      </p>
-                    ) : null}
-                  </div>
-                )}
+                        <button
+                          type="button"
+                          className="workspace-empty-action"
+                          onClick={handleNewTabAgent}
+                          disabled={selectedKey === null || addDisabled}
+                          aria-describedby={selectedKey === null ? EMPTY_PANE_REASON_ID : undefined}
+                        >
+                          Open an agent
+                        </button>
+                        {selectedKey === null ? (
+                          <p id={EMPTY_PANE_REASON_ID} className="workspace-empty-note">
+                            {NO_WORKSPACE_SENTENCE}
+                          </p>
+                        ) : null}
+                      </div>
+                    )}
                   </div>
                 )}
               </SplitPane>
