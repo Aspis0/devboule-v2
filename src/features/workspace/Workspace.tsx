@@ -106,6 +106,7 @@ import { getLastSelectedWorkspaceKey, setLastSelectedWorkspaceKey } from "./last
 import { Sidebar } from "./sidebar/Sidebar";
 import { buildAgentRows } from "./sidebar/agentRowViews";
 import { hostNames } from "./sidebar/hostNames";
+import type { WorkspaceTreeProps } from "./sidebar/WorkspaceTree";
 import { HistoryPanel } from "../history/HistoryPanel";
 import { StatusBar, agentStateOf, type FocusedAgent } from "./statusBar/StatusBar";
 import { useWorkspaceStats } from "./sidebar/useWorkspaceStats";
@@ -1972,9 +1973,12 @@ export function Workspace({
 
   // One instance of the provider choice UI, anchored where the flow was
   // opened. What happens afterwards was fixed when the flow started.
-  const providerMenu =
-    providerAnchor === null || providerPicker === null ? null : (
-      <AnchoredPopover
+  // Memoised: the rail's bundle reads this node, and a fresh element every
+  // render would defeat the rail's memo.
+  const providerMenu = useMemo(
+    () =>
+      providerAnchor === null || providerPicker === null ? null : (
+        <AnchoredPopover
         containerRef={providerPickerRef}
         anchorRef={providerAnchorElRef}
         onDismiss={dismissProviderPicker}
@@ -2019,9 +2023,74 @@ export function Workspace({
           </div>
         )}
       </AnchoredPopover>
-    );
+      ),
+    [
+      providerAnchor,
+      providerPicker,
+      dismissProviderPicker,
+      openProvidersSettings,
+      pickProvider,
+    ],
+  );
 
   const agentRows = useMemo(() => buildAgentRows(sessions), [sessions]);
+  // What the daemon's status poll hands out every 2 s is a new object even
+  // when nothing changed; the rail compares the fields its dot reads, so an
+  // unchanged daemon keeps its identity and the rail's memo holds.
+  const sidebarDaemon = useMemo(
+    () => daemon,
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- the snapshot is the same object until one of these fields moves.
+    [daemon.state, daemon.pid, daemon.message],
+  );
+  // The rail's bundle, stable across renders that change nothing it shows:
+  // without this the inline literal below is a new identity every render
+  // and the rail re-traverses its tree on every session and daemon update.
+  const sidebarTree: WorkspaceTreeProps = useMemo(
+    () => ({
+      projects: visibleProjects,
+      loading: projectsLoading,
+      error: projectsError,
+      providerError,
+      selectedWorkspace: selectedKey,
+      onRetryProjects: handleRetryProjects,
+      onRetryProviders: handleRetryProviders,
+      onSelectWorkspace: selectWorkspace,
+      onNewWorkspace: handleNewWorkspace,
+      onRenameWorkspace: renameWorkspace,
+      onDeleteWorkspace: handleDeleteWorkspace,
+      providerMenuAnchorProjectId:
+        providerAnchor?.kind === "project" ? providerAnchor.projectId : null,
+      providerMenu: providerAnchor?.kind === "project" ? providerMenu : null,
+      stats: workspaceStats,
+      branches: workspaceBranches,
+      agentRows,
+      activeSessionId: panes.upperToolId === null ? selectedSessionId : null,
+      onOpenAgent: handleOpenAgentRow,
+      hostNames: hostNameMap,
+    }),
+    [
+      visibleProjects,
+      projectsLoading,
+      projectsError,
+      providerError,
+      selectedKey,
+      handleRetryProjects,
+      handleRetryProviders,
+      selectWorkspace,
+      handleNewWorkspace,
+      renameWorkspace,
+      handleDeleteWorkspace,
+      providerAnchor,
+      providerMenu,
+      workspaceStats,
+      workspaceBranches,
+      agentRows,
+      panes.upperToolId,
+      selectedSessionId,
+      handleOpenAgentRow,
+      hostNameMap,
+    ],
+  );
   return (
     <section className="workspace-screen" data-screen-label="Workspace">
       <div className="workspace-panels">
@@ -2040,30 +2109,9 @@ export function Workspace({
           onAddProject={openProjectDialog}
           onOpenSettings={handleOpenSettings}
           addProjectRef={newProjectTriggerRef}
-          daemon={daemon}
+          daemon={sidebarDaemon}
           daemonNote={restartFailureNote}
-          tree={{
-            projects: visibleProjects,
-            loading: projectsLoading,
-            error: projectsError,
-            providerError,
-            selectedWorkspace: selectedKey,
-            onRetryProjects: handleRetryProjects,
-            onRetryProviders: handleRetryProviders,
-            onSelectWorkspace: selectWorkspace,
-            onNewWorkspace: handleNewWorkspace,
-            onRenameWorkspace: renameWorkspace,
-            onDeleteWorkspace: handleDeleteWorkspace,
-            providerMenuAnchorProjectId:
-              providerAnchor?.kind === "project" ? providerAnchor.projectId : null,
-            providerMenu: providerAnchor?.kind === "project" ? providerMenu : null,
-            stats: workspaceStats,
-            branches: workspaceBranches,
-            agentRows,
-            activeSessionId: panes.upperToolId === null ? selectedSessionId : null,
-            onOpenAgent: handleOpenAgentRow,
-            hostNames: hostNameMap,
-          }}
+          tree={sidebarTree}
         />
 
         <main className="workspace-center-panel" ref={centerRef}>

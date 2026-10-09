@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { ChangeEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent } from "react";
 import { searchChordFor, searchChordLabel } from "../../../lib/keymap";
 import { useMenuOpen } from "../../../lib/menuOpen";
@@ -37,8 +37,11 @@ export interface SidebarProps {
  * Nothing here collapses or swaps: the History page opens in the main area
  * while this rail keeps showing the workspaces. The resize handle is this
  * region's other half — a sibling of the aside in the screen's flex row.
+ *
+ * Memoised: the daemon poll and roster pushes re-render the surface, and a
+ * rail whose every prop kept its identity must not re-traverse its tree.
  */
-export function Sidebar({
+export const Sidebar = memo(function Sidebar({
   width,
   collapsed,
   onCollapsedChange,
@@ -335,4 +338,4 @@ export function Sidebar({
       />
     </>
   );
-}
+});
