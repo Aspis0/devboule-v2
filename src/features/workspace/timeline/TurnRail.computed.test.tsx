@@ -271,45 +271,31 @@ describe("turn rail computed styles", () => {
     preview.remove();
   });
 
-  it("shows the card only on a focus-opened dot whose turn leaves canvas", () => {
+  it("floats the card on a focus-opened dot over any bubble, and on hover", () => {
     railCss.inject([
       ".turn-rail-preview",
-      ".turn-rail-stop[data-preview-fits] .turn-rail-dot:hover .turn-rail-preview",
-      ".turn-rail-stop[data-preview-fits][data-preview-open] .turn-rail-preview",
+      ".turn-rail-stop .turn-rail-dot:hover .turn-rail-preview",
+      ".turn-rail-stop[data-preview-open] .turn-rail-preview",
     ]);
-    const buildStop = (fits: boolean): { stop: HTMLElement; preview: HTMLElement } => {
-      const stop = document.createElement("span");
-      stop.className = "turn-rail-stop";
-      if (fits) stop.setAttribute("data-preview-fits", "");
-      stop.setAttribute("data-preview-open", "");
-      const dot = document.createElement("button");
-      dot.className = "turn-rail-dot";
-      const preview = document.createElement("span");
-      preview.className = "turn-rail-preview";
-      dot.appendChild(preview);
-      stop.appendChild(dot);
-      document.body.appendChild(stop);
-      return { stop, preview };
-    };
-    // happy-dom serves a stale computed style when an element's attributes
-    // change after a getComputedStyle call, so each state gets its own
-    // stop instead of one stop mutated between reads.
-    const fitting = buildStop(true);
-    expect(getComputedStyle(fitting.preview).display).toBe("block");
-    fitting.stop.remove();
-
-    // No free canvas: even the focus-open must not cover the turn's bubble.
-    const crowded = buildStop(false);
-    expect(getComputedStyle(crowded.preview).display).toBe("none");
-    crowded.stop.remove();
+    const stop = document.createElement("span");
+    stop.className = "turn-rail-stop";
+    stop.setAttribute("data-preview-open", "");
+    const dot = document.createElement("button");
+    dot.className = "turn-rail-dot";
+    const preview = document.createElement("span");
+    preview.className = "turn-rail-preview";
+    dot.appendChild(preview);
+    stop.appendChild(dot);
+    document.body.appendChild(stop);
+    expect(getComputedStyle(preview).display).toBe("block");
+    stop.remove();
 
     // The hover path: happy-dom cannot compute :hover, so the rule text
     // is the sanctioned proof for it (cssProof.rulesFor).
-    expect(
-      railCss.rulesFor(
-        ".turn-rail-stop[data-preview-fits] .turn-rail-dot:hover .turn-rail-preview",
-      ),
-    ).toContain("display: block");
+    expect(railCss.rulesFor(".turn-rail-stop .turn-rail-dot:hover .turn-rail-preview")).toContain(
+      "display: block",
+    );
+    expect(read("src/features/workspace/timeline/TurnRail.css")).not.toContain("data-preview-fits");
   });
 
   it("keeps the dot a keyboard target with an accent focus ring and no motion", () => {
@@ -352,13 +338,10 @@ describe("turn rail computed styles", () => {
 
   it("rests the rail invisible and answers hover, keyboard focus, or an open preview", () => {
     railCss.inject([".turn-rail"]);
-    const rail = document.createElement("nav");
-    rail.className = "turn-rail";
-    document.body.appendChild(rail);
-    // At rest the rail is out of the reading path but still in the tab
-    // order: opacity hides, and happy-dom computes it.
-    expect(getComputedStyle(rail).opacity).toBe("0");
-    rail.remove();
+    // At rest the rail is out of the reading path but still in the tab order.
+    // happy-dom matches the touch media, so the rest state is read off the
+    // rule text: the base rule hides, and the touch rule shows.
+    expect(railCss.rulesFor(".turn-rail")).toContain("opacity: 0");
     // Hover and keyboard focus cannot be computed, so the rule text is the
     // sanctioned proof for those two paths (cssProof.rulesFor).
     expect(railCss.rulesFor(".workspace-conversation:hover .turn-rail")).toContain("opacity: 1");
@@ -368,10 +351,10 @@ describe("turn rail computed styles", () => {
     expect(railCss.rulesFor(".turn-rail.is-preview-open")).toContain("opacity: 1");
   });
 
-  it("keeps the hover reveal off touch hardware, focus reveal on", () => {
+  it("shows the ticks on touch hardware with no reveal step, and makes them tappable", () => {
     // The assembled proof flattens @media, so the scoping itself is read
-    // off the sheet source: the hover paths cancel under (hover: none)
-    // while the focus path stays global.
+    // off the sheet source: under (hover: none) the rail rests visible and
+    // its dots take a tap at once, with no hover to reveal them first.
     const source = read("src/features/workspace/timeline/TurnRail.css");
     const mediaAt = source.indexOf("@media (hover: none)");
     expect(mediaAt).toBeGreaterThan(-1);
@@ -389,12 +372,9 @@ describe("turn rail computed styles", () => {
     }
     expect(end).toBeGreaterThan(mediaAt);
     const mediaBody = source.slice(mediaAt, end);
-    expect(mediaBody).toContain(".workspace-conversation:hover .turn-rail");
-    expect(mediaBody).toContain("opacity: 0");
-    expect(mediaBody).toContain(".workspace-conversation:hover .turn-rail .turn-rail-dot");
-    expect(mediaBody).toContain("pointer-events: none");
-    expect(mediaBody).not.toContain("focus-within");
-    expect(mediaBody).not.toContain("is-preview-open");
+    expect(mediaBody).toContain(".turn-rail {\n    opacity: 1;");
+    expect(mediaBody).toContain(".turn-rail .turn-rail-dot {\n    pointer-events: auto;");
+    expect(mediaBody).not.toContain(":hover");
   });
 
   it("resolves the rail's theme tokens in the dark theme as well", () => {

@@ -54,35 +54,16 @@ function openStop(dot: Element): Element {
 
 describe("the turn rail preview card", () => {
   describe("placement", () => {
-    it("opens only into canvas the previewed turn does not occupy", () => {
-      // A full-width column: 680 px behind the gutter, a max-width bubble at
-      // 70% (476 px) leaves 204 px of canvas — exactly the card's reach.
-      const rail = readyPreview([476, 300], 680);
-      let stopsNow = stops(rail);
-      expect(stopsNow[0]!.hasAttribute("data-preview-fits")).toBe(true);
-      expect(stopsNow[1]!.hasAttribute("data-preview-fits")).toBe(true);
-
-      // The pane narrows: the long turn's bubble now reaches into the
-      // card's lane, while the short one still leaves it free.
-      stubColumnWidth(rail.content, 640);
-      fireResize();
-      stopsNow = stops(rail);
-      expect(stopsNow[0]!.hasAttribute("data-preview-fits")).toBe(false);
-      expect(stopsNow[1]!.hasAttribute("data-preview-fits")).toBe(true);
-      rail.unmount();
-    });
-
-    it("keeps the message on hover when the card has no room for it", () => {
-      // The same narrowed pane: the long turn's card cannot open, so its dot
-      // names the message itself, and the turn that fits keeps the card alone.
-      const rail = readyPreview([476, 300], 680);
-      const dots = [...rail.content.querySelectorAll<HTMLElement>(".turn-rail-dot")];
-      expect(dots[0]!.getAttribute("title")).toBeNull();
-      stubColumnWidth(rail.content, 640);
-      fireResize();
-      const narrowed = [...rail.content.querySelectorAll<HTMLElement>(".turn-rail-dot")];
-      expect(narrowed[0]!.getAttribute("title")).toContain("Question 1");
-      expect(narrowed[1]!.getAttribute("title")).toBeNull();
+    it("floats the card over the transcript whatever the bubble's width", () => {
+      // The card needs no canvas beside the bubble: it floats above the
+      // transcript, so no stop is gated and no dot falls back to a title.
+      const rail = readyPreview([476, 300], 640);
+      for (const stop of stops(rail)) {
+        expect(stop.hasAttribute("data-preview-fits")).toBe(false);
+      }
+      for (const dot of rail.content.querySelectorAll(".turn-rail-dot")) {
+        expect(dot.hasAttribute("title")).toBe(false);
+      }
       rail.unmount();
     });
   });

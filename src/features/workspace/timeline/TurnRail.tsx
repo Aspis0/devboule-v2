@@ -19,17 +19,6 @@ import "./TurnRail.css";
 
 const GUTTER_CLASS = "has-turn-rail";
 
-/** The card spans 9…233 px of the content box (224 px wide, starting 3 px
- * short of the dot box's right edge); the column begins at the gutter's
- * 32 px, so the turn's bubble must leave 204 px of column beside the card —
- * 3 px of gap included — or the card covers the turn it previews. */
-const PREVIEW_MIN_CANVAS_PX = 204;
-
-/** The gutter reserved in the content box (TurnRail.css: `has-turn-rail …
- * content { padding-left: 32px }`): `clientWidth` includes it, the bubbles
- * live inside it, so the preview's canvas is the column behind it. */
-const GUTTER_COLUMN_PX = 32;
-
 interface TurnRailProps {
   scrollRef: RefObject<HTMLDivElement | null>;
   contentRef: RefObject<HTMLDivElement | null>;
@@ -440,8 +429,6 @@ function TurnRailInner({ scrollRef, contentRef, items }: TurnRailProps) {
         if (measures === null) return null;
         const measure = measures.byId[turn.id];
         if (measure === undefined) return null;
-        const fits =
-          measures.contentWidth - GUTTER_COLUMN_PX - measure.bubbleWidth >= PREVIEW_MIN_CANVAS_PX;
         return (
           <TurnStop
             key={turn.id}
@@ -449,7 +436,6 @@ function TurnRailInner({ scrollRef, contentRef, items }: TurnRailProps) {
             index={index}
             count={turns.length}
             center={measure.center}
-            fits={fits}
             isCurrent={turn.id === activeId}
             isOpen={openPreviewId === turn.id}
             tabIndex={turn.id === stopId ? 0 : -1}

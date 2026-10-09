@@ -7,7 +7,6 @@ interface TurnStopProps {
   index: number;
   count: number;
   center: number;
-  fits: boolean;
   isCurrent: boolean;
   isOpen: boolean;
   tabIndex: 0 | -1;
@@ -29,7 +28,6 @@ function TurnStopInner({
   index,
   count,
   center,
-  fits,
   isCurrent,
   isOpen,
   tabIndex,
@@ -44,7 +42,6 @@ function TurnStopInner({
     <span
       className="turn-rail-stop"
       style={{ top: `${center}px` }}
-      data-preview-fits={fits ? "" : undefined}
       data-preview-open={isOpen ? "" : undefined}
     >
       <button
@@ -52,9 +49,6 @@ function TurnStopInner({
         className="turn-rail-dot"
         aria-current={isCurrent ? "true" : undefined}
         aria-label={userTurnLabel(turn, index, count, time)}
-        // A card with no room to open is replaced by the native tooltip, so a
-        // mouse hover always shows the message.
-        title={fits ? undefined : turn.title}
         tabIndex={tabIndex}
         onClick={() => jumpTo(turn)}
         onPointerDown={pressStarted}

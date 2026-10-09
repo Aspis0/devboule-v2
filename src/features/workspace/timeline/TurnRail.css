@@ -23,10 +23,10 @@
   z-index: 2;
   width: 56px;
   pointer-events: none;
-  /* The rail is navigation, not reading chrome: it rests invisible and
-     answers hover, keyboard focus, or an open preview — never the
-     transcript at rest. Opacity keeps the dots tabbable while hidden, and
-     the flip is instant: this sheet carries no transition or animation. */
+  /* The rail is navigation, not reading chrome: on a pointer it rests
+     invisible and answers hover, keyboard focus, or an open preview (touch
+     rests it visible, below). Opacity keeps the dots tabbable while hidden,
+     and the flip is instant: this sheet carries no transition or animation. */
   opacity: 0;
 }
 
@@ -36,15 +36,15 @@
   opacity: 1;
 }
 
-/* Touch never hovers: under (hover: none) the pointer reveal above stays
-   off and the rail answers keyboard focus or an open preview alone. */
+/* Touch never hovers, so there is no reveal to wait for: the ticks rest
+   visible and a tap lands on the dot, which scrolls to its turn. */
 @media (hover: none) {
-  .workspace-conversation:hover .turn-rail {
-    opacity: 0;
+  .turn-rail {
+    opacity: 1;
   }
 
-  .workspace-conversation:hover .turn-rail .turn-rail-dot {
-    pointer-events: none;
+  .turn-rail .turn-rail-dot {
+    pointer-events: auto;
   }
 }
 
@@ -69,9 +69,9 @@
   align-items: center;
   justify-content: center;
   /* The target, WCAG 2.5.8's 24 px minimum; the glyph it holds keeps the
-     spec's 5/8/9 — only the button box is sized here. Inert while the rail
-     rests hidden, so a touch tap (no hover to reveal first) cannot fire an
-     invisible target: keyboard focus still lands, and focus reveals. */
+     spec's 5/8/9 — only the button box is sized here. Inert while a pointer
+     rests over nothing, so an invisible target never fires; touch takes its
+     taps at once (see the touch rule). */
   width: 24px;
   height: 24px;
   padding: 0;
@@ -118,8 +118,7 @@
   position: absolute;
   top: 50%;
   /* 3 px into the dot box: it clears the current dot's ring on the left,
-     and gives the card a 3 px gap before a max-width bubble at full pane
-     width (the fits check in TurnRail.tsx guards the rest). */
+     and the card floats over the transcript from there. */
   left: calc(100% - 3px);
   display: none;
   width: 224px;
@@ -135,14 +134,14 @@
   text-align: left;
 }
 
-/* Both openings are gated on the measured canvas: a card that would cover
-   the turn it previews never shows, whatever opened it. The hover rule is
-   the only one happy-dom cannot compute — cssProof.rulesFor carries it. */
-.turn-rail-stop[data-preview-fits] .turn-rail-dot:hover .turn-rail-preview {
+/* The card floats over the transcript above the bubbles, so hover and an
+   open focus both show it whatever the bubble's width. The hover rule is
+   the one happy-dom cannot compute — cssProof.rulesFor carries it. */
+.turn-rail-stop .turn-rail-dot:hover .turn-rail-preview {
   display: block;
 }
 
-.turn-rail-stop[data-preview-fits][data-preview-open] .turn-rail-preview {
+.turn-rail-stop[data-preview-open] .turn-rail-preview {
   display: block;
 }
 
