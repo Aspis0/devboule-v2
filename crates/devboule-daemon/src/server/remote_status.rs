@@ -45,6 +45,11 @@ impl<T> StatusCoalescer<T> {
         None
     }
 
+    /// Whether a trailing value is parked, so a flusher knows to keep waking.
+    pub(crate) fn has_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
     /// The trailing value, if the window has passed since the last delivery.
     pub(crate) fn tick(&mut self, now: Instant) -> Option<T> {
         if let Some(sent) = self.last_sent {

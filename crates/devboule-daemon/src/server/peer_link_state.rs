@@ -125,6 +125,11 @@ pub(crate) struct HostLink {
     /// Set when this daemon's own hosting state changed and the outbound
     /// hello must be spoken again. One-shot: the worker takes it and redials.
     reconnect_requested: AtomicBool,
+    /// A weak self-reference, so a parked trailing status can be flushed by a
+    /// timer thread without the worker's loop being the only clock.
+    me: Mutex<std::sync::Weak<HostLink>>,
+    /// One flusher at a time.
+    flushing: AtomicBool,
     idle_grace: Duration,
 }
 
@@ -134,7 +139,7 @@ impl HostLink {
         idle_grace: Duration,
         status_window: Duration,
     ) -> Arc<Self> {
-        Arc::new(Self {
+        let link = Arc::new(Self {
             device_id,
             worker: Mutex::new(None),
             next_worker: AtomicU64::new(0),
@@ -149,8 +154,12 @@ impl HostLink {
             status_coalescer: Mutex::new(super::remote_status::StatusCoalescer::new(status_window)),
             remote_revision: Mutex::new(None),
             reconnect_requested: AtomicBool::new(false),
+            me: Mutex::new(std::sync::Weak::new()),
+            flushing: AtomicBool::new(false),
             idle_grace,
-        })
+        });
+        *link.me.lock().unwrap_or_else(|error| error.into_inner()) = Arc::downgrade(&link);
+        link
     }
 
     /// Record a workspace revision the host pushed over this link, if it is a
@@ -598,6 +607,12 @@ impl HostLink {
         };
         if let Some(status) = due {
             self.deliver_status(status);
+        } else {
+            // The value is parked; the worker's poll is not the only clock a
+            // parked push may wait on, because the worker can be blocked in a
+            // read, an attach or a backoff. The battery promise is one second,
+            // so a timer keeps it whether or not the loop is free.
+            self.ensure_flusher();
         }
     }
 
@@ -614,6 +629,54 @@ impl HostLink {
         };
         if let Some(status) = due {
             self.deliver_status(status);
+        }
+    }
+
+    /// Keep a flusher alive while a trailing status waits. One thread per
+    /// link at most; it exits when nothing is parked, and a value parked as
+    /// it exits starts a new one.
+    fn ensure_flusher(&self) {
+        if self.flushing.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let Some(link) = self
+            .me
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .upgrade()
+        else {
+            self.flushing.store(false, Ordering::SeqCst);
+            return;
+        };
+        let started = std::thread::Builder::new()
+            .name(format!("daemon-peer-status-flush-{}", link.device_id))
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(Duration::from_millis(50));
+                    link.flush_status(Instant::now());
+                    let pending = link
+                        .status_coalescer
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .has_pending();
+                    if !pending {
+                        break;
+                    }
+                }
+                link.flushing.store(false, Ordering::SeqCst);
+                // A value parked between the last flush and this clear starts
+                // a fresh flusher rather than waiting for a worker turn.
+                let still_pending = link
+                    .status_coalescer
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .has_pending();
+                if still_pending {
+                    link.ensure_flusher();
+                }
+            });
+        if started.is_err() {
+            self.flushing.store(false, Ordering::SeqCst);
         }
     }
 

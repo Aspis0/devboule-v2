@@ -660,7 +660,63 @@ fn revoking_a_host_closes_its_link_and_streams_immediately() {
     }
 }
 
-/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones
+/// The trailing status is delivered within its window by the timer, even when
+/// the worker loop never runs: the battery promise is the clock the flusher
+/// keeps, not the loop's poll.
+#[test]
+fn a_parked_trailing_status_is_flushed_within_its_window() {
+    let link = super::HostLink::new(
+        "b".to_string(),
+        Duration::from_secs(1),
+        Duration::from_millis(200),
+    );
+    let conn = remote_conn_handle(3, "b");
+    link.lease(Arc::clone(&conn));
+    link.publish(RemoteHostStatus {
+        device_id: "b".to_string(),
+        state: RemoteHostState::Online,
+        last_failure: Some("first".to_string()),
+        revision: None,
+    });
+    link.publish(RemoteHostStatus {
+        device_id: "b".to_string(),
+        state: RemoteHostState::Offline,
+        last_failure: Some("trailing".to_string()),
+        revision: None,
+    });
+
+    // No flush_status call: only the flusher thread can deliver the parked
+    // value, and it must do so inside the window plus a little slack.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let statuses: Vec<_> = conn
+            .outbound
+            .pull_replies()
+            .into_iter()
+            .filter_map(|reply| match reply {
+                DaemonMessage::RemoteHostStatus {
+                    state,
+                    last_failure,
+                    ..
+                } => Some((state, last_failure)),
+                _ => None,
+            })
+            .collect();
+        if statuses
+            .iter()
+            .any(|(state, _)| *state == RemoteHostState::Offline)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the trailing status was never flushed by the timer"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones
 /// must continue it, a replay or a poisoned value moves nothing, and a new
 /// transport re-baselines.
 #[test]
