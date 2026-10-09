@@ -16,11 +16,11 @@ use devboule_protocol::{
     ClientHello, ClientMessage, Cursor, DaemonHello, DaemonMessage, DaemonStatusBody, ErrorCode,
     JournalRetention, JournalUsage, OwnerId, PairingSecret, PeerRow, PermissionOutcome,
     Persistence, Project, PromptAttachment, ProviderInfo, RemoteHostList, RemoteHostListBody,
-    RemoteHostStatus, ResumeResult, RetentionPatch, Session, SessionEvent, SessionEventEnvelope,
-    SessionKind, SessionResumeInfo, SessionResumeOutcome, SessionStateSnapshot, SessionTask,
-    StoredAttachment, SubscriptionId, WireError, Workspace, WorkspaceDirectory,
-    WorkspaceFileContent, WorkspaceFileMutation, WorkspaceFilePreview, WorkspaceGitFileDiff,
-    WorkspaceGitLog, WorkspaceGitStatus, WorkspaceIsolation,
+    RemoteHostStatus, RemoteRelayedEvent, ResumeResult, RetentionPatch, Session, SessionEvent,
+    SessionEventEnvelope, SessionKind, SessionResumeInfo, SessionResumeOutcome,
+    SessionStateSnapshot, SessionTask, StoredAttachment, SubscriptionId, WireError, Workspace,
+    WorkspaceDirectory, WorkspaceFileContent, WorkspaceFileMutation, WorkspaceFilePreview,
+    WorkspaceGitFileDiff, WorkspaceGitLog, WorkspaceGitStatus, WorkspaceIsolation,
 };
 
 use crate::diagnostics::DiagnosticsReport;
@@ -141,6 +141,11 @@ pub type DelegationChangedHandler =
 /// and it arrives only for the hosts this process is watching.
 pub type RemoteHostStatusHandler = Arc<dyn Fn(RemoteHostStatus) + Send + Sync>;
 
+/// One relayed remote-session event, handed to the surface that opened the
+/// stream. One slot for the process: the event carries its host and
+/// subscription, so the surface multiplexes.
+pub type RemoteHostEventHandler = Arc<dyn Fn(RemoteRelayedEvent) + Send + Sync>;
+
 struct PendingSubscription {
     subscription_id: SubscriptionId,
     session_id: String,
@@ -167,6 +172,7 @@ struct ClientInner {
     session_state_subscription: Mutex<Option<SessionStateHandler>>,
     delegation_subscription: Mutex<Option<DelegationChangedHandler>>,
     remote_host_status_handler: Mutex<Option<RemoteHostStatusHandler>>,
+    remote_host_event_handler: Mutex<Option<RemoteHostEventHandler>>,
     /// The sending half of the browser-host queue (`client_browser.rs`). The
     /// reader only `try_send`s into it; emptied on connection failure so the
     /// host's receiver sees the end.
@@ -1998,6 +2004,61 @@ impl DaemonClient {
     /// Install the handler for the daemon-pushed host state. A sidebar renders
     /// from this rather than from a reply, because a link comes up, drops and
     /// comes back while nobody is asking it anything.
+    /// Install the handler for relayed remote-session events. One slot for
+    /// the process, like the host-status push: every event names its host and
+    /// subscription, so the surface routes them itself.
+    pub fn on_remote_host_event(&self, handler: RemoteHostEventHandler) {
+        *self
+            .inner
+            .remote_host_event_handler
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(handler);
+    }
+
+    /// Open one session's live stream on a paired host. The events arrive
+    /// through [`Self::on_remote_host_event`]; the peer's grant and session
+    /// scope decide the answer, exactly as a local attach's do.
+    pub fn remote_host_attach(
+        &self,
+        device_id: &str,
+        session_id: &str,
+        subscription_id: u64,
+    ) -> Result<(), DaemonError> {
+        self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::RemoteHostAttach {
+            id,
+            device_id: device_id.to_string(),
+            session_id: session_id.to_string(),
+            subscription_id,
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Close one session's live stream. Absent a stream this is still `Ok`.
+    pub fn remote_host_detach(
+        &self,
+        device_id: &str,
+        session_id: &str,
+        subscription_id: u64,
+    ) -> Result<(), DaemonError> {
+        self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::RemoteHostDetach {
+            id,
+            device_id: device_id.to_string(),
+            session_id: session_id.to_string(),
+            subscription_id,
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     pub fn on_remote_host_status(&self, handler: RemoteHostStatusHandler) {
         *self
             .inner
@@ -2712,6 +2773,7 @@ fn handshake_with_runtime(
                 session_state_subscription: Mutex::new(None),
                 delegation_subscription: Mutex::new(None),
                 remote_host_status_handler: Mutex::new(None),
+                remote_host_event_handler: Mutex::new(None),
                 browser_requests: Mutex::new(Some(browser_requests)),
                 browser_request_inbox: Mutex::new(Some(browser_request_inbox)),
                 browser_rejects: Mutex::new(None),
@@ -2854,6 +2916,30 @@ fn client_read_loop(inner: Arc<ClientInner>) {
                             state: *state,
                             last_failure: last_failure.clone(),
                             revision: *revision,
+                        });
+                    }
+                    continue;
+                }
+                // One relayed remote-session event, handed to the surface
+                // that opened the stream. It answers no request.
+                if let DaemonMessage::RemoteHostEvent {
+                    device_id,
+                    session_id,
+                    subscription_id,
+                    envelope,
+                } = &message
+                {
+                    let handler = inner
+                        .remote_host_event_handler
+                        .lock()
+                        .unwrap_or_else(|err| err.into_inner())
+                        .clone();
+                    if let Some(handler) = handler {
+                        handler(RemoteRelayedEvent {
+                            device_id: device_id.clone(),
+                            session_id: session_id.clone(),
+                            subscription_id: *subscription_id,
+                            envelope: envelope.clone(),
                         });
                     }
                     continue;

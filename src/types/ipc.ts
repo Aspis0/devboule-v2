@@ -2504,6 +2504,24 @@ export type RemoteHostState =
  * error dump, and never an address, a key or a tailnet name. It is absent
  * when there is nothing to explain (`connecting`, `online`).
  */
+/**
+ * One relayed session event from a paired host: the host it came from, the
+ * remote session, the local subscription the app opened, and the event. The
+ * remote session id is the host's own; `deviceId` is what keeps two machines'
+ * identical ids apart, and `subscriptionId` is what closes the stream.
+ */
+export interface RemoteRelayedEvent {
+  deviceId: string;
+  sessionId: string;
+  subscriptionId: number;
+  envelope: {
+    sessionId: string;
+    generation: number;
+    transcriptSeq?: number;
+    event: SessionEvent;
+  };
+}
+
 export interface RemoteHostStatus {
   deviceId: string;
   state: RemoteHostState;

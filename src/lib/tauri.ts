@@ -33,6 +33,7 @@ import type {
   RemoteHostList,
   RemoteHostListBody,
   RemoteHostStatus,
+  RemoteRelayedEvent,
   AttachmentReference,
   ResumeResult,
   SavedLogin,
@@ -278,6 +279,13 @@ export type CommandArgs = {
   remote_host_watch: { deviceId: string; ch: RemoteHostStatusChannel };
   remote_host_unwatch: { deviceId: string };
   remote_host_list: { deviceId: string; list: RemoteHostList };
+  remote_session_attach: {
+    deviceId: string;
+    sessionId: string;
+    subscriptionId: number;
+    ch: RemoteEventChannel;
+  };
+  remote_session_detach: { deviceId: string; sessionId: string; subscriptionId: number };
   sessions_unwatch: undefined;
   providers_list: undefined;
   providers_refresh: undefined;
@@ -486,6 +494,10 @@ type CommandResults = {
   remote_host_unwatch: void;
   /** The paired machine's own rows, carried through unchanged. */
   remote_host_list: RemoteHostListBody;
+  /** The stream is open; its events arrive on the channel. */
+  remote_session_attach: void;
+  /** The stream is closed; idempotent. */
+  remote_session_detach: void;
   /**
    * The STORED policy rows only (`DaemonMessage::ToolPolicy` minus its
    * request id). A provider with no row is enabled by default: the panel
@@ -676,6 +688,8 @@ export const COMMAND_ARG_KEYS = {
   remote_host_watch: ["deviceId", "ch"],
   remote_host_unwatch: ["deviceId"],
   remote_host_list: ["deviceId", "list"],
+  remote_session_attach: ["deviceId", "sessionId", "subscriptionId", "ch"],
+  remote_session_detach: ["deviceId", "sessionId", "subscriptionId"],
   tool_policy_get: [],
   tool_policy_set: ["providerId", "enabled", "disabledTools"],
   provider_set_enabled: ["providerId", "enabled"],
@@ -728,6 +742,7 @@ export type BrowserChannel = Channel<BrowserUpdate>;
 export type SessionChannel = Channel<SessionAttachMessage>;
 export type SessionStateChannel = Channel<SessionStateSnapshot[]>;
 export type RemoteHostStatusChannel = Channel<RemoteHostStatus>;
+export type RemoteEventChannel = Channel<RemoteRelayedEvent>;
 
 export function createSessionChannel(
   onEvent?: (event: SessionAttachMessage) => void,
@@ -745,6 +760,12 @@ export function createRemoteHostStatusChannel(
   onStatus?: (status: RemoteHostStatus) => void,
 ): RemoteHostStatusChannel {
   return new Channel<RemoteHostStatus>(onStatus ?? (() => undefined));
+}
+
+export function createRemoteEventChannel(
+  onEvent?: (event: RemoteRelayedEvent) => void,
+): RemoteEventChannel {
+  return new Channel<RemoteRelayedEvent>(onEvent ?? (() => undefined));
 }
 
 export function invokeTyped<K extends CommandName>(
@@ -1452,6 +1473,20 @@ export const remoteHostUnwatch = (deviceId: string) =>
  */
 export const remoteHostList = (deviceId: string, list: RemoteHostList) =>
   invokeTyped("remote_host_list", { deviceId, list });
+/**
+ * Open one session's live stream on a paired host. Registering the channel and
+ * asking for the stream are one call, so an event that overtakes the attach
+ * reply cannot be missed.
+ */
+export const remoteSessionAttach = (
+  deviceId: string,
+  sessionId: string,
+  subscriptionId: number,
+  ch: RemoteEventChannel,
+) => invokeTyped("remote_session_attach", { deviceId, sessionId, subscriptionId, ch });
+/** Close the stream; the daemon drops its copy regardless of the peer. */
+export const remoteSessionDetach = (deviceId: string, sessionId: string, subscriptionId: number) =>
+  invokeTyped("remote_session_detach", { deviceId, sessionId, subscriptionId });
 
 /**
  * The STORED tool-policy rows (`DaemonMessage::ToolPolicy` minus its request

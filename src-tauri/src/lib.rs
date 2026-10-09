@@ -202,6 +202,8 @@ pub fn run() {
             backend::remote_hosts::remote_host_watch,
             backend::remote_hosts::remote_host_unwatch,
             backend::remote_hosts::remote_host_list,
+            backend::remote_hosts::remote_session_attach,
+            backend::remote_hosts::remote_session_detach,
             backend::tool_policy::tool_policy_get,
             backend::tool_policy::tool_policy_set,
             backend::agent_profiles::agent_profiles_get,

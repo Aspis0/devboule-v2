@@ -13,7 +13,9 @@ use tauri::ipc::Channel;
 use tauri::State;
 
 use devboule_daemon::DaemonClient;
-use devboule_protocol::{ErrorCode, RemoteHostList, RemoteHostListBody, RemoteHostStatus};
+use devboule_protocol::{
+    ErrorCode, RemoteHostList, RemoteHostListBody, RemoteHostStatus, RemoteRelayedEvent,
+};
 
 use super::blocking::off_main_thread;
 use super::error::CommandError;
@@ -64,6 +66,40 @@ pub async fn remote_host_unwatch(
 /// The reply is the remote machine's own rows. A refusal is the remote's own
 /// typed error and reaches the app as `CommandError`, so the empty state can
 /// say what the far side said instead of what this machine guessed.
+/// Open one session's live stream on a paired host and forward its events to
+/// the webview. Registration happens before the attach leaves, exactly like
+/// the watch: an event that overtakes the reply would otherwise be lost.
+#[tauri::command]
+pub async fn remote_session_attach(
+    bridge: State<'_, DaemonBridge>,
+    device_id: String,
+    session_id: String,
+    subscription_id: u64,
+    ch: Channel<RemoteRelayedEvent>,
+) -> Result<(), CommandError> {
+    let client = require_client(&bridge)?;
+    let sink = Arc::new(move |event: RemoteRelayedEvent| {
+        let _ = ch.send(event);
+    });
+    client.on_remote_host_event(sink);
+    off_main_thread(move || client.remote_host_attach(&device_id, &session_id, subscription_id))
+        .await
+}
+
+/// Close one session's live stream. The daemon drops the local subscription
+/// regardless of what the peer answers, so this is idempotent.
+#[tauri::command]
+pub async fn remote_session_detach(
+    bridge: State<'_, DaemonBridge>,
+    device_id: String,
+    session_id: String,
+    subscription_id: u64,
+) -> Result<(), CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.remote_host_detach(&device_id, &session_id, subscription_id))
+        .await
+}
+
 #[tauri::command]
 pub async fn remote_host_list(
     bridge: State<'_, DaemonBridge>,

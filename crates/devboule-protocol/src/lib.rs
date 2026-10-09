@@ -143,7 +143,9 @@ pub use messages::{
 };
 pub use plugin::WorkspaceRootBody;
 pub use project::{Project, Workspace, WorkspaceIsolation};
-pub use remote_host::{RemoteHostList, RemoteHostListBody, RemoteHostState, RemoteHostStatus};
+pub use remote_host::{
+    RemoteHostList, RemoteHostListBody, RemoteHostState, RemoteHostStatus, RemoteRelayedEvent,
+};
 pub use resume::{SessionResumeInfo, SessionResumeOutcome, SessionResumeReason, SessionResumeTail};
 pub use session::{
     cursor_replay_ok, ActiveTurnBehavior, AgentActivityState, AgentBackgroundTask, AgentTaskItem,

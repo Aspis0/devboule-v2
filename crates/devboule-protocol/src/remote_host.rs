@@ -119,6 +119,20 @@ pub enum RemoteHostState {
     Busy,
 }
 
+/// One relayed session event, as the app's remote-tab surface reads it: the
+/// host it came from, the remote session, the local subscription the app
+/// opened, and the event itself. The host's own session id is carried
+/// unchanged; together with `device_id` it is the composite identity nothing
+/// else in the app may collapse.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteRelayedEvent {
+    pub device_id: String,
+    pub session_id: String,
+    pub subscription_id: u64,
+    pub envelope: crate::SessionEventEnvelope,
+}
+
 /// One host's state change, pushed to the connections that watch that host.
 /// Camel-cased like every other frame the app reads.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
