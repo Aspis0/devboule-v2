@@ -64,6 +64,11 @@ struct RemoteConn {
     conn: Arc<ConnHandle>,
 }
 
+/// Silence past this closes an accepted peer connection: four peer-link probe
+/// periods (15 s each) plus slack, so an ordinary idle link never trips it and
+/// a half-open socket cannot keep a device marked online forever.
+pub(crate) const PEER_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
 pub struct ServerState {
     pub(super) instance_id: String,
     pub(super) started: Instant,
@@ -210,6 +215,12 @@ pub struct ServerState {
     /// create, rename and delete; pushed to peer connections so a watcher can
     /// reload its snapshots instead of polling forever.
     workspace_revision: AtomicU64,
+    /// How long an accepted peer connection may stay silent before it is
+    /// closed, in milliseconds. The peer link pings on its own cadence, so
+    /// silence past this means a half-open socket whose registry entry would
+    /// otherwise keep the device marked online after its outbound link had
+    /// already timed out.
+    peer_idle_timeout_ms: AtomicU64,
     /// The `peers` snapshot the accept path filters on, cached: a burst of
     /// connects would otherwise be a burst of journal RPCs on the writer
     /// thread. The cache is refreshed by every peer mutation and expires on
@@ -513,6 +524,7 @@ impl ServerState {
             )),
             remote_conns: Mutex::new(HashMap::new()),
             workspace_revision: AtomicU64::new(1),
+            peer_idle_timeout_ms: AtomicU64::new(PEER_IDLE_TIMEOUT.as_millis() as u64),
             peer_table: Mutex::new(PeerTableView::default()),
             peer_table_load: Mutex::new(()),
             peer_stop: Arc::new(AtomicBool::new(false)),
@@ -1730,6 +1742,19 @@ impl ServerState {
             .find(|record| record.device_id == device_id && !record.is_revoked())
             .map(|record| record.caps)
             .unwrap_or_default()
+    }
+
+    /// How long a peer connection may stay silent before it is closed.
+    pub(crate) fn peer_idle_timeout(&self) -> Duration {
+        Duration::from_millis(self.peer_idle_timeout_ms.load(Ordering::SeqCst))
+    }
+
+    /// Shorten the idle deadline for a fault-injection test; the production
+    /// value is four peer-link probe periods.
+    #[cfg(test)]
+    pub(crate) fn set_peer_idle_timeout(&self, idle: Duration) {
+        self.peer_idle_timeout_ms
+            .store(idle.as_millis() as u64, Ordering::SeqCst);
     }
 
     /// Record a live remote connection so a revoke can close it and a

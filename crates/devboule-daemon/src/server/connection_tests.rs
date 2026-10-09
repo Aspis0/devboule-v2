@@ -62,7 +62,7 @@ fn arrival_is_on_disk_before_the_request_reaches_the_queue_and_names_nothing_els
     let framed = Framed::new(file);
     let (inbox_tx, inbox_rx) = mpsc::sync_channel(64);
     let reader = thread::spawn(move || {
-        read_client_requests(framed, inbox_tx, ConnOut::new(), 123456789);
+        read_client_requests(framed, inbox_tx, ConnOut::new(), 123456789, None);
     });
 
     // At the moment the serving loop would take the request, the arrival

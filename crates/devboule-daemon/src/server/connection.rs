@@ -262,19 +262,29 @@ pub(crate) fn handle_client(
             .iter()
             .any(|capability| capability.as_str() == caps::SESSION_PLAN_USAGE),
     );
+    // Remote connections are rate limited; a local pipe is not. Computed
+    // before the reader so a peer's silent socket gets an idle deadline.
+    let is_remote = matches!(conn.conn_peer, Some(ConnPeer::Remote { .. }));
     let (request_tx, request_rx) = mpsc::sync_channel(64);
     let reader_wake = Arc::clone(&conn.outbound);
     let reader_framed = framed.clone();
     let reader_conn_id = conn.id;
+    let reader_idle = is_remote.then(|| state.peer_idle_timeout());
     let reader = std::thread::Builder::new()
         .name("daemon-client-request".into())
-        .spawn(move || read_client_requests(reader_framed, request_tx, reader_wake, reader_conn_id))
+        .spawn(move || {
+            read_client_requests(
+                reader_framed,
+                request_tx,
+                reader_wake,
+                reader_conn_id,
+                reader_idle,
+            )
+        })
         .map_err(DaemonError::from)?;
     let mut pending_events = VecDeque::new();
     let mut pending_state_events = VecDeque::new();
     let mut pending_replies = VecDeque::new();
-    // Remote connections are rate limited; a local pipe is not.
-    let is_remote = matches!(conn.conn_peer, Some(ConnPeer::Remote { .. }));
     let mut bucket = TokenBucket::new(Instant::now());
     // A revocation must drop a live connection, so the connection registers
     // itself and polls the flag its own revoke sets.
@@ -699,9 +709,16 @@ fn read_client_requests(
     inbox: SyncSender<Result<ClientMessage, DaemonError>>,
     wake: Arc<ConnOut>,
     conn_id: u64,
+    idle: Option<Duration>,
 ) {
     loop {
-        let request = framed.recv::<ClientMessage>();
+        // A peer link pings on its own cadence; silence past the deadline is a
+        // half-open socket, and closing the reader is what removes the
+        // registry entry that would otherwise keep the device online.
+        let request = match idle {
+            Some(deadline) => framed.recv_timeout::<ClientMessage>(deadline),
+            None => framed.recv::<ClientMessage>(),
+        };
         // Arrival on disk before the request enters the queue: an arrival
         // between two dispatch markers is the time it stood in line.
         if let Ok(message) = &request {
@@ -725,6 +742,11 @@ fn read_client_requests(
 }
 
 fn connection_closed(error: &DaemonError) -> bool {
+    // A reader deadline that passes is an idle link ending, which is a clean
+    // close for the same reason a hang-up is: nothing is left to read.
+    if matches!(error, DaemonError::TimedOut(_)) {
+        return true;
+    }
     matches!(
         error,
         DaemonError::Io(error)

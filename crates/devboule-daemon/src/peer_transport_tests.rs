@@ -1342,6 +1342,60 @@ fn a_presence_word_that_denies_the_advertised_service_is_refused() {
     join_bounded(accept, "the peer accept loop");
 }
 
+/// A silent peer socket — the half-open shape — is closed by the reader's
+/// deadline, so its registry entry stops keeping the device online after the
+/// outbound link has already timed out. The socket here stays open the whole
+/// time: no EOF arrives, which is exactly the case a read that never completes
+/// cannot see.
+#[test]
+fn a_silent_peer_connection_is_closed_and_goes_offline() {
+    use devboule_protocol::{ClientHello, DaemonMessage, OwnerId};
+
+    let transport = Arc::new(TestTransport::default());
+    let (address, state, stop, accept) = spawn_accept_loop(
+        transport,
+        Arc::new(PairingDisabled) as Arc<dyn PairingHook>,
+        "peer-half-open",
+    );
+    state.set_peer_idle_timeout(Duration::from_secs(2));
+    let (client_private, client_public) = keypair(PEER_NOISE_PATTERN);
+    upsert_paired_row(&state, address, client_public, true);
+    let (stream, framed, reply) = open_raw_peer(
+        address,
+        &client_private,
+        ClientHello::peer(
+            OwnerId::new("peer_phone", "devboule-daemon").expect("owner"),
+            "devboule-daemon",
+            true,
+        ),
+    );
+    assert!(matches!(reply, DaemonMessage::Hello(_)), "{reply:?}");
+    // The connection registers just after its hello leaves; wait for the
+    // entry, then prove silence removes it without any EOF.
+    let online_by = Instant::now() + Duration::from_secs(1);
+    while !state.is_peer_online("phone") {
+        assert!(
+            Instant::now() < online_by,
+            "the accepted connection never registered as online"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while state.is_peer_online("phone") {
+        assert!(
+            Instant::now() < deadline,
+            "a silent peer connection stayed online past its idle deadline"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    drop(framed);
+    drop(stream);
+    stop_accept_loop(&state, &stop);
+    join_bounded(accept, "the peer accept loop");
+}
+
 /// The presence pair is followed in both directions: a truthful host flips the
 /// record to hosting and is served the machine projection, and a host whose
 /// last workspace is gone flips it back to client and is served the broader
