@@ -50,6 +50,21 @@ describe("hideUntrustedFrame", () => {
     expect(hideUntrustedFrame(open)).toBe(open);
   });
 
+  it("drops a fenced result that other text comes before, keeping that text", () => {
+    const result = `{"success":true}\n${HEAD}\n{"title":"cart"}\ncontent-end 0123456789abcdef`;
+    expect(hideUntrustedFrame(result)).toBe('{"success":true}\n{"title":"cart"}');
+  });
+
+  it("keeps the text a result adds after the fence's tail", () => {
+    const result = `${HEAD}\nthe cart is empty\ncontent-end 0123456789abcdef\nimage/jpeg 704x252 px`;
+    expect(hideUntrustedFrame(result)).toBe("the cart is empty\nimage/jpeg 704x252 px");
+  });
+
+  it("drops a fence head that another result carries in its middle", () => {
+    const result = `first part\n\n${HEAD}\nbody\ncontent-end 0123456789abcdef\n\nsecond part`;
+    expect(hideUntrustedFrame(result)).toBe("first part\n\nbody\n\nsecond part");
+  });
+
   it("leaves ordinary text, and a mention of the marker, alone", () => {
     expect(hideUntrustedFrame("a plain message")).toBe("a plain message");
     const mention = "the line [devboule: untrusted content] marks a frame";
