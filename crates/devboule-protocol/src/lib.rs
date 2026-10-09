@@ -214,7 +214,9 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// manifest: a bool with a serde default of `false`, so a manifest from an
 /// older daemon decodes with every model read as taking no images, and an
 /// older reader ignores the key. The floor stays put.
-pub const PROTOCOL_VERSION: u32 = 30;
+/// Protocol 31 adds `modelProvider` to `AgentProfile`, which an older daemon's
+/// strict profile parser refuses, so the bump marks that boundary.
+pub const PROTOCOL_VERSION: u32 = 31;
 /// Oldest dialect this crate still accepts. Protocols 17, 18 and 20 added only
 /// optional fields, so a v16 peer still interoperates — it just shows no
 /// command chip, turn time, cache, cost or chat-image thumbnails until
