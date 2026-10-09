@@ -46,9 +46,6 @@ export function AgentProfileOverlayEditor({
         />
         <span>
           <span>No peer contact and no further agents for children</span>
-          <span className="agent-profile-tick-note">
-            Children created from this profile cannot message other agents or create further agents.
-          </span>
         </span>
       </label>
       {extras.length > 0 ? (

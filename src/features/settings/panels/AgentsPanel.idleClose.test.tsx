@@ -19,7 +19,6 @@ import {
   useAgentsPanelDom,
   makeProfile,
   renderAgentsPanel,
-  describedText,
   typeText,
 } from "./agentsPanelTestHarness";
 import { rowButton, panelButton } from "./agentsPanelTestQueries";
@@ -180,7 +179,7 @@ describe("Settings agents panel — the idle-close timer", () => {
     expect(alert?.textContent).toContain("whole number of minutes");
   });
 
-  it("wires the idle-close hint to its input, the way every other field does", async () => {
+  it("labels the idle-close field with one line and no hint", async () => {
     await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
 
     await act(async () => rowButton("Explorer", "Edit").click());
@@ -190,9 +189,9 @@ describe("Settings agents panel — the idle-close timer", () => {
       '.agent-inline-editor input[aria-label="Close idle children after minutes"]',
     );
     if (!idleField) throw new Error("the idle-close minutes field did not render");
-    // The one short line that carries the field's meaning — the default
-    // and the cap — read out with the control, not beside it.
-    expect(describedText(idleField)).toContain("30 by default");
-    expect(describedText(idleField)).toContain("10080");
+    // One-line label only: no hint element, nothing tied through
+    // described-by.
+    expect(idleField.getAttribute("aria-describedby")).toBeNull();
+    expect(idleField.closest("label")?.querySelectorAll(".device-field-hint").length).toBe(0);
   });
 });

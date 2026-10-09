@@ -119,7 +119,7 @@ describe("Settings agents panel — the profile dialog", () => {
     expect(dom.container.querySelector('.agent-profiles > [role="alert"]')).toBeNull();
   });
 
-  it("hints what the Icon field takes", async () => {
+  it("labels the Icon field with one line and no hint", async () => {
     await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
     await act(async () => rowButton("Explorer", "Edit").click());
     await act(async () => undefined);
@@ -129,9 +129,10 @@ describe("Settings agents panel — the profile dialog", () => {
     if (!advanced) throw new Error("Advanced section did not render");
     await act(async () => advanced.click());
     await act(async () => undefined);
-    const hint = dom.container.querySelector('.edit-card [id$="-icon-hint"]');
-    if (!hint) throw new Error("icon hint did not render");
-    expect(hint.textContent).toContain("first letter");
+    const icon = dom.container.querySelector('.edit-card input[aria-label="Profile icon"]');
+    if (!icon) throw new Error("icon field did not render");
+    expect(icon.getAttribute("aria-describedby")).toBeNull();
+    expect(dom.container.querySelector('.edit-card [id$="-icon-hint"]')).toBeNull();
   });
 
   it("lands mid-save close focus on the list, and re-owns the pencil on settle", async () => {

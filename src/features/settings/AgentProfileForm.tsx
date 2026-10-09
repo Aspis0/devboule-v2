@@ -149,9 +149,7 @@ export function AgentProfileForm({
     ),
   );
   const describedById = useId();
-  const iconHintId = `${describedById}-icon-hint`;
   const thinkingHintId = `${describedById}-thinking-hint`;
-  const idleHintId = `${describedById}-idle-hint`;
   function currentSeed(): ProfileFormSeed {
     return {
       name,
@@ -544,7 +542,6 @@ export function AgentProfileForm({
               Icon
               <input
                 aria-label="Profile icon"
-                aria-describedby={iconHintId}
                 value={icon}
                 disabled={busy}
                 onChange={(event) => {
@@ -552,9 +549,6 @@ export function AgentProfileForm({
                   userChanged({ icon: event.target.value });
                 }}
               />
-              <span className="device-field-hint" id={iconHintId}>
-                One glyph for the row; empty shows the name&apos;s first letter.
-              </span>
             </label>
             <AgentProfileFeatureFields
               offered={offered}
@@ -586,7 +580,6 @@ export function AgentProfileForm({
               Close idle children after — minutes
               <input
                 aria-label="Close idle children after minutes"
-                aria-describedby={idleHintId}
                 type="number"
                 min={1}
                 max={MAX_IDLE_CLOSE_MINUTES}
@@ -604,9 +597,6 @@ export function AgentProfileForm({
                   });
                 }}
               />
-              <span className="device-field-hint" id={idleHintId}>
-                {DEFAULT_IDLE_CLOSE_MINUTES} by default, up to {MAX_IDLE_CLOSE_MINUTES}.
-              </span>
             </label>
             <label className="agent-profile-tick">
               <input

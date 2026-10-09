@@ -20,13 +20,6 @@
 import type { VocabularyFeature } from "../../types/ipc";
 import { AUTO_ACCEPT_FEATURE } from "./AgentProfileDraft";
 
-/** The consent-bearing sentence every agent family's tick needs and no other
- *  feature does: the difference between a child that will ask this human and
- *  one that will not. The daemon supplies the label; this is the one thing the
- *  form says in its own words, and only for the key the daemon reads as a
- *  constraint on the delivered mode. */
-const AUTO_ACCEPT_NOTE =
-  "Children created from this profile approve their own permission prompts instead of asking you.";
 const UNSET_SELECT_VALUE = "__devboule_profile_feature_unset__";
 
 function unsetSelectValue(feature: VocabularyFeature): string {
@@ -88,9 +81,6 @@ function FeatureControl({
       />
       <span>
         <span>{feature.label}</span>
-        {feature.id === AUTO_ACCEPT_FEATURE ? (
-          <span className="agent-profile-tick-note">{AUTO_ACCEPT_NOTE}</span>
-        ) : null}
       </span>
     </label>
   );

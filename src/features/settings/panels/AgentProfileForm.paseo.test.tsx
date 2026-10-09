@@ -214,6 +214,25 @@ describe("Settings agents panel — profile editor pickers", () => {
     expect(editor.querySelector('[aria-label="Effort"]')).toBeNull();
   });
 
+  it("keeps Advanced to one-line labels, no helper copy", async () => {
+    vi.mocked(providerVocabularyGet).mockResolvedValue(piVocabulary());
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
+    await openForm();
+    await act(async () => undefined);
+    const editor = form();
+    const advancedButton = Array.from(editor.querySelectorAll("button")).find(
+      (button) => button.textContent === "Advanced",
+    );
+    if (!advancedButton) throw new Error("Advanced section did not render");
+    await act(async () => advancedButton.click());
+    await act(async () => undefined);
+    const advanced = editor.querySelector("[data-profile-advanced]");
+    if (!advanced) throw new Error("Advanced body did not render");
+    expect(advanced.querySelectorAll(".device-field-hint").length).toBe(0);
+    expect(advanced.querySelectorAll(".agent-profile-tick-note").length).toBe(0);
+    expect(advanced.querySelectorAll("p").length).toBe(0);
+  });
+
   it("keeps everything else under one collapsed Advanced section", async () => {
     vi.mocked(providerVocabularyGet).mockResolvedValue(piVocabulary());
     await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);

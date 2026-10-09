@@ -115,9 +115,11 @@ describe("Settings agents panel — new profile form: create and save", () => {
     await openForm();
     await openAdvanced();
 
-    // The copy must say what the tick does — it is the most consequential
-    // control on the form.
-    expect(form().textContent).toContain("approve their own permission prompts");
+    // The tick is the daemon's label and nothing else — the most
+    // consequential control on the form reads as one line.
+    expect(
+      form().querySelector('input[aria-label="Auto accept for children of this profile"]'),
+    ).not.toBeNull();
 
     await fillDraft();
     await act(async () => createButton().click());
@@ -184,9 +186,9 @@ describe("Settings agents panel — new profile form: create and save", () => {
       'input[aria-label="Children cannot message peers or create further agents"]',
     );
     expect(tick.checked).toBe(false);
-    // The tick names what it denies: peer messages and further creations.
-    // It must not promise a surface it does not deliver, so no "design".
-    expect(form().textContent).toContain("cannot message other agents or create further");
+    // The tick is one line naming the denial, and it must not promise a
+    // surface it does not deliver, so no "design".
+    expect(form().textContent).toContain("No peer contact and no further agents for children");
     expect(form().textContent).not.toContain("Design");
 
     await fillDraft();
