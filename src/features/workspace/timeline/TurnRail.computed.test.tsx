@@ -57,6 +57,7 @@ describe("turn rail computed styles", () => {
     ): {
       shell: HTMLDivElement;
       aux: HTMLDivElement;
+      wrap: HTMLDivElement;
       track: HTMLDivElement;
       composer: HTMLDivElement;
     } => {
@@ -84,26 +85,41 @@ describe("turn rail computed styles", () => {
       shell.appendChild(conversation);
       shell.appendChild(wrap);
       document.body.appendChild(shell);
-      return { shell, aux, track, composer };
+      return { shell, aux, wrap, track, composer };
     };
 
-    // Rail off: no sibling takes an inset; the track keeps the lane's 20 px,
-    // and the field keeps its own 14 px inside its border.
+    // happy-dom lays nothing out, so the two edges are compared through the
+    // terms that place them: the wrap pads 24 px for both children, the track
+    // adds no padding of its own, and the field adds its own 14 px inside its
+    // border — the same width cap and auto margins, so the border boxes land
+    // on the same lines.
+    const laneBox = (element: HTMLElement): string => {
+      const style = getComputedStyle(element);
+      return `${style.width} ${style.maxWidth} ${style.marginLeft} ${style.marginRight}`;
+    };
+
+    // Rail off: no sibling takes an inset.
     const off = build(false);
     expect(getComputedStyle(off.aux).marginLeft).toBe("");
-    expect(getComputedStyle(off.track).paddingLeft).toBe("20px");
-    expect(getComputedStyle(off.track).maxWidth).toBe("1060px");
+    // The wrap's 24 px is the whole inset between the pane edge and the
+    // track's box; the track declares no side padding of its own (the lane's
+    // 20 px is gone from it), so its content starts on its border edge.
+    expect(getComputedStyle(off.wrap).paddingLeft).toBe("24px");
+    expect(getComputedStyle(off.wrap).paddingRight).toBe("24px");
+    expect(railCss.rulesFor(".workspace-composer-track")).not.toMatch(/\bpadding/);
+    expect(laneBox(off.track)).toBe(laneBox(off.composer));
     expect(getComputedStyle(off.composer).paddingLeft).toBe("14px");
     off.shell.remove();
 
-    // The card takes the gutter as margin; the track keeps the lane rule in
-    // both states, and the field keeps its 14 px inset with the rail open.
+    // The card takes the gutter as margin; the track and the field keep the
+    // same box rule and their own padding with the rail open, so the track's
+    // edges still land on the field's border edges.
     // Separate trees per state with classes set at build: happy-dom keeps a
     // stale computed style for deeper descendants after a later class add.
     const on = build(true);
     expect(getComputedStyle(on.aux).marginLeft).toBe("32px");
-    expect(getComputedStyle(on.track).paddingLeft).toBe("20px");
-    expect(getComputedStyle(on.track).maxWidth).toBe("1060px");
+    expect(railCss.rulesFor(".workspace-composer-track")).not.toMatch(/\bpadding/);
+    expect(laneBox(on.track)).toBe(laneBox(on.composer));
     expect(getComputedStyle(on.composer).paddingLeft).toBe("14px");
     expect(getComputedStyle(on.composer).paddingRight).toBe("14px");
     on.shell.remove();

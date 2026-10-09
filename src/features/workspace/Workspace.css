@@ -499,7 +499,6 @@
    padding (border-box), so rows and controls inset alike and the three
    boxes stay on one axis at every pane width. */
 .workspace-conversation,
-.workspace-composer-track,
 .workspace-composer {
   --lane-inset: 20px;
   width: 100%;
@@ -1240,6 +1239,17 @@
   position: relative;
   flex: none;
   padding: var(--space-8) var(--space-24) var(--space-14);
+}
+
+/* The checklist and queue track takes the lane's box rule but none of its side
+   padding: it is a sibling of the field inside the wrap, so the wrap's own
+   24 px is the only inset either takes and their edges land on the same
+   lines. */
+.workspace-composer-track {
+  width: 100%;
+  max-width: 1060px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 .workspace-command-menu {
