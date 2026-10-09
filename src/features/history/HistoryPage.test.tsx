@@ -222,7 +222,9 @@ describe("the History page", () => {
     expect(more.textContent).toContain("70");
     await act(async () => more.click());
     expect(container.querySelectorAll(".history-row")).toHaveLength(100);
-    await act(async () => container.querySelector<HTMLButtonElement>(".history-show-more")?.click());
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>(".history-show-more")?.click(),
+    );
     expect(container.querySelectorAll(".history-row")).toHaveLength(120);
     expect(container.querySelector(".history-show-more")).toBeNull();
   });
@@ -298,9 +300,7 @@ describe("the History page", () => {
     const solo = [
       {
         ...projects()[0],
-        workspaces: [
-          { ...projects()[0].workspaces[0], title: "Alpha", displayTitle: "Alpha" },
-        ],
+        workspaces: [{ ...projects()[0].workspaces[0], title: "Alpha", displayTitle: "Alpha" }],
       },
     ];
     await renderPage({ projects: solo });

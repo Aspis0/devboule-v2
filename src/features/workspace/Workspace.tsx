@@ -1979,58 +1979,52 @@ export function Workspace({
     () =>
       providerAnchor === null || providerPicker === null ? null : (
         <AnchoredPopover
-        containerRef={providerPickerRef}
-        anchorRef={providerAnchorElRef}
-        onDismiss={dismissProviderPicker}
-        className="workspace-surface-menu"
-        role="listbox"
-        aria-label="Choose agent"
-      >
-        <div className="workspace-menu-label">Choose agent</div>
-        {providerPicker!.length === 0 ? (
-          // The gate's empty state: no agent CLI is installed, so the flow
-          // stops here instead of creating a session that cannot start.
-          <div className="workspace-provider-empty">
-            <p className="workspace-provider-empty-text">
-              No agent CLI is installed on this machine. Install one — for example grok, claude, or
-              gemini — then choose Refresh in Settings → Providers. Run on demand (npx) agents are
-              listed in Settings → Providers too, and they are not offered here.
-            </p>
-            <button
-              type="button"
-              className="workspace-empty-action"
-              onClick={openProvidersSettings}
-            >
-              Install instructions
-            </button>
-          </div>
-        ) : (
-          <div className="workspace-provider-group">
-            <div className="workspace-menu-label">Installed</div>
-            <div className="workspace-surface-options">
-              {providerPicker!.map((provider) => (
-                <button
-                  type="button"
-                  role="option"
-                  className="workspace-surface-option"
-                  key={provider.id}
-                  onClick={() => pickProvider(provider)}
-                >
-                  <span className="workspace-surface-name">{provider.id}</span>
-                </button>
-              ))}
+          containerRef={providerPickerRef}
+          anchorRef={providerAnchorElRef}
+          onDismiss={dismissProviderPicker}
+          className="workspace-surface-menu"
+          role="listbox"
+          aria-label="Choose agent"
+        >
+          <div className="workspace-menu-label">Choose agent</div>
+          {providerPicker!.length === 0 ? (
+            // The gate's empty state: no agent CLI is installed, so the flow
+            // stops here instead of creating a session that cannot start.
+            <div className="workspace-provider-empty">
+              <p className="workspace-provider-empty-text">
+                No agent CLI is installed on this machine. Install one — for example grok, claude,
+                or gemini — then choose Refresh in Settings → Providers. Run on demand (npx) agents
+                are listed in Settings → Providers too, and they are not offered here.
+              </p>
+              <button
+                type="button"
+                className="workspace-empty-action"
+                onClick={openProvidersSettings}
+              >
+                Install instructions
+              </button>
             </div>
-          </div>
-        )}
-      </AnchoredPopover>
+          ) : (
+            <div className="workspace-provider-group">
+              <div className="workspace-menu-label">Installed</div>
+              <div className="workspace-surface-options">
+                {providerPicker!.map((provider) => (
+                  <button
+                    type="button"
+                    role="option"
+                    className="workspace-surface-option"
+                    key={provider.id}
+                    onClick={() => pickProvider(provider)}
+                  >
+                    <span className="workspace-surface-name">{provider.id}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </AnchoredPopover>
       ),
-    [
-      providerAnchor,
-      providerPicker,
-      dismissProviderPicker,
-      openProvidersSettings,
-      pickProvider,
-    ],
+    [providerAnchor, providerPicker, dismissProviderPicker, openProvidersSettings, pickProvider],
   );
 
   const agentRows = useMemo(() => buildAgentRows(sessions), [sessions]);

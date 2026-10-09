@@ -209,9 +209,7 @@ describe("the sidebar's top actions", () => {
     await render({ historyOpen: true });
 
     expect(namedButton("History").getAttribute("aria-current")).toBe("true");
-    expect(namedButton("History").getAttribute("aria-controls")).toBe(
-      "workspace-history-panel",
-    );
+    expect(namedButton("History").getAttribute("aria-controls")).toBe("workspace-history-panel");
     // The sidebar keeps the tree: no History panel takes its place.
     expect(container.querySelector("#workspace-history-panel")).toBeNull();
     expect(container.querySelector(".workspace-row")).not.toBeNull();
@@ -254,7 +252,9 @@ describe("the sidebar's top actions", () => {
     });
 
     await act(async () => namedButton("New workspace").click());
-    const item = container.querySelector<HTMLButtonElement>('.sidebar-action-menu [role="menuitem"]');
+    const item = container.querySelector<HTMLButtonElement>(
+      '.sidebar-action-menu [role="menuitem"]',
+    );
     if (item === null) throw new Error("the project menu did not open");
     await act(async () => item.click());
 

@@ -271,8 +271,7 @@ export function HistoryPanel({
     // return an empty list. Remote rows arrive in a later slice.
     const effective = showHostFilter ? hostFilter : "all";
     return rows.filter(
-      (row) =>
-        (effective === "all" || row.hostId === effective) && historyRowMatches(row, search),
+      (row) => (effective === "all" || row.hostId === effective) && historyRowMatches(row, search),
     );
   }, [hostFilter, rows, search, showHostFilter]);
   // The rendered page, not the whole match: both the DOM and the status
@@ -522,47 +521,47 @@ export function HistoryPanel({
         ) : (
           <>
             {searchActive ? (
-          <div className="history-rows">
-            {groups.flatMap((group) =>
-              group.entries.map((row) => (
-                <HistoryRowView
-                  key={row.id}
-                  now={now}
-                  row={row}
-                  confirming={confirmingId === row.id}
-                  deleting={deletingId === row.id}
-                  resuming={resumingId === row.id}
-                  selected={selectedSessionId === row.id}
-                  onActivate={activateRow}
-                  onDelete={deleteRow}
-                  onReopen={reopenRow}
-                />
-              )),
-            )}
-          </div>
-        ) : (
-          groups.map((group) => (
-            <section className="history-day-group" key={group.key}>
-              <h3 className="workspace-project-heading history-day-heading">{group.label}</h3>
               <div className="history-rows">
-                {group.entries.map((row) => (
-                  <HistoryRowView
-                    key={row.id}
-                    now={now}
-                    row={row}
-                    confirming={confirmingId === row.id}
-                    deleting={deletingId === row.id}
-                    resuming={resumingId === row.id}
-                    selected={selectedSessionId === row.id}
-                    onActivate={activateRow}
-                    onDelete={deleteRow}
-                    onReopen={reopenRow}
-                  />
-                ))}
+                {groups.flatMap((group) =>
+                  group.entries.map((row) => (
+                    <HistoryRowView
+                      key={row.id}
+                      now={now}
+                      row={row}
+                      confirming={confirmingId === row.id}
+                      deleting={deletingId === row.id}
+                      resuming={resumingId === row.id}
+                      selected={selectedSessionId === row.id}
+                      onActivate={activateRow}
+                      onDelete={deleteRow}
+                      onReopen={reopenRow}
+                    />
+                  )),
+                )}
               </div>
-            </section>
-          ))
-        )}
+            ) : (
+              groups.map((group) => (
+                <section className="history-day-group" key={group.key}>
+                  <h3 className="workspace-project-heading history-day-heading">{group.label}</h3>
+                  <div className="history-rows">
+                    {group.entries.map((row) => (
+                      <HistoryRowView
+                        key={row.id}
+                        now={now}
+                        row={row}
+                        confirming={confirmingId === row.id}
+                        deleting={deletingId === row.id}
+                        resuming={resumingId === row.id}
+                        selected={selectedSessionId === row.id}
+                        onActivate={activateRow}
+                        onDelete={deleteRow}
+                        onReopen={reopenRow}
+                      />
+                    ))}
+                  </div>
+                </section>
+              ))
+            )}
             {filteredRows.length > visibleCount ? (
               <button
                 type="button"
