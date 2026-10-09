@@ -15,11 +15,16 @@ use tauri::State;
 
 use devboule_daemon::DaemonClient;
 use devboule_protocol::{
-    ErrorCode, RemoteHostList, RemoteHostListBody, RemoteHostStatus, RemoteRelayMessage,
+    AttachmentReference, ErrorCode, PermissionOutcome, PromptAttachment, RemoteHostList,
+    RemoteHostListBody, RemoteHostStatus, RemoteRelayMessage, Session, SessionKind, SubscriptionId,
 };
 
 use super::blocking::off_main_thread;
 use super::error::CommandError;
+use super::session::{
+    parse_active_turn_behavior, require_attachment_limits, require_attachment_reference_limits,
+    require_idempotency_key, require_session_id, require_write_size,
+};
 use crate::client::DaemonBridge;
 
 fn require_client(bridge: &DaemonBridge) -> Result<Arc<DaemonClient>, CommandError> {
@@ -207,4 +212,214 @@ pub async fn remote_host_list(
 ) -> Result<RemoteHostListBody, CommandError> {
     let client = require_client(&bridge)?;
     off_main_thread(move || client.remote_host_list(&device_id, list)).await
+}
+
+/// Create one session in a workspace on a paired host. The owning daemon
+/// runs the provider and the process; this side only carries the ask.
+///
+/// `idempotency_key` is the caller's retry identity: it travels with the
+/// host's own create, so an explicit retry after a lost reply answers with
+/// the same session. The UI mints one key per user intent and keeps it
+/// across the retry affordance — never resending on its own, because after
+/// a transport failure the create outcome is unknown.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn remote_host_create(
+    bridge: State<'_, DaemonBridge>,
+    device_id: String,
+    workspace_id: Option<String>,
+    kind: SessionKind,
+    provider: Option<String>,
+    mode: Option<String>,
+    display_name: Option<String>,
+    idempotency_key: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+) -> Result<Session, CommandError> {
+    require_idempotency_key(idempotency_key.as_deref())?;
+    let client = require_client(&bridge)?;
+    off_main_thread(move || {
+        client.remote_host_create(
+            &device_id,
+            workspace_id,
+            kind,
+            provider,
+            mode,
+            display_name,
+            idempotency_key,
+            cols,
+            rows,
+        )
+    })
+    .await
+}
+
+/// Send text into one session on a paired host. The stream must already be
+/// attached: the subscription is the one `remote_session_attach` opened,
+/// and the host's scope decides the answer exactly as for a local send.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn remote_host_send(
+    bridge: State<'_, DaemonBridge>,
+    device_id: String,
+    session_id: String,
+    subscription_id: SubscriptionId,
+    text: String,
+    attachments: Option<Vec<PromptAttachment>>,
+    active_turn_behavior: Option<String>,
+    attachment_references: Option<Vec<AttachmentReference>>,
+    idempotency_key: Option<String>,
+) -> Result<bool, CommandError> {
+    require_session_id(&session_id)?;
+    require_write_size(&text)?;
+    let attachments = attachments.unwrap_or_default();
+    require_attachment_limits(&attachments)?;
+    let attachment_references = attachment_references.unwrap_or_default();
+    require_attachment_reference_limits(&session_id, &attachment_references)?;
+    require_idempotency_key(idempotency_key.as_deref())?;
+    let active_turn_behavior = parse_active_turn_behavior(active_turn_behavior.as_deref())?;
+    let client = require_client(&bridge)?;
+    off_main_thread(move || {
+        client.remote_host_send(
+            &device_id,
+            &session_id,
+            subscription_id,
+            &text,
+            attachments,
+            active_turn_behavior,
+            idempotency_key,
+            attachment_references,
+        )
+    })
+    .await
+}
+
+/// Resize one terminal on a paired host.
+#[tauri::command]
+pub async fn remote_host_resize(
+    bridge: State<'_, DaemonBridge>,
+    device_id: String,
+    session_id: String,
+    subscription_id: SubscriptionId,
+    cols: u16,
+    rows: u16,
+) -> Result<(), CommandError> {
+    require_session_id(&session_id)?;
+    let client = require_client(&bridge)?;
+    off_main_thread(move || {
+        client.remote_host_resize(&device_id, &session_id, subscription_id, cols, rows)
+    })
+    .await
+}
+
+/// Claim one terminal's resize right on a paired host.
+#[tauri::command]
+pub async fn remote_host_claim(
+    bridge: State<'_, DaemonBridge>,
+    device_id: String,
+    session_id: String,
+    subscription_id: SubscriptionId,
+) -> Result<(), CommandError> {
+    require_session_id(&session_id)?;
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.remote_host_claim(&device_id, &session_id, subscription_id))
+        .await
+}
+
+/// Interrupt one session on a paired host.
+#[tauri::command]
+pub async fn remote_host_interrupt(
+    bridge: State<'_, DaemonBridge>,
+    device_id: String,
+    session_id: String,
+    subscription_id: SubscriptionId,
+) -> Result<(), CommandError> {
+    require_session_id(&session_id)?;
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.remote_host_interrupt(&device_id, &session_id, subscription_id))
+        .await
+}
+
+/// Answer one permission card on a paired host. The card was created and is
+/// resolved there; this side cannot auto-approve it, and the human's answer
+/// travels as the human's — no confirmation card of its own.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn remote_host_permission_respond(
+    bridge: State<'_, DaemonBridge>,
+    device_id: String,
+    session_id: String,
+    subscription_id: SubscriptionId,
+    request_id: String,
+    outcome: PermissionOutcome,
+    option_id: Option<String>,
+    answer: Option<String>,
+    idempotency_key: Option<String>,
+) -> Result<(), CommandError> {
+    require_session_id(&session_id)?;
+    if request_id.is_empty() {
+        return Err(CommandError::new(
+            ErrorCode::InvalidRequest,
+            "Permission request id is required.",
+        ));
+    }
+    require_idempotency_key(idempotency_key.as_deref())?;
+    let client = require_client(&bridge)?;
+    off_main_thread(move || {
+        client.remote_host_permission_respond(
+            &device_id,
+            &session_id,
+            subscription_id,
+            &request_id,
+            outcome,
+            option_id,
+            answer,
+            idempotency_key,
+        )
+    })
+    .await
+}
+
+/// Close one session on a paired host.
+#[tauri::command]
+pub async fn remote_host_close(
+    bridge: State<'_, DaemonBridge>,
+    device_id: String,
+    session_id: String,
+    idempotency_key: Option<String>,
+) -> Result<(), CommandError> {
+    require_session_id(&session_id)?;
+    require_idempotency_key(idempotency_key.as_deref())?;
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.remote_host_close(&device_id, &session_id, idempotency_key))
+        .await
+}
+
+/// Stop one session's process on a paired host, keeping the session.
+#[tauri::command]
+pub async fn remote_host_stop(
+    bridge: State<'_, DaemonBridge>,
+    device_id: String,
+    session_id: String,
+    subscription_id: SubscriptionId,
+) -> Result<(), CommandError> {
+    require_session_id(&session_id)?;
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.remote_host_stop(&device_id, &session_id, subscription_id)).await
+}
+
+/// Read a paired host's provider catalog, for the remote create picker:
+/// what that machine offers, not this one's.
+#[tauri::command]
+pub async fn remote_host_providers(
+    bridge: State<'_, DaemonBridge>,
+    device_id: String,
+) -> Result<super::providers::ProviderCatalog, CommandError> {
+    let client = require_client(&bridge)?;
+    let (providers, unreadable_dirs) =
+        off_main_thread(move || client.remote_host_providers(&device_id)).await?;
+    Ok(super::providers::ProviderCatalog {
+        providers,
+        unreadable_dirs,
+    })
 }

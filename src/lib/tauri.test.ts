@@ -21,6 +21,15 @@ import {
   peerRevoke,
   peerSetCaps,
   providersRefresh,
+  remoteHostClaim,
+  remoteHostClose,
+  remoteHostCreate,
+  remoteHostInterrupt,
+  remoteHostPermissionRespond,
+  remoteHostProviders,
+  remoteHostResize,
+  remoteHostSend,
+  remoteHostStop,
   sessionAttach,
   sessionAttachmentDelete,
   sessionAttachmentRead,
@@ -1039,6 +1048,172 @@ describe("device command wrappers", () => {
     expect(COMMAND_ARG_KEYS.pairing_confirm).toEqual(["deviceId", "accept"]);
     expect(COMMAND_ARG_KEYS.peer_revoke).toEqual(["deviceId"]);
     expect(COMMAND_ARG_KEYS.peer_set_caps).toEqual(["deviceId", "caps"]);
+  });
+});
+
+describe("remote operate command wrappers", () => {
+  it("creates with the host, workspace, kind and the retry identity", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue({} as never);
+
+    await remoteHostCreate({
+      deviceId: "device-b",
+      workspaceId: "w-1",
+      kind: "terminal",
+      displayName: "B shell",
+      idempotencyKey: "key-1",
+      size: { cols: 80, rows: 24 },
+    });
+
+    expect(invoke).toHaveBeenCalledWith("remote_host_create", {
+      deviceId: "device-b",
+      workspaceId: "w-1",
+      kind: "terminal",
+      provider: null,
+      displayName: "B shell",
+      idempotencyKey: "key-1",
+      cols: 80,
+      rows: 24,
+    });
+  });
+
+  it("sends without attachment keys when the run carries none", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue(true as never);
+
+    await remoteHostSend({
+      deviceId: "device-b",
+      sessionId: "s.owner.1",
+      subscriptionId: 3,
+      text: "echo hi",
+    });
+
+    expect(invoke).toHaveBeenCalledWith("remote_host_send", {
+      deviceId: "device-b",
+      sessionId: "s.owner.1",
+      subscriptionId: 3,
+      text: "echo hi",
+    });
+    expect(vi.mocked(invoke).mock.calls[0]?.[1]).not.toHaveProperty("attachments");
+    expect(vi.mocked(invoke).mock.calls[0]?.[1]).not.toHaveProperty("attachmentReferences");
+  });
+
+  it("answers a host card with the outcome and the chosen option", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue(undefined as never);
+
+    await remoteHostPermissionRespond({
+      deviceId: "device-b",
+      sessionId: "s.owner.1",
+      subscriptionId: 3,
+      requestId: "card-1",
+      outcome: "allow_once",
+      idempotencyKey: "key-3",
+    });
+
+    expect(invoke).toHaveBeenCalledWith("remote_host_permission_respond", {
+      deviceId: "device-b",
+      sessionId: "s.owner.1",
+      subscriptionId: 3,
+      requestId: "card-1",
+      outcome: "allow_once",
+      idempotencyKey: "key-3",
+    });
+  });
+
+  it("drives the terminal verbs and the teardown with the same keys", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue(undefined as never);
+
+    await remoteHostResize("device-b", "s.owner.1", 3, 80, 24);
+    await remoteHostClaim("device-b", "s.owner.1", 3);
+    await remoteHostInterrupt("device-b", "s.owner.1", 3);
+    await remoteHostClose("device-b", "s.owner.1", "key-4");
+    await remoteHostStop("device-b", "s.owner.1", 3);
+    await remoteHostProviders("device-b");
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "remote_host_resize", {
+      deviceId: "device-b",
+      sessionId: "s.owner.1",
+      subscriptionId: 3,
+      cols: 80,
+      rows: 24,
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "remote_host_claim", {
+      deviceId: "device-b",
+      sessionId: "s.owner.1",
+      subscriptionId: 3,
+    });
+    expect(invoke).toHaveBeenNthCalledWith(3, "remote_host_interrupt", {
+      deviceId: "device-b",
+      sessionId: "s.owner.1",
+      subscriptionId: 3,
+    });
+    expect(invoke).toHaveBeenNthCalledWith(4, "remote_host_close", {
+      deviceId: "device-b",
+      sessionId: "s.owner.1",
+      idempotencyKey: "key-4",
+    });
+    expect(invoke).toHaveBeenNthCalledWith(5, "remote_host_stop", {
+      deviceId: "device-b",
+      sessionId: "s.owner.1",
+      subscriptionId: 3,
+    });
+    expect(invoke).toHaveBeenNthCalledWith(6, "remote_host_providers", {
+      deviceId: "device-b",
+    });
+  });
+
+  it("pins the wire keys of every remote operate command", () => {
+    // The structural parity test compares these with the Rust signatures; a
+    // rename on either side has to fail here first.
+    expect(COMMAND_ARG_KEYS.remote_host_create).toEqual([
+      "deviceId",
+      "workspaceId",
+      "kind",
+      "provider",
+      "mode",
+      "displayName",
+      "idempotencyKey",
+      "cols",
+      "rows",
+    ]);
+    expect(COMMAND_ARG_KEYS.remote_host_send).toEqual([
+      "deviceId",
+      "sessionId",
+      "subscriptionId",
+      "text",
+      "attachments",
+      "activeTurnBehavior",
+      "attachmentReferences",
+      "idempotencyKey",
+    ]);
+    expect(COMMAND_ARG_KEYS.remote_host_resize).toEqual([
+      "deviceId",
+      "sessionId",
+      "subscriptionId",
+      "cols",
+      "rows",
+    ]);
+    expect(COMMAND_ARG_KEYS.remote_host_claim).toEqual(["deviceId", "sessionId", "subscriptionId"]);
+    expect(COMMAND_ARG_KEYS.remote_host_interrupt).toEqual([
+      "deviceId",
+      "sessionId",
+      "subscriptionId",
+    ]);
+    expect(COMMAND_ARG_KEYS.remote_host_permission_respond).toEqual([
+      "deviceId",
+      "sessionId",
+      "subscriptionId",
+      "requestId",
+      "outcome",
+      "optionId",
+      "answer",
+      "idempotencyKey",
+    ]);
+    expect(COMMAND_ARG_KEYS.remote_host_close).toEqual(["deviceId", "sessionId", "idempotencyKey"]);
+    expect(COMMAND_ARG_KEYS.remote_host_stop).toEqual(["deviceId", "sessionId", "subscriptionId"]);
+    expect(COMMAND_ARG_KEYS.remote_host_providers).toEqual(["deviceId"]);
   });
 });
 

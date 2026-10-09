@@ -286,6 +286,49 @@ export type CommandArgs = {
     ch: RemoteEventChannel;
   };
   remote_session_detach: { deviceId: string; sessionId: string; subscriptionId: number };
+  remote_host_create: {
+    deviceId: string;
+    workspaceId?: string | null;
+    kind: SessionKind;
+    provider?: string | null;
+    mode?: string | null;
+    displayName?: string | null;
+    idempotencyKey?: string | null;
+    cols?: number;
+    rows?: number;
+  };
+  remote_host_send: {
+    deviceId: string;
+    sessionId: string;
+    subscriptionId: number;
+    text: string;
+    attachments?: readonly PromptAttachment[];
+    activeTurnBehavior?: ActiveTurnBehavior;
+    attachmentReferences?: readonly AttachmentReference[];
+    idempotencyKey?: string | null;
+  };
+  remote_host_resize: {
+    deviceId: string;
+    sessionId: string;
+    subscriptionId: number;
+    cols: number;
+    rows: number;
+  };
+  remote_host_claim: { deviceId: string; sessionId: string; subscriptionId: number };
+  remote_host_interrupt: { deviceId: string; sessionId: string; subscriptionId: number };
+  remote_host_permission_respond: {
+    deviceId: string;
+    sessionId: string;
+    subscriptionId: number;
+    requestId: string;
+    outcome: PermissionOutcome;
+    optionId?: string | null;
+    answer?: string | null;
+    idempotencyKey?: string | null;
+  };
+  remote_host_close: { deviceId: string; sessionId: string; idempotencyKey?: string | null };
+  remote_host_stop: { deviceId: string; sessionId: string; subscriptionId: number };
+  remote_host_providers: { deviceId: string };
   sessions_unwatch: undefined;
   providers_list: undefined;
   providers_refresh: undefined;
@@ -498,6 +541,18 @@ type CommandResults = {
   remote_session_attach: void;
   /** The stream is closed; idempotent. */
   remote_session_detach: void;
+  /** The session the host created. */
+  remote_host_create: Session;
+  /** Whether a turn runs on the host's session. */
+  remote_host_send: boolean;
+  remote_host_resize: void;
+  remote_host_claim: void;
+  remote_host_interrupt: void;
+  remote_host_permission_respond: void;
+  remote_host_close: void;
+  remote_host_stop: void;
+  /** The host's own provider catalog, for the remote create picker. */
+  remote_host_providers: ProviderCatalog;
   /**
    * The STORED policy rows only (`DaemonMessage::ToolPolicy` minus its
    * request id). A provider with no row is enabled by default: the panel
@@ -690,6 +745,43 @@ export const COMMAND_ARG_KEYS = {
   remote_host_list: ["deviceId", "list"],
   remote_session_attach: ["deviceId", "sessionId", "subscriptionId", "ch"],
   remote_session_detach: ["deviceId", "sessionId", "subscriptionId"],
+  remote_host_create: [
+    "deviceId",
+    "workspaceId",
+    "kind",
+    "provider",
+    "mode",
+    "displayName",
+    "idempotencyKey",
+    "cols",
+    "rows",
+  ],
+  remote_host_send: [
+    "deviceId",
+    "sessionId",
+    "subscriptionId",
+    "text",
+    "attachments",
+    "activeTurnBehavior",
+    "attachmentReferences",
+    "idempotencyKey",
+  ],
+  remote_host_resize: ["deviceId", "sessionId", "subscriptionId", "cols", "rows"],
+  remote_host_claim: ["deviceId", "sessionId", "subscriptionId"],
+  remote_host_interrupt: ["deviceId", "sessionId", "subscriptionId"],
+  remote_host_permission_respond: [
+    "deviceId",
+    "sessionId",
+    "subscriptionId",
+    "requestId",
+    "outcome",
+    "optionId",
+    "answer",
+    "idempotencyKey",
+  ],
+  remote_host_close: ["deviceId", "sessionId", "idempotencyKey"],
+  remote_host_stop: ["deviceId", "sessionId", "subscriptionId"],
+  remote_host_providers: ["deviceId"],
   tool_policy_get: [],
   tool_policy_set: ["providerId", "enabled", "disabledTools"],
   provider_set_enabled: ["providerId", "enabled"],
@@ -1498,6 +1590,110 @@ export const remoteSessionAttach = (
 /** Close the stream; the daemon drops its copy regardless of the peer. */
 export const remoteSessionDetach = (deviceId: string, sessionId: string, subscriptionId: number) =>
   invokeTyped("remote_session_detach", { deviceId, sessionId, subscriptionId });
+
+/**
+ * Create one session in a workspace on a paired host. The idempotency key is
+ * one per user intent: the caller keeps it across the retry affordance and
+ * never resends on its own, because after a transport failure the outcome is
+ * unknown and only an explicit retry may ask again with the same key.
+ */
+export const remoteHostCreate = (args: {
+  deviceId: string;
+  workspaceId: string;
+  kind: SessionKind;
+  provider?: string | null;
+  mode?: string | null;
+  displayName?: string | null;
+  idempotencyKey: string;
+  size?: { cols: number; rows: number };
+}) =>
+  invokeTyped("remote_host_create", {
+    deviceId: args.deviceId,
+    workspaceId: args.workspaceId,
+    kind: args.kind,
+    provider: args.provider ?? null,
+    ...(args.mode === undefined || args.mode === null ? {} : { mode: args.mode }),
+    ...(args.displayName === undefined || args.displayName === null
+      ? {}
+      : { displayName: args.displayName }),
+    idempotencyKey: args.idempotencyKey,
+    ...(args.size === undefined ? {} : { cols: args.size.cols, rows: args.size.rows }),
+  });
+/** Send text into one session on a paired host; resolves with the turn state. */
+export const remoteHostSend = (args: {
+  deviceId: string;
+  sessionId: string;
+  subscriptionId: number;
+  text: string;
+  attachments?: readonly PromptAttachment[];
+  activeTurnBehavior?: ActiveTurnBehavior;
+  attachmentReferences?: readonly AttachmentReference[];
+  idempotencyKey?: string;
+}) =>
+  invokeTyped("remote_host_send", {
+    deviceId: args.deviceId,
+    sessionId: args.sessionId,
+    subscriptionId: args.subscriptionId,
+    text: args.text,
+    ...(args.attachments === undefined || args.attachments.length === 0
+      ? {}
+      : { attachments: args.attachments }),
+    ...(args.activeTurnBehavior === undefined
+      ? {}
+      : { activeTurnBehavior: args.activeTurnBehavior }),
+    ...(args.attachmentReferences === undefined || args.attachmentReferences.length === 0
+      ? {}
+      : { attachmentReferences: args.attachmentReferences }),
+    ...(args.idempotencyKey === undefined ? {} : { idempotencyKey: args.idempotencyKey }),
+  });
+/** Resize one terminal on a paired host. */
+export const remoteHostResize = (
+  deviceId: string,
+  sessionId: string,
+  subscriptionId: number,
+  cols: number,
+  rows: number,
+) => invokeTyped("remote_host_resize", { deviceId, sessionId, subscriptionId, cols, rows });
+/** Claim one terminal's resize right on a paired host. */
+export const remoteHostClaim = (deviceId: string, sessionId: string, subscriptionId: number) =>
+  invokeTyped("remote_host_claim", { deviceId, sessionId, subscriptionId });
+/** Interrupt one session on a paired host. */
+export const remoteHostInterrupt = (deviceId: string, sessionId: string, subscriptionId: number) =>
+  invokeTyped("remote_host_interrupt", { deviceId, sessionId, subscriptionId });
+/** Answer one permission card on a paired host; the card resolves there. */
+export const remoteHostPermissionRespond = (args: {
+  deviceId: string;
+  sessionId: string;
+  subscriptionId: number;
+  requestId: string;
+  outcome: PermissionOutcome;
+  optionId?: string | null;
+  answer?: string | null;
+  idempotencyKey?: string;
+}) =>
+  invokeTyped("remote_host_permission_respond", {
+    deviceId: args.deviceId,
+    sessionId: args.sessionId,
+    subscriptionId: args.subscriptionId,
+    requestId: args.requestId,
+    outcome: args.outcome,
+    ...(args.optionId === undefined || args.optionId === null ? {} : { optionId: args.optionId }),
+    ...(args.answer === undefined || args.answer === null ? {} : { answer: args.answer }),
+    ...(args.idempotencyKey === undefined ? {} : { idempotencyKey: args.idempotencyKey }),
+  });
+/** Close one session on a paired host. */
+export const remoteHostClose = (deviceId: string, sessionId: string, idempotencyKey?: string) =>
+  invokeTyped("remote_host_close", {
+    deviceId,
+    sessionId,
+    ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
+  });
+/** Stop one session's process on a paired host, keeping the session. */
+export const remoteHostStop = (deviceId: string, sessionId: string, subscriptionId: number) =>
+  invokeTyped("remote_host_stop", { deviceId, sessionId, subscriptionId });
+/** Read a paired host's provider catalog, for the remote create picker. */
+export const remoteHostProviders = (deviceId: string) =>
+  invokeTyped("remote_host_providers", { deviceId });
 
 /**
  * The STORED tool-policy rows (`DaemonMessage::ToolPolicy` minus its request

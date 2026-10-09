@@ -721,7 +721,7 @@ fn disconnected(message: String) -> CommandError {
     CommandError::new(ErrorCode::Io, message)
 }
 
-fn require_session_id(id: &str) -> Result<(), CommandError> {
+pub(super) fn require_session_id(id: &str) -> Result<(), CommandError> {
     validate_session_id(id).map_err(|message| CommandError::new(ErrorCode::InvalidRequest, message))
 }
 
@@ -744,7 +744,7 @@ fn require_upload_id(upload_id: &str) -> Result<(), CommandError> {
 /// invented wrong — an empty one, a character the wire's id alphabet does not
 /// carry — should cost the caller a rejection, not a round trip that the daemon
 /// answers after the frame has already been queued.
-fn require_idempotency_key(key: Option<&str>) -> Result<(), CommandError> {
+pub(super) fn require_idempotency_key(key: Option<&str>) -> Result<(), CommandError> {
     let Some(key) = key else {
         return Ok(());
     };
@@ -752,7 +752,7 @@ fn require_idempotency_key(key: Option<&str>) -> Result<(), CommandError> {
         .map_err(|message| CommandError::new(ErrorCode::InvalidRequest, message))
 }
 
-fn require_write_size(text: &str) -> Result<(), CommandError> {
+pub(super) fn require_write_size(text: &str) -> Result<(), CommandError> {
     if text.len() > MAX_WRITE_BYTES {
         return Err(CommandError::new(
             ErrorCode::InvalidRequest,
@@ -770,7 +770,9 @@ fn require_write_size(text: &str) -> Result<(), CommandError> {
 /// depend on a client that may skip the check. `validate_attachments` is shared
 /// rather than copied because five interdependent rules written twice are five
 /// chances for the two sides to disagree about what the wire allows.
-fn require_attachment_limits(attachments: &[PromptAttachment]) -> Result<(), CommandError> {
+pub(super) fn require_attachment_limits(
+    attachments: &[PromptAttachment],
+) -> Result<(), CommandError> {
     devboule_protocol::validate_attachments(attachments)
         .map_err(|message| CommandError::new(ErrorCode::InvalidRequest, message))
 }
@@ -783,7 +785,7 @@ fn require_attachment_limits(attachments: &[PromptAttachment]) -> Result<(), Com
 /// one, and whether the stored bytes it points at would take the owner over the
 /// store's budget. A reference that fails any of those is refused on this side
 /// of the pipe instead of as a frame round trip.
-fn require_attachment_reference_limits(
+pub(super) fn require_attachment_reference_limits(
     session_id: &str,
     references: &[AttachmentReference],
 ) -> Result<(), CommandError> {
@@ -808,7 +810,7 @@ fn require_terminal_kind(kind: &SessionKind) -> Result<(), CommandError> {
 /// words exist, and a word the daemon would refuse is refused here as
 /// `InvalidRequest` instead of travelling as a frame the daemon answers with an
 /// error.
-fn parse_active_turn_behavior(
+pub(super) fn parse_active_turn_behavior(
     word: Option<&str>,
 ) -> Result<Option<ActiveTurnBehavior>, CommandError> {
     let Some(word) = word else {
