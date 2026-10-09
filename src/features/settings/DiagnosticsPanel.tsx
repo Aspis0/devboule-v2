@@ -252,7 +252,7 @@ export class DiagnosticsErrorBoundary extends Component<
       return (
         <div id="settings-panel-diagnostics">
           <div role="alert">
-            <p className="settings-status">Could not render the diagnostics.</p>
+            <p className="settings-error">Could not render the diagnostics.</p>
             <ErrorText
               sentence={errorSentence(this.state.error).sentence}
               detail={errorSentence(this.state.error).detail}
@@ -332,7 +332,7 @@ function DiagnosticsPanelContent() {
     return (
       <div id="settings-panel-diagnostics">
         <div role="alert">
-          <p className="settings-status">Could not load the diagnostics.</p>
+          <p className="settings-error">Could not load the diagnostics.</p>
           <ErrorText sentence={error.sentence} detail={error.detail} id="diagnostics-load-error" />
           <button type="button" className="diagnostics-retry" onClick={retry}>
             Try again

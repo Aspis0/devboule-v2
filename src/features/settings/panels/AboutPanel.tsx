@@ -51,7 +51,7 @@ export function AboutPanel() {
             <FactRow label="Protocol version" value={String(report.value.daemon.protocolVersion)} />
           </>
         ) : report.status === "error" ? (
-          <p className="settings-status" role="alert">
+          <p className="settings-error" role="alert">
             {report.message}
           </p>
         ) : null}

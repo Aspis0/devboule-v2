@@ -40,4 +40,13 @@ describe("shared row pattern (live stylesheets)", () => {
     // --danger-deep aliases --danger; token() reads one level, so name the base.
     expect(getComputedStyle(figure).color).toBe(proof.token("--danger"));
   });
+  it("draws a failed save as an error line in the danger colour, not a caption", () => {
+    proof.inject([".settings-error"]);
+    const line = document.createElement("p");
+    line.className = "settings-error";
+    line.setAttribute("role", "alert");
+    line.textContent = "The close choice could not be saved.";
+    document.body.appendChild(line);
+    expect(getComputedStyle(line).color).toBe(proof.token("--danger"));
+  });
 });

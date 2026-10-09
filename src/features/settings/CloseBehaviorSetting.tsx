@@ -92,7 +92,7 @@ export function CloseBehaviorSetting() {
         }
       />
       {error !== null && (
-        <p role="alert" className="settings-status">
+        <p role="alert" className="settings-error">
           {error}
         </p>
       )}

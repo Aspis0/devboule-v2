@@ -143,3 +143,11 @@
 .settings-value-danger {
   color: var(--danger-deep);
 }
+
+/* A refused save or failed load: the one line that asks for an action. */
+.settings-error {
+  margin: 0;
+  padding: 2px 0 8px;
+  font-size: 12px;
+  color: var(--danger);
+}
