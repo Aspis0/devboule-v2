@@ -52,10 +52,13 @@ export function SettingsSection({
   action?: ReactNode;
   children: ReactNode;
 }) {
+  const labelId = useId();
   return (
-    <section className="settings-section" data-settings-section>
+    <section className="settings-section" data-settings-section aria-labelledby={labelId}>
       <div className="settings-section-head">
-        <span className="settings-section-label">{label}</span>
+        <h3 className="settings-section-label" id={labelId}>
+          {label}
+        </h3>
         {action === undefined ? null : <span className="settings-section-action">{action}</span>}
       </div>
       {children}

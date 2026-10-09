@@ -22,6 +22,26 @@ afterEach(async () => {
   container.remove();
 });
 
+describe("shared Settings section heading", () => {
+  it("renders the label as a heading and names its section after it", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <SettingsSection label="Daemon">
+          <SettingsRow title="Version" control={<span>0.1.0</span>} />
+        </SettingsSection>,
+      );
+    });
+    const heading = container.querySelector("h3");
+    expect(heading?.textContent).toBe("Daemon");
+    const section = container.querySelector("[data-settings-section]");
+    const labelId = section?.getAttribute("aria-labelledby");
+    expect(labelId).toBe(heading?.id);
+    expect(labelId).toBeTruthy();
+    expect(document.getElementById(labelId!)?.textContent).toBe("Daemon");
+  });
+});
+
 describe("shared Settings row pattern", () => {
   it("renders a title, at most one short description, and the control on the right", async () => {
     root = createRoot(container);

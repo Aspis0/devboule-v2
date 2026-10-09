@@ -45,6 +45,15 @@ describe("ShortcutsPanel", () => {
     }
   });
 
+  it("names each scope group after its label, so a screen reader can list them", async () => {
+    await renderPanel();
+    const names = [...container.querySelectorAll("section")].map((section) => {
+      const labelId = section.getAttribute("aria-labelledby");
+      return labelId === null ? null : document.getElementById(labelId)?.textContent;
+    });
+    expect(names).toEqual(["Tabs", "Composer", "Navigation", "Panel", "Browser"]);
+  });
+
   it("groups the rows under the five scopes, in order", async () => {
     await renderPanel();
     const headings = Array.from(container.querySelectorAll(".settings-section-label")).map(

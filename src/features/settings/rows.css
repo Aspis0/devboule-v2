@@ -96,7 +96,9 @@
 }
 
 .settings-section-label {
+  margin: 0;
   font-size: 12px;
+  font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   opacity: 0.65;
