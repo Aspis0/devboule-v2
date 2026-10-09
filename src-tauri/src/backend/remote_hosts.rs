@@ -7,7 +7,8 @@
 //! No key, address or tailnet name crosses this boundary: the only handle the
 //! app ever names is the device id it already knows from the Devices panel.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use tauri::ipc::Channel;
 use tauri::State;
@@ -25,6 +26,66 @@ fn require_client(bridge: &DaemonBridge) -> Result<Arc<DaemonClient>, CommandErr
     bridge
         .client()
         .map_err(|message| CommandError::new(ErrorCode::Io, message))
+}
+
+/// Every open remote stream's channel, keyed by `device:subscription`. One
+/// dispatcher is installed on the client for the process, so a second stream
+/// never replaces the first stream's handler; the key routes an event to the
+/// surface that opened it, even when two surfaces watch the same host.
+fn relay_channels() -> &'static Mutex<HashMap<String, Channel<RemoteRelayMessage>>> {
+    static CHANNELS: OnceLock<Mutex<HashMap<String, Channel<RemoteRelayMessage>>>> =
+        OnceLock::new();
+    CHANNELS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn relay_key(device_id: &str, subscription_id: u64) -> String {
+    format!("{device_id}:{subscription_id}")
+}
+
+/// Whether a registry key belongs to one host, whoever subscribed.
+fn relay_key_is_for_device(key: &str, device_id: &str) -> bool {
+    key.starts_with(&format!("{device_id}:"))
+}
+
+fn forget_relay(device_id: &str, subscription_id: u64) {
+    relay_channels()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .remove(&relay_key(device_id, subscription_id));
+}
+
+/// Drop every stream route of one host: a window that gives the lease back
+/// cannot still want the streams it opened under it, and a closed window must
+/// not leave its channels in the process registry.
+fn forget_relays_for_device(device_id: &str) {
+    relay_channels()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .retain(|key, _| !relay_key_is_for_device(key, device_id));
+}
+
+/// Install the one dispatcher, once. Called before a channel is registered so
+/// no event can arrive before its route exists.
+fn install_relay_dispatcher(client: &Arc<DaemonClient>) {
+    static INSTALLED: OnceLock<()> = OnceLock::new();
+    if INSTALLED.get().is_some() {
+        return;
+    }
+    client.on_remote_host_event(Arc::new(|message: RemoteRelayMessage| {
+        let (device_id, subscription_id) = match &message {
+            RemoteRelayMessage::Event(event) => (&event.device_id, event.subscription_id),
+            RemoteRelayMessage::Gap(gap) => (&gap.device_id, gap.subscription_id),
+        };
+        let channel = relay_channels()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(&relay_key(device_id, subscription_id))
+            .cloned();
+        if let Some(channel) = channel {
+            let _ = channel.send(message);
+        }
+    }));
+    let _ = INSTALLED.set(());
 }
 
 /// IMPORTANT STARTUP ORDER: the Channel is registered as the client's
@@ -58,7 +119,12 @@ pub async fn remote_host_unwatch(
     device_id: String,
 ) -> Result<(), CommandError> {
     let client = require_client(&bridge)?;
-    off_main_thread(move || client.remote_host_unwatch(&device_id)).await
+    let host = device_id.clone();
+    let result = off_main_thread(move || client.remote_host_unwatch(&device_id)).await;
+    // The lease is gone: its stream routes go with it, so a closed window's
+    // channels do not linger in the process registry.
+    forget_relays_for_device(&host);
+    result
 }
 
 /// Read one of the three allowlisted lists from that host.
@@ -78,12 +144,22 @@ pub async fn remote_session_attach(
     ch: Channel<RemoteRelayMessage>,
 ) -> Result<(), CommandError> {
     let client = require_client(&bridge)?;
-    let sink = Arc::new(move |message: RemoteRelayMessage| {
-        let _ = ch.send(message);
-    });
-    client.on_remote_host_event(sink);
-    off_main_thread(move || client.remote_host_attach(&device_id, &session_id, subscription_id))
-        .await
+    install_relay_dispatcher(&client);
+    // The route exists before the attach leaves, so an event that overtakes
+    // the reply still lands on this surface's channel.
+    relay_channels()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .insert(relay_key(&device_id, subscription_id), ch);
+    let route = (device_id.clone(), subscription_id);
+    let result = off_main_thread(move || {
+        client.remote_host_attach(&device_id, &session_id, subscription_id)
+    })
+    .await;
+    if result.is_err() {
+        forget_relay(&route.0, route.1);
+    }
+    result
 }
 
 /// Close one session's live stream. The daemon drops the local subscription
@@ -96,8 +172,31 @@ pub async fn remote_session_detach(
     subscription_id: u64,
 ) -> Result<(), CommandError> {
     let client = require_client(&bridge)?;
-    off_main_thread(move || client.remote_host_detach(&device_id, &session_id, subscription_id))
-        .await
+    let route = (device_id.clone(), subscription_id);
+    let result = off_main_thread(move || {
+        client.remote_host_detach(&device_id, &session_id, subscription_id)
+    })
+    .await;
+    // The route goes whether or not the daemon answered: a closed stream must
+    // not keep a channel alive, which is also what an unmount reaches.
+    forget_relay(&route.0, route.1);
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two streams of the same host and two hosts with the same subscription
+    /// id are different routes; one process-wide handler never mixes them.
+    #[test]
+    fn a_relay_route_is_keyed_by_device_and_subscription() {
+        assert_eq!(relay_key("device-a", 1), "device-a:1");
+        assert_ne!(relay_key("device-a", 1), relay_key("device-a", 2));
+        assert_ne!(relay_key("device-a", 1), relay_key("device-b", 1));
+        assert!(relay_key_is_for_device("device-a:7", "device-a"));
+        assert!(!relay_key_is_for_device("device-ab:7", "device-a"));
+    }
 }
 
 #[tauri::command]
