@@ -36,6 +36,8 @@ export type DropOutcome =
   | { kind: "split-up" }
   /** The dragged tab leaves the pane below and the workspace is one pane again. */
   | { kind: "merge" }
+  /** The dragged tab moves to the place on the tab row the pointer is over. */
+  | { kind: "reorder" }
   /** A plain selection: the tab is in front, nothing structural changes. */
   | { kind: "select" };
 
@@ -111,7 +113,7 @@ export interface DropContext {
 export function resolveDropOutcome(context: DropContext): DropOutcome {
   const { draggedTabId, lowerTabId, upperTabId, upperCanMoveBelow, zone } = context;
   if (zone === "strip") {
-    return lowerTabId === draggedTabId ? { kind: "merge" } : { kind: "select" };
+    return lowerTabId === draggedTabId ? { kind: "merge" } : { kind: "reorder" };
   }
   if (zone === "bottom") {
     // A tab the pane below cannot show is a selection, not a split that would
@@ -120,7 +122,13 @@ export function resolveDropOutcome(context: DropContext): DropOutcome {
   }
   if (zone === "center") return { kind: "select" };
   if (lowerTabId === draggedTabId) return { kind: "merge" };
-  if (upperCanMoveBelow && upperTabId !== null && upperTabId !== draggedTabId) {
+  // Only a page can take the pane above, so only a page may be the one dropped there.
+  if (
+    upperCanMoveBelow &&
+    upperTabId !== null &&
+    upperTabId !== draggedTabId &&
+    tabCanGoBelow(draggedTabId)
+  ) {
     return { kind: "split-up" };
   }
   return { kind: "select" };

@@ -7,7 +7,7 @@
 import { forwardRef, useImperativeHandle } from "react";
 import { SplitDropPreview } from "./SplitDropPreview";
 import { tabCanGoBelow, type DropZone } from "./tabDropZones";
-import { useTabDrag, type TabDragBoxes } from "./useTabDrag";
+import { useTabDrag, type TabDragBoxes, type TabDropPoint } from "./useTabDrag";
 
 /** What the strip's press needs to hand the gesture, and no more. */
 export interface SplitDragLayerHandle {
@@ -24,19 +24,17 @@ export interface SplitDragLayerProps {
   /** Whether the tab is still open: a tab an agent closes ends the gesture. */
   hasTab: (tabId: string) => boolean;
   /** What a drop does, decided by the caller against the live panes. */
-  onDrop: (tabId: string, zone: DropZone | "strip") => void;
+  onDrop: (tabId: string, zone: DropZone | "strip", point: TabDropPoint) => void;
 }
 
 /** The drag, and the destination it is previewing over the workspace centre. */
 export const SplitDragLayer = forwardRef<SplitDragLayerHandle, SplitDragLayerProps>(
   function SplitDragLayer({ boxes, hasTab, onDrop }, ref) {
-    const { zone, startDrag } = useTabDrag({
-      boxes,
-      hasTab,
-      onDrop,
-      canDrag: tabCanGoBelow,
-    });
+    const { zone, tabId, startDrag } = useTabDrag({ boxes, hasTab, onDrop });
     useImperativeHandle(ref, () => ({ start: startDrag }), [startDrag]);
-    return <SplitDropPreview zone={zone} />;
+    // Only a tab the pane below can hold is previewed over the centre: any other
+    // tab dropped there is a selection, and a preview would promise a split.
+    const previewed = tabId !== null && tabCanGoBelow(tabId) ? zone : null;
+    return <SplitDropPreview zone={previewed} />;
   },
 );

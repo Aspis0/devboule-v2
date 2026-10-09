@@ -47,13 +47,17 @@ export interface TabDragBoxes {
   strip: HTMLElement | null;
 }
 
+/** Where the pointer was let go, in viewport pixels: a strip drop reads the
+ * place on the row from it. */
+export interface TabDropPoint {
+  x: number;
+  y: number;
+}
+
 export interface UseTabDragOptions {
   boxes: () => TabDragBoxes;
   /** What a drop does, decided by the caller against the live panes. */
-  onDrop: (tabId: string, zone: DropZone | "strip") => void;
-  /** Whether this tab may be picked up at all: only a tab the pane below can
-   * hold ever starts a gesture, so nothing else can reach a pane mutation. */
-  canDrag: (tabId: string) => boolean;
+  onDrop: (tabId: string, zone: DropZone | "strip", point: TabDropPoint) => void;
   /** Whether the tab is still open. A tab an agent closes mid-gesture ends it. */
   hasTab: (tabId: string) => boolean;
 }
@@ -75,7 +79,7 @@ function inside(rect: DOMRect, x: number, y: number): boolean {
   return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 }
 
-export function useTabDrag({ boxes, onDrop, canDrag, hasTab }: UseTabDragOptions): {
+export function useTabDrag({ boxes, onDrop, hasTab }: UseTabDragOptions): {
   /** The zone the preview answers, and nothing else: a pointer that moves
    * inside one zone must not re-render the surface that owns this hook. */
   zone: DropZone | "strip" | null;
@@ -91,12 +95,12 @@ export function useTabDrag({ boxes, onDrop, canDrag, hasTab }: UseTabDragOptions
   const [drag, setDrag] = useState<TabDrag | null>(null);
   const pressRef = useRef<Press | null>(null);
   const draggingRef = useRef(false);
-  const optionsRef = useRef({ boxes, onDrop, canDrag, hasTab });
+  const optionsRef = useRef({ boxes, onDrop, hasTab });
   // The latest caller values, read through a ref and written after the render:
   // the listeners below are installed once, and re-installing them on every
   // render would take the drag's body class off while the drag is still on.
   useEffect(() => {
-    optionsRef.current = { boxes, onDrop, canDrag, hasTab };
+    optionsRef.current = { boxes, onDrop, hasTab };
   });
   const now = useCallback(() => optionsRef.current, []);
 
@@ -111,7 +115,9 @@ export function useTabDrag({ boxes, onDrop, canDrag, hasTab }: UseTabDragOptions
       // pointer stream itself was lost.
       releaseCapture(press);
       setDrag(null);
-      if (zone !== null && press !== null) now().onDrop(press.tabId, zone);
+      if (zone !== null && press !== null) {
+        now().onDrop(press.tabId, zone, { x: press.x, y: press.y });
+      }
     },
     [now],
   );
@@ -206,9 +212,6 @@ export function useTabDrag({ boxes, onDrop, canDrag, hasTab }: UseTabDragOptions
       owner: Element,
       event: { clientX: number; clientY: number; pointerId: number },
     ) => {
-      // Only a tab the pane below can hold is picked up: a chip that cannot go
-      // below never starts a gesture, so it can never reach a pane mutation.
-      if (!canDrag(tabId)) return;
       pressRef.current = {
         tabId,
         owner,
@@ -219,7 +222,7 @@ export function useTabDrag({ boxes, onDrop, canDrag, hasTab }: UseTabDragOptions
         y: event.clientY,
       };
     },
-    [canDrag],
+    [],
   );
 
   return { zone: drag?.zone ?? null, tabId: drag?.tabId ?? null, startDrag };

@@ -129,10 +129,6 @@ export function SessionStrip({
     (unopenedAttentionCount === 0
       ? ""
       : `, ${unopenedAttentionCount} ${unopenedAttentionCount === 1 ? "needs" : "need"} approval`);
-  const toolTabs = useMemo(
-    () => tabs.flatMap((tab) => (tab.type === "tool" ? [tab.tool] : [])),
-    [tabs],
-  );
   // A browser chip names its page, and the favicon arrives long after the tab
   // does. The strip reads the tab model itself rather than taking a map
   // through Workspace, and `MemoToolChip` still keeps the other chips still.
@@ -240,10 +236,7 @@ export function SessionStrip({
     if (overviewCloseTimer.current !== null) return;
     overviewCloseTimer.current = window.setTimeout(closeOverview, 150);
   }, [closeOverview]);
-  const stripOrder = useMemo(
-    () => tabs.flatMap((tab) => (tab.type === "session" ? [tab.session.id] : [])),
-    [tabs],
-  );
+  const tabIds = useMemo(() => tabs.map((tab) => tab.id), [tabs]);
   const handleOverviewOpen = useCallback(
     (sessionId: string) => {
       closeOverview();
@@ -299,9 +292,47 @@ export function SessionStrip({
   // The rows themselves, memoised on the same stable inputs: an
   // unrelated parent render reuses the very same elements, so the
   // memoised chips below never re-render for it.
-  const rows = useMemo(
-    () => [
-      ...chips.map(({ session, display, tooltip, provenanceLines, takeBack }) => (
+  // One pass over the tab list, so the row order is the strip's order whatever
+  // the kinds are. A chip is looked up by id, never rebuilt from its position.
+  const rows = useMemo(() => {
+    const chipById = new Map(chips.map((chip) => [chip.session.id, chip]));
+    return tabs.flatMap((tab): ReactNode[] => {
+      if (tab.type === "tool") {
+        const tool = tab.tool;
+        return [
+          <MemoToolChip
+            key={tool.id}
+            tool={tool}
+            selected={activeTabId === tool.id}
+            multiselected={selection.has(tool.id)}
+            tabIndex={tabIndexFor(tool.id)}
+            browser={tool.kind === "browser" ? browserPages.get(tool.browserId) : undefined}
+            tooltip={
+              tool.kind === "browser"
+                ? (browserPages.get(tool.browserId)?.url ?? tool.browserId)
+                : tool.path
+            }
+            menuOpen={menuAnchorId === tool.id}
+            onTabClick={(event) => handleTabClick({ id: tool.id }, event)}
+            onTabAuxClick={(event) => {
+              if (event.button === 1) {
+                event.preventDefault();
+                closeTab(tool.id);
+              }
+            }}
+            onRowContextMenu={(event) => {
+              event.preventDefault();
+              openMenu(tool.id);
+            }}
+            onChipKeyDown={(event) => handleChipKeyDown(tool.id, event)}
+            onClose={() => closeTab(tool.id)}
+          />,
+        ];
+      }
+      const chip = chipById.get(tab.id);
+      if (chip === undefined) return [];
+      const { session, display, tooltip, provenanceLines, takeBack } = chip;
+      return [
         <MemoStripChip
           key={session.id}
           session={session}
@@ -327,53 +358,23 @@ export function SessionStrip({
           }}
           onChipKeyDown={(event) => handleChipKeyDown(session.id, event)}
           onClose={() => closeTab(session.id)}
-        />
-      )),
-      ...toolTabs.map((tool) => (
-        <MemoToolChip
-          key={tool.id}
-          tool={tool}
-          selected={activeTabId === tool.id}
-          multiselected={selection.has(tool.id)}
-          tabIndex={tabIndexFor(tool.id)}
-          browser={tool.kind === "browser" ? browserPages.get(tool.browserId) : undefined}
-          tooltip={
-            tool.kind === "browser"
-              ? (browserPages.get(tool.browserId)?.url ?? tool.browserId)
-              : tool.path
-          }
-          menuOpen={menuAnchorId === tool.id}
-          onTabClick={(event) => handleTabClick({ id: tool.id }, event)}
-          onTabAuxClick={(event) => {
-            if (event.button === 1) {
-              event.preventDefault();
-              closeTab(tool.id);
-            }
-          }}
-          onRowContextMenu={(event) => {
-            event.preventDefault();
-            openMenu(tool.id);
-          }}
-          onChipKeyDown={(event) => handleChipKeyDown(tool.id, event)}
-          onClose={() => closeTab(tool.id)}
-        />
-      )),
-    ],
-    [
-      chips,
-      toolTabs,
-      browserPages,
-      activeTabId,
-      selection,
-      tabIndexFor,
-      menuAnchorId,
-      onTakeBack,
-      handleTabClick,
-      closeTab,
-      openMenu,
-      handleChipKeyDown,
-    ],
-  );
+        />,
+      ];
+    });
+  }, [
+    tabs,
+    chips,
+    browserPages,
+    activeTabId,
+    selection,
+    tabIndexFor,
+    menuAnchorId,
+    onTakeBack,
+    handleTabClick,
+    closeTab,
+    openMenu,
+    handleChipKeyDown,
+  ]);
 
   const chipUnder = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>): void => {
@@ -455,7 +456,7 @@ export function SessionStrip({
         triggerRef={overviewTriggerRef}
         contentRef={overviewRootRef}
         sessions={overviewSessions}
-        stripOrder={stripOrder}
+        stripOrder={tabIds}
         tabs={tabs}
         browserPages={browserPages}
         activeTabId={activeTabId}

@@ -33,6 +33,7 @@ let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
 let handle: SplitDragLayerHandle | null = null;
 let dropped: Array<[string, DropZone | "strip"]> = [];
+let lastDropPoint: { x: number; y: number } | null = null;
 /** The only kind of tab the pane below may hold, so the only kind that starts
  * a gesture. */
 const TAB = "tool:browser:w-1:page-1";
@@ -79,7 +80,10 @@ function Harness() {
         }}
         boxes={boxes}
         hasTab={(tabId) => openTabs.has(tabId)}
-        onDrop={(tabId, where) => dropped.push([tabId, where])}
+        onDrop={(tabId, where, point) => {
+          dropped.push([tabId, where]);
+          lastDropPoint = point;
+        }}
       />
     </Profiler>
   );
@@ -146,6 +150,7 @@ function dragging(): boolean {
 
 beforeEach(() => {
   dropped = [];
+  lastDropPoint = null;
   openTabs = new Set([TAB]);
   commits = 0;
   parentRenders = 0;
@@ -190,16 +195,22 @@ describe("a chip press that travels", () => {
     dropped.length = 0;
   });
 
-  it("picks up only a tab the pane below can hold", () => {
-    // The tab is open, so nothing but the kind of tab can refuse it.
+  it("picks up any open tab, and a conversation draws no pane preview over the centre", () => {
     openTabs = new Set([TAB, "session-1"]);
 
     press("session-1");
     move({ x: 700, y: 900 });
-    expect(dragging()).toBe(false);
+    expect(dragging()).toBe(true);
     expect(preview()).toBeNull();
     release({ x: 700, y: 900 });
-    expect(dropped).toEqual([]);
+    expect(dropped).toEqual([["session-1", "bottom"]]);
+  });
+
+  it("reports the point where the pointer was let go with the drop", () => {
+    travel({ x: 300, y: 60 }, { x: 500, y: 300 });
+    release({ x: 300, y: 60 });
+    expect(dropped).toEqual([[TAB, "strip"]]);
+    expect(lastDropPoint).toEqual({ x: 300, y: 60 });
   });
 
   it("takes the capture on the chip that owns the gesture", () => {

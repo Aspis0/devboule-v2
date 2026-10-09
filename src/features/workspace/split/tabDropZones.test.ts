@@ -111,6 +111,20 @@ describe("what each drop does", () => {
     expect(resolveDropOutcome({ ...base, zone: "top" })).toEqual({ kind: "select" });
   });
 
+  it("is a plain selection from the top edge for a conversation, even over a browser pane above", () => {
+    // Only a page can take the pane above, so a conversation dropped on that
+    // edge is a selection, not a split that would leave the page nowhere to go.
+    expect(
+      resolveDropOutcome({
+        ...base,
+        draggedTabId: "session-1",
+        zone: "top",
+        upperTabId: "tool:browser:a:other",
+        upperCanMoveBelow: true,
+      }),
+    ).toEqual({ kind: "select" });
+  });
+
   it("merges when the dragged tab is the one in the pane below", () => {
     expect(resolveDropOutcome({ ...base, zone: "top", lowerTabId: base.draggedTabId })).toEqual({
       kind: "merge",
@@ -120,8 +134,8 @@ describe("what each drop does", () => {
     });
   });
 
-  it("is a plain selection from the strip for any other tab", () => {
-    expect(resolveDropOutcome({ ...base, zone: "strip" })).toEqual({ kind: "select" });
+  it("reorders the strip for any other tab dropped on it", () => {
+    expect(resolveDropOutcome({ ...base, zone: "strip" })).toEqual({ kind: "reorder" });
   });
 
   it("does not swap a tab with itself", () => {

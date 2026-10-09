@@ -20,7 +20,9 @@ vi.mock("./StripChip", async (importOriginal) => {
 import type { MouseEvent as ReactMouseEvent } from "react";
 import type { Session } from "../../../types/ipc";
 import { SessionStrip } from "./SessionStrip";
-import { composeStripTabs } from "./toolTabs";
+import { localWorkspaceKey, type WorkspaceKey } from "../hosts/hostIdentity";
+import { composeStripTabs, makeToolTab, type StripTab } from "./toolTabs";
+import { sessionTabElementId } from "./useTabCloseFlow";
 
 function session(id: string, title: string, overrides: Partial<Session> = {}): Session {
   return {
@@ -640,5 +642,33 @@ describe("SessionStrip", () => {
   it("announces the selection size politely", () => {
     renderStrip([session("a", "agent a")], "a");
     expect(container!.querySelector('[role="status"]')).not.toBeNull();
+  });
+
+  it("lays every kind of tab out in the order the tab list gives", () => {
+    const sessions = [session("a", "agent a"), session("b", "agent b")];
+    const tool = makeToolTab(
+      "diff",
+      localWorkspaceKey("workspace-1") as WorkspaceKey,
+      "src/app.ts",
+    );
+    const tabs: StripTab[] = [
+      { type: "session", id: "b", session: sessions[1] },
+      { type: "tool", id: tool.id, tool },
+      { type: "session", id: "a", session: sessions[0] },
+    ];
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    act(() => {
+      root!.render(<SessionStrip {...propsOf(sessions, "a")} tabs={tabs} />);
+    });
+    const ids = [...container.querySelectorAll<HTMLElement>(".workspace-session-tab")].map(
+      (tab) => tab.id,
+    );
+    expect(ids).toEqual([
+      sessionTabElementId("b"),
+      sessionTabElementId(tool.id),
+      sessionTabElementId("a"),
+    ]);
   });
 });

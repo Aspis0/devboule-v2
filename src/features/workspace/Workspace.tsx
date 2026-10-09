@@ -44,6 +44,9 @@ import {
   type FileToolTabKind,
   type ToolTab,
 } from "./strip/toolTabs";
+import { insertionIndex, moveTabId, orderStripTabs } from "./strip/tabOrder";
+import { readStripOrders, writeStripOrders } from "./strip/stripOrderStorage";
+import { readTabSlots } from "./strip/tabSlots";
 import { ToolDiffPane } from "./ToolDiffPane";
 import { WorkspaceFileTab } from "./WorkspaceFileTab";
 import { BrowserTab } from "./BrowserTab";
@@ -62,6 +65,7 @@ import { closeBrowserPage } from "./browserPages";
 import { SplitPane } from "./split/SplitPane";
 import { SplitDragLayer, type SplitDragLayerHandle } from "./split/SplitDragLayer";
 import { resolveDropOutcome, tabCanGoBelow, type DropZone } from "./split/tabDropZones";
+import type { TabDropPoint } from "./split/useTabDrag";
 import {
   forgetSplitPanesFor,
   mergeSplitPane,
@@ -378,6 +382,9 @@ export function Workspace({
   // underneath an active tool so the reconcile below keeps passing.
   const [toolTabs, setToolTabs] = useState<ToolTab[]>([]);
   const [activeToolTabId, setActiveToolTabId] = useState<string | null>(null);
+  // The order the person arranged each workspace's strip in, every kind of tab
+  // in one list. Written through on every drop, so it outlives the mount.
+  const [stripOrders, setStripOrders] = useState(readStripOrders);
   // What the tool tabs last showed, so a tab switched away from and back to
   // re-reads over its old content instead of an empty cell. Per mount, never
   // shared: each pane seeds from it and writes its landed reads back.
@@ -683,8 +690,12 @@ export function Workspace({
   const activeToolId = activeTool?.id ?? null;
   const activeTabId = activeToolId ?? selectedSessionId;
   const composedTabs = useMemo(
-    () => composeStripTabs(visibleSessions, visibleToolTabs),
-    [visibleSessions, visibleToolTabs],
+    () =>
+      orderStripTabs(
+        composeStripTabs(visibleSessions, visibleToolTabs),
+        (selectedKey === null ? undefined : stripOrders.get(selectedKey)) ?? [],
+      ),
+    [visibleSessions, visibleToolTabs, selectedKey, stripOrders],
   );
   // The one writer of the per-workspace tab memory, because there are many
   // roads to a selection and only one answer to "what is on screen now": a
@@ -974,7 +985,7 @@ export function Workspace({
    * drop, so the outcome is never decided against a layout the drag has since
    * changed. */
   const dropTab = useCallback(
-    (tabId: string, zone: DropZone | "strip") => {
+    (tabId: string, zone: DropZone | "strip", point: TabDropPoint) => {
       if (selectedKey === null) return;
       const outcome = resolveDropOutcome({
         zone,
@@ -1005,14 +1016,29 @@ export function Workspace({
         setMovedTab({ tabId, sentence: "Moved out of the pane below." });
         return;
       }
+      if (outcome.kind === "reorder") {
+        const strip = document.querySelector<HTMLElement>(".workspace-session-tabs");
+        if (strip === null) return;
+        const index = insertionIndex(readTabSlots(strip), point.x, tabId);
+        const next = moveTabId(
+          composedTabs.map((tab) => tab.id),
+          tabId,
+          index,
+        );
+        const orders = new Map(stripOrders).set(selectedKey, next);
+        setStripOrders(orders);
+        writeStripOrders(orders);
+      }
       selectTab(tabId);
     },
     [
       activeTabId,
+      composedTabs,
       panes.upperTool,
       selectSession,
       selectTab,
       selectedKey,
+      stripOrders,
       selectedSessionId,
       split,
       visibleSessions,
