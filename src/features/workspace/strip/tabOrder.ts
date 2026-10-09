@@ -83,3 +83,12 @@ export function insertionEdge(
   if (index <= 0) return rest[0]!.left;
   return rest[Math.min(index, rest.length) - 1]!.right;
 }
+
+/** The same ids with `movedId` one place along, by `step`; the order stands at
+ * either end, and for an id the list does not hold. */
+export function stepTabId(ids: readonly string[], movedId: string, step: number): string[] {
+  const from = ids.indexOf(movedId);
+  if (from === -1) return [...ids];
+  const to = Math.min(Math.max(from + step, 0), ids.length - 1);
+  return to === from ? [...ids] : moveTabId(ids, movedId, to);
+}

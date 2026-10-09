@@ -87,6 +87,7 @@ function propsOf(sessions: Session[], activeTabId: string | null, overview = ses
     workspaceName: "workspace one",
     onOpenSession: vi.fn(),
     selectedSessionId: sessions[0]?.id ?? null,
+    onMoveTab: vi.fn(),
   };
 }
 
@@ -642,6 +643,39 @@ describe("SessionStrip", () => {
   it("announces the selection size politely", () => {
     renderStrip([session("a", "agent a")], "a");
     expect(container!.querySelector('[role="status"]')).not.toBeNull();
+  });
+
+  it("moves the focused tab one place with Ctrl+Shift+PageUp and PageDown, and keeps its focus", () => {
+    const props = renderStrip([session("a", "agent a"), session("b", "agent b")], "a");
+    const chip = container!.querySelector<HTMLElement>("#workspace-session-tab-a")!;
+    chip.focus();
+    act(() => {
+      chip.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "PageDown",
+          ctrlKey: true,
+          shiftKey: true,
+          bubbles: true,
+        }),
+      );
+    });
+    expect(props.onMoveTab).toHaveBeenCalledWith("a", 1);
+    act(() => {
+      chip.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "PageUp",
+          ctrlKey: true,
+          shiftKey: true,
+          bubbles: true,
+        }),
+      );
+    });
+    expect(props.onMoveTab).toHaveBeenLastCalledWith("a", -1);
+
+    // The order changes under the chip, as Workspace would change it: the
+    // chip the person moved keeps the focus, wherever it now sits.
+    props.rerender([session("b", "agent b"), session("a", "agent a")], "a");
+    expect(document.activeElement?.id).toBe("workspace-session-tab-a");
   });
 
   it("lays every kind of tab out in the order the tab list gives", () => {

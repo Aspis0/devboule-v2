@@ -87,6 +87,7 @@ function renderOpenStrip() {
           onCloseMenu: vi.fn(),
         }}
         providerMenu={null}
+        onMoveTab={() => undefined}
         peerNames={new Map<string, string>()}
         resolveCreator={() => null as string | null}
         takeBackAvailable={false}

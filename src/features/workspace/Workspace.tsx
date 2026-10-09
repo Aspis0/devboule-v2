@@ -44,7 +44,13 @@ import {
   type FileToolTabKind,
   type ToolTab,
 } from "./strip/toolTabs";
-import { insertionEdge, insertionIndex, moveTabId, orderStripTabs } from "./strip/tabOrder";
+import {
+  insertionEdge,
+  insertionIndex,
+  moveTabId,
+  orderStripTabs,
+  stepTabId,
+} from "./strip/tabOrder";
 import { readStripOrders, writeStripOrders } from "./strip/stripOrderStorage";
 import { readTabSlots } from "./strip/tabSlots";
 import { edgeScrollStep } from "./strip/stripEdgeScroll";
@@ -1064,6 +1070,21 @@ export function Workspace({
   );
   /** The drag belongs to the layer below, which also draws the preview: a
    * pointer moving inside one destination must not re-render this surface. */
+  /** Moves a tab one place along the row, from the keyboard; the order is kept like a drop keeps it. */
+  const moveStripTab = useCallback(
+    (tabId: string, step: number) => {
+      if (selectedKey === null) return;
+      const next = stepTabId(
+        composedTabs.map((tab) => tab.id),
+        tabId,
+        step,
+      );
+      const orders = new Map(stripOrders).set(selectedKey, next);
+      setStripOrders(orders);
+      writeStripOrders(orders);
+    },
+    [composedTabs, selectedKey, stripOrders],
+  );
   /** Scrolls the tab row while the pointer holds one of its ends, and says so. */
   const scrollStripAt = useCallback((x: number): boolean => {
     const scroll = document.querySelector<HTMLElement>(".workspace-session-tabs-scroll");
@@ -2073,6 +2094,7 @@ export function Workspace({
             workspaceName={workspaceName}
             onOpenSession={handleOpenOverviewSession}
             selectedSessionId={selectedSessionId}
+            onMoveTab={moveStripTab}
             onStripPointerDown={startTabDrag}
           />
           <SplitDragLayer

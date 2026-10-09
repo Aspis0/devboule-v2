@@ -327,6 +327,7 @@ describe("walking every menu the source finds — the band's open is the outside
           workspaceName={null}
           onOpenSession={() => undefined}
           selectedSessionId={null}
+          onMoveTab={() => undefined}
         />
       </ShellWith>,
     );

@@ -216,6 +216,7 @@ function renderStrip(
           workspaceName="atelier"
           onOpenSession={onOpenSession}
           selectedSessionId={selectedSessionId}
+          onMoveTab={() => undefined}
         />,
       );
     });

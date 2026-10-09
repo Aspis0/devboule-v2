@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { insertionEdge, insertionIndex, moveTabId, orderStripTabs, type TabSlot } from "./tabOrder";
+import {
+  insertionEdge,
+  insertionIndex,
+  moveTabId,
+  orderStripTabs,
+  stepTabId,
+  type TabSlot,
+} from "./tabOrder";
 
 describe("orderStripTabs", () => {
   it("lays tabs out in the remembered order, whatever their kind", () => {
@@ -129,5 +136,21 @@ describe("orderStripTabs across a recovered session", () => {
       "new-a",
       "new-b",
     ]);
+  });
+});
+
+describe("stepTabId", () => {
+  it("moves a tab one place forward or back", () => {
+    expect(stepTabId(["a", "b", "c"], "a", 1)).toEqual(["b", "a", "c"]);
+    expect(stepTabId(["a", "b", "c"], "c", -1)).toEqual(["a", "c", "b"]);
+  });
+
+  it("leaves the order alone at either end", () => {
+    expect(stepTabId(["a", "b"], "a", -1)).toEqual(["a", "b"]);
+    expect(stepTabId(["a", "b"], "b", 1)).toEqual(["a", "b"]);
+  });
+
+  it("leaves the order alone for a tab it does not hold", () => {
+    expect(stepTabId(["a"], "x", 1)).toEqual(["a"]);
   });
 });

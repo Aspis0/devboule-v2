@@ -109,6 +109,7 @@ function renderStrip(tabs: StripTab[], overview: readonly Session[], activeTabId
         workspaceName="atelier"
         onOpenSession={onOpenSession}
         selectedSessionId="b"
+        onMoveTab={() => undefined}
       />,
     );
   });

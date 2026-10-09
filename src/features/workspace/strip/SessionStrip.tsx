@@ -2,6 +2,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -24,6 +25,7 @@ import { chipDisplay } from "./stripDisplay";
 import { sessionNeedsApproval } from "../sessionAttention";
 import { useStripFade } from "./useStripFade";
 import { useStripKeyboard } from "./useStripKeyboard";
+import { sessionTabElementId } from "./useTabCloseFlow";
 import { StripChip, ToolStripChip, type BrowserTabPage } from "./StripChip";
 import type { StripTab } from "./toolTabs";
 import { browserLayoutSnapshot, subscribeBrowserLayout } from "../browserTabs";
@@ -81,6 +83,8 @@ export interface SessionStripProps {
   /** The strip's own pointerdown, with the chip under the pointer: a press that
    * travels becomes a drag of that tab, and a press that does not stays the
    * click that selects it. */
+  /** Moves one tab a place along the row: Ctrl+Shift+PageUp and PageDown. */
+  onMoveTab: (tabId: string, step: number) => void;
   onStripPointerDown?: (
     tabId: string,
     owner: Element,
@@ -107,8 +111,12 @@ export function SessionStrip({
   workspaceName,
   onOpenSession,
   selectedSessionId,
+  onMoveTab,
   onStripPointerDown,
 }: SessionStripProps) {
+  // A chip moved from the keyboard is re-mounted in its new place by the rows
+  // below, so the focus it held is put back on it once the order has landed.
+  const focusAfterMove = useRef<string | null>(null);
   const scrollportRef = useRef<HTMLDivElement>(null);
   const sessions = useMemo(
     () => tabs.flatMap((tab) => (tab.type === "session" ? [tab.session] : [])),
@@ -252,6 +260,13 @@ export function SessionStrip({
     [closeOverview, selectTab],
   );
 
+  useLayoutEffect(() => {
+    const id = focusAfterMove.current;
+    if (id === null) return;
+    focusAfterMove.current = null;
+    document.getElementById(sessionTabElementId(id))?.focus({ preventScroll: true });
+  }, [tabs]);
+
   const handleChipKeyDown = useCallback(
     (id: string, event: ReactKeyboardEvent<HTMLElement>) => {
       if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
@@ -259,9 +274,15 @@ export function SessionStrip({
         openMenu(id);
         return;
       }
+      if (event.ctrlKey && event.shiftKey && (event.key === "PageUp" || event.key === "PageDown")) {
+        event.preventDefault();
+        focusAfterMove.current = id;
+        onMoveTab(id, event.key === "PageUp" ? -1 : 1);
+        return;
+      }
       keyboardChipKeyDown(id, event);
     },
-    [openMenu, keyboardChipKeyDown],
+    [openMenu, keyboardChipKeyDown, onMoveTab],
   );
 
   // One derivation per row, recomputed only when the roster, the names, or
