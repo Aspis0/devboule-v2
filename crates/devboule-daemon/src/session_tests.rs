@@ -2759,6 +2759,15 @@ fn a_daemon_peer_is_scoped_by_origin_and_delivers_agent_messages() {
     let conn = remote_conn(PeerScope::PeerDevice, Some("peer_dev-phone"));
 
     for (path, result) in ownership_paths(&registry, &other_id, &owner, &conn) {
+        if path == "attach" {
+            // Reading opened up for a machine peer (the owner's two PCs open
+            // each other's agents); every operation below stays origin-only.
+            assert!(
+                result.is_ok(),
+                "attach observes the pairing user's session: {result:?}"
+            );
+            continue;
+        }
         if IDENTITY_FREE_PATHS.contains(&path) {
             // `stop` and `set_model` take no requestor identity, so the
             // origin cannot answer for them; a peer never reaches them
@@ -3127,6 +3136,14 @@ fn a_daemon_peer_is_refused_an_unknown_origin_like_a_local_one() {
     for id in [&local_id, &unknown_id] {
         for (path, result) in ownership_paths(&registry, id, &owner, &conn) {
             if IDENTITY_FREE_PATHS.contains(&path) {
+                continue;
+            }
+            if path == "attach" {
+                // Reads observe the pairing user's sessions whatever the
+                // origin (pinned by the tests above and by
+                // `session_roster_access_tests`); the operations below keep
+                // the origin door. This harness reuses one subscription id
+                // across ids, so the second attach is not assertable here.
                 continue;
             }
             if id == &local_id && path == "agent_message_send" {
