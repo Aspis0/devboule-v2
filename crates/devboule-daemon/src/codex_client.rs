@@ -1776,8 +1776,8 @@ fn codex_local_image_entry(path: &std::path::Path) -> serde_json::Value {
 }
 
 /// `turn/start` params with one trailing `localImage` entry per carried
-/// raster, in attachment order, after the single text entry. The text entry
-/// is the shared fallback text: the user's text plus the path lines for the
+/// raster, in attachment order, after the text entry. The text entry is the
+/// shared fallback text: the user's text plus the path lines for the
 /// attachments that stay prose (SVG, which takes no inline shape).
 ///
 /// With no carried path it builds exactly what `turn_start_params` builds —
@@ -1797,9 +1797,13 @@ fn turn_start_params_with_images(
     // policy fields go back only after an explicit `set_mode`.
     let mut params = policy_mode.map(mode_values).unwrap_or_default();
     params.insert("threadId".to_string(), Value::String(thread_id.to_string()));
-    // The text entry first, then one `localImage` entry per carried raster,
-    // in attachment order.
-    let mut input = vec![serde_json::json!({ "type": "text", "text": text })];
+    // The text entry first when there is text, then one `localImage` entry per
+    // carried raster, in attachment order. An image-only message has no text
+    // entry, the same as the other providers' image-only frames.
+    let mut input = Vec::with_capacity(image_paths.len().saturating_add(1));
+    if !text.is_empty() || image_paths.is_empty() {
+        input.push(serde_json::json!({ "type": "text", "text": text }));
+    }
     input.extend(image_paths.iter().map(|path| codex_local_image_entry(path)));
     params.insert("input".to_string(), Value::Array(input));
     if let Some(model) = model {

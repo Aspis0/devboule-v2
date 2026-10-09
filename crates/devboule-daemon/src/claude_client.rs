@@ -1331,19 +1331,22 @@ fn frame_user_message(
 }
 
 /// One user message with the measured image shape: a content entry of
-/// `{"type": "image", ...}` for every carried raster, after the single text
-/// entry. The nested `source` carries the key `media_type`, not the ACP flat
+/// `{"type": "image", ...}` for every carried raster, after the text entry.
+/// The nested `source` carries the key `media_type`, not the ACP flat
 /// `{type, mimeType, data}`.
 ///
 /// With no blocks this is [`frame_user_message`] byte for byte — the two
 /// differ only by the loop that runs zero times — which is what lets the
-/// static route frame every prompt through this one builder.
+/// static route frame every prompt through this one builder. An image-only
+/// prompt has no text entry: the API refuses a text block whose text is empty.
 fn frame_user_message_with_images(
     text: &str,
     images: &[super::AcpImageBlock],
 ) -> io::Result<Vec<u8>> {
     let mut content = Vec::with_capacity(images.len().saturating_add(1));
-    content.push(serde_json::json!({"type": "text", "text": text}));
+    if !text.is_empty() || images.is_empty() {
+        content.push(serde_json::json!({"type": "text", "text": text}));
+    }
     for image in images {
         content.push(claude_image_block(&image.mime_type, &image.data_base64));
     }

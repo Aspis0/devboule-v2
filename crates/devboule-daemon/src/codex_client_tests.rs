@@ -3151,3 +3151,6 @@ fn live_codex_result(
     let _ = child.wait();
     result
 }
+
+#[path = "codex_client_tests/image_only_input_tests.rs"]
+mod image_only_input_tests;

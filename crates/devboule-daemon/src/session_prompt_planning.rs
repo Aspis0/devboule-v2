@@ -371,13 +371,17 @@ pub(crate) struct StructuredPromptPlan {
 }
 
 impl StructuredPromptPlan {
-    /// The full `prompt` array the child receives: the text block, then one
-    /// image block per raster attachment. The journal records
-    /// `fallback_text` — element zero of this array — never the blocks.
+    /// The full `prompt` array the child receives: the text block when there
+    /// is text, then one image block per raster attachment. An image-only
+    /// prompt has no text block, since a provider refuses an empty one. The
+    /// journal records `fallback_text`, never the blocks.
     /// `pub(crate)` for the acp_client wire-shape test, which pins the
     /// exact JSON the read side already expects.
     pub(crate) fn content_blocks(&self) -> Vec<serde_json::Value> {
-        let mut prompt = vec![serde_json::json!({ "type": "text", "text": self.fallback_text })];
+        let mut prompt = Vec::with_capacity(self.images.len().saturating_add(1));
+        if !self.fallback_text.is_empty() || self.images.is_empty() {
+            prompt.push(serde_json::json!({ "type": "text", "text": self.fallback_text }));
+        }
         prompt.extend(self.images.iter().map(AcpImageBlock::to_content_block));
         prompt
     }
@@ -626,3 +630,7 @@ pub(super) fn prompt_text_with_fallback_paths(text: &str, fallback_paths: &[Path
     push_path_lines(&mut prompt, fallback_paths);
     prompt
 }
+
+#[cfg(test)]
+#[path = "session_prompt_planning_tests.rs"]
+mod tests;

@@ -308,7 +308,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 
   const sendInput = useCallback(() => {
     const text = input.trim();
-    if (!text || disabled || sendingImages || filesBlocked) return;
+    if ((!text && attachedImages.length === 0) || disabled || sendingImages || filesBlocked) return;
     // Imageless sends keep the fire-and-forget they always had. A send that
     // carries anything else takes a snapshot and waits for the answer: the
     // picks stay put as sending and clear only on success, so a failure keeps
@@ -354,7 +354,14 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
     // Blocked while an image send is in flight, like the buttons: the
     // in-flight picks still belong to that send, and queueing them again
     // would send them twice.
-    if (!text || disabled || sendingImages || filesBlocked || onQueue === undefined) return;
+    if (
+      (!text && attachedImages.length === 0) ||
+      disabled ||
+      sendingImages ||
+      filesBlocked ||
+      onQueue === undefined
+    )
+      return;
     // One intent, one frame. A second activation inside this render still reads
     // the text the first press is about to clear, so the daemon would see two
     // adds of the same words under two ids.
@@ -590,7 +597,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
                 disabled ||
                 sendingImages ||
                 filesBlocked ||
-                !input.trim()
+                (!input.trim() && attachedImages.length === 0)
               }
             >
               {/* A clock while the action queues: it sends later. The
@@ -654,7 +661,12 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
               title={`Send · ${composerChordLabel("submit")} (${composerChordLabel("newline")} for a new line)`}
               aria-label="Send"
               onClick={sendInput}
-              disabled={disabled || sendingImages || filesBlocked || !input.trim()}
+              disabled={
+                disabled ||
+                sendingImages ||
+                filesBlocked ||
+                (!input.trim() && attachedImages.length === 0)
+              }
             >
               <svg
                 width={14}
