@@ -273,6 +273,62 @@ describe("the remote workspace surface", () => {
     expect(container.textContent).toContain("line 2999");
   });
 
+  it("bounds gap replays with a backoff", async () => {
+    vi.useFakeTimers();
+    await render(true);
+    const chip = [...container.querySelectorAll<HTMLButtonElement>("[role='tab']")][0];
+    await act(async () => {
+      chip?.click();
+    });
+    await flush();
+    const first = vi.mocked(remoteSessionAttach).mock.calls.at(-1)?.[2] as number;
+
+    await act(async () => {
+      emit({
+        kind: "gap",
+        deviceId: "device-one",
+        sessionId: "session-one",
+        subscriptionId: first,
+      });
+    });
+    await flush();
+    expect(remoteSessionAttach).toHaveBeenCalledTimes(2);
+    // The detach rode the serialized chain before the new attach.
+    expect(vi.mocked(remoteSessionDetach).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(remoteSessionAttach).mock.invocationCallOrder[1],
+    );
+    const second = vi.mocked(remoteSessionAttach).mock.calls.at(-1)?.[2] as number;
+
+    // A second gap inside the backoff window does not resync again: the tail
+    // of the replay is kept instead of looping.
+    await act(async () => {
+      emit({
+        kind: "gap",
+        deviceId: "device-one",
+        sessionId: "session-one",
+        subscriptionId: second,
+      });
+    });
+    await flush();
+    expect(remoteSessionAttach).toHaveBeenCalledTimes(2);
+
+    // After the window, a gap replays again.
+    await act(async () => {
+      vi.advanceTimersByTime(2100);
+    });
+    await act(async () => {
+      emit({
+        kind: "gap",
+        deviceId: "device-one",
+        sessionId: "session-one",
+        subscriptionId: second,
+      });
+    });
+    await flush();
+    expect(remoteSessionAttach).toHaveBeenCalledTimes(3);
+    vi.useRealTimers();
+  });
+
   it("replays a gapped stream on a fresh subscription", async () => {
     await render(true);
     const chip = [...container.querySelectorAll<HTMLButtonElement>("[role='tab']")][0];

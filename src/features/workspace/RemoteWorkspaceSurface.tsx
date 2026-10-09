@@ -84,8 +84,13 @@ export function RemoteWorkspaceSurface({
   const chainRef = useRef<Promise<void>>(Promise.resolve());
   const operationRef = useRef(0);
   const lastAttachAtRef = useRef(0);
-  // A gap is a data event, not a flapping edge: its reattach is immediate.
+  // A gap is a data event, not a flapping edge: its reattach is immediate,
+  // but a transcript that overflows the relay on every replay must not loop.
+  // One resync per backoff window; gaps inside it mean the replay itself is
+  // overflowing, so the tail we already have is kept rather than re-gapped.
   const forceReattachRef = useRef(false);
+  const lastResyncAtRef = useRef(0);
+  const resyncBackoffRef = useRef(1000);
   const reattachTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Line appends are batched per microtask and bounded, so a long replay does
   // not re-render the whole history once per chunk.
@@ -186,10 +191,18 @@ export function RemoteWorkspaceSurface({
     openRef.current = target;
     operationRef.current += 1;
     const token = operationRef.current;
+    const forced = forceReattachRef.current;
+    forceReattachRef.current = false;
     const run = chainRef.current.then(async () => {
       if (token !== operationRef.current) return;
-      if (previous !== null && previous !== target) {
-        await remoteSessionDetach(deviceId, previous, subscriptionRef.current).catch(
+      // The previous subscription goes back before the next one opens: a
+      // session switch and a gap's replay both detach on this chain, never
+      // fire-and-forget, so the link is never asked for two streams at once.
+      const previousSubscription = subscriptionRef.current;
+      const detachSession = previous ?? target;
+      if (previousSubscription !== 0 && detachSession !== null && (previous !== target || forced)) {
+        subscriptionRef.current = 0;
+        await remoteSessionDetach(deviceId, detachSession, previousSubscription).catch(
           () => undefined,
         );
       }
@@ -209,8 +222,6 @@ export function RemoteWorkspaceSurface({
       // *same* session inside the debounce window is coalesced into one. A
       // user switching tabs, and a gap's replay, are never debounced.
       const sameSession = previous === target;
-      const forced = forceReattachRef.current;
-      forceReattachRef.current = false;
       const since = Date.now() - lastAttachAtRef.current;
       if (sameSession && !forced && since < 750) {
         if (reattachTimerRef.current !== null) clearTimeout(reattachTimerRef.current);
@@ -230,15 +241,25 @@ export function RemoteWorkspaceSurface({
           if (message.deviceId !== deviceId || message.sessionId !== target) return;
           if (message.subscriptionId !== subscriptionId) return;
           if (message.kind === "gap") {
-            // The relay lost bulk events. Close this subscription and
-            // re-attach: the host replays the transcript, so nothing stays
-            // silently missing.
+            // The relay lost bulk events. Re-attach so the host replays —
+            // but at most once per backoff window: a transcript that
+            // overflows the relay on every replay keeps its tail instead of
+            // looping through gap and reattach forever.
+            const now = Date.now();
+            if (now - lastResyncAtRef.current < resyncBackoffRef.current) {
+              return;
+            }
+            lastResyncAtRef.current = now;
+            resyncBackoffRef.current = Math.min(resyncBackoffRef.current * 2, 30_000);
+            // The detach rides the serialized chain with the attach.
             forceReattachRef.current = true;
-            void remoteSessionDetach(deviceId, target, subscriptionId).catch(() => undefined);
             setLines([]);
             setResyncNonce((value) => value + 1);
             return;
           }
+          // A healthy stream clears the resync backoff: a later genuine gap
+          // replays right away.
+          resyncBackoffRef.current = 1000;
           const line = lineOf(message.envelope.event);
           if (line !== null) appendLine(line);
           // A state, a terminal exit or a permission card changes what the
