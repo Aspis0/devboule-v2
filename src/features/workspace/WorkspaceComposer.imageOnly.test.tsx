@@ -68,6 +68,18 @@ async function pickImage() {
   await act(async () => {});
 }
 
+async function typeText(text: string) {
+  const textarea = container.querySelector<HTMLTextAreaElement>(
+    'textarea[aria-label="Message the agent"]',
+  );
+  if (textarea === null) throw new Error("composer textarea did not render");
+  const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+  await act(async () => {
+    setValue.call(textarea, text);
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
 beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -103,6 +115,28 @@ describe("WorkspaceComposer image-only sends", () => {
     expect(text).toBe("");
     expect(attachments.map((attachment) => attachment.mimeType)).toEqual(["image/png"]);
   });
+
+  it("treats whitespace-only text as no text", async () => {
+    const onSend = vi.fn<SendMock>(async () => true);
+    await renderComposer(onSend, { imageOnlyAccepted: true });
+    await pickImage();
+    await typeText("   ");
+    await act(async () => {
+      sendButton().click();
+    });
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onSend.mock.calls[0]?.[0]).toBe("");
+  });
+
+  it("disables send again once the last picked image is removed", async () => {
+    await renderComposer(vi.fn(), { imageOnlyAccepted: true });
+    await pickImage();
+    expect(sendButton().disabled).toBe(false);
+    await act(async () => {
+      button('button[aria-label^="Remove attached image"]').click();
+    });
+    expect(sendButton().disabled).toBe(true);
+  });
 });
 
 describe("WorkspaceComposer image-only queue", () => {
@@ -111,6 +145,31 @@ describe("WorkspaceComposer image-only queue", () => {
   it("keeps queue off for an image with no text when the target cannot take images", async () => {
     await renderComposer(vi.fn(), { ...queueOptions, imageOnlyAccepted: false });
     await pickImage();
+    expect(queueButton().disabled).toBe(true);
+  });
+
+  it("queues a picked image with no text when the target takes images", async () => {
+    const mocks = await renderComposer(vi.fn(), { ...queueOptions, imageOnlyAccepted: true });
+    await pickImage();
+    expect(queueButton().disabled).toBe(false);
+    await act(async () => {
+      queueButton().click();
+    });
+    expect(mocks.onQueue).toHaveBeenCalledTimes(1);
+    const [text, attachments] = mocks.onQueue.mock.calls[0] as [
+      string,
+      readonly PromptAttachment[],
+    ];
+    expect(text).toBe("");
+    expect(attachments.map((attachment) => attachment.mimeType)).toEqual(["image/png"]);
+  });
+
+  it("disables queue again once the last picked image is removed", async () => {
+    await renderComposer(vi.fn(), { ...queueOptions, imageOnlyAccepted: true });
+    await pickImage();
+    await act(async () => {
+      button('button[aria-label^="Remove attached image"]').click();
+    });
     expect(queueButton().disabled).toBe(true);
   });
 });
