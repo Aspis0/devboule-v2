@@ -3,6 +3,7 @@ import { Component, type ReactNode, useEffect, useRef, useState } from "react";
 import { daemonDiagnostics } from "../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import { ErrorText } from "../../components/ErrorText";
+import { SettingsAdvanced, SettingsRow, SettingsSection } from "./rows";
 import type { DaemonDiagnostics } from "../../types/ipc";
 import "./diagnostics.css";
 
@@ -186,24 +187,38 @@ interface RecordSectionProps {
 function RecordSection({ title, record }: RecordSectionProps) {
   const entries = sortedEntries(record);
   return (
-    <section className="diagnostics-card diagnostics-section">
-      <h3 className="diagnostics-card-title">{title}</h3>
+    <SettingsSection label={title}>
       {entries.length === 0 ? (
-        // A blank card in a diagnostics panel reads as "there is no problem".
-        // When a section carries nothing the frontend recognises — the most
-        // likely symptom of a wire-shape mismatch — it must say so.
-        <p className="diagnostics-section-empty">(no data for this section)</p>
+        // A blank section reads as "there is no problem". When a section carries
+        // nothing the frontend recognises — the most likely symptom of a
+        // wire-shape mismatch — it must say so.
+        <p className="settings-status">(no data for this section)</p>
       ) : (
-        <dl className="diagnostics-rows">
-          {entries.map(([key, value]) => (
-            <div className="diagnostics-row" key={key}>
-              <dt>{humanizeKey(key)}</dt>
-              <dd>{formatValue(value)}</dd>
-            </div>
-          ))}
-        </dl>
+        entries.map(([key, value]) => (
+          <SettingsRow
+            key={key}
+            title={humanizeKey(key)}
+            control={<span>{formatValue(value)}</span>}
+          />
+        ))
       )}
-    </section>
+    </SettingsSection>
+  );
+}
+
+function ProviderRow({ row, index }: { row: unknown; index: number }) {
+  const entries = sortedEntries(row);
+  const name = entries.find(([key]) => key === "id" || key === "name");
+  const fields = entries.filter((entry) => entry !== name);
+  return (
+    <SettingsRow
+      title={name === undefined ? `Provider ${index + 1}` : formatValue(name[1])}
+      control={
+        <span>
+          {fields.map(([key, value]) => `${humanizeKey(key)} ${formatValue(value)}`).join(" · ")}
+        </span>
+      }
+    />
   );
 }
 
@@ -211,8 +226,6 @@ interface DiagnosticsErrorBoundaryProps {
   children: ReactNode;
 }
 
-// Kept beside the Copy button, not as a page heading: the shell titles the
-// page now, but the redaction reassurance belongs with the action it guards.
 const SAFETY_NOTE =
   "This report is numbers and versions about the app itself. It is already " +
   "redacted by the daemon: no secrets, no conversation content, no session " +
@@ -238,19 +251,13 @@ export class DiagnosticsErrorBoundary extends Component<
     if (this.state.error !== null) {
       return (
         <div id="settings-panel-diagnostics">
-          <section className="diagnostics-card diagnostics-error" role="alert">
-            <h3 className="diagnostics-card-title">Could not render the diagnostics</h3>
-            <p>
-              <ErrorText
-                sentence={errorSentence(this.state.error).sentence}
-                detail={errorSentence(this.state.error).detail}
-                id="diagnostics-boundary-error"
-              />
-            </p>
-            <p>
-              The diagnostics response was not understood, but the rest of the app is still
-              available.
-            </p>
+          <div role="alert">
+            <p className="settings-status">Could not render the diagnostics.</p>
+            <ErrorText
+              sentence={errorSentence(this.state.error).sentence}
+              detail={errorSentence(this.state.error).detail}
+              id="diagnostics-boundary-error"
+            />
             <button
               type="button"
               className="diagnostics-boundary-retry diagnostics-retry"
@@ -258,7 +265,7 @@ export class DiagnosticsErrorBoundary extends Component<
             >
               Try again
             </button>
-          </section>
+          </div>
         </div>
       );
     }
@@ -324,20 +331,13 @@ function DiagnosticsPanelContent() {
   if (error !== null) {
     return (
       <div id="settings-panel-diagnostics">
-        <section className="diagnostics-card diagnostics-error" role="alert">
-          <h3 className="diagnostics-card-title">Could not load the diagnostics</h3>
-          <p>
-            <ErrorText
-              sentence={error.sentence}
-              detail={error.detail}
-              id="diagnostics-load-error"
-            />
-          </p>
-          <p>The daemon may not be answering right now — try again once it recovers.</p>
+        <div role="alert">
+          <p className="settings-status">Could not load the diagnostics.</p>
+          <ErrorText sentence={error.sentence} detail={error.detail} id="diagnostics-load-error" />
           <button type="button" className="diagnostics-retry" onClick={retry}>
             Try again
           </button>
-        </section>
+        </div>
       </div>
     );
   }
@@ -345,8 +345,7 @@ function DiagnosticsPanelContent() {
   if (report === null) {
     return (
       <div id="settings-panel-diagnostics">
-        <p className="diagnostics-loading">Loading the diagnostics…</p>
-        <p className="diagnostics-note">{SAFETY_NOTE}</p>
+        <p className="settings-status">Loading the diagnostics…</p>
       </div>
     );
   }
@@ -354,7 +353,7 @@ function DiagnosticsPanelContent() {
   if (isReportEmpty(report)) {
     return (
       <div id="settings-panel-diagnostics">
-        <p className="diagnostics-empty">The daemon answered, but sent no diagnostics data.</p>
+        <p className="settings-status">The daemon answered, but sent no diagnostics data.</p>
       </div>
     );
   }
@@ -365,45 +364,42 @@ function DiagnosticsPanelContent() {
 
   return (
     <div id="settings-panel-diagnostics">
-      <div className="diagnostics-actions">
-        <button type="button" className="diagnostics-copy" onClick={() => void copyReport()}>
-          Copy diagnostics
-        </button>
-        {copyState === "copied" ? <span className="diagnostics-copy-note">Copied.</span> : null}
-        {/* The report below stays available for manual copying when clipboard access fails. */}
-        {copyState === "failed" ? (
-          <span className="diagnostics-copy-note diagnostics-copy-failed">
-            Copying failed — select the text below and copy it manually.
-          </span>
-        ) : null}
-      </div>
-      <p className="diagnostics-note">{SAFETY_NOTE}</p>
+      <SettingsRow
+        title="Report"
+        control={
+          <div className="settings-choices">
+            <button
+              type="button"
+              className="diagnostics-copy settings-device-action"
+              onClick={() => void copyReport()}
+            >
+              Copy
+            </button>
+            {copyState === "copied" ? <span className="diagnostics-copy-note">Copied.</span> : null}
+          </div>
+        }
+      />
+      {copyState === "failed" ? (
+        <p className="settings-status diagnostics-copy-failed">
+          Copying failed — open Advanced and copy the text manually.
+        </p>
+      ) : null}
       <RecordSection title="Daemon" record={source.daemon} />
       <RecordSection title="Health" record={health} />
       <RecordSection title="Journal" record={journal} />
       <RecordSection title="Sessions" record={source.sessions} />
       {providers.length > 0 ? (
-        <section className="diagnostics-card diagnostics-section">
-          <h3 className="diagnostics-card-title">Providers</h3>
-          <ul className="diagnostics-providers">
-            {providers.map((row, index) => {
-              const entries = sortedEntries(row);
-              return (
-                <li key={index}>
-                  {entries.map(([key, value]) => (
-                    <span className="diagnostics-provider-field" key={key}>
-                      <span className="diagnostics-provider-key">{humanizeKey(key)}</span>{" "}
-                      {formatValue(value)}
-                    </span>
-                  ))}
-                </li>
-              );
-            })}
-          </ul>
-        </section>
+        <SettingsSection label="Providers">
+          {providers.map((row, index) => (
+            <ProviderRow key={index} row={row} index={index} />
+          ))}
+        </SettingsSection>
       ) : null}
       <RecordSection title="Environment" record={source.environment} />
-      <pre className="diagnostics-text">{formatDiagnostics(report)}</pre>
+      <SettingsAdvanced>
+        <p>{SAFETY_NOTE}</p>
+        <pre className="diagnostics-text">{formatDiagnostics(report)}</pre>
+      </SettingsAdvanced>
     </div>
   );
 }

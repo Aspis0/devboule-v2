@@ -192,7 +192,7 @@ describe("Settings static contracts", () => {
       ],
       ["profiles.css", []],
       ["devices.css", [".dev-fingerprint", ".dev-pair-code", ".dev-typed-input"]],
-      ["diagnostics.css", [".retention-limit-input", ".diagnostics-row dd"]],
+      ["diagnostics.css", [".retention-limit-input"]],
     ]);
     for (const sheet of sheets) {
       expect(
@@ -202,7 +202,7 @@ describe("Settings static contracts", () => {
     }
   });
 
-  it("gives the profiles, appearance, layout, editing, notifications, about, usage, projects, shortcuts and saved logins pages a title and no paragraph", () => {
+  it("gives the profiles, appearance, layout, editing, notifications, about, usage, projects, shortcuts, saved logins and diagnostics pages a title and no paragraph", () => {
     const pages = SETTINGS_MENU.flatMap((group) => group.pages);
     const introOf = (id: string) => pages.find((page) => page.id === id)?.intro ?? "missing";
     expect(introOf("profiles")).toBe("");
@@ -215,6 +215,7 @@ describe("Settings static contracts", () => {
     expect(introOf("projects")).toBe("");
     expect(introOf("shortcuts")).toBe("");
     expect(introOf("saved-logins")).toBe("");
+    expect(introOf("diagnostics")).toBe("");
     const providers = pages.find((page) => page.id === "providers")?.intro ?? "";
     expect(providers).toContain("An executable is not a login");
   });

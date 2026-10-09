@@ -154,7 +154,7 @@ describe("diagnostics panel", () => {
     await act(async () => renderPanel());
     await act(async () => undefined);
 
-    const sections = [...container.querySelectorAll(".diagnostics-section")];
+    const sections = [...container.querySelectorAll("[data-settings-section]")];
     const journal = sections.find((section) => section.textContent?.includes("Journal"));
     if (journal === undefined) throw new Error("journal section did not render");
     expect(journal.textContent).toContain("accepted frames");
@@ -299,17 +299,10 @@ describe("diagnostics panel", () => {
     await act(async () => renderPanel());
     await act(async () => undefined);
 
-    const sections = [
-      ...container.querySelectorAll("section.diagnostics-card.diagnostics-section"),
-    ];
-    expect(sections.map((section) => section.querySelector("h3")?.textContent)).toEqual([
-      "Daemon",
-      "Health",
-      "Journal",
-      "Sessions",
-      "Providers",
-      "Environment",
-    ]);
+    const sections = [...container.querySelectorAll("[data-settings-section]")];
+    expect(
+      sections.map((section) => section.querySelector(".settings-section-label")?.textContent),
+    ).toEqual(["Daemon", "Health", "Journal", "Sessions", "Providers", "Environment"]);
   });
 
   it("gives the boundary retry the same pill as the load retry", async () => {

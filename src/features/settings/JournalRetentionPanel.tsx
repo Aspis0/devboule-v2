@@ -6,6 +6,7 @@ import { formatCount } from "../../lib/format";
 import { isImeComposition } from "../../lib/imeComposition";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import { ErrorText } from "../../components/ErrorText";
+import { SettingsAdvanced, SettingsRow, SettingsSection } from "./rows";
 import "./diagnostics.css";
 
 const RETENTION_FIELDS = [
@@ -110,10 +111,6 @@ export function JournalRetentionPanel() {
 
   return (
     <div className="retention-panel">
-      <h3 className="settings-subheading">Transcript history</h3>
-      <p className="retention-help">
-        See how much journal history is saved and choose its retention limits.
-      </p>
       {error && (
         <div className="settings-retention-alert" role="alert">
           <ErrorText sentence={error.sentence} detail={error.detail} id="journal-retention-error" />
@@ -121,88 +118,99 @@ export function JournalRetentionPanel() {
       )}
       {usage && (
         <div className="retention-summary" aria-label="Transcript history usage">
-          <div className="settings-card settings-value-row">
-            <span>Total saved bytes</span>
-            <span className="settings-card-value">{formatCount(usage.totalBytes)} bytes</span>
-          </div>
-          <div className="settings-card settings-value-row">
-            <span>Saved sessions</span>
-            <span className="settings-card-value">{formatCount(usage.sessionCount)}</span>
-          </div>
-          {usage.unreclaimable.bytesOver > 0 && (
-            <div className="settings-card settings-value-row">
-              <span>Bytes over an unreclaimable limit</span>
-              <span className="settings-card-value settings-value-danger">
-                {formatCount(usage.unreclaimable.bytesOver)} bytes
-              </span>
-            </div>
-          )}
-          {usage.unreclaimable.sessionsOver > 0 && (
-            <div className="settings-card settings-value-row">
-              <span>Sessions over an unreclaimable limit</span>
-              <span className="settings-card-value settings-value-danger">
-                {formatCount(usage.unreclaimable.sessionsOver)}
-              </span>
-            </div>
-          )}
-          {usage.unreclaimable.agedOut > 0 && (
-            <div className="settings-card settings-value-row">
-              <span>Sessions past an unreclaimable age</span>
-              <span className="settings-card-value settings-value-danger">
-                {formatCount(usage.unreclaimable.agedOut)}
-              </span>
-            </div>
-          )}
-          {blockedReasons.length > 0 && (
-            <p className="retention-blocked-copy">
-              Retention is blocked because {blockedReasons.join(" and ")}.
-            </p>
-          )}
+          <SettingsSection label="Transcript history">
+            <SettingsRow
+              title="Total saved bytes"
+              control={<span>{formatCount(usage.totalBytes)} bytes</span>}
+            />
+            <SettingsRow
+              title="Saved sessions"
+              control={<span>{formatCount(usage.sessionCount)}</span>}
+            />
+            {usage.unreclaimable.bytesOver > 0 && (
+              <SettingsRow
+                title="Bytes over an unreclaimable limit"
+                control={
+                  <span className="settings-value-danger">
+                    {formatCount(usage.unreclaimable.bytesOver)} bytes
+                  </span>
+                }
+              />
+            )}
+            {usage.unreclaimable.sessionsOver > 0 && (
+              <SettingsRow
+                title="Sessions over an unreclaimable limit"
+                control={
+                  <span className="settings-value-danger">
+                    {formatCount(usage.unreclaimable.sessionsOver)}
+                  </span>
+                }
+              />
+            )}
+            {usage.unreclaimable.agedOut > 0 && (
+              <SettingsRow
+                title="Sessions past an unreclaimable age"
+                control={
+                  <span className="settings-value-danger">
+                    {formatCount(usage.unreclaimable.agedOut)}
+                  </span>
+                }
+              />
+            )}
+            {blockedReasons.length > 0 && (
+              <p className="settings-status">
+                Retention is blocked because {blockedReasons.join(" and ")}.
+              </p>
+            )}
+          </SettingsSection>
         </div>
       )}
       {retention && (
         <div className="retention-limits">
-          <div className="settings-subheading">Retention limits</div>
-          <p className="retention-help">
-            Enter 0 for no limit. An empty or invalid field is rejected; it never silently disables
-            a limit.
-          </p>
-          <p className="retention-help">
-            Lowering a limit takes effect immediately and can delete history.
-          </p>
-          {RETENTION_FIELDS.map((field) => (
-            <label className="settings-card retention-limit-row" key={field}>
-              <span className="settings-card-copy">
-                <span className="settings-card-title">{FIELD_LABELS[field]}</span>
-                <span className="settings-card-meta">{retention[field].source}</span>
-              </span>
-              <input
-                aria-label={FIELD_LABELS[field]}
-                className="retention-limit-input"
-                inputMode="numeric"
-                min="0"
-                step="1"
-                type="number"
-                value={values[field]}
-                onBlur={() => {
-                  focusedField.current = null;
-                  commitField(field, values[field]);
-                }}
-                onChange={(event) => handleChange(field, event.currentTarget.value)}
-                onFocus={() => {
-                  focusedField.current = field;
-                }}
-                onKeyDown={(event) => {
-                  if (isImeComposition(event.nativeEvent)) return;
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    commitField(field, values[field]);
-                    event.currentTarget.blur();
-                  }
-                }}
+          <SettingsSection label="Retention limits">
+            {RETENTION_FIELDS.map((field) => (
+              <SettingsRow
+                key={field}
+                title={FIELD_LABELS[field]}
+                description={retention[field].source}
+                control={
+                  <input
+                    aria-label={FIELD_LABELS[field]}
+                    className="retention-limit-input"
+                    inputMode="numeric"
+                    min="0"
+                    step="1"
+                    type="number"
+                    value={values[field]}
+                    onBlur={() => {
+                      focusedField.current = null;
+                      commitField(field, values[field]);
+                    }}
+                    onChange={(event) => handleChange(field, event.currentTarget.value)}
+                    onFocus={() => {
+                      focusedField.current = field;
+                    }}
+                    onKeyDown={(event) => {
+                      if (isImeComposition(event.nativeEvent)) return;
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        commitField(field, values[field]);
+                        event.currentTarget.blur();
+                      }
+                    }}
+                  />
+                }
               />
-            </label>
-          ))}
+            ))}
+          </SettingsSection>
+          <SettingsAdvanced>
+            <p>See how much journal history is saved and choose its retention limits.</p>
+            <p>
+              Enter 0 for no limit. An empty or invalid field is rejected; it never silently
+              disables a limit.
+            </p>
+            <p>Lowering a limit takes effect immediately and can delete history.</p>
+          </SettingsAdvanced>
         </div>
       )}
     </div>

@@ -66,7 +66,7 @@ export const SETTINGS_MENU: readonly SettingsMenuGroup[] = [
       {
         id: "diagnostics",
         label: "Diagnostics",
-        intro: "Numbers and versions about the app itself, plus the transcript history it keeps.",
+        intro: "",
       },
       {
         id: "saved-logins",
