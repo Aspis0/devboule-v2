@@ -35,6 +35,31 @@
   gap: 8px;
 }
 
+.settings-choices {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 14px;
+}
+
+.settings-choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.settings-choice input {
+  accent-color: var(--control-on);
+}
+
+.settings-status {
+  margin: 0;
+  padding: 2px 0 8px;
+  font-size: 12px;
+  opacity: 0.72;
+}
+
 .settings-section {
   display: flex;
   flex-direction: column;

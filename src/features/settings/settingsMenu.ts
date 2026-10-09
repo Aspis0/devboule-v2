@@ -19,7 +19,7 @@ export type SettingsPageId =
 export interface SettingsMenuPage {
   id: SettingsPageId;
   label: string;
-  /** One line saying what the page holds. Every page carries one. */
+  /** Empty when the page needs no paragraph under its title; the rows say the rest. */
   intro: string;
   /**
    * Set for pages with no function yet: the page renders the quiet
@@ -42,7 +42,7 @@ export const SETTINGS_MENU: readonly SettingsMenuGroup[] = [
   {
     label: "This machine",
     pages: [
-      { id: "appearance", label: "Appearance", intro: "Light or dark theme for the app." },
+      { id: "appearance", label: "Appearance", intro: "" },
       {
         id: "layout",
         label: "Layout",

@@ -202,11 +202,12 @@ describe("Settings static contracts", () => {
     }
   });
 
-  it("gives the profiles page a title and no paragraph", () => {
+  it("gives the profiles and appearance pages a title and no paragraph", () => {
     const pages = SETTINGS_MENU.flatMap((group) => group.pages);
-    const profiles = pages.find((page) => page.id === "profiles")?.intro ?? "missing";
+    const introOf = (id: string) => pages.find((page) => page.id === id)?.intro ?? "missing";
+    expect(introOf("profiles")).toBe("");
+    expect(introOf("appearance")).toBe("");
     const providers = pages.find((page) => page.id === "providers")?.intro ?? "";
-    expect(profiles).toBe("");
     expect(providers).toContain("An executable is not a login");
   });
 });

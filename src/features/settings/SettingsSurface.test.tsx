@@ -521,7 +521,7 @@ describe("Settings menu shell", () => {
   });
 
   it.each([
-    ["appearance", "Appearance", ".machine-card"],
+    ["appearance", "Appearance", "[data-settings-row]"],
     ["providers", "Providers", "#settings-panel-providers"],
     ["profiles", "Agent profiles", "#settings-panel-agents"],
     ["usage", "Usage", "#settings-panel-usage"],

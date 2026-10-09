@@ -116,7 +116,7 @@ describe("the Appearance row", () => {
     expect(inputFor(current, "dark").checked).toBe(true);
     expect(document.documentElement.dataset.theme).toBe("dark");
     const note = current.querySelector('[role="status"]');
-    expect(note?.textContent).toContain("could not be saved");
+    expect(note?.textContent).toContain("Not saved");
   });
 
   it("a saved choice shows no failure note", () => {
@@ -165,11 +165,11 @@ describe("the Appearance row", () => {
 });
 
 describe("the Appearance radios (static CSS contract)", () => {
-  const css = readFileSync(resolve(import.meta.dirname, "general.css"), "utf8");
-  const block = /\.machine-choice input\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  const css = readFileSync(resolve(import.meta.dirname, "rows.css"), "utf8");
+  const block = /\.settings-choice input\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
 
   it("draw in the neutral on colour, not the OS default", () => {
-    expect(block, "a .machine-choice input rule is missing").not.toBe("");
+    expect(block, "a .settings-choice input rule is missing").not.toBe("");
     expect(block).toContain("accent-color: var(--control-on)");
   });
 });
