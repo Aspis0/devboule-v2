@@ -80,6 +80,16 @@ mod platform {
             Self::create(Scope::Attached { root })
         }
 
+        /// A terminal's job by opener: an agent's terminal owns the whole job so
+        /// nothing it started survives the close; a human's only records membership.
+        pub fn terminal(root: u32, created_by: Option<&str>) -> io::Result<Self> {
+            if created_by.is_some() {
+                Self::new()
+            } else {
+                Self::attached(root)
+            }
+        }
+
         fn create(scope: Scope) -> io::Result<Self> {
             let handle = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
             if handle.is_null() {

@@ -102,6 +102,7 @@ pub fn spawn_session(
     // which is why none is applied here. The initial size rides the same way:
     // the family with a grid opens the PTY at it, the others ignore it.
     let workspace_id = metadata.workspace_id.clone();
+    let created_by = metadata.created_by.clone();
     let spawned = provider::catalog_registry()
         .provider_for_kind(&metadata.kind)
         .spawn(
@@ -111,6 +112,7 @@ pub fn spawn_session(
             delivery.clone(),
             workspace_id.as_deref(),
             initial_size,
+            created_by.as_deref(),
         )?;
     start_spawned_session(
         state,

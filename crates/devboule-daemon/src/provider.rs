@@ -166,7 +166,10 @@ pub(crate) trait Provider: Send + Sync {
     /// step — which is why the mapping lives inside the impls, not at the
     /// shared call site. `initial_size` is the create frame's optional
     /// geometry, already judged at the wire boundary; the family with a grid
-    /// opens the PTY at it, the families without one ignore it.
+    /// opens the PTY at it, the families without one ignore it. `created_by` is the
+    /// birth link: `Some` when an agent opened the session, `None` for a human.
+    /// Only the terminal road reads it.
+    #[allow(clippy::too_many_arguments)]
     fn spawn(
         &self,
         state: &Arc<ServerState>,
@@ -175,6 +178,7 @@ pub(crate) trait Provider: Send + Sync {
         delivery: ProfileDelivery,
         workspace_id: Option<&str>,
         initial_size: Option<(u16, u16)>,
+        created_by: Option<&str>,
     ) -> Result<SpawnedSession, WireError>;
 
     /// The provider id stamped on the session record. `named` is the resolved
@@ -406,6 +410,7 @@ impl Provider for AcpProvider {
         delivery: ProfileDelivery,
         workspace_id: Option<&str>,
         _initial_size: Option<(u16, u16)>,
+        _created_by: Option<&str>,
     ) -> Result<SpawnedSession, WireError> {
         let workspace_path = command.cwd.clone();
         super::acp_client::spawn_process(state, command, mcp, delivery).map_err(|error| {
@@ -575,6 +580,7 @@ impl Provider for ClaudeProvider {
         delivery: ProfileDelivery,
         workspace_id: Option<&str>,
         _initial_size: Option<(u16, u16)>,
+        _created_by: Option<&str>,
     ) -> Result<SpawnedSession, WireError> {
         let workspace_path = command.cwd.clone();
         super::claude_client::spawn_process(state, command, mcp, delivery).map_err(|error| {
@@ -732,6 +738,7 @@ impl Provider for PiProvider {
         delivery: ProfileDelivery,
         workspace_id: Option<&str>,
         _initial_size: Option<(u16, u16)>,
+        _created_by: Option<&str>,
     ) -> Result<SpawnedSession, WireError> {
         let workspace_path = command.cwd.clone();
         super::pi_client::spawn_process(state, command, mcp, delivery).map_err(|error| {
@@ -884,6 +891,7 @@ impl Provider for CodexProvider {
         delivery: ProfileDelivery,
         workspace_id: Option<&str>,
         _initial_size: Option<(u16, u16)>,
+        _created_by: Option<&str>,
     ) -> Result<SpawnedSession, WireError> {
         let workspace_path = command.cwd.clone();
         super::codex_client::spawn_process(state, command, mcp, delivery).map_err(|error| {
@@ -1028,11 +1036,12 @@ impl Provider for TerminalProvider {
         _delivery: ProfileDelivery,
         workspace_id: Option<&str>,
         initial_size: Option<(u16, u16)>,
+        created_by: Option<&str>,
     ) -> Result<SpawnedSession, WireError> {
         // The PTY road, moved verbatim out of `spawn_session`'s fallthrough
         // (a move, not a rewrite): the same openpty, the same Windows job
         // containment, the same writer/reader wiring, the same teardowns.
-        open_pty_session(command, workspace_id, initial_size)
+        open_pty_session(command, workspace_id, initial_size, created_by)
     }
 
     fn stamp_session_provider(
@@ -1148,6 +1157,7 @@ fn open_pty_session(
     command: super::PtyCommand,
     workspace_id: Option<&str>,
     initial_size: Option<(u16, u16)>,
+    created_by: Option<&str>,
 ) -> Result<SpawnedSession, WireError> {
     // The one place the terminal road's first grid is decided: the create
     // frame's judged size when the client measured one, the historical
@@ -1194,9 +1204,8 @@ fn open_pty_session(
     // restating this.
     #[cfg(windows)]
     let (process_job, os_handle) = {
-        // The terminal's job records membership but kills nothing on close: a
-        // process the shell detached must outlive the terminal. A stop kills
-        // the tree still attached to this root instead.
+        // An agent's terminal owns the whole job so nothing it started
+        // survives the close; a human's only records membership.
         let Some(root_pid) = child.process_id() else {
             super::terminate_spawned_child(pair, child);
             return Err(WireError::new(
@@ -1204,7 +1213,7 @@ fn open_pty_session(
                 "The terminal process has no pid.",
             ));
         };
-        let process_job = match JobObject::attached(root_pid) {
+        let process_job = match JobObject::terminal(root_pid, created_by) {
             Ok(process_job) => process_job,
             Err(error) => {
                 super::terminate_spawned_child(pair, child);
@@ -1241,6 +1250,8 @@ fn open_pty_session(
         (process_job, os_handle)
     };
 
+    #[cfg(not(windows))]
+    let _ = created_by;
     #[cfg(not(windows))]
     let process_job = match child.process_id() {
         // portable-pty's Unix spawn calls setsid, so the child already leads

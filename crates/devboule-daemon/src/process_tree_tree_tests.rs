@@ -113,6 +113,23 @@ fn whole_job_kill_takes_a_detached_child() {
 }
 
 #[test]
+fn agent_terminal_kill_takes_a_child_its_shell_detached() {
+    // An agent's terminal owns the whole job, so a detached child dies with it.
+    let mut root = spawn_cmd(&["start", "/b", "ping", "-n", "60", "127.0.0.1"]);
+    let root_pid = root.id();
+    let job = JobObject::terminal(root_pid, Some("agent-session")).expect("agent terminal job");
+    job.assign(root.as_raw_handle()).expect("assign root");
+    root.wait().expect("reap root");
+    let ping = wait_for_ping(&job);
+    let _ping_guard = KillOnDrop::of(ping);
+
+    let tree = job.capture_tree();
+    job.terminate_tree_and_wait(&tree, DEADLINE)
+        .expect("agent terminal tree ends");
+    wait_for_members(&job, |members| !members.contains(&ping));
+}
+
+#[test]
 fn attached_stop_spares_a_child_its_root_detached() {
     let mut root = spawn_cmd(&["start", "/b", "ping", "-n", "60", "127.0.0.1"]);
     let job = JobObject::attached(root.id()).expect("attached job");
