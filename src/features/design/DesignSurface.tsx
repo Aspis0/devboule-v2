@@ -1387,12 +1387,16 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     .flatMap((project) => project.workspaces)
     .find((workspace) => workspace.id === selectedWorkspaceId);
   const attachedFolderPath = agentSessionRecord?.cwd ?? attachedFolder?.path ?? null;
+  // The daemon refuses a session with no workspace, so no generation may start
+  // without a folder: the composer says why, and every road into a run waits.
+  const folderMissing = selectedWorkspaceId === null;
 
   const startGeneration = useCallback(
     (prompt: string) => {
       if (
         busy ||
         daemonGone ||
+        folderMissing ||
         generate === undefined ||
         generationInFlightRef.current ||
         historyOpenInFlightRef.current
@@ -1621,6 +1625,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       document.contextPrefix,
       disposeHistoryOpen,
       document.workingMessage,
+      folderMissing,
       generate,
       grounded,
       handleAttachmentFeedback,
@@ -1866,6 +1871,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
 
         <DesignAssistant
           canGenerate={canGenerate}
+          folderMissing={folderMissing}
           contextPrefix={document.contextPrefix}
           generationLabel={generationLabel}
           contextLayerName={composerContextLayerName}

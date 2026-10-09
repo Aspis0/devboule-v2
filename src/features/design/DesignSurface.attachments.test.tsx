@@ -282,12 +282,26 @@ async function fillDraft(container: HTMLDivElement, prompt: string): Promise<voi
   });
 }
 
+// A registered folder: a run with none attached waits in the composer.
+const DESIGN_FOLDER_PROJECT = {
+  id: "project-design-folder",
+  name: "Design folder",
+  path: "C:/design-folder",
+} as const;
+const DESIGN_FOLDER = {
+  id: "workspace-design-folder",
+  projectId: DESIGN_FOLDER_PROJECT.id,
+  title: "main workspace",
+  isolation: "local",
+  path: "C:/design-folder",
+} as const;
+
 beforeEach(() => {
   useAppStore.setState({ plugins: null, installing: null, installError: null });
   settingsMocks.load.mockResolvedValue({ version: 1, mode: "all", enabledSlugs: [] });
   settingsMocks.loadProvider.mockResolvedValue(null);
   settingsMocks.loadStoredProvider.mockResolvedValue(null);
-  settingsMocks.loadWorkspace.mockResolvedValue(null);
+  settingsMocks.loadWorkspace.mockResolvedValue(DESIGN_FOLDER.id);
   settingsMocks.loadStoredWorkspace.mockResolvedValue(null);
   settingsMocks.loadOutput.mockResolvedValue("page");
   providerMocks.daemonStatus.mockResolvedValue({
@@ -300,8 +314,8 @@ beforeEach(() => {
     message: null,
   });
   providerMocks.list.mockResolvedValue({ providers: [], unreadableDirs: 0 });
-  providerMocks.projectsList.mockResolvedValue([]);
-  providerMocks.workspacesList.mockResolvedValue([]);
+  providerMocks.projectsList.mockResolvedValue([DESIGN_FOLDER_PROJECT]);
+  providerMocks.workspacesList.mockResolvedValue([DESIGN_FOLDER]);
 });
 
 afterEach(() => {

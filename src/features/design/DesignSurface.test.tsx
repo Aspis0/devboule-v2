@@ -465,7 +465,8 @@ beforeEach(() => {
   skillSettingsMocks.loadProvider.mockResolvedValue(null);
   skillSettingsMocks.loadStoredProvider.mockResolvedValue(null);
   skillSettingsMocks.saveProvider.mockResolvedValue(true);
-  skillSettingsMocks.loadWorkspace.mockResolvedValue(null);
+  // A folder is attached by default: a run with none waits (see the composer tests).
+  skillSettingsMocks.loadWorkspace.mockResolvedValue(WORKSPACE.id);
   skillSettingsMocks.loadOutput.mockResolvedValue("page");
   skillSettingsMocks.saveOutput.mockResolvedValue(true);
   skillSettingsMocks.loadStoredWorkspace.mockResolvedValue(null);
@@ -2473,6 +2474,7 @@ describe("DesignSurface host capabilities", () => {
   });
 
   it("keeps folder selection available once a session exists", async () => {
+    skillSettingsMocks.loadWorkspace.mockResolvedValueOnce(null);
     const { session } = fakeAgentSession(agentState(null));
     const { container, root } = await renderDesign(
       createHost({
@@ -2716,7 +2718,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate.mock.calls[0]?.[2]).toEqual({
       skillMode: "all",
       grounded: false,
-      folderPath: null,
+      folderPath: WORKSPACE.path,
       outputMode: "page",
       attachments: [],
       onAttachmentFeedback: expect.any(Function),
@@ -3297,7 +3299,7 @@ describe("DesignSurface host capabilities", () => {
       {
         skillMode: "all",
         grounded: true,
-        folderPath: null,
+        folderPath: WORKSPACE.path,
         outputMode: "page",
         attachments: [],
         onAttachmentFeedback: expect.any(Function),
@@ -3320,7 +3322,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenCalledWith("Make the header quieter.", expect.any(AbortSignal), {
       skillMode: "all",
       grounded: true,
-      folderPath: null,
+      folderPath: WORKSPACE.path,
       outputMode: "page",
       attachments: [],
       onAttachmentFeedback: expect.any(Function),
@@ -3355,7 +3357,7 @@ describe("DesignSurface host capabilities", () => {
       {
         skillMode: "all",
         grounded: true,
-        folderPath: null,
+        folderPath: WORKSPACE.path,
         outputMode: "page",
         attachments: [],
         onAttachmentFeedback: expect.any(Function),
@@ -3550,7 +3552,7 @@ describe("DesignSurface host capabilities", () => {
       {
         skillMode: "all",
         grounded: true,
-        folderPath: null,
+        folderPath: WORKSPACE.path,
         outputMode: "page",
         attachments: [],
         onAttachmentFeedback: expect.any(Function),
@@ -3853,7 +3855,7 @@ describe("DesignSurface host capabilities", () => {
       {
         skillMode: "all",
         grounded: true,
-        folderPath: null,
+        folderPath: WORKSPACE.path,
         outputMode: "page",
         attachments: [],
         onAttachmentFeedback: expect.any(Function),
@@ -3893,7 +3895,7 @@ describe("DesignSurface host capabilities", () => {
       {
         skillMode: "all",
         grounded: true,
-        folderPath: null,
+        folderPath: WORKSPACE.path,
         outputMode: "page",
         attachments: [],
         onAttachmentFeedback: expect.any(Function),
@@ -4364,7 +4366,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate.mock.calls[0]?.[2]).toEqual({
       skillMode: "all",
       grounded: true,
-      folderPath: null,
+      folderPath: WORKSPACE.path,
       outputMode: "page",
       attachments: [],
       onAttachmentFeedback: expect.any(Function),
@@ -4513,7 +4515,7 @@ describe("DesignSurface host capabilities", () => {
       skillMode: "manual",
       skills: [selected.slug],
       grounded: true,
-      folderPath: null,
+      folderPath: WORKSPACE.path,
       outputMode: "page",
       attachments: [],
       onAttachmentFeedback: expect.any(Function),
@@ -4625,7 +4627,7 @@ describe("DesignSurface host capabilities", () => {
       skillMode: "manual",
       skills: [],
       grounded: true,
-      folderPath: null,
+      folderPath: WORKSPACE.path,
       outputMode: "page",
       attachments: [],
       onAttachmentFeedback: expect.any(Function),
@@ -4717,7 +4719,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate.mock.calls[0]?.[2]).toEqual({
       skillMode: "auto",
       grounded: true,
-      folderPath: null,
+      folderPath: WORKSPACE.path,
       outputMode: "page",
       attachments: [],
       onAttachmentFeedback: expect.any(Function),
@@ -4818,6 +4820,7 @@ describe("Design chrome, composer and folder attachment", () => {
   });
 
   it("says plainly when no folder is attached", async () => {
+    skillSettingsMocks.loadWorkspace.mockResolvedValueOnce(null);
     const { container, root } = await renderDesign(createHost());
     await act(settle);
 
@@ -4829,6 +4832,33 @@ describe("Design chrome, composer and folder attachment", () => {
       "Folder: none attached. Choose or attach a folder for this canvas.",
     );
     expect(trigger.textContent).toContain("none attached");
+    await act(async () => root.unmount());
+  });
+
+  it("waits for a folder: no generation without one, and the composer says why", async () => {
+    skillSettingsMocks.loadWorkspace.mockResolvedValueOnce(null);
+    // The daemon refuses a session with no workspace, so the composer may not
+    // offer a generation that would start one. Enter is the same road as the button.
+    const generate = vi.fn(() => new Promise<DesignGenerationResult>(() => undefined));
+    const { container, root } = await renderDesign(createHost({ generate }));
+    await act(settle);
+    await fillDraft(container, "Create the final card.");
+
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate button missing");
+    expect(send.disabled).toBe(true);
+    expect(send.getAttribute("aria-describedby")).toBe("design-no-folder-reason");
+    expect(container.querySelector("#design-no-folder-reason")?.textContent).toBe(
+      "No workspace is selected.",
+    );
+    const draft = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Describe a design change"]',
+    );
+    if (draft === null) throw new Error("Composer missing");
+    await act(async () => {
+      draft.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(generate).not.toHaveBeenCalled();
     await act(async () => root.unmount());
   });
 

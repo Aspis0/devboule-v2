@@ -336,7 +336,11 @@ beforeEach(() => {
   mocks.surfaceSettingsGet.mockReset();
   mocks.surfaceSettingsSet.mockReset();
 
-  mocks.surfaceSettingsGet.mockResolvedValue({ status: "absent" });
+  // A folder is attached by default: a run with none waits in the composer.
+  mocks.surfaceSettingsGet.mockResolvedValue({
+    status: "value",
+    value: { version: 1, mode: "all", enabledSlugs: [], workspaceId: WORKSPACE.id },
+  });
   mocks.surfaceSettingsSet.mockResolvedValue(undefined);
   // The H4 generate gate reads `state`; the default is a connected daemon.
   mocks.daemonStatus.mockResolvedValue({
@@ -2724,7 +2728,7 @@ describe("ACP design host", () => {
     await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(1));
     expect(mocks.projectsList).toHaveBeenCalled();
     expect(mocks.workspacesList).toHaveBeenCalledWith(PROJECT.id);
-    expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp", "grok");
+    expect(mocks.sessionCreate).toHaveBeenCalledWith(WORKSPACE.id, "acp", "grok");
 
     await act(async () => useAppStore.getState().selectSurface("workspace"));
     await settle();

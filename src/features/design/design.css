@@ -2001,6 +2001,12 @@
   opacity: 1;
 }
 
+.design-composer-reason {
+  margin: var(--space-4) 0 0;
+  color: var(--ink-soft);
+  font-size: var(--type-small);
+}
+
 .design-composer-footer {
   display: flex;
   min-width: 0;

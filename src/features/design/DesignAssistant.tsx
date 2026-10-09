@@ -49,11 +49,15 @@ import type { DesignSkillSelection } from "./designSettings";
  * the accessible name carry it, so hiding it from the layout does not hide it
  * from a screen reader.
  */
+/** Said by the composer when a run waits for a folder; the send button points at it. */
+export const NO_FOLDER_REASON_ID = "design-no-folder-reason";
 export const END_SESSION_EXPLANATION =
   "Ends this session and drops the agent's context for this surface.";
 
 interface AssistantProps extends DesignSkillViewProps {
   canGenerate: boolean;
+  /** No folder is attached: a run would start a session with no workspace, so it waits. */
+  folderMissing: boolean;
   contextPrefix: string;
   generationLabel: string;
   contextLayerName: string | null;
@@ -121,6 +125,7 @@ interface AssistantProps extends DesignSkillViewProps {
 
 export const DesignAssistant = memo(function DesignAssistant({
   canGenerate,
+  folderMissing,
   contextPrefix,
   generationLabel,
   contextLayerName,
@@ -349,7 +354,7 @@ export const DesignAssistant = memo(function DesignAssistant({
               title={daemonGone ? "The agent daemon is not connected." : "Visual check"}
               aria-label="Run visual check"
               onClick={onVisualCheck}
-              disabled={daemonGone}
+              disabled={daemonGone || folderMissing}
             >
               ◉
             </button>
@@ -517,12 +522,18 @@ export const DesignAssistant = memo(function DesignAssistant({
                 className="design-generate-button"
                 type="button"
                 onClick={onSend}
-                disabled={busy || daemonGone || !draft.trim()}
+                disabled={busy || daemonGone || folderMissing || !draft.trim()}
+                aria-describedby={folderMissing ? NO_FOLDER_REASON_ID : undefined}
                 title={daemonGone ? "The agent daemon is not connected." : undefined}
               >
                 {sendLabel}
               </button>
             </div>
+            {folderMissing ? (
+              <p className="design-composer-reason" id={NO_FOLDER_REASON_ID}>
+                No workspace is selected.
+              </p>
+            ) : null}
             {skillResultNotice ? (
               <div className="design-skill-result" role="status">
                 {skillResultNotice}
