@@ -107,6 +107,7 @@ mod peer_link;
 
 #[path = "server/peer_link_state.rs"]
 mod peer_link_state;
+mod remote_status;
 
 #[path = "server/peer_link_read.rs"]
 mod peer_link_read;

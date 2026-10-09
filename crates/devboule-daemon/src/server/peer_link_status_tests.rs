@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use devboule_protocol::{RemoteHostState, WorkspaceIsolation};
+use devboule_protocol::{DaemonMessage, RemoteHostState, RemoteHostStatus, WorkspaceIsolation};
 
 use super::harness::Harness;
 
@@ -151,12 +151,75 @@ fn a_pushed_workspace_revision_reaches_the_watcher() {
     }
 }
 
-/// The revision rule itself: a link's first number is its baseline, later ones
+/// The battery rule at the link: a burst of a hundred distinct statuses
+/// delivers one immediately and exactly one trailing value — the last — to
+/// every watcher, so a flapping host wakes them twice, not a hundred times,
+/// and the final state is still the one delivered last.
+#[test]
+fn a_status_burst_delivers_one_immediate_and_one_trailing_value() {
+    fn statuses(conn: &Arc<crate::session::ConnHandle>) -> Vec<RemoteHostStatus> {
+        conn.outbound
+            .pull_replies()
+            .into_iter()
+            .filter_map(|reply| match reply {
+                DaemonMessage::RemoteHostStatus {
+                    device_id,
+                    state,
+                    last_failure,
+                    revision,
+                } => Some(RemoteHostStatus {
+                    device_id,
+                    state,
+                    last_failure,
+                    revision,
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
+    let link = super::HostLink::new(
+        "b".to_string(),
+        Duration::from_secs(1),
+        Duration::from_secs(1),
+    );
+    let conn = remote_conn_handle(3, "b");
+    link.lease(Arc::clone(&conn));
+    let start = Instant::now();
+    for value in 0..100 {
+        link.publish(RemoteHostStatus {
+            device_id: "b".to_string(),
+            state: RemoteHostState::Online,
+            last_failure: Some(value.to_string()),
+            revision: None,
+        });
+    }
+
+    let immediate = statuses(&conn);
+    assert_eq!(immediate.len(), 1, "the burst delivers one status now");
+    assert_eq!(immediate[0].last_failure.as_deref(), Some("0"));
+
+    link.flush_status(start + Duration::from_millis(500));
+    assert!(
+        statuses(&conn).is_empty(),
+        "the trailing value waits out the window"
+    );
+    link.flush_status(start + Duration::from_millis(1100));
+    let trailing = statuses(&conn);
+    assert_eq!(trailing.len(), 1, "one trailing delivery, not ninety-nine");
+    assert_eq!(
+        trailing[0].last_failure.as_deref(),
+        Some("99"),
+        "the trailing value is the final state"
+    );
+}
+
+/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones
 /// must continue it, a replay or a poisoned value moves nothing, and a new
 /// transport re-baselines.
 #[test]
 fn a_pushed_revision_must_be_a_continuation() {
-    let link = super::HostLink::new("b".to_string(), Duration::from_secs(1));
+    let link = super::HostLink::new("b".to_string(), Duration::from_secs(1), Duration::ZERO);
     assert_eq!(link.remote_revision(), None);
     assert!(
         link.set_remote_revision(2),
@@ -248,7 +311,7 @@ fn a_workspace_change_is_pushed_only_to_dialects_that_know_it() {
 /// taken request is not replayed on the next loop.
 #[test]
 fn a_reconnect_request_is_taken_once() {
-    let link = super::HostLink::new("b".to_string(), Duration::from_secs(1));
+    let link = super::HostLink::new("b".to_string(), Duration::from_secs(1), Duration::ZERO);
     assert!(!link.take_reconnect_request());
     link.request_reconnect();
     assert!(link.take_reconnect_request());

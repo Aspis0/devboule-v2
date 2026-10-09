@@ -32,6 +32,7 @@ use super::{LinkTuning, PeerLinks};
 /// survive one.
 fn pacing() -> LinkTuning {
     LinkTuning {
+        status_window: Duration::ZERO,
         poll: Duration::from_millis(10),
         keepalive_every: Duration::from_millis(400),
         pong_timeout: Duration::from_secs(30),

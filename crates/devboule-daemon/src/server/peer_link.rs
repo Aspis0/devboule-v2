@@ -74,6 +74,10 @@ pub(crate) struct LinkTuning {
     pub(crate) backoff_min: Duration,
     pub(crate) backoff_max: Duration,
     pub(crate) idle_grace: Duration,
+    /// At most one status delivery per host per window, latest wins with a
+    /// trailing delivery. Production is one second; a test turns it down (or
+    /// off) so a sequence is observable without waiting.
+    pub(crate) status_window: Duration,
 }
 
 impl Default for LinkTuning {
@@ -86,6 +90,7 @@ impl Default for LinkTuning {
             backoff_min: Duration::from_secs(1),
             backoff_max: Duration::from_secs(60),
             idle_grace: LINK_IDLE_GRACE,
+            status_window: Duration::from_secs(1),
         }
     }
 }
@@ -151,7 +156,11 @@ impl PeerLinks {
                     if inner.links.len() >= MAX_HELD_LINKS {
                         return Err(());
                     }
-                    let link = HostLink::new(device_id.to_string(), self.tuning.idle_grace);
+                    let link = HostLink::new(
+                        device_id.to_string(),
+                        self.tuning.idle_grace,
+                        self.tuning.status_window,
+                    );
                     inner.links.insert(device_id.to_string(), Arc::clone(&link));
                     link
                 }
@@ -187,13 +196,16 @@ impl PeerLinks {
     /// so the online union can be read without a clock or a socket.
     #[cfg(test)]
     pub(crate) fn publish_for_test(&self, device_id: &str, state: RemoteHostState) {
-        let link =
-            {
-                let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-                Arc::clone(inner.links.entry(device_id.to_string()).or_insert_with(|| {
-                    HostLink::new(device_id.to_string(), self.tuning.idle_grace)
-                }))
-            };
+        let link = {
+            let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+            Arc::clone(inner.links.entry(device_id.to_string()).or_insert_with(|| {
+                HostLink::new(
+                    device_id.to_string(),
+                    self.tuning.idle_grace,
+                    self.tuning.status_window,
+                )
+            }))
+        };
         link.publish(RemoteHostStatus {
             device_id: device_id.to_string(),
             state,

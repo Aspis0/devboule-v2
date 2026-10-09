@@ -391,6 +391,35 @@ describe("remote hosts on the sidebar poll", () => {
     expect(remoteHostUnwatch).toHaveBeenCalledWith("device-one");
   });
 
+  it("merges a burst of statuses before it touches UI state", async () => {
+    await mount(<HostsProbe />);
+    const before = hostsSeen.length;
+    await act(async () => {
+      for (let change = 0; change < 100; change += 1) {
+        emit({ deviceId: "device-one", state: "connecting", lastFailure: `attempt ${change}` });
+      }
+    });
+    await flush();
+    const midBurst = hostsSeen.slice(before).map((hosts) => hosts.hosts.get("device-one")?.online);
+    const midChanges = midBurst.filter(
+      (value, index) => index > 0 && value !== midBurst[index - 1],
+    ).length;
+    expect(midChanges).toBeLessThanOrEqual(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(1100);
+    });
+    await act(async () => emit({ deviceId: "device-one", state: "online", revision: 1 }));
+    await flush();
+
+    const states = hostsSeen.slice(before).map((hosts) => hosts.hosts.get("device-one")?.online);
+    const changes = states.filter(
+      (value, index) => index > 0 && value !== states[index - 1],
+    ).length;
+    expect(changes).toBeLessThanOrEqual(2);
+    expect(latest().hosts.get("device-one")?.online).toBe(true);
+  });
+
   it("ignores a status naming a host the device list does not carry", async () => {
     await mount(<HostsProbe />);
     await act(async () => emit({ deviceId: "device-unknown", state: "online", revision: 9 }));

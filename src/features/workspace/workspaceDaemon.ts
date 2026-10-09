@@ -275,6 +275,13 @@ const watchPending = new Set<string>();
 const watchRetryAt = new Map<string, number>();
 const WATCH_RETRY_MS = 10_000;
 const loadingHosts = new Set<string>();
+// The host coalesces its status pushes at the source (at most one per second,
+// latest wins with a trailing delivery); this is the receiver half of the same
+// rule. A burst that still arrives faster is merged before it touches UI
+// state, and because the sender always delivers the trailing state, dropping
+// the middle ones cannot lose the final one.
+const statusAppliedAt = new Map<string, number>();
+const STATUS_COALESCE_MS = 1000;
 // A host whose rows changed while a load was already running. The running
 // load's snapshot is older than the change, so it is followed by exactly one
 // more read; without this the newer revision is lost and the snapshot stays
@@ -313,6 +320,28 @@ function remoteChannel(): RemoteHostStatusChannel | null {
 function handleRemoteStatus(status: RemoteHostStatus): void {
   const host = remoteHosts.hosts.get(status.deviceId);
   if (host === undefined) return;
+  // A terminal state is never delayed or merged: offline is what a person
+  // acts on, and a data change (a revision) is what reloads the rows either
+  // way. Everything else is merged into the window.
+  const terminal =
+    status.state === "offline" ||
+    status.state === "needs_pairing" ||
+    status.state === "identity_missing";
+  // The online edge is the reconnect signal the snapshot reload hangs on; it
+  // is never merged away, exactly like a terminal state.
+  const onlineEdge = status.state === "online" && !host.online;
+  const hasNewRevision =
+    status.revision !== undefined && status.revision !== null && status.revision !== host.revision;
+  const now = Date.now();
+  if (
+    !terminal &&
+    !onlineEdge &&
+    !hasNewRevision &&
+    now - (statusAppliedAt.get(status.deviceId) ?? 0) < STATUS_COALESCE_MS
+  ) {
+    return;
+  }
+  statusAppliedAt.set(status.deviceId, now);
   const online = status.state === "online";
   // Offline drops the baseline: a reconnect re-baselines the host's counter,
   // and a value this link saw before must not make the first push after the
@@ -449,6 +478,7 @@ function syncRemoteHosts(peers: readonly PeerRow[]): void {
     watchedHosts.delete(deviceId);
     watchPending.delete(deviceId);
     watchRetryAt.delete(deviceId);
+    statusAppliedAt.delete(deviceId);
     changed = true;
     void remoteHostUnwatch(deviceId).catch(() => undefined);
   }
@@ -504,6 +534,7 @@ function resetRemoteHosts(): void {
   watchedHosts.clear();
   watchPending.clear();
   watchRetryAt.clear();
+  statusAppliedAt.clear();
   loadingHosts.clear();
   dirtyHosts.clear();
   remoteGeneration += 1;

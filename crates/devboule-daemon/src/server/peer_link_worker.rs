@@ -73,6 +73,9 @@ fn run(
     let mut backoff = tuning.backoff_min;
     let mut reads = 0u64;
     loop {
+        // A parked trailing status goes out once its window has passed even
+        // when nothing else happens on the link.
+        link.flush_status(Instant::now());
         if state.is_shutting_down() {
             link.retire();
             return;

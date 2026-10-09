@@ -67,8 +67,13 @@ pub(crate) struct HostLink {
     /// come back.
     inflight: AtomicBool,
     /// The last status handed to the watchers, so an unchanged poll is not a
-    /// flood: one change, one push.
+    /// flood: one change, one push. Compared before the coalescer, so an
+    /// identical state is dropped rather than parked as a trailing duplicate.
     published: Mutex<Option<RemoteHostStatus>>,
+    /// One status delivery per window, latest wins with a trailing delivery:
+    /// a host that flaps cannot wake every watcher at flapping rate, and the
+    /// final state is still the one delivered last.
+    status_coalescer: Mutex<super::remote_status::StatusCoalescer<RemoteHostStatus>>,
     /// The newest workspace revision this host pushed, if any. Reloads are
     /// the app's call, and this is the number its status push carries.
     remote_revision: Mutex<Option<u64>>,
@@ -79,7 +84,11 @@ pub(crate) struct HostLink {
 }
 
 impl HostLink {
-    pub(crate) fn new(device_id: String, idle_grace: Duration) -> Arc<Self> {
+    pub(crate) fn new(
+        device_id: String,
+        idle_grace: Duration,
+        status_window: Duration,
+    ) -> Arc<Self> {
         Arc::new(Self {
             device_id,
             worker: Mutex::new(None),
@@ -89,6 +98,7 @@ impl HostLink {
             generation: AtomicU64::new(0),
             inflight: AtomicBool::new(false),
             published: Mutex::new(None),
+            status_coalescer: Mutex::new(super::remote_status::StatusCoalescer::new(status_window)),
             remote_revision: Mutex::new(None),
             reconnect_requested: AtomicBool::new(false),
             idle_grace,
@@ -314,6 +324,35 @@ impl HostLink {
             }
             *published = Some(status.clone());
         }
+        let due = {
+            let mut coalescer = self
+                .status_coalescer
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            coalescer.offer(status, Instant::now())
+        };
+        if let Some(status) = due {
+            self.deliver_status(status);
+        }
+    }
+
+    /// Deliver the trailing status once its window has passed. Called on the
+    /// worker's poll, so a parked final state is always sent even when no
+    /// further change arrives to flush it.
+    pub(crate) fn flush_status(&self, now: Instant) {
+        let due = {
+            let mut coalescer = self
+                .status_coalescer
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            coalescer.tick(now)
+        };
+        if let Some(status) = due {
+            self.deliver_status(status);
+        }
+    }
+
+    fn deliver_status(&self, status: RemoteHostStatus) {
         let leases = self
             .leases
             .lock()
