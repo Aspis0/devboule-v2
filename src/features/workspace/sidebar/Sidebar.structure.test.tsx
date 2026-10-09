@@ -233,6 +233,28 @@ describe("the sidebar's top actions", () => {
     expect(container.querySelector(".workspace-project")).not.toBeNull();
   });
 
+  it("anchors a multi-project New workspace on the stable top action, not the menu item", async () => {
+    const onNewWorkspace = vi.fn();
+    await render({
+      tree: {
+        ...(sidebarProps().tree as SidebarProps["tree"]),
+        projects: [project(), project({ ...PROJECT, id: "project-beta", name: "Beta" })],
+        onNewWorkspace,
+      },
+    });
+
+    await act(async () => namedButton("New workspace").click());
+    const item = container.querySelector<HTMLButtonElement>('.sidebar-action-menu [role="menuitem"]');
+    if (item === null) throw new Error("the project menu did not open");
+    await act(async () => item.click());
+
+    expect(onNewWorkspace).toHaveBeenCalledTimes(1);
+    // The menu item unmounts with the click, so it must not be the anchor
+    // the provider picker positions off: the top action row persists.
+    expect(onNewWorkspace.mock.calls[0][0]).toBe(namedButton("New workspace"));
+    expect(onNewWorkspace.mock.calls[0][1]).toBe("project-alpha");
+  });
+
   it("ends each project with its own New workspace row", async () => {
     const onNewWorkspace = vi.fn();
     await render({

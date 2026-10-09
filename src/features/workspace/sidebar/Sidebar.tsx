@@ -229,7 +229,13 @@ export function Sidebar({
                       role="menuitem"
                       onClick={(event) => {
                         setProjectMenuOpen(false);
-                        tree.onNewWorkspace(event.currentTarget, project.id);
+                        // The menu item unmounts with this click, so the
+                        // provider picker anchors on the top action row that
+                        // persists, never on the item that is already gone.
+                        tree.onNewWorkspace(
+                          newWorkspaceRef.current ?? event.currentTarget,
+                          project.id,
+                        );
                       }}
                     >
                       {project.name}
