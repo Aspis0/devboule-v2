@@ -3339,6 +3339,7 @@ fn workspace_git_status_round_trips_with_its_wire_words() {
             capped: false,
         }],
         error: None,
+        git_missing: false,
     };
     let reply = DaemonMessage::WorkspaceGit { id: 7, status };
     let json = serde_json::to_string(&reply).expect("serialize");
@@ -3385,6 +3386,17 @@ fn workspace_git_status_round_trips_with_its_wire_words() {
     let json = serde_json::to_string(&refused).expect("serialize");
     assert!(json.contains("\"branch\":null"), "{json}");
     assert!(json.contains("\"error\":\"the workspace folder"), "{json}");
+
+    // A missing `git` program is an answer without an error, and it says so
+    // on its own key, so the panel can tell it from a refused read.
+    let missing = WorkspaceGitStatus {
+        error: None,
+        git_missing: true,
+        ..refused
+    };
+    let json = serde_json::to_string(&missing).expect("serialize");
+    assert!(json.contains("\"gitMissing\":true"), "{json}");
+    assert!(json.contains("\"error\":null"), "{json}");
 
     for (word, spelled) in [
         (WorkspaceGitFileStatus::Modified, "\"modified\""),

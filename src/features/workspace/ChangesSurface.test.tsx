@@ -153,6 +153,18 @@ describe("ChangesSurface", () => {
     expect(container.textContent).not.toContain("No uncommitted changes");
   });
 
+  it("names a missing git program in one quiet line, not as an error", async () => {
+    vi.mocked(workspaceGitStatus).mockResolvedValue(
+      statusReply({ isGit: false, gitMissing: true }),
+    );
+    await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
+
+    expect(container.textContent).toContain("git is not installed");
+    expect(container.textContent).toContain("put git on PATH");
+    expect(container.textContent).not.toContain("not a git repository");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
   it("says the tree is clean and keeps the refresh action there", async () => {
     await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 

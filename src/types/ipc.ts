@@ -134,6 +134,12 @@ export interface WorkspaceGitStatus {
   totals: WorkspaceGitTotals;
   rows: WorkspaceGitRow[];
   error: string | null;
+  /**
+   * The `git` program is not on this machine. `isGit` is false and `error` is
+   * null: a quiet line names the fix, not a failure. Optional so fixtures and
+   * older daemons without the key still type-check; `undefined` reads as false.
+   */
+  gitMissing?: boolean;
 }
 
 /** The commit history of one workspace, the reply of `workspace_git_log`

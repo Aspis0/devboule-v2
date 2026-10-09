@@ -83,6 +83,7 @@ pub(crate) const NOT_A_REPOSITORY: &str = "this workspace folder is not a git re
 pub(crate) const NOT_A_DIRECTORY: &str = "the workspace folder is not a directory";
 const PROBE_TIMEOUT: &str = "git did not answer within the probe timeout";
 const GIT_UNAVAILABLE: &str = "git could not be run";
+const GIT_NOT_INSTALLED: &str = "git is not installed: install Git for Windows, or put git on PATH";
 
 /// Refusals of a requested path, shared by every reader that confines one:
 /// the diff refuses with these words and the Files tree refuses with the
@@ -133,8 +134,10 @@ pub(crate) enum Probe {
     Ready,
     NotRepository,
     InsideRepository,
-    /// Not a directory, a probe git did not answer, or git itself missing —
-    /// with the pathless sentence that says which.
+    /// The `git` program is not on this machine's PATH.
+    NotInstalled,
+    /// Not a directory, or a probe git did not answer — with the pathless
+    /// sentence that says which.
     Refused(&'static str),
 }
 
@@ -149,6 +152,7 @@ pub(crate) fn probe(root: &Path) -> Probe {
         GitRepositoryStatus::RepositoryRoot => Probe::Ready,
         GitRepositoryStatus::InsideRepository => Probe::InsideRepository,
         GitRepositoryStatus::NotRepository => Probe::NotRepository,
+        GitRepositoryStatus::NotInstalled => Probe::NotInstalled,
         GitRepositoryStatus::TimedOut => Probe::Refused(PROBE_TIMEOUT),
         GitRepositoryStatus::Unknown => Probe::Refused(GIT_UNAVAILABLE),
     }
@@ -164,6 +168,7 @@ impl Probe {
         match self {
             Probe::Ready => None,
             Probe::NotRepository => Some(NOT_A_REPOSITORY),
+            Probe::NotInstalled => Some(GIT_NOT_INSTALLED),
             Probe::InsideRepository => Some(INSIDE_A_REPOSITORY),
             Probe::Refused(message) => Some(message),
         }

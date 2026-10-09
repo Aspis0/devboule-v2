@@ -35,6 +35,7 @@ fn status_of(root: &Path) -> WorkspaceGitStatus {
     match probe(root) {
         Probe::Ready => {}
         Probe::NotRepository => return build(false, false, None, Vec::new(), None),
+        Probe::NotInstalled => return missing_git(),
         Probe::InsideRepository => return caveat(INSIDE_A_REPOSITORY),
         // Not a directory (also: the folder vanished after the registry had
         // cached it), a probe git did not answer, or git missing.
@@ -108,6 +109,16 @@ fn build(
         totals,
         rows,
         error,
+        git_missing: false,
+    }
+}
+
+/// `git` is not on this machine's PATH: no answer, and no error either, since
+/// nothing failed on the folder. `git_missing` carries the reason.
+fn missing_git() -> WorkspaceGitStatus {
+    WorkspaceGitStatus {
+        git_missing: true,
+        ..build(false, false, None, Vec::new(), None)
     }
 }
 

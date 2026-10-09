@@ -12,7 +12,9 @@ export function changesBadgeLabel(status: WorkspaceGitStatus): string {
     const exact = status.error === null && !status.rows.some((row) => row.capped);
     return exact ? counts : `≈${counts}`;
   }
-  if (!status.isGit && status.error === null) return "not a repo";
+  if (!status.isGit && status.error === null) {
+    return status.gitMissing === true ? "no git" : "not a repo";
+  }
   // Rows withheld by the reply cap: `dirty` is the only fact that survived it.
   if (status.dirty) return "changes";
   if (status.error !== null) return "unavailable";

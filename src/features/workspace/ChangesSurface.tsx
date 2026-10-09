@@ -407,7 +407,9 @@ export const ChangesSurface = memo(function ChangesSurface({
       ) : !reply.isGit ? (
         <>
           <div className="workspace-changes-state">
-            This workspace folder is not a git repository.
+            {reply.gitMissing === true
+              ? "git is not installed. Install Git for Windows, or put git on PATH, then refresh."
+              : "This workspace folder is not a git repository."}
           </div>
           <div className="workspace-changes-refresh-line">
             <RefreshButton onRefresh={refresh} />

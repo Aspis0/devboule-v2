@@ -25,6 +25,8 @@ pub(crate) enum GitRepositoryStatus {
     RepositoryRoot,
     InsideRepository,
     NotRepository,
+    /// The `git` program itself is missing from this machine's PATH.
+    NotInstalled,
     TimedOut,
     Unknown,
 }
@@ -35,6 +37,7 @@ impl GitRepositoryStatus {
             Self::RepositoryRoot => "repository",
             Self::InsideRepository => "inside_repository",
             Self::NotRepository => "not_repository",
+            Self::NotInstalled => "not_installed",
             Self::TimedOut => "timed_out",
             Self::Unknown => "unknown",
         }
@@ -106,7 +109,7 @@ fn detect_git_repository_with_program(
     let mut process = match spawn_git_process(command) {
         Ok(process) => process,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return GitRepositoryStatus::Unknown
+            return GitRepositoryStatus::NotInstalled
         }
         Err(_) => return GitRepositoryStatus::Unknown,
     };
@@ -761,6 +764,19 @@ mod tests {
             detect_git_repository(&nested),
             GitRepositoryStatus::InsideRepository
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn detect_git_repository_reports_a_missing_git_program_as_not_installed() {
+        let root = crate::test_dirs::test_temp_dir("devboule-git-missing");
+        let status = detect_git_repository_with_program(
+            &root,
+            std::ffi::OsStr::new("devboule-git-program-that-does-not-exist"),
+            &[],
+        );
+        assert_eq!(status, GitRepositoryStatus::NotInstalled);
+        assert_eq!(status.as_str(), "not_installed");
         let _ = std::fs::remove_dir_all(&root);
     }
 

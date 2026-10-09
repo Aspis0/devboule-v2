@@ -475,6 +475,24 @@ fn worktree_create_refuses_when_live_git_is_not_a_repository() {
 }
 
 #[test]
+fn worktree_refusal_names_the_project_and_the_real_cause() {
+    let missing = refuse_worktree_unless_live_git_allows("unknown", "not_installed", "Blog")
+        .expect_err("a machine without git must refuse");
+    assert_eq!(
+        missing.message,
+        "Project 'Blog' cannot host a worktree: git is not installed; install Git for Windows, or put git on PATH."
+    );
+
+    let plain = refuse_worktree_unless_live_git_allows("unknown", "not_repository", "Blog")
+        .expect_err("a plain folder must refuse");
+    assert_eq!(
+        plain.message,
+        "Project 'Blog' cannot host a worktree: this workspace folder is not a git repository."
+    );
+    assert!(!plain.message.contains("unknown"), "{}", plain.message);
+}
+
+#[test]
 fn worktree_workspace_cwd_uses_the_checkout_path_not_the_project() {
     let (dir, registry, journal) = tmp_delete_registry();
     let project_path = dir.join("project");

@@ -2344,6 +2344,11 @@ pub struct WorkspaceGitStatus {
     pub totals: WorkspaceGitTotals,
     pub rows: Vec<WorkspaceGitRow>,
     pub error: Option<String>,
+    /// The `git` program is not on this machine's PATH. `is_git` is false and
+    /// `error` stays null: nothing failed on the folder, so the panel states
+    /// the missing program in a quiet line instead of an error.
+    #[serde(default)]
+    pub git_missing: bool,
 }
 
 /// Added and removed lines over every row of one reply.

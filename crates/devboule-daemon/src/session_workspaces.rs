@@ -518,7 +518,7 @@ impl super::SessionRegistry {
         let project = self.require_project(journal, project_id)?;
         let project_path = PathBuf::from(&project.path);
         let live = crate::git::detect_git_repository(&project_path);
-        refuse_worktree_unless_live_git_allows(&project.git_state, live.as_str(), project_id)?;
+        refuse_worktree_unless_live_git_allows(&project.git_state, live.as_str(), &project.name)?;
         let branch = match branch.filter(|value| !value.trim().is_empty()) {
             Some(branch) => branch,
             None => crate::worktree::generated_branch_slug(worktree_branch_seed()),
@@ -985,23 +985,24 @@ fn git_state_allows_worktree(state: &str) -> bool {
 pub(super) fn refuse_worktree_unless_live_git_allows(
     recorded: &str,
     observed: &str,
-    project_id: &str,
+    project_name: &str,
 ) -> Result<(), WireError> {
     if git_state_allows_worktree(observed) {
         return Ok(());
     }
-    Err(
-        WireError::new(
-            ErrorCode::WorkspaceUnavailable,
-            format!(
-                "Project '{project_id}' cannot host a worktree (git state is '{observed}'; recorded '{recorded}')."
-            ),
-        )
-        .with_details(ErrorDetails::WorktreeGitState {
-            recorded: recorded.to_string(),
-            observed: observed.to_string(),
-        }),
+    let cause = match observed {
+        "not_installed" => "git is not installed; install Git for Windows, or put git on PATH",
+        "not_repository" => "this workspace folder is not a git repository",
+        _ => "git did not answer for this folder",
+    };
+    Err(WireError::new(
+        ErrorCode::WorkspaceUnavailable,
+        format!("Project '{project_name}' cannot host a worktree: {cause}."),
     )
+    .with_details(ErrorDetails::WorktreeGitState {
+        recorded: recorded.to_string(),
+        observed: observed.to_string(),
+    }))
 }
 
 impl super::SessionRegistry {

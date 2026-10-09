@@ -62,6 +62,11 @@ describe("changesBadgeLabel", () => {
     ).toBe("unavailable");
   });
 
+  it("names a machine without git apart from a plain folder", () => {
+    expect(changesBadgeLabel(status({ isGit: false, gitMissing: true }))).toBe("no git");
+    expect(changesBadgeLabel(status({ isGit: false }))).toBe("not a repo");
+  });
+
   it("reports a dirty tree whose row list was withheld as changes, not as clean", () => {
     // The withheld list keeps `dirty` while dropping the rows: reading this as
     // "clean" would tell the user the opposite of what the reply said.
