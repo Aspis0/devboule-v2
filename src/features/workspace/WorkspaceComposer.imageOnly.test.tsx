@@ -173,3 +173,46 @@ describe("WorkspaceComposer image-only queue", () => {
     expect(queueButton().disabled).toBe(true);
   });
 });
+
+describe("WorkspaceComposer pasted images", () => {
+  function paste(files: File[]): Event {
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: { files, types: ["Files"] } });
+    return event;
+  }
+
+  function textarea(): HTMLTextAreaElement {
+    const element = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Message the agent"]',
+    );
+    if (element === null) throw new Error("composer textarea did not render");
+    return element;
+  }
+
+  it("attaches a pasted image, and removing it closes the send again", async () => {
+    const onSend = vi.fn();
+    await renderComposer(onSend, { imageOnlyAccepted: true });
+    const event = paste([pngFile()]);
+    await act(async () => {
+      textarea().dispatchEvent(event);
+    });
+    await act(async () => {});
+    expect(event.defaultPrevented).toBe(true);
+    expect(container.querySelector('[data-testid="composer-image-preview"]')).not.toBeNull();
+    expect(sendButton().disabled).toBe(false);
+    await act(async () => {
+      button('button[aria-label^="Remove attached image"]').click();
+    });
+    expect(container.querySelector('[data-testid="composer-image-preview"]')).toBeNull();
+    expect(sendButton().disabled).toBe(true);
+  });
+
+  it("leaves a text paste to the textarea", async () => {
+    await renderComposer(vi.fn(), { imageOnlyAccepted: true });
+    const event = paste([]);
+    await act(async () => {
+      textarea().dispatchEvent(event);
+    });
+    expect(event.defaultPrevented).toBe(false);
+  });
+});

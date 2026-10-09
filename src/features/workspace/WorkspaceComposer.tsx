@@ -11,7 +11,11 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent, DragEvent as ReactDragEvent } from "react";
+import type {
+  ClipboardEvent as ReactClipboardEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  DragEvent as ReactDragEvent,
+} from "react";
 import { composerActionLabel } from "../../lib/sendBehavior";
 import { COMMAND_MENU_KEY, composerChordLabel, composerKeyAction } from "../../lib/keymap";
 import { isImeComposition } from "../../lib/imeComposition";
@@ -287,6 +291,19 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   // A drop is the picker's own partition, run from the composer's root: the
   // files that fit the image route are read here, and the rest go to the file
   // route without their bytes being touched.
+  // A drop and a paste take files the same way: the picks that fit the image
+  // route are read here, and the rest go to the file route.
+  const takeFiles = useCallback(
+    (files: readonly File[]) => {
+      const room = Math.max(0, MAX_COMPOSER_IMAGES - attachedImages.length);
+      void routePickedFiles(files, acceptedImageTypes(gifWebpSupported), room).then((route) => {
+        if (route.images.length > 0) addPickedImages(route.images);
+        if (route.files.length > 0) onAddFiles?.(route.files);
+      });
+    },
+    [addPickedImages, attachedImages.length, gifWebpSupported, onAddFiles],
+  );
+
   const handleDrop = useCallback(
     (event: ReactDragEvent<HTMLDivElement>) => {
       // Only a drag that carries files is ours: a text or URL drop keeps the
@@ -296,13 +313,20 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
       setDropTarget(false);
       const dropped = Array.from(event.dataTransfer?.files ?? []);
       if (dropped.length === 0 || disabled) return;
-      const room = Math.max(0, MAX_COMPOSER_IMAGES - attachedImages.length);
-      void routePickedFiles(dropped, acceptedImageTypes(gifWebpSupported), room).then((route) => {
-        if (route.images.length > 0) addPickedImages(route.images);
-        if (route.files.length > 0) onAddFiles?.(route.files);
-      });
+      takeFiles(dropped);
     },
-    [addPickedImages, attachedImages.length, disabled, gifWebpSupported, onAddFiles],
+    [disabled, takeFiles],
+  );
+
+  // A paste that carries files takes them like a drop; a text paste stays text.
+  const handlePaste = useCallback(
+    (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+      const pasted = Array.from(event.clipboardData?.files ?? []);
+      if (pasted.length === 0 || disabled) return;
+      event.preventDefault();
+      takeFiles(pasted);
+    },
+    [disabled, takeFiles],
   );
 
   // Only a drag that is carrying files is ours: a text selection dragged over
@@ -539,6 +563,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
             captureTextarea?.(element);
           }}
           value={input}
+          onPaste={handlePaste}
           onChange={(event) => {
             const value = event.target.value;
             const refused = pendingPrefixRef.current;
