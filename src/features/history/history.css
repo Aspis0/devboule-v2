@@ -121,6 +121,25 @@
   gap: 2px;
 }
 
+/* The next page of a long list: quiet, like the agent rows' overflow. */
+.history-show-more {
+  margin: var(--space-4) 6px 0;
+  padding: var(--space-2) var(--space-8);
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-6);
+  font-size: var(--type-meta);
+  text-align: left;
+  cursor: pointer;
+}
+
+.history-show-more:hover,
+.history-show-more:focus-visible {
+  color: var(--ink);
+  background: var(--fill-hover);
+}
+
 .history-row {
   position: relative;
   display: flex;

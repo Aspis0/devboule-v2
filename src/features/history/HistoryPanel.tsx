@@ -55,6 +55,9 @@ const EMPTY_BRANCHES: ReadonlyMap<WorkspaceKey, string> = new Map();
 const EMPTY_KEYS: readonly WorkspaceKey[] = [];
 const EMPTY_HOSTS: readonly HistoryHost[] = [];
 
+/** One page of rows: bounds both the DOM and the status sweep behind it. */
+const HISTORY_PAGE_SIZE = 50;
+
 /** A hung daemon reply must not blank the panel forever. */
 const ROSTER_WAIT_MS = 5000;
 
@@ -93,6 +96,11 @@ export function HistoryPanel({
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [resumingId, setResumingId] = useState<string | null>(null);
   const [showAll, setShowAll] = useState<boolean>(getHistoryShowAll);
+  const [visibleCount, setVisibleCount] = useState(HISTORY_PAGE_SIZE);
+  // A new query starts from the first page; paging further is per query.
+  useEffect(() => {
+    setVisibleCount(HISTORY_PAGE_SIZE);
+  }, [search, hostFilter, showAll]);
   const [rosterTimedOut, setRosterTimedOut] = useState(false);
   const focusTargetRef = useRef<FocusTarget>(null);
   const [actionError, setActionError] = useState<ErrorSentence | null>(null);
@@ -220,20 +228,6 @@ export function HistoryPanel({
     }
     return [...byId.values()];
   }, [hostById, projects, roster, sessionsById, showAll, usage, workspaceNames]);
-  // Sorted, so a reordered list is not a new read set.
-  const rowWorkspaceKeys = useMemo(() => {
-    const keys = new Set<WorkspaceKey>();
-    for (const row of rowsBase) {
-      if (!row.workspaceId) continue;
-      const key = localWorkspaceKey(row.workspaceId);
-      if (key !== null) keys.add(key);
-    }
-    return [...keys].sort();
-  }, [rowsBase]);
-  useEffect(() => {
-    onWorkspaceKeysChange?.(rowWorkspaceKeys);
-  }, [onWorkspaceKeysChange, rowWorkspaceKeys]);
-  useEffect(() => () => onWorkspaceKeysChange?.(EMPTY_KEYS), [onWorkspaceKeysChange]);
   const freshRows = useMemo(
     () =>
       rowsBase.map((row) => ({
@@ -281,7 +275,29 @@ export function HistoryPanel({
         (effective === "all" || row.hostId === effective) && historyRowMatches(row, search),
     );
   }, [hostFilter, rows, search, showHostFilter]);
-  const groups = useMemo(() => groupByDay(filteredRows, now), [filteredRows, now]);
+  // The rendered page, not the whole match: both the DOM and the status
+  // sweep behind it stay bounded while a large history pages.
+  const visibleRows = useMemo(
+    () => filteredRows.slice(0, visibleCount),
+    [filteredRows, visibleCount],
+  );
+  const groups = useMemo(() => groupByDay(visibleRows, now), [visibleRows, now]);
+  // Sorted, so a reordered list is not a new read set. Only the rendered
+  // page joins the sidebar's status sweep: a large history must not fan out
+  // a status request per workspace it ever named.
+  const rowWorkspaceKeys = useMemo(() => {
+    const keys = new Set<WorkspaceKey>();
+    for (const row of visibleRows) {
+      if (!row.workspaceId) continue;
+      const key = localWorkspaceKey(row.workspaceId);
+      if (key !== null) keys.add(key);
+    }
+    return [...keys].sort();
+  }, [visibleRows]);
+  useEffect(() => {
+    onWorkspaceKeysChange?.(rowWorkspaceKeys);
+  }, [onWorkspaceKeysChange, rowWorkspaceKeys]);
+  useEffect(() => () => onWorkspaceKeysChange?.(EMPTY_KEYS), [onWorkspaceKeysChange]);
   const refreshUsage = usageRequest.run;
   const refreshSessions = sessionsRequest.run;
 
@@ -503,7 +519,9 @@ export function HistoryPanel({
           <p className="history-empty">
             {searchActive ? "No matching agents." : "No agents in History."}
           </p>
-        ) : searchActive ? (
+        ) : (
+          <>
+            {searchActive ? (
           <div className="history-rows">
             {groups.flatMap((group) =>
               group.entries.map((row) => (
@@ -544,6 +562,17 @@ export function HistoryPanel({
               </div>
             </section>
           ))
+        )}
+            {filteredRows.length > visibleCount ? (
+              <button
+                type="button"
+                className="history-show-more"
+                onClick={() => setVisibleCount((count) => count + HISTORY_PAGE_SIZE)}
+              >
+                +{filteredRows.length - visibleCount} more
+              </button>
+            ) : null}
+          </>
         )
       ) : null}
     </div>

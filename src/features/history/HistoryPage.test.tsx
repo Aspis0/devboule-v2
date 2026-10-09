@@ -186,6 +186,110 @@ describe("the History page", () => {
     ).toContain("This PC");
   });
 
+  it("pages a long list instead of rendering every row", async () => {
+    const perSession = Array.from({ length: 120 }, (_, index) => ({
+      id: `session-${index}`,
+      title: `Session ${index}`,
+      kind: "acp" as const,
+      bytes: 100,
+      updatedAtMs: now - index * 1000,
+    }));
+    vi.mocked(journalUsage).mockResolvedValueOnce({ ...usage(), sessionCount: 120, perSession });
+    vi.mocked(sessionsList).mockResolvedValueOnce([]);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <HistoryPanel
+          now={now}
+          search=""
+          onSearchChange={() => {}}
+          projects={projects()}
+          hosts={HOSTS}
+          hostFilter="all"
+          onHostFilterChange={() => {}}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelectorAll(".history-row")).toHaveLength(50);
+    const more = container.querySelector<HTMLButtonElement>(".history-show-more");
+    if (more === null) throw new Error("the show-more control did not render");
+    expect(more.textContent).toContain("70");
+    await act(async () => more.click());
+    expect(container.querySelectorAll(".history-row")).toHaveLength(100);
+    await act(async () => container.querySelector<HTMLButtonElement>(".history-show-more")?.click());
+    expect(container.querySelectorAll(".history-row")).toHaveLength(120);
+    expect(container.querySelector(".history-show-more")).toBeNull();
+  });
+
+  it("reports status keys only for the rows it renders", async () => {
+    const live = (id: string, workspaceId: string, createdAtMs: number): Session => ({
+      id,
+      workspaceId,
+      kind: "acp",
+      title: id,
+      createdAtMs,
+      state: { type: "live", generation: 1 },
+      elapsedMs: 0,
+    });
+    const sessions: Session[] = [
+      ...Array.from({ length: 60 }, (_, index) =>
+        live(`session-a-${index}`, "workspace-rust", now - index * 1000),
+      ),
+      ...Array.from({ length: 60 }, (_, index) =>
+        live(`session-b-${index}`, "workspace-two", now - 3_600_000 - index * 1000),
+      ),
+    ];
+    const twoProjects = [
+      { ...projects()[0] },
+      {
+        id: "project-2",
+        name: "Beta",
+        path: "C:/code/beta",
+        hostId: LOCAL_HOST_ID,
+        workspaces: [
+          {
+            id: "workspace-two",
+            projectId: "project-2",
+            hostId: LOCAL_HOST_ID,
+            title: "second work",
+            isolation: "local" as const,
+            path: "C:/code/beta",
+            displayTitle: "second work",
+            agents: { working: 0, waiting: 0 },
+            elapsedMs: null,
+            stateDot: null,
+          },
+        ],
+      },
+    ];
+    const seen: string[][] = [];
+    vi.mocked(journalUsage).mockResolvedValueOnce(usage());
+    vi.mocked(sessionsList).mockResolvedValueOnce(sessions);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <HistoryPanel
+          now={now}
+          search=""
+          onSearchChange={() => {}}
+          projects={twoProjects}
+          hosts={HOSTS}
+          hostFilter="all"
+          onHostFilterChange={() => {}}
+          onWorkspaceKeysChange={(keys) => seen.push([...keys])}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    // Only the rendered first page (all workspace-rust rows) joins the
+    // sidebar's status sweep — never the whole history.
+    const last = seen[seen.length - 1];
+    expect(last).toEqual([`${LOCAL_HOST_ID}:workspace-rust`]);
+  });
+
   it("still groups rows by day", async () => {
     await renderPage();
 
