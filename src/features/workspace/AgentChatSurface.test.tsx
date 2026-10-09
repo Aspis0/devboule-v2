@@ -1128,7 +1128,7 @@ describe("AgentChatSurface", () => {
     });
 
     const chip = container.querySelector('[data-testid="provider-model-chip"]');
-    expect(chip?.textContent).toContain("opencode-go · NVIDIA: Nemotron 3 Ultra (free)");
+    expect(chip?.textContent).toBe("pi · opencode-go · NVIDIA: Nemotron 3 Ultra (free)");
   });
 
   it("names the one pi model with its provider in the static label", async () => {
