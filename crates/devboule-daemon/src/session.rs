@@ -4098,7 +4098,24 @@ impl SessionRegistry {
                 scope: crate::peer_policy::PeerScope::PeerDevice,
                 paired_by_user: Some(paired),
                 ..
-            }) => self.list_for_user(paired),
+            }) => {
+                // A machine peer observes the pairing user's sessions (Slice 3)
+                // and operates the ones it created itself (Slice 4): the
+                // roster is the union of both, so a session this peer just
+                // created is listed back to it instead of vanishing until
+                // the pairing user happens to own one beside it. Another
+                // account's sessions stay out either way.
+                let mut sessions = self.list_for_user(paired)?;
+                if paired != &owner.user {
+                    for session in self.list_for_user(&owner.user)? {
+                        if !sessions.iter().any(|listed| listed.id == session.id) {
+                            sessions.push(session);
+                        }
+                    }
+                    sessions.sort_by(|left, right| left.id.cmp(&right.id));
+                }
+                Ok(sessions)
+            }
             _ => self.list(owner),
         }
     }

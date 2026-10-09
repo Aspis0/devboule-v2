@@ -60,6 +60,14 @@ pub(crate) const LINK_IDLE_GRACE: Duration = Duration::from_secs(30);
 /// interval, so a silent host is noticed by the probe rather than by a caller.
 pub(crate) const READ_DEADLINE: Duration = Duration::from_secs(10);
 
+/// How long one remote create waits for the host's answer. A create runs
+/// the provider's whole handshake inline on the host — the local create
+/// budget is 210 s for the same reason — so the link's ten-second read
+/// budget would refuse every agent create while the host is still starting
+/// it. When this lapses the outcome is unknown, and only an explicit retry
+/// with the same idempotency key may ask again.
+pub(crate) const CREATE_DEADLINE: Duration = Duration::from_secs(120);
+
 /// One link's pacing. Production is [`LinkTuning::default`]; a test sets the
 /// fields down so keepalive, backoff and grace can be observed in
 /// milliseconds instead of minutes.
@@ -71,6 +79,10 @@ pub(crate) struct LinkTuning {
     pub(crate) pong_timeout: Duration,
     /// How long one read waits for its answer.
     pub(crate) read_deadline: Duration,
+    /// How long one remote create waits for the host's answer. Production
+    /// is two minutes against the provider handshake; a test turns it down
+    /// with the rest of the pacing.
+    pub(crate) create_deadline: Duration,
     pub(crate) backoff_min: Duration,
     pub(crate) backoff_max: Duration,
     pub(crate) idle_grace: Duration,
@@ -87,6 +99,7 @@ impl Default for LinkTuning {
             keepalive_every: Duration::from_secs(15),
             pong_timeout: Duration::from_secs(10),
             read_deadline: READ_DEADLINE,
+            create_deadline: CREATE_DEADLINE,
             backoff_min: Duration::from_secs(1),
             backoff_max: Duration::from_secs(60),
             idle_grace: LINK_IDLE_GRACE,
@@ -458,10 +471,12 @@ impl PeerLinks {
     /// The same budgets a read meets: the cross-link pending cap, the link's
     /// published failure, and the one-call-at-a-time slot. Called from a
     /// worker thread of the *local* connection, never from that connection's
-    /// reader.
+    /// reader. `wait` is how long the caller holds for the worker's answer:
+    /// the read budget for most calls, the create budget for a create.
     fn operate(
         &self,
         device_id: &str,
+        wait: Duration,
         build: impl FnOnce(u64, std::sync::mpsc::SyncSender<LinkAnswer>) -> LinkCommand,
     ) -> LinkAnswer {
         let link = {
@@ -495,13 +510,22 @@ impl PeerLinks {
             self.finish_read();
             return LinkAnswer::Failed(RemoteHostState::Offline, offline_sentence().to_string());
         }
-        let answer = answer_rx
-            .recv_timeout(Duration::from_secs(30))
-            .unwrap_or_else(|_| {
-                LinkAnswer::Failed(RemoteHostState::Offline, offline_sentence().to_string())
-            });
+        let answer = answer_rx.recv_timeout(wait).unwrap_or_else(|_| {
+            LinkAnswer::Failed(RemoteHostState::Offline, offline_sentence().to_string())
+        });
         self.finish_read();
         answer
+    }
+
+    /// How long one operate caller holds for the worker's answer: the read
+    /// budget, except a create, which runs the host's provider handshake
+    /// and waits on the create budget with a margin for the queue.
+    fn operate_wait(&self, create: bool) -> Duration {
+        if create {
+            self.tuning.create_deadline + Duration::from_secs(30)
+        } else {
+            Duration::from_secs(30)
+        }
     }
 
     /// Create one session on the host. The idempotency key travels with the
@@ -519,7 +543,8 @@ impl PeerLinks {
         cols: Option<u16>,
         rows: Option<u16>,
     ) -> LinkAnswer {
-        self.operate(device_id, |generation, answer| LinkCommand::Create {
+        let wait = self.operate_wait(true);
+        self.operate(device_id, wait, |generation, answer| LinkCommand::Create {
             generation,
             workspace_id,
             kind,
@@ -546,7 +571,8 @@ impl PeerLinks {
         idempotency_key: Option<String>,
         attachment_references: Vec<devboule_protocol::AttachmentReference>,
     ) -> LinkAnswer {
-        self.operate(device_id, |generation, answer| LinkCommand::Send {
+        let wait = self.operate_wait(false);
+        self.operate(device_id, wait, |generation, answer| LinkCommand::Send {
             generation,
             session_id,
             subscription_id,
@@ -568,7 +594,8 @@ impl PeerLinks {
         cols: u16,
         rows: u16,
     ) -> LinkAnswer {
-        self.operate(device_id, |generation, answer| LinkCommand::Resize {
+        let wait = self.operate_wait(false);
+        self.operate(device_id, wait, |generation, answer| LinkCommand::Resize {
             generation,
             session_id,
             subscription_id,
@@ -585,7 +612,8 @@ impl PeerLinks {
         session_id: String,
         subscription_id: u64,
     ) -> LinkAnswer {
-        self.operate(device_id, |generation, answer| LinkCommand::Claim {
+        let wait = self.operate_wait(false);
+        self.operate(device_id, wait, |generation, answer| LinkCommand::Claim {
             generation,
             session_id,
             subscription_id,
@@ -600,11 +628,14 @@ impl PeerLinks {
         session_id: String,
         subscription_id: u64,
     ) -> LinkAnswer {
-        self.operate(device_id, |generation, answer| LinkCommand::Interrupt {
-            generation,
-            session_id,
-            subscription_id,
-            answer,
+        let wait = self.operate_wait(false);
+        self.operate(device_id, wait, |generation, answer| {
+            LinkCommand::Interrupt {
+                generation,
+                session_id,
+                subscription_id,
+                answer,
+            }
         })
     }
 
@@ -621,7 +652,8 @@ impl PeerLinks {
         answer_text: Option<String>,
         idempotency_key: Option<String>,
     ) -> LinkAnswer {
-        self.operate(device_id, |generation, answer| {
+        let wait = self.operate_wait(false);
+        self.operate(device_id, wait, |generation, answer| {
             LinkCommand::PermissionRespond {
                 generation,
                 session_id,
@@ -643,7 +675,8 @@ impl PeerLinks {
         session_id: String,
         idempotency_key: Option<String>,
     ) -> LinkAnswer {
-        self.operate(device_id, |generation, answer| LinkCommand::Close {
+        let wait = self.operate_wait(false);
+        self.operate(device_id, wait, |generation, answer| LinkCommand::Close {
             generation,
             session_id,
             idempotency_key,
@@ -658,7 +691,8 @@ impl PeerLinks {
         session_id: String,
         subscription_id: u64,
     ) -> LinkAnswer {
-        self.operate(device_id, |generation, answer| LinkCommand::Stop {
+        let wait = self.operate_wait(false);
+        self.operate(device_id, wait, |generation, answer| LinkCommand::Stop {
             generation,
             session_id,
             subscription_id,
@@ -668,9 +702,9 @@ impl PeerLinks {
 
     /// Read the host's provider catalog.
     pub(crate) fn operate_providers(&self, device_id: &str) -> LinkAnswer {
-        self.operate(device_id, |generation, answer| LinkCommand::Providers {
-            generation,
-            answer,
+        let wait = self.operate_wait(false);
+        self.operate(device_id, wait, |generation, answer| {
+            LinkCommand::Providers { generation, answer }
         })
     }
 }

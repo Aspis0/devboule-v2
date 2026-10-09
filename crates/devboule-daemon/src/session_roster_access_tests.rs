@@ -449,6 +449,24 @@ fn a_machine_peer_observes_the_pairing_users_sessions_but_does_not_operate_on_th
     );
     assert!(!roster.iter().any(|row| row.id == other_session));
 
+    // Slice 4: the peer's own created sessions ride the same roster, so a
+    // session this peer just created is listed back to it. Another
+    // account's sessions stay out either way.
+    let own_session = compose_session_id(&caller.session_token(), "own01").expect("id");
+    insert_live(&registry, &own_session, caller.clone());
+    let roster = registry
+        .list_for_conn(&caller, &peer.conn_peer)
+        .expect("roster");
+    assert!(
+        roster.iter().any(|row| row.id == own_session),
+        "the roster lists the peer's own created sessions: {roster:?}"
+    );
+    assert!(
+        roster.iter().any(|row| row.id == host_session),
+        "the pairing user's sessions stay listed beside them"
+    );
+    assert!(!roster.iter().any(|row| row.id == other_session));
+
     // The attach door itself lets the observing read through.
     registry
         .attach_with_subscription(&host_session, 1, None, &peer, &caller, false)

@@ -37,6 +37,7 @@ fn pacing() -> LinkTuning {
         keepalive_every: Duration::from_millis(400),
         pong_timeout: Duration::from_secs(30),
         read_deadline: Duration::from_secs(5),
+        create_deadline: Duration::from_secs(5),
         backoff_min: Duration::from_millis(20),
         backoff_max: Duration::from_millis(60),
         idle_grace: Duration::from_millis(60),

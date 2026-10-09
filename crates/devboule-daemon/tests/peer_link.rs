@@ -33,8 +33,8 @@ use devboule_daemon::{
     PEER_NOISE_PATTERN, PEER_PROLOGUE,
 };
 use devboule_protocol::{
-    AgentMessageState, ClientHello, ClientMessage, DaemonMessage, ErrorCode, OwnerId, SessionEvent,
-    SessionKind, UserMessageKind, WorkspaceIsolation,
+    AgentMessageState, ClientHello, ClientMessage, DaemonMessage, ErrorCode, OwnerId,
+    PermissionOutcome, SessionEvent, SessionKind, UserMessageKind, WorkspaceIsolation,
 };
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -1868,6 +1868,504 @@ fn both_hosts_open_each_others_terminals_and_survive_a_reconnect() {
         replay(&a, &b_self.device_id, &b_terminal.id, 2).is_some(),
         "the reattached stream never replayed"
     );
+
+    let _ = a_self;
+}
+
+/// Where the ACP stub binary lives, for the daemon-side provider catalog
+/// that scans PATH. Cargo builds it for this target; a stale-binary
+/// fallback would silently run the past, so its absence is a loud failure
+/// like the daemon binary's.
+fn stub_bin() -> PathBuf {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_devboule-acp-stub") {
+        return PathBuf::from(path);
+    }
+    if let Some(path) = option_env!("CARGO_BIN_EXE_devboule-acp-stub") {
+        return PathBuf::from(path);
+    }
+    panic!(
+        "CARGO_BIN_EXE_devboule-acp-stub was not provided by Cargo; refusing to \
+         guess a target directory binary (a stale one would test the past)"
+    );
+}
+
+/// Slice 4 end to end, in the owner's topology: BOTH daemons host a
+/// workspace, and A creates an agent and a terminal on B, drives them over
+/// the held link, answers the agent's permission card on B, proves the
+/// create idempotency across a dropped link and an explicit retry, and
+/// proves revocation stops an attached stream. No Tailscale, never skipped.
+#[test]
+fn a_host_creates_and_operates_sessions_on_its_peer_over_loopback() {
+    let _guard = lock_tests();
+    // B runs the ACP stub as its agent: the command override pairs with
+    // the named provider id, so the catalog never decides what B spawns.
+    let stub_argv = format!(
+        "[\"{}\"]",
+        stub_bin().to_string_lossy().replace('\\', "\\\\"),
+    );
+    let (port_a, port_b) = two_free_ports();
+    let a = Peer::spawn_with_env("s4-op-a", port_a, &[("DEVBOULE_PEER_LOOPBACK", "1")]);
+    let b = Peer::spawn_with_env(
+        "s4-op-b",
+        port_b,
+        &[
+            ("DEVBOULE_PEER_LOOPBACK", "1"),
+            ("DEVBOULE_ACP_COMMAND", stub_argv.as_str()),
+            ("DEVBOULE_ACP_PROVIDER_ID", "devboule-acp-stub"),
+            ("DEVBOULE_ACP_STUB_PERMISSION_DELAY_MS", "200"),
+        ],
+    );
+    let _address_a = wait_until_listening(&a);
+    let address_b = wait_until_listening(&b);
+    let a_self = a.self_info();
+    let b_self = b.self_info();
+    pair_devices(&a, &b, &address_b, &b_self.device_id);
+
+    let (_a_project, _a_workspace) = create_project_and_workspace(&a, "a");
+    let (_b_project, b_workspace) = create_project_and_workspace(&b, "b");
+
+    for (peer, other) in [(&a, &b_self.device_id), (&b, &a_self.device_id)] {
+        let watch = request_skipping_pushes(
+            peer,
+            ClientMessage::RemoteHostWatch {
+                id: peer.pipe.id(),
+                device_id: other.clone(),
+            },
+            |frame| match frame {
+                DaemonMessage::Ok { .. } => Some(()),
+                _ => None,
+            },
+        );
+        assert!(watch.is_some(), "the watch never answered");
+    }
+    for (peer, other) in [(&a, &b_self.device_id), (&b, &a_self.device_id)] {
+        let online =
+            peer.pipe.recv_until(
+                Instant::now() + Duration::from_secs(30),
+                |frame| match frame {
+                    DaemonMessage::RemoteHostStatus {
+                        device_id, state, ..
+                    } if device_id == other
+                        && *state == devboule_protocol::RemoteHostState::Online =>
+                    {
+                        Some(())
+                    }
+                    _ => None,
+                },
+            );
+        assert!(online.is_some(), "the link to {other} never came online");
+    }
+
+    // ---- create an agent on B from A ------------------------------------
+    let create_on_b = |workspace: &str,
+                       kind: SessionKind,
+                       provider: Option<String>,
+                       key: &str|
+     -> devboule_protocol::Session {
+        request_skipping_pushes(
+            &a,
+            ClientMessage::RemoteHostCreate {
+                id: a.pipe.id(),
+                device_id: b_self.device_id.clone(),
+                workspace_id: Some(workspace.to_string()),
+                kind,
+                provider,
+                mode: None,
+                display_name: Some("from A".to_string()),
+                idempotency_key: Some(key.to_string()),
+                cols: None,
+                rows: None,
+            },
+            |frame| match frame {
+                DaemonMessage::RemoteHostSession { session, .. } => Some(session.clone()),
+                _ => None,
+            },
+        )
+        .expect("the host's create")
+    };
+    let agent = create_on_b(
+        &b_workspace,
+        SessionKind::Acp,
+        Some("devboule-acp-stub".to_string()),
+        "s4-agent-1",
+    );
+    assert_eq!(agent.workspace_id.as_deref(), Some(b_workspace.as_str()));
+    assert_eq!(agent.kind, SessionKind::Acp);
+    let terminal = create_on_b(&b_workspace, SessionKind::Terminal, None, "s4-term-1");
+    assert_eq!(terminal.kind, SessionKind::Terminal);
+
+    // ---- both daemons' inventories: B holds them, A does not --------------
+    // B's own user roster stays B-user scoped: a machine peer's sessions
+    // belong to the peer's origin, so they are listed back over the link
+    // that created them — never in the host user's own list, and never in
+    // the creating daemon's local list either.
+    let inventory = |peer: &Peer| {
+        request_skipping_pushes(
+            peer,
+            ClientMessage::SessionsList { id: peer.pipe.id() },
+            |frame| match frame {
+                DaemonMessage::Sessions { sessions, .. } => Some(
+                    sessions
+                        .iter()
+                        .map(|session| session.id.clone())
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            },
+        )
+        .expect("the inventory")
+    };
+    let link_inventory = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostList {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+            list: devboule_protocol::RemoteHostList::Sessions,
+        },
+        |frame| match frame {
+            DaemonMessage::RemoteHostList {
+                body: devboule_protocol::RemoteHostListBody::Sessions { rows },
+                ..
+            } => Some(
+                rows.iter()
+                    .map(|session| session.id.clone())
+                    .collect::<Vec<_>>(),
+            ),
+            _ => None,
+        },
+    )
+    .expect("the host's session roster over the link");
+    assert!(
+        link_inventory.contains(&agent.id) && link_inventory.contains(&terminal.id),
+        "the link roster lists what A created on B: {link_inventory:?}"
+    );
+    let b_inventory = inventory(&b);
+    assert!(
+        !b_inventory.contains(&agent.id) && !b_inventory.contains(&terminal.id),
+        "B's own user roster stays B-user scoped: {b_inventory:?}"
+    );
+    let a_inventory = inventory(&a);
+    assert!(
+        !a_inventory.contains(&agent.id) && !a_inventory.contains(&terminal.id),
+        "A holds nothing of B's: {a_inventory:?}"
+    );
+
+    // ---- duplicate create idempotency: the same key is the same session ---
+    let agent_again = create_on_b(
+        &b_workspace,
+        SessionKind::Acp,
+        Some("devboule-acp-stub".to_string()),
+        "s4-agent-1",
+    );
+    assert_eq!(
+        agent_again.id, agent.id,
+        "a duplicate create answers the first session, not a second one"
+    );
+
+    // ---- attach to both from A ------------------------------------------
+    let attach = |session: &str, subscription_id: u64| {
+        request_skipping_pushes(
+            &a,
+            ClientMessage::RemoteHostAttach {
+                id: a.pipe.id(),
+                device_id: b_self.device_id.clone(),
+                session_id: session.to_string(),
+                subscription_id,
+            },
+            |frame| match frame {
+                DaemonMessage::Ok { .. } => Some("ok".to_string()),
+                DaemonMessage::Error(..) => Some("refused".to_string()),
+                _ => None,
+            },
+        )
+    };
+    assert_eq!(
+        attach(&agent.id, 11).as_deref(),
+        Some("ok"),
+        "A attaches to the agent it created on B"
+    );
+    assert_eq!(
+        attach(&terminal.id, 12).as_deref(),
+        Some("ok"),
+        "A attaches to the terminal it created on B"
+    );
+    let relayed = |subscription_id: u64,
+                   want: &dyn Fn(&devboule_protocol::SessionEventEnvelope) -> bool|
+     -> Option<devboule_protocol::SessionEventEnvelope> {
+        a.pipe.recv_until(
+            Instant::now() + Duration::from_secs(30),
+            |frame| match frame {
+                DaemonMessage::RemoteHostEvent {
+                    device_id,
+                    subscription_id: seen,
+                    envelope,
+                    ..
+                } if device_id == &b_self.device_id
+                    && *seen == subscription_id
+                    && want(envelope) =>
+                {
+                    Some(envelope.clone())
+                }
+                _ => None,
+            },
+        )
+    };
+    // A fresh agent is silent until its first prompt: the replay assert
+    // belongs after the send below, where the stub answers. The terminal's
+    // shell prints its prompt on spawn, so its replay is already waiting.
+    assert!(
+        relayed(12, &|_| true).is_some(),
+        "the terminal's replay reaches A tagged with B's device id"
+    );
+
+    // ---- type into the terminal on B from A ------------------------------
+    let send = |session: &str, subscription_id: u64, text: &str| {
+        request_skipping_pushes(
+            &a,
+            ClientMessage::RemoteHostSend {
+                id: a.pipe.id(),
+                device_id: b_self.device_id.clone(),
+                session_id: session.to_string(),
+                subscription_id,
+                text: text.to_string(),
+                attachments: Vec::new(),
+                active_turn_behavior: None,
+                idempotency_key: None,
+                attachment_references: Vec::new(),
+            },
+            |frame| match frame {
+                DaemonMessage::RemoteHostSent { .. } => Some(()),
+                _ => None,
+            },
+        )
+    };
+    send(&terminal.id, 12, "echo s4-live\r").expect("the terminal send");
+    assert!(
+        relayed(
+            12,
+            &|envelope| matches!(&envelope.event, SessionEvent::Output { data, .. } if data.contains("s4-live"))
+        )
+        .is_some(),
+        "typing travels to B's shell and its output comes back"
+    );
+    // Claim, then resize: the grid B's shell runs on is the one A sees.
+    let claim = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostClaim {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+            session_id: terminal.id.clone(),
+            subscription_id: 12,
+        },
+        |frame| match frame {
+            DaemonMessage::Ok { .. } => Some(()),
+            _ => None,
+        },
+    );
+    assert!(claim.is_some(), "the resize claim on B's terminal");
+    let resize = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostResize {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+            session_id: terminal.id.clone(),
+            subscription_id: 12,
+            cols: 100,
+            rows: 30,
+        },
+        |frame| match frame {
+            DaemonMessage::Ok { .. } => Some(()),
+            _ => None,
+        },
+    );
+    assert!(resize.is_some(), "the resize on B's terminal");
+
+    // ---- the agent's tool call cards on B; A answers it there --------------
+    send(&agent.id, 11, "please request permission").expect("the agent send");
+    let card = relayed(
+        11,
+        &|envelope| matches!(&envelope.event, SessionEvent::PermissionRequest { tool_call_id, .. } if tool_call_id == "tool-perm-1"),
+    );
+    assert!(
+        card.is_some(),
+        "every tool invocation from the remote session cards on the target host"
+    );
+    let answer = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostPermissionRespond {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+            session_id: agent.id.clone(),
+            subscription_id: 11,
+            request_id: "tool-perm-1".to_string(),
+            outcome: PermissionOutcome::AllowOnce,
+            option_id: None,
+            answer: None,
+            idempotency_key: Some("s4-answer-1".to_string()),
+        },
+        |frame| match frame {
+            DaemonMessage::Ok { .. } => Some(()),
+            _ => None,
+        },
+    );
+    assert!(answer.is_some(), "A answers B's card from the app");
+    assert!(
+        relayed(
+            11,
+            &|envelope| matches!(&envelope.event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn")
+        )
+        .is_some(),
+        "the answered turn runs to its end on B and A sees it"
+    );
+
+    // ---- drop the link: a create fails instead of duplicating ------------
+    for (peer, other) in [(&a, &b_self.device_id), (&b, &a_self.device_id)] {
+        let unwatch = request_skipping_pushes(
+            peer,
+            ClientMessage::RemoteHostUnwatch {
+                id: peer.pipe.id(),
+                device_id: other.clone(),
+            },
+            |frame| match frame {
+                DaemonMessage::Ok { .. } => Some(()),
+                _ => None,
+            },
+        );
+        assert!(unwatch.is_some(), "the unwatch never answered");
+    }
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        let online = peer_row(&a, &b_self.device_id).is_some_and(|row| row.online);
+        if !online {
+            break;
+        }
+        assert!(Instant::now() < deadline, "B never went offline");
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    let offline_create = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostCreate {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+            workspace_id: Some(b_workspace.clone()),
+            kind: SessionKind::Terminal,
+            provider: None,
+            mode: None,
+            display_name: None,
+            idempotency_key: Some("s4-unknown-1".to_string()),
+            cols: None,
+            rows: None,
+        },
+        |frame| match frame {
+            DaemonMessage::Error(error) => Some(error.code),
+            _ => None,
+        },
+    );
+    assert!(
+        offline_create.is_some(),
+        "a create with no link fails instead of running blind"
+    );
+
+    // ---- explicit retry with the same key: one session, not two ------------
+    let watch = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostWatch {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+        },
+        |frame| match frame {
+            DaemonMessage::Ok { .. } => Some(()),
+            _ => None,
+        },
+    );
+    assert!(watch.is_some(), "the second watch never answered");
+    let online = a.pipe.recv_until(
+        Instant::now() + Duration::from_secs(30),
+        |frame| match frame {
+            DaemonMessage::RemoteHostStatus {
+                device_id, state, ..
+            } if device_id == &b_self.device_id
+                && *state == devboule_protocol::RemoteHostState::Online =>
+            {
+                Some(())
+            }
+            _ => None,
+        },
+    );
+    assert!(online.is_some(), "the link to B never came back");
+    let link_roster = || {
+        request_skipping_pushes(
+            &a,
+            ClientMessage::RemoteHostList {
+                id: a.pipe.id(),
+                device_id: b_self.device_id.clone(),
+                list: devboule_protocol::RemoteHostList::Sessions,
+            },
+            |frame| match frame {
+                DaemonMessage::RemoteHostList {
+                    body: devboule_protocol::RemoteHostListBody::Sessions { rows },
+                    ..
+                } => Some(
+                    rows.iter()
+                        .map(|session| session.id.clone())
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            },
+        )
+        .expect("the host's session roster over the link")
+    };
+    let before_retry = link_roster();
+    let retried = create_on_b(&b_workspace, SessionKind::Terminal, None, "s4-unknown-1");
+    let after_retry = link_roster();
+    let fresh: Vec<_> = after_retry
+        .iter()
+        .filter(|id| !before_retry.contains(id))
+        .collect();
+    assert_eq!(
+        fresh,
+        vec![&retried.id],
+        "the failed attempt created nothing and the explicit retry made exactly one: {after_retry:?}"
+    );
+
+    // ---- revocation while attached stops the stream at once ----------------
+    let revoke = request_skipping_pushes(
+        &a,
+        ClientMessage::PeerRevoke {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+        },
+        |frame| match frame {
+            DaemonMessage::PeerUpdated { .. } => Some(()),
+            _ => None,
+        },
+    );
+    assert!(revoke.is_some(), "the revoke never answered");
+    let refused_attach = attach(&agent.id, 21);
+    assert_eq!(
+        refused_attach.as_deref(),
+        Some("refused"),
+        "a revoked host cannot be attached"
+    );
+    let refused_send = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostSend {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+            session_id: agent.id.clone(),
+            subscription_id: 11,
+            text: "after revoke".to_string(),
+            attachments: Vec::new(),
+            active_turn_behavior: None,
+            idempotency_key: None,
+            attachment_references: Vec::new(),
+        },
+        |frame| match frame {
+            DaemonMessage::Error(..) => Some(()),
+            _ => None,
+        },
+    );
+    assert!(refused_send.is_some(), "a revoked host cannot be operated");
 
     let _ = a_self;
 }

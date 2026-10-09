@@ -165,7 +165,7 @@ fn run(
                         serve_detach(&link, open, command, reads, tuning.read_deadline);
                     }
                     LinkCommand::Create { .. } => {
-                        serve_create(&state, &link, open, command, reads, tuning.read_deadline);
+                        serve_create(&state, &link, open, command, reads, tuning.create_deadline);
                     }
                     LinkCommand::Send { .. } => {
                         serve_send(&state, &link, open, command, reads, tuning.read_deadline);
