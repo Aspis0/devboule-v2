@@ -4742,6 +4742,35 @@ fn a_profile_resolves_to_exactly_what_was_saved() {
     );
 }
 
+/// A profile whose provider the catalog no longer publishes stays in the
+/// store, and a creation that names it is refused by name, never spawned.
+#[test]
+fn a_profile_whose_provider_was_removed_is_refused_at_resolution() {
+    let dir = crate::test_dirs::test_temp_dir("devboule broker removed provider");
+    let seeded = document(
+        vec![profile(
+            "runner",
+            "profile-runner",
+            "does-not-exist",
+            "bypass",
+            serde_json::json!({}),
+            &[],
+            true,
+        )],
+        "",
+    );
+    std::fs::write(
+        dir.join(crate::agent_profiles::PROFILES_FILE),
+        serde_json::to_vec_pretty(&seeded).expect("json"),
+    )
+    .expect("seed");
+    let store = crate::agent_profiles::AgentProfilesStore::load(&dir);
+    assert_eq!(store.document().profiles.len(), 1, "the row is kept");
+    let refusal = resolve_profile(&store, "runner").expect_err("a removed provider is refused");
+    assert!(refusal.contains("not installed"), "{refusal}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The spawn prompt is part of what a resolution **is**: what was saved at
 /// the moment of the call is what the card names and the creation carries,
 /// and a profile without one resolves to none, not to a placeholder.

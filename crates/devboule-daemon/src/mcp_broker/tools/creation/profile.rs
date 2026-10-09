@@ -89,6 +89,17 @@ pub(in crate::mcp_broker) fn resolve_profile(
         [one] => *one,
         many => return Err(format!("more than one profile is called {}", many[0].name)),
     };
+    if crate::provider_catalog::catalog_provider_id_for(
+        &crate::session::catalog_registry(),
+        &profile.provider,
+    )
+    .is_none()
+    {
+        return Err(format!(
+            "profile {} uses a provider that is not installed; pick another provider for it in Settings",
+            profile.name
+        ));
+    }
     Ok(ResolvedProfile {
         id: profile.id.clone(),
         name: profile.name.clone(),

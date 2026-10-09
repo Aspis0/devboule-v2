@@ -179,14 +179,12 @@ impl AgentProfilesStore {
     /// fix it; a daemon that overwrote the file would erase the evidence of what
     /// it refused.
     ///
-    /// Nothing is repaired on this path except rows for providers the
-    /// registry no longer publishes (see `load_document`): that is the
-    /// deliberate difference from `ToolPolicyStore::load`, which drops a row
-    /// it cannot consult because such a row could never have been reached.
-    /// A profile row for a removed provider is the same case — no creation
-    /// could resolve it any more — while every other wrong row still refuses
-    /// the document whole: half a list of rules is not a smaller version of
-    /// the rules, it is different rules, applied to an agent nobody chose.
+    /// Nothing is dropped or repaired on this path. A row for a provider the
+    /// registry no longer publishes is kept as the file holds it, so the
+    /// person can see it and pick another provider; a creation naming it is
+    /// refused at resolution. Every other wrong row still refuses the document
+    /// whole: half a list of rules is not a smaller version of the rules, it
+    /// is different rules, applied to an agent nobody chose.
     pub(crate) fn load(runtime_dir: &Path) -> Self {
         let path = runtime_dir.join(PROFILES_FILE);
         let document = match load_document(&path) {
@@ -255,11 +253,17 @@ impl AgentProfilesStore {
     /// nothing here sorts, and nothing here keys a profile by its name.
     pub(crate) fn set(&self, document: AgentProfilesDocument) -> Result<(), ProfilesError> {
         let mut next = document;
-        check_document(&mut next).map_err(ProfilesError::InvalidRequest)?;
         let mut held = self
             .document
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        // A row for a provider the catalog no longer publishes is admitted only
+        // as the store already holds it: saving the rest of the list writes it
+        // back, and any other edit to it is refused until its provider changes.
+        check_document(&mut next, &|row| {
+            held.profiles.iter().any(|stored| stored == row)
+        })
+        .map_err(ProfilesError::InvalidRequest)?;
         write_document(&self.path, &next)?;
         *held = next;
         Ok(())
@@ -276,30 +280,10 @@ impl AgentProfilesStore {
 /// store has to start empty.
 fn load_document(path: &Path) -> Result<AgentProfilesDocument, String> {
     let mut document = read_document(path).map_err(|error| error.to_string())?;
-    // Rows for providers the registry no longer publishes — a removed user
-    // provider — are dropped here, loudly, before validation. Keeping the
-    // rest beats quarantining the whole document (standing instructions
-    // included) for one row nobody can resolve any more; a creation naming
-    // the dropped row gets the honest unknown-profile refusal. Anything
-    // else wrong still refuses the document whole (see `load`). Writes keep
-    // the strict rule: no new row for an unpublished provider can be saved.
-    // One snapshot for the partition, the same rule `check_document` keeps.
-    let registry = crate::session::catalog_registry();
-    document.profiles.retain(|profile| {
-        let known = crate::provider_catalog::catalog_provider_id_for(
-            &registry,
-            profile.provider.trim(),
-        )
-        .is_some();
-        if !known {
-            eprintln!(
-                "agent profiles: profile '{}' names a provider the catalog does not publish; dropping the row and keeping the rest",
-                profile.name
-            );
-        }
-        known
-    });
-    check_document(&mut document)?;
+    // A row for a provider the catalog no longer publishes (a removed user
+    // provider) is kept exactly as the file holds it: the person sees it, can
+    // pick another provider, and saving the rest of the list writes it back.
+    check_document(&mut document, &|_| true)?;
     Ok(document)
 }
 
@@ -332,9 +316,9 @@ fn read_document(path: &Path) -> io::Result<AgentProfilesDocument> {
 
 /// The document as the store will hold it, or the reason it cannot be used.
 ///
-/// Shared by `load` and `set`, so a document the store accepted from the app is
-/// a document it would also accept from its file, and a document it refuses at
-/// load is one it would have refused from the app with the same sentence.
+/// Shared by `load` and `set`. `retained` names the rows admitted with a
+/// provider the catalog no longer publishes: every row at load (the file is
+/// the truth), and at `set` only the rows the store already holds unchanged.
 ///
 /// Every sentence names what is wrong, and by value only where the value has
 /// already been proven bounded — the rule `validate_display_name` states
@@ -343,7 +327,10 @@ fn read_document(path: &Path) -> io::Result<AgentProfilesDocument> {
 /// renders. A name is checked for length first and named by its position; a
 /// provider, model, mode or tool name is checked for length first and only then
 /// named back.
-fn check_document(document: &mut AgentProfilesDocument) -> Result<(), String> {
+fn check_document(
+    document: &mut AgentProfilesDocument,
+    retained: &dyn Fn(&AgentProfile) -> bool,
+) -> Result<(), String> {
     if document.profiles.len() > MAX_PROFILES {
         return Err(format!(
             "the document holds {} profiles, over the {MAX_PROFILES}-profile cap",
@@ -363,7 +350,8 @@ fn check_document(document: &mut AgentProfilesDocument) -> Result<(), String> {
     // against another, accepting a pair no single catalogue ever published.
     let registry = crate::session::catalog_registry();
     for (index, profile) in document.profiles.iter_mut().enumerate() {
-        check_profile(profile, index + 1, &mut ids, &registry)?;
+        let keep_unpublished = retained(&*profile);
+        check_profile(profile, index + 1, &mut ids, &registry, keep_unpublished)?;
     }
     // Enabled profiles may not share a name, document-wide: a creation
     // resolves a profile **by name**, so two enabled ones with one name would
@@ -410,11 +398,15 @@ fn check_document(document: &mut AgentProfilesDocument) -> Result<(), String> {
 /// business — two rows may share one — but the document-level rule below
 /// (`check_document`) refuses two **enabled** rows sharing a name, because a
 /// creation resolves a profile by name.
+///
+/// `keep_unpublished` admits a provider the registry does not publish, stored
+/// as it is; only a row the store already holds may say so.
 fn check_profile(
     profile: &mut AgentProfile,
     position: usize,
     ids: &mut std::collections::HashSet<String>,
     registry: &crate::session::ProviderRegistry,
+    keep_unpublished: bool,
 ) -> Result<(), String> {
     let name = profile.name.trim();
     if name.is_empty() {
@@ -503,13 +495,15 @@ fn check_profile(
             provider.len()
         ));
     }
-    let Some(canonical) = crate::provider_catalog::catalog_provider_id_for(registry, provider)
-    else {
-        return Err(format!(
-            "'{provider}' is not a provider the catalog publishes"
-        ));
-    };
-    profile.provider = canonical;
+    match crate::provider_catalog::catalog_provider_id_for(registry, provider) {
+        Some(canonical) => profile.provider = canonical,
+        None if keep_unpublished => {}
+        None => {
+            return Err(format!(
+                "'{provider}' is not installed: the catalog does not publish it, so pick a provider that is"
+            ));
+        }
+    }
 
     check_required_field(&mut profile.model, "model", position)?;
     check_required_field(&mut profile.mode_id, "mode id", position)?;
@@ -811,7 +805,7 @@ mod tests {
         let mut named = profile("p-1", "On a user row");
         named.provider = "snapshot-agent".to_string();
         let mut ids = std::collections::HashSet::new();
-        check_profile(&mut named, 1, &mut ids, &local)
+        check_profile(&mut named, 1, &mut ids, &local, false)
             .expect("the snapshot handed in is the one consulted");
         assert_eq!(named.provider, "snapshot-agent");
     }
@@ -841,17 +835,18 @@ mod tests {
         // Absent is what older builds wrote: admitted, and left absent.
         let mut bare = profile("p-1", "Bare");
         let mut ids = std::collections::HashSet::new();
-        check_profile(&mut bare, 1, &mut ids, &registry).expect("absent is admitted");
+        check_profile(&mut bare, 1, &mut ids, &registry, false).expect("absent is admitted");
         assert_eq!(bare.model_provider, None);
         // Padded is trimmed to the pair the spawn path resolves.
         let mut padded = profile("p-2", "Padded");
         padded.model_provider = Some("  opencode-go  ".to_string());
-        check_profile(&mut padded, 2, &mut ids, &registry).expect("padded is trimmed");
+        check_profile(&mut padded, 2, &mut ids, &registry, false).expect("padded is trimmed");
         assert_eq!(padded.model_provider.as_deref(), Some("opencode-go"));
         // Over the field cap is refused, like every other id on the row.
         let mut over = profile("p-3", "Over");
         over.model_provider = Some("x".repeat(super::MAX_PROFILE_FIELD_BYTES + 1));
-        let refusal = check_profile(&mut over, 3, &mut ids, &registry).expect_err("over the cap");
+        let refusal =
+            check_profile(&mut over, 3, &mut ids, &registry, false).expect_err("over the cap");
         assert!(
             refusal.contains("over the"),
             "the refusal names the cap: {refusal}"
@@ -899,31 +894,6 @@ mod tests {
             serde_json::to_vec_pretty(&document).expect("json"),
         )
         .expect("seed");
-    }
-
-    #[test]
-    fn load_drops_rows_for_removed_providers_and_keeps_the_rest() {
-        let dir = temp_dir();
-        // A provider the registry never published: `set` would refuse this
-        // document, so the file is seeded by hand — exactly the state a
-        // removed user provider leaves behind. Loading must not quarantine
-        // the whole document for one row nobody can resolve any more.
-        let raw = serde_json::json!({
-            "profiles": [
-                {"id": "p-good", "name": "Good", "provider": "claude", "model": "m", "modeId": "d", "enabledForAgents": false},
-                {"id": "p-gone", "name": "Gone", "provider": "does-not-exist", "model": "m", "modeId": "d", "enabledForAgents": false},
-            ],
-            "standingInstructions": "Stay brief."
-        });
-        std::fs::write(
-            dir.join(PROFILES_FILE),
-            serde_json::to_vec_pretty(&raw).expect("json"),
-        )
-        .expect("seed");
-        let reopened = AgentProfilesStore::load(&dir).document();
-        assert_eq!(names(&reopened), ["Good"]);
-        assert_eq!(reopened.standing_instructions, "Stay brief.");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1616,21 +1586,21 @@ mod tests {
     /// partially repaired and never guessed at.
     #[test]
     fn a_hand_edited_document_the_store_cannot_admit_is_quarantined() {
-        // A provider the catalog does not publish: the row is dropped and
-        // the rest loads — a removed provider must not quarantine the
-        // whole document. The quarantine file stays untouched and the live
-        // file stays in place.
+        // A provider the catalog does not publish is a removed provider: its
+        // row is kept as the file holds it, and nothing is quarantined. The
+        // live file stays in place.
         let dir = temp_dir();
         let mut unresolvable =
             serde_json::to_value(document(vec![profile("p-1", "Ghost")])).expect("the document");
         unresolvable["profiles"][0]["provider"] = serde_json::json!("not-a-provider");
         seed(&dir, unresolvable);
         let store = AgentProfilesStore::load(&dir);
-        assert!(store.document().profiles.is_empty());
+        assert_eq!(names(&store.document()), ["Ghost"]);
+        assert_eq!(store.document().profiles[0].provider, "not-a-provider");
         assert_eq!(
             quarantined(&dir).len(),
             0,
-            "a dead row is dropped, not quarantined"
+            "a removed provider's row is kept, not quarantined"
         );
         assert!(dir.join(PROFILES_FILE).exists());
         let _ = std::fs::remove_dir_all(&dir);
@@ -1746,11 +1716,11 @@ mod tests {
         )
         .expect("a declaration with one choice")];
         crate::provider_feature_probe::record_answer_for_test(
-            &crate::provider_feature_probe::ProbeKey::new("grok"),
+            &crate::provider_feature_probe::ProbeKey::new("qwen"),
             answer,
         );
         let mut other_model = profile("p-grok-b", "Model B profile");
-        other_model.provider = "grok".to_string();
+        other_model.provider = "qwen".to_string();
         other_model.model = "glm-4.7".to_string();
         other_model.features = serde_json::json!({ "engine": "m1", "undeclared": true })
             .as_object()
@@ -1791,7 +1761,7 @@ mod tests {
             "the same provider-wide answer preserves the declared value here"
         );
         crate::provider_feature_probe::remove_answer_for_test(
-            &crate::provider_feature_probe::ProbeKey::new("grok"),
+            &crate::provider_feature_probe::ProbeKey::new("qwen"),
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1806,21 +1776,22 @@ mod tests {
         let mut ids = std::collections::HashSet::new();
 
         let mut absent = profile("p-idle-1", "Absent");
-        check_profile(&mut absent, 1, &mut ids, &registry).expect("an absent field is admitted");
+        check_profile(&mut absent, 1, &mut ids, &registry, false)
+            .expect("an absent field is admitted");
         assert_eq!(absent.idle_close_minutes, None);
 
         let mut off = profile("p-idle-2", "Off");
         off.idle_close_minutes = Some(0);
-        check_profile(&mut off, 2, &mut ids, &registry)
+        check_profile(&mut off, 2, &mut ids, &registry, false)
             .expect("zero is the timer off, not a value out of range");
 
         let mut week = profile("p-idle-3", "A week");
         week.idle_close_minutes = Some(MAX_IDLE_CLOSE_MINUTES);
-        check_profile(&mut week, 3, &mut ids, &registry).expect("a week is the cap");
+        check_profile(&mut week, 3, &mut ids, &registry, false).expect("a week is the cap");
 
         let mut over = profile("p-idle-4", "Over");
         over.idle_close_minutes = Some(MAX_IDLE_CLOSE_MINUTES + 1);
-        let refusal = check_profile(&mut over, 4, &mut ids, &registry)
+        let refusal = check_profile(&mut over, 4, &mut ids, &registry, false)
             .expect_err("a minute over the cap is refused");
         assert_eq!(
             refusal,
@@ -1891,3 +1862,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 }
+
+#[cfg(test)]
+#[path = "agent_profiles_retained_tests.rs"]
+mod retained_tests;

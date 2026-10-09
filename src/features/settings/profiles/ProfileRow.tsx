@@ -26,6 +26,7 @@ function TrashIcon() {
  */
 export function ProfileRow({
   profile,
+  providerMissing,
   isFirst,
   isLast,
   busy,
@@ -38,6 +39,7 @@ export function ProfileRow({
   onDeleteConfirm,
 }: {
   profile: AgentProfile;
+  providerMissing: boolean;
   isFirst: boolean;
   isLast: boolean;
   busy: boolean;
@@ -57,7 +59,10 @@ export function ProfileRow({
       </span>
       <div className="agent-profile-main">
         <span className="profile-name">{profile.name}</span>
-        <span className="profile-meta">{profileMetaText(profile)}</span>
+        <span className="profile-meta">
+          {profileMetaText(profile)}
+          {providerMissing ? " · not installed" : ""}
+        </span>
         {profile.note ? <span className="agent-profile-note">{profile.note}</span> : null}
       </div>
       <div className="profile-row-actions">

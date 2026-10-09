@@ -279,6 +279,17 @@ export function AgentProfileForm({
     providerId !== "" && !providers.some((provider) => provider.id === providerId)
       ? [...providers.map((provider) => provider.id), providerId]
       : providers.map((provider) => provider.id);
+  // A stored provider the catalog no longer lists stays on the row. Until the
+  // person picks an installed one, the other fields are locked and not saved.
+  // With no provider installed at all the picker already says so, and the
+  // rest of the profile stays editable.
+  const providerMissing =
+    !catalogLoading &&
+    catalogError === null &&
+    providers.length > 0 &&
+    providerId !== "" &&
+    !providers.some((provider) => provider.id === providerId);
+  const locked = busy || providerMissing;
 
   // An edit keeps a stored model no row resolves visible and selected,
   // labelled as the saved one: unknown to the catalog, a stale pair with
@@ -372,7 +383,7 @@ export function AgentProfileForm({
         <input
           aria-label="Profile name"
           value={name}
-          disabled={busy}
+          disabled={locked}
           onChange={(event) => {
             setName(event.target.value);
             userChanged({ name: event.target.value });
@@ -396,7 +407,7 @@ export function AgentProfileForm({
           ) : null}
           {providerChoices.map((id) => (
             <option key={id} value={id}>
-              {id}
+              {id === providerId && providerMissing ? `${id} (not installed)` : id}
             </option>
           ))}
         </select>
@@ -416,10 +427,10 @@ export function AgentProfileForm({
       {!vocabularySupported ? (
         <p className="device-field-hint">{VOCABULARY_UNAVAILABLE_TEXT}</p>
       ) : null}
-      {vocabularySupported && providerId !== "" && !vocabularyKnown ? (
+      {vocabularySupported && !providerMissing && providerId !== "" && !vocabularyKnown ? (
         <div role="status">Asking the daemon what {providerId} offers…</div>
       ) : null}
-      {vocabularyError !== null ? (
+      {vocabularyError !== null && !providerMissing ? (
         <p className="device-field-hint">
           <ErrorText
             sentence={`The vocabulary query failed (${vocabularyError.sentence}); type the model and mode below; what you type is checked when the session starts.`}
@@ -428,7 +439,7 @@ export function AgentProfileForm({
           />
         </p>
       ) : null}
-      {(!vocabularySupported || vocabularyKnown) && providers.length > 0 ? (
+      {!providerMissing && (!vocabularySupported || vocabularyKnown) && providers.length > 0 ? (
         <>
           <VocabularyField
             label="Model"
@@ -437,7 +448,7 @@ export function AgentProfileForm({
                 ? model
                 : (matchedModel?.modelId ?? modelKeyOf(modelProvider, model))
             }
-            busy={busy}
+            busy={locked}
             freeText={modelsView.freeText}
             hint={piModelsHint ?? modelsView.hint}
             waitingLabel={modelsWaiting ? PI_MODELS_READING_TEXT : undefined}
@@ -461,7 +472,7 @@ export function AgentProfileForm({
               <select
                 aria-label="Effort"
                 value={thinkingOptionId}
-                disabled={busy}
+                disabled={locked}
                 onChange={(event) => {
                   setThinkingOptionId(event.target.value);
                   userChanged({ thinkingOptionId: event.target.value });
@@ -484,7 +495,7 @@ export function AgentProfileForm({
                 aria-label="Effort"
                 aria-describedby={thinkingHintId}
                 value={thinkingOptionId}
-                disabled={busy}
+                disabled={locked}
                 onChange={(event) => {
                   setThinkingOptionId(event.target.value);
                   userChanged({ thinkingOptionId: event.target.value });
@@ -498,7 +509,7 @@ export function AgentProfileForm({
           <VocabularyField
             label="Mode"
             value={modeId}
-            busy={busy}
+            busy={locked}
             freeText={modesView.freeText}
             hint={modesView.hint}
             suggestion={
@@ -521,7 +532,7 @@ export function AgentProfileForm({
         <textarea
           aria-label="Profile note"
           value={note}
-          disabled={busy}
+          disabled={locked}
           rows={2}
           onChange={(event) => {
             setNote(event.target.value);
@@ -535,7 +546,7 @@ export function AgentProfileForm({
         <textarea
           aria-label="Profile instructions"
           value={spawnPrompt}
-          disabled={busy}
+          disabled={locked}
           rows={2}
           onChange={(event) => {
             setSpawnPrompt(event.target.value);
@@ -560,7 +571,7 @@ export function AgentProfileForm({
               <input
                 aria-label="Profile icon"
                 value={icon}
-                disabled={busy}
+                disabled={locked}
                 onChange={(event) => {
                   setIcon(event.target.value);
                   userChanged({ icon: event.target.value });
@@ -572,7 +583,7 @@ export function AgentProfileForm({
               probing={probing}
               askedAndFailed={askedAndFailed}
               features={features}
-              busy={busy}
+              busy={locked}
               onChange={(next) => {
                 setFeatures(next);
                 userChanged({ features: next });
@@ -583,7 +594,7 @@ export function AgentProfileForm({
                 type="checkbox"
                 aria-label="Available to agents"
                 checked={enabledForAgents}
-                disabled={busy}
+                disabled={locked}
                 onChange={(event) => {
                   setEnabledForAgents(event.target.checked);
                   userChanged({ enabledForAgents: event.target.checked });
@@ -602,7 +613,7 @@ export function AgentProfileForm({
                 max={MAX_IDLE_CLOSE_MINUTES}
                 step={1}
                 value={idleMinutes}
-                disabled={busy || idleOff}
+                disabled={locked || idleOff}
                 onChange={(event) => {
                   const raw = event.target.value;
                   const minutes = idleMinutesOf(raw);
@@ -620,7 +631,7 @@ export function AgentProfileForm({
                 type="checkbox"
                 aria-label="Never close idle children"
                 checked={idleOff}
-                disabled={busy}
+                disabled={locked}
                 onChange={(event) => {
                   const off = event.target.checked;
                   setIdleOff(off);
@@ -635,7 +646,7 @@ export function AgentProfileForm({
             </label>
             <AgentProfileOverlayEditor
               overlay={overlay}
-              busy={busy}
+              busy={locked}
               onChange={(next) => {
                 setOverlay(next);
                 userChanged({ overlay: next });
@@ -657,7 +668,7 @@ export function AgentProfileForm({
         <button
           type="button"
           className="settings-device-action"
-          disabled={busy || (mode === "create" && (catalogLoading || providers.length === 0))}
+          disabled={locked || (mode === "create" && (catalogLoading || providers.length === 0))}
           onClick={submit}
         >
           {mode === "create" ? "Create profile" : "Save"}

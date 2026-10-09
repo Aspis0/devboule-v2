@@ -45,7 +45,9 @@ import {
 } from "./agentsPanelTestQueries";
 
 describe("Settings agents panel — sentence uniqueness", () => {
-  useAgentsPanelDom(() => [makeProvider()]);
+  // The profile fixtures name `grok`, so it is installed here: an edit of a
+  // profile whose provider is not installed is a different state, locked.
+  useAgentsPanelDom(() => [makeProvider(), makeProvider({ id: "grok" })]);
 
   it("gives every state its own sentence: no two rendered sentences are equal or substrings", async () => {
     // The property the sentences exist for, held over the render itself:

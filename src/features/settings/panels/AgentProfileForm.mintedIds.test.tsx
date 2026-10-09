@@ -31,7 +31,8 @@ import {
 } from "./agentsPanelTestQueries";
 
 describe("Settings agents panel — new profile form: adopting the daemon's minted ids", () => {
-  useAgentsPanelDom(() => [makeProvider()]);
+  // The profile fixtures name `grok`, so it is installed here.
+  useAgentsPanelDom(() => [makeProvider(), makeProvider({ id: "grok" })]);
 
   /** The agents tick lives in the editor under Advanced: open, flip, save. */
   async function toggleAgentsTick(name: string) {
