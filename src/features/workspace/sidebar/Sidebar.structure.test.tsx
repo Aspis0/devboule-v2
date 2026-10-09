@@ -255,6 +255,20 @@ describe("the sidebar's top actions", () => {
     expect(onNewWorkspace.mock.calls[0][1]).toBe("project-alpha");
   });
 
+  it("opens the add-project flow when there is no project to host a workspace", async () => {
+    const onAddProject = vi.fn();
+    await render({
+      onAddProject,
+      tree: { ...(sidebarProps().tree as SidebarProps["tree"]), projects: [] },
+    });
+
+    await act(async () => namedButton("New workspace").click());
+
+    // Never a silent no-op: with no project the action leads to project creation.
+    expect(onAddProject).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(".sidebar-action-menu")).toBeNull();
+  });
+
   it("ends each project with its own New workspace row", async () => {
     const onNewWorkspace = vi.fn();
     await render({

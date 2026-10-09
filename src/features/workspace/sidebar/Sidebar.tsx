@@ -139,6 +139,12 @@ export function Sidebar({
   const newWorkspaceProjects: readonly WorkspaceProject[] = tree.projects;
   const newWorkspace = useCallback(
     (trigger: HTMLButtonElement) => {
+      // No project can host a workspace yet: lead to project creation
+      // instead of a silent no-op.
+      if (newWorkspaceProjects.length === 0) {
+        onAddProject();
+        return;
+      }
       // One project takes the click straight to its create flow; several ask
       // which project the workspace belongs to, in a menu off this row.
       if (newWorkspaceProjects.length === 1) {
@@ -147,7 +153,7 @@ export function Sidebar({
       }
       setProjectMenuOpen((open) => !open);
     },
-    [newWorkspaceProjects, tree],
+    [newWorkspaceProjects, onAddProject, tree],
   );
 
   const searchField = (
