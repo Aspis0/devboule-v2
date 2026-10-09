@@ -2471,16 +2471,6 @@ fn catalog_from_responses(
         let Some(id) = model.get("id").and_then(Value::as_str) else {
             continue;
         };
-        let map_efforts = model
-            .get("thinkingLevelMap")
-            .and_then(Value::as_object)
-            .map(|map| {
-                map.iter()
-                    .filter(|(_, value)| !value.is_null())
-                    .map(|(id, _)| effort(id, false))
-                    .collect::<Vec<_>>()
-            })
-            .filter(|efforts| !efforts.is_empty());
         let efforts = if catalog.current_model_id.as_deref() == Some(id) {
             Some(
                 catalog
@@ -2490,7 +2480,7 @@ fn catalog_from_responses(
                     .collect(),
             )
         } else {
-            map_efforts
+            listed_thinking_levels(model)
         };
         catalog.models.insert(
             id.to_string(),
@@ -2517,6 +2507,27 @@ fn catalog_from_responses(
         ));
     }
     Ok(catalog)
+}
+
+/// The levels pi lists for a model that is not running, by pi's own rule
+/// (`getSupportedThinkingLevels`): a model that does not reason has no
+/// control, and otherwise every level its `thinkingLevelMap` does not null
+/// out. `xhigh` and `max` exist only when the map names them.
+fn listed_thinking_levels(model: &Value) -> Option<Vec<SessionModelEffort>> {
+    if model.get("reasoning").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let map = model.get("thinkingLevelMap").and_then(Value::as_object);
+    let levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+        .into_iter()
+        .filter(|level| match map.and_then(|map| map.get(*level)) {
+            Some(Value::Null) => false,
+            Some(_) => true,
+            None => !matches!(*level, "xhigh" | "max"),
+        })
+        .map(|level| effort(level, false))
+        .collect::<Vec<_>>();
+    (!levels.is_empty()).then_some(levels)
 }
 
 fn effort(id: &str, default: bool) -> SessionModelEffort {
@@ -4640,3 +4651,7 @@ mod local_command_replay_tests;
 #[cfg(test)]
 #[path = "pi_local_command_window_tests.rs"]
 mod local_command_window_tests;
+
+#[cfg(test)]
+#[path = "pi_model_levels_tests.rs"]
+mod model_levels_tests;
