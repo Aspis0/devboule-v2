@@ -168,13 +168,13 @@ describe("HistoryPanel", () => {
     expect(activation.getAttribute("aria-disabled")).toBe("true");
   });
 
-  it("shows the journal totals in one quiet, human-readable line", async () => {
+  it("shows the journal count in one quiet line, no size", async () => {
     const usage = baseUsage();
     usage.totalBytes = 17_928_791;
     usage.sessionCount = 163;
     await renderPanel(usage);
     const summary = container.querySelector<HTMLElement>(".history-usage");
-    expect(summary?.textContent).toBe("163 saved sessions · 17.9 MB");
+    expect(summary?.textContent).toBe("163 saved sessions");
   });
 
   it("keeps the relative day count aligned with the row's calendar-day heading", async () => {
@@ -640,11 +640,9 @@ describe("HistoryPanel", () => {
     expect(container.textContent).toContain("Agent s.4242.7");
   });
 
-  it("shows a quiet saved-session count and human-readable size", async () => {
+  it("shows a quiet saved-session count", async () => {
     await renderPanel();
-    expect(container.querySelector(".history-usage")?.textContent).toBe(
-      "2 saved sessions · 12.3 KB",
-    );
+    expect(container.querySelector(".history-usage")?.textContent).toBe("2 saved sessions");
   });
 
   it("shows Reopen only where the daemon's verdict says resume", async () => {

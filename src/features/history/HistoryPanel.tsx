@@ -480,7 +480,7 @@ export function HistoryPanel({
       {usage ? (
         <>
           <div className="history-usage" aria-label="Saved journal totals">
-            {formatCount(usage.sessionCount)} saved sessions · {formatSavedSize(usage.totalBytes)}
+            {formatCount(usage.sessionCount)} saved sessions
           </div>
           <label className="history-show-all">
             <input
@@ -570,15 +570,4 @@ function Alert({ sentence, id }: { sentence: ErrorSentence; id: string }) {
       <ErrorText sentence={sentence.sentence} detail={sentence.detail} id={id} />
     </div>
   );
-}
-
-function formatSavedSize(bytes: number): string {
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let size = Math.max(0, bytes);
-  let unit = 0;
-  while (size >= 1000 && unit < units.length - 1) {
-    size /= 1000;
-    unit += 1;
-  }
-  return unit === 0 ? `${formatCount(size)} ${units[unit]}` : `${size.toFixed(1)} ${units[unit]}`;
 }
