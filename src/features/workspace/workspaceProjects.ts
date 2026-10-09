@@ -12,6 +12,7 @@ import { workspaceDisplayTitles } from "../../lib/workspaceTitles";
 import type { Project, Session, Workspace } from "../../types/ipc";
 import { isAgentKind } from "../../types/ipc";
 import { sessionNeedsApproval } from "./sessionAttention";
+import { useRemoteHosts, type RemoteHostSnapshot } from "./workspaceDaemon";
 import {
   LOCAL_HOST_ID,
   localWorkspaceKey,
@@ -73,10 +74,37 @@ function onLocalHost(workspaces: readonly Workspace[]): HostWorkspace[] {
   return workspaces.map((workspace) => ({ ...workspace, hostId: LOCAL_HOST_ID }));
 }
 
-interface ProjectRecord extends Project {
+export interface ProjectRecord extends Project {
   hostId: HostId;
   workspaces: HostWorkspace[];
   workspaceError?: ErrorSentence;
+}
+
+/**
+ * The records a host's snapshot contributes, keyed by the composite identity
+ * (host, project): two machines may mint the same project and workspace ids,
+ * and the sidebar must keep them apart. A host with no workspaces contributes
+ * its project rows with empty workspace lists — the tree renders no empty
+ * host section because it is built from workspaces, not from this list.
+ */
+export function remoteProjectRecords(
+  hosts: ReadonlyMap<string, RemoteHostSnapshot>,
+): ProjectRecord[] {
+  const records: ProjectRecord[] = [];
+  for (const host of hosts.values()) {
+    const hostId = host.deviceId as HostId;
+    for (const project of host.projects) {
+      records.push({
+        ...project,
+        hostId,
+        workspaces: (host.workspaces.get(project.id) ?? []).map((workspace) => ({
+          ...workspace,
+          hostId,
+        })),
+      });
+    }
+  }
+  return records;
 }
 
 export function reconcileProjectRecords(
@@ -249,20 +277,29 @@ export function useWorkspaceProjects(restoredWorkspaceKey: WorkspaceKey | null) 
   // retryProjects; manual retries go through the same path.
   // The session index is built once per roster, not once per project.
   const sessionIndex = useMemo(() => buildSessionIndex(sessionFacts), [sessionFacts]);
+  // The local records are the mutable ones; the remote hosts' rows come from
+  // the watch store and are replaced wholesale when a snapshot reloads or a
+  // revoke drops the host.
+  const remoteHosts = useRemoteHosts();
+  const remoteRecords = useMemo(() => remoteProjectRecords(remoteHosts.hosts), [remoteHosts]);
+  const allRecords = useMemo(
+    () => [...projectRecords, ...remoteRecords],
+    [projectRecords, remoteRecords],
+  );
   const projectViews = useMemo(
-    () => projectRecords.map((project) => projectView(project, sessionIndex)),
-    [projectRecords, sessionIndex],
+    () => allRecords.map((project) => projectView(project, sessionIndex)),
+    [allRecords, sessionIndex],
   );
 
   useEffect(() => {
     if (loading || error !== null) return;
-    const keys = projectRecords
+    const keys = allRecords
       .flatMap((project) => project.workspaces.map(keyOfWorkspace))
       .filter((key) => key !== null);
     setSelectedKey((current) =>
       current !== null && keys.includes(current) ? current : (keys[0] ?? null),
     );
-  }, [error, loading, projectRecords]);
+  }, [allRecords, error, loading]);
 
   const setSessionFacts = useCallback((sessions: readonly Session[]) => {
     setSessionFactsState([...sessions]);

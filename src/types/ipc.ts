@@ -2348,6 +2348,13 @@ export interface PeerRow {
    * shows peers, not this field.
    */
   pairedByUser: string | null;
+  /**
+   * Whether the daemon recorded this peer as hosting workspaces. The pairing
+   * payload (or an authenticated hello that claimed hosting) sets it; a claim
+   * that denies it never clears it. Absent on a payload from before the field,
+   * which reads as not hosting.
+   */
+  hostsWorkspaces?: boolean;
   online: boolean;
 }
 
@@ -2501,6 +2508,12 @@ export interface RemoteHostStatus {
   deviceId: string;
   state: RemoteHostState;
   lastFailure?: string;
+  /**
+   * The host's workspace revision, on a push that reports one. A watcher
+   * reloads that host's snapshots when this number moves or the link comes
+   * back. Absent on a state change with nothing new to reload.
+   */
+  revision?: number | null;
 }
 
 /**

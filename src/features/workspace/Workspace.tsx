@@ -105,6 +105,7 @@ import { keyOfWorkspace, useWorkspaceProjects } from "./workspaceProjects";
 import { getLastSelectedWorkspaceKey, setLastSelectedWorkspaceKey } from "./lastSelectedWorkspace";
 import { Sidebar } from "./sidebar/Sidebar";
 import { hostNames } from "./sidebar/hostNames";
+import { LOCAL_HOST_ID, type HostId } from "./hosts/hostIdentity";
 import type { WorkspaceTreeProps } from "./sidebar/WorkspaceTree";
 import { HistoryPanel } from "../history/HistoryPanel";
 import { StatusBar, agentStateOf, type FocusedAgent } from "./statusBar/StatusBar";
@@ -351,6 +352,14 @@ export function Workspace({
   // Each host's short label by id, local first: the sidebar rows' second
   // line and the History page's host filter read the same map.
   const hostNameMap = useMemo(() => hostNames(devices), [devices]);
+  // The local machine answers by construction; a peer's state is the union
+  // the daemon reports (inbound or outbound link), so both Devices panels
+  // read online for the same connection.
+  const hostOnlineMap = useMemo(() => {
+    const online = new Map<HostId, boolean>([[LOCAL_HOST_ID, true]]);
+    for (const peer of devices.peers) online.set(peer.deviceId as HostId, peer.online);
+    return online;
+  }, [devices]);
   const historyHosts = useMemo(
     () => [...hostNameMap].map(([id, name]) => ({ id, name })),
     [hostNameMap],
@@ -2041,6 +2050,7 @@ export function Workspace({
       stats: workspaceStats,
       branches: workspaceBranches,
       hostNames: hostNameMap,
+      hostOnline: hostOnlineMap,
     }),
     [
       visibleProjects,
@@ -2059,6 +2069,7 @@ export function Workspace({
       workspaceStats,
       workspaceBranches,
       hostNameMap,
+      hostOnlineMap,
     ],
   );
   return (

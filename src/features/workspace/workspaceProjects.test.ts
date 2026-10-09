@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import type { Session, Workspace } from "../../types/ipc";
 import { LOCAL_HOST_ID, type HostId } from "./hosts/hostIdentity";
+import type { RemoteHostSnapshot } from "./workspaceDaemon";
 import {
   projectView,
   reconcileProjectRecords,
+  remoteProjectRecords,
   workspaceView,
   type HostWorkspace,
 } from "./workspaceProjects";
@@ -223,5 +225,48 @@ describe("projectView", () => {
       "devboule-v2",
       "devboule-v2 2",
     ]);
+  });
+});
+
+describe("remoteProjectRecords", () => {
+  const host = (deviceId: string): RemoteHostSnapshot => ({
+    deviceId,
+    displayName: deviceId,
+    online: true,
+    hostsWorkspaces: true,
+    projects: [{ id: "project-1", name: "devboule-v2", path: "C:/devboule" }],
+    workspaces: new Map([["project-1", [workspace]]]),
+    revision: 1,
+  });
+
+  it("keeps identical project and workspace ids from two hosts apart", () => {
+    const records = remoteProjectRecords(
+      new Map([
+        ["device-one", host("device-one")],
+        ["device-two", host("device-two")],
+      ]),
+    );
+
+    expect(records.map((record) => record.hostId)).toEqual(["device-one", "device-two"]);
+    const keys = records.flatMap((record) =>
+      record.workspaces.map((entry) => `${entry.hostId}:${entry.id}`),
+    );
+    expect(new Set(keys).size).toBe(2);
+  });
+
+  it("contributes nothing for a host with no projects", () => {
+    const empty: RemoteHostSnapshot = {
+      ...host("device-three"),
+      projects: [],
+      workspaces: new Map(),
+    };
+    expect(remoteProjectRecords(new Map([["device-three", empty]]))).toEqual([]);
+  });
+
+  it("keeps a project whose workspace list has not arrived yet", () => {
+    const pending: RemoteHostSnapshot = { ...host("device-four"), workspaces: new Map() };
+    const records = remoteProjectRecords(new Map([["device-four", pending]]));
+    expect(records.map((record) => record.id)).toEqual(["project-1"]);
+    expect(records[0].workspaces).toEqual([]);
   });
 });

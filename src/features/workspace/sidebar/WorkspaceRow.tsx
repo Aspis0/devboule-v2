@@ -102,7 +102,15 @@ export interface WorkspaceRowProps {
   onRename: (workspaceId: string, title: string) => Promise<ErrorSentence | null>;
   /** Deletes the workspace and answers with the refusal, if one came back. */
   onDelete: (workspaceId: string) => Promise<ErrorSentence | null>;
+  /** A workspace on another machine: read-only here until host-targeted
+   * mutations land, and its second line may carry the offline label. */
+  remote?: boolean;
+  /** Whether that host answers right now. */
+  hostOffline?: boolean;
 }
+
+/** The one word a row on an unreachable host carries. */
+const OFFLINE_LABEL = "offline";
 
 /**
  * One workspace row. Memoised: the daemon republishes every two seconds and
@@ -120,6 +128,8 @@ export const WorkspaceRow = memo(function WorkspaceRow({
   onSelect,
   onRename,
   onDelete,
+  remote = false,
+  hostOffline = false,
 }: WorkspaceRowProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -206,6 +216,9 @@ export const WorkspaceRow = memo(function WorkspaceRow({
   }, [confirming]);
 
   const openMenu = (event: { preventDefault: () => void }) => {
+    // A remote row has no local rename or delete to offer: the bare id would
+    // be sent to this machine's daemon, which is not the workspace's owner.
+    if (remote) return;
     event.preventDefault();
     setMenuOpen(true);
   };
@@ -322,11 +335,13 @@ export const WorkspaceRow = memo(function WorkspaceRow({
     stat !== undefined && stat.additions + stat.deletions > 0
       ? `+${stat.additions} −${stat.deletions}`
       : null;
-  const twoLines = subBranch !== null || subHost !== null || totals !== null;
+  const twoLines =
+    subBranch !== null || subHost !== null || totals !== null || (remote && hostOffline);
   // The visible label leads the name; a branch or host standing in for the
   // title is followed by the title, so the row stays findable by what it is
   // called — and the name says each thing once, never the project's name twice.
   const nameParts = [label];
+  if (remote && hostOffline) nameParts.push(OFFLINE_LABEL);
   if (label !== workspace.displayTitle) nameParts.push(workspace.displayTitle);
   if (!nameParts.includes(projectName)) nameParts.push(projectName);
   if (subHost !== null && !nameParts.includes(hostName)) nameParts.push(hostName);
@@ -433,6 +448,9 @@ export const WorkspaceRow = memo(function WorkspaceRow({
                       {subHost}
                     </span>
                   )}
+                  {remote && hostOffline ? (
+                    <span className="workspace-row-offline">{OFFLINE_LABEL}</span>
+                  ) : null}
                   {totals === null ? null : <span className="workspace-row-totals">{totals}</span>}
                 </span>
               ) : null}

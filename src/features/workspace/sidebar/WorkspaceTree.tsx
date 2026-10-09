@@ -4,7 +4,7 @@ import { firstGrapheme } from "../../../lib/graphemeBound";
 import type { ErrorSentence } from "../../../lib/errorSentence";
 import type { WorkspaceProject } from "../workspaceProjects";
 import { keyOfWorkspace } from "../workspaceProjects";
-import type { HostId, WorkspaceKey } from "../hosts/hostIdentity";
+import { LOCAL_HOST_ID, type HostId, type WorkspaceKey } from "../hosts/hostIdentity";
 import { avatarStyle } from "./avatars";
 import { hostLabel } from "./hostNames";
 import { WorkspaceRow } from "./WorkspaceRow";
@@ -34,6 +34,9 @@ export interface WorkspaceTreeProps {
   branches: ReadonlyMap<WorkspaceKey, string>;
   /** Each host's short label by id, for the rows' second line. */
   hostNames: ReadonlyMap<HostId, string>;
+  /** Whether each host answers right now; the local host always does. A
+   * surface that does not carry the map treats every host as offline. */
+  hostOnline?: ReadonlyMap<HostId, boolean>;
 }
 
 /**
@@ -70,6 +73,7 @@ export function WorkspaceTree({
   stats,
   branches,
   hostNames,
+  hostOnline,
 }: WorkspaceTreeProps) {
   // Derived once per project list, not once per render: two headers may hold
   // the same name, and only the folder separates them.
@@ -166,9 +170,10 @@ export function WorkspaceTree({
               {project.workspaces.map((workspace) => {
                 const key = keyOfWorkspace(workspace);
                 const selected = key !== null && selectedWorkspace === key;
+                const local = project.hostId === LOCAL_HOST_ID;
                 return (
                   <WorkspaceRow
-                    key={workspace.id}
+                    key={key ?? workspace.id}
                     workspace={workspace}
                     workspaceKey={key}
                     projectName={project.name}
@@ -179,17 +184,23 @@ export function WorkspaceTree({
                     onSelect={onSelectWorkspace}
                     onRename={onRenameWorkspace}
                     onDelete={onDeleteWorkspace}
+                    remote={!local}
+                    hostOffline={!local && !(hostOnline?.get(project.hostId) ?? false)}
                   />
                 );
               })}
-              <button
-                type="button"
-                className="workspace-project-new"
-                onClick={(event) => onNewWorkspace(event.currentTarget, project.id)}
-                aria-label={`New workspace in ${project.name}`}
-              >
-                <span aria-hidden="true">+</span> New workspace
-              </button>
+              {/* A remote project's "+ New workspace" belongs to its host and
+                  is not built yet; it must never fall through to this daemon. */}
+              {project.hostId === LOCAL_HOST_ID ? (
+                <button
+                  type="button"
+                  className="workspace-project-new"
+                  onClick={(event) => onNewWorkspace(event.currentTarget, project.id)}
+                  aria-label={`New workspace in ${project.name}`}
+                >
+                  <span aria-hidden="true">+</span> New workspace
+                </button>
+              ) : null}
             </div>
             {providerMenuAnchorProjectId === project.id ? providerMenu : null}
           </div>
