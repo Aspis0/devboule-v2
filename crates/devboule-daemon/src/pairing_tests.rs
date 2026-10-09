@@ -1936,10 +1936,11 @@ fn a_roleless_initiator_downgrades_only_on_a_role_tag_or_a_close() {
 /// can be *offered* that wire: the first connection answers the roleless
 /// prelude with a role tag (the explicit version rejection), the second speaks
 /// the whole v30 codec and then holds the answer until `release` says a person
-/// confirmed.
+/// confirmed. `own_tag` is the role byte this old responder declares.
 fn v30_responder_offering_the_old_wire(
     listener: std::net::TcpListener,
     code: PairingSecret,
+    own_tag: PeerRole,
     release: std::sync::mpsc::Receiver<bool>,
 ) {
     use std::io::{Read as _, Write as _};
@@ -1954,12 +1955,11 @@ fn v30_responder_offering_the_old_wire(
         .expect("the roleless version byte");
     assert_eq!(version[0], PAIR_VERSION_V2);
     first
-        .write_all(&[ROLE_CLIENT_TAG])
+        .write_all(&[role_tag(own_tag)])
         .expect("the v30 role tag");
     drop(first);
 
-    // Connection two: the v30 codec, with a client tag of our own so the
-    // topology is complementary.
+    // Connection two: the v30 codec.
     let (mut stream, _) = accept_bounded(&listener);
     let deadline = Instant::now() + bound::THREAD;
     stream.read_exact(&mut magic).expect("the second magic");
@@ -1968,7 +1968,7 @@ fn v30_responder_offering_the_old_wire(
         .map_err(|end| prelude_error(end).to_string())
         .expect("the initiator's tag");
     let initiator_tag = role_from_tag(tag_byte).expect("a known role tag");
-    write_prelude(&mut stream, role_tag(PeerRole::Client), deadline).expect("our tag");
+    write_prelude(&mut stream, role_tag(own_tag), deadline).expect("our tag");
     let password = spake2::Password::new(code.as_str().as_bytes());
     let responder_identity = spake2::Identity::new(PAIR_RESPONDER_ID);
     let initiator_identity = spake2::Identity::new(PAIR_INITIATOR_ID);
@@ -1985,7 +1985,7 @@ fn v30_responder_offering_the_old_wire(
         .finish(&their_message[..their_len])
         .expect("the spake key");
     let (private, public) = test_keypair();
-    let mut psk = derive_psk(&spake_key, initiator_tag, PeerRole::Client);
+    let mut psk = derive_psk(&spake_key, initiator_tag, own_tag);
     spake_key.zeroize();
     let session = responder_handshake(
         &stream,
@@ -2005,7 +2005,7 @@ fn v30_responder_offering_the_old_wire(
     let our_payload = PairPayload {
         device_id: "6f1e5b7a-0000-4000-8000-00000000c0af".to_string(),
         display_name: "Old peer".to_string(),
-        role: Some(PeerRole::Client),
+        role: Some(own_tag),
         workspace_host: None,
         public_key: base64_encode(&public),
         listen_port: None,
@@ -2025,14 +2025,48 @@ fn v30_responder_offering_the_old_wire(
     .expect("the answer");
 }
 
-/// The exact exploit the review found: a v32 initiator is talked onto the v30
-/// wire by a role tag where the version byte belongs, and the v30 daemon tag
-/// used to be answered at once. It must not be. The initiator reports the
-/// pairing as pending, no row exists before the person at the code-displaying
-/// device confirms, and the row appears only after that answer.
+/// A pre-32 responder that only ever rejects the roleless prelude and then
+/// proves no v30 retry follows: one connection gets the role tag, and a second
+/// connection inside the watch window panics the thread.
+fn v30_responder_rejecting_the_roleless_wire(listener: std::net::TcpListener) {
+    use std::io::{Read as _, Write as _};
+    let (mut first, _) = accept_bounded(&listener);
+    let mut magic = [0u8; 4];
+    first.read_exact(&mut magic).expect("the first magic");
+    assert_eq!(magic, PAIRING_MAGIC);
+    let mut version = [0u8; 1];
+    first
+        .read_exact(&mut version)
+        .expect("the roleless version byte");
+    assert_eq!(version[0], PAIR_VERSION_V2);
+    first
+        .write_all(&[ROLE_CLIENT_TAG])
+        .expect("the v30 role tag");
+    drop(first);
+
+    listener
+        .set_nonblocking(true)
+        .expect("the watch listener goes non-blocking");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        match listener.accept() {
+            Ok(_) => panic!("the initiator retried a v30 exchange it must refuse"),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("the watch listener failed: {error}"),
+        }
+    }
+}
+
+/// The exploit the review found, on the *initiator* side: this device hosts a
+/// workspace, so its v30 tag is `daemon`, and the old code-displaying device
+/// would answer that tag by itself without anyone there confirming. Our side
+/// must not complete a pairing the other side never confirmed. It refuses with
+/// a sentence that says to update the other device, and tries nothing else.
 #[test]
-fn a_v32_initiator_offered_the_v30_path_still_waits_for_confirmation() {
-    let (dir, server) = server("downgrade-confirm");
+fn a_v32_host_refuses_the_v30_fallback() {
+    let (dir, server) = server("downgrade-refuse");
     // A workspace makes this device's synthesized v30 tag a daemon, which is
     // the tag the old auto-accept path keyed on.
     let project_dir = dir.join("project");
@@ -2058,27 +2092,68 @@ fn a_v32_initiator_offered_the_v30_path_still_waits_for_confirmation() {
     let (code, _expires_at) = service.start().expect("a code");
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let address = listener.local_addr().expect("addr").to_string();
-    let (release, wait) = mpsc::channel::<bool>();
-    let responder_code = code.clone();
     let responder = std::thread::spawn(move || {
-        v30_responder_offering_the_old_wire(listener, responder_code, wait);
+        v30_responder_rejecting_the_roleless_wire(listener);
     });
 
-    let outcome = service
+    let error = service
         .complete(&server, &address, &code)
-        .expect("the exchange completes on the v30 wire");
-    let PairingOutcome::Pending(pending) = outcome;
-    assert_eq!(
-        pending.role,
-        Some(PeerRole::Client),
-        "the far side's client tag projects onto the pending card"
+        .expect_err("a hosted device must refuse a pairing the other side cannot confirm");
+    let message = error.to_string();
+    assert!(
+        message.contains("old version") && message.contains("update"),
+        "the refusal says what to do: {message}"
     );
     assert!(
         server.peers().expect("rows").is_empty(),
-        "the v30 tag must not write a row before the confirmation"
+        "a refused fallback writes no row"
+    );
+    assert!(
+        service.pending_snapshot().is_empty(),
+        "a refused fallback parks nothing"
+    );
+    join_bounded(responder, "the refusing v30 responder");
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The other direction of the same rule: this device does not host, so its v30
+/// tag is `client`, which the old code always parked for its own person. That
+/// pairing is legitimate — the person there confirms it — and completes once
+/// the answer arrives, with the far side's daemon tag recorded as the machine
+/// scope.
+#[test]
+fn a_client_device_completes_a_v30_pairing_after_the_far_side_confirms() {
+    let (dir, server) = server("downgrade-client");
+    assert!(!server.has_hosted_workspace(), "this device is a client");
+    let service = PairingService::new();
+    assert!(server
+        .set_peer_transport(Arc::new(crate::peer_transport::TestTransport::default()))
+        .is_ok());
+    let (code, _expires_at) = service.start().expect("a code");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let address = listener.local_addr().expect("addr").to_string();
+    let (release, wait) = mpsc::channel::<bool>();
+    let responder_code = code.clone();
+    let responder = std::thread::spawn(move || {
+        v30_responder_offering_the_old_wire(listener, responder_code, PeerRole::Daemon, wait);
+    });
+
+    let PairingOutcome::Pending(pending) = service
+        .complete(&server, &address, &code)
+        .expect("the v30 exchange completes on the client path");
+    assert_eq!(
+        pending.role,
+        Some(PeerRole::Daemon),
+        "the far side's daemon tag is the machine scope on the card"
+    );
+    assert!(
+        server.peers().expect("rows").is_empty(),
+        "no row before the far side's person confirms"
     );
 
-    release.send(true).expect("the person confirms");
+    release.send(true).expect("the far side confirms");
     let deadline = Instant::now() + bound::THREAD;
     loop {
         if server.peers().expect("rows").len() == 1 {
@@ -2092,9 +2167,137 @@ fn a_v32_initiator_offered_the_v30_path_still_waits_for_confirmation() {
     }
     let rows = server.peers().expect("rows");
     assert_eq!(rows[0].display_name, "Old peer");
-    assert!(!rows[0].legacy_dialable, "a client tag is no dial hint");
+    assert!(rows[0].legacy_dialable, "the daemon tag is the dial hint");
+    assert!(
+        rows[0].hosts_workspaces,
+        "and it is the machine-scope record"
+    );
     join_bounded(responder, "the v30 responder");
 
     drop(server);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The pairing ceremony records which side hosts workspaces, and the session
+/// scope is read from that record later — never from a live hello. B hosts a
+/// workspace here and A does not: A's row for B is the machine-scope record
+/// (the narrow one), B's row for A is the client-scope record, and neither
+/// needed a `workspaceHost` word after the pairing.
+#[test]
+fn a_roleless_pairing_records_the_peers_workspace_presence() {
+    let (dir_a, server_a) = server("presence-a");
+    let (dir_b, server_b) = server("presence-b");
+    let project_dir = dir_b.join("project");
+    std::fs::create_dir_all(&project_dir).expect("project dir");
+    let project = server_b
+        .sessions
+        .project_add(project_dir.to_str().expect("utf-8 path"))
+        .expect("project row");
+    server_b
+        .sessions
+        .workspace_create(
+            &project.id,
+            devboule_protocol::WorkspaceIsolation::Local,
+            None,
+        )
+        .expect("workspace row");
+    assert!(server_b.has_hosted_workspace(), "B hosts");
+    assert!(!server_a.has_hosted_workspace(), "A does not");
+
+    let service_a = PairingService::new();
+    let service_b = Arc::new(PairingService::new());
+    let (code, _expires_at) = service_b.start().expect("a code");
+    let transport = Arc::new(crate::peer_transport::TestTransport::default());
+    assert!(server_a.set_peer_transport(transport.clone()).is_ok());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let address = listener.local_addr().expect("addr").to_string();
+
+    let responder_transport = Arc::clone(&transport);
+    let responder_server = Arc::clone(&server_b);
+    let responder_service = Arc::clone(&service_b);
+    let caps = Arc::new(crate::peer_transport::AcceptCaps::default());
+    let responder = std::thread::spawn(move || {
+        let (stream, peer_addr) = accept_bounded(&listener);
+        let slot = caps
+            .admit_handshake(crate::peer_transport::HandshakeKind::Pairing)
+            .expect("a pairing slot");
+        responder_service.handle(
+            responder_transport.as_ref(),
+            stream,
+            peer_addr,
+            &responder_server,
+            slot,
+        );
+    });
+
+    let PairingOutcome::Pending(pending) = service_a
+        .complete(&server_a, &address, &code)
+        .expect("the exchange completes");
+    assert_eq!(
+        pending.role,
+        Some(PeerRole::Daemon),
+        "B's own statement makes it the machine peer on the card"
+    );
+    let a_id = server_a
+        .device_identity()
+        .as_ref()
+        .expect("A has an identity")
+        .device_id
+        .clone();
+    let deadline = Instant::now() + bound::THREAD;
+    loop {
+        if !service_b.pending_snapshot().is_empty() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "B never parked the pairing");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    match service_b
+        .confirm(&server_b, &a_id, true)
+        .expect("confirm on B")
+    {
+        ConfirmOutcome::Accepted(_) => {}
+        ConfirmOutcome::Declined => panic!("an accept must produce a row"),
+    }
+    join_bounded(responder, "the responder's pairing thread");
+
+    let deadline = Instant::now() + bound::THREAD;
+    loop {
+        if !server_a.peers().expect("A's rows").is_empty() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "A never wrote its row after the confirmation"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let a_row = &server_a.peers().expect("A's rows")[0];
+    assert!(
+        a_row.hosts_workspaces,
+        "the peer that said it hosts is the machine-scope record"
+    );
+    assert!(
+        !a_row.legacy_dialable,
+        "and it is not a v30 endpoint to dial"
+    );
+    assert_eq!(
+        crate::peer_policy::PeerScope::recorded(a_row.hosts_workspaces),
+        crate::peer_policy::PeerScope::PeerDevice,
+        "the record selects the narrow scope"
+    );
+    let b_row = &server_b.peers().expect("B's rows")[0];
+    assert!(
+        !b_row.hosts_workspaces,
+        "the peer with no workspace is the client-scope record"
+    );
+    assert_eq!(
+        crate::peer_policy::PeerScope::recorded(b_row.hosts_workspaces),
+        crate::peer_policy::PeerScope::PairedUser
+    );
+
+    drop(server_a);
+    drop(server_b);
+    let _ = std::fs::remove_dir_all(&dir_a);
+    let _ = std::fs::remove_dir_all(&dir_b);
 }

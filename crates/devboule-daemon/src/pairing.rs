@@ -836,6 +836,20 @@ impl PairingService {
         )? {
             ExchangeOutcome::Downgrade => {
                 let legacy = legacy_role(server);
+                // This device hosts workspaces, so its v30 tag is `daemon`, and
+                // the old code-displaying device answers that tag by itself —
+                // nobody there confirms. A pairing must never complete without
+                // a confirmation on the device that showed the code, so this
+                // side refuses the exchange rather than accept an answer no
+                // person gave. A client-tagged retry is fine: the old code
+                // parks that one for its own person.
+                if legacy == PeerRole::Daemon {
+                    return Err(PairingError::Failed(
+                        "the other device runs an old version that pairs without confirmation; \
+                         update it, then pair again"
+                            .to_string(),
+                    ));
+                }
                 match self.exchange(
                     server,
                     remote_addr,
