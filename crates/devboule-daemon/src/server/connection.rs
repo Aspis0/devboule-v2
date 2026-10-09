@@ -91,15 +91,7 @@ pub(crate) fn handle_client(
         },
     };
     if client_hello.owner != true_owner {
-        // Redacted, not printed: the user SID and, on
-        // a peer connection, `peer_<device_id>` both stay out
-        // of logs (§8 R7). The mismatch is still diagnosable; the identities are not in
-        // the file.
-        eprintln!(
-            "client hello owner label {} did not match the connection peer {}",
-            crate::device_identity::redact(&client_hello.owner.user),
-            crate::device_identity::redact(&true_owner.user)
-        );
+        super::hello_owner_log::log_mismatch_once(&client_hello.owner, &true_owner);
     }
     let daemon_hello = daemon_hello(&state);
     let agreed = match negotiate(&client_hello, &daemon_hello) {
