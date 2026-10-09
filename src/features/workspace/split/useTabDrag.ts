@@ -23,6 +23,15 @@ export const DRAG_SLOP_PX = 4;
 export interface TabDrag {
   tabId: string;
   zone: DropZone | "strip" | null;
+  mark: TabInsertionMark | null;
+}
+
+/** Where a tab dragged over the tab row would land: the viewport x of the gap,
+ * and the row's box for the line that marks it. */
+export interface TabInsertionMark {
+  x: number;
+  top: number;
+  height: number;
 }
 
 interface Press {
@@ -58,8 +67,15 @@ export interface UseTabDragOptions {
   boxes: () => TabDragBoxes;
   /** What a drop does, decided by the caller against the live panes. */
   onDrop: (tabId: string, zone: DropZone | "strip", point: TabDropPoint) => void;
+  /** Where a tab dropped on the tab row would land, or null when nothing is shown. */
+  markAt: (tabId: string, point: TabDropPoint) => TabInsertionMark | null;
   /** Whether the tab is still open. A tab an agent closes mid-gesture ends it. */
   hasTab: (tabId: string) => boolean;
+}
+
+function sameMark(a: TabInsertionMark | null, b: TabInsertionMark | null): boolean {
+  if (a === null || b === null) return a === b;
+  return a.x === b.x && a.top === b.top && a.height === b.height;
 }
 
 function zoneAt(boxes: TabDragBoxes, x: number, y: number): DropZone | "strip" | null {
@@ -79,12 +95,14 @@ function inside(rect: DOMRect, x: number, y: number): boolean {
   return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 }
 
-export function useTabDrag({ boxes, onDrop, hasTab }: UseTabDragOptions): {
+export function useTabDrag({ boxes, onDrop, markAt, hasTab }: UseTabDragOptions): {
   /** The zone the preview answers, and nothing else: a pointer that moves
    * inside one zone must not re-render the surface that owns this hook. */
   zone: DropZone | "strip" | null;
   /** The tab under the pointer, while a gesture is on. */
   tabId: string | null;
+  /** The gap on the tab row the drop would land in, for the line that marks it. */
+  mark: TabInsertionMark | null;
   /** Called from the strip's own pointerdown, with the chip that was pressed. */
   startDrag: (
     tabId: string,
@@ -95,12 +113,12 @@ export function useTabDrag({ boxes, onDrop, hasTab }: UseTabDragOptions): {
   const [drag, setDrag] = useState<TabDrag | null>(null);
   const pressRef = useRef<Press | null>(null);
   const draggingRef = useRef(false);
-  const optionsRef = useRef({ boxes, onDrop, hasTab });
+  const optionsRef = useRef({ boxes, onDrop, markAt, hasTab });
   // The latest caller values, read through a ref and written after the render:
   // the listeners below are installed once, and re-installing them on every
   // render would take the drag's body class off while the drag is still on.
   useEffect(() => {
-    optionsRef.current = { boxes, onDrop, hasTab };
+    optionsRef.current = { boxes, onDrop, markAt, hasTab };
   });
   const now = useCallback(() => optionsRef.current, []);
 
@@ -141,10 +159,16 @@ export function useTabDrag({ boxes, onDrop, hasTab }: UseTabDragOptions): {
       }
       press.x = event.clientX;
       press.y = event.clientY;
-      // Only the zone is state, and only when it changes: a pointer moving
-      // inside one destination must not re-render the surface.
+      // The zone and the gap are state, and only when one changes: a pointer
+      // moving inside one destination must not re-render the surface.
       const zone = zoneAt(now().boxes(), event.clientX, event.clientY);
-      setDrag((current) => (current?.zone === zone ? current : { tabId: press.tabId, zone }));
+      const mark =
+        zone === "strip" ? now().markAt(press.tabId, { x: event.clientX, y: event.clientY }) : null;
+      setDrag((current) =>
+        current?.zone === zone && sameMark(current.mark, mark)
+          ? current
+          : { tabId: press.tabId, zone, mark },
+      );
     };
     const up = (event: PointerEvent): void => {
       const press = pressRef.current;
@@ -225,7 +249,12 @@ export function useTabDrag({ boxes, onDrop, hasTab }: UseTabDragOptions): {
     [],
   );
 
-  return { zone: drag?.zone ?? null, tabId: drag?.tabId ?? null, startDrag };
+  return {
+    zone: drag?.zone ?? null,
+    tabId: drag?.tabId ?? null,
+    mark: drag?.mark ?? null,
+    startDrag,
+  };
 }
 
 /** Capture is best-effort: a surface that refuses it still gets the gesture. */

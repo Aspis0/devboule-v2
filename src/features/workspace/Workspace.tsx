@@ -44,7 +44,7 @@ import {
   type FileToolTabKind,
   type ToolTab,
 } from "./strip/toolTabs";
-import { insertionIndex, moveTabId, orderStripTabs } from "./strip/tabOrder";
+import { insertionEdge, insertionIndex, moveTabId, orderStripTabs } from "./strip/tabOrder";
 import { readStripOrders, writeStripOrders } from "./strip/stripOrderStorage";
 import { readTabSlots } from "./strip/tabSlots";
 import { ToolDiffPane } from "./ToolDiffPane";
@@ -65,7 +65,7 @@ import { closeBrowserPage } from "./browserPages";
 import { SplitPane } from "./split/SplitPane";
 import { SplitDragLayer, type SplitDragLayerHandle } from "./split/SplitDragLayer";
 import { resolveDropOutcome, tabCanGoBelow, type DropZone } from "./split/tabDropZones";
-import type { TabDropPoint } from "./split/useTabDrag";
+import type { TabDropPoint, TabInsertionMark } from "./split/useTabDrag";
 import {
   forgetSplitPanesFor,
   mergeSplitPane,
@@ -1047,6 +1047,22 @@ export function Workspace({
   );
   /** The drag belongs to the layer below, which also draws the preview: a
    * pointer moving inside one destination must not re-render this surface. */
+  /** The gap a tab dropped on the row would land in, read from the live chips:
+   * the same index the drop itself resolves, so the line shows where it lands. */
+  const tabInsertionAt = useCallback(
+    (tabId: string, point: TabDropPoint): TabInsertionMark | null => {
+      // The pane-below tab merges on the row instead of reordering, so it has no gap.
+      if (tabId === split?.lowerTabId) return null;
+      const strip = document.querySelector<HTMLElement>(".workspace-session-tabs");
+      if (strip === null) return null;
+      const slots = readTabSlots(strip);
+      const x = insertionEdge(slots, tabId, insertionIndex(slots, point.x, tabId));
+      if (x === null) return null;
+      const box = strip.getBoundingClientRect();
+      return { x, top: box.top, height: box.height };
+    },
+    [split?.lowerTabId],
+  );
   const dragLayerRef = useRef<SplitDragLayerHandle>(null);
   const startTabDrag = useCallback(
     (tabId: string, owner: Element, event: ReactPointerEvent<HTMLDivElement>) => {
@@ -2050,6 +2066,7 @@ export function Workspace({
           <SplitDragLayer
             ref={dragLayerRef}
             hasTab={hasLiveTab}
+            markAt={tabInsertionAt}
             onDrop={dropTab}
             boxes={() => ({
               area: centerRef.current,

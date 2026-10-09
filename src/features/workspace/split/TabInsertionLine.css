@@ -1,0 +1,10 @@
+/* One thin line in the accent, centred on the gap it marks. It is drawn over
+   the strip while a tab is dragged, and takes no pointer of its own. */
+.workspace-tab-insertion {
+  position: fixed;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 20;
+}

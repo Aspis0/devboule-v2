@@ -38,3 +38,16 @@ export function insertionIndex(slots: readonly TabSlot[], x: number, movedId: st
   }
   return index;
 }
+
+/** The x of the gap a dragged chip would land in, given the index insertionIndex
+ * chose: the edge of the chip before it, or the first chip's left edge at zero. */
+export function insertionEdge(
+  slots: readonly TabSlot[],
+  movedId: string,
+  index: number,
+): number | null {
+  const rest = slots.filter((slot) => slot.id !== movedId);
+  if (rest.length === 0) return null;
+  if (index <= 0) return rest[0]!.left;
+  return rest[Math.min(index, rest.length) - 1]!.right;
+}

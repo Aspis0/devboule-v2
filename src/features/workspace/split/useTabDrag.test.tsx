@@ -79,6 +79,7 @@ function Harness() {
           handle = value;
         }}
         boxes={boxes}
+        markAt={() => ({ x: 240, top: 40, height: 40 })}
         hasTab={(tabId) => openTabs.has(tabId)}
         onDrop={(tabId, where, point) => {
           dropped.push([tabId, where]);
@@ -204,6 +205,17 @@ describe("a chip press that travels", () => {
     expect(preview()).toBeNull();
     release({ x: 700, y: 900 });
     expect(dropped).toEqual([["session-1", "bottom"]]);
+  });
+
+  it("draws an insertion line on the tab row at the gap it is given, and none over the centre", () => {
+    travel({ x: 500, y: 60 }, { x: 500, y: 300 });
+    const line = document.querySelector<HTMLElement>(".workspace-tab-insertion");
+    expect(line).not.toBeNull();
+    expect(line!.style.left).toBe("240px");
+    expect(line!.style.top).toBe("40px");
+    move({ x: 500, y: 900 });
+    expect(document.querySelector(".workspace-tab-insertion")).toBeNull();
+    release({ x: 500, y: 900 });
   });
 
   it("reports the point where the pointer was let go with the drop", () => {

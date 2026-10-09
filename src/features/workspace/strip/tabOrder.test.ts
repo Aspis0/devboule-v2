@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { insertionIndex, moveTabId, orderStripTabs, type TabSlot } from "./tabOrder";
+import { insertionEdge, insertionIndex, moveTabId, orderStripTabs, type TabSlot } from "./tabOrder";
 
 describe("orderStripTabs", () => {
   it("lays tabs out in the remembered order, whatever their kind", () => {
@@ -66,5 +66,34 @@ describe("insertionIndex", () => {
 
   it("is zero when the strip has no chips to measure", () => {
     expect(insertionIndex([], 150, "x")).toBe(0);
+  });
+});
+
+describe("insertionEdge", () => {
+  const slots: TabSlot[] = [
+    { id: "a", left: 0, right: 100 },
+    { id: "b", left: 100, right: 200 },
+    { id: "c", left: 200, right: 300 },
+  ];
+
+  it("sits on the left edge of the first chip for index zero", () => {
+    expect(insertionEdge(slots, "x", 0)).toBe(0);
+  });
+
+  it("sits on the right edge of the chip before the gap", () => {
+    expect(insertionEdge(slots, "x", 2)).toBe(200);
+  });
+
+  it("skips the dragged chip when it measures the gap", () => {
+    expect(insertionEdge(slots, "b", 1)).toBe(100);
+  });
+
+  it("sits past the last chip at the end of the row", () => {
+    expect(insertionEdge(slots, "x", 9)).toBe(300);
+  });
+
+  it("is null when there is no other chip to sit beside", () => {
+    expect(insertionEdge([], "x", 0)).toBeNull();
+    expect(insertionEdge([{ id: "b", left: 0, right: 100 }], "b", 0)).toBeNull();
   });
 });
