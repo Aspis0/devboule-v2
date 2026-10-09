@@ -179,13 +179,14 @@ impl AgentProfilesStore {
     /// fix it; a daemon that overwrote the file would erase the evidence of what
     /// it refused.
     ///
-    /// Nothing is repaired on this path, and that is the deliberate difference
-    /// from `ToolPolicyStore::load`: that store drops a row it cannot consult
-    /// (a row for a provider with no MCP tools), because such a row could never
-    /// have been reached. A profile has no equivalent — every row here is one a
-    /// creation could have resolved — so a document that is wrong in any row is
-    /// refused whole. Half a list of rules is not a smaller version of the
-    /// rules; it is different rules, applied to an agent nobody chose.
+    /// Nothing is repaired on this path except rows for providers the
+    /// registry no longer publishes (see `load_document`): that is the
+    /// deliberate difference from `ToolPolicyStore::load`, which drops a row
+    /// it cannot consult because such a row could never have been reached.
+    /// A profile row for a removed provider is the same case — no creation
+    /// could resolve it any more — while every other wrong row still refuses
+    /// the document whole: half a list of rules is not a smaller version of
+    /// the rules, it is different rules, applied to an agent nobody chose.
     pub(crate) fn load(runtime_dir: &Path) -> Self {
         let path = runtime_dir.join(PROFILES_FILE);
         let document = match load_document(&path) {
@@ -275,6 +276,29 @@ impl AgentProfilesStore {
 /// store has to start empty.
 fn load_document(path: &Path) -> Result<AgentProfilesDocument, String> {
     let mut document = read_document(path).map_err(|error| error.to_string())?;
+    // Rows for providers the registry no longer publishes — a removed user
+    // provider — are dropped here, loudly, before validation. Keeping the
+    // rest beats quarantining the whole document (standing instructions
+    // included) for one row nobody can resolve any more; a creation naming
+    // the dropped row gets the honest unknown-profile refusal. Anything
+    // else wrong still refuses the document whole (see `load`). Writes keep
+    // the strict rule: no new row for an unpublished provider can be saved.
+    // One snapshot for the partition, the same rule `check_document` keeps.
+    let registry = crate::session::catalog_registry();
+    document.profiles.retain(|profile| {
+        let known = crate::provider_catalog::catalog_provider_id_for(
+            &registry,
+            profile.provider.trim(),
+        )
+        .is_some();
+        if !known {
+            eprintln!(
+                "agent profiles: profile '{}' names a provider the catalog does not publish; dropping the row and keeping the rest",
+                profile.name
+            );
+        }
+        known
+    });
     check_document(&mut document)?;
     Ok(document)
 }
@@ -875,6 +899,31 @@ mod tests {
             serde_json::to_vec_pretty(&document).expect("json"),
         )
         .expect("seed");
+    }
+
+    #[test]
+    fn load_drops_rows_for_removed_providers_and_keeps_the_rest() {
+        let dir = temp_dir();
+        // A provider the registry never published: `set` would refuse this
+        // document, so the file is seeded by hand — exactly the state a
+        // removed user provider leaves behind. Loading must not quarantine
+        // the whole document for one row nobody can resolve any more.
+        let raw = serde_json::json!({
+            "profiles": [
+                {"id": "p-good", "name": "Good", "provider": "claude", "model": "m", "modeId": "d", "enabledForAgents": false},
+                {"id": "p-gone", "name": "Gone", "provider": "does-not-exist", "model": "m", "modeId": "d", "enabledForAgents": false},
+            ],
+            "standingInstructions": "Stay brief."
+        });
+        std::fs::write(
+            dir.join(PROFILES_FILE),
+            serde_json::to_vec_pretty(&raw).expect("json"),
+        )
+        .expect("seed");
+        let reopened = AgentProfilesStore::load(&dir).document();
+        assert_eq!(names(&reopened), ["Good"]);
+        assert_eq!(reopened.standing_instructions, "Stay brief.");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1567,7 +1616,10 @@ mod tests {
     /// partially repaired and never guessed at.
     #[test]
     fn a_hand_edited_document_the_store_cannot_admit_is_quarantined() {
-        // A provider the catalog does not publish.
+        // A provider the catalog does not publish: the row is dropped and
+        // the rest loads — a removed provider must not quarantine the
+        // whole document. The quarantine file stays untouched and the live
+        // file stays in place.
         let dir = temp_dir();
         let mut unresolvable =
             serde_json::to_value(document(vec![profile("p-1", "Ghost")])).expect("the document");
@@ -1575,8 +1627,12 @@ mod tests {
         seed(&dir, unresolvable);
         let store = AgentProfilesStore::load(&dir);
         assert!(store.document().profiles.is_empty());
-        assert_eq!(quarantined(&dir).len(), 1, "refused whole, not repaired");
-        assert!(!dir.join(PROFILES_FILE).exists());
+        assert_eq!(
+            quarantined(&dir).len(),
+            0,
+            "a dead row is dropped, not quarantined"
+        );
+        assert!(dir.join(PROFILES_FILE).exists());
         let _ = std::fs::remove_dir_all(&dir);
 
         // An unknown field: the wire types deny them, so a document carrying one
