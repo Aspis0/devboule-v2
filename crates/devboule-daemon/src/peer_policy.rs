@@ -32,13 +32,12 @@ pub enum PeerDecision {
 /// A paired device's connection scope, resolved once when its hello is read.
 ///
 /// This is what replaced the paired role's only live effect: a device that
-/// **states** it hosts workspaces reaches the sessions it created on this
-/// machine, and every other paired device reaches the sessions of the person
-/// who paired it. It is service presence, never a pairing choice and never
-/// taken from anything the peer says about itself: the record keeps the one
-/// transport fact (`legacy_dialable`, preserved by the peers migration) that
-/// the v30 dialect could verify, and a later slice records hosted-workspace
-/// presence through a locally confirmed channel before changing either.
+/// hosts workspaces reaches the sessions it created on this machine, and every
+/// other paired device reaches the sessions of the person who paired it. The
+/// fact is recorded by the pairing ceremony — the v30 daemon tag, or the
+/// roleless pairing payload's own statement inside the authenticated session
+/// the person confirmed — and read back from that record. A later connection's
+/// hello claim is displayed, never consulted here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PeerScope {
     /// A device with no hosted workspace: the person who paired it, and only
@@ -75,11 +74,13 @@ impl PeerScope {
         }
     }
 
-    /// The v30 projection of the migrated dial hint: a peer whose old tag said
-    /// `daemon` promised a listener and keeps the machine scope; anything else
-    /// reads as a client.
-    pub fn legacy(legacy_dialable: bool) -> Self {
-        if legacy_dialable {
+    /// The scope a stored record selects: a device that said, during its
+    /// confirmed pairing, that it hosts workspaces is the machine peer (it
+    /// reaches the sessions it created here); every other device is a client
+    /// of the person who paired it. The v17 migration backfilled the old
+    /// daemon tag into this column, so a migrated row keeps the scope it had.
+    pub fn recorded(hosts_workspaces: bool) -> Self {
+        if hosts_workspaces {
             Self::PeerDevice
         } else {
             Self::PairedUser
@@ -3477,8 +3478,8 @@ pub(crate) mod tests {
                 "a claim may not widen a client peer: {forged:?}"
             );
         }
-        assert_eq!(PeerScope::legacy(true), PeerScope::PeerDevice);
-        assert_eq!(PeerScope::legacy(false), PeerScope::PairedUser);
+        assert_eq!(PeerScope::recorded(true), PeerScope::PeerDevice);
+        assert_eq!(PeerScope::recorded(false), PeerScope::PairedUser);
     }
 
     #[test]

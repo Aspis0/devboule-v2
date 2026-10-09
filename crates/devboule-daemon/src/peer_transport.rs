@@ -1663,7 +1663,7 @@ fn serve_noise_peer(
     // presence, before any request is served.
     let conn_peer = ConnPeer::Remote {
         device_id: row.device_id.clone(),
-        scope: PeerScope::legacy(row.legacy_dialable),
+        scope: PeerScope::recorded(row.hosts_workspaces),
         paired_by_user: row.paired_by_user.clone(),
         binding: binding.clone(),
     };

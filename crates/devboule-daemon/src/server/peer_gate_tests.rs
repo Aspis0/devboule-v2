@@ -45,6 +45,47 @@ fn a_daemon_send_reaches_the_registry_for_a_local_target() {
     );
 }
 
+/// The pairing memory's rule, pinned: a client device — the owner's own phone
+/// or laptop — may send into the local sessions of the person who paired it,
+/// under the `send` grant. Child scopes and machine records must never take
+/// that away, because that send is the point of pairing a device.
+#[test]
+fn a_client_scoped_send_reaches_the_paired_users_local_session() {
+    let state = ServerState::new("peer-gate-client-local-target".into());
+    let target_owner = OwnerId::new("local-user", "local-process").expect("owner");
+    crate::session::insert_test_live_agent(&state.sessions, "s.local.target", target_owner);
+    let conn = ConnHandle::with_peer_caps(
+        7,
+        None,
+        Some(ConnPeer::Remote {
+            device_id: "dev-phone".to_string(),
+            scope: PeerScope::PairedUser,
+            paired_by_user: Some("local-user".to_string()),
+            binding: TransportBinding::tailnet("nstable", "node", "user@example.com"),
+        }),
+        [CAP_VIEW.to_string(), CAP_SEND.to_string()].to_vec(),
+        QuitIntent::default(),
+    );
+    let owner = OwnerId::new("local-user", "paired-device").expect("peer owner");
+
+    assert!(
+        peer_refusal_before_mode(&state, &owner, &request("s.local.target"), &conn.conn_peer)
+            .is_none(),
+        "the paired user's own device must reach that user's local sessions"
+    );
+
+    // And only that user's: another account's local session stays out of a
+    // client device's reach, so the allowance is consent to one person's
+    // sessions, not to the machine.
+    let other_owner = OwnerId::new("other-user", "local-process").expect("owner");
+    crate::session::insert_test_live_agent(&state.sessions, "s.other.target", other_owner);
+    assert!(
+        peer_refusal_before_mode(&state, &owner, &request("s.other.target"), &conn.conn_peer)
+            .is_some(),
+        "another account's session is not the paired user's consent"
+    );
+}
+
 #[test]
 fn a_third_device_target_is_refused_like_an_unknown_id_before_mode_lookup() {
     let state = ServerState::new("peer-gate-third-target".into());

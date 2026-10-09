@@ -312,6 +312,7 @@ fn the_listener_advertisement_keeps_its_wire_key() {
         device_id: "6f1e5b7a-0000-4000-8000-00000000c0dd".to_string(),
         display_name: "Peer".to_string(),
         role: Some(PeerRole::Daemon),
+        workspace_host: None,
         public_key: String::new(),
         listen_port: Some(47831),
     };
@@ -922,6 +923,7 @@ fn a_local_peer_record_carries_this_device_as_the_pairer() {
         "6f1e5b7a-0000-4000-8000-00000000c0de",
         "Peer",
         false,
+        false,
         &[5u8; 32],
         TransportBinding::tailnet("npeer", "peer.tailnet.ts.net.", "user@example.com"),
         "100.64.0.2:47831".to_string(),
@@ -939,6 +941,7 @@ fn a_local_peer_record_carries_this_device_as_the_pairer() {
         "not-a-uuid",
         "Peer",
         false,
+        false,
         &[5u8; 32],
         TransportBinding::tailnet("n", "n", "n"),
         "100.64.0.2:47831".to_string(),
@@ -948,6 +951,7 @@ fn a_local_peer_record_carries_this_device_as_the_pairer() {
         &server,
         "6f1e5b7a-0000-4000-8000-00000000c0df",
         "Peer",
+        false,
         false,
         &[5u8; 31],
         TransportBinding::tailnet("n", "n", "n"),
@@ -968,6 +972,7 @@ fn re_pairing_a_live_device_is_refused_until_it_is_revoked() {
         id,
         "Peer",
         true,
+        true,
         &[6u8; 32],
         TransportBinding::tailnet("npeer", "peer.", "user@example.com"),
         "100.64.0.2:47831".to_string(),
@@ -980,6 +985,7 @@ fn re_pairing_a_live_device_is_refused_until_it_is_revoked() {
         id,
         "Peer",
         true,
+        true,
         &[7u8; 32],
         TransportBinding::tailnet("npeer", "peer.", "user@example.com"),
         "100.64.0.2:47831".to_string(),
@@ -991,6 +997,7 @@ fn re_pairing_a_live_device_is_refused_until_it_is_revoked() {
         &server,
         id,
         "Peer",
+        true,
         true,
         &[7u8; 32],
         TransportBinding::tailnet("npeer", "peer.", "user@example.com"),
@@ -1018,6 +1025,7 @@ fn a_pending_pairing_is_answered_by_confirm_and_writes_the_row_only_when_accepte
             device_id: "6f1e5b7a-0000-4000-8000-00000000c0d2".to_string(),
             display_name: "Phone".to_string(),
             legacy_dialable: false,
+            hosts_workspaces: false,
             key_fingerprint: crate::device_identity::key_fingerprint(&public_key),
             address: "100.64.0.2:47831".to_string(),
             public_key: public_key.clone(),
@@ -1068,6 +1076,7 @@ fn declining_a_pending_pairing_writes_no_row_but_does_audit() {
             device_id: "6f1e5b7a-0000-4000-8000-00000000c0d3".to_string(),
             display_name: "Phone".to_string(),
             legacy_dialable: false,
+            hosts_workspaces: false,
             key_fingerprint: crate::device_identity::key_fingerprint(&[9u8; 32]),
             address: "100.64.0.2:47831".to_string(),
             public_key: vec![9u8; 32],
@@ -1123,6 +1132,7 @@ fn at_most_two_pairings_park_and_a_third_is_answered_busy() {
                 device_id: format!("6f1e5b7a-0000-4000-8000-00000000000{index}"),
                 display_name: "Phone".to_string(),
                 legacy_dialable: false,
+                hosts_workspaces: false,
                 key_fingerprint: String::new(),
                 address: "100.64.0.2:47831".to_string(),
                 public_key: vec![1u8; 32],
@@ -1350,6 +1360,7 @@ fn a_payload_name_that_cannot_be_shown_is_refused() {
         device_id: "6f1e5b7a-0000-4000-8000-00000000c0d9".to_string(),
         display_name: name.to_string(),
         role: Some(PeerRole::Client),
+        workspace_host: None,
         public_key: String::new(),
         listen_port: None,
     };
@@ -1389,6 +1400,7 @@ fn a_peer_record_refuses_a_name_that_cannot_be_shown() {
         "6f1e5b7a-0000-4000-8000-00000000c0da",
         "invisible\u{202e}name",
         false,
+        false,
         &[5u8; 32],
         TransportBinding::tailnet("n", "n", "n"),
         "100.64.0.2:47831".to_string(),
@@ -1421,6 +1433,7 @@ fn re_pairing_with_the_same_key_finishes_the_pairing() {
         id,
         "Peer",
         true,
+        true,
         &key,
         TransportBinding::tailnet("npeer", "peer.", "user@example.com"),
         "100.64.0.2:47831".to_string(),
@@ -1433,6 +1446,7 @@ fn re_pairing_with_the_same_key_finishes_the_pairing() {
         &server,
         id,
         "Peer Renamed",
+        true,
         true,
         &key,
         TransportBinding::tailnet("npeer", "peer.", "user@example.com"),
@@ -1455,6 +1469,7 @@ fn re_pairing_with_the_same_key_finishes_the_pairing() {
         &server,
         id,
         "Peer",
+        true,
         true,
         &[7u8; 32],
         TransportBinding::tailnet("npeer", "peer.", "user@example.com"),
@@ -1629,6 +1644,7 @@ fn v30_initiator_exchange(
         device_id: device_id.to_string(),
         display_name: "Old phone".to_string(),
         role: Some(tag),
+        workspace_host: None,
         public_key: base64_encode(&public),
         listen_port: None,
     };
@@ -1707,9 +1723,11 @@ fn a_v30_daemon_tag_still_waits_for_the_local_confirmation() {
         Some(PeerRole::Daemon),
         "the daemon tag is the dial hint the card carries"
     );
+    let stored = server.peers().expect("rows");
+    assert!(stored[0].legacy_dialable, "and it is stored on the row");
     assert!(
-        server.peers().expect("rows")[0].legacy_dialable,
-        "and it is stored on the row"
+        stored[0].hosts_workspaces,
+        "a daemon tag is also the machine-scope record"
     );
     let answer = join_bounded(initiator, "the v30 initiator").expect("the answer arrives");
     assert_eq!(answer.accepted, true, "{answer:?}");
@@ -1782,6 +1800,12 @@ fn a_v30_client_tag_parks_for_the_local_confirmation() {
         row.role,
         Some(PeerRole::Client),
         "a client tag projects to the client word for the v30 panel"
+    );
+    let stored = server.peers().expect("rows");
+    assert!(stored[0].legacy_dialable == false);
+    assert!(
+        !stored[0].hosts_workspaces,
+        "a client tag is the paired-user-scope record"
     );
     let answer = join_bounded(initiator, "the v30 initiator").expect("the answer arrives");
     assert!(answer.accepted, "{answer:?}");
@@ -1982,6 +2006,7 @@ fn v30_responder_offering_the_old_wire(
         device_id: "6f1e5b7a-0000-4000-8000-00000000c0af".to_string(),
         display_name: "Old peer".to_string(),
         role: Some(PeerRole::Client),
+        workspace_host: None,
         public_key: base64_encode(&public),
         listen_port: None,
     };

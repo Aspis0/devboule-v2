@@ -4010,6 +4010,7 @@ fn the_peer_table_is_loaded_once_and_refreshed_on_change() {
             device_id: "6f1e5b7a-0000-4000-8000-00000000c0db".to_string(),
             display_name: "Peer".to_string(),
             legacy_dialable: false,
+            hosts_workspaces: false,
             public_key: vec![7u8; 32],
             paired_by_user: None,
             binding_kind: "tailnet".to_string(),
@@ -4847,6 +4848,7 @@ fn the_capability_set_of_a_device_comes_from_its_row_and_fails_closed() {
         device_id: "dev-phone".to_string(),
         display_name: "Phone".to_string(),
         legacy_dialable: false,
+        hosts_workspaces: false,
         // The store refuses a peer key that is not a 32-byte X25519 public key,
         // and that refusal is the point: a fixture cannot skip the shape.
         public_key: vec![7u8; 32],
@@ -4898,6 +4900,7 @@ fn a_daemon_peer_narrowed_from_the_panel_is_stored_and_read_back() {
             device_id: "dev-daemon".to_string(),
             display_name: "Other devboule".to_string(),
             legacy_dialable: true,
+            hosts_workspaces: true,
             public_key: vec![9u8; 32],
             paired_by_user: Some("S-user-a".to_string()),
             binding_kind: "tailnet".to_string(),

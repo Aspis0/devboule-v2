@@ -23,6 +23,7 @@ fn dial_row(address: String, pinned_public: &[u8]) -> PeerRecord {
         device_id: "b".to_string(),
         display_name: "peer b".to_string(),
         legacy_dialable: true,
+        hosts_workspaces: true,
         public_key: pinned_public.to_vec(),
         paired_by_user: None,
         binding_kind: "tailscale".to_string(),

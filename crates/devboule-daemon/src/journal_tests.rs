@@ -1486,6 +1486,7 @@ fn peer_record(device_id: &str) -> PeerRecord {
         device_id: device_id.to_string(),
         display_name: "Marco's MacBook Pro".to_string(),
         legacy_dialable: true,
+        hosts_workspaces: true,
         public_key: vec![7u8; 32],
         paired_by_user: Some("S-1-5-21-1".to_string()),
         binding_kind: "tailnet".to_string(),

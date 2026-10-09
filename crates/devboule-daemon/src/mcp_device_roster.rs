@@ -53,6 +53,7 @@ mod tests {
             device_id: device_id.to_string(),
             display_name: format!("Device {device_id}"),
             legacy_dialable: true,
+            hosts_workspaces: true,
             public_key: vec![7u8; 32],
             paired_by_user: paired_by,
             binding_kind: "tailnet".to_string(),

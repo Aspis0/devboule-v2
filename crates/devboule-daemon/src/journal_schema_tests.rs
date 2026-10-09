@@ -853,6 +853,7 @@ fn version_7_journal_migrates_to_v8_with_peers_audit_and_triggers() {
             device_id: "dev-migrated".to_string(),
             display_name: "Host".to_string(),
             legacy_dialable: false,
+            hosts_workspaces: false,
             public_key: vec![1u8; 32],
             paired_by_user: Some("S-1-5-21-1".to_string()),
             binding_kind: "tailnet".to_string(),
@@ -1704,7 +1705,10 @@ fn v16_migration_adds_a_nullable_goal_column() {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("version");
     assert_eq!(version, JOURNAL_SCHEMA_VERSION);
-    assert_eq!(version, 17, "the v17 peers migration runs after v16");
+    assert_eq!(
+        version, 18,
+        "the v17 and v18 peers migrations run after v16"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1866,6 +1870,10 @@ fn a_v16_journal_migrates_to_the_roleless_peers_table_and_preserves_every_row() 
         daemon.legacy_dialable,
         "the old daemon tag is the dial hint"
     );
+    assert!(
+        daemon.hosts_workspaces,
+        "and the v18 backfill makes it the machine-scope record"
+    );
     assert_eq!(daemon.display_name, "Desk");
     assert_eq!(daemon.public_key, vec![0xabu8; 32], "key bytes survive");
     assert_eq!(daemon.paired_by_user.as_deref(), Some("S-1-5-21-1"));
@@ -1892,6 +1900,10 @@ fn a_v16_journal_migrates_to_the_roleless_peers_table_and_preserves_every_row() 
         .find(|row| row.device_id == client_id)
         .expect("the client row");
     assert!(!client.legacy_dialable);
+    assert!(
+        !client.hosts_workspaces,
+        "an old client tag is the paired-user scope"
+    );
     assert_eq!(client.public_key, vec![0xcdu8; 32]);
     assert_eq!(client.paired_by_user, None);
     assert_eq!(client.binding_node_name, None);

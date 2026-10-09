@@ -61,7 +61,7 @@ pub(crate) use journal_transcript_time::time_a_kindless_report;
 
 /// Stored in `PRAGMA user_version`. Bump whenever the journal schema gains
 /// tables or columns that need migration.
-pub const JOURNAL_SCHEMA_VERSION: i32 = 17;
+pub const JOURNAL_SCHEMA_VERSION: i32 = 18;
 
 /// How often the append path enforces the audit age floor and per-device cap.
 /// The session retention sweep is byte-driven, not time-driven, so the hourly
@@ -394,17 +394,21 @@ impl WorkspaceRecord {
 
 /// One paired device, as stored in `peers`.
 ///
-/// The pairing records no role: `legacy_dialable` is transport compatibility,
+/// The pairing records no role. `legacy_dialable` is transport compatibility,
 /// preserved by the v17 migration from the old role, and says only whether a
-/// v30 endpoint at the recorded address may still be dialled. `caps` is a JSON
-/// array of capability names. `paired_by_user` is **this** daemon's own user SID
-/// at pairing time, written by this side: it is never received from the peer
-/// and never trusted from a frame.
+/// v30 endpoint at the recorded address may still be dialled.
+/// `hosts_workspaces` is the scope fact: whether the peer said, during the
+/// authenticated and locally confirmed pairing, that it hosts workspaces. A
+/// connection's session scope is read from this column and never from a later
+/// hello claim. `caps` is a JSON array of capability names. `paired_by_user` is
+/// **this** daemon's own user SID at pairing time, written by this side: it is
+/// never received from the peer and never trusted from a frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PeerRecord {
     pub device_id: String,
     pub display_name: String,
     pub legacy_dialable: bool,
+    pub hosts_workspaces: bool,
     pub public_key: Vec<u8>,
     pub paired_by_user: Option<String>,
     pub binding_kind: String,
@@ -2732,28 +2736,29 @@ fn set_workspace_title(
         .ok_or_else(|| JournalError::InvalidRequest(format!("Workspace '{id}' does not exist.")))
 }
 
-const PEER_COLUMNS: &str = "device_id, display_name, legacy_dialable, public_key, paired_by_user, \
-     binding_kind, binding_stable_id, binding_node_name, binding_login_name, address, \
-     paired_at, revoked_at, caps";
+const PEER_COLUMNS: &str = "device_id, display_name, legacy_dialable, hosts_workspaces, \
+     public_key, paired_by_user, binding_kind, binding_stable_id, binding_node_name, \
+     binding_login_name, address, paired_at, revoked_at, caps";
 
 fn peers_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PeerRecord> {
-    let caps_json: String = row.get(12)?;
+    let caps_json: String = row.get(13)?;
     let caps = serde_json::from_str::<Vec<String>>(&caps_json).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(12, rusqlite::types::Type::Text, Box::new(error))
+        rusqlite::Error::FromSqlConversionFailure(13, rusqlite::types::Type::Text, Box::new(error))
     })?;
     Ok(PeerRecord {
         device_id: row.get(0)?,
         display_name: row.get(1)?,
         legacy_dialable: row.get(2)?,
-        public_key: row.get(3)?,
-        paired_by_user: row.get(4)?,
-        binding_kind: row.get(5)?,
-        binding_stable_id: row.get(6)?,
-        binding_node_name: row.get(7)?,
-        binding_login_name: row.get(8)?,
-        address: row.get(9)?,
-        paired_at: row.get(10)?,
-        revoked_at: row.get(11)?,
+        hosts_workspaces: row.get(3)?,
+        public_key: row.get(4)?,
+        paired_by_user: row.get(5)?,
+        binding_kind: row.get(6)?,
+        binding_stable_id: row.get(7)?,
+        binding_node_name: row.get(8)?,
+        binding_login_name: row.get(9)?,
+        address: row.get(10)?,
+        paired_at: row.get(11)?,
+        revoked_at: row.get(12)?,
         caps,
     })
 }
@@ -2788,13 +2793,14 @@ fn upsert_peer(conn: &Connection, record: &PeerRecord) -> Result<PeerRecord, Jou
         .map_err(|error| JournalError::InvalidRequest(error.to_string()))?;
     conn.execute(
         "INSERT INTO peers (
-                device_id, display_name, legacy_dialable, public_key, paired_by_user,
-                binding_kind, binding_stable_id, binding_node_name, binding_login_name,
-                address, paired_at, revoked_at, caps
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                device_id, display_name, legacy_dialable, hosts_workspaces, public_key,
+                paired_by_user, binding_kind, binding_stable_id, binding_node_name,
+                binding_login_name, address, paired_at, revoked_at, caps
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(device_id) DO UPDATE SET
                 display_name = excluded.display_name,
                 legacy_dialable = excluded.legacy_dialable,
+                hosts_workspaces = excluded.hosts_workspaces,
                 public_key = excluded.public_key,
                 paired_by_user = excluded.paired_by_user,
                 binding_kind = excluded.binding_kind,
@@ -2809,6 +2815,7 @@ fn upsert_peer(conn: &Connection, record: &PeerRecord) -> Result<PeerRecord, Jou
             record.device_id,
             record.display_name,
             record.legacy_dialable,
+            record.hosts_workspaces,
             record.public_key,
             record.paired_by_user,
             record.binding_kind,

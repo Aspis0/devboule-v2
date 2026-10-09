@@ -361,6 +361,32 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
             // would die on a table this daemon cannot read honestly.
             validate_v17_columns(&tx)?;
         }
+        if version < 18 {
+            // The hosted-workspace record, and with it the scope a peer
+            // connection reaches. A device that hosts workspaces is the machine
+            // peer (the sessions it created here); every other device is a
+            // client of the person who paired it. The value is recorded by the
+            // pairing ceremony — the v30 daemon tag, or the v32 pairing
+            // payload's own statement inside the authenticated, locally
+            // confirmed session — and never by a later connection's claim. A
+            // migrated row keeps the old daemon scope: `legacy_dialable` is
+            // exactly the old machine tag.
+            if peer_column_shape(&tx, "hosts_workspaces")?.is_none() {
+                tx.execute(
+                    "ALTER TABLE peers ADD COLUMN hosts_workspaces INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )?;
+            }
+            tx.execute(
+                "UPDATE peers SET hosts_workspaces = 1 WHERE legacy_dialable = 1",
+                [],
+            )?;
+            // The pre-stamp guard, same ordering as v12 to v17: a colliding
+            // shape must leave the file at 17, openable by the previous
+            // build, rather than stamped 18 — where the first `peers` read
+            // would die on a column this daemon cannot read honestly.
+            validate_v18_columns(&tx)?;
+        }
         tx.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
         tx.commit()?;
     }
@@ -381,6 +407,8 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
     validate_v16_columns(&conn)?;
     // The v17 peers shape: the dial hint present, `role` gone.
     validate_v17_columns(&conn)?;
+    // The v18 peers column, by shape like its siblings.
+    validate_v18_columns(&conn)?;
     // A crash inside `sweep_audit` between dropping the triggers and
     // recreating them leaves the audit table writable, so the guarantee is
     // re-established on every open rather than trusted from the migration.
@@ -609,6 +637,24 @@ fn validate_v17_columns(conn: &Connection) -> Result<(), JournalError> {
     Ok(())
 }
 
+/// The v18 peers column, spelled once: `hosts_workspaces` is
+/// `INTEGER NOT NULL DEFAULT 0`, the shape the migration adds. The pre-stamp
+/// guard and the post-commit check both read this predicate.
+fn validate_v18_columns(conn: &Connection) -> Result<(), JournalError> {
+    let hosts = peer_column_shape(conn, "hosts_workspaces")?;
+    let ours = matches!(
+        hosts,
+        Some((ref kind, 1, Some(ref default)))
+            if kind.eq_ignore_ascii_case("integer") && default == "0"
+    );
+    if !ours {
+        return Err(JournalError::Corrupt(
+            "journal schema has an unexpected peers.hosts_workspaces column".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// One `peers` column's `(type, notnull, default)` as SQLite reports it, or
 /// `None` when the table has no such column.
 fn peer_column_shape(
@@ -788,6 +834,7 @@ fn validate_v6_schema(conn: &Connection) -> Result<(), JournalError> {
             ("device_id", "TEXT", 0, 1),
             ("display_name", "TEXT", 1, 0),
             ("legacy_dialable", "INTEGER", 1, 0),
+            ("hosts_workspaces", "INTEGER", 1, 0),
             ("public_key", "BLOB", 1, 0),
             ("paired_by_user", "TEXT", 0, 0),
             ("binding_kind", "TEXT", 1, 0),

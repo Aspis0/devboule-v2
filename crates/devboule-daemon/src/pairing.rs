@@ -421,6 +421,13 @@ struct PairPayload {
     /// and always `Some` on a v30 exchange because an old decoder requires it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     role: Option<PeerRole>,
+    /// Whether this device hosts workspaces, inside the pairing session only.
+    /// Present on the roleless wire and absent on the v30 one, where the role
+    /// tag says the same thing. The far side records it with the confirmed
+    /// pairing and reads its session scope from that record later; the word
+    /// never travels on a live connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace_host: Option<bool>,
     /// The claimed Noise static public key, base64. It must equal the remote
     /// static the Noise handshake actually authenticated.
     public_key: String,
@@ -434,19 +441,21 @@ struct PairPayload {
 }
 
 /// This device's own payload: its identity, the role word a v30 peer expects
-/// (`None` on the roleless wire), and the port its peer listener actually
-/// bound. The port is read from the listener state the daemon published when
-/// it bound — the bound socket is the truth — not re-parsed from the
-/// environment.
+/// (`None` on the roleless wire), whether it hosts workspaces (roleless wire
+/// only), and the port its peer listener actually bound. The port is read from
+/// the listener state the daemon published when it bound — the bound socket is
+/// the truth — not re-parsed from the environment.
 fn own_payload(
     identity: &crate::device_identity::DeviceIdentity,
     role: Option<PeerRole>,
+    workspace_host: Option<bool>,
     server: &Arc<ServerState>,
 ) -> PairPayload {
     PairPayload {
         device_id: identity.device_id.clone(),
         display_name: identity.display_name.clone(),
         role,
+        workspace_host,
         public_key: identity.public_key_b64(),
         listen_port: server.remote_port(),
     }
@@ -541,6 +550,10 @@ struct PendingEntry {
     /// the stored row as `legacy_dialable` and is the only thing the old role
     /// contributes to the pairing; a roleless park records `false`.
     legacy_dialable: bool,
+    /// Whether the parked peer said it hosts workspaces (the v30 daemon tag,
+    /// or the roleless payload's bit). It travels onto the stored row and is
+    /// what the connection scope is later read from.
+    hosts_workspaces: bool,
     key_fingerprint: String,
     address: String,
     public_key: Vec<u8>,
@@ -699,7 +712,7 @@ impl PairingService {
             .map(|entry| PendingPairing {
                 device_id: entry.device_id.clone(),
                 display_name: entry.display_name.clone(),
-                role: Some(devboule_protocol::projected_role(entry.legacy_dialable)),
+                role: Some(devboule_protocol::projected_role(entry.hosts_workspaces)),
                 key_fingerprint: entry.key_fingerprint.clone(),
                 address: entry.address.clone(),
                 expires_at: millis_from(now, entry.expires_at),
@@ -739,6 +752,7 @@ impl PairingService {
             &entry.device_id,
             &entry.display_name,
             entry.legacy_dialable,
+            entry.hosts_workspaces,
             &entry.public_key,
             entry.binding.clone(),
             entry.address.clone(),
@@ -964,7 +978,11 @@ impl PairingService {
             .to_vec();
         let (mut reader, mut writer, _closer) = split_session(&stream, session)?;
 
-        let payload = own_payload(identity, dialect.payload_role(), server);
+        let own_workspace_host = match dialect {
+            Dialect::Roleless => Some(server.has_hosted_workspace()),
+            Dialect::Legacy(_) => None,
+        };
+        let payload = own_payload(identity, dialect.payload_role(), own_workspace_host, server);
         write_json(&mut writer, &payload, setup_deadline)?;
 
         // The responder's own payload. This is the identity recorded below:
@@ -986,6 +1004,14 @@ impl PairingService {
         // ignored rather than allowed to set a compatibility hint.
         let peer_legacy_dialable =
             matches!(dialect, Dialect::Legacy(_)) && peer_payload.role == Some(PeerRole::Daemon);
+        // Whether the far side hosts workspaces: the old daemon tag on the v30
+        // wire, its own statement inside this authenticated pairing session on
+        // the roleless one. Recorded with the pairing and read back as the
+        // connection scope; a later hello claim never changes it.
+        let peer_hosts_workspaces = match dialect {
+            Dialect::Legacy(_) => peer_legacy_dialable,
+            Dialect::Roleless => peer_payload.workspace_host == Some(true),
+        };
 
         // The far side's user answers a pairing parked on that device, which
         // can take a minute. Waiting for that here would hold the caller's RPC
@@ -999,7 +1025,7 @@ impl PairingService {
             let pending = PendingPairing {
                 device_id: peer_payload.device_id.clone(),
                 display_name: peer_payload.display_name.clone(),
-                role: Some(devboule_protocol::projected_role(peer_legacy_dialable)),
+                role: Some(devboule_protocol::projected_role(peer_hosts_workspaces)),
                 key_fingerprint: crate::device_identity::key_fingerprint(&remote_static),
                 address: address.to_string(),
                 expires_at: millis_from(Instant::now(), Instant::now() + CONFIRM_WINDOW),
@@ -1038,6 +1064,7 @@ impl PairingService {
                         &peer_device_id,
                         &peer_display_name,
                         peer_legacy_dialable,
+                        peer_hosts_workspaces,
                         &remote_static,
                         binding,
                         address_for_answer,
@@ -1197,7 +1224,12 @@ impl PairingService {
         // whose PSK binds both tags. This side reads first — the initiator has
         // already written its byte — so a v30 initiator's write-first order is
         // untouched.
-        let local_legacy_role = legacy_role(server);
+        let local_has_workspace = server.has_hosted_workspace();
+        let local_legacy_role = if local_has_workspace {
+            PeerRole::Daemon
+        } else {
+            PeerRole::Client
+        };
         let initiator_role = match read_prelude(stream, deadline).map_err(prelude_error)? {
             PAIR_VERSION_V2 => {
                 write_prelude(stream, PAIR_VERSION_V2, deadline)?;
@@ -1297,9 +1329,13 @@ impl PairingService {
         // identity to store but its own. A v30 initiator's decoder requires the
         // role word, so it travels there and only there.
         let own_role = initiator_role.map(|_| local_legacy_role);
+        let own_workspace_host = match initiator_role {
+            None => Some(local_has_workspace),
+            Some(_) => None,
+        };
         write_json(
             &mut writer,
-            &own_payload(&identity, own_role, server),
+            &own_payload(&identity, own_role, own_workspace_host, server),
             deadline,
         )?;
 
@@ -1330,9 +1366,15 @@ impl PairingService {
         // (design §8b A11). The v30 daemon tag no longer auto-accepts: a
         // role-bearing peer can speak that tag to this daemon, and accepting
         // it without confirmation let a v32 side be talked onto the old wire
-        // and stored unconfirmed. The tag's only surviving meaning is the dial
-        // hint recorded on the row once this person confirms.
+        // and stored unconfirmed. The tag's only surviving meanings are the
+        // dial hint and the machine-scope record written once this person
+        // confirms.
         let legacy_dialable = initiator_role == Some(PeerRole::Daemon);
+        let hosts_workspaces = match initiator_role {
+            Some(PeerRole::Daemon) => true,
+            Some(PeerRole::Client) => false,
+            None => payload.workspace_host == Some(true),
+        };
         let accepted = {
             let (decision, wait) = mpsc::channel::<bool>();
             // Allocated before the lock: the token identifies this park, and the
@@ -1369,6 +1411,7 @@ impl PairingService {
                             device_id: payload.device_id.clone(),
                             display_name: payload.display_name.clone(),
                             legacy_dialable,
+                            hosts_workspaces,
                             key_fingerprint: key_fingerprint.clone(),
                             address: address.clone(),
                             public_key: remote_static.clone(),
@@ -1484,12 +1527,15 @@ impl PairingService {
 /// ran the pairing. It is written here and never received from the peer.
 /// `legacy_dialable` is the only thing kept from the v30 role tags: whether a
 /// v30 endpoint at the recorded address may be dialled, which is true exactly
-/// when that peer tagged itself a daemon.
+/// when that peer tagged itself a daemon. `hosts_workspaces` is what the peer
+/// stated inside the pairing session (the v30 daemon tag, or the roleless
+/// payload's own bit) and is the fact the connection scope is later read from.
 fn local_peer_record(
     server: &Arc<ServerState>,
     device_id: &str,
     display_name: &str,
     legacy_dialable: bool,
+    hosts_workspaces: bool,
     public_key: &[u8],
     binding: TransportBinding,
     address: String,
@@ -1546,6 +1592,7 @@ fn local_peer_record(
         device_id: device_id.to_string(),
         display_name: display_name.to_string(),
         legacy_dialable,
+        hosts_workspaces,
         public_key: public_key.to_vec(),
         paired_by_user: server.local_user_sid(),
         binding_kind: binding.kind,
@@ -1572,7 +1619,7 @@ pub fn peer_row(server: &Arc<ServerState>, record: &PeerRecord) -> PeerRow {
     PeerRow {
         device_id: record.device_id.clone(),
         display_name: record.display_name.clone(),
-        role: Some(devboule_protocol::projected_role(record.legacy_dialable)),
+        role: Some(devboule_protocol::projected_role(record.hosts_workspaces)),
         public_key: base64_encode(&record.public_key),
         key_fingerprint: crate::device_identity::key_fingerprint(&record.public_key),
         binding_kind: record.binding_kind.clone(),
