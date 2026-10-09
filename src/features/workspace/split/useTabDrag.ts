@@ -67,6 +67,8 @@ export interface UseTabDragOptions {
   boxes: () => TabDragBoxes;
   /** What a drop does, decided by the caller against the live panes. */
   onDrop: (tabId: string, zone: DropZone | "strip", point: TabDropPoint) => void;
+  /** Scrolls the tab row while the pointer holds one of its ends; true when it moved. */
+  scrollStrip: (x: number) => boolean;
   /** Where a tab dropped on the tab row would land, or null when nothing is shown. */
   markAt: (tabId: string, point: TabDropPoint) => TabInsertionMark | null;
   /** Whether the tab is still open. A tab an agent closes mid-gesture ends it. */
@@ -95,7 +97,7 @@ function inside(rect: DOMRect, x: number, y: number): boolean {
   return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 }
 
-export function useTabDrag({ boxes, onDrop, markAt, hasTab }: UseTabDragOptions): {
+export function useTabDrag({ boxes, onDrop, markAt, scrollStrip, hasTab }: UseTabDragOptions): {
   /** The zone the preview answers, and nothing else: a pointer that moves
    * inside one zone must not re-render the surface that owns this hook. */
   zone: DropZone | "strip" | null;
@@ -113,19 +115,26 @@ export function useTabDrag({ boxes, onDrop, markAt, hasTab }: UseTabDragOptions)
   const [drag, setDrag] = useState<TabDrag | null>(null);
   const pressRef = useRef<Press | null>(null);
   const draggingRef = useRef(false);
-  const optionsRef = useRef({ boxes, onDrop, markAt, hasTab });
+  const frameRef = useRef<number | null>(null);
+  const optionsRef = useRef({ boxes, onDrop, markAt, scrollStrip, hasTab });
   // The latest caller values, read through a ref and written after the render:
   // the listeners below are installed once, and re-installing them on every
   // render would take the drag's body class off while the drag is still on.
   useEffect(() => {
-    optionsRef.current = { boxes, onDrop, markAt, hasTab };
+    optionsRef.current = { boxes, onDrop, markAt, scrollStrip, hasTab };
   });
   const now = useCallback(() => optionsRef.current, []);
+
+  const stopEdgeScroll = useCallback(() => {
+    if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+    frameRef.current = null;
+  }, []);
 
   const end = useCallback(
     (zone: DropZone | "strip" | null) => {
       const press = pressRef.current;
       pressRef.current = null;
+      stopEdgeScroll();
       if (!draggingRef.current) return;
       draggingRef.current = false;
       document.body.classList.remove("workspace-is-dragging-tab");
@@ -137,10 +146,35 @@ export function useTabDrag({ boxes, onDrop, markAt, hasTab }: UseTabDragOptions)
         now().onDrop(press.tabId, zone, { x: press.x, y: press.y });
       }
     },
-    [now],
+    [now, stopEdgeScroll],
   );
 
   useEffect(() => {
+    // The zone and the gap are state, and only when one changes: a pointer
+    // moving inside one destination must not re-render the surface.
+    const settle = (press: Press): void => {
+      const zone = zoneAt(now().boxes(), press.x, press.y);
+      const mark = zone === "strip" ? now().markAt(press.tabId, { x: press.x, y: press.y }) : null;
+      setDrag((current) =>
+        current?.zone === zone && sameMark(current.mark, mark)
+          ? current
+          : { tabId: press.tabId, zone, mark },
+      );
+    };
+    // While the pointer holds an end of the row, the row scrolls a frame at a
+    // time and the gap follows the chips under the pointer.
+    function startEdgeScroll(): void {
+      if (frameRef.current === null) frameRef.current = requestAnimationFrame(edgeScroll);
+    }
+    function edgeScroll(): void {
+      frameRef.current = null;
+      const press = pressRef.current;
+      if (press === null || !draggingRef.current) return;
+      if (zoneAt(now().boxes(), press.x, press.y) !== "strip") return;
+      if (!now().scrollStrip(press.x)) return;
+      settle(press);
+      startEdgeScroll();
+    }
     const move = (event: PointerEvent): void => {
       const press = pressRef.current;
       if (press === null || event.pointerId !== press.pointerId) return;
@@ -159,16 +193,10 @@ export function useTabDrag({ boxes, onDrop, markAt, hasTab }: UseTabDragOptions)
       }
       press.x = event.clientX;
       press.y = event.clientY;
-      // The zone and the gap are state, and only when one changes: a pointer
-      // moving inside one destination must not re-render the surface.
-      const zone = zoneAt(now().boxes(), event.clientX, event.clientY);
-      const mark =
-        zone === "strip" ? now().markAt(press.tabId, { x: event.clientX, y: event.clientY }) : null;
-      setDrag((current) =>
-        current?.zone === zone && sameMark(current.mark, mark)
-          ? current
-          : { tabId: press.tabId, zone, mark },
-      );
+      if (zoneAt(now().boxes(), press.x, press.y) === "strip" && now().scrollStrip(press.x)) {
+        startEdgeScroll();
+      }
+      settle(press);
     };
     const up = (event: PointerEvent): void => {
       const press = pressRef.current;
@@ -221,6 +249,7 @@ export function useTabDrag({ boxes, onDrop, markAt, hasTab }: UseTabDragOptions)
       document.removeEventListener("visibilitychange", hidden);
       document.removeEventListener("freeze", hidden);
       window.removeEventListener("lostpointercapture", captured);
+      stopEdgeScroll();
       // The layer can go while a drag is on, and a chip that kept the pointer
       // would not give it back to the controls the pointer is over next.
       releaseCapture(pressRef.current);
@@ -228,7 +257,7 @@ export function useTabDrag({ boxes, onDrop, markAt, hasTab }: UseTabDragOptions)
       draggingRef.current = false;
       document.body.classList.remove("workspace-is-dragging-tab");
     };
-  }, [end, now]);
+  }, [end, now, stopEdgeScroll]);
 
   const startDrag = useCallback(
     (

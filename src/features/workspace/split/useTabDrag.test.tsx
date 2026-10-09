@@ -34,6 +34,7 @@ let root: ReturnType<typeof createRoot>;
 let handle: SplitDragLayerHandle | null = null;
 let dropped: Array<[string, DropZone | "strip"]> = [];
 let lastDropPoint: { x: number; y: number } | null = null;
+let scrollStripSpy = vi.fn((_x: number): boolean => false);
 /** The only kind of tab the pane below may hold, so the only kind that starts
  * a gesture. */
 const TAB = "tool:browser:w-1:page-1";
@@ -80,6 +81,7 @@ function Harness() {
         }}
         boxes={boxes}
         markAt={() => ({ x: 240, top: 40, height: 40 })}
+        scrollStrip={(x) => scrollStripSpy(x)}
         hasTab={(tabId) => openTabs.has(tabId)}
         onDrop={(tabId, where, point) => {
           dropped.push([tabId, where]);
@@ -152,6 +154,7 @@ function dragging(): boolean {
 beforeEach(() => {
   dropped = [];
   lastDropPoint = null;
+  scrollStripSpy = vi.fn((_x: number): boolean => false);
   openTabs = new Set([TAB]);
   commits = 0;
   parentRenders = 0;
@@ -216,6 +219,19 @@ describe("a chip press that travels", () => {
     move({ x: 500, y: 900 });
     expect(document.querySelector(".workspace-tab-insertion")).toBeNull();
     release({ x: 500, y: 900 });
+  });
+
+  it("keeps scrolling the strip while the pointer holds its edge, and stops on release", async () => {
+    // The stub scrolls every time it is asked, so the frames keep asking.
+    scrollStripSpy = vi.fn((_x: number): boolean => true);
+    travel({ x: 5, y: 60 }, { x: 500, y: 300 });
+    expect(scrollStripSpy).toHaveBeenCalledWith(5);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(scrollStripSpy.mock.calls.length).toBeGreaterThan(2);
+    release({ x: 5, y: 60 });
+    const atRelease = scrollStripSpy.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(scrollStripSpy.mock.calls.length).toBe(atRelease);
   });
 
   it("reports the point where the pointer was let go with the drop", () => {

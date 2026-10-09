@@ -29,6 +29,8 @@ export interface SplitDragLayerProps {
   boxes: () => TabDragBoxes;
   /** Whether the tab is still open: a tab an agent closes ends the gesture. */
   hasTab: (tabId: string) => boolean;
+  /** Scrolls the tab row while the pointer holds one of its ends; true when it moved. */
+  scrollStrip: (x: number) => boolean;
   /** Where a tab dropped on the tab row would land, for the line that marks it. */
   markAt: (tabId: string, point: TabDropPoint) => TabInsertionMark | null;
   /** What a drop does, decided by the caller against the live panes. */
@@ -37,8 +39,14 @@ export interface SplitDragLayerProps {
 
 /** The drag, and the destination it is previewing over the workspace centre. */
 export const SplitDragLayer = forwardRef<SplitDragLayerHandle, SplitDragLayerProps>(
-  function SplitDragLayer({ boxes, hasTab, markAt, onDrop }, ref) {
-    const { zone, tabId, mark, startDrag } = useTabDrag({ boxes, hasTab, markAt, onDrop });
+  function SplitDragLayer({ boxes, hasTab, markAt, scrollStrip, onDrop }, ref) {
+    const { zone, tabId, mark, startDrag } = useTabDrag({
+      boxes,
+      hasTab,
+      markAt,
+      scrollStrip,
+      onDrop,
+    });
     useImperativeHandle(ref, () => ({ start: startDrag }), [startDrag]);
     // Only a tab the pane below can hold is previewed over the centre: any other
     // tab dropped there is a selection, and a preview would promise a split.

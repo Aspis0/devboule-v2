@@ -47,6 +47,7 @@ import {
 import { insertionEdge, insertionIndex, moveTabId, orderStripTabs } from "./strip/tabOrder";
 import { readStripOrders, writeStripOrders } from "./strip/stripOrderStorage";
 import { readTabSlots } from "./strip/tabSlots";
+import { edgeScrollStep } from "./strip/stripEdgeScroll";
 import { ToolDiffPane } from "./ToolDiffPane";
 import { WorkspaceFileTab } from "./WorkspaceFileTab";
 import { BrowserTab } from "./BrowserTab";
@@ -1063,6 +1064,17 @@ export function Workspace({
   );
   /** The drag belongs to the layer below, which also draws the preview: a
    * pointer moving inside one destination must not re-render this surface. */
+  /** Scrolls the tab row while the pointer holds one of its ends, and says so. */
+  const scrollStripAt = useCallback((x: number): boolean => {
+    const scroll = document.querySelector<HTMLElement>(".workspace-session-tabs-scroll");
+    if (scroll === null) return false;
+    const box = scroll.getBoundingClientRect();
+    const step = edgeScrollStep(x, box.left, box.right);
+    if (step === 0) return false;
+    const before = scroll.scrollLeft;
+    scroll.scrollLeft += step;
+    return scroll.scrollLeft !== before;
+  }, []);
   const dragLayerRef = useRef<SplitDragLayerHandle>(null);
   const startTabDrag = useCallback(
     (tabId: string, owner: Element, event: ReactPointerEvent<HTMLDivElement>) => {
@@ -2067,6 +2079,7 @@ export function Workspace({
             ref={dragLayerRef}
             hasTab={hasLiveTab}
             markAt={tabInsertionAt}
+            scrollStrip={scrollStripAt}
             onDrop={dropTab}
             boxes={() => ({
               area: centerRef.current,
