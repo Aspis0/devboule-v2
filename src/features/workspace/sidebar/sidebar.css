@@ -614,11 +614,6 @@
   background: var(--tone-live);
 }
 
-/* Settled workspaces read idle in the chips' own quiet tone. */
-.sidebar-row-dot-idle {
-  background: var(--tone-idle);
-}
-
 .sidebar-row-dot-attention {
   background: var(--tone-attention);
 }
