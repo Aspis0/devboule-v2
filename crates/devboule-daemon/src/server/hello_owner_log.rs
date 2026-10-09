@@ -1,8 +1,8 @@
 //! The log line for a client hello whose owner differs from the peer the
 //! connection proved. On a paired link the dialing daemon's hello says
 //! `client: "daemon"` while the responder stores that peer as a client, so the
-//! mismatch repeats on every dial and is expected. The line names both role
-//! tags, which are roles and not identities, and redacts each user.
+//! mismatch repeats on every dial and is expected. The line names both roles by
+//! a fixed word and redacts each user; the client tag itself is never printed.
 
 use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex};
@@ -39,10 +39,21 @@ fn first_mismatch_line(
     Some(format!(
         "client hello owner label {} (role {}) did not match the connection peer {} (role {})",
         redact(&hello.user),
-        hello.client,
+        role_tag(&hello.client),
         redact(&peer.user),
-        peer.client,
+        role_tag(&peer.client),
     ))
+}
+
+/// The fixed words a log line may carry for a role. The client token is
+/// peer-supplied on the hello and is never printed as it arrived.
+fn role_tag(client: &str) -> &'static str {
+    match client {
+        "client" => "client",
+        "daemon" => "daemon",
+        other if other.starts_with("process-") => "process",
+        _ => "unrecognised",
+    }
 }
 
 #[cfg(test)]
@@ -62,6 +73,33 @@ mod tests {
         assert!(line.contains("(role daemon)"), "{line}");
         assert!(line.contains("(role client)"), "{line}");
         assert!(!line.contains("peer_dev-1"), "{line}");
+    }
+
+    #[test]
+    fn peer_supplied_role_text_is_never_printed() {
+        // The hello's client token arrives on the wire unvalidated: a newline
+        // or an escape in it must not reach the log.
+        let mut seen = HashSet::new();
+        let hostile = OwnerId {
+            user: "peer_dev-1".to_string(),
+            client: "daemon\n[devboule] forged line \u{1b}[2J".to_string(),
+        };
+        let peer = owner("peer_dev-1", "client");
+        let line = first_mismatch_line(&mut seen, &hostile, &peer).expect("first sighting");
+        assert!(!line.contains('\n'), "{line:?}");
+        assert!(!line.contains("forged"), "{line:?}");
+        assert!(!line.contains('\u{1b}'), "{line:?}");
+        assert!(line.contains("(role unrecognised)"), "{line}");
+    }
+
+    #[test]
+    fn a_local_process_is_named_by_its_role_not_its_pid() {
+        let mut seen = HashSet::new();
+        let hello = owner("peer_dev-1", "daemon");
+        let local = owner("S-1-5-21-1", "process-4242");
+        let line = first_mismatch_line(&mut seen, &hello, &local).expect("first sighting");
+        assert!(line.contains("(role process)"), "{line}");
+        assert!(!line.contains("4242"), "{line}");
     }
 
     #[test]
