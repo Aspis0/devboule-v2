@@ -138,3 +138,8 @@
     animation: none;
   }
 }
+
+/* Over-limit figures: the one warning tone a row control carries. */
+.settings-value-danger {
+  color: var(--danger-deep);
+}
