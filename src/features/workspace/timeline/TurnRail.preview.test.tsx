@@ -71,6 +71,20 @@ describe("the turn rail preview card", () => {
       expect(stopsNow[1]!.hasAttribute("data-preview-fits")).toBe(true);
       rail.unmount();
     });
+
+    it("keeps the message on hover when the card has no room for it", () => {
+      // The same narrowed pane: the long turn's card cannot open, so its dot
+      // names the message itself, and the turn that fits keeps the card alone.
+      const rail = readyPreview([476, 300], 680);
+      const dots = [...rail.content.querySelectorAll<HTMLElement>(".turn-rail-dot")];
+      expect(dots[0]!.getAttribute("title")).toBeNull();
+      stubColumnWidth(rail.content, 640);
+      fireResize();
+      const narrowed = [...rail.content.querySelectorAll<HTMLElement>(".turn-rail-dot")];
+      expect(narrowed[0]!.getAttribute("title")).toContain("Question 1");
+      expect(narrowed[1]!.getAttribute("title")).toBeNull();
+      rail.unmount();
+    });
   });
 
   describe("focus and pinning", () => {
