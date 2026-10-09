@@ -285,11 +285,18 @@ fn a_revoked_row_closes_the_link_and_is_never_retried() {
 }
 
 /// One connection's watch, list and status push, end to end through the router
-/// the connection handler calls.
+/// the connection handler calls. The handle carries a kernel identity like a
+/// real app pipe client: the app-only door refuses identity-less handles.
 #[test]
 fn the_router_answers_a_watch_a_list_and_an_unwatch() {
     let harness = Harness::start("peer-link-router");
-    let conn = harness.other_conn();
+    let conn = crate::session::ConnHandle::with_peer(
+        harness.state.alloc_conn(),
+        Some(crate::agent_report::PeerIdentity {
+            user: "S-test-user".to_string(),
+            pid: 1,
+        }),
+    );
     conn.set_remote_hosts_negotiated(true);
     let watched = crate::server::peer_link_dispatch::dispatch_remote_host(
         &harness.state,

@@ -717,9 +717,14 @@ fn a_parked_trailing_status_is_flushed_within_its_window() {
     }
 }
 
-/// The attach frames are app-only. A connection that speaks for a paired
-/// device — the shape an agent's cross-machine tool path resolves to — is
-/// refused before anything is queued, in both directions.
+/// The host frames are app-only: a real pipe client with a kernel identity.
+/// A connection that speaks for a paired device — the shape an agent's
+/// cross-machine tool path resolves to — is refused before anything is
+/// queued, in both directions; and so is a handle the daemon built for
+/// itself, which is what a local agent's tool call resolves to
+/// (`mcp_broker::caller` builds it with no kernel identity). No agent tool
+/// reaches these frames today, so the door is proved by construction, not
+/// by absence.
 #[test]
 fn a_peer_connection_cannot_open_or_close_a_remote_stream() {
     let harness = Harness::start("peer-link-attach-peer-denied");
@@ -736,7 +741,10 @@ fn a_peer_connection_cannot_open_or_close_a_remote_stream() {
     );
     match attach {
         DaemonMessage::Error(error) => {
-            assert!(error.message.contains("cannot open a stream"), "{error:?}");
+            assert!(
+                error.message.contains("cannot operate a remote host"),
+                "{error:?}"
+            );
         }
         other => panic!("a peer must not attach, got {other:?}"),
     }
@@ -752,9 +760,84 @@ fn a_peer_connection_cannot_open_or_close_a_remote_stream() {
     );
     match detach {
         DaemonMessage::Error(error) => {
-            assert!(error.message.contains("cannot close a stream"), "{error:?}");
+            assert!(
+                error.message.contains("cannot operate a remote host"),
+                "{error:?}"
+            );
         }
         other => panic!("a peer must not detach, got {other:?}"),
+    }
+}
+
+/// A local agent's tool call resolves to a handle with no kernel identity —
+/// exactly what `mcp_broker::caller` builds — and the app-only door refuses
+/// it every host frame, including the reads. Only a real pipe client gets
+/// through.
+#[test]
+fn a_local_agent_connection_is_refused_every_host_frame() {
+    let harness = Harness::start("peer-link-agent-denied");
+    // The shape `mcp_broker::caller` builds for a local agent's tool call:
+    // no kernel identity, no peer identity.
+    let agent = crate::session::ConnHandle::with_peer(9, None);
+    let frames: Vec<ClientMessage> = vec![
+        ClientMessage::RemoteHostWatch {
+            id: 1,
+            device_id: "b".to_string(),
+        },
+        ClientMessage::RemoteHostUnwatch {
+            id: 2,
+            device_id: "b".to_string(),
+        },
+        ClientMessage::RemoteHostList {
+            id: 3,
+            device_id: "b".to_string(),
+            list: devboule_protocol::RemoteHostList::Sessions,
+        },
+        ClientMessage::RemoteHostAttach {
+            id: 4,
+            device_id: "b".to_string(),
+            session_id: "session-1".to_string(),
+            subscription_id: 1,
+        },
+        ClientMessage::RemoteHostCreate {
+            id: 5,
+            device_id: "b".to_string(),
+            workspace_id: Some("w.1".to_string()),
+            kind: devboule_protocol::SessionKind::Terminal,
+            provider: None,
+            mode: None,
+            display_name: None,
+            idempotency_key: None,
+            cols: None,
+            rows: None,
+        },
+        ClientMessage::RemoteHostSend {
+            id: 6,
+            device_id: "b".to_string(),
+            session_id: "session-1".to_string(),
+            subscription_id: 1,
+            text: "hi".to_string(),
+            attachments: Vec::new(),
+            active_turn_behavior: None,
+            attachment_references: Vec::new(),
+            idempotency_key: None,
+        },
+    ];
+    for request in frames {
+        let name = request.name();
+        match crate::server::peer_link_dispatch::dispatch_remote_host(
+            &harness.state,
+            &agent,
+            request,
+        ) {
+            DaemonMessage::Error(error) => {
+                assert!(
+                    error.message.contains("cannot operate a remote host"),
+                    "{name}: {error:?}"
+                );
+            }
+            other => panic!("a local agent must not {name}, got {other:?}"),
+        }
     }
 }
 

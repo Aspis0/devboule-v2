@@ -23,13 +23,18 @@ pub(super) fn dispatch_remote_host(
     conn: &Arc<ConnHandle>,
     request: ClientMessage,
 ) -> DaemonMessage {
-    /// The app-only door every operate frame passes: a peer connection —
+    /// The app-only door every host frame passes: a peer connection —
     /// which is what an agent's cross-machine path resolves to — cannot
-    /// open, drive or close a stream through this daemon. Human-originated
-    /// requests arrive on the local app connection only; agent-originated
-    /// cross-machine commands travel the permission-card path instead.
+    /// open, drive or close a stream through this daemon, and neither can
+    /// a handle the daemon built for itself (an agent's local tool call
+    /// resolves to one: `mcp_broker::caller` builds it with no kernel
+    /// identity). Human-originated requests arrive on the local app
+    /// connection only — a real pipe client with a kernel identity, which
+    /// the accept layer already verified; agent-originated cross-machine
+    /// commands travel the permission-card path instead, and reach these
+    /// frames through no tool at all.
     fn app_only(conn: &Arc<ConnHandle>, id: u64) -> Option<DaemonMessage> {
-        if conn.conn_peer.is_some() {
+        if conn.conn_peer.is_some() || conn.peer.is_none() {
             return Some(DaemonMessage::Error(
                 WireError::new(
                     ErrorCode::InvalidRequest,
@@ -72,6 +77,9 @@ pub(super) fn dispatch_remote_host(
     }
     match request {
         ClientMessage::RemoteHostWatch { id, device_id } => {
+            if let Some(refused) = app_only(conn, id) {
+                return refused;
+            }
             let sentence = busy_sentence(MAX_HELD_LINKS, "held links");
             match state.peer_links.watch(state, Arc::clone(conn), &device_id) {
                 Ok(()) => DaemonMessage::Ok { id },
@@ -93,6 +101,9 @@ pub(super) fn dispatch_remote_host(
             }
         }
         ClientMessage::RemoteHostUnwatch { id, device_id } => {
+            if let Some(refused) = app_only(conn, id) {
+                return refused;
+            }
             // Absent a lease this is still an `Ok`: a panel that tears down
             // twice must not have to be careful about the second time.
             state.peer_links.unwatch(conn.id, &device_id);
@@ -105,15 +116,11 @@ pub(super) fn dispatch_remote_host(
             subscription_id,
         } => {
             // Local-only by construction (peer_policy denies it to every cap
-            // set); the check here is the belt to that suspenders.
-            if conn.conn_peer.is_some() {
-                return DaemonMessage::Error(
-                    WireError::new(
-                        ErrorCode::InvalidRequest,
-                        "a peer cannot open a stream through this daemon",
-                    )
-                    .with_id(id),
-                );
+            // set); the check here is the belt to that suspenders, and it
+            // also stops the daemon's own synthetic handles (an agent's
+            // local tool call).
+            if let Some(refused) = app_only(conn, id) {
+                return refused;
             }
             match state.peer_links.attach(
                 &device_id,
@@ -151,14 +158,8 @@ pub(super) fn dispatch_remote_host(
             session_id,
             subscription_id,
         } => {
-            if conn.conn_peer.is_some() {
-                return DaemonMessage::Error(
-                    WireError::new(
-                        ErrorCode::InvalidRequest,
-                        "a peer cannot close a stream through this daemon",
-                    )
-                    .with_id(id),
-                );
+            if let Some(refused) = app_only(conn, id) {
+                return refused;
             }
             match state
                 .peer_links
@@ -192,36 +193,41 @@ pub(super) fn dispatch_remote_host(
             id,
             device_id,
             list,
-        } => match state.peer_links.read(&device_id, list) {
-            LinkAnswer::Body(body) => DaemonMessage::RemoteHostList {
-                id,
-                device_id,
-                body,
-            },
-            LinkAnswer::Accepted => DaemonMessage::Error(
-                WireError::new(ErrorCode::Internal, "a list read is not an attach").with_id(id),
-            ),
-            // The remote's own refusal: its code and reason travel back intact,
-            // so the host's empty state says what the far machine said.
-            LinkAnswer::Refused(error) => DaemonMessage::Error(error.with_id(id)),
-            LinkAnswer::Failed(state, sentence) => DaemonMessage::Error(
-                WireError::new(
-                    if state == RemoteHostState::Busy {
-                        ErrorCode::OperationConflict
-                    } else {
-                        ErrorCode::Io
-                    },
-                    sentence,
-                )
-                .with_id(id),
-            ),
-            LinkAnswer::Created(_) | LinkAnswer::Sent(_) | LinkAnswer::Providers { .. } => {
-                DaemonMessage::Error(
-                    WireError::new(ErrorCode::Internal, "a list read is not an operate call")
-                        .with_id(id),
-                )
+        } => {
+            if let Some(refused) = app_only(conn, id) {
+                return refused;
             }
-        },
+            match state.peer_links.read(&device_id, list) {
+                LinkAnswer::Body(body) => DaemonMessage::RemoteHostList {
+                    id,
+                    device_id,
+                    body,
+                },
+                LinkAnswer::Accepted => DaemonMessage::Error(
+                    WireError::new(ErrorCode::Internal, "a list read is not an attach").with_id(id),
+                ),
+                // The remote's own refusal: its code and reason travel back intact,
+                // so the host's empty state says what the far machine said.
+                LinkAnswer::Refused(error) => DaemonMessage::Error(error.with_id(id)),
+                LinkAnswer::Failed(state, sentence) => DaemonMessage::Error(
+                    WireError::new(
+                        if state == RemoteHostState::Busy {
+                            ErrorCode::OperationConflict
+                        } else {
+                            ErrorCode::Io
+                        },
+                        sentence,
+                    )
+                    .with_id(id),
+                ),
+                LinkAnswer::Created(_) | LinkAnswer::Sent(_) | LinkAnswer::Providers { .. } => {
+                    DaemonMessage::Error(
+                        WireError::new(ErrorCode::Internal, "a list read is not an operate call")
+                            .with_id(id),
+                    )
+                }
+            }
+        }
         ClientMessage::RemoteHostCreate {
             id,
             device_id,
