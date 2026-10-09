@@ -1738,12 +1738,19 @@ impl ServerState {
         closes.len()
     }
 
+    /// Whether this peer has a live connection in either direction.
+    ///
+    /// An accepted inbound connection is in `remote_conns`; an outbound held
+    /// link publishes its own state in `peer_links`. Both are the same fact to
+    /// the person reading the Devices panel, so the answer is the union.
     pub(crate) fn is_peer_online(&self, device_id: &str) -> bool {
-        self.remote_conns
+        let inbound = self
+            .remote_conns
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .values()
-            .any(|(owner, _)| owner == device_id)
+            .any(|(owner, _)| owner == device_id);
+        inbound || self.peer_links.is_online(device_id)
     }
 
     /// The addresses `Status.remote` and `SelfInfo` advertise.

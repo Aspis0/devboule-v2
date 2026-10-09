@@ -44,3 +44,45 @@ fn a_new_watcher_is_told_the_current_state_and_nothing_else_moves() {
         "one watch more is one lease more, not one dial more"
     );
 }
+
+/// Online is the union of both directions. A daemon that watches a host holds
+/// an outbound link and no inbound connection, and the Devices panel must
+/// still say online; an accepted inbound connection alone must too, and a link
+/// that published a failure is not online.
+#[test]
+fn a_peer_is_online_over_either_direction() {
+    let harness = Harness::start("peer-online-union");
+    assert!(
+        !harness.state.is_peer_online("b"),
+        "nothing is connected yet"
+    );
+
+    harness
+        .state
+        .peer_links
+        .publish_for_test("b", RemoteHostState::Online);
+    assert!(
+        harness.state.is_peer_online("b"),
+        "an outbound link alone is a live connection"
+    );
+    harness
+        .state
+        .peer_links
+        .publish_for_test("b", RemoteHostState::Offline);
+    assert!(
+        !harness.state.is_peer_online("b"),
+        "a link that published a failure is not online"
+    );
+
+    let close = harness.state.register_remote_conn(77, "b");
+    assert!(
+        harness.state.is_peer_online("b"),
+        "an inbound connection alone is a live connection"
+    );
+    close.store(true, Ordering::SeqCst);
+    harness.state.unregister_remote_conn(77);
+    assert!(
+        !harness.state.is_peer_online("b"),
+        "a closed connection is not online"
+    );
+}

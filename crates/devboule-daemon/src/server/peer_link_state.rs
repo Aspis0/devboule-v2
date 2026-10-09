@@ -255,6 +255,17 @@ impl HostLink {
         }
     }
 
+    /// The state this link last published, if any. The Devices panel reads it
+    /// to report a peer online over an outbound link, where no inbound
+    /// connection exists.
+    pub(crate) fn published_state(&self) -> Option<RemoteHostState> {
+        self.published
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .map(|status| status.state)
+    }
+
     /// The failure this link last published, when that is the state it is in.
     ///
     /// A link that has failed is not serving reads however soon its worker

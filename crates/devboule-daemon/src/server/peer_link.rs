@@ -171,6 +171,35 @@ impl PeerLinks {
         Ok(())
     }
 
+    /// Whether an outbound link to this device is up now. The Devices list
+    /// reads online as the union of this and the inbound connection registry:
+    /// a host watching a peer holds an outbound link and no inbound one.
+    pub(crate) fn is_online(&self, device_id: &str) -> bool {
+        let link = {
+            let inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+            inner.links.get(device_id).cloned()
+        };
+        link.is_some_and(|link| link.published_state() == Some(RemoteHostState::Online))
+    }
+
+    /// Test-only: publish a state for a link whether or not a worker serves it,
+    /// so the online union can be read without a clock or a socket.
+    #[cfg(test)]
+    pub(crate) fn publish_for_test(&self, device_id: &str, state: RemoteHostState) {
+        let link =
+            {
+                let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+                Arc::clone(inner.links.entry(device_id.to_string()).or_insert_with(|| {
+                    HostLink::new(device_id.to_string(), self.tuning.idle_grace)
+                }))
+            };
+        link.publish(RemoteHostStatus {
+            device_id: device_id.to_string(),
+            state,
+            last_failure: None,
+        });
+    }
+
     /// Give back one connection's lease. A host nobody watches any more keeps
     /// its link until the grace runs out, so the next watch reuses it.
     pub(crate) fn unwatch(&self, conn_id: u64, device_id: &str) {
