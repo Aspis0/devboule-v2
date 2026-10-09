@@ -410,7 +410,7 @@ export const ChangesSurface = memo(function ChangesSurface({
               a folder that is not a repository is only claimed without one. */}
           {reply.gitMissing === true ? (
             <div className="workspace-changes-state">
-              git is not installed. Install Git for Windows, or put git on PATH, then refresh.
+              git is not installed: install Git for Windows, or put git on PATH.
             </div>
           ) : reply.error === null ? (
             <div className="workspace-changes-state">

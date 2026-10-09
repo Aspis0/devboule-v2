@@ -991,7 +991,7 @@ pub(super) fn refuse_worktree_unless_live_git_allows(
         return Ok(());
     }
     let cause = match observed {
-        "not_installed" => "git is not installed; install Git for Windows, or put git on PATH",
+        "not_installed" => "git is not installed",
         "not_repository" => "this workspace folder is not a git repository",
         _ => "git did not answer for this folder",
     };

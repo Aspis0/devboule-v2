@@ -480,7 +480,7 @@ fn worktree_refusal_names_the_project_and_the_real_cause() {
         .expect_err("a machine without git must refuse");
     assert_eq!(
         missing.message,
-        "Project 'Blog' cannot host a worktree: git is not installed; install Git for Windows, or put git on PATH."
+        "Project 'Blog' cannot host a worktree: git is not installed."
     );
 
     let plain = refuse_worktree_unless_live_git_allows("unknown", "not_repository", "Blog")

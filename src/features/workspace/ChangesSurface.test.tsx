@@ -173,7 +173,7 @@ describe("ChangesSurface", () => {
     await render(<ChangesSurface workspaceKey={keyFor(WORKSPACE)} canListCommits={true} />);
 
     expect(container.textContent).toContain("git is not installed");
-    expect(container.textContent).toContain("put git on PATH");
+    expect(container.textContent).toContain("install Git");
     expect(container.textContent).not.toContain("not a git repository");
     expect(container.querySelector('[role="alert"]')).toBeNull();
   });
