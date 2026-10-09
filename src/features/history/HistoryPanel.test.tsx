@@ -759,21 +759,25 @@ describe("HistoryPanel", () => {
     await act(async () => resolveResume?.({ type: "not_supported" }));
   });
 
-  it("declares deleted sessions and unreclaimable sessions", async () => {
+  it("keeps quiet about retention trimming: totals only, no prose", async () => {
     const usage = baseUsage();
     usage.deletedByRetention = 3;
     usage.unreclaimable.sessionsOver = 2;
     await renderPanel(usage);
-    expect(container.textContent).toContain("The history limit removed 3 sessions.");
-    expect(container.textContent).toContain("Retention cannot reclaim 2 sessions");
+    // Short labels only: the totals line stands alone, no notice explains it.
+    expect(container.querySelector(".history-notice")).toBeNull();
+    expect(container.querySelector(".history-usage")?.textContent).toContain("saved sessions");
+    expect(container.textContent).not.toContain("The history limit removed");
+    expect(container.textContent).not.toContain("Retention cannot reclaim");
   });
 
-  it("renders the history-limit notice when retention removed sessions", async () => {
+  it("renders no notice when retention removed sessions", async () => {
     const usage = baseUsage();
     usage.deletedByRetention = 3;
     usage.deletedByUser = 0;
     await renderPanel(usage);
-    expect(container.textContent).toContain("The history limit removed 3 sessions.");
+    expect(container.querySelector(".history-notice")).toBeNull();
+    expect(container.textContent).not.toContain("The history limit removed");
     expect(container.textContent).not.toContain("sessions were removed from history");
   });
 
@@ -1211,14 +1215,14 @@ describe("HistoryPanel", () => {
     });
     await act(async () => undefined);
     expect(container.textContent).toContain("Build history");
-    expect(container.textContent).toContain("Session details are unavailable");
-    expect(container.textContent).toContain("this list is unfiltered");
-    expect(container.textContent).toContain("rows show no workspace");
+    // One short line, whatever the toggle: no sentence explains the fallback.
+    expect(container.textContent).toContain("Session details unavailable.");
+    expect(container.textContent).not.toContain("this list is unfiltered");
+    expect(container.textContent).not.toContain("rows show no workspace");
     const toggle = container.querySelector<HTMLInputElement>('input[type="checkbox"]');
     if (!toggle) throw new Error("History show-all toggle did not render");
     await act(async () => toggle.click());
-    expect(container.textContent).not.toContain("this list is unfiltered");
-    expect(container.textContent).toContain("rows show no workspace");
+    expect(container.textContent).toContain("Session details unavailable.");
   });
 
   it("groups a push-only running row under Today instead of Unknown date", async () => {

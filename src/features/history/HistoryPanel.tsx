@@ -470,18 +470,10 @@ export function HistoryPanel({
         <Alert sentence={sessionsError} id="history-sessions-error" />
       ) : null}
       {usage && rosterBypassed ? (
-        // Each half names a checked fact: without the roster join, saved
-        // rows carry no workspace label, and the top-level filter cannot run
-        // — so the list is unfiltered unless the toggle asked for that. A
-        // timeout still waits; only an error is final.
+        // One short line for the degraded read; the missing labels are
+        // visible in the list itself, so no sentence explains them.
         <p className="history-notice">
-          {rosterFailed
-            ? showAll
-              ? "Session details are unavailable, so rows show no workspace."
-              : "Session details are unavailable, so this list is unfiltered and rows show no workspace."
-            : showAll
-              ? "Waiting for session details — rows show no workspace."
-              : "Waiting for session details — this list is unfiltered and rows show no workspace."}
+          {rosterFailed ? "Session details unavailable." : "Waiting for session details."}
         </p>
       ) : null}
       {actionError ? <Alert sentence={actionError} id="history-action-error" /> : null}
@@ -502,12 +494,6 @@ export function HistoryPanel({
             />
             Include terminals and subagents
           </label>
-          {usage.deletedByRetention > 0 ? (
-            <p className="history-notice">
-              The history limit removed {formatCount(usage.deletedByRetention)} sessions.
-            </p>
-          ) : null}
-          <RetentionNotice usage={usage} />
         </>
       ) : usageRequest.state.status === "loading" ? (
         <p className="history-empty">Loading history…</p>
@@ -595,28 +581,4 @@ function formatSavedSize(bytes: number): string {
     unit += 1;
   }
   return unit === 0 ? `${formatCount(size)} ${units[unit]}` : `${size.toFixed(1)} ${units[unit]}`;
-}
-
-function RetentionNotice({ usage }: { usage: JournalUsage }) {
-  const { bytesOver, sessionsOver, agedOut } = usage.unreclaimable;
-  return (
-    <>
-      {bytesOver > 0 ? (
-        <p className="history-notice">
-          Retention cannot reclaim {formatCount(bytesOver)} bytes over the configured byte limit.
-        </p>
-      ) : null}
-      {sessionsOver > 0 ? (
-        <p className="history-notice">
-          Retention cannot reclaim {formatCount(sessionsOver)} sessions over the configured session
-          limit.
-        </p>
-      ) : null}
-      {agedOut > 0 ? (
-        <p className="history-notice">
-          Retention cannot reclaim {formatCount(agedOut)} sessions past the configured age limit.
-        </p>
-      ) : null}
-    </>
-  );
 }
