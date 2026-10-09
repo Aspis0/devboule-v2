@@ -50,7 +50,6 @@ function reply(displayName: string): DevicesReply {
       {
         deviceId: "device-one",
         displayName,
-        role: "daemon",
         publicKey: "k",
         keyFingerprint: "aaaa bbbb",
         bindingKind: "tailnet",

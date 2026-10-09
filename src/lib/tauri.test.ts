@@ -917,7 +917,6 @@ describe("folder-scoped Oracle wrappers", () => {
 const PAIRED_PEER: PeerRow = {
   deviceId: "9f6b0f2e-6f1c-4a1e-9c62-1e2f7d59a9c3",
   displayName: "Xiaomi 14",
-  role: "client",
   publicKey: "cHVibGljLWtleQ==",
   keyFingerprint: "0a1b2c3d4e5f60718293a4b5c6d7e8f9",
   bindingKind: "tailnet",
@@ -934,7 +933,6 @@ const PAIRED_PEER: PeerRow = {
 const WAITING_PAIRING: PendingPairing = {
   deviceId: "3ac1f0de-4b5a-4c3d-8e9f-0a1b2c3d4e5f",
   displayName: "Marco's MacBook Pro",
-  role: "daemon",
   keyFingerprint: "f9e8d7c6b5a4938271605f4e3d2c1b0a",
   address: "100.74.116.126:47831",
   expiresAt: 1_760_000_060_000,
@@ -972,12 +970,11 @@ describe("pairing outcome narrowing", () => {
     vi.mocked(invoke).mockClear();
     vi.mocked(invoke).mockResolvedValue({ type: "pairing_done", peer: PAIRED_PEER } as never);
 
-    const outcome = await pairingComplete("100.74.116.126:47831", "ABCD2345", "client");
+    const outcome = await pairingComplete("100.74.116.126:47831", "ABCD2345");
 
     expect(invoke).toHaveBeenCalledWith("pairing_complete", {
       address: "100.74.116.126:47831",
       code: "ABCD2345",
-      role: "client",
     });
     expect(outcome.type).toBe("pairing_done");
     if (outcome.type !== "pairing_done") throw new Error("narrowing failed");
@@ -991,13 +988,13 @@ describe("device command wrappers", () => {
     vi.mocked(invoke).mockResolvedValue({} as never);
 
     await devicesList();
-    await pairingStart("daemon");
+    await pairingStart();
     await pairingConfirm("device-1", true);
     await peerRevoke("device-1");
     await peerSetCaps("device-1", ["view", "send", "answer_permissions"]);
 
     expect(invoke).toHaveBeenNthCalledWith(1, "devices_list", undefined);
-    expect(invoke).toHaveBeenNthCalledWith(2, "pairing_start", { role: "daemon" });
+    expect(invoke).toHaveBeenNthCalledWith(2, "pairing_start", undefined);
     expect(invoke).toHaveBeenNthCalledWith(3, "pairing_confirm", {
       deviceId: "device-1",
       accept: true,
@@ -1037,8 +1034,8 @@ describe("device command wrappers", () => {
 
   it("pins the wire keys of every device command", () => {
     expect(COMMAND_ARG_KEYS.devices_list).toEqual([]);
-    expect(COMMAND_ARG_KEYS.pairing_start).toEqual(["role"]);
-    expect(COMMAND_ARG_KEYS.pairing_complete).toEqual(["address", "code", "role"]);
+    expect(COMMAND_ARG_KEYS.pairing_start).toEqual([]);
+    expect(COMMAND_ARG_KEYS.pairing_complete).toEqual(["address", "code"]);
     expect(COMMAND_ARG_KEYS.pairing_confirm).toEqual(["deviceId", "accept"]);
     expect(COMMAND_ARG_KEYS.peer_revoke).toEqual(["deviceId"]);
     expect(COMMAND_ARG_KEYS.peer_set_caps).toEqual(["deviceId", "caps"]);

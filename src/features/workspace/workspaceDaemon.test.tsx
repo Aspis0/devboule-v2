@@ -39,7 +39,6 @@ function peer(displayName: string, online: boolean): PeerRow {
   return {
     deviceId: `device-${displayName}`,
     displayName,
-    role: "daemon",
     publicKey: "k",
     keyFingerprint: "aaaa bbbb",
     bindingKind: "tailnet",

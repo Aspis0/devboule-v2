@@ -156,7 +156,6 @@ function sameDevices(a: PairedDevices, b: PairedDevices): boolean {
       peer.deviceId === other.deviceId &&
       peer.displayName === other.displayName &&
       peer.bindingNodeName === other.bindingNodeName &&
-      peer.role === other.role &&
       peer.revokedAt === other.revokedAt &&
       peer.online === other.online
     );

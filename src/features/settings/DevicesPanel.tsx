@@ -11,7 +11,7 @@ import {
 } from "../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import { ErrorText } from "../../components/ErrorText";
-import type { Cap, DevicesReply, PeerRole, PeerRow, RemoteState } from "../../types/ipc";
+import type { Cap, DevicesReply, PeerRow, RemoteState } from "../../types/ipc";
 import { nextCaps } from "./peerCaps";
 import { readPairingSession, updatePairingSession, usePairingSession } from "./pairingSession";
 import { DeviceGlyph } from "./devices/DeviceGlyph";
@@ -46,19 +46,6 @@ const DEFAULT_PEER_PORT = 47831;
 /** Shown when the typed address is not a shape the daemon can be asked about. */
 const ADDRESS_ERROR =
   "Enter the address as host:port, for example 100.64.0.1:47831 or [fd7a:115c:a1e0::1]:47831.";
-
-const ROLE_OPTIONS: readonly { value: PeerRole; label: string; hint: string }[] = [
-  {
-    value: "client",
-    label: "Client",
-    hint: "a phone or laptop of yours that views and steers this device",
-  },
-  {
-    value: "daemon",
-    label: "Daemon",
-    hint: "another devboule that this one may talk to as a machine",
-  },
-];
 
 /** The panel's capability table, in switch order. The one runtime
  * enumeration a new grant must join — the PEER_CAPS walker test reads it. */
@@ -188,36 +175,6 @@ export function remoteLabel(remote: RemoteState): string {
   }
 }
 
-interface RoleChoiceProps {
-  name: string;
-  value: PeerRole;
-  disabled: boolean;
-  onChange: (role: PeerRole) => void;
-}
-
-/** The two peer roles, each with the one line that says what it means. */
-function RoleChoice({ name, value, disabled, onChange }: RoleChoiceProps) {
-  return (
-    <fieldset className="dev-role-choice">
-      <legend>Pair the other device as</legend>
-      {ROLE_OPTIONS.map((option) => (
-        <label className="dev-role-option" key={option.value}>
-          <input
-            type="radio"
-            name={name}
-            value={option.value}
-            checked={value === option.value}
-            disabled={disabled}
-            onChange={() => onChange(option.value)}
-          />
-          <span className="dev-role-name">{option.label}</span>
-          <span className="dev-role-hint">{option.hint}</span>
-        </label>
-      ))}
-    </fieldset>
-  );
-}
-
 interface PeerCardProps {
   row: PeerRow;
   caps: readonly Cap[];
@@ -233,15 +190,10 @@ interface PeerCardProps {
 
 /**
  * The one switch a row may not turn off, and the daemon's own reason it is
- * held: `validate_caps` refuses a `Client` without `view`, and refuses an
- * empty set for every role. A `Daemon`-role row's `view` is not special — the
- * daemon forces that name only for a client, so the panel does not force it
- * either; any single capability is enough to keep the row usable.
+ * held: `validate_caps` refuses an empty set. No capability is tied to a role,
+ * so any single one is enough to keep the row usable.
  */
-function heldCap(row: PeerRow, caps: readonly Cap[]): { cap: Cap; note: string } | null {
-  if (row.role === "client") {
-    return { cap: "view", note: "Client peers can always view their own sessions" };
-  }
+function heldCap(caps: readonly Cap[]): { cap: Cap; note: string } | null {
   const last = caps[0];
   return caps.length === 1 && last !== undefined
     ? { cap: last, note: "A device must keep at least one capability" }
@@ -263,7 +215,7 @@ function PeerCard({
   // Which revoke copy is armed on this row, if any. Local to the row so a
   // half-answered revoke on one device is not shown as armed on another.
   const [armed, setArmed] = useState<"revoke" | "lost" | null>(null);
-  const held = heldCap(row, caps);
+  const held = heldCap(caps);
   // The armed confirm renders at the bottom of a tall row, past the
   // capability switches, while the kebab that armed it sits at the top:
   // focus moves to the confirm and its `role="alert"` announces what
@@ -306,7 +258,6 @@ function PeerCard({
           <DeviceGlyph />
         </span>
         <span className="dev-name">{row.displayName}</span>
-        <span className="dev-role-chip">{row.role}</span>
         <span className="dev-status">
           <span className={`dev-dot dev-dot-${row.online ? "live" : "idle"}`} aria-hidden="true" />
           {row.online ? "online" : "offline"}
@@ -339,12 +290,6 @@ function PeerCard({
             </label>
           ))}
         </fieldset>
-        {row.role === "client" ? null : (
-          <p className="device-copy">
-            A daemon peer reaches the sessions it created on this device; this machine's own
-            sessions are not in its list.
-          </p>
-        )}
         {error === undefined ? null : (
           <p role="alert" className="device-error">
             <ErrorText
@@ -410,14 +355,12 @@ export function DevicesPanel() {
   // the peers table gets its answer onto the screen without waiting a tick.
   const [refreshSeq, setRefreshSeq] = useState(0);
 
-  const [showRole, setShowRole] = useState<PeerRole>("client");
   const [codeError, setCodeError] = useState<ErrorSentence | null>(null);
   // The code, the waiting card and the enter draft outlive this panel: a page
   // switch unmounts it, and the shown code must come back when it is mounted again.
   const { code, starting, enterOpen, enterAddress, enterCode, enterBusy, waiting } =
     usePairingSession();
 
-  const [enterRole, setEnterRole] = useState<PeerRole>("client");
   const [enterError, setEnterError] = useState<ErrorSentence | null>(null);
   const [pairedNotice, setPairedNotice] = useState<PeerRow | null>(null);
 
@@ -601,7 +544,7 @@ export function DevicesPanel() {
     updatePairingSession({ starting: true });
     setCodeError(null);
     try {
-      const fresh = await pairingStart(showRole);
+      const fresh = await pairingStart();
       // The daemon has already replaced any earlier code, so the answer is kept
       // even when the panel has unmounted in the meantime.
       updatePairingSession({ code: fresh, codeBaseline: baseline });
@@ -633,7 +576,7 @@ export function DevicesPanel() {
     setEnterError(null);
     setPairedNotice(null);
     try {
-      const outcome = await pairingComplete(enterAddress.trim(), enterCode, enterRole);
+      const outcome = await pairingComplete(enterAddress.trim(), enterCode);
       // Written to the store even when the panel has unmounted: the far side has
       // already parked or accepted the pairing, and the waiting card must say so.
       if (outcome.type === "pairing_pending") {
@@ -871,13 +814,6 @@ export function DevicesPanel() {
           </p>
         )}
 
-        <RoleChoice
-          name="pairing-show-role"
-          value={showRole}
-          disabled={showBusy || enterOpen}
-          onChange={setShowRole}
-        />
-
         {enterOpen ? (
           <form className="dev-pair-form" onSubmit={(event) => void submitEnter(event)}>
             <label className="device-field">
@@ -914,12 +850,6 @@ export function DevicesPanel() {
                 }
               />
             </label>
-            <RoleChoice
-              name="pairing-enter-role"
-              value={enterRole}
-              disabled={enterBusyFlow}
-              onChange={setEnterRole}
-            />
             <div className="device-actions">
               <button type="submit" className="settings-device-action" disabled={enterBusyFlow}>
                 {enterBusy ? "Pairing…" : "Pair"}
@@ -962,9 +892,7 @@ export function DevicesPanel() {
         )}
 
         {pairedNotice === null ? null : (
-          <span className="dev-meta">
-            Paired with {pairedNotice.displayName} ({pairedNotice.role}).
-          </span>
+          <span className="dev-meta">Paired with {pairedNotice.displayName}.</span>
         )}
 
         {enterError === null ? null : (
@@ -996,7 +924,6 @@ export function DevicesPanel() {
                   <DeviceGlyph />
                 </span>
                 <span className="dev-name">{pending.displayName}</span>
-                <span className="dev-role-chip">{pending.role}</span>
                 <span className="dev-status">
                   expires in {formatDuration(pending.expiresAt - now)}
                 </span>
@@ -1074,7 +1001,6 @@ export function DevicesPanel() {
             {revokedPeers.map((row) => (
               <div className="dev-revoked-row" key={row.deviceId}>
                 <span className="dev-name">{row.displayName}</span>
-                <span className="dev-role-chip">{row.role}</span>
                 <span className="dev-meta" title={new Date(row.revokedAt).toISOString()}>
                   revoked {relativeTime(row.revokedAt, now)}
                 </span>

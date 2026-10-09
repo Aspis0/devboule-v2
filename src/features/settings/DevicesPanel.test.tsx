@@ -75,7 +75,6 @@ const ADMIN_LABEL = "administer this device (settings, projects, shutdown)";
 const CLIENT_PEER: PeerRow = {
   deviceId: "9f6b0f2e-6f1c-4a1e-9c62-1e2f7d59a9c3",
   displayName: "Xiaomi 14",
-  role: "client",
   publicKey: "cGVlci1wdWJsaWMta2V5",
   keyFingerprint: "f9e8d7c6b5a4938271605f4e3d2c1b0a",
   bindingKind: "tailnet",
@@ -93,7 +92,6 @@ const REVOKED_PEER: PeerRow = {
   ...CLIENT_PEER,
   deviceId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
   displayName: "TABLET-V477JRIG",
-  role: "daemon",
   caps: [],
   online: false,
   revokedAt: NOW - 7_200_000,
@@ -102,7 +100,6 @@ const REVOKED_PEER: PeerRow = {
 const PENDING: PendingPairing = {
   deviceId: "3ac1f0de-4b5a-4c3d-8e9f-0a1b2c3d4e5f",
   displayName: "Marco's MacBook Pro",
-  role: "daemon",
   keyFingerprint: "0123456789abcdef0123456789abcdef",
   address: "100.74.116.126:47831",
   expiresAt: NOW + 60_000,
@@ -114,7 +111,6 @@ const SECOND_PENDING: PendingPairing = {
   ...PENDING,
   deviceId: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
   displayName: "TABLET-V477JRIG",
-  role: "client",
 };
 
 const CODE: PairingCode = {
@@ -419,7 +415,7 @@ describe("devices panel", () => {
       buttonByText("Show a code").click();
       await Promise.resolve();
     });
-    expect(pairingStart).toHaveBeenCalledWith("client");
+    expect(pairingStart).toHaveBeenCalledWith();
     expect(container.textContent).toContain("ABCD 2345");
     expect(container.textContent).toContain(
       "Type this on the other device at 100.102.128.70:47831",
@@ -539,7 +535,7 @@ describe("devices panel", () => {
     await fillEnterForm("100.74.116.126:47831", "ABCD2345");
     await submitForm();
 
-    expect(pairingComplete).toHaveBeenCalledWith("100.74.116.126:47831", "ABCD2345", "client");
+    expect(pairingComplete).toHaveBeenCalledWith("100.74.116.126:47831", "ABCD2345");
     expect(container.textContent).toContain("Waiting for Marco's MacBook Pro to confirm");
   });
 
@@ -550,12 +546,12 @@ describe("devices panel", () => {
     await fillEnterForm("100.74.116.126:47831", "ABCD2345");
     await submitForm();
 
-    expect(container.textContent).toContain("Paired with Xiaomi 14 (client).");
+    expect(container.textContent).toContain("Paired with Xiaomi 14.");
     // The panel re-polls immediately instead of waiting for the next tick.
     expect(vi.mocked(devicesList).mock.calls.length).toBeGreaterThan(1);
   });
 
-  it("sends the typed address and role with the code", async () => {
+  it("sends the typed address and code", async () => {
     await renderPanel();
 
     await act(async () => {
@@ -566,14 +562,6 @@ describe("devices panel", () => {
     if (address === null) throw new Error("address field did not render");
     await typeInto(address, "100.74.116.126:47831");
     await typeInto(codeInput(), "abcd 2345");
-    const daemonRadio = container.querySelector<HTMLInputElement>(
-      'input[name="pairing-enter-role"][value="daemon"]',
-    );
-    if (daemonRadio === null) throw new Error("role choice did not render");
-    await act(async () => {
-      daemonRadio.click();
-      await Promise.resolve();
-    });
     await act(async () => {
       const form = container.querySelector("form");
       if (form === null) throw new Error("pairing form did not render");
@@ -581,7 +569,7 @@ describe("devices panel", () => {
       await Promise.resolve();
     });
 
-    expect(pairingComplete).toHaveBeenCalledWith("100.74.116.126:47831", "ABCD2345", "daemon");
+    expect(pairingComplete).toHaveBeenCalledWith("100.74.116.126:47831", "ABCD2345");
   });
 
   it("answers a pending confirmation and re-polls", async () => {
@@ -752,14 +740,16 @@ describe("devices panel", () => {
     expect(checkboxByLabel("send").checked).toBe(true);
   });
 
-  it("keeps view checked and disabled, and never sends it away", async () => {
+  it("keeps the last capability checked and disabled, and never sends it away", async () => {
+    // No capability is tied to a role any more; the one rule left is that a
+    // row may not be emptied, so the last switch on a one-grant row is held.
     vi.mocked(devicesList).mockResolvedValue(replyWith({ peers: [CLIENT_PEER] }));
     await renderPanel();
 
     const view = checkboxByLabel("view");
     expect(view.checked).toBe(true);
     expect(view.disabled).toBe(true);
-    expect(container.textContent).toContain("Client peers can always view their own sessions");
+    expect(container.textContent).toContain("A device must keep at least one capability");
   });
 
   it("reverts a capability toggle when the daemon refuses it", async () => {
@@ -782,27 +772,21 @@ describe("devices panel", () => {
     expect(alert.querySelector(".error-detail-sr-only")).not.toBeNull();
   });
 
-  it("draws the capability switches for a daemon peer and drops the false scope sentence", async () => {
-    // A daemon peer given the whole set has switches for all of them and no
-    // "reaches the sessions it created and nothing else": it reaches Shutdown, the
-    // settings stores, and the rest of the surface the `admin` switch names.
-    // `browser` is in this fixture because a row can hold it; it is not born
-    // holding it.
+  it("draws the capability switches for a peer holding the whole set", async () => {
+    // A peer given the whole set has switches for all of them, and the `admin`
+    // switch names the rest of the surface it reaches. `browser` is in this
+    // fixture because a row can hold it; it is not born holding it.
     vi.mocked(devicesList).mockResolvedValue(
-      replyWith({ peers: [{ ...CLIENT_PEER, role: "daemon", caps: [...CAP_ORDER] }] }),
+      replyWith({ peers: [{ ...CLIENT_PEER, caps: [...CAP_ORDER] }] }),
     );
     await renderPanel();
 
     expect(container.querySelectorAll('input[type="checkbox"]')).toHaveLength(CAP_ORDER.length);
     expect(checkboxByLabel(ADMIN_LABEL).checked).toBe(true);
-    // `view` is a client's to keep, not a daemon's: the daemon refuses to strip
-    // it from a client and says nothing about a daemon row.
+    // With more than one grant nothing is held, so every switch is live.
     expect(checkboxByLabel("view").disabled).toBe(false);
     expect(container.textContent).not.toContain("and nothing else");
     expect(container.textContent).not.toContain("scoped by the daemon");
-    expect(container.textContent).toContain(
-      "A daemon peer reaches the sessions it created on this device; this machine's own sessions are not in its list.",
-    );
     // The one fact a person cannot read off the switches: the default is
     // granted at pairing, so a row paired earlier keeps what it had then.
     expect(container.textContent).toContain("A device paired before 21 September 2026");
@@ -813,7 +797,7 @@ describe("devices panel", () => {
     // change that device's stored set, and what stays on screen is the set the
     // daemon answered with. A box that flips and changes nothing would be
     // worse than no box, because it would look like a protection.
-    const peer: PeerRow = { ...CLIENT_PEER, role: "daemon", caps: [...CAP_ORDER] };
+    const peer: PeerRow = { ...CLIENT_PEER, caps: [...CAP_ORDER] };
     vi.mocked(devicesList).mockResolvedValue(replyWith({ peers: [peer] }));
     vi.mocked(peerSetCaps).mockResolvedValue({
       ...peer,
@@ -842,7 +826,7 @@ describe("devices panel", () => {
     // `validate_caps` refuses a peer left with no capability at all. The panel
     // holds the last switch instead of sending a set the daemon will refuse.
     vi.mocked(devicesList).mockResolvedValue(
-      replyWith({ peers: [{ ...CLIENT_PEER, role: "daemon", caps: ["admin"] }] }),
+      replyWith({ peers: [{ ...CLIENT_PEER, caps: ["admin"] }] }),
     );
     await renderPanel();
 
@@ -1093,7 +1077,6 @@ describe("devices panel", () => {
             ...CLIENT_PEER,
             deviceId: PENDING.deviceId,
             displayName: PENDING.displayName,
-            role: "daemon",
           },
         ],
       }),
@@ -1103,7 +1086,7 @@ describe("devices panel", () => {
     });
 
     expect(container.textContent).not.toContain("Waiting for");
-    expect(container.textContent).toContain("Paired with Marco's MacBook Pro (daemon).");
+    expect(container.textContent).toContain("Paired with Marco's MacBook Pro.");
     expect(container.textContent).toContain("Paired devices (1)");
   });
 
@@ -1334,7 +1317,7 @@ describe("devices panel", () => {
     await fillEnterForm("[fd7a:115c:a1e0::1]:47831", "ABCD2345");
     await submitForm();
 
-    expect(pairingComplete).toHaveBeenCalledWith("[fd7a:115c:a1e0::1]:47831", "ABCD2345", "client");
+    expect(pairingComplete).toHaveBeenCalledWith("[fd7a:115c:a1e0::1]:47831", "ABCD2345");
   });
 
   it("hints the code field for a phone keyboard", async () => {

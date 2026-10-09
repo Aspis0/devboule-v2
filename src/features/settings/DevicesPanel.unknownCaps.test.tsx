@@ -39,7 +39,6 @@ const SELF: SelfInfo = {
 const PEER: PeerRow = {
   deviceId: "peer-1",
   displayName: "Phone",
-  role: "client",
   publicKey: "cA==",
   keyFingerprint: "11".repeat(16),
   bindingKind: "tailnet",

@@ -419,11 +419,6 @@ describe("devices card geometry (real stylesheets, no app launch)", () => {
     expect(getComputedStyle(kebab).height).toBe("26px");
   });
 
-  it("keeps the role chip a 12px metadata label, not a 14px chip", () => {
-    proof.inject([".dev-role-chip"]);
-    expect(getComputedStyle(box("dev-role-chip")).fontSize).toBe("12px");
-  });
-
   it("owns every dev- rule: no other settings sheet declares one", () => {
     // What makes the four-sheet assembly above sound. A `dev-*` selector
     // in providers, profiles, general or diagnostics would join the real
@@ -604,20 +599,6 @@ describe("devices card geometry (real stylesheets, no app launch)", () => {
     // Muted, proved without a hex: the same computed colour as the
     // house meta line.
     expect(getComputedStyle(title).color).toBe(getComputedStyle(box("dev-meta")).color);
-  });
-
-  it("sets the pairing role legend in sentence case like every other label", () => {
-    // Live check: "PAIR THE OTHER DEVICE AS" was the only all-caps label
-    // on the page. The JSX already reads "Pair the other device as"; the
-    // caps came from this rule, now a 12/500 label with no transform.
-    proof.inject([".dev-role-choice legend"]);
-    const boxEl = box("dev-role-choice");
-    const legend = document.createElement("legend");
-    boxEl.appendChild(legend);
-    const style = getComputedStyle(legend);
-    expect(style.fontSize).toBe("12px");
-    expect(style.fontWeight).toBe("500");
-    expect(style.textTransform).not.toBe("uppercase");
   });
 
   it("keeps the first card on the shell's 16px rhythm", () => {

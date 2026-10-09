@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use devboule_daemon::DaemonClient;
 use devboule_protocol::{
-    DaemonMessage, ErrorCode, PairingSecret, PeerRole, PeerRow, PendingPairing, SelfInfo,
+    DaemonMessage, ErrorCode, PairingSecret, PeerRow, PendingPairing, SelfInfo,
 };
 use tauri::State;
 
@@ -32,19 +32,6 @@ fn require_client(bridge: &DaemonBridge) -> Result<Arc<DaemonClient>, CommandErr
 /// a secret ends up in a log.
 fn unexpected_reply() -> CommandError {
     CommandError::new(ErrorCode::Internal, "unexpected daemon reply")
-}
-
-/// Read the panel's role string into the daemon's enum.
-///
-/// The frontend sends `"client" | "daemon"`, which is what `PeerRole`
-/// serialises to; an unknown value is refused **here**, with a sentence a
-/// person can act on, rather than being passed to the daemon as a string it
-/// would have to reinterpret. The message names both accepted values because
-/// the only realistic cause is a UI bug or a stale frontend.
-fn parse_role(role: &str) -> Result<PeerRole, CommandError> {
-    PeerRole::parse(role).ok_or_else(|| {
-        CommandError::new(ErrorCode::InvalidRequest, "role must be client or daemon")
-    })
 }
 
 /// The `devices_list` reply: the daemon's `devices` frame without its request
@@ -73,7 +60,8 @@ pub struct PairingCode {
 
 /// The two ways `pairing_complete` can land. Tagged with the daemon frame's own
 /// names (`pairing_pending` / `pairing_done`) so the frontend discriminates on
-/// the reply variant instead of on which fields are present.
+/// the reply variant instead of on which fields are present. A current pairing
+/// always lands `pairing_pending`: the code-displaying device confirms it.
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PairingOutcome {
@@ -101,13 +89,9 @@ pub async fn devices_list(bridge: State<'_, DaemonBridge>) -> Result<DevicesRepl
 }
 
 #[tauri::command]
-pub async fn pairing_start(
-    bridge: State<'_, DaemonBridge>,
-    role: String,
-) -> Result<PairingCode, CommandError> {
-    let role = parse_role(&role)?;
+pub async fn pairing_start(bridge: State<'_, DaemonBridge>) -> Result<PairingCode, CommandError> {
     let client = require_client(&bridge)?;
-    off_main_thread(move || match client.pairing_start(role)? {
+    off_main_thread(move || match client.pairing_start()? {
         DaemonMessage::PairingCode {
             code,
             expires_at,
@@ -130,9 +114,7 @@ pub async fn pairing_complete(
     bridge: State<'_, DaemonBridge>,
     address: String,
     code: String,
-    role: String,
 ) -> Result<PairingOutcome, CommandError> {
-    let role = parse_role(&role)?;
     let client = require_client(&bridge)?;
     off_main_thread(move || {
         match client.pairing_complete(
@@ -140,7 +122,6 @@ pub async fn pairing_complete(
             // The wrapper keeps the code out of `Debug` output for the whole trip
             // through the daemon client.
             PairingSecret::new(code),
-            role,
         )? {
             DaemonMessage::PairingPending { peer, .. } => {
                 Ok(PairingOutcome::PairingPending { peer })

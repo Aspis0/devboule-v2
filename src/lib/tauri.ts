@@ -20,7 +20,6 @@ import type {
   OracleWorkspace,
   OracleSearchResponse,
   PairingCode,
-  PeerRole,
   PeerRow,
   PendingPairing,
   PermissionOutcome,
@@ -309,8 +308,8 @@ export type CommandArgs = {
   plugin_backend_stop: { pluginId: string; generation?: number };
   plugin_invoke: { pluginId: string; method: string; payload?: unknown };
   devices_list: undefined;
-  pairing_start: { role: PeerRole };
-  pairing_complete: { address: string; code: string; role: PeerRole };
+  pairing_start: undefined;
+  pairing_complete: { address: string; code: string };
   pairing_confirm: { deviceId: string; accept: boolean };
   peer_revoke: { deviceId: string };
   peer_set_caps: { deviceId: string; caps: readonly Cap[] };
@@ -669,8 +668,8 @@ export const COMMAND_ARG_KEYS = {
   plugin_backend_stop: ["pluginId", "generation"],
   plugin_invoke: ["pluginId", "method", "payload"],
   devices_list: [],
-  pairing_start: ["role"],
-  pairing_complete: ["address", "code", "role"],
+  pairing_start: [],
+  pairing_complete: ["address", "code"],
   pairing_confirm: ["deviceId", "accept"],
   peer_revoke: ["deviceId"],
   peer_set_caps: ["deviceId", "caps"],
@@ -1398,19 +1397,21 @@ export type PairingOutcome =
  */
 export const devicesList = () => invokeTyped("devices_list");
 /**
- * Asks the daemon to display a fresh one-time pairing code for the given role.
- * The code is a five-minute secret: it goes on screen, never into a log, and it
- * expires on its own (there is no cancel message in the protocol).
+ * Asks the daemon to display a fresh one-time pairing code. No role is asked:
+ * the code-displaying device confirms every new pairing itself, and a paired
+ * device is a client until it hosts a workspace. The code is a five-minute
+ * secret: it goes on screen, never into a log, and it expires on its own
+ * (there is no cancel message in the protocol).
  */
-export const pairingStart = (role: PeerRole) => invokeTyped("pairing_start", { role });
+export const pairingStart = () => invokeTyped("pairing_start");
 /**
  * Types a code another device is showing. Resolves with either the parked
  * pairing (a confirmation is pending on the far side) or the finished row.
  */
-export const pairingComplete = (address: string, code: string, role: PeerRole) =>
-  invokeTyped("pairing_complete", { address, code, role });
+export const pairingComplete = (address: string, code: string) =>
+  invokeTyped("pairing_complete", { address, code });
 /**
- * Answers a pending `client` pairing. Resolves with the row the daemon wrote on
+ * Answers a pending pairing. Resolves with the row the daemon wrote on
  * an accept, and with `null` on a decline — declining is a success, not an
  * error, so a rejected promise here means the daemon genuinely refused the
  * request.

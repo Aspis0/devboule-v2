@@ -49,7 +49,6 @@ const CODE: PairingCode = {
 const PENDING: PendingPairing = {
   deviceId: "3ac1f0de-4b5a-4c3d-8e9f-0a1b2c3d4e5f",
   displayName: "Marco's MacBook Pro",
-  role: "daemon",
   keyFingerprint: "0123456789abcdef0123456789abcdef",
   address: "100.74.116.126:47831",
   expiresAt: NOW + 60_000,
@@ -59,7 +58,6 @@ const PENDING: PendingPairing = {
 const CONFIRMED_PEER: PeerRow = {
   deviceId: PENDING.deviceId,
   displayName: PENDING.displayName,
-  role: "client",
   publicKey: "cGVlci1wdWJsaWMta2V5",
   keyFingerprint: PENDING.keyFingerprint,
   bindingKind: "tailnet",
@@ -285,7 +283,7 @@ describe("pairing session across a Settings page switch", () => {
     });
 
     expect(container.textContent).not.toContain("Waiting for Marco's MacBook Pro to confirm");
-    expect(container.textContent).toContain("Paired with Marco's MacBook Pro (client).");
+    expect(container.textContent).toContain("Paired with Marco's MacBook Pro.");
   });
 
   it("keeps the enter draft, address and code text, across a page switch", async () => {

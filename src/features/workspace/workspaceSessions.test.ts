@@ -46,7 +46,6 @@ const liveSession = (id: string, title = id): Session => ({
 const pairedPhone: PeerRow = {
   deviceId: "device-phone",
   displayName: "Xiaomi 14",
-  role: "client",
   publicKey: "cHVibGljLWtleQ==",
   keyFingerprint: "f9e8d7c6b5a4938271605f4e3d2c1b0a",
   bindingKind: "tailnet",

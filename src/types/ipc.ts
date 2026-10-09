@@ -2266,14 +2266,18 @@ export interface PluginInventory {
  * split `PermissionOutcome` already uses.
  */
 
-/** What a paired device is allowed to be. Decided at pairing, never changed later. */
+/**
+ * The role word protocol 30 paired a device as. Pairing no longer asks, so the
+ * live rows carry none; the word survives as historical attribution — a stored
+ * session origin, an audit row — and as the projection a v30 app still reads.
+ */
 export type PeerRole = "client" | "daemon";
 
 /**
  * One grant a paired device may hold, and one switch in the Devices panel for
- * every role. `view` is the one name `validate_caps` refuses to strip from a
- * `client` peer (the panel holds that switch on); a `daemon` peer may be left
- * with any single one. Every new pairing starts holding all of them
+ * every grant. No capability is tied to a role any more: any listed grant may
+ * come off any peer, and the permission gate denies each act whose capability
+ * is absent. Every new pairing starts holding all of them
  * (`PEER_DEFAULT_CAPS`, the 2026-09-21 parity decision), so the switches are
  * how a person narrows a device and how a grant is put back — except
  * `browser`, which no pairing is born holding (owner's decision, 2026-09-23):
@@ -2325,7 +2329,6 @@ export interface SelfInfo {
 export interface PeerRow {
   deviceId: string;
   displayName: string;
-  role: PeerRole;
   publicKey: string;
   keyFingerprint: string;
   /** The only binding that exists today; `relay` is designed but unbuilt. */
@@ -2352,7 +2355,6 @@ export interface PeerRow {
 export interface PendingPairing {
   deviceId: string;
   displayName: string;
-  role: PeerRole;
   keyFingerprint: string;
   address: string;
   /** Unix milliseconds when the parked pairing gives up. */
