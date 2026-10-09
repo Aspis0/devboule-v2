@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 use std::io::Read;
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use super::{CreationStatus, Membership, ProcessIdentity};
@@ -54,8 +54,8 @@ impl Probe {
     }
 
     pub(crate) fn begin_refresh(&mut self) -> Result<(), String> {
-        let listings = run_bounded("ps", &["-axo", "pid=,ppid=,pgid=,command="])?;
-        let stamps = run_bounded("ps", &["-axo", "pid=,lstart="])?;
+        let listings = run_listing("ps", &["-axo", "pid=,ppid=,pgid=,command="])?;
+        let stamps = run_listing("ps", &["-axo", "pid=,lstart="])?;
         self.rows = parse_ps_rows(&listings);
         apply_start_times(&mut self.rows, &stamps);
         self.ports = parse_lsof_ports(&run_bounded(
@@ -313,10 +313,27 @@ fn timezone_offset_seconds() -> i64 {
 
 /// One bounded helper run: spawn, read stdout on its own thread while the
 /// deadline runs (a child that fills the pipe blocks on the reader, never on
-/// us), kill on overrun. Every failure — start, timeout, cap — is an error
-/// the caller must surface; only a successful read with empty output means
-/// "nothing to report".
+/// us), kill on overrun. Start, timeout and cap failures are errors the caller
+/// must surface. The exit status is the caller's to judge: a listing requires
+/// success, a per-pid query reads a non-zero exit as "no such pid".
 fn run_bounded(program: &str, args: &[&str]) -> Result<String, String> {
+    run_helper(program, args).map(|(output, _)| output)
+}
+
+/// One listing the refresh is built from. A helper that exits non-zero, or
+/// whose output is cut short, is a failed snapshot: a partial listing could
+/// omit a bridge or a root, so it is never used.
+fn run_listing(program: &str, args: &[&str]) -> Result<String, String> {
+    let (output, status) = run_helper(program, args)?;
+    if status.success() {
+        Ok(output)
+    } else {
+        Err(format!("{program} exited with {status}"))
+    }
+}
+
+/// The helper run to its end under its budget: its output and exit status.
+fn run_helper(program: &str, args: &[&str]) -> Result<(String, ExitStatus), String> {
     let mut child = Command::new(program)
         .args(args)
         .stdout(Stdio::piped())
@@ -337,7 +354,7 @@ fn run_bounded(program: &str, args: &[&str]) -> Result<String, String> {
     let deadline = Instant::now() + HELPER_BUDGET;
     let wait_result = loop {
         match child.try_wait() {
-            Ok(Some(_)) => break Ok(()),
+            Ok(Some(status)) => break Ok(status),
             Ok(None) if Instant::now() < deadline => {
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 std::thread::sleep(HELPER_POLL.min(remaining));
@@ -350,19 +367,22 @@ fn run_bounded(program: &str, args: &[&str]) -> Result<String, String> {
             }
         }
     };
-    if let Err(error) = wait_result {
-        let _ = child.kill();
-        let _ = child.wait();
-        let _ = reader.join();
-        return Err(error);
-    }
+    let status = match wait_result {
+        Ok(status) => status,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = reader.join();
+            return Err(error);
+        }
+    };
     let output = reader
         .join()
         .map_err(|_| format!("{program} output thread panicked"))?;
     if output.len() as u64 > HELPER_OUTPUT_CAP {
         return Err(format!("{program} output exceeded its cap"));
     }
-    Ok(String::from_utf8_lossy(&output).into_owned())
+    Ok((String::from_utf8_lossy(&output).into_owned(), status))
 }
 
 #[cfg(test)]

@@ -113,3 +113,15 @@ fn the_real_listener_table_names_a_port_this_process_bound() {
         "port {port} is listed under our pid"
     );
 }
+
+/// A process created after the parent snapshot was taken is not covered by
+/// it: a pid reused since then has a ppid that describes the old process.
+#[test]
+fn a_process_created_after_the_snapshot_is_not_covered_by_it() {
+    assert!(
+        snapshot_covers(1_000, 1_000),
+        "the same millisecond is covered"
+    );
+    assert!(snapshot_covers(900, 1_000));
+    assert!(!snapshot_covers(1_001, 1_000));
+}

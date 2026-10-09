@@ -11,8 +11,8 @@ use std::mem;
 use std::ptr;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, ERROR_NO_DATA, FILETIME,
-    HANDLE, INVALID_HANDLE_VALUE,
+    CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, ERROR_NO_DATA,
+    ERROR_NO_MORE_FILES, FILETIME, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_OWNER_PID, TCP_TABLE_OWNER_PID_LISTENER,
@@ -40,6 +40,8 @@ pub(crate) const PARENT_LINKS_SURVIVE_EXIT: bool = true;
 pub(crate) struct Probe {
     parents: HashMap<u32, u32>,
     ports: Vec<(u16, u32)>,
+    /// When the parent snapshot was taken, in unix milliseconds.
+    taken_at_ms: u64,
 }
 
 impl Probe {
@@ -47,10 +49,12 @@ impl Probe {
         Self {
             parents: HashMap::new(),
             ports: Vec::new(),
+            taken_at_ms: 0,
         }
     }
 
     pub(crate) fn begin_refresh(&mut self) -> Result<(), String> {
+        self.taken_at_ms = unix_millis_now();
         self.parents = process_parents().ok_or("process snapshot unavailable")?;
         self.ports = listener_ports().ok_or("listener table unavailable")?;
         Ok(())
@@ -73,8 +77,10 @@ impl Probe {
         let started_at_ms = read_creation_time(handle);
         let exe = read_exe(handle);
         unsafe { CloseHandle(handle) };
+        let started_at_ms =
+            started_at_ms.filter(|started| snapshot_covers(*started, self.taken_at_ms))?;
         Some(ProcessIdentity {
-            started_at_ms: started_at_ms?,
+            started_at_ms,
             ppid,
             exe,
             argv: Vec::new(),
@@ -151,8 +157,27 @@ pub(crate) fn process_parents() -> Option<HashMap<u32, u32>> {
         parents.insert(entry.th32ProcessID, entry.th32ParentProcessID);
         ok = unsafe { Process32NextW(snapshot, &mut entry) };
     }
+    // Only "no more entries" ends a complete walk; any other failure stops it
+    // midway, and a partial table must not pass for the whole machine.
+    let stop_reason = unsafe { windows_sys::Win32::Foundation::GetLastError() };
     unsafe { CloseHandle(snapshot) };
-    Some(parents)
+    (stop_reason == ERROR_NO_MORE_FILES).then_some(parents)
+}
+
+/// Whether a process created at `started_at_ms` was already running when the
+/// parent snapshot was taken at `taken_at_ms`. A later creation means the pid
+/// may have been reused since the snapshot, and its ppid is the old process's.
+pub(crate) fn snapshot_covers(started_at_ms: u64, taken_at_ms: u64) -> bool {
+    started_at_ms <= taken_at_ms
+}
+
+/// Unix milliseconds now. A clock read that fails returns zero, which covers
+/// nothing: every identity is then refused rather than trusted.
+fn unix_millis_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Both families' listener tables, read through the kernel's owner-pid API.
