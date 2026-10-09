@@ -34,6 +34,10 @@ use crate::journal::PeerRecord;
 /// for a read's reply, nor the reverse.
 pub(crate) const PROBE_ID_BASE: u64 = 1 << 62;
 
+/// A parked detach's request id. Below the probe base and above every read id
+/// a link mints, so its `Ok` cannot be mistaken for a read's reply.
+pub(crate) const DEFERRED_DETACH_ID_BASE: u64 = 1 << 61;
+
 /// Missed probes before a link is called offline and closed. Two, because one
 /// lost pong is a tailnet fact and two are a host that has stopped answering.
 const MAX_PROBE_MISSES: u32 = 2;
@@ -134,6 +138,15 @@ fn run(
         let Some(open) = session.as_mut() else {
             continue;
         };
+        // A detach parked while this link was busy goes out here, before any
+        // new command, so the host stops streaming at the first free turn.
+        for (session_id, subscription_id) in link.take_deferred_detaches() {
+            let _ = open.framed.send(&ClientMessage::SessionDetach {
+                id: DEFERRED_DETACH_ID_BASE + subscription_id,
+                session_id,
+                subscription_id,
+            });
+        }
         match queue.try_recv() {
             Ok(command) => {
                 reads += 1;

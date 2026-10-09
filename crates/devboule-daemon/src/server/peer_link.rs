@@ -326,8 +326,13 @@ impl PeerLinks {
         answer
     }
 
-    /// Close one session's live stream. A stream this daemon no longer has is
-    /// still an `Accepted`: the local subscription is gone either way.
+    /// Close one session's live stream.
+    ///
+    /// The local close is unconditional and first: whatever the link can do,
+    /// no event is relayed after this call. The peer is asked to stop right
+    /// away when the link is free, and the request is parked for the worker's
+    /// next idle turn when it is not — a busy moment must not leave the host
+    /// streaming. A link this daemon no longer has is still an `Accepted`.
     pub(crate) fn detach(
         &self,
         device_id: &str,
@@ -335,39 +340,30 @@ impl PeerLinks {
         subscription_id: u64,
     ) -> LinkAnswer {
         let link = {
-            let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-            if inner.pending_reads >= MAX_PENDING_READS {
-                return LinkAnswer::Accepted;
-            }
-            inner.pending_reads += 1;
+            let inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
             inner.links.get(device_id).cloned()
         };
-        let (answer_tx, answer_rx) = std::sync::mpsc::sync_channel(1);
         let Some(link) = link else {
-            self.finish_read();
             return LinkAnswer::Accepted;
         };
+        link.remove_subscription(subscription_id);
         let Some(_permit) = link.try_read_permit() else {
-            self.finish_read();
-            // The stream is closed locally even when the worker is busy; the
-            // peer's copy dies with the next transport.
-            link.remove_subscription(subscription_id);
+            link.defer_detach(session_id.to_string(), subscription_id);
             return LinkAnswer::Accepted;
         };
+        let (answer_tx, answer_rx) = std::sync::mpsc::sync_channel(1);
         if !link.queue_detach(
             link.generation(),
             session_id.to_string(),
             subscription_id,
             answer_tx,
         ) {
-            self.finish_read();
+            link.defer_detach(session_id.to_string(), subscription_id);
             return LinkAnswer::Accepted;
         }
-        let answer = answer_rx
+        answer_rx
             .recv_timeout(Duration::from_secs(30))
-            .unwrap_or(LinkAnswer::Accepted);
-        self.finish_read();
-        answer
+            .unwrap_or(LinkAnswer::Accepted)
     }
 
     /// Read one list over the host's link, waiting on its worker.

@@ -7,7 +7,9 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use devboule_protocol::{DaemonMessage, RemoteHostState, RemoteHostStatus, WorkspaceIsolation};
+use devboule_protocol::{
+    ClientMessage, DaemonMessage, RemoteHostState, RemoteHostStatus, WorkspaceIsolation,
+};
 
 use super::harness::Harness;
 use super::peer_link_test_support::eventually;
@@ -323,7 +325,84 @@ fn a_detach_stops_the_relay() {
     }
 }
 
-/// A new transport fences the old generation's subscriptions: the app
+/// A detach while the link is busy still closes the stream locally at once —
+/// nothing is relayed after it — and the peer is asked to stop at the first
+/// free turn instead of being left streaming.
+#[test]
+fn a_busy_link_still_closes_a_detached_stream_and_stops_the_peer() {
+    let harness = Harness::start("peer-link-detach-busy");
+    harness.watch();
+    harness.wait_online(&harness.conn);
+    assert!(matches!(
+        harness
+            .links
+            .attach("b", "session-1", 7, Arc::clone(&harness.conn)),
+        super::LinkAnswer::Accepted
+    ));
+    eventually("the first stream relays", || {
+        harness
+            .conn
+            .outbound
+            .pull_replies()
+            .into_iter()
+            .any(|reply| matches!(reply, DaemonMessage::RemoteHostEvent { .. }))
+    });
+
+    // Occupy the link's one command slot with an attach the fake peer never
+    // answers; the harness read deadline is five seconds.
+    harness.responder.hold_reads();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let _ = harness
+                .links
+                .attach("b", "session-2", 9, Arc::clone(&harness.conn));
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            matches!(
+                harness.links.detach("b", "session-1", 7),
+                super::LinkAnswer::Accepted
+            ),
+            "the local close must not be refused by a busy link"
+        );
+        // The peer keeps pushing for the detached stream; none of it relays.
+        harness.responder.push_session_event(7, "after-detach");
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            !harness
+                .conn
+                .outbound
+                .pull_replies()
+                .into_iter()
+                .any(|reply| matches!(
+                    reply,
+                    DaemonMessage::RemoteHostEvent {
+                        subscription_id: 7,
+                        ..
+                    }
+                )),
+            "a detached stream must not relay, busy link or not"
+        );
+    });
+
+    // The parked detach goes out once the held attach gives the link back.
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        match harness.requests.recv_timeout(Duration::from_millis(100)) {
+            Ok(ClientMessage::SessionDetach {
+                subscription_id, ..
+            }) => {
+                assert_eq!(subscription_id, 7, "the detached stream is named");
+                break;
+            }
+            Ok(_) => continue,
+            Err(_) if Instant::now() < deadline => continue,
+            Err(_) => panic!("the deferred detach never reached the peer"),
+        }
+    }
+}
+
+/// A new transport fences the old generation's subscriptions: the app/// A new transport fences the old generation's subscriptions: the app
 /// reattaches on the online edge, and a stale attach never relays into the
 /// link that replaced it.
 #[test]

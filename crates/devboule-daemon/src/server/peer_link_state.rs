@@ -101,6 +101,11 @@ pub(crate) struct HostLink {
     /// app reattaches on the online edge, and a generation that is gone must
     /// never relay into the one that replaced it.
     subscriptions: Mutex<HashMap<u64, Subscription>>,
+    /// Peer detaches that could not be sent the moment the app asked (the
+    /// link was serving a read). The worker drains them at its next idle
+    /// turn, so the host stops streaming instead of being left running by a
+    /// busy moment.
+    deferred_detaches: Mutex<Vec<(String, u64)>>,
     /// The last status handed to the watchers, so an unchanged poll is not a
     /// flood: one change, one push. Compared before the coalescer, so an
     /// identical state is dropped rather than parked as a trailing duplicate.
@@ -133,6 +138,7 @@ impl HostLink {
             generation: AtomicU64::new(0),
             inflight: AtomicBool::new(false),
             subscriptions: Mutex::new(HashMap::new()),
+            deferred_detaches: Mutex::new(Vec::new()),
             published: Mutex::new(None),
             status_coalescer: Mutex::new(super::remote_status::StatusCoalescer::new(status_window)),
             remote_revision: Mutex::new(None),
@@ -462,6 +468,30 @@ impl HostLink {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clear();
+        self.deferred_detaches
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+    }
+
+    /// Park a peer detach for the worker's next idle turn. The local
+    /// subscription is already gone by the time this runs, so no event is
+    /// relayed in the meantime.
+    pub(crate) fn defer_detach(&self, session_id: String, subscription_id: u64) {
+        self.deferred_detaches
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push((session_id, subscription_id));
+    }
+
+    /// Take every parked detach.
+    pub(crate) fn take_deferred_detaches(&self) -> Vec<(String, u64)> {
+        std::mem::take(
+            &mut *self
+                .deferred_detaches
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        )
     }
 
     /// Leave the queue behind, if it is still the one this worker installed.
