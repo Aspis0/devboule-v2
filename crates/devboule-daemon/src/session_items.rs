@@ -717,6 +717,21 @@ pub(super) fn peer_entry<'a>(
     Ok(entry)
 }
 
+/// The observing twin of [`peer_entry`], for the read-only attach door.
+pub(super) fn peer_entry_observing<'a>(
+    map: &'a HashMap<String, RegistryEntry>,
+    session_id: &str,
+    owner: &OwnerId,
+    conn_peer: &Option<ConnPeer>,
+) -> Result<&'a RegistryEntry, WireError> {
+    let entry = map.get(session_id).ok_or_else(not_found)?;
+    check_user_owner_observing(entry, owner, conn_peer)?;
+    if entry.is_configuring() {
+        return Err(not_found());
+    }
+    Ok(entry)
+}
+
 pub(super) fn agent_message_target_entry<'a>(
     map: &'a HashMap<String, RegistryEntry>,
     session_id: &str,
@@ -885,6 +900,28 @@ pub(super) fn check_user_owner(
     owner: &OwnerId,
     conn_peer: &Option<ConnPeer>,
 ) -> Result<(), WireError> {
+    check_user_owner_with(entry, owner, conn_peer, false)
+}
+
+/// The observing door: reading a session — its transcript, its terminal
+/// screen, its roster row — is not operating on it. A machine peer observes
+/// the pairing user's sessions (the owner's two PCs each see the other's
+/// agents), while every operation keeps the origin-only rule below. The
+/// product decision is explicit: read-only opens up, writes do not.
+pub(super) fn check_user_owner_observing(
+    entry: &RegistryEntry,
+    owner: &OwnerId,
+    conn_peer: &Option<ConnPeer>,
+) -> Result<(), WireError> {
+    check_user_owner_with(entry, owner, conn_peer, true)
+}
+
+fn check_user_owner_with(
+    entry: &RegistryEntry,
+    owner: &OwnerId,
+    conn_peer: &Option<ConnPeer>,
+    observing: bool,
+) -> Result<(), WireError> {
     match conn_peer {
         // A client-scoped peer speaks for the person who paired it: the register
         // of sessions it reaches is that user's, and only that user's. The
@@ -909,12 +946,19 @@ pub(super) fn check_user_owner(
         Some(ConnPeer::Remote {
             scope: crate::peer_policy::PeerScope::PeerDevice,
             device_id,
+            paired_by_user,
             ..
         }) => {
             let origin = entry.origin();
             let own_origin = origin.kind == SessionOriginKind::Peer
                 && origin.device_id.as_deref() == Some(device_id.as_str());
-            if own_origin && entry.owner().user == owner.user {
+            // Observing also reaches the sessions of the person who paired
+            // this machine here; operating does not.
+            let pairing_users_session = observing
+                && paired_by_user
+                    .as_deref()
+                    .is_some_and(|paired| entry.owner().user == paired);
+            if (own_origin && entry.owner().user == owner.user) || pairing_users_session {
                 Ok(())
             } else {
                 Err(unauthorized())

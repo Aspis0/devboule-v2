@@ -372,7 +372,10 @@ pub(super) fn dispatch_session(
                 .resize_with_subscription(&session_id, subscription_id, cols, rows, owner, conn)
                 .map(|()| DaemonMessage::Ok { id }),
         ),
-        ClientMessage::SessionsList { id } => match state.sessions.list(owner) {
+        ClientMessage::SessionsList { id } => match state
+            .sessions
+            .list_for_conn(owner, &conn.conn_peer)
+        {
             Ok(sessions) => DaemonMessage::Sessions { id, sessions },
             Err(error) => DaemonMessage::Error(error.with_id(id)),
         },

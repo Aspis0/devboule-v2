@@ -313,12 +313,12 @@ mod session_spawn;
 pub(crate) use session_items::session_unique_for_test;
 use session_items::{
     agent_message_target_entry, check_attached, check_resize_owner, check_user_owner,
-    classify_agent_message_target, is_child_of, live_session_view, mint_session_unique,
-    not_found_while_configuring, owner_from_session_id, peer_entry, peer_entry_mut, process_gone,
-    session_metadata_for_resume, unauthorized, write_child_stdin, AgentMessageSourceNamespace,
-    AgentMessageTargetClass, PtyKiller, PtySession, PtyWaitableChild, TerminalReaderDispatch,
-    UnsupportedSteerer, COALESCE_EAGER_BYTES, EXIT_DRAIN, INITIAL_COLS, INITIAL_ROWS, PULL_BATCH,
-    READER_JOIN_BUDGET, READ_CHUNK,
+    check_user_owner_observing, classify_agent_message_target, is_child_of, live_session_view,
+    mint_session_unique, not_found_while_configuring, owner_from_session_id, peer_entry,
+    peer_entry_mut, peer_entry_observing, process_gone, session_metadata_for_resume, unauthorized,
+    write_child_stdin, AgentMessageSourceNamespace, AgentMessageTargetClass, PtyKiller, PtySession,
+    PtyWaitableChild, TerminalReaderDispatch, UnsupportedSteerer, COALESCE_EAGER_BYTES, EXIT_DRAIN,
+    INITIAL_COLS, INITIAL_ROWS, PULL_BATCH, READER_JOIN_BUDGET, READ_CHUNK,
 };
 #[cfg(test)]
 use session_items::{check_owner, elapsed_ms_since_last_life, session_nonce, session_unique};
@@ -2361,7 +2361,7 @@ impl SessionRegistry {
         owner: &OwnerId,
         typed_permissions: bool,
     ) -> Result<Option<SessionResumeInfo>, WireError> {
-        let runtime = match self.runtime_for_user(session_id, owner, conn) {
+        let runtime = match self.runtime_for_user_observing(session_id, owner, conn) {
             Ok(runtime) => runtime,
             // A hydrated transcript keeps its full-history semantics: nothing
             // here answers with a bounded tail.
@@ -4085,7 +4085,29 @@ impl SessionRegistry {
         }
     }
 
+    /// The roster one connection reaches: a machine peer observes the pairing
+    /// user's sessions (the owner's two PCs list each other's agents), every
+    /// other connection keeps its own scope.
+    pub fn list_for_conn(
+        &self,
+        owner: &OwnerId,
+        conn_peer: &Option<ConnPeer>,
+    ) -> Result<Vec<Session>, WireError> {
+        match conn_peer {
+            Some(ConnPeer::Remote {
+                scope: crate::peer_policy::PeerScope::PeerDevice,
+                paired_by_user: Some(paired),
+                ..
+            }) => self.list_for_user(paired),
+            _ => self.list(owner),
+        }
+    }
+
     pub fn list(&self, owner: &OwnerId) -> Result<Vec<Session>, WireError> {
+        self.list_for_user(&owner.user)
+    }
+
+    fn list_for_user(&self, user: &str) -> Result<Vec<Session>, WireError> {
         let map = self
             .inner
             .lock()
@@ -4101,14 +4123,14 @@ impl SessionRegistry {
             .collect();
         let mut sessions: Vec<Session> = map
             .values()
-            .filter(|entry| entry.owner().user == owner.user && !entry.is_configuring())
+            .filter(|entry| entry.owner().user == user && !entry.is_configuring())
             .map(RegistryEntry::to_session)
             .collect();
         drop(map);
         if let Some(journal) = &self.journal {
             if let Ok(rows) = journal.list() {
                 for row in rows {
-                    if row.owner != owner.user {
+                    if row.owner != user {
                         continue;
                     }
                     if sessions.iter().any(|session| session.id == row.id) {
@@ -4250,11 +4272,33 @@ impl SessionRegistry {
     /// It is deliberately not a substitute for the checks the session methods
     /// make: this is the *ordering* the gate needs, and every operation still
     /// authorizes itself again at the point it touches the session.
+    /// The observing twin of [`Self::session_scope`], for a read-only attach:
+    /// a machine peer may attach to the pairing user's sessions, while every
+    /// operating frame keeps the origin-only scope.
+    pub(crate) fn session_scope_observing(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        conn_peer: &Option<ConnPeer>,
+    ) -> Result<(), WireError> {
+        self.session_scope_with(session_id, owner, conn_peer, true)
+    }
+
     pub(crate) fn session_scope(
         &self,
         session_id: &str,
         owner: &OwnerId,
         conn_peer: &Option<ConnPeer>,
+    ) -> Result<(), WireError> {
+        self.session_scope_with(session_id, owner, conn_peer, false)
+    }
+
+    fn session_scope_with(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        conn_peer: &Option<ConnPeer>,
+        observing: bool,
     ) -> Result<(), WireError> {
         let map = self
             .inner
@@ -4262,7 +4306,11 @@ impl SessionRegistry {
             .map_err(|_| internal("Session state is unavailable."))?;
         match map.get(session_id) {
             Some(entry) => {
-                check_user_owner(entry, owner, conn_peer)?;
+                if observing {
+                    check_user_owner_observing(entry, owner, conn_peer)?;
+                } else {
+                    check_user_owner(entry, owner, conn_peer)?;
+                }
                 // The ordering gate must not admit a session that is still
                 // inside its delivery window: the honest answer is the one
                 // the operation behind this gate would give —
@@ -4359,6 +4407,22 @@ impl SessionRegistry {
         let map = self.inner.lock().ok()?;
         let entry = peer_entry(&map, session_id, owner, &conn.conn_peer).ok()?;
         Some(entry.runtime())
+    }
+
+    fn runtime_for_user_observing(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        conn: &ConnHandle,
+    ) -> Result<Arc<SessionRuntime>, WireError> {
+        validate_session_id(session_id)
+            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        let map = self
+            .inner
+            .lock()
+            .map_err(|_| internal("Session state is unavailable."))?;
+        let entry = peer_entry_observing(&map, session_id, owner, &conn.conn_peer)?;
+        Ok(entry.runtime())
     }
 
     fn runtime_for_user(

@@ -10,8 +10,11 @@
 //! apart from this header; every fixture it uses is already `pub(super)` in the
 //! provider.
 
-use super::tests::{ended_record, insert_live, insert_live_agent, test_owner, tmp_delete_registry};
+use super::tests::{
+    ended_record, insert_live, insert_live_agent, remote_conn, test_owner, tmp_delete_registry,
+};
 use super::*;
+use crate::peer_policy::PeerScope;
 
 #[test]
 fn learned_peer_session_id_is_durable_and_restored_on_hydration() {
@@ -398,6 +401,59 @@ fn live_transition_does_not_rebuild_a_large_roster() {
         1,
         "the transition must not make work proportional to journal-only sessions"
     );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The owner's two PCs each host workspaces: a machine peer observes the
+/// pairing user's sessions — attach, roster — while every operating frame
+/// keeps the origin-only scope. Reading opens up; writing does not.
+#[test]
+fn a_machine_peer_observes_the_pairing_users_sessions_but_does_not_operate_on_them() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let host = test_owner("S-1-5-21-host", "process-host");
+    let other = test_owner("S-1-5-21-other", "process-other");
+    let host_session = compose_session_id(&host.session_token(), "host01").expect("id");
+    insert_live(&registry, &host_session, host);
+    let other_session = compose_session_id(&other.session_token(), "other01").expect("id");
+    insert_live(&registry, &other_session, other);
+
+    let peer = remote_conn(PeerScope::PeerDevice, Some("S-1-5-21-host"));
+    let caller = test_owner("peer_dev-phone", "paired-device");
+
+    assert!(
+        registry
+            .session_scope_observing(&host_session, &caller, &peer.conn_peer)
+            .is_ok(),
+        "a machine peer may attach to the pairing user's session"
+    );
+    assert!(
+        registry
+            .session_scope(&host_session, &caller, &peer.conn_peer)
+            .is_err(),
+        "operating on that session stays origin-only"
+    );
+    assert!(
+        registry
+            .session_scope_observing(&other_session, &caller, &peer.conn_peer)
+            .is_err(),
+        "another account's session is not the pairing user's"
+    );
+
+    let roster = registry
+        .list_for_conn(&caller, &peer.conn_peer)
+        .expect("roster");
+    assert!(
+        roster.iter().any(|row| row.id == host_session),
+        "the roster lists the pairing user's sessions: {roster:?}"
+    );
+    assert!(!roster.iter().any(|row| row.id == other_session));
+
+    // The attach door itself lets the observing read through.
+    registry
+        .attach_with_subscription(&host_session, 1, None, &peer, &caller, false)
+        .expect("the observing attach is admitted");
+
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }

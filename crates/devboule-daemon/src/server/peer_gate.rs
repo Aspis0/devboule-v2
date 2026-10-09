@@ -159,8 +159,12 @@ pub(super) fn peer_refusal_before_mode(
         }));
     }
     let scope = match request {
-        ClientMessage::SessionAttach { session_id, .. }
-        | ClientMessage::SessionSend { session_id, .. }
+        // Attaching is reading: a machine peer reaches the pairing user's
+        // sessions here, and only here.
+        ClientMessage::SessionAttach { session_id, .. } => state
+            .sessions
+            .session_scope_observing(session_id, owner, conn_peer),
+        ClientMessage::SessionSend { session_id, .. }
         | ClientMessage::SessionQueueAdd { session_id, .. }
         | ClientMessage::SessionQueueEdit { session_id, .. }
         | ClientMessage::SessionQueueRemove { session_id, .. }
