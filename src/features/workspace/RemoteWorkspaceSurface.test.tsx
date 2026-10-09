@@ -137,6 +137,73 @@ describe("the remote workspace surface", () => {
     vi.useRealTimers();
   });
 
+  it("pauses the roster poll while the window is hidden", async () => {
+    vi.useFakeTimers();
+    await render(true);
+    const afterMount = vi.mocked(remoteHostList).mock.calls.length;
+
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(5100);
+    });
+    await flush();
+    expect(vi.mocked(remoteHostList).mock.calls.length).toBe(afterMount);
+
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await flush();
+    expect(vi.mocked(remoteHostList).mock.calls.length).toBe(afterMount + 1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(5100);
+    });
+    await flush();
+    expect(vi.mocked(remoteHostList).mock.calls.length).toBeGreaterThan(afterMount + 1);
+    vi.useRealTimers();
+  });
+
+  it("coalesces event-triggered roster reloads", async () => {
+    vi.useFakeTimers();
+    await render(true);
+    const chip = [...container.querySelectorAll<HTMLButtonElement>("[role='tab']")][0];
+    await act(async () => {
+      chip?.click();
+    });
+    await flush();
+    const subscription = vi.mocked(remoteSessionAttach).mock.calls.at(-1)?.[2] as number;
+    const before = vi.mocked(remoteHostList).mock.calls.length;
+
+    await act(async () => {
+      for (let index = 0; index < 5; index += 1) {
+        emit({
+          kind: "event",
+          deviceId: "device-one",
+          sessionId: "session-one",
+          subscriptionId: subscription,
+          envelope: {
+            sessionId: "session-one",
+            generation: 1,
+            event: { type: "detached" },
+          },
+        });
+      }
+    });
+    await flush();
+    expect(vi.mocked(remoteHostList).mock.calls.length - before).toBeLessThanOrEqual(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(1100);
+    });
+    await flush();
+    expect(vi.mocked(remoteHostList).mock.calls.length).toBeGreaterThan(before + 1);
+    vi.useRealTimers();
+  });
+
   it("clears a selection the host no longer lists", async () => {
     vi.useFakeTimers();
     await render(true);

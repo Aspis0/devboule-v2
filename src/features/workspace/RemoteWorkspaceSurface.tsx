@@ -91,6 +91,10 @@ export function RemoteWorkspaceSurface({
   // not re-render the whole history once per chunk.
   const pendingLinesRef = useRef<string[]>([]);
   const flushScheduledRef = useRef(false);
+  // Event-triggered reloads are coalesced to at most one per second, with the
+  // last ask delivered as a trailing one.
+  const lastLoadAtRef = useRef(0);
+  const loadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // The host's own session rows for this workspace. The roster is live, not a
   // one-shot snapshot: it reloads on the online edge, on a working session's
@@ -114,11 +118,63 @@ export function RemoteWorkspaceSurface({
   useEffect(() => {
     void load();
   }, [load, hostOnline]);
+  // A reload asked for by a stream event waits its turn: one per second at
+  // most, and the last ask always runs.
+  const requestLoad = useCallback(() => {
+    const since = Date.now() - lastLoadAtRef.current;
+    if (since >= 1000) {
+      lastLoadAtRef.current = Date.now();
+      void load();
+      return;
+    }
+    if (loadTimerRef.current !== null) clearTimeout(loadTimerRef.current);
+    loadTimerRef.current = setTimeout(() => {
+      loadTimerRef.current = null;
+      lastLoadAtRef.current = Date.now();
+      void load();
+    }, 1000 - since);
+  }, [load]);
+  // The slow roster re-read runs only while the window is visible: a hidden
+  // window has nothing to repaint, and coming back re-reads once and resumes
+  // the interval.
   useEffect(() => {
     if (!hostOnline) return;
-    const timer = setInterval(() => void load(), 5000);
-    return () => clearInterval(timer);
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const start = () => {
+      if (timer === null) timer = setInterval(() => void load(), 5000);
+    };
+    const stop = () => {
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+    const onVisibility = () => {
+      if (document.hidden) {
+        stop();
+        return;
+      }
+      void load();
+      start();
+    };
+    if (document.hidden) stop();
+    else start();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [hostOnline, load]);
+  // A coalesced trailing reload must not outlive the surface.
+  useEffect(
+    () => () => {
+      if (loadTimerRef.current !== null) {
+        clearTimeout(loadTimerRef.current);
+        loadTimerRef.current = null;
+      }
+    },
+    [],
+  );
 
   // Open the session's stream, reattaching with a fresh subscription on the
   // online edge. Every operation is serialized on one chain and carries a
@@ -186,8 +242,9 @@ export function RemoteWorkspaceSurface({
           const line = lineOf(message.envelope.event);
           if (line !== null) appendLine(line);
           // A state, a terminal exit or a permission card changes what the
-          // tabs should say; the roster is re-read rather than left stale.
-          if (!isBulkTranscript(message.envelope.event)) void load();
+          // tabs should say; the roster is re-read rather than left stale,
+          // coalesced so a burst of events is one read.
+          if (!isBulkTranscript(message.envelope.event)) requestLoad();
         },
       );
       await remoteSessionAttach(deviceId, target, subscriptionId, channel).catch(() => {
@@ -201,7 +258,7 @@ export function RemoteWorkspaceSurface({
         reattachTimerRef.current = null;
       }
     };
-  }, [deviceId, hostOnline, load, openSessionId, resyncNonce]);
+  }, [deviceId, hostOnline, load, openSessionId, requestLoad, resyncNonce]);
 
   // Give the stream back when the surface leaves.
   useEffect(
