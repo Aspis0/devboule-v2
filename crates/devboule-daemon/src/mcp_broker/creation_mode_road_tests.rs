@@ -184,6 +184,15 @@ fn answer(state: &Arc<ServerState>, session: &str, card: &str) {
         .expect("answer the card");
 }
 
+/// Whether this refusal is the global provider-row race the retry exists for:
+/// a concurrent refresh replaced the snapshot between the road's own read and
+/// its resolve. The plain sentence is the tool's; the profile's picker reports
+/// the same race as "profile X uses a provider that is not installed".
+fn provider_row_race(body: &Value) -> bool {
+    let text = error_text(body);
+    text == "provider not installed" || text.contains("provider that is not installed")
+}
+
 fn error_text(body: &Value) -> &str {
     assert_eq!(
         body.pointer("/result/isError"),
@@ -217,10 +226,14 @@ fn a_plan_switch_after_a_person_opened_the_gate_refuses_the_next_creation() {
             // the row is live when this attempt reads it.
             seed_probe_provider(&state);
             let (value, carded) = attempt(&state, frame);
-            if !carded && error_text(&value) == "provider not installed" {
+            if !carded && provider_row_race(&value) {
                 continue;
             }
-            assert!(carded, "the first creation cards in an asking mode");
+            assert!(
+                carded,
+                "the first creation cards in an asking mode: {}",
+                error_text(&value)
+            );
             landed = Some(value);
             break;
         }
@@ -251,7 +264,7 @@ fn a_plan_switch_after_a_person_opened_the_gate_refuses_the_next_creation() {
             seed_probe_provider(&state);
             let (value, carded) = attempt(&state, frame);
             assert!(!carded, "plan mode raised a card instead of refusing");
-            if error_text(&value) == "provider not installed" {
+            if provider_row_race(&value) {
                 continue;
             }
             landed = Some(value);
