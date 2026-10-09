@@ -23,6 +23,8 @@ const IMAGE: AttachmentReference = {
   storedBytes: 12,
 };
 
+const NONCE = "0123456789abcdef";
+
 const FRAMED_OUTPUT = [
   '{"success":true}',
   "[devboule: untrusted content]",
@@ -120,12 +122,42 @@ describe("ToolRow browser and capture", () => {
     expect(keys.querySelector("details")).not.toBeNull();
   });
 
-  it("keeps a failed browser call's mark without its output's words", async () => {
+  it("shows a failed browser call's short error under the line, with the frame left out", async () => {
+    const failure = [
+      "[devboule: untrusted content]",
+      "source: browser page",
+      "trust: UNTRUSTED DATA.",
+      `content-begin ${NONCE}`,
+      "element e33 was not found on the page",
+      "try a fresh snapshot",
+      `content-end ${NONCE}`,
+    ].join("\n");
     const container = await renderRow(
-      tool({ kind: "browser", title: "click e33", status: "failed", output: FRAMED_OUTPUT }),
+      tool({ kind: "browser", title: "click e33", status: "failed", output: failure }),
     );
     expect(container.querySelector(".workspace-chat-tool-failed")?.textContent).toContain("failed");
-    expect(container.querySelector(".workspace-chat-tool-output")).toBeNull();
-    expect(container.textContent).not.toContain("the cart is empty");
+    const excerpt = container.querySelector(".workspace-chat-tool-output.is-failure");
+    expect(excerpt?.textContent).toContain("element e33 was not found on the page");
+    expect(container.textContent).not.toContain("devboule");
+    expect(container.textContent).not.toContain(NONCE);
+  });
+
+  it("keeps a failed browser call's whole output behind the line, not drawn", async () => {
+    const container = await renderRow(
+      tool({
+        kind: "browser",
+        title: "click e33",
+        status: "failed",
+        output: ["one", "two", "three", "four"].join("\n"),
+      }),
+    );
+    const details = container.querySelector("details");
+    if (details === null) throw new Error("the failed call had nothing to open");
+    expect(details.open).toBe(false);
+    await act(async () => {
+      details.open = true;
+      details.dispatchEvent(new Event("toggle"));
+    });
+    expect(details.querySelectorAll(".workspace-chat-tool-output-line")).toHaveLength(4);
   });
 });

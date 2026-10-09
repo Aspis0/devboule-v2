@@ -43,8 +43,10 @@ export const ToolRow = memo(function ToolRow({
   // the row's display title, which for some providers is the line itself.
   const commandRow = item.command !== undefined;
   const hasSummary = model.summary !== undefined || planDecision !== undefined;
-  // A browser call or a terminal capture prints nothing; a screenshot's picture is the one exception.
-  const quiet = rowShowsNoOutput(item.kind, item.title);
+  // A browser call or a terminal capture prints nothing when it went well; a
+  // screenshot's picture is the one exception, and a failure keeps its words.
+  const noOutputRow = rowShowsNoOutput(item.kind, item.title);
+  const quiet = noOutputRow && !failed;
   const screenshot = isScreenshotRow(item.kind, item.title);
   const lines = useMemo(
     () => (quiet ? [] : outputLines(hideUntrustedFrame(item.output))),
@@ -57,7 +59,11 @@ export const ToolRow = memo(function ToolRow({
   // A failure's words stand under its line without a click; every other
   // output waits behind the line.
   const excerpt = useMemo(() => (failed ? failureExcerpt(lines) : []), [failed, lines]);
-  const bodyLines = useMemo(() => (failed || isPlan ? [] : lines), [failed, isPlan, lines]);
+  // A failed call that prints nothing on success still opens to its whole output.
+  const bodyLines = useMemo(
+    () => (isPlan || (failed && !noOutputRow) ? [] : lines),
+    [failed, isPlan, lines, noOutputRow],
+  );
   const locations = useMemo(
     () =>
       (item.locations ?? []).filter(
@@ -68,7 +74,7 @@ export const ToolRow = memo(function ToolRow({
   const hasImages = item.images !== undefined && item.images.length > 0;
   // A screenshot's picture stands under its line; any other picture waits behind it.
   const picture = screenshot && hasImages;
-  const bodyImages = hasImages && !picture && !quiet;
+  const bodyImages = hasImages && !picture && !noOutputRow;
   const hasBody =
     linkUrl !== undefined ||
     locations.length > 0 ||
