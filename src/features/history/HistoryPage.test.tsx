@@ -141,8 +141,12 @@ describe("the History page", () => {
     expect(field.value).toBe("Build");
     expect(field.getAttribute("aria-label")).toBe("Search history");
     await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setter?.call(field, "Build history");
       field.dispatchEvent(new Event("input", { bubbles: true }));
     });
+    // Typing reaches the page search, which is what filters the rows.
+    expect(onSearchChange).toHaveBeenCalledWith("Build history");
   });
 
   it("hides the host filter while every row is local", async () => {
