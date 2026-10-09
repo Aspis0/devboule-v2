@@ -192,14 +192,14 @@ impl From<crate::peer_transport::PeerError> for PairingError {
     }
 }
 
-/// What the initiator's `PairingComplete` produced.
+/// What the initiator's `PairingComplete` produced. Every pairing asks no
+/// role, and the code-displaying device always confirms it, so the initiator
+/// always reports `Pending`; the old auto-accepted shape is gone.
 #[derive(Debug)]
 pub enum PairingOutcome {
     /// The far side must confirm; its answer arrives later and the row appears
     /// on the next `DevicesList` poll.
     Pending(PendingPairing),
-    /// Both sides wrote their row.
-    Done(PeerRow),
 }
 
 /// What a local answer to a parked pairing produced.
@@ -982,17 +982,20 @@ impl PairingService {
         validate_peer_payload(&peer_payload)?;
         // The far side's v30 tag is the only fact the role word carries: it
         // says whether a v30 endpoint at this address may later be dialled.
-        let peer_legacy_dialable = peer_payload.role == Some(PeerRole::Daemon);
+        // The roleless dialect has no role at all, so a `role` word on it is
+        // ignored rather than allowed to set a compatibility hint.
+        let peer_legacy_dialable =
+            matches!(dialect, Dialect::Legacy(_)) && peer_payload.role == Some(PeerRole::Daemon);
 
         // The far side's user answers a pairing parked on that device, which
         // can take a minute. Waiting for that here would hold the caller's RPC
         // open for the whole window and, worse, leave the caller unable to poll
         // `DevicesList` and answer it: the confirm could never arrive. So this
         // side reports the pairing as pending now and finishes it on its own
-        // thread, writing the row only if the answer is `accepted`. A v30
-        // exchange whose far side read a daemon tag is the one shape that old
-        // responder answers at once, and only that shape waits here.
-        if !matches!(dialect, Dialect::Legacy(PeerRole::Daemon)) {
+        // thread, writing the row only if the answer is `accepted`. The old
+        // v30 daemon tag no longer short-circuits this: confirmation on the
+        // code-displaying device is required on every wire.
+        {
             let pending = PendingPairing {
                 device_id: peer_payload.device_id.clone(),
                 display_name: peer_payload.display_name.clone(),
@@ -1052,32 +1055,6 @@ impl PairingService {
                 .ok();
             return Ok(ExchangeOutcome::Pending(pending));
         }
-
-        let answer: PairAnswer = read_json(&mut reader, Instant::now() + ANSWER_TIMEOUT)?;
-        if !answer.accepted {
-            return Err(PairingError::Failed(if answer.reason.is_empty() {
-                "the other device declined".to_string()
-            } else {
-                answer.reason
-            }));
-        }
-
-        // The binding is what **our** `whois` says about **their** address.
-        let binding = server
-            .peer_transport()
-            .binding(&remote_addr)
-            .map_err(|error| PairingError::Failed(error.to_string()))?;
-        let record = local_peer_record(
-            server,
-            &peer_payload.device_id,
-            &peer_payload.display_name,
-            peer_legacy_dialable,
-            &remote_static,
-            binding,
-            address.to_string(),
-        )?;
-        let stored = upsert_peer(server, record)?;
-        Ok(ExchangeOutcome::Done(peer_row(server, &stored)))
     }
 }
 
@@ -1104,8 +1081,6 @@ impl Dialect {
 enum ExchangeOutcome {
     /// The far side must confirm; the row lands on the answer thread.
     Pending(PendingPairing),
-    /// Both sides wrote their row.
-    Done(PeerRow),
     /// The far side answered the roleless prelude with a v30 role tag (or
     /// closed the socket where its answer belonged): retry on the v30 wire.
     Downgrade,
@@ -1115,7 +1090,6 @@ impl ExchangeOutcome {
     fn into_outcome(self) -> PairingOutcome {
         match self {
             Self::Pending(pending) => PairingOutcome::Pending(pending),
-            Self::Done(row) => PairingOutcome::Done(row),
             Self::Downgrade => unreachable!("the caller maps a downgrade before unwrapping"),
         }
     }
@@ -1352,30 +1326,14 @@ impl PairingService {
             payload.listen_port.unwrap_or(0),
         );
 
-        // 5: a v30 initiator that tagged itself a daemon promised a listener
-        // and is answered at once. Every other pairing — the roleless wire,
-        // and a v30 client — is the one the person at this device must approve
-        // (design §8b A11). The legacy dial hint stored on the row is exactly
-        // that tag, and nothing more.
+        // 5: every pairing is the one the person at this device must approve
+        // (design §8b A11). The v30 daemon tag no longer auto-accepts: a
+        // role-bearing peer can speak that tag to this daemon, and accepting
+        // it without confirmation let a v32 side be talked onto the old wire
+        // and stored unconfirmed. The tag's only surviving meaning is the dial
+        // hint recorded on the row once this person confirms.
         let legacy_dialable = initiator_role == Some(PeerRole::Daemon);
-        let accepted = if legacy_dialable {
-            let record = local_peer_record(
-                server,
-                &payload.device_id,
-                &payload.display_name,
-                true,
-                &remote_static,
-                binding,
-                address,
-            )?;
-            upsert_peer(server, record)?;
-            // The row is written, so the code has done its one job.
-            self.state
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .consume();
-            true
-        } else {
+        let accepted = {
             let (decision, wait) = mpsc::channel::<bool>();
             // Allocated before the lock: the token identifies this park, and the
             // cleanup below uses it to remove only its own entry.

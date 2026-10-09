@@ -45,15 +45,14 @@ pub(super) fn dispatch_devices(
             // The pairing service takes this device's transport from its own
             // state, so the binding check on both the immediate path and the
             // deferred answer thread see the same one.
+            // The message never contains the code: `PairingError` renders
+            // only reasons, and `PairingSecret`'s `Debug` is redacted. A
+            // pairing always parks on the code-displaying device, so this
+            // reply is always the pending one.
             match state.pairing().complete(state, &address, &code) {
                 Ok(crate::pairing::PairingOutcome::Pending(peer)) => {
                     DaemonMessage::PairingPending { id, peer }
                 }
-                Ok(crate::pairing::PairingOutcome::Done(peer)) => {
-                    DaemonMessage::PairingDone { id, peer }
-                }
-                // The message never contains the code: `PairingError` renders
-                // only reasons, and `PairingSecret`'s `Debug` is redacted.
                 Err(error) => DaemonMessage::Error(
                     WireError::new(ErrorCode::InvalidRequest, error.to_string()).with_id(id),
                 ),

@@ -76,12 +76,8 @@ fn a_client_pairing_completes_and_writes_both_rows() {
     let outcome = service_a
         .complete(&server_a, &address, &code)
         .expect("the initiator completes the exchange");
-    let pending = match outcome {
-        PairingOutcome::Pending(pending) => pending,
-        PairingOutcome::Done(_) => {
-            panic!("a Client pairing must be reported pending: the far side has not confirmed yet")
-        }
-    };
+    // One shape: every pairing is parked on the code-displaying device.
+    let PairingOutcome::Pending(pending) = outcome;
     // The initiator's card names the device that has to confirm.
     let responder_id = server_b
         .device_identity()
@@ -208,15 +204,9 @@ fn a_pairing_completes_and_the_responder_records(
         );
     });
 
-    let pending = match service_a
+    let PairingOutcome::Pending(pending) = service_a
         .complete(&server_a, &address, &code)
-        .expect("the initiator completes the exchange")
-    {
-        PairingOutcome::Pending(pending) => pending,
-        PairingOutcome::Done(_) => {
-            panic!("a roleless pairing is always parked: the far side has not confirmed yet")
-        }
-    };
+        .expect("the initiator completes the exchange");
     assert_eq!(
         pending.device_id,
         server_b
@@ -1649,11 +1639,11 @@ fn v30_initiator_exchange(
     Ok(answer)
 }
 
-/// A v30 daemon tag is the one shape the old responder answered at once, and
-/// this daemon keeps that: the row is written inside the exchange, the code is
-/// spent, and the only thing kept from the tag is the transport hint.
+/// A v30 daemon tag no longer buys an unconfirmed pairing. The row is written
+/// only when this device's person confirms, exactly like the roleless wire;
+/// the tag's only remaining meaning is the transport hint stored with it.
 #[test]
-fn a_v30_daemon_tag_is_recorded_as_a_dial_hint_without_confirmation() {
+fn a_v30_daemon_tag_still_waits_for_the_local_confirmation() {
     let (dir, server) = server("v30-daemon");
     let service = Arc::new(PairingService::new());
     let (code, _expires_at) = service.start().expect("a code");
@@ -1680,19 +1670,51 @@ fn a_v30_daemon_tag_is_recorded_as_a_dial_hint_without_confirmation() {
     });
 
     let device_id = "6f1e5b7a-0000-4000-8000-00000000c0aa";
-    let answer = v30_initiator_exchange(&address, &code, PeerRole::Daemon, device_id)
-        .expect("a v30 daemon exchange completes");
-    assert!(answer.accepted, "{answer:?}");
-    join_bounded(responder, "the v30 responder's thread");
-
-    let rows = server.peers().expect("rows");
-    assert_eq!(rows.len(), 1, "the v30 tag wrote the row at once: {rows:?}");
-    assert_eq!(rows[0].device_id, device_id);
-    assert!(rows[0].legacy_dialable, "the daemon tag is the dial hint");
+    let initiator = std::thread::spawn(move || {
+        v30_initiator_exchange(&address, &code, PeerRole::Daemon, device_id)
+    });
+    let deadline = Instant::now() + bound::THREAD;
+    let parked = loop {
+        let pending = service.pending_snapshot();
+        if !pending.is_empty() {
+            break pending;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the v30 daemon tag never parked the pairing"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
     assert!(
-        !service.is_active(),
-        "an auto-accepted pairing spends the code"
+        server.peers().expect("rows").is_empty(),
+        "no row may be written before the person here confirms"
     );
+    assert_eq!(
+        parked[0].role,
+        Some(PeerRole::Daemon),
+        "the tag projects as the dial hint on the card"
+    );
+
+    let row = match service
+        .confirm(&server, "6f1e5b7a-0000-4000-8000-00000000c0aa", true)
+        .expect("confirm")
+    {
+        ConfirmOutcome::Accepted(row) => *row,
+        ConfirmOutcome::Declined => panic!("an accept must produce a row"),
+    };
+    assert_eq!(
+        row.role,
+        Some(PeerRole::Daemon),
+        "the daemon tag is the dial hint the card carries"
+    );
+    assert!(
+        server.peers().expect("rows")[0].legacy_dialable,
+        "and it is stored on the row"
+    );
+    let answer = join_bounded(initiator, "the v30 initiator").expect("the answer arrives");
+    assert_eq!(answer.accepted, true, "{answer:?}");
+    join_bounded(responder, "the v30 responder's thread");
+    assert!(!service.is_active(), "a confirmed pairing spends the code");
 
     drop(server);
     let _ = std::fs::remove_dir_all(&dir);
@@ -1881,6 +1903,172 @@ fn a_roleless_initiator_downgrades_only_on_a_role_tag_or_a_close() {
         "the roleless attempt must have been retried once on the v30 wire"
     );
     assert!(server.peers().expect("rows").is_empty());
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The responder's half of a v30 exchange, driven by hand so a v32 initiator
+/// can be *offered* that wire: the first connection answers the roleless
+/// prelude with a role tag (the explicit version rejection), the second speaks
+/// the whole v30 codec and then holds the answer until `release` says a person
+/// confirmed.
+fn v30_responder_offering_the_old_wire(
+    listener: std::net::TcpListener,
+    code: PairingSecret,
+    release: std::sync::mpsc::Receiver<bool>,
+) {
+    use std::io::{Read as _, Write as _};
+    let mut magic = [0u8; 4];
+    // Connection one: the version rejection, and nothing else.
+    let (mut first, _) = accept_bounded(&listener);
+    first.read_exact(&mut magic).expect("the first magic");
+    assert_eq!(magic, PAIRING_MAGIC);
+    let mut version = [0u8; 1];
+    first
+        .read_exact(&mut version)
+        .expect("the roleless version byte");
+    assert_eq!(version[0], PAIR_VERSION_V2);
+    first
+        .write_all(&[ROLE_CLIENT_TAG])
+        .expect("the v30 role tag");
+    drop(first);
+
+    // Connection two: the v30 codec, with a client tag of our own so the
+    // topology is complementary.
+    let (mut stream, _) = accept_bounded(&listener);
+    let deadline = Instant::now() + bound::THREAD;
+    stream.read_exact(&mut magic).expect("the second magic");
+    assert_eq!(magic, PAIRING_MAGIC);
+    let tag_byte = read_prelude(&mut stream, deadline)
+        .map_err(|end| prelude_error(end).to_string())
+        .expect("the initiator's tag");
+    let initiator_tag = role_from_tag(tag_byte).expect("a known role tag");
+    write_prelude(&mut stream, role_tag(PeerRole::Client), deadline).expect("our tag");
+    let password = spake2::Password::new(code.as_str().as_bytes());
+    let responder_identity = spake2::Identity::new(PAIR_RESPONDER_ID);
+    let initiator_identity = spake2::Identity::new(PAIR_INITIATOR_ID);
+    let (spake_state, our_message) = spake2::Spake2::<spake2::Ed25519Group>::start_a(
+        &password,
+        &responder_identity,
+        &initiator_identity,
+    );
+    write_framed(&stream, &our_message, deadline).expect("the spake message");
+    let mut their_message = [0u8; 256];
+    let their_len =
+        read_framed(&stream, &mut their_message, deadline).expect("the initiator's spake message");
+    let mut spake_key = spake_state
+        .finish(&their_message[..their_len])
+        .expect("the spake key");
+    let (private, public) = test_keypair();
+    let mut psk = derive_psk(&spake_key, initiator_tag, PeerRole::Client);
+    spake_key.zeroize();
+    let session = responder_handshake(
+        &stream,
+        deadline,
+        &private,
+        PAIR_PROLOGUE,
+        Some(&psk),
+        PAIR_NOISE_PATTERN,
+    )
+    .expect("the v30 Noise session");
+    for byte in psk.iter_mut() {
+        *byte = 0;
+    }
+    let (mut reader, mut writer, _closer) =
+        split_session(&stream, session).expect("split the session");
+    let _payload: PairPayload = read_json(&mut reader, deadline).expect("the initiator payload");
+    let our_payload = PairPayload {
+        device_id: "6f1e5b7a-0000-4000-8000-00000000c0af".to_string(),
+        display_name: "Old peer".to_string(),
+        role: Some(PeerRole::Client),
+        public_key: base64_encode(&public),
+        listen_port: None,
+    };
+    write_json(&mut writer, &our_payload, deadline).expect("our payload");
+    // The exchange is complete and the answer waits for the confirmation the
+    // test withholds on purpose.
+    let accepted = release.recv_timeout(bound::THREAD).unwrap_or(false);
+    write_json(
+        &mut writer,
+        &PairAnswer {
+            accepted,
+            reason: String::new(),
+        },
+        deadline,
+    )
+    .expect("the answer");
+}
+
+/// The exact exploit the review found: a v32 initiator is talked onto the v30
+/// wire by a role tag where the version byte belongs, and the v30 daemon tag
+/// used to be answered at once. It must not be. The initiator reports the
+/// pairing as pending, no row exists before the person at the code-displaying
+/// device confirms, and the row appears only after that answer.
+#[test]
+fn a_v32_initiator_offered_the_v30_path_still_waits_for_confirmation() {
+    let (dir, server) = server("downgrade-confirm");
+    // A workspace makes this device's synthesized v30 tag a daemon, which is
+    // the tag the old auto-accept path keyed on.
+    let project_dir = dir.join("project");
+    std::fs::create_dir_all(&project_dir).expect("project dir");
+    let project = server
+        .sessions
+        .project_add(project_dir.to_str().expect("utf-8 path"))
+        .expect("project row");
+    server
+        .sessions
+        .workspace_create(
+            &project.id,
+            devboule_protocol::WorkspaceIsolation::Local,
+            None,
+        )
+        .expect("workspace row");
+    assert!(server.has_hosted_workspace());
+
+    let service = PairingService::new();
+    assert!(server
+        .set_peer_transport(Arc::new(crate::peer_transport::TestTransport::default()))
+        .is_ok());
+    let (code, _expires_at) = service.start().expect("a code");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let address = listener.local_addr().expect("addr").to_string();
+    let (release, wait) = mpsc::channel::<bool>();
+    let responder_code = code.clone();
+    let responder = std::thread::spawn(move || {
+        v30_responder_offering_the_old_wire(listener, responder_code, wait);
+    });
+
+    let outcome = service
+        .complete(&server, &address, &code)
+        .expect("the exchange completes on the v30 wire");
+    let PairingOutcome::Pending(pending) = outcome;
+    assert_eq!(
+        pending.role,
+        Some(PeerRole::Client),
+        "the far side's client tag projects onto the pending card"
+    );
+    assert!(
+        server.peers().expect("rows").is_empty(),
+        "the v30 tag must not write a row before the confirmation"
+    );
+
+    release.send(true).expect("the person confirms");
+    let deadline = Instant::now() + bound::THREAD;
+    loop {
+        if server.peers().expect("rows").len() == 1 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the initiator never wrote its row after the confirmation"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let rows = server.peers().expect("rows");
+    assert_eq!(rows[0].display_name, "Old peer");
+    assert!(!rows[0].legacy_dialable, "a client tag is no dial hint");
+    join_bounded(responder, "the v30 responder");
 
     drop(server);
     let _ = std::fs::remove_dir_all(&dir);
