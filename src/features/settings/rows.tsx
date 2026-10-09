@@ -129,10 +129,11 @@ export function SettingsDialog({
     }
   }
 
-  // Opening the dialog lands the human on the first field, not the ×.
-  // Keyed on the open transition alone: returning from a confirm step
-  // keeps whatever focus the step's own button placed.
-  const openRef = useRef(open);
+  // Opening the dialog lands the human on the first field, not the × —
+  // including a mount that is already open. Keyed on the open transition
+  // alone: returning from a confirm step keeps whatever focus the step's
+  // own button placed.
+  const openRef = useRef(false);
   useEffect(() => {
     const was = openRef.current;
     openRef.current = open;

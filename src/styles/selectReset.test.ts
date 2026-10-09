@@ -178,6 +178,7 @@ describe("selects paint the primary ink in both themes", () => {
       buildSettingsSelect("Provider"),
       buildSettingsSelect("Vocabulary"),
       host,
+      buildSettingsSelect("Effort"),
     ];
     for (const select of selects) {
       expect(getComputedStyle(select).color).toBe(expected);

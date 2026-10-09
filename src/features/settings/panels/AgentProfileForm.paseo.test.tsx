@@ -154,6 +154,56 @@ describe("Settings agents panel — profile editor pickers", () => {
     expect(created).not.toHaveProperty("idleCloseMinutes");
   });
 
+  it("says it is reading pi's list while the probe runs, never that pi published nothing", async () => {
+    vi.mocked(providerVocabularyGet).mockResolvedValue(
+      makeVocabulary({
+        provider: "pi",
+        models: { state: "absent", items: [] },
+        modes: {
+          state: "present",
+          origin: "daemon",
+          items: [
+            { id: "ask", name: "Always ask" },
+            { id: "bypass", name: "Bypass" },
+          ],
+        },
+        features: { state: "absent", probing: true, items: [] },
+      }),
+    );
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
+    await openForm();
+    await act(async () => undefined);
+    const editor = form();
+    expect(editor.textContent).toContain("Reading pi's model list");
+    expect(editor.textContent).not.toContain("did not publish its models");
+    // No picker yet: the model stays typeable while the read runs.
+    expect(editor.querySelector('input[aria-label="Model"]')).not.toBeNull();
+  });
+
+  it("says the read failed when pi's list could not be answered", async () => {
+    vi.mocked(providerVocabularyGet).mockResolvedValue(
+      makeVocabulary({
+        provider: "pi",
+        models: { state: "absent", items: [] },
+        modes: {
+          state: "present",
+          origin: "daemon",
+          items: [
+            { id: "ask", name: "Always ask" },
+            { id: "bypass", name: "Bypass" },
+          ],
+        },
+        features: { state: "absent", probing: false, items: [] },
+      }),
+    );
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
+    await openForm();
+    await act(async () => undefined);
+    const editor = form();
+    expect(editor.textContent).toContain("could not be read");
+    expect(editor.textContent).not.toContain("did not publish its models");
+  });
+
   it("keeps everything else under one collapsed Advanced section", async () => {
     vi.mocked(providerVocabularyGet).mockResolvedValue(piVocabulary());
     await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);

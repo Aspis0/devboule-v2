@@ -22,7 +22,7 @@
 
 .settings-row-description {
   opacity: 0.72;
-  font-size: 0.92em;
+  font-size: 12px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -49,7 +49,7 @@
 }
 
 .settings-section-label {
-  font-size: 0.85em;
+  font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   opacity: 0.65;

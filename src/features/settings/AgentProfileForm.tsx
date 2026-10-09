@@ -15,6 +15,8 @@ import { ByteCounter } from "./rows";
 import {
   ACP_MODE_SUGGESTION,
   ACP_MODE_SUGGESTION_TEXT,
+  PI_MODELS_READING_TEXT,
+  PI_MODELS_UNREADABLE_TEXT,
   VOCABULARY_UNAVAILABLE_TEXT,
   VocabularyField,
   vocabularyAxisView,
@@ -235,6 +237,15 @@ export function AgentProfileForm({
 
   const offered = offeredFeatures(vocabularyCurrent, model);
   const probing = vocabularyError === null && featuresAreProbing(vocabularyCurrent);
+  // Pi reads its catalog by probe: while that read runs the models axis is
+  // `absent` with the features axis probing, and after a failure with it
+  // answered-unavailable. Either way the generic absent sentence would
+  // claim pi published nothing — the one thing that is false — so the
+  // form names the read instead.
+  const piModelsHint =
+    providerId === "pi" && vocabularyCurrent?.models?.state === "absent"
+      ? (probing ? PI_MODELS_READING_TEXT : PI_MODELS_UNREADABLE_TEXT)
+      : undefined;
   const askedAndFailed = vocabularyError !== null || featuresAskFailed(vocabularyCurrent);
   const offeredForSeed = offered === null ? null : [...offered];
   const offeredKey = offered === null ? "none" : offered.map((feature) => feature.id).join(",");
@@ -413,7 +424,7 @@ export function AgentProfileForm({
             }
             busy={busy}
             freeText={modelsView.freeText}
-            hint={modelsView.hint}
+            hint={piModelsHint ?? modelsView.hint}
             items={[...modelsView.items, ...storedModelOption]}
             onChange={(next) => {
               if (modelsView.freeText) {

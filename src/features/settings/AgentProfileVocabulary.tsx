@@ -47,6 +47,19 @@ function absentVocabularyText(axisWord: "models" | "modes"): string {
 }
 
 /**
+ * Pi is the one provider whose catalog the daemon reads itself — by starting
+ * pi once per run — so an absent models axis is a read that is still running
+ * or one that failed, never a silent provider. The form swaps these in for
+ * the generic absent sentence, keyed on the provider the picker shows. This
+ * is the single provider-named exception on this surface, and it exists
+ * because the generic sentence would state the one thing that is false.
+ */
+export const PI_MODELS_READING_TEXT =
+  "Reading pi's model list — the pickers arrive when it answers.";
+export const PI_MODELS_UNREADABLE_TEXT =
+  "Pi's model list could not be read; type the model below, or reopen this editor to retry. What you type is checked when the session starts.";
+
+/**
  * A reply that arrived without this axis at all: the daemon answered, and
  * what it sent cannot be read as an answer for this axis. Malformed is its
  * own state — not `absent` (which names a silent source) and not the query
