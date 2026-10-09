@@ -17,7 +17,6 @@ import { dom, useAgentsPanelDom, makeProfile, renderAgentsPanel } from "./agents
 import {
   profileRows,
   rowByName,
-  tickBox,
   rowButton,
   panelButton,
   dialogButton,
@@ -26,7 +25,7 @@ import {
 describe("Settings agents panel — profile rows and their actions", () => {
   useAgentsPanelDom(() => []);
 
-  it("ticking agents-may-create writes exactly that flag and nothing else", async () => {
+  it("toggling agents-may-create in the editor writes exactly that flag and nothing else", async () => {
     await renderAgentsPanel({
       profiles: [makeProfile()],
       standingInstructions: "",
@@ -39,7 +38,21 @@ describe("Settings agents panel — profile rows and their actions", () => {
       },
     });
 
-    await act(async () => tickBox("Explorer").click());
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    const editor = dom.container.querySelector(".agent-inline-editor");
+    if (!editor) throw new Error("editor did not render");
+    const advanced = Array.from(editor.querySelectorAll("button")).find(
+      (button) => button.textContent === "Advanced",
+    );
+    if (!advanced) throw new Error("Advanced section did not render");
+    await act(async () => advanced.click());
+    await act(async () => undefined);
+    const tick = editor.querySelector<HTMLInputElement>('input[aria-label="Available to agents"]');
+    if (!tick) throw new Error("agents tick did not render in Advanced");
+    await act(async () => tick.click());
+    await act(async () => undefined);
+    await act(async () => dialogButton("Save").click());
     await act(async () => undefined);
 
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
@@ -47,13 +60,12 @@ describe("Settings agents panel — profile rows and their actions", () => {
     // note, order and the standing instructions travel untouched — only the
     // tick flipped.
     expect(agentProfilesSet).toHaveBeenCalledWith({
-      profiles: [{ ...makeProfile(), enabledForAgents: true }],
+      profiles: [{ ...makeProfile(), enabledForAgents: true, modelProvider: null }],
       standingInstructions: "",
     });
-    expect(tickBox("Explorer").checked).toBe(true);
   });
 
-  it("reverts the tick and shows the daemon sentence verbatim on a failed write", async () => {
+  it("reverts the editor tick and shows the daemon sentence on a failed write", async () => {
     await renderAgentsPanel({
       profiles: [makeProfile()],
       standingInstructions: "",
@@ -63,41 +75,28 @@ describe("Settings agents panel — profile rows and their actions", () => {
       message: "A system or file operation failed on this machine.",
     });
 
-    await act(async () => tickBox("Explorer").click());
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    const editor = dom.container.querySelector(".agent-inline-editor");
+    if (!editor) throw new Error("editor did not render");
+    const advanced = Array.from(editor.querySelectorAll("button")).find(
+      (button) => button.textContent === "Advanced",
+    );
+    if (!advanced) throw new Error("Advanced section did not render");
+    await act(async () => advanced.click());
+    await act(async () => undefined);
+    const tick = editor.querySelector<HTMLInputElement>('input[aria-label="Available to agents"]');
+    if (!tick) throw new Error("agents tick did not render in Advanced");
+    await act(async () => tick.click());
+    await act(async () => undefined);
+    await act(async () => dialogButton("Save").click());
     await act(async () => undefined);
 
-    expect(tickBox("Explorer").checked).toBe(false);
+    // Refused: the row is back as it was, and the sentence sits in the open
+    // dialog above the buttons — not behind the scrim.
     expect(dom.container.querySelector('[role="alert"]')?.textContent).toContain(
       "A system or file operation failed on this machine.",
     );
-  });
-
-  it("shows the off-switch sentence once the last ticked profile is untoggled", async () => {
-    await renderAgentsPanel({
-      profiles: [
-        makeProfile({ enabledForAgents: true }),
-        makeProfile({ id: "profile-2", name: "Coder" }),
-      ],
-      standingInstructions: "",
-    });
-    // The store's read-back after the confirmed write: both rows, untoggled.
-    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
-      document: {
-        profiles: [makeProfile(), makeProfile({ id: "profile-2", name: "Coder" })],
-        standingInstructions: "",
-      },
-    });
-
-    // One ticked: the door is open, the sentence must be absent.
-    expect(dom.container.textContent).not.toContain("agents cannot start agents");
-
-    await act(async () => tickBox("Explorer").click());
-    await act(async () => undefined);
-
-    // The last tick is gone, so the section reads as the off switch it is.
-    expect(dom.container.textContent).toContain("agents cannot start agents");
-    expect(tickBox("Explorer").checked).toBe(false);
-    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
   });
 
   it("moving a profile up sends the reordered document and re-renders in that order", async () => {
@@ -157,7 +156,7 @@ describe("Settings agents panel — profile rows and their actions", () => {
     ]);
   });
 
-  it("shows the tile, the thinking meta and the spawn prompt on the row", async () => {
+  it("shows the tile, the provider · model · effort meta and the note on the row", async () => {
     await renderAgentsPanel({
       profiles: [
         makeProfile({
@@ -173,17 +172,15 @@ describe("Settings agents panel — profile rows and their actions", () => {
 
     const coder = rowByName("Coder");
     expect(coder.querySelector(".profile-tile")?.textContent).toBe("✦");
-    expect(coder.querySelector(".profile-meta")?.textContent).toBe(
-      "grok · grok-4 · ask · high thinking",
-    );
-    expect(coder.querySelector(".profile-spawn")?.textContent).toContain("Work in small steps.");
+    expect(coder.querySelector(".profile-meta")?.textContent).toBe("grok · grok-4 · high");
+    // The row is name, meta and note: the spawn prompt lives in the editor.
+    expect(coder.querySelector(".profile-spawn")).toBeNull();
 
-    // No icon, no thinking option, no spawn prompt: the letter tile, a meta
-    // line that claims nothing about thinking, and the named absence.
+    // No icon, no effort: the letter tile and a meta line that claims
+    // nothing about effort.
     const plain = rowByName("Plain");
     expect(plain.querySelector(".profile-tile")?.textContent).toBe("P");
-    expect(plain.querySelector(".profile-meta")?.textContent).toBe("grok · grok-4 · ask");
-    expect(plain.querySelector(".profile-spawn")?.textContent).toContain("No spawn prompt");
+    expect(plain.querySelector(".profile-meta")?.textContent).toBe("grok · grok-4");
   });
 
   it("dims the dead reorder ends", async () => {
@@ -209,19 +206,19 @@ describe("Settings agents panel — profile rows and their actions", () => {
     expect(liveDown?.classList.contains("profile-is-dim")).toBe(false);
   });
 
-  it("orders the page: behaviour card, profile list, delegation last", async () => {
+  it("orders the page: standing row, profile list, delegation last", async () => {
     await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
 
     const panel = dom.container.querySelector("#settings-panel-agents");
     if (!panel) throw new Error("agents panel did not render");
     const order = Array.from(
       panel.querySelectorAll(
-        ".agent-standing, .agent-profile-list, .agent-delegation, .agent-delegation-unavailable",
+        "[data-settings-row], [data-settings-section], .agent-delegation, .agent-delegation-unavailable",
       ),
     );
     expect(order.map((el) => el.className)).toEqual([
-      expect.stringContaining("agent-standing"),
-      expect.stringContaining("agent-profile-list"),
+      expect.stringContaining("settings-row"),
+      expect.stringContaining("settings-section"),
       expect.stringMatching(/agent-delegation(-unavailable)?/),
     ]);
   });
@@ -230,18 +227,14 @@ describe("Settings agents panel — profile rows and their actions", () => {
     await renderAgentsPanel({ profiles: [], standingInstructions: "" });
 
     expect(profileRows()).toHaveLength(0);
-    const empty = dom.container.querySelector(".agent-profile-empty");
-    if (!empty) throw new Error("empty state did not render");
-    expect(empty.textContent).toContain("No profiles yet");
-    const action = empty.querySelector<HTMLButtonElement>("button");
-    expect(action?.textContent).toBe("New profile");
+    const section = dom.container.querySelector("[data-settings-section]");
+    if (!section) throw new Error("agent profiles section did not render");
+    expect(section.textContent).toContain("No profiles yet.");
+    const action = section.querySelector<HTMLButtonElement>('button[aria-label="New profile"]');
+    expect(action?.textContent).toBe("+");
     expect(action?.disabled).toBe(false);
-    // One New profile action on the page, beside the line — not a second
-    // one below it.
-    const actions = Array.from(dom.container.querySelectorAll<HTMLButtonElement>("button")).filter(
-      (candidate) => candidate.textContent === "New profile",
-    );
-    expect(actions).toHaveLength(1);
+    // One creation action on the page, on the section label.
+    expect(dom.container.querySelectorAll('button[aria-label="New profile"]')).toHaveLength(1);
   });
 
   it("lands delete focus on the previous pencil when the last row goes", async () => {
@@ -346,30 +339,5 @@ describe("Settings agents panel — profile rows and their actions", () => {
     await act(async () => undefined);
     // Confirmed with nothing left: the list itself holds focus.
     expect(document.activeElement?.classList.contains("agent-profile-list")).toBe(true);
-  });
-
-  it("holds the row's agents tick while that profile's dialog is open", async () => {
-    await renderAgentsPanel({
-      profiles: [makeProfile({ enabledForAgents: true })],
-      standingInstructions: "",
-    });
-
-    await act(async () => rowButton("Explorer", "Edit").click());
-    await act(async () => undefined);
-    let rowTick = dom.container.querySelector<HTMLInputElement>(
-      '.agent-profile-row input[type="checkbox"]',
-    );
-    if (!rowTick) throw new Error("row tick did not render");
-    expect(rowTick.disabled).toBe(true);
-    // The reason is on the screen, not a silent lock.
-    expect(dom.container.textContent).toContain("The open dialog holds this setting");
-
-    await act(async () => dialogButton("Cancel").click());
-    await act(async () => undefined);
-    rowTick = dom.container.querySelector<HTMLInputElement>(
-      '.agent-profile-row input[type="checkbox"]',
-    );
-    if (!rowTick) throw new Error("row tick did not render after close");
-    expect(rowTick.disabled).toBe(false);
   });
 });

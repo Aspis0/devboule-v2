@@ -19,7 +19,6 @@ import {
   useAgentsPanelDom,
   makeProfile,
   renderAgentsPanel,
-  describedText,
   typeText,
 } from "./agentsPanelTestHarness";
 import { rowButton, panelButton } from "./agentsPanelTestQueries";
@@ -33,7 +32,7 @@ describe("Settings agents panel — spawn prompt, note and name limits", () => {
     await act(async () => rowButton("Explorer", "Edit").click());
     await act(async () => undefined);
     const spawnField = dom.container.querySelector<HTMLTextAreaElement>(
-      '.agent-inline-editor textarea[aria-label="Profile spawn prompt"]',
+      '.agent-inline-editor textarea[aria-label="Profile instructions"]',
     );
     if (!spawnField) throw new Error("spawn prompt field did not render");
     // One U+0085 over the cap raw, exactly the cap after the daemon's trim:
@@ -58,7 +57,7 @@ describe("Settings agents panel — spawn prompt, note and name limits", () => {
     await act(async () => undefined);
 
     const spawnField = dom.container.querySelector<HTMLTextAreaElement>(
-      '.agent-inline-editor textarea[aria-label="Profile spawn prompt"]',
+      '.agent-inline-editor textarea[aria-label="Profile instructions"]',
     );
     if (!spawnField) throw new Error("spawn prompt field did not render");
     // 4097 two-byte characters: 8194 UTF-8 bytes, 2 over the cap. The byte
@@ -85,7 +84,7 @@ describe("Settings agents panel — spawn prompt, note and name limits", () => {
     await act(async () => undefined);
 
     const spawnField = dom.container.querySelector<HTMLTextAreaElement>(
-      '.agent-inline-editor textarea[aria-label="Profile spawn prompt"]',
+      '.agent-inline-editor textarea[aria-label="Profile instructions"]',
     );
     if (!spawnField) throw new Error("spawn prompt field did not render");
     // Whitespace only: the daemon trims the field, so this is none, and the
@@ -100,7 +99,7 @@ describe("Settings agents panel — spawn prompt, note and name limits", () => {
     expect("spawnPrompt" in sent.profiles[0]).toBe(false);
   });
 
-  it("says when the spawn prompt is sent and that running agents keep what they started with", async () => {
+  it("keeps the instructions field to one short label, no explanation", async () => {
     await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
 
     await act(async () => rowButton("Explorer", "Edit").click());
@@ -108,37 +107,13 @@ describe("Settings agents panel — spawn prompt, note and name limits", () => {
 
     const editor = dom.container.querySelector(".agent-inline-editor");
     if (!editor) throw new Error("editor did not render");
-    expect(editor.textContent).toContain(
-      "Sent at the start of every agent created from this profile, before the creator's prompt",
-    );
-    expect(editor.textContent).toContain("Agents already running keep what they started with");
-    // The spawn prompt carries its own counter, in the daemon's units.
-    expect(editor.textContent).toContain("8192 bytes");
-  });
-
-  it("ties one hint to the spawn prompt field, keep-it-short sentence included", async () => {
-    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
-
-    await act(async () => rowButton("Explorer", "Edit").click());
-    await act(async () => undefined);
-
-    const editor = dom.container.querySelector(".agent-inline-editor");
-    if (!editor) throw new Error("editor did not render");
-    const spawnField = editor.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="Profile spawn prompt"]',
-    );
-    if (!spawnField) throw new Error("spawn prompt field did not render");
-    // One hint under the field: the keep-it-short note was merged into the
-    // hint the field already had rather than stacked as a second one.
-    expect(spawnField.closest("label")?.querySelectorAll(".device-field-hint").length).toBe(1);
-    // …and the field's described-by is what points at that hint.
-    const hinted = describedText(spawnField);
-    expect(hinted).toContain(
-      "Sent at the start of every agent created from this profile, before the creator's prompt",
-    );
-    expect(hinted).toContain(
-      "Keep it short. An agent created from this profile also receives the standing instructions and the task written by the agent that creates it — write only what is specific to this kind of agent.",
-    );
+    const label = editor
+      .querySelector('textarea[aria-label="Profile instructions"]')
+      ?.closest("label");
+    if (!label) throw new Error("instructions label did not render");
+    // One short label, no hint paragraph, no counter before the cap.
+    expect(label.querySelectorAll(".device-field-hint").length).toBe(0);
+    expect(label.textContent).toContain("Instructions (optional)");
   });
 
   it("refuses a note over 2 KiB with the size named and truncates nothing", async () => {
@@ -192,7 +167,7 @@ describe("Settings agents panel — spawn prompt, note and name limits", () => {
     expect(dom.container.querySelector('[role="alert"]')).toBeNull();
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
     expect(agentProfilesSet).toHaveBeenCalledWith({
-      profiles: [{ ...makeProfile(), name }],
+      profiles: [{ ...makeProfile(), name, modelProvider: null }],
       standingInstructions: "",
     });
   });

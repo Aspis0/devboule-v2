@@ -1,15 +1,6 @@
 import type { MouseEvent } from "react";
 import type { AgentProfile } from "../../../types/ipc";
-import { overlayDenialsDescription } from "../profileOverlay";
 import { profileMetaText, profileTileText } from "./profileText";
-
-function PenMark() {
-  return (
-    <svg className="profile-spawn-pen" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M5 3v4M3 5h4M6 17v4M4 19h4M13 3l4 4-9 9H4v-4Z" />
-    </svg>
-  );
-}
 
 function PencilIcon() {
   return (
@@ -28,10 +19,10 @@ function TrashIcon() {
 }
 
 /**
- * One agent profile's row: the glyph tile, name, meta, spawn prompt, and the
- * icon actions. The editor lives in the dialog now, so the row holds no form
- * state — only the delete arm, which reuses the app's `device-inline-confirm`
- * pattern (the same one the Devices panel's revoke uses).
+ * One agent profile's row: the glyph tile, the name, the provider · model ·
+ * effort line, the one-line note, and the icon actions. Nothing else reads
+ * here — the editor behind the pencil holds the rest. The delete arm reuses
+ * the app's `device-inline-confirm` pattern, beside the trash that armed it.
  */
 export function ProfileRow({
   profile,
@@ -39,10 +30,8 @@ export function ProfileRow({
   isLast,
   busy,
   loading,
-  dialogHoldsTick,
   deleteArmed,
   onMove,
-  onToggle,
   onEdit,
   onDeleteArm,
   onDeleteCancel,
@@ -53,14 +42,8 @@ export function ProfileRow({
   isLast: boolean;
   busy: boolean;
   loading: boolean;
-  /**
-   * This row's own dialog is open: the row's tick waits, the dialog holds
-   * it. Any other row's tick stays live — the base rule, kept exactly.
-   */
-  dialogHoldsTick: boolean;
   deleteArmed: boolean;
   onMove: (id: string, delta: -1 | 1) => void;
-  onToggle: (id: string, next: boolean) => void;
   onEdit: (id: string, opener: HTMLElement) => void;
   onDeleteArm: (id: string) => void;
   onDeleteCancel: () => void;
@@ -75,48 +58,8 @@ export function ProfileRow({
       <div className="agent-profile-main">
         <span className="profile-name">{profile.name}</span>
         <span className="profile-meta">{profileMetaText(profile)}</span>
-        {profile.spawnPrompt ? (
-          <span className="profile-spawn">
-            <PenMark />
-            <span className="profile-spawn-text">{profile.spawnPrompt}</span>
-          </span>
-        ) : (
-          <span className="profile-spawn profile-spawn-empty">
-            No spawn prompt — agents created from this profile start with the task alone.
-          </span>
-        )}
-        {overlayDenialsDescription(profile.toolOverlay) === null ? null : (
-          <span className="agent-profile-note">
-            {overlayDenialsDescription(profile.toolOverlay)}
-          </span>
-        )}
-        {profile.note ? (
-          <span className="agent-profile-note">
-            <span className="agent-profile-note-label">When to use: </span>
-            {profile.note}
-          </span>
-        ) : (
-          <span className="agent-profile-note agent-profile-note-empty">
-            No note — agents choosing between profiles will be choosing blind on this one.
-          </span>
-        )}
+        {profile.note ? <span className="agent-profile-note">{profile.note}</span> : null}
       </div>
-      <label className="agent-profile-tick">
-        <input
-          type="checkbox"
-          checked={profile.enabledForAgents}
-          disabled={locked || dialogHoldsTick}
-          onChange={(event) => onToggle(profile.id, event.target.checked)}
-        />
-        <span>
-          <span>Agents may create this</span>
-          <span className="agent-profile-tick-note">
-            {dialogHoldsTick
-              ? "The open dialog holds this setting; save or close it, then use this tick. If this profile answers its own permission cards, its children run unattended."
-              : "Lets an agent start this kind of agent. If this profile answers its own permission cards, its children run unattended."}
-          </span>
-        </span>
-      </label>
       <div className="profile-row-actions">
         <button
           type="button"
@@ -163,10 +106,7 @@ export function ProfileRow({
       </div>
       {deleteArmed ? (
         <div className="device-inline-confirm">
-          <p className="device-copy">
-            Deletes this profile. Agents are no longer offered it, and a creation naming it is
-            refused.
-          </p>
+          <p className="device-copy">Deletes this profile.</p>
           <div className="device-actions">
             <button
               type="button"

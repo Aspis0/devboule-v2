@@ -88,8 +88,7 @@ export const SETTINGS_MENU: readonly SettingsMenuGroup[] = [
       {
         id: "profiles",
         label: "Agent profiles",
-        intro:
-          "The kinds of agent that can be started, and the instructions they all receive. The order here is the order agents read, top down.",
+        intro: "",
       },
       {
         id: "usage",

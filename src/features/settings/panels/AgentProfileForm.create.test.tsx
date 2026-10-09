@@ -41,7 +41,17 @@ import {
 describe("Settings agents panel — new profile form: create and save", () => {
   useAgentsPanelDom(() => [makeProvider()]);
 
-  it("saves a new profile with enabledForAgents false and an empty id at the end of the list", async () => {
+  /** The consent ticks live under Advanced: open the form, then the section. */
+  async function openAdvanced() {
+    const advanced = Array.from(form().querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent === "Advanced",
+    );
+    if (!advanced) throw new Error("Advanced section did not render");
+    await act(async () => advanced.click());
+    await act(async () => undefined);
+  }
+
+  it("saves a new profile with the owner's defaults and an empty id at the end of the list", async () => {
     const beta = makeProfile({ id: "b", name: "Beta" });
     const gamma: AgentProfile = {
       id: "",
@@ -50,11 +60,12 @@ describe("Settings agents panel — new profile form: create and save", () => {
       note: "Checks the build output.",
       provider: "claude",
       model: "claude-sonnet-4-5",
+      modelProvider: null,
       modeId: "default",
       thinkingOptionId: null,
-      features: {},
+      features: { autoAccept: true },
       toolOverlay: [],
-      enabledForAgents: false,
+      enabledForAgents: true,
     };
     await renderAgentsPanel({ profiles: [beta], standingInstructions: "" });
     // The store's read-back after the confirmed create: the daemon minted
@@ -81,24 +92,28 @@ describe("Settings agents panel — new profile form: create and save", () => {
     });
   });
 
-  it("passes auto accept into features only when it is ticked, and says what it does", async () => {
+  it("passes auto accept into features by default, and drops it when unticked", async () => {
     await renderAgentsPanel({ profiles: [], standingInstructions: "" });
     // The store's read-backs after each confirmed create: the store grows by
     // one, under the ids the daemon minted.
     vi.mocked(agentProfilesGet)
       .mockResolvedValueOnce({
-        document: { profiles: [storedProfile("minted-1")], standingInstructions: "" },
+        document: {
+          profiles: [storedProfile("minted-1", { features: { autoAccept: true } })],
+          standingInstructions: "",
+        },
       })
       .mockResolvedValueOnce({
         document: {
           profiles: [
-            storedProfile("minted-1"),
-            storedProfile("minted-2", { features: { autoAccept: true } }),
+            storedProfile("minted-1", { features: { autoAccept: true } }),
+            storedProfile("minted-2", { features: {} }),
           ],
           standingInstructions: "",
         },
       });
     await openForm();
+    await openAdvanced();
 
     // The copy must say what the tick does — it is the most consequential
     // control on the form.
@@ -108,50 +123,52 @@ describe("Settings agents panel — new profile form: create and save", () => {
     await act(async () => createButton().click());
     await act(async () => undefined);
 
-    // Unticked: features carries nothing.
+    // Tick on by default: features carries it without anyone asking.
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
-    const unticked = vi.mocked(agentProfilesSet).mock.calls[0]?.[0];
-    expect(unticked?.profiles[0]?.features).toEqual({});
+    const ticked = vi.mocked(agentProfilesSet).mock.calls[0]?.[0];
+    expect(ticked?.profiles[0]?.features).toEqual({ autoAccept: true });
 
-    // Again, with the tick: features.autoAccept is the one flag.
+    // Again, with the tick off: features carries nothing.
     await openForm();
+    await openAdvanced();
     await fillDraft();
     const autoAccept = field<HTMLInputElement>(
       'input[aria-label="Auto accept for children of this profile"]',
     );
-    await tickCheckbox(autoAccept, true);
+    await tickCheckbox(autoAccept, false);
     await act(async () => createButton().click());
     await act(async () => undefined);
 
     expect(agentProfilesSet).toHaveBeenCalledTimes(2);
     // The document now carries the first save too; the appended entry is the
     // one this second save created.
-    const ticked = vi.mocked(agentProfilesSet).mock.calls[1]?.[0];
-    expect(ticked?.profiles.at(-1)?.features).toEqual({ autoAccept: true });
+    const unticked = vi.mocked(agentProfilesSet).mock.calls[1]?.[0];
+    expect(unticked?.profiles.at(-1)?.features).toEqual({});
   });
 
-  it("defaults the agents tick to off and saves it only when the human ticks it", async () => {
+  it("defaults the agents tick to on and saves it only when the human unticks it", async () => {
     await renderAgentsPanel({ profiles: [], standingInstructions: "" });
     // The store's read-back after the confirmed create: the tick is stored.
     vi.mocked(agentProfilesGet).mockResolvedValueOnce({
       document: {
-        profiles: [storedProfile("minted-1", { enabledForAgents: true })],
+        profiles: [storedProfile("minted-1", { enabledForAgents: false })],
         standingInstructions: "",
       },
     });
     await openForm();
+    await openAdvanced();
 
     const tick = field<HTMLInputElement>('input[aria-label="Available to agents"]');
-    expect(tick.checked).toBe(false);
+    expect(tick.checked).toBe(true);
 
     await fillDraft();
-    await tickCheckbox(tick, true);
+    await tickCheckbox(tick, false);
     await act(async () => createButton().click());
     await act(async () => undefined);
 
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
     const sent = vi.mocked(agentProfilesSet).mock.calls[0]?.[0];
-    expect(sent?.profiles[0]?.enabledForAgents).toBe(true);
+    expect(sent?.profiles[0]?.enabledForAgents).toBe(false);
   });
 
   it("saves no overlay by default and both peer tools when the tick is on", async () => {
@@ -161,6 +178,7 @@ describe("Settings agents panel — new profile form: create and save", () => {
       document: { profiles: [storedProfile("minted-1")], standingInstructions: "" },
     });
     await openForm();
+    await openAdvanced();
 
     const tick = field<HTMLInputElement>(
       'input[aria-label="Children cannot message peers or create further agents"]',
@@ -181,6 +199,7 @@ describe("Settings agents panel — new profile form: create and save", () => {
 
     // Again, with the tick: the overlay denies exactly the two peer tools.
     await openForm();
+    await openAdvanced();
     await fillDraft();
     const retick = field<HTMLInputElement>(
       'input[aria-label="Children cannot message peers or create further agents"]',

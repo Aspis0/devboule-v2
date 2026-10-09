@@ -147,9 +147,11 @@ export function AgentProfileFeatureFields({
   onChange: (features: Record<string, boolean | string>) => void;
 }) {
   function change(id: string, value: boolean | string | undefined) {
-    // Selecting the provider default removes a value; the empty string remains
-    // available for a provider that explicitly declares it.
-    if (value === undefined) {
+    // Unsetting a toggle and selecting the provider default both remove a
+    // value; the empty string remains available for a provider that
+    // explicitly declares it. The map holds only values that ask for
+    // something — `false` and absent are one state to the daemon.
+    if (value === undefined || value === false) {
       const next = { ...features };
       delete next[id];
       onChange(next);

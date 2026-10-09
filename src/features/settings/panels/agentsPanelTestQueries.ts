@@ -37,6 +37,15 @@ export function rowButton(name: string, text: string): HTMLButtonElement {
   return button;
 }
 
+/** The "+" action on the Agent profiles section label. */
+export function newProfileButton(): HTMLButtonElement {
+  const button = dom.container.querySelector<HTMLButtonElement>(
+    '[data-settings-section] button[aria-label="New profile"]',
+  );
+  if (!button) throw new Error("New profile action did not render");
+  return button;
+}
+
 /** A button anywhere in the Agents tab: the dialog renders outside the list. */
 export function panelButton(text: string): HTMLButtonElement {
   const button = Array.from(
@@ -56,13 +65,10 @@ export function dialogButton(text: string): HTMLButtonElement {
 }
 
 export async function openForm() {
-  // The button sits beside the empty-state line on an empty store and in the
-  // create row otherwise.
-  const button = Array.from(
-    dom.container.querySelectorAll<HTMLButtonElement>(
-      ".agent-profile-create-row button, .agent-profile-empty button",
-    ),
-  ).find((candidate) => candidate.textContent === "New profile");
+  // The "+" action on the Agent profiles section label.
+  const button = dom.container.querySelector<HTMLButtonElement>(
+    '[data-settings-section] button[aria-label="New profile"]',
+  );
   if (!button) throw new Error("New profile button did not render");
   await act(async () => button.click());
   await act(async () => undefined);

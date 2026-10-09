@@ -7,7 +7,7 @@
  * entries. The draft always carries the whole list, so a save writes back
  * exactly what is stored and can never silently drop a restriction.
  */
-import { PEER_TOOLS } from "./profileOverlay";
+import { PEER_TOOLS, overlayDenialsDescription } from "./profileOverlay";
 
 export function AgentProfileOverlayEditor({
   overlay,
@@ -48,14 +48,13 @@ export function AgentProfileOverlayEditor({
           <span>No peer contact and no further agents for children</span>
           <span className="agent-profile-tick-note">
             Children created from this profile cannot message other agents or create further agents.
-            They keep the agent roster, their read-only view.
           </span>
         </span>
       </label>
       {extras.length > 0 ? (
         <div className="agent-profile-legacy-denials">
           <span className="device-field-hint">
-            This profile blocks some tools from an older setting.
+            {overlayDenialsDescription(extras) ?? "This profile blocks some tools."}
           </span>
           <button
             type="button"

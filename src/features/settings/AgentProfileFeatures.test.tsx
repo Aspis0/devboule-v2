@@ -106,6 +106,7 @@ const EMPTY_SEED: ProfileFormSeed = {
   spawnPrompt: "",
   provider: "claude",
   model: "claude-opus-5",
+  modelProvider: null,
   modeId: "default",
   thinkingOptionId: "",
   features: {},
@@ -264,7 +265,15 @@ describe("the feature controls, as the form draws them", () => {
     );
     // The mount's own ask, then its reply: the form clears the answer on a
     // provider change, so a render that has not seen one draws no controls.
+    // Feature controls live under Advanced: open it, so the draw assertions
+    // read what the form drew rather than what the collapse hides.
     await act(async () => undefined);
+    await act(async () => undefined);
+    const advanced = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Advanced",
+    );
+    if (!advanced) throw new Error("Advanced section did not render");
+    await act(async () => advanced.click());
     await act(async () => undefined);
     return { onCreate };
   }

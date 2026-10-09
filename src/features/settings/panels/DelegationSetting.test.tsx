@@ -158,7 +158,7 @@ describe("DelegationSetting - the switch beside the profiles", () => {
     await settle();
 
     const note = container.querySelector(".agent-delegation-unavailable");
-    expect(note?.textContent).toContain("permission_delegation");
+    expect(note?.textContent).toContain("cannot keep the delegation switch");
     expect(note?.textContent).toContain("older than this app");
     // The switch is not drawn and the request is never sent - the section is
     // not broken, it is absent, and the absence has a name.
@@ -240,15 +240,19 @@ describe("DelegationSetting - the switch beside the profiles", () => {
     }
   });
 
-  it("states the blast radius and the global scope - the copy without which there is no consent", async () => {
+  it("renders the switch as one toggle row with a one-line label", async () => {
     vi.mocked(delegationGet).mockResolvedValue({ enabled: true, source: "default" });
     mountDelegation(DELEGATION_DAEMON);
     await settle();
 
-    const note = container.querySelector(".agent-profile-tick-note")?.textContent ?? "";
-    expect(note).toContain("a write, a command, a network call");
-    expect(note).toContain("every child of every agent");
-    expect(note).toContain("not the one you see");
+    // One row: the label, the switch on the right, the stored answer's
+    // one-line status under it — no explanatory paragraph.
+    const row = theSwitch().closest("[data-settings-row]");
+    expect(row?.textContent).toContain("Let agents answer their children's cards");
+    expect(row?.querySelectorAll("p").length).toBe(0);
+    expect(container.querySelector(".agent-delegation-source")?.textContent).toBe(
+      "Never configured — on by default",
+    );
   });
 
   it("renders a quarantined file as damaged - neither never-configured nor deliberately off", async () => {

@@ -20,7 +20,6 @@ import {
   storedProfile,
   renderAgentsPanel,
   typeText,
-  tickCheckbox,
   makeProvider,
 } from "./agentsPanelTestHarness";
 import {
@@ -29,12 +28,39 @@ import {
   modelControl,
   modeControl,
   createButton,
-  rowTicks,
-  rowTick,
 } from "./agentsPanelTestQueries";
 
 describe("Settings agents panel — new profile form: adopting the daemon's minted ids", () => {
   useAgentsPanelDom(() => [makeProvider()]);
+
+  /** The agents tick lives in the editor under Advanced: open, flip, save. */
+  async function toggleAgentsTick(name: string) {
+    const edit = dom.container.querySelector<HTMLButtonElement>(
+      `.agent-profile-row button[aria-label="Edit ${name}"]`,
+    );
+    if (!edit) throw new Error(`Edit ${name} did not render`);
+    await act(async () => edit.click());
+    await act(async () => undefined);
+    const advanced = Array.from(
+      dom.container.querySelectorAll<HTMLButtonElement>(".edit-card button"),
+    ).find((button) => button.textContent === "Advanced");
+    if (!advanced) throw new Error("Advanced section did not render");
+    await act(async () => advanced.click());
+    await act(async () => undefined);
+    const tick = dom.container.querySelector<HTMLInputElement>(
+      '.edit-card input[aria-label="Available to agents"]',
+    );
+    if (!tick) throw new Error("agents tick did not render in Advanced");
+    await act(async () => tick.click());
+    await act(async () => undefined);
+    const save = Array.from(
+      dom.container.querySelectorAll<HTMLButtonElement>(".edit-card button"),
+    ).find((button) => button.textContent === "Save");
+    if (!save) throw new Error("Save did not render");
+    await act(async () => save.click());
+    await act(async () => undefined);
+    await act(async () => undefined);
+  }
 
   it("ticks the row the human ticked once the daemon's minted ids are adopted", async () => {
     await renderAgentsPanel({ profiles: [], standingInstructions: "" });
@@ -83,12 +109,10 @@ describe("Settings agents panel — new profile form: adopting the daemon's mint
     await act(async () => undefined);
     await act(async () => undefined);
 
-    expect(rowTicks()).toHaveLength(2);
+    expect(agentProfilesSet).toHaveBeenCalledTimes(2);
 
-    // The human ticks the second row (Beta).
-    await tickCheckbox(rowTicks()[1]!, true);
-    await act(async () => undefined);
-    await act(async () => undefined);
+    // The human enables the second profile (Beta) through its editor.
+    await toggleAgentsTick("Beta");
 
     // The write flips exactly Beta, under the ids the daemon minted — never
     // the first empty-id row the panel used to mistake for it.
@@ -97,8 +121,6 @@ describe("Settings agents panel — new profile form: adopting the daemon's mint
       ["minted-a", false],
       ["minted-b", true],
     ]);
-    expect(rowTicks()[0]?.checked).toBe(false);
-    expect(rowTicks()[1]?.checked).toBe(true);
   });
 
   it("adopts the minted ids after every confirmed write, so no empty id is ever re-sent", async () => {
@@ -150,12 +172,10 @@ describe("Settings agents panel — new profile form: adopting the daemon's mint
     const secondCreate = vi.mocked(agentProfilesSet).mock.calls[1]?.[0];
     expect(secondCreate?.profiles.map((profile) => profile.id)).toEqual(["minted-a", ""]);
 
-    // Ticking Alpha re-sends the whole document: every id must be the
-    // daemon's — an empty id would make the store mint yet another identity
-    // for a row the human already created.
-    await tickCheckbox(rowTicks()[0]!, true);
-    await act(async () => undefined);
-    await act(async () => undefined);
+    // Enabling Alpha through its editor re-sends the whole document:
+    // every id must be the daemon's — an empty id would make the store
+    // mint yet another identity for a row the human already created.
+    await toggleAgentsTick("Alpha");
 
     const tickWrite = vi.mocked(agentProfilesSet).mock.calls.at(-1)?.[0];
     expect(tickWrite?.profiles.map((profile) => profile.id)).toEqual(["minted-a", "minted-b"]);
@@ -183,23 +203,22 @@ describe("Settings agents panel — new profile form: adopting the daemon's mint
       message: "A system or file operation failed on this machine.",
     });
 
-    await act(async () => tickCheckbox(rowTick("Explorer"), true));
-    await act(async () => undefined);
-    await act(async () => undefined);
+    await toggleAgentsTick("Explorer");
 
-    // The row is exactly what the human was seeing before the click, and
-    // the refusal is named.
-    expect(rowTick("Explorer").checked).toBe(false);
-    expect(dom.container.querySelector('[role="alert"]')?.textContent).toContain(
+    // The row is exactly what the human was seeing before the edit, and
+    // the refusal is named in the open dialog.
+    expect(agentProfilesGet).toHaveBeenCalledTimes(1);
+    expect(dom.container.querySelector('.edit-card [role="alert"]')?.textContent).toContain(
       "A system or file operation failed on this machine.",
     );
-    // A refused write re-reads nothing: a refusal adopts no reply.
-    expect(agentProfilesGet).toHaveBeenCalledTimes(1);
 
-    // The retry starts from the revert, not from any reply: it re-sends the
-    // human's tick (the row went back to unchecked) over the document as it
-    // stood — never the armed reply's note.
-    await act(async () => tickCheckbox(rowTick("Explorer"), true));
+    // The retry is a second Save of the same draft: it re-sends the human's
+    // tick over the document as it stood — never the armed reply's note.
+    const save = Array.from(
+      dom.container.querySelectorAll<HTMLButtonElement>(".edit-card button"),
+    ).find((button) => button.textContent === "Save");
+    if (!save) throw new Error("Save did not render");
+    await act(async () => save.click());
     await act(async () => undefined);
     await act(async () => undefined);
     const retry = vi.mocked(agentProfilesSet).mock.calls.at(-1)?.[0];

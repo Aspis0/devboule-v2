@@ -1,19 +1,17 @@
 /**
  * The agent-profile form: one component for creating a profile and editing a
- * stored one. The fields' rules live in `AgentProfileDraft.ts` (the draft,
- * the caps, the daemon's own trim and name comparison) and the tool-overlay
- * editor in `AgentProfileOverlay.tsx`; this component owns the fields, the
- * provider-vocabulary lifecycle and what a provider switch clears — which is
- * the provider's own vocabulary: model, mode and thinking option. The feature
- * values are the profile's own and stay across a switch, because the list that
- * decides each one's fate is the answer this fetch is about to receive, not the
- * picker's current value.
+ * stored one. The main form asks only what it must — name, provider, model,
+ * effort, mode, note, instructions — every enumerable as a picker fed by the
+ * daemon's vocabulary, never free text. Everything else lives under one
+ * collapsed Advanced section. The fields' rules live in
+ * `AgentProfileDraft.ts`; the panel owns the document.
  */
 import { useEffect, useId, useRef, useState } from "react";
 import { useProviderVocabulary } from "./useProviderVocabulary";
 import { ErrorText } from "../../components/ErrorText";
 import type { ErrorSentence } from "../../lib/errorSentence";
-import type { ProviderInfo } from "../../types/ipc";
+import type { ProviderInfo, SessionModel } from "../../types/ipc";
+import { ByteCounter } from "./rows";
 import {
   ACP_MODE_SUGGESTION,
   ACP_MODE_SUGGESTION_TEXT,
@@ -26,9 +24,13 @@ import {
   MAX_IDLE_CLOSE_MINUTES,
   MAX_PROFILE_SPAWN_PROMPT_BYTES,
   type ProfileFormSeed,
+  matchModelItem,
+  modelOptionLabel,
+  modelRefOf,
   offeredFeatures,
   featuresAreProbing,
   featuresAskFailed,
+  parseModelRef,
   rustTrim,
   utf8Bytes,
 } from "./AgentProfileDraft";
@@ -40,31 +42,22 @@ const MAX_PROFILE_NOTE_BYTES = 2 * 1024;
 /**
  * The provider-specific slice of the draft: cleared when the provider
  * changes, restored from the per-provider cache when the human switches
- * back, so a wrong pick is not a loss. Stored features are deliberately
- * absent — they are the profile's saved keys, not the provider's
- * vocabulary, so they travel as saved whatever the picker says.
+ * back. Stored features are absent — they are the profile's saved keys, not
+ * the provider's vocabulary, so they travel as saved whatever the picker
+ * says.
  */
-type ProviderSpecificFields = Pick<ProfileFormSeed, "model" | "modeId" | "thinkingOptionId">;
+type ProviderSpecificFields = Pick<
+  ProfileFormSeed,
+  "model" | "modelProvider" | "modeId" | "thinkingOptionId"
+>;
 
 const CLEARED_PROVIDER_FIELDS: ProviderSpecificFields = {
   model: "",
+  modelProvider: null,
   modeId: "",
   thinkingOptionId: "",
 };
 
-/**
- * The minutes field's text as the draft holds it: blank is the profile
- * saying nothing (the default applies), and anything else is the number the
- * daemon's own cap will judge — `profileDraftRefusal` refuses what this
- * cannot be, rather than the form quietly rounding it. The one value this
- * does correct is a typed **0**: the field's own `min` is 1, and "never" has
- * a door of its own (the tick), so a 0 the human typed must not save as the
- * daemon's `Some(0)` — the opposite of what they asked for.
- *
- * A text that is not a number at all stays `NaN`: it is not a minute count
- * the field can hold, and the refusal has to see it instead of the form
- * inventing a value for words.
- */
 function idleMinutesOf(text: string): number | null {
   const trimmed = rustTrim(text);
   if (trimmed === "") return null;
@@ -73,28 +66,14 @@ function idleMinutesOf(text: string): number | null {
   return minutes < 1 ? 1 : minutes;
 }
 
-/**
- * The profile form, inline in the Agents panel — the panel's own shape (the
- * editor and the delete confirm are inline too; nothing here needs a modal).
- * One form serves creating a profile and editing a stored one, because the
- * fields are the same and the way to different values should not depend on
- * whether the row exists yet. Its one hard rule: model and modeId are the
- * provider's own vocabulary, stored verbatim, so the form never invents one.
- * It asks — through the `provider_vocabulary` handshake gate — and renders
- * the answer's three states distinctly; when the daemon predates the query
- * it says so in its own words and falls back to free text, so a human can
- * always finish.
- *
- * The vocabulary refetch on a provider change rides the same sequence-guard
- * cadence as the panel's document load: only the newest fetch may apply, AND
- * only a reply naming the provider the form currently shows — a reply for A
- * must not dress B's controls even in the moments before B's own ask leaves.
- *
- * The thinking option is a free-text field: the vocabulary reply carries no
- * thinking axis, and the daemon publishes no list, so typed text is checked
- * against the daemon's caps here and by the provider itself when a session
- * starts.
- */
+/** Whether the stored effort is one the matched model still offers. */
+function effortKept(item: SessionModel | undefined, effort: string): boolean {
+  if (effort === "") return true;
+  const levels = item?.efforts ?? null;
+  if (levels === null) return true;
+  return levels.some((level) => level.id === effort);
+}
+
 export function AgentProfileForm({
   mode,
   seed,
@@ -130,9 +109,8 @@ export function AgentProfileForm({
   /** Edit mode's every keystroke, reported up so the draft survives the row. */
   onSeedChange?: (seed: ProfileFormSeed) => void;
   /**
-   * One call per human edit — never for the form's own reports (the offered
-   * list landing, a settled model). The dialog's dirty check reads only
-   * this, so auto-defaults never arm it.
+   * One call per human edit — never for the form's own reports. The
+   * dialog's dirty check reads only this, so auto-defaults never arm it.
    */
   onDirty?: () => void;
   /**
@@ -143,7 +121,6 @@ export function AgentProfileForm({
   /**
    * The panel's error, if the failed write belongs to this dialog: refusal
    * sentences render here, above the buttons, instead of behind the scrim.
-   * Null renders nothing — the card must not hold an empty alert.
    */
   formError?: ErrorSentence | null;
   onCancel: () => void;
@@ -154,15 +131,13 @@ export function AgentProfileForm({
   const [spawnPrompt, setSpawnPrompt] = useState(seed.spawnPrompt);
   const [providerId, setProviderId] = useState(seed.provider);
   const [model, setModel] = useState(seed.model);
+  const [modelProvider, setModelProvider] = useState<string | null>(seed.modelProvider);
   const [modeId, setModeId] = useState(seed.modeId);
   const [thinkingOptionId, setThinkingOptionId] = useState(seed.thinkingOptionId);
   const [features, setFeatures] = useState<Record<string, boolean | string>>(seed.features);
   const [overlay, setOverlay] = useState(seed.overlay);
   const [enabledForAgents, setEnabledForAgents] = useState(seed.enabledForAgents);
-  // The idle-close timer as the two controls hold it: the off tick decides
-  // between `0` and the minutes field, and the field shows the default when
-  // the profile says nothing (or is off) — 30 is what a saved row without the
-  // key means, so it is what an untouched field shows.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [idleOff, setIdleOff] = useState(seed.idleCloseMinutes === 0);
   const [idleMinutes, setIdleMinutes] = useState(
     String(
@@ -171,18 +146,10 @@ export function AgentProfileForm({
         : seed.idleCloseMinutes,
     ),
   );
-  // Field-associated text for assistive technology: the ids the described-by
-  // wiring points at. One useId per mount, so a create form and an edit form
-  // open side by side cannot collide.
   const describedById = useId();
   const iconHintId = `${describedById}-icon-hint`;
-  const spawnHintId = `${describedById}-spawn-hint`;
-  const spawnCounterId = `${describedById}-spawn-count`;
-  const noteCounterId = `${describedById}-note-count`;
   const thinkingHintId = `${describedById}-thinking-hint`;
   const idleHintId = `${describedById}-idle-hint`;
-  // The fields as they stand this render: the base every change reports up
-  // from, so the panel's draft always holds the whole form, never a patch.
   function currentSeed(): ProfileFormSeed {
     return {
       name,
@@ -191,6 +158,7 @@ export function AgentProfileForm({
       spawnPrompt,
       provider: providerId,
       model,
+      modelProvider,
       modeId,
       thinkingOptionId,
       features,
@@ -200,26 +168,14 @@ export function AgentProfileForm({
       idleCloseMinutes: idleOff ? 0 : idleMinutesOf(idleMinutes),
     };
   }
-  // One call for a human edit: the draft goes up exactly as before, and the
-  // dialog's dirty check arms. The form's own reports (the offered list, a
-  // settled model) keep calling onSeedChange directly and never touch this.
   function userChanged(patch: Partial<ProfileFormSeed>) {
     onSeedChange?.({ ...currentSeed(), ...patch });
     onDirty?.();
   }
-  // Provider-specific fields, cached by provider while the form is open:
-  // switching away clears them (the new provider's vocabulary is its own),
-  // and switching back restores what was typed.
   const providerDraftsRef = useRef(new Map<string, ProviderSpecificFields>());
   const formErrorRef = useRef<HTMLParagraphElement>(null);
   const scrolledErrorRef = useRef<string | null>(null);
 
-  // A fresh refusal lands above the buttons, which may be below the card's
-  // own fold on a short window: bring it into view. Keyed on the words so
-  // a re-issued identical refusal does not scroll twice; unkeyed deps
-  // would either miss the dedup or trip the hooks rule, so the effect
-  // runs per render and guards itself. The harness has no scrolling —
-  // the guarded call never throws where it cannot scroll.
   useEffect(() => {
     if (formError === null) {
       scrolledErrorRef.current = null;
@@ -231,8 +187,6 @@ export function AgentProfileForm({
     formErrorRef.current?.scrollIntoView?.({ block: "nearest" });
   });
 
-  // The catalog lands after the first paint; default the picker to the first
-  // installed provider once there is one, and let the vocabulary effect run.
   useEffect(() => {
     if (!catalogLoading && providerId === "" && providers.length > 0) {
       setProviderId(providers[0].id);
@@ -245,9 +199,6 @@ export function AgentProfileForm({
       model,
       providers,
       supported: vocabularySupported,
-      // The one prefill a reply may make: an ACP agent that declares no modes
-      // runs in "default". Typed text is never clobbered — the hook only calls
-      // this, and the form decides what to do with it.
       onAcpWithoutModes: () =>
         setModeId((current) => (current === "" ? ACP_MODE_SUGGESTION : current)),
       onSettledModel: (next) => {
@@ -256,19 +207,12 @@ export function AgentProfileForm({
       },
     });
 
-  // One decision per axis, made by the shared reader: every state the wire
-  // can reach — present, none, absent, malformed, the contradiction, the
-  // unknown — is named there.
   const modelsView = vocabularyAxisView(
     vocabularyCurrent?.models,
     vocabularyKnown,
     vocabularyError !== null && vocabularyCurrent === null,
     "models",
-    (item) => ({
-      value: item.modelId,
-      label:
-        item.name && item.name !== item.modelId ? `${item.name} (${item.modelId})` : item.modelId,
-    }),
+    (item) => ({ value: modelRefOf(item), label: modelOptionLabel(item) }),
   );
   const modesView = vocabularyAxisView(
     vocabularyCurrent?.modes,
@@ -281,23 +225,21 @@ export function AgentProfileForm({
     }),
   );
 
-  // Provider declarations stay visible while a model edit is pending; the
-  // current model filters only the model-gated rows.
+  // The raw model items beside the mapped options: the effort picker and the
+  // serving-provider pair read here, not from option strings.
+  const modelItems: readonly SessionModel[] =
+    vocabularyCurrent?.models?.state === "present" ? (vocabularyCurrent.models.items ?? []) : [];
+  const matchedModel = matchModelItem(modelItems, model, modelProvider);
+  const modelEfforts = matchedModel?.efforts ?? null;
+  const modelsPresent = !modelsView.freeText && vocabularyCurrent?.models?.state === "present";
+
   const offered = offeredFeatures(vocabularyCurrent, model);
   const probing = vocabularyError === null && featuresAreProbing(vocabularyCurrent);
   const askedAndFailed = vocabularyError !== null || featuresAskFailed(vocabularyCurrent);
-  // The list the seed carries to the save. A fresh array each render, so the
-  // report below keys on its content and not its identity.
   const offeredForSeed = offered === null ? null : [...offered];
   const offeredKey = offered === null ? "none" : offered.map((feature) => feature.id).join(",");
   const lastOfferedKeyRef = useRef<string | undefined>(undefined);
 
-  // The offered list is part of the draft a save prunes by, and it can change
-  // without the human touching a field: a reply lands, the hook's poll replaces a
-  // `probing` answer with the real list, or a settled model moves the gate. Every
-  // other field reports itself on the change that moved it; these have no change
-  // event, so a save reading a stale list would prune by an answer the form had
-  // already replaced.
   useEffect(() => {
     const key = `${offeredKey}|${probing ? "probing" : "known"}`;
     if (lastOfferedKeyRef.current === key) {
@@ -308,61 +250,81 @@ export function AgentProfileForm({
   });
 
   const noteBytes = utf8Bytes(note);
-  // The counter shows the bytes Save will count — the daemon trims before it
-  // caps, so an announcement of raw bytes would refuse a draft Save accepts.
   const spawnBytes = utf8Bytes(rustTrim(spawnPrompt));
 
-  // A stored profile may name a provider that is not installed right now:
-  // the row still exists, so the picker must still be able to say so — the
-  // stored id is offered as its own option rather than rendering as a blank
-  // the human cannot read or keep.
   const providerChoices =
     providerId !== "" && !providers.some((provider) => provider.id === providerId)
       ? [...providers.map((provider) => provider.id), providerId]
       : providers.map((provider) => provider.id);
 
-  // An edit must not render a stored model or mode the provider no longer
-  // lists as an empty field: a select over published items alone would hide
-  // the very value the human opened the editor to change. The stored value
-  // is appended, labelled as the saved one, so it stays visible, stays
-  // selected, and is kept by a save that touches nothing else. Create mode
-  // has nothing stored, so its list is the answer's own.
+  // An edit keeps a stored model the catalog no longer lists visible and
+  // selected, labelled as the saved one. A legacy bare id the catalog lists
+  // under any serving provider needs no such row: it already matches.
   const storedModelOption =
-    mode === "edit" && model !== "" && !modelsView.items.some((item) => item.value === model)
-      ? [{ value: model, label: `${model} (the value saved on this profile)` }]
+    mode === "edit" &&
+    model !== "" &&
+    matchedModel === undefined &&
+    !modelsView.items.some((item) => parseModelRef(item.value).model === model)
+      ? [
+          {
+            value: modelRefOf({ modelId: model, provider: modelProvider ?? undefined }),
+            label: `${model} (the value saved on this profile)`,
+          },
+        ]
       : [];
   const storedModeOption =
     mode === "edit" && modeId !== "" && !modesView.items.some((item) => item.value === modeId)
-      ? [{ value: modeId, label: `${modeId} (the value saved on this profile)` }]
+      ? [{ value: modeId, label: modeId }]
       : [];
+
+  // The effort control: a picker over exactly the levels the matched model
+  // publishes, nothing when the model publishes none, and free text only
+  // while the daemon cannot enumerate at all.
+  const showEffortPicker =
+    modelsPresent && matchedModel !== undefined && (modelEfforts?.length ?? 0) > 0;
+  const dropEffort =
+    modelsPresent && matchedModel !== undefined && (modelEfforts?.length ?? 0) === 0;
+
+  function changeModelRef(ref: string) {
+    const parsed = parseModelRef(ref);
+    const next = matchModelItem(modelItems, parsed.model, parsed.modelProvider);
+    const effort = effortKept(next, thinkingOptionId) ? thinkingOptionId : "";
+    setModel(parsed.model);
+    setModelProvider(parsed.modelProvider);
+    setThinkingOptionId(effort);
+    // Settles with the bare id: the hook re-asks the features read for a
+    // finished choice, and the compound picker value must never leak into
+    // the settled model the reply is trusted against.
+    settleModel(parsed.model);
+    userChanged({
+      model: parsed.model,
+      modelProvider: parsed.modelProvider,
+      thinkingOptionId: effort,
+    });
+  }
 
   function changeProvider(next: string) {
     if (next === providerId) return;
-    // The old provider's fields are cached under its id and the new
-    // provider's own are restored if the human has been here before:
-    // switching must not let one provider's vocabulary survive into
-    // another, but a wrong pick followed by switching back must not be a
-    // loss either. The feature values and the overlay stay: they belong to the
-    // profile, not to the provider's vocabulary, and the new provider's own
-    // list — which this switch is about to fetch — decides each value's fate at
-    // save, dropping silently the keys that provider does not offer.
-    providerDraftsRef.current.set(providerId, { model, modeId, thinkingOptionId });
+    providerDraftsRef.current.set(providerId, { model, modelProvider, modeId, thinkingOptionId });
     const restored = providerDraftsRef.current.get(next) ?? CLEARED_PROVIDER_FIELDS;
     setProviderId(next);
-    // A provider switch settles its model in the same breath: the field is not
-    // being typed in, the value is the whole point of the switch, and the ask
-    // that follows is about that model.
     settleModel(restored.model, false);
+    setModel(restored.model);
+    setModelProvider(restored.modelProvider);
     setModeId(restored.modeId);
     setThinkingOptionId(restored.thinkingOptionId);
     userChanged({ provider: next, ...restored });
   }
 
   function submit() {
+    const draft = currentSeed();
+    // A model that publishes no levels cannot carry one: the spawn would
+    // refuse it, so the save drops it instead of sending work it cannot keep.
+    if (dropEffort) draft.thinkingOptionId = "";
     if (mode === "create") {
-      onCreate(currentSeed());
+      onCreate(draft);
     } else {
-      onSaveSeed?.(currentSeed());
+      onSaveSeed?.(draft);
     }
   }
 
@@ -388,62 +350,6 @@ export function AgentProfileForm({
             userChanged({ name: event.target.value });
           }}
         />
-      </label>
-      <label className="device-field">
-        Icon
-        <input
-          aria-label="Profile icon"
-          aria-describedby={iconHintId}
-          value={icon}
-          disabled={busy}
-          onChange={(event) => {
-            setIcon(event.target.value);
-            userChanged({ icon: event.target.value });
-          }}
-        />
-        <span className="device-field-hint" id={iconHintId}>
-          One short glyph — an emoji or letter — for the row's tile; empty shows the name's first
-          letter.
-        </span>
-      </label>
-      <label className="device-field">
-        Note — what a creating agent reads to choose this profile. Write it for the agent.
-        <textarea
-          aria-label="Profile note"
-          value={note}
-          disabled={busy}
-          rows={3}
-          onChange={(event) => {
-            setNote(event.target.value);
-            userChanged({ note: event.target.value });
-          }}
-        />
-        <span className="agent-byte-counter" id={noteCounterId} aria-live="polite">
-          {noteBytes} / {MAX_PROFILE_NOTE_BYTES} bytes
-        </span>
-      </label>
-      <label className="device-field">
-        Spawn prompt — the profile's own instructions for its children
-        <textarea
-          aria-label="Profile spawn prompt"
-          aria-describedby={`${spawnHintId} ${spawnCounterId}`}
-          value={spawnPrompt}
-          disabled={busy}
-          rows={3}
-          onChange={(event) => {
-            setSpawnPrompt(event.target.value);
-            userChanged({ spawnPrompt: event.target.value });
-          }}
-        />
-        <span className="agent-byte-counter" id={spawnCounterId} aria-live="polite">
-          {spawnBytes} / {MAX_PROFILE_SPAWN_PROMPT_BYTES} bytes
-        </span>
-        <span className="device-field-hint" id={spawnHintId}>
-          Sent at the start of every agent created from this profile, before the creator's prompt.
-          Keep it short. An agent created from this profile also receives the standing instructions
-          and the task written by the agent that creates it — write only what is specific to this
-          kind of agent.
-        </span>
       </label>
       <label className="device-field">
         Provider
@@ -476,14 +382,8 @@ export function AgentProfileForm({
           />
         </p>
       ) : null}
-      {/* A completed read that found nothing is the only state allowed to
-          claim "no agent CLI": not-read is not empty, and a failed read is
-          its own fact — the paragraph above names it. */}
       {!catalogLoading && catalogError === null && providers.length === 0 ? (
-        <p className="device-field-hint">
-          No agent CLI is installed on this machine: install one and restart Devboule, then create
-          the profile.
-        </p>
+        <p className="device-field-hint">No agent CLI is installed on this machine.</p>
       ) : null}
       {!vocabularySupported ? (
         <p className="device-field-hint">{VOCABULARY_UNAVAILABLE_TEXT}</p>
@@ -504,17 +404,69 @@ export function AgentProfileForm({
         <>
           <VocabularyField
             label="Model"
-            value={model}
+            value={
+              modelsView.freeText
+                ? model
+                : matchedModel !== undefined
+                  ? modelRefOf(matchedModel)
+                  : model
+            }
             busy={busy}
             freeText={modelsView.freeText}
             hint={modelsView.hint}
             items={[...modelsView.items, ...storedModelOption]}
             onChange={(next) => {
-              setModel(next);
-              userChanged({ model: next });
+              if (modelsView.freeText) {
+                const parsed = parseModelRef(next);
+                setModel(parsed.model);
+                setModelProvider(parsed.modelProvider);
+                userChanged({ model: parsed.model, modelProvider: parsed.modelProvider });
+              } else {
+                changeModelRef(next);
+              }
             }}
-            onSettle={settleModel}
+            onSettle={modelsView.freeText ? settleModel : undefined}
           />
+          {showEffortPicker ? (
+            <label className="device-field">
+              Effort
+              <select
+                aria-label="Effort"
+                value={thinkingOptionId}
+                disabled={busy}
+                onChange={(event) => {
+                  setThinkingOptionId(event.target.value);
+                  userChanged({ thinkingOptionId: event.target.value });
+                }}
+              >
+                <option value="">The provider&apos;s own default</option>
+                {(modelEfforts ?? []).map((level) => (
+                  <option key={level.id} value={level.id}>
+                    {level.label}
+                    {level.default === true ? " (default)" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          {!showEffortPicker && !dropEffort ? (
+            <label className="device-field">
+              Effort
+              <input
+                aria-label="Effort"
+                aria-describedby={thinkingHintId}
+                value={thinkingOptionId}
+                disabled={busy}
+                onChange={(event) => {
+                  setThinkingOptionId(event.target.value);
+                  userChanged({ thinkingOptionId: event.target.value });
+                }}
+              />
+              <span className="device-field-hint" id={thinkingHintId}>
+                The id the provider uses, or empty for none.
+              </span>
+            </label>
+          ) : null}
           <VocabularyField
             label="Mode"
             value={modeId}
@@ -534,126 +486,144 @@ export function AgentProfileForm({
               userChanged({ modeId: next });
             }}
           />
-          <label className="device-field">
-            Thinking option
-            <input
-              aria-label="Thinking option"
-              aria-describedby={thinkingHintId}
-              value={thinkingOptionId}
-              disabled={busy}
-              onChange={(event) => {
-                setThinkingOptionId(event.target.value);
-                userChanged({ thinkingOptionId: event.target.value });
-              }}
-            />
-            <span className="device-field-hint" id={thinkingHintId}>
-              The daemon keeps no list of thinking options: type the id the provider uses, or leave
-              this empty for none.
-            </span>
-          </label>
         </>
       ) : null}
-      {/* One control per feature this provider offers, read from the reply the
-          effect above fetched and never from a list written here. It sits
-          outside the `vocabularyKnown` block on purpose: with no answer in hand
-          the component still draws the daemon's own tick and says why, and the
-          model and mode fields above handle their half of that silence. */}
-      <AgentProfileFeatureFields
-        offered={offered}
-        probing={probing}
-        askedAndFailed={askedAndFailed}
-        features={features}
-        busy={busy}
-        onChange={(next) => {
-          setFeatures(next);
-          userChanged({ features: next });
-        }}
-      />
-      <label className="agent-profile-tick">
-        <input
-          type="checkbox"
-          aria-label="Available to agents"
-          checked={enabledForAgents}
+      <label className="device-field">
+        Note (optional)
+        <textarea
+          aria-label="Profile note"
+          value={note}
           disabled={busy}
+          rows={2}
           onChange={(event) => {
-            setEnabledForAgents(event.target.checked);
-            userChanged({ enabledForAgents: event.target.checked });
+            setNote(event.target.value);
+            userChanged({ note: event.target.value });
           }}
         />
-        <span>
-          <span>Agents may create this</span>
-          <span className="agent-profile-tick-note">
-            Lets an agent start this kind of agent. If this profile answers its own permission
-            cards, its children run unattended.
-          </span>
-        </span>
+        <ByteCounter bytes={noteBytes} cap={MAX_PROFILE_NOTE_BYTES} />
       </label>
       <label className="device-field">
-        Close idle children after — minutes
-        <input
-          aria-label="Close idle children after minutes"
-          aria-describedby={idleHintId}
-          type="number"
-          min={1}
-          max={MAX_IDLE_CLOSE_MINUTES}
-          step={1}
-          value={idleMinutes}
-          disabled={busy || idleOff}
-          onChange={(event) => {
-            const raw = event.target.value;
-            const minutes = idleMinutesOf(raw);
-            // The corrected value is what the field shows, so a typed 0
-            // reads as the 1 it will be saved as — never as silence. Text
-            // that parses to no number keeps its own characters: the save
-            // refuses it, and the refusal must name what the human sees.
-            setIdleMinutes(minutes !== null && Number.isFinite(minutes) ? String(minutes) : raw);
-            userChanged({
-              idleCloseMinutes: idleOff ? 0 : minutes,
-            });
-          }}
-        />
-        <span className="device-field-hint" id={idleHintId}>
-          {DEFAULT_IDLE_CLOSE_MINUTES} by default, up to {MAX_IDLE_CLOSE_MINUTES} (a week). A child
-          created from this profile is closed after this long with no turn, no waiting permission
-          card, nothing being sent to it, and nobody looking at it; a closed session cannot reopen.
-          Only children an agent created are ever closed this way.
-        </span>
-      </label>
-      <label className="agent-profile-tick">
-        <input
-          type="checkbox"
-          aria-label="Never close idle children"
-          checked={idleOff}
+        Instructions (optional)
+        <textarea
+          aria-label="Profile instructions"
+          value={spawnPrompt}
           disabled={busy}
+          rows={2}
           onChange={(event) => {
-            const off = event.target.checked;
-            setIdleOff(off);
-            userChanged({
-              idleCloseMinutes: off ? 0 : idleMinutesOf(idleMinutes),
-            });
+            setSpawnPrompt(event.target.value);
+            userChanged({ spawnPrompt: event.target.value });
           }}
         />
-        <span>
-          <span>Never close idle children</span>
-          <span className="agent-profile-tick-note">
-            Keep them running until you close them yourself; the minutes above stop applying.
-          </span>
-        </span>
+        <ByteCounter bytes={spawnBytes} cap={MAX_PROFILE_SPAWN_PROMPT_BYTES} />
       </label>
-      <AgentProfileOverlayEditor
-        overlay={overlay}
-        busy={busy}
-        onChange={(next) => {
-          setOverlay(next);
-          userChanged({ overlay: next });
-        }}
-      />
-      {mode === "edit" ? (
-        <p className="device-field-hint">
-          Changes apply to agents created from now on. Agents already running keep what they started
-          with.
-        </p>
-      ) : null}
+      <div className="profile-advanced" data-profile-advanced>
+        <button
+          type="button"
+          className="settings-device-action"
+          aria-expanded={advancedOpen}
+          onClick={() => setAdvancedOpen((open) => !open)}
+        >
+          Advanced
+        </button>
+        {advancedOpen ? (
+          <>
+            <label className="device-field">
+              Icon
+              <input
+                aria-label="Profile icon"
+                aria-describedby={iconHintId}
+                value={icon}
+                disabled={busy}
+                onChange={(event) => {
+                  setIcon(event.target.value);
+                  userChanged({ icon: event.target.value });
+                }}
+              />
+              <span className="device-field-hint" id={iconHintId}>
+                One glyph for the row; empty shows the name&apos;s first letter.
+              </span>
+            </label>
+            <AgentProfileFeatureFields
+              offered={offered}
+              probing={probing}
+              askedAndFailed={askedAndFailed}
+              features={features}
+              busy={busy}
+              onChange={(next) => {
+                setFeatures(next);
+                userChanged({ features: next });
+              }}
+            />
+            <label className="agent-profile-tick">
+              <input
+                type="checkbox"
+                aria-label="Available to agents"
+                checked={enabledForAgents}
+                disabled={busy}
+                onChange={(event) => {
+                  setEnabledForAgents(event.target.checked);
+                  userChanged({ enabledForAgents: event.target.checked });
+                }}
+              />
+              <span>
+                <span>Agents may create this</span>
+              </span>
+            </label>
+            <label className="device-field">
+              Close idle children after — minutes
+              <input
+                aria-label="Close idle children after minutes"
+                aria-describedby={idleHintId}
+                type="number"
+                min={1}
+                max={MAX_IDLE_CLOSE_MINUTES}
+                step={1}
+                value={idleMinutes}
+                disabled={busy || idleOff}
+                onChange={(event) => {
+                  const raw = event.target.value;
+                  const minutes = idleMinutesOf(raw);
+                  setIdleMinutes(
+                    minutes !== null && Number.isFinite(minutes) ? String(minutes) : raw,
+                  );
+                  userChanged({
+                    idleCloseMinutes: idleOff ? 0 : minutes,
+                  });
+                }}
+              />
+              <span className="device-field-hint" id={idleHintId}>
+                {DEFAULT_IDLE_CLOSE_MINUTES} by default, up to {MAX_IDLE_CLOSE_MINUTES}.
+              </span>
+            </label>
+            <label className="agent-profile-tick">
+              <input
+                type="checkbox"
+                aria-label="Never close idle children"
+                checked={idleOff}
+                disabled={busy}
+                onChange={(event) => {
+                  const off = event.target.checked;
+                  setIdleOff(off);
+                  userChanged({
+                    idleCloseMinutes: off ? 0 : idleMinutesOf(idleMinutes),
+                  });
+                }}
+              />
+              <span>
+                <span>Never close idle children</span>
+              </span>
+            </label>
+            <AgentProfileOverlayEditor
+              overlay={overlay}
+              busy={busy}
+              onChange={(next) => {
+                setOverlay(next);
+                userChanged({ overlay: next });
+              }}
+            />
+          </>
+        ) : null}
+      </div>
       {formError === null ? null : (
         <p role="alert" className="device-error" ref={formErrorRef}>
           <ErrorText

@@ -26,7 +26,13 @@ import {
   renderAgentsPanelErrored,
   typeText,
 } from "./agentsPanelTestHarness";
-import { profileRows, rowByName, tickBox, rowButton, panelButton } from "./agentsPanelTestQueries";
+import {
+  profileRows,
+  rowByName,
+  rowButton,
+  panelButton,
+  newProfileButton,
+} from "./agentsPanelTestQueries";
 
 describe("Settings agents panel — load, locks and refetch", () => {
   useAgentsPanelDom(() => []);
@@ -70,7 +76,7 @@ describe("Settings agents panel — load, locks and refetch", () => {
       "Alpha",
     ]);
     expect(rowByName("Beta").querySelector<HTMLElement>(".profile-meta")?.textContent).toBe(
-      "grok · grok-4 · ask",
+      "grok · grok-4",
     );
     // The edges are where a reorder bug would show: the first row cannot move
     // up and the last cannot move down.
@@ -109,15 +115,15 @@ describe("Settings agents panel — load, locks and refetch", () => {
     vi.useFakeTimers();
     try {
       await renderAgentsPanel({
-        profiles: [makeProfile()],
+        profiles: [makeProfile(), makeProfile({ id: "profile-2", name: "Coder" })],
         standingInstructions: "",
       });
 
       // The write is confirmed with a read-back (the panel adopts the stored
-      // document, ids included): the store holds the tick.
+      // document, ids included): the store holds the new order.
       vi.mocked(agentProfilesGet).mockResolvedValueOnce({
         document: {
-          profiles: [{ ...makeProfile(), enabledForAgents: true }],
+          profiles: [makeProfile({ id: "profile-2", name: "Coder" }), makeProfile()],
           standingInstructions: "",
         },
       });
@@ -125,16 +131,29 @@ describe("Settings agents panel — load, locks and refetch", () => {
       // A write puts the sequence past zero; a daemon restart then flips the
       // handshake capability off and back on, re-running the load effect
       // while the panel stays mounted.
-      await act(async () => tickBox("Explorer").click());
+      const up = rowByName("Coder").querySelector<HTMLButtonElement>(
+        'button[aria-label="Move Coder up"]',
+      );
+      if (!up) throw new Error("move-up button did not render");
+      await act(async () => up.click());
       await act(async () => undefined);
-      expect(tickBox("Explorer").checked).toBe(true);
+      expect(profileRows().map((row) => row.querySelector(".profile-name")?.textContent)).toEqual([
+        "Coder",
+        "Explorer",
+      ]);
 
       // A draft typed after the write, never saved: the fresh load must
-      // release it, so the box shows the restarted store's instructions.
+      // release it, so the editor shows the restarted store's instructions.
+      const edit = Array.from(
+        dom.container.querySelectorAll<HTMLButtonElement>("[data-settings-row] button"),
+      ).find((button) => button.textContent === "Edit");
+      if (!edit) throw new Error("standing instructions Edit row did not render");
+      await act(async () => edit.click());
+      await act(async () => undefined);
       const fieldBefore = dom.container.querySelector<HTMLTextAreaElement>(
-        ".agent-standing textarea",
+        '[aria-label="Standing instructions for every agent"]',
       );
-      if (!fieldBefore) throw new Error("standing instructions field did not render");
+      if (!fieldBefore) throw new Error("standing instructions editor did not render");
       await typeText(fieldBefore, "typed against the old daemon");
 
       vi.mocked(daemonStatus).mockResolvedValue(
@@ -171,15 +190,17 @@ describe("Settings agents panel — load, locks and refetch", () => {
       // restarted store's refetch.
       expect(agentProfilesGet).toHaveBeenCalledTimes(3);
       expect(profileRows()).toHaveLength(0);
-      // A fresh load also releases any draft: the box reads the new store.
-      const field = dom.container.querySelector<HTMLTextAreaElement>(".agent-standing textarea");
+      // A fresh load also releases any draft: the editor reads the new store.
+      const field = dom.container.querySelector<HTMLTextAreaElement>(
+        '[aria-label="Standing instructions for every agent"]',
+      );
       expect(field?.value).toBe("fresh from the restarted store");
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("holds the inline editor under the busy lock so a second write cannot start", async () => {
+  it("holds the open editor under the busy lock so a second write cannot start", async () => {
     await renderAgentsPanel({
       profiles: [makeProfile(), makeProfile({ id: "profile-2", name: "Coder" })],
       standingInstructions: "",
@@ -192,7 +213,11 @@ describe("Settings agents panel — load, locks and refetch", () => {
     const save = panelButton("Save");
 
     vi.mocked(agentProfilesSet).mockImplementationOnce(() => new Promise<void>(() => undefined));
-    await act(async () => tickBox("Explorer").click());
+    const down = rowByName("Explorer").querySelector<HTMLButtonElement>(
+      'button[aria-label="Move Explorer down"]',
+    );
+    if (!down) throw new Error("move-down button did not render");
+    await act(async () => down.click());
     await act(async () => undefined);
 
     expect(save.disabled).toBe(true);
@@ -204,7 +229,7 @@ describe("Settings agents panel — load, locks and refetch", () => {
 
   it("keeps the panel locked until the read-back lands, so no write can re-send an empty id", async () => {
     await renderAgentsPanel({
-      profiles: [makeProfile()],
+      profiles: [makeProfile(), makeProfile({ id: "profile-2", name: "Coder" })],
       standingInstructions: "",
     });
     // The write will confirm, and its read-back — where the daemon's minted
@@ -219,7 +244,13 @@ describe("Settings agents panel — load, locks and refetch", () => {
         }),
     );
 
-    await act(async () => tickBox("Explorer").click());
+    await act(async () => {
+      const down = rowByName("Explorer").querySelector<HTMLButtonElement>(
+        'button[aria-label="Move Explorer down"]',
+      );
+      if (!down) throw new Error("move-down button did not render");
+      await down.click();
+    });
     await act(async () => undefined);
 
     // The write is confirmed but its read-back has not landed. Every writer
@@ -231,34 +262,48 @@ describe("Settings agents panel — load, locks and refetch", () => {
     // wrong.
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
     expect(agentProfilesGet).toHaveBeenCalledTimes(2);
-    expect(tickBox("Explorer").disabled).toBe(true);
-    expect(panelButton("New profile").disabled).toBe(true);
+    expect(
+      rowByName("Explorer").querySelector<HTMLButtonElement>(
+        'button[aria-label="Move Explorer down"]',
+      )?.disabled,
+    ).toBe(true);
+    expect(newProfileButton().disabled).toBe(true);
 
     // The read-back lands: the window closes, the minted id is adopted,
     // and the panel is writable again.
     resolveReadBack?.({
       document: {
-        profiles: [makeProfile({ id: "minted-1", enabledForAgents: true })],
+        profiles: [
+          makeProfile({ id: "minted-1" }),
+          makeProfile({ id: "profile-2", name: "Coder" }),
+        ],
         standingInstructions: "",
       },
     });
     await act(async () => undefined);
 
-    expect(tickBox("Explorer").disabled).toBe(false);
-    expect(panelButton("New profile").disabled).toBe(false);
-    expect(tickBox("Explorer").checked).toBe(true);
+    expect(
+      rowByName("Explorer").querySelector<HTMLButtonElement>(
+        'button[aria-label="Move Explorer down"]',
+      )?.disabled,
+    ).toBe(false);
+    expect(newProfileButton().disabled).toBe(false);
+    expect(profileRows().map((row) => row.querySelector(".profile-name")?.textContent)).toEqual([
+      "Explorer",
+      "Coder",
+    ]);
   });
 
   it("does not adopt a store fetch that raced a write still in flight", async () => {
     vi.useFakeTimers();
     try {
       await renderAgentsPanel({
-        profiles: [makeProfile()],
+        profiles: [makeProfile(), makeProfile({ id: "profile-2", name: "Coder" })],
         standingInstructions: "",
       });
 
-      // A write whose fate is still open: the optimistic tick is on screen,
-      // the daemon has not answered.
+      // A write whose fate is still open: the optimistic order is on
+      // screen, the daemon has not answered.
       let rejectSet!: (cause: unknown) => void;
       vi.mocked(agentProfilesSet).mockImplementationOnce(
         () =>
@@ -266,9 +311,18 @@ describe("Settings agents panel — load, locks and refetch", () => {
             rejectSet = reject;
           }),
       );
-      await act(async () => tickBox("Explorer").click());
+      await act(async () => {
+        const down = rowByName("Explorer").querySelector<HTMLButtonElement>(
+          'button[aria-label="Move Explorer down"]',
+        );
+        if (!down) throw new Error("move-down button did not render");
+        await down.click();
+      });
       await act(async () => undefined);
-      expect(tickBox("Explorer").checked).toBe(true);
+      expect(profileRows().map((row) => row.querySelector(".profile-name")?.textContent)).toEqual([
+        "Coder",
+        "Explorer",
+      ]);
 
       // While that write is in flight, a daemon restart flips the
       // capability off and back on, re-running the load effect. Its reply
@@ -307,7 +361,10 @@ describe("Settings agents panel — load, locks and refetch", () => {
       // revert then clobbered it — because the guard never asked whether a
       // write was in flight when the fetch started.
       expect(agentProfilesGet).toHaveBeenCalledTimes(2);
-      expect(tickBox("Explorer").checked).toBe(true);
+      expect(profileRows().map((row) => row.querySelector(".profile-name")?.textContent)).toEqual([
+        "Coder",
+        "Explorer",
+      ]);
       expect(dom.container.textContent).not.toContain("raced the write");
 
       // The write then refuses: the revert restores exactly what the human
@@ -316,7 +373,10 @@ describe("Settings agents panel — load, locks and refetch", () => {
         rejectSet({ code: "io", message: "profile file unwritable" });
       });
       await act(async () => undefined);
-      expect(tickBox("Explorer").checked).toBe(false);
+      expect(profileRows().map((row) => row.querySelector(".profile-name")?.textContent)).toEqual([
+        "Explorer",
+        "Coder",
+      ]);
       expect(dom.container.querySelector('[role="alert"]')?.textContent).toContain(
         "A system or file operation failed on this machine.",
       );

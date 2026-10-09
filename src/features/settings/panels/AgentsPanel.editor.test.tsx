@@ -26,6 +26,16 @@ import { rowButton, panelButton } from "./agentsPanelTestQueries";
 describe("Settings agents panel — editing a profile's fields", () => {
   useAgentsPanelDom(() => []);
 
+  /** Ticks, icon and timers live under Advanced: open the editor, then the section. */
+  async function openAdvanced() {
+    const advanced = Array.from(
+      dom.container.querySelectorAll<HTMLButtonElement>(".edit-card button"),
+    ).find((button) => button.textContent === "Advanced");
+    if (!advanced) throw new Error("Advanced section did not render");
+    await act(async () => advanced.click());
+    await act(async () => undefined);
+  }
+
   it("saves a rename and note while every other field travels untouched", async () => {
     const explorer = makeProfile();
     await renderAgentsPanel({ profiles: [explorer], standingInstructions: "" });
@@ -53,7 +63,14 @@ describe("Settings agents panel — editing a profile's fields", () => {
 
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
     expect(agentProfilesSet).toHaveBeenCalledWith({
-      profiles: [{ ...explorer, name: "Scout", note: "Maps the work before anyone builds." }],
+      profiles: [
+        {
+          ...explorer,
+          name: "Scout",
+          note: "Maps the work before anyone builds.",
+          modelProvider: null,
+        },
+      ],
       standingInstructions: "",
     });
   });
@@ -113,12 +130,13 @@ describe("Settings agents panel — editing a profile's fields", () => {
       "Maps the work before anyone builds.",
     );
     await typeText(
-      pick<HTMLTextAreaElement>('textarea[aria-label="Profile spawn prompt"]'),
+      pick<HTMLTextAreaElement>('textarea[aria-label="Profile instructions"]'),
       "Check the diff before you report.",
     );
     await typeText(pick<HTMLInputElement>('[aria-label="Model"]'), "grok-4-fast");
     await typeText(pick<HTMLInputElement>('[aria-label="Mode"]'), "reflect");
-    await typeText(pick<HTMLInputElement>('[aria-label="Thinking option"]'), "high");
+    await typeText(pick<HTMLInputElement>('[aria-label="Effort"]'), "high");
+    await openAdvanced();
     await act(async () =>
       pick<HTMLInputElement>(
         'input[aria-label="Auto accept for children of this profile"]',
@@ -137,6 +155,7 @@ describe("Settings agents panel — editing a profile's fields", () => {
           note: "Maps the work before anyone builds.",
           spawnPrompt: "Check the diff before you report.",
           model: "grok-4-fast",
+          modelProvider: null,
           modeId: "reflect",
           thinkingOptionId: "high",
           features: { autoAccept: true },
@@ -179,6 +198,7 @@ describe("Settings agents panel — editing a profile's fields", () => {
 
     await act(async () => rowButton("Explorer", "Edit").click());
     await act(async () => undefined);
+    await openAdvanced();
     const iconField = dom.container.querySelector<HTMLInputElement>('[aria-label="Profile icon"]');
     if (!iconField) throw new Error("icon field did not render");
     await typeText(iconField, "eye");
@@ -186,13 +206,14 @@ describe("Settings agents panel — editing a profile's fields", () => {
     await act(async () => undefined);
 
     expect(vi.mocked(agentProfilesSet).mock.calls[0]?.[0] as AgentProfilesDocument).toEqual({
-      profiles: [{ ...makeProfile(), icon: "eye" }],
+      profiles: [{ ...makeProfile(), icon: "eye", modelProvider: null }],
       standingInstructions: "",
     });
 
     // Clearing the field is none on the wire: null, never an empty string.
     await act(async () => rowButton("Explorer", "Edit").click());
     await act(async () => undefined);
+    await openAdvanced();
     const iconAgain = dom.container.querySelector<HTMLInputElement>('[aria-label="Profile icon"]');
     if (!iconAgain) throw new Error("icon field did not render on the second open");
     await typeText(iconAgain, "");
@@ -218,7 +239,7 @@ describe("Settings agents panel — editing a profile's fields", () => {
     await act(async () => undefined);
 
     expect(vi.mocked(agentProfilesSet).mock.calls[0]?.[0] as AgentProfilesDocument).toEqual({
-      profiles: [featured],
+      profiles: [{ ...featured, modelProvider: null }],
       standingInstructions: "",
     });
   });
@@ -245,10 +266,12 @@ describe("Settings agents panel — editing a profile's fields", () => {
 
     const editor = dom.container.querySelector(".agent-inline-editor");
     if (!editor) throw new Error("the editor did not open for the legacy profile");
-    // Absent features read as none, not as a crash: the tick is drawn (this
-    // daemon answers the vocabulary query without a features axis, so the form
-    // falls back to the one feature every agent family applies) and nothing
-    // invented is stored for the keys the profile never had.
+    // Absent features read as none, not as a crash: the tick is drawn under
+    // Advanced (this daemon answers the vocabulary query without a features
+    // axis, so the form falls back to the one feature every agent family
+    // applies) and nothing invented is stored for the keys the profile never
+    // had.
+    await openAdvanced();
     expect(
       editor.querySelector('[aria-label="Auto accept for children of this profile"]'),
     ).not.toBeNull();
@@ -269,6 +292,7 @@ describe("Settings agents panel — editing a profile's fields", () => {
     expect(sent.profiles[0]).toEqual({
       ...legacy,
       icon: null,
+      modelProvider: null,
       thinkingOptionId: null,
       features: {},
       toolOverlay: [],

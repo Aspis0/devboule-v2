@@ -1,18 +1,22 @@
 import type { AgentProfile } from "../../../types/ipc";
 import { rustTrim } from "../AgentProfileDraft";
 
-type MetaSource = Pick<AgentProfile, "provider" | "model" | "modeId" | "thinkingOptionId">;
+type MetaSource = Pick<AgentProfile, "provider" | "model" | "modelProvider" | "thinkingOptionId">;
 
 /**
- * The profile row's meta line: provider, model, mode, and the thinking
- * option — but only when the profile names one. An unset thinking option
- * means the daemon sends no effort and the child runs on the provider's own
- * default, so the row says nothing rather than claiming "no thinking".
+ * The profile row's meta line: provider, model, and effort — with the
+ * serving provider between the first two when the profile stores one
+ * (pi's catalog serves one id under several providers). A bare stored id
+ * reads as before, so legacy rows need no migration to render.
  */
 export function profileMetaText(profile: MetaSource): string {
+  const serving = rustTrim(profile.modelProvider ?? "");
   const thinking = rustTrim(profile.thinkingOptionId ?? "");
-  const base = `${profile.provider} · ${profile.model} · ${profile.modeId}`;
-  return thinking === "" ? base : `${base} · ${thinking} thinking`;
+  const base =
+    serving === ""
+      ? `${profile.provider} · ${profile.model}`
+      : `${profile.provider} · ${serving} · ${profile.model}`;
+  return thinking === "" ? base : `${base} · ${thinking}`;
 }
 
 type TileSource = Pick<AgentProfile, "name" | "icon">;

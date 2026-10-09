@@ -43,7 +43,7 @@ function SettingsPageHeader({
       <h2 className="settings-page-title" id={titleId} ref={titleRef} tabIndex={-1}>
         {page.label}
       </h2>
-      <p className="settings-page-intro">{page.intro}</p>
+      {page.intro ? <p className="settings-page-intro">{page.intro}</p> : null}
       {page.unavailable === true ? <p className="settings-page-empty">{EMPTY_PAGE_NOTE}</p> : null}
       {page.note ? <p className="settings-page-empty">{page.note}</p> : null}
     </section>

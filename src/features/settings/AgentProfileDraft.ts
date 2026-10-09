@@ -6,7 +6,12 @@
  * draft the form accepts is a document the store admits. The form component
  * (`AgentProfileForm.tsx`) owns the fields; the panel owns the document.
  */
-import type { AgentProfile, ProviderVocabulary, VocabularyFeature } from "../../types/ipc";
+import type {
+  AgentProfile,
+  ProviderVocabulary,
+  SessionModel,
+  VocabularyFeature,
+} from "../../types/ipc";
 
 /** The profile store's caps, the daemon's own constants mirrored. */
 const MAX_PROFILE_NAME_CHARS = 60;
@@ -135,6 +140,12 @@ export interface ProfileFormSeed {
   spawnPrompt: string;
   provider: string;
   model: string;
+  /**
+   * The provider serving the model, for catalogs that name one per model
+   * (pi). Null is none — and is what profiles older builds wrote always
+   * carry, matched by the bare id alone.
+   */
+  modelProvider: string | null;
   modeId: string;
   /** "" means none; the daemon stores null. */
   thinkingOptionId: string;
@@ -174,7 +185,10 @@ export interface ProfileFormSeed {
   offeredFeatures: VocabularyFeature[] | null;
 }
 
-/** The seed a new profile starts from: empty fields, no provider chosen yet. */
+/** The seed a new profile starts from: empty fields, no provider chosen yet.
+ *  The owner's defaults are already in it — auto accept on, agents may
+ *  create on, no peer restriction, idle close at the daemon default — so a
+ *  profile the human names and picks a model for is done. */
 export const EMPTY_PROFILE_FORM_SEED: ProfileFormSeed = {
   name: "",
   icon: "",
@@ -182,11 +196,12 @@ export const EMPTY_PROFILE_FORM_SEED: ProfileFormSeed = {
   spawnPrompt: "",
   provider: "",
   model: "",
+  modelProvider: null,
   modeId: "",
   thinkingOptionId: "",
-  features: {},
+  features: { [AUTO_ACCEPT_FEATURE]: true },
   overlay: [],
-  enabledForAgents: false,
+  enabledForAgents: true,
   idleCloseMinutes: null,
   offeredFeatures: null,
 };
@@ -222,6 +237,7 @@ export function seedFromProfile(profile: AgentProfile): ProfileFormSeed {
     spawnPrompt: profile.spawnPrompt ?? "",
     provider: profile.provider,
     model: profile.model,
+    modelProvider: profile.modelProvider ?? null,
     modeId: profile.modeId,
     thinkingOptionId: profile.thinkingOptionId ?? "",
     features: seeded,
@@ -260,10 +276,10 @@ export function profileDraftRefusal(draft: ProfileFormSeed): string | null {
     return `This spawn prompt is ${spawnBytes} bytes, over the ${MAX_PROFILE_SPAWN_PROMPT_BYTES}-byte cap. Nothing was saved and nothing was truncated.`;
   }
   if (rustTrim(draft.model) === "") {
-    return "Choose or type a model for the profile.";
+    return "Choose a model for the profile.";
   }
   if (rustTrim(draft.modeId) === "") {
-    return "Choose or type a mode for the profile.";
+    return "Choose a mode for the profile.";
   }
   const thinkingBytes = utf8Bytes(rustTrim(draft.thinkingOptionId));
   if (thinkingBytes > MAX_PROFILE_FIELD_BYTES) {
@@ -409,4 +425,56 @@ export function profileFeaturesFromDraft(
     saved[feature.id] = value;
   }
   return saved;
+}
+
+/**
+ * The model picker's option value for one catalog item: the serving
+ * provider and the model id together, because one id can be served by two
+ * providers and a bare id cannot tell them apart. Items with no serving
+ * provider keep the bare id, which is also what profiles older builds
+ * wrote always carry.
+ */
+export function modelRefOf(item: Pick<SessionModel, "modelId" | "provider">): string {
+  const provider = item.provider ?? "";
+  return provider === "" ? item.modelId : `${provider}\0${item.modelId}`;
+}
+
+/** The pair a picker value carries back: the id, and the serving provider. */
+export function parseModelRef(ref: string): { model: string; modelProvider: string | null } {
+  const separator = ref.indexOf("\0");
+  if (separator < 0) return { model: ref, modelProvider: null };
+  const provider = ref.slice(0, separator);
+  return { model: ref.slice(separator + 1), modelProvider: provider === "" ? null : provider };
+}
+
+/**
+ * The catalog item a stored pair names: the exact pair first, then the
+ * bare id alone, so a legacy profile still opens against a catalog that
+ * lists its id under any serving provider.
+ */
+export function matchModelItem(
+  items: readonly SessionModel[],
+  model: string,
+  modelProvider: string | null,
+): SessionModel | undefined {
+  if (modelProvider !== null) {
+    const paired = items.find(
+      (item) => item.modelId === model && (item.provider ?? null) === modelProvider,
+    );
+    if (paired !== undefined) return paired;
+  }
+  return items.find((item) => item.modelId === model);
+}
+
+/**
+ * What the model picker shows for one catalog item: the serving provider
+ * first when the catalog names one, so two rows for one id read apart.
+ */
+export function modelOptionLabel(
+  item: Pick<SessionModel, "modelId" | "name" | "provider">,
+): string {
+  const base =
+    item.name && item.name !== item.modelId ? `${item.name} (${item.modelId})` : item.modelId;
+  const provider = item.provider ?? "";
+  return provider === "" ? base : `${provider} · ${base}`;
 }

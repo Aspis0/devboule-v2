@@ -1892,6 +1892,13 @@ export interface AgentProfile {
   spawnPrompt?: string;
   provider: string;
   model: string;
+  /**
+   * The provider serving the model (pi's `provider` per catalog entry:
+   * openrouter, opencode-go, …). Stored beside the bare model id, because
+   * one id can be served by two providers. Absent on profiles older builds
+   * wrote: those still read, matched by the bare id alone.
+   */
+  modelProvider?: string | null;
   modeId: string;
   thinkingOptionId?: string | null;
   /** Skipped when empty: absent is `{}`, the profile carries no features. */

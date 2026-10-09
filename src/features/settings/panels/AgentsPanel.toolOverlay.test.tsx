@@ -26,6 +26,18 @@ import { rowButton, panelButton, dialogButton } from "./agentsPanelTestQueries";
 describe("Settings agents panel — agents tick, peer restriction and tool denials", () => {
   useAgentsPanelDom(() => []);
 
+  /** The editor's ticks live under Advanced: open the editor, then the section. */
+  async function openAdvanced() {
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    const advanced = Array.from(
+      dom.container.querySelectorAll<HTMLButtonElement>(".edit-card button"),
+    ).find((button) => button.textContent === "Advanced");
+    if (!advanced) throw new Error("Advanced section did not render");
+    await act(async () => advanced.click());
+    await act(async () => undefined);
+  }
+
   it("edits the agents tick and the peer restriction from the editor", async () => {
     const restricted = makeProfile({
       enabledForAgents: false,
@@ -33,8 +45,7 @@ describe("Settings agents panel — agents tick, peer restriction and tool denia
     });
     await renderAgentsPanel({ profiles: [restricted], standingInstructions: "" });
 
-    await act(async () => rowButton("Explorer", "Edit").click());
-    await act(async () => undefined);
+    await openAdvanced();
     const agentsTick = dom.container.querySelector<HTMLInputElement>(
       '.agent-inline-editor input[aria-label="Available to agents"]',
     );
@@ -50,7 +61,7 @@ describe("Settings agents panel — agents tick, peer restriction and tool denia
     await act(async () => undefined);
 
     expect(vi.mocked(agentProfilesSet).mock.calls[0]?.[0] as AgentProfilesDocument).toEqual({
-      profiles: [{ ...restricted, enabledForAgents: true, toolOverlay: [] }],
+      profiles: [{ ...restricted, enabledForAgents: true, toolOverlay: [], modelProvider: null }],
       standingInstructions: "",
     });
   });
@@ -61,8 +72,7 @@ describe("Settings agents panel — agents tick, peer restriction and tool denia
     });
     await renderAgentsPanel({ profiles: [guarded], standingInstructions: "" });
 
-    await act(async () => rowButton("Explorer", "Edit").click());
-    await act(async () => undefined);
+    await openAdvanced();
     // The peer tick is on: the peer tools are in the overlay, whatever else
     // is there with them.
     const peersTick = dom.container.querySelector<HTMLInputElement>(
@@ -83,6 +93,7 @@ describe("Settings agents panel — agents tick, peer restriction and tool denia
       profiles: [
         {
           ...guarded,
+          modelProvider: null,
           note: "Updated note for the agent.",
           toolOverlay: ["devboule_send_message", "devboule_create_agent", "devboule_list_profiles"],
         },
@@ -97,12 +108,10 @@ describe("Settings agents panel — agents tick, peer restriction and tool denia
     });
     await renderAgentsPanel({ profiles: [guarded], standingInstructions: "" });
 
-    await act(async () => rowButton("Explorer", "Edit").click());
-    await act(async () => undefined);
-    // One honest line, one action — and no per-tool control anywhere.
-    expect(dom.container.textContent).toContain(
-      "This profile blocks some tools from an older setting.",
-    );
+    await openAdvanced();
+    // One honest line naming the denial, one action — and no per-tool
+    // control anywhere.
+    expect(dom.container.textContent).toContain("cannot use: devboule_list_profiles");
     expect(dom.container.textContent).not.toContain("Deny a tool by name");
     expect(dom.container.textContent).not.toContain("Add denial");
     expect(dom.container.textContent).not.toContain("Remove denial");
@@ -113,7 +122,7 @@ describe("Settings agents panel — agents tick, peer restriction and tool denia
 
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
     expect(agentProfilesSet).toHaveBeenCalledWith({
-      profiles: [guarded],
+      profiles: [{ ...guarded, modelProvider: null }],
       standingInstructions: "",
     });
   });
@@ -130,20 +139,23 @@ describe("Settings agents panel — agents tick, peer restriction and tool denia
       },
     });
 
-    await act(async () => rowButton("Explorer", "Edit").click());
-    await act(async () => undefined);
+    await openAdvanced();
     await act(async () => dialogButton("Allow all tools").click());
     await act(async () => undefined);
-    expect(dom.container.textContent).not.toContain(
-      "This profile blocks some tools from an older setting.",
-    );
+    expect(dom.container.textContent).not.toContain("cannot use:");
 
     await act(async () => panelButton("Save").click());
     await act(async () => undefined);
 
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
     expect(agentProfilesSet).toHaveBeenCalledWith({
-      profiles: [{ ...guarded, toolOverlay: ["devboule_send_message", "devboule_create_agent"] }],
+      profiles: [
+        {
+          ...guarded,
+          modelProvider: null,
+          toolOverlay: ["devboule_send_message", "devboule_create_agent"],
+        },
+      ],
       standingInstructions: "",
     });
   });
@@ -171,6 +183,12 @@ describe("Settings agents panel — agents tick, peer restriction and tool denia
 
     await act(async () => rowButton("Explorer", "Edit").click());
     await act(async () => undefined);
+    const advanced = Array.from(
+      dom.container.querySelectorAll<HTMLButtonElement>(".edit-card button"),
+    ).find((button) => button.textContent === "Advanced");
+    if (!advanced) throw new Error("Advanced section did not render");
+    await act(async () => advanced.click());
+    await act(async () => undefined);
     const peersTick = dom.container.querySelector<HTMLInputElement>(
       '.edit-card input[aria-label="Children cannot message peers or create further agents"]',
     );
@@ -185,6 +203,7 @@ describe("Settings agents panel — agents tick, peer restriction and tool denia
       profiles: [
         {
           ...guarded,
+          modelProvider: null,
           toolOverlay: ["devboule_list_profiles", "devboule_send_message", "devboule_create_agent"],
         },
       ],

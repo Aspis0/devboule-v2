@@ -27,6 +27,16 @@ import { rowButton, panelButton } from "./agentsPanelTestQueries";
 describe("Settings agents panel — the idle-close timer", () => {
   useAgentsPanelDom(() => []);
 
+  /** The timer lives under Advanced: open the editor, then the section. */
+  async function openAdvanced() {
+    const advanced = Array.from(
+      dom.container.querySelectorAll<HTMLButtonElement>(".edit-card button"),
+    ).find((button) => button.textContent === "Advanced");
+    if (!advanced) throw new Error("Advanced section did not render");
+    await act(async () => advanced.click());
+    await act(async () => undefined);
+  }
+
   it("round-trips the idle-close timer: the default 30, a custom value, and off", async () => {
     const explorer = makeProfile();
     await renderAgentsPanel({ profiles: [explorer], standingInstructions: "" });
@@ -50,6 +60,7 @@ describe("Settings agents panel — the idle-close timer", () => {
     // means 30 to the daemon, so an untouched field leaves the row alone.
     await act(async () => rowButton("Explorer", "Edit").click());
     await act(async () => undefined);
+    await openAdvanced();
     expect(idleField().value).toBe("30");
     vi.mocked(agentProfilesGet).mockResolvedValueOnce({
       document: { profiles: [explorer], standingInstructions: "" },
@@ -64,6 +75,7 @@ describe("Settings agents panel — the idle-close timer", () => {
     // next open — the round trip the field exists for.
     await act(async () => rowButton("Explorer", "Edit").click());
     await act(async () => undefined);
+    await openAdvanced();
     await typeText(idleField(), "45");
     vi.mocked(agentProfilesGet).mockResolvedValueOnce({
       document: {
@@ -74,11 +86,12 @@ describe("Settings agents panel — the idle-close timer", () => {
     await act(async () => panelButton("Save").click());
     await act(async () => undefined);
     expect(agentProfilesSet).toHaveBeenLastCalledWith({
-      profiles: [{ ...explorer, idleCloseMinutes: 45 }],
+      profiles: [{ ...explorer, idleCloseMinutes: 45, modelProvider: null }],
       standingInstructions: "",
     });
     await act(async () => rowButton("Explorer", "Edit").click());
     await act(async () => undefined);
+    await openAdvanced();
     expect(idleField().value).toBe("45");
     expect(offTick().checked).toBe(false);
 
@@ -94,10 +107,12 @@ describe("Settings agents panel — the idle-close timer", () => {
     await act(async () => panelButton("Save").click());
     await act(async () => undefined);
     expect(agentProfilesSet).toHaveBeenLastCalledWith({
-      profiles: [{ ...explorer, idleCloseMinutes: 0 }],
+      profiles: [{ ...explorer, idleCloseMinutes: 0, modelProvider: null }],
       standingInstructions: "",
     });
     await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    await openAdvanced();
     await act(async () => undefined);
     expect(offTick().checked).toBe(true);
     expect(idleField().disabled).toBe(true);
@@ -109,6 +124,7 @@ describe("Settings agents panel — the idle-close timer", () => {
 
     await act(async () => rowButton("Explorer", "Edit").click());
     await act(async () => undefined);
+    await openAdvanced();
     const idleField = dom.container.querySelector<HTMLInputElement>(
       '.agent-inline-editor input[aria-label="Close idle children after minutes"]',
     );
@@ -134,7 +150,7 @@ describe("Settings agents panel — the idle-close timer", () => {
     await act(async () => undefined);
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
     expect(agentProfilesSet).toHaveBeenLastCalledWith({
-      profiles: [{ ...makeProfile(), idleCloseMinutes: 1 }],
+      profiles: [{ ...makeProfile(), idleCloseMinutes: 1, modelProvider: null }],
       standingInstructions: "",
     });
   });
@@ -144,6 +160,7 @@ describe("Settings agents panel — the idle-close timer", () => {
 
     await act(async () => rowButton("Explorer", "Edit").click());
     await act(async () => undefined);
+    await openAdvanced();
     const idleField = dom.container.querySelector<HTMLInputElement>(
       '.agent-inline-editor input[aria-label="Close idle children after minutes"]',
     );
@@ -168,15 +185,14 @@ describe("Settings agents panel — the idle-close timer", () => {
 
     await act(async () => rowButton("Explorer", "Edit").click());
     await act(async () => undefined);
+    await openAdvanced();
     const idleField = dom.container.querySelector<HTMLInputElement>(
       '.agent-inline-editor input[aria-label="Close idle children after minutes"]',
     );
     if (!idleField) throw new Error("the idle-close minutes field did not render");
-    // The three sentences that carry the field's whole meaning — the
-    // default, the cap and what the close waits for — are read out with the
-    // control, not left beside it.
+    // The one short line that carries the field's meaning — the default
+    // and the cap — read out with the control, not beside it.
     expect(describedText(idleField)).toContain("30 by default");
     expect(describedText(idleField)).toContain("10080");
-    expect(describedText(idleField)).toContain("nobody looking at it");
   });
 });

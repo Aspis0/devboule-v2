@@ -20,7 +20,13 @@ import {
   renderAgentsPanel,
   typeText,
 } from "./agentsPanelTestHarness";
-import { rowByName, tickBox, rowButton, panelButton, dialogButton } from "./agentsPanelTestQueries";
+import {
+  rowByName,
+  rowButton,
+  panelButton,
+  dialogButton,
+  newProfileButton,
+} from "./agentsPanelTestQueries";
 
 describe("Settings agents panel — the profile dialog", () => {
   useAgentsPanelDom(() => []);
@@ -33,7 +39,7 @@ describe("Settings agents panel — the profile dialog", () => {
       standingInstructions: "",
     });
 
-    await act(async () => panelButton("New profile").click());
+    await act(async () => newProfileButton().click());
     await act(async () => undefined);
     expect(dom.container.querySelector(".edit-scrim")).not.toBeNull();
     expect(dom.container.querySelector(".edit-title")?.textContent).toBe("New profile");
@@ -44,9 +50,9 @@ describe("Settings agents panel — the profile dialog", () => {
     await act(async () => rowButton("Explorer", "Edit").click());
     await act(async () => undefined);
     expect(dom.container.querySelector(".edit-title")?.textContent).toBe("Edit profile — Explorer");
-    // The row clamps to two lines; the dialog carries the whole text.
+    // The row shows name, meta and note; the dialog carries the whole text.
     const spawnField = dom.container.querySelector<HTMLTextAreaElement>(
-      '.edit-card textarea[aria-label="Profile spawn prompt"]',
+      '.edit-card textarea[aria-label="Profile instructions"]',
     );
     if (!spawnField) throw new Error("dialog spawn prompt field did not render");
     expect(spawnField.value).toBe(prompt);
@@ -116,6 +122,12 @@ describe("Settings agents panel — the profile dialog", () => {
   it("hints what the Icon field takes", async () => {
     await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
     await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    const advanced = Array.from(
+      dom.container.querySelectorAll<HTMLButtonElement>(".edit-card button"),
+    ).find((button) => button.textContent === "Advanced");
+    if (!advanced) throw new Error("Advanced section did not render");
+    await act(async () => advanced.click());
     await act(async () => undefined);
     const hint = dom.container.querySelector('.edit-card [id$="-icon-hint"]');
     if (!hint) throw new Error("icon hint did not render");
@@ -357,13 +369,10 @@ describe("Settings agents panel — the profile dialog", () => {
       profiles: [makeProfile({ id: "x1" }), makeProfile({ id: "x2", name: "Coder" })],
       standingInstructions: "",
     });
-    // The store's read-back after the confirmed tick.
+    // The store's read-back after the confirmed move.
     vi.mocked(agentProfilesGet).mockResolvedValueOnce({
       document: {
-        profiles: [
-          makeProfile({ id: "x1" }),
-          makeProfile({ id: "x2", name: "Coder", enabledForAgents: true }),
-        ],
+        profiles: [makeProfile({ id: "x2", name: "Coder" }), makeProfile({ id: "x1" })],
         standingInstructions: "",
       },
     });
@@ -377,7 +386,11 @@ describe("Settings agents panel — the profile dialog", () => {
     // Another row's write, confirmed with its read-back: the editor stays
     // open and the draft stays in it — no write that did not carry the
     // draft may release it.
-    await act(async () => tickBox("Coder").click());
+    const up = rowByName("Coder").querySelector<HTMLButtonElement>(
+      'button[aria-label="Move Coder up"]',
+    );
+    if (!up) throw new Error("move-up button did not render");
+    await act(async () => up.click());
     await act(async () => undefined);
 
     const editor = dom.container.querySelector(".agent-inline-editor");

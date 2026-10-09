@@ -261,7 +261,7 @@ describe("ProfileDialog", () => {
     const onClose = vi.fn();
     renderDialog({ onClose, withDirtyButton: true, busy: true });
     // Dirty or not, nothing closes outright mid-save: Escape, scrim, ×
-    // and Cancel arm the honest exit instead.
+    // turn the dialog itself into the honest exit instead.
     pressKey("Escape");
     expect(onClose).not.toHaveBeenCalled();
     // The sentence promises nothing about the outcome: the save continues,
@@ -274,11 +274,16 @@ describe("ProfileDialog", () => {
       scrim?.dispatchEvent(new MouseEvent("mousedown", { button: 0, bubbles: true }));
     });
     expect(onClose).not.toHaveBeenCalled();
-    act(() => buttonByText("Cancel").click());
-    expect(onClose).not.toHaveBeenCalled();
-    // The discard arm itself is unreachable, and Discard is dead if armed.
-    act(() => buttonByText("Make dirty").click());
+    // The step replaced the form: there is no Cancel to press and no
+    // dirty-maker behind it — the only exits are the step's own buttons.
+    expect(container.textContent).not.toContain("Discard unsaved changes?");
+    expect(
+      Array.from(container.querySelectorAll("button")).some(
+        (button) => button.textContent === "Cancel",
+      ),
+    ).toBe(false);
     pressKey("Escape");
+    expect(container.textContent).toContain("A save is still running.");
     expect(container.textContent).not.toContain("Discard unsaved changes?");
   });
 

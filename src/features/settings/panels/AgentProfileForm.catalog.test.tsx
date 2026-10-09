@@ -21,12 +21,18 @@ import {
   storedProfile,
   renderAgentsPanel,
 } from "./agentsPanelTestHarness";
-import { openForm, form, providerField, selectValues } from "./agentsPanelTestQueries";
+import {
+  openForm,
+  form,
+  providerField,
+  selectValues,
+  newProfileButton,
+} from "./agentsPanelTestQueries";
 
 describe("Settings agents panel — new profile form: catalog, caps and stored rows", () => {
   useAgentsPanelDom(() => [makeProvider()]);
 
-  it("shows the peer restriction on a stored profile row", async () => {
+  it("shows the peer restriction in the stored profile's editor", async () => {
     await renderAgentsPanel({
       profiles: [
         storedProfile("p-1", {
@@ -38,26 +44,58 @@ describe("Settings agents panel — new profile form: catalog, caps and stored r
       standingInstructions: "",
     });
 
-    const hermit = dom.container.textContent ?? "";
-    expect(hermit).toContain("cannot message peers or create further agents");
+    // The rows stay quiet; the restriction reads in the editor under
+    // Advanced, ticked on for the stored pair.
+    expect(dom.container.textContent).not.toContain("cannot message peers");
+    const edit = dom.container.querySelector<HTMLButtonElement>(
+      '.agent-profile-row button[aria-label="Edit Hermit"]',
+    );
+    if (!edit) throw new Error("Edit Hermit did not render");
+    await act(async () => edit.click());
+    await act(async () => undefined);
+    const advanced = Array.from(
+      dom.container.querySelectorAll<HTMLButtonElement>(".edit-card button"),
+    ).find((button) => button.textContent === "Advanced");
+    if (!advanced) throw new Error("Advanced section did not render");
+    await act(async () => advanced.click());
+    await act(async () => undefined);
+    const peersTick = dom.container.querySelector<HTMLInputElement>(
+      '.edit-card input[aria-label="Children cannot message peers or create further agents"]',
+    );
+    if (!peersTick) throw new Error("peer tick did not render");
+    expect(peersTick.checked).toBe(true);
   });
 
-  it("names the denial on a row whose overlay is not the exact peer pair", async () => {
-    // A single-tool denial is valid daemon-side; the row must render it
+  it("names the denial in the editor when the overlay is not the exact peer pair", async () => {
+    // A single-tool denial is valid daemon-side; the editor must name it
     // instead of showing nothing.
     await renderAgentsPanel({
       profiles: [
         storedProfile("p-1", {
           name: "NoGrandchildren",
-          toolOverlay: ["devboule_create_agent"],
+          toolOverlay: ["devboule_create_agent", "devboule_list_profiles"],
         }),
       ],
       standingInstructions: "",
     });
 
     const text = dom.container.textContent ?? "";
-    expect(text).toContain("cannot use: devboule_create_agent");
-    expect(text).not.toContain("cannot message peers");
+    expect(text).not.toContain("cannot use:");
+    const edit = dom.container.querySelector<HTMLButtonElement>(
+      '.agent-profile-row button[aria-label="Edit NoGrandchildren"]',
+    );
+    if (!edit) throw new Error("Edit NoGrandchildren did not render");
+    await act(async () => edit.click());
+    await act(async () => undefined);
+    const advanced = Array.from(
+      dom.container.querySelectorAll<HTMLButtonElement>(".edit-card button"),
+    ).find((button) => button.textContent === "Advanced");
+    if (!advanced) throw new Error("Advanced section did not render");
+    await act(async () => advanced.click());
+    await act(async () => undefined);
+    const editorText = dom.container.querySelector(".edit-card")?.textContent ?? "";
+    expect(editorText).toContain("cannot use: devboule_list_profiles");
+    expect(editorText).not.toContain("cannot message peers");
   });
 
   it("offers only installed providers in the picker", async () => {
@@ -101,11 +139,9 @@ describe("Settings agents panel — new profile form: catalog, caps and stored r
     // The cap is named before the human fills anything in...
     expect(dom.container.textContent).toContain("the maximum of 64 profiles");
     // ...and the form cannot be opened: a 65th creation is refused by the
-    // store, so the panel does not offer the work.
-    const open = Array.from(
-      dom.container.querySelectorAll<HTMLButtonElement>(".agent-profile-create-row button"),
-    ).find((candidate) => candidate.textContent === "New profile");
-    expect(open?.disabled).toBe(true);
+    // store, so the section action stays disabled.
+    const open = newProfileButton();
+    expect(open.disabled).toBe(true);
     await act(async () => open?.click());
     await act(async () => undefined);
     expect(dom.container.querySelector(".agent-profile-create")).toBeNull();

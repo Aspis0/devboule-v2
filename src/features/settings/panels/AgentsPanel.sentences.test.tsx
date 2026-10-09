@@ -35,16 +35,13 @@ import {
   storedProfile,
   renderAgentsPanel,
   typeText,
-  tickCheckbox,
 } from "./agentsPanelTestHarness";
 import {
   openForm,
-  form,
   nameField,
   modelControl,
   modeControl,
   createButton,
-  rowTicks,
 } from "./agentsPanelTestQueries";
 
 describe("Settings agents panel — sentence uniqueness", () => {
@@ -69,17 +66,13 @@ describe("Settings agents panel — sentence uniqueness", () => {
 
     // Sentence-bearing elements only: labels, buttons, row titles and
     // option texts are not sentences. An element that contains another
-    // collected element (the off-switch wrapper around its two paragraphs,
-    // a role=status wrapper) is dropped — its text would falsely "contain"
-    // the real sentences inside it.
+    // collected element (a role=status wrapper) is dropped — its text
+    // would falsely "contain" the real sentences inside it.
     const SENTENCE_SELECTOR = [
       ".device-field-hint",
       ".device-copy",
       ".agent-profile-tick-note",
-      ".agent-profiles-off p",
-      ".agent-profile-note-empty",
-      ".profile-spawn-empty",
-      ".agent-standing .agent-byte-counter",
+      ".agent-byte-counter",
       "[role='alert']",
       "[role='status']",
     ].join(",");
@@ -135,6 +128,38 @@ describe("Settings agents panel — sentence uniqueness", () => {
       if (!edit) throw new Error(`Edit button on ${name} did not render`);
       await act(async () => edit.click());
       await act(async () => undefined);
+    }
+
+    async function openAdvanced() {
+      const advanced = Array.from(
+        dom.container.querySelectorAll<HTMLButtonElement>(".edit-card button"),
+      ).find((button) => button.textContent === "Advanced");
+      if (!advanced) throw new Error("Advanced section did not render");
+      await act(async () => advanced.click());
+      await act(async () => undefined);
+    }
+
+    async function openStandingEditor() {
+      const edit = Array.from(
+        dom.container.querySelectorAll<HTMLButtonElement>("[data-settings-row] button"),
+      ).find((button) => button.textContent === "Edit");
+      if (!edit) throw new Error("standing instructions Edit row did not render");
+      await act(async () => edit.click());
+      await act(async () => undefined);
+      const box = dom.container.querySelector<HTMLTextAreaElement>(
+        '[aria-label="Standing instructions for every agent"]',
+      );
+      if (!box) throw new Error("standing instructions editor did not render");
+      return box;
+    }
+
+    /** An unrelated panel write for the cap scenarios: the first live move. */
+    async function tickMoveFirstRow() {
+      const down = dom.container.querySelector<HTMLButtonElement>(
+        '.agent-profile-row button[aria-label$=" down"]',
+      );
+      if (!down || down.disabled) throw new Error("live move button did not render");
+      await act(async () => down.click());
     }
 
     async function armAndOpen(reply: ProviderVocabulary | undefined) {
@@ -276,12 +301,14 @@ describe("Settings agents panel — sentence uniqueness", () => {
     await act(async () => undefined);
     await collectScenario("loading");
 
-    // 13. The off switch, with a note-less row.
+    // 13. Unticked profiles add no sentence: the old warning box is gone.
+    // Its absence is the assertion — the net collects nothing here.
     await renderAgentsPanel({
       profiles: [makeProfile({ note: "" }), makeProfile({ id: "x2", name: "Coder", note: "" })],
       standingInstructions: "",
     });
-    await collectScenario("off switch");
+    expect(dom.container.querySelector(".agent-profiles-off")).toBeNull();
+    await collectScenario("no warning box");
 
     // 14. A delete armed: the inline confirm's copy.
     await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
@@ -309,7 +336,7 @@ describe("Settings agents panel — sentence uniqueness", () => {
     });
     await collectScenario("discard armed");
 
-    // 15c. Older stored denials: the quiet line, not a control.
+    // 15c. Older stored denials: the quiet line under Advanced, not a control.
     await renderAgentsPanel({
       profiles: [
         makeProfile({
@@ -319,7 +346,15 @@ describe("Settings agents panel — sentence uniqueness", () => {
       standingInstructions: "",
     });
     await openEditorOn("Explorer");
+    await openAdvanced();
     await collectScenario("legacy denials");
+
+    // 15c2. Advanced open on an older daemon: the icon, effort and idle
+    // hints plus the auto-accept note.
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+    await openEditorOn("Explorer");
+    await openAdvanced();
+    await collectScenario("advanced open");
 
     // 15d. A save in flight: the honest exit while the write runs. The
     // write stays pending past the collect (the busy-lock test's shape) —
@@ -359,12 +394,9 @@ describe("Settings agents panel — sentence uniqueness", () => {
     await act(async () => undefined);
     await collectScenario("note cap refusal");
 
-    // 18. The standing-instructions cap refusal.
+    // 18. The standing-instructions cap refusal, from the row's editor.
     await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
-    const standingField = dom.container.querySelector<HTMLTextAreaElement>(
-      ".agent-standing textarea",
-    );
-    if (!standingField) throw new Error("standing instructions field did not render");
+    const standingField = await openStandingEditor();
     await typeText(standingField, "é".repeat(4200));
     await act(async () => agentsSectionButton("Save standing instructions").click());
     await act(async () => undefined);
@@ -404,7 +436,7 @@ describe("Settings agents panel — sentence uniqueness", () => {
         standingInstructions: "",
       },
     });
-    await tickCheckbox(rowTicks()[0]!, true);
+    await tickMoveFirstRow();
     await act(async () => undefined);
     await act(async () => undefined);
     await act(async () => createButton().click());
@@ -432,29 +464,10 @@ describe("Settings agents panel — sentence uniqueness", () => {
     await openForm();
     await collectScenario("catalog failed");
 
-    // The one declared duplicate: the tick note exists in the form and on
-    // the row — the same control in two places, so identical is right — and
-    // this assertion is what holds them equal, so an edit to either is
-    // loud instead of a silent parting.
-    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
-    await openForm();
-    const formAvailableNote = Array.from(
-      form().querySelectorAll<HTMLElement>(".agent-profile-tick-note"),
-    ).find((note) => note.textContent?.startsWith("Lets an agent start"));
-    const rowTickNote = dom.container.querySelector<HTMLElement>(
-      ".agent-profile-row .agent-profile-tick-note",
-    );
-    if (!formAvailableNote || !rowTickNote) throw new Error("tick notes did not render");
-    const normalize = (text: string) => text.replace(/\s+/g, " ").trim();
-    expect(normalize(formAvailableNote.textContent ?? "")).toBe(
-      normalize(rowTickNote.textContent ?? ""),
-    );
-    await collectScenario("tick note pin");
-
-    // 24. The shell header above the panel: the intro that now carries the
-    // panel's order sentence (the title stays out — labels are not sentences).
-    // Rendered through the surface so the net covers the sentence where users
-    // actually read it.
+    // 25. The shell header above the panel: the profiles page carries a
+    // title and no paragraph. Rendered through the surface so the net
+    // covers the title where users actually read it — and pins that no
+    // intro paragraph rides with it.
     vi.mocked(daemonStatus).mockResolvedValue(
       daemonStatusWith([
         "ping",
@@ -480,51 +493,26 @@ describe("Settings agents panel — sentence uniqueness", () => {
     await act(async () => undefined);
     const content = dom.container.querySelector("[data-settings-content]");
     if (!content) throw new Error("settings content did not render");
-    // The net holds sentences, not labels: the shell page title above the
-    // panel is pinned by the shell titles test, so only the intro (which
-    // carries the panel's order sentence) enters here.
-    for (const element of Array.from(
-      content.querySelectorAll<HTMLElement>(".settings-page-intro"),
-    )) {
-      const text = (element.textContent ?? "").replace(/\s+/g, " ").trim();
-      if (text === "" || seen.has(text)) continue;
-      seen.add(text);
-      scenarioNames.push("shell header");
-      sentences.push(text);
-    }
+    expect(content.querySelector(".settings-page-intro")).toBeNull();
+    expect(content.querySelector(".settings-page-title")?.textContent).toBe("Agent profiles");
     await act(async () => dom.root!.unmount());
     dom.root = undefined;
     dom.container.innerHTML = "";
 
     // The count is part of the net: a scenario that stops rendering its
     // sentence, or a new sentence nobody rendered here, moves this number.
-    // Fifty-four: the delegation section's one sentence on this panel (an
-    // older daemon's named absence — the switch itself is gated harder and
-    // only renders when the handshake advertises permission_delegation), the
-    // fifteen vocabulary sentences, the ACP suggestion
-    // and the in-flight ask, the load-failed and loading sentences, the
-    // off-switch pair and the no-note sentence, the delete-confirm copy,
-    // the editor's two hints (when the spawn prompt is sent, and that running
-    // agents keep what they started with), the thinking option's own hint,
-    // the one feature-list sentence (the provider answered and offered
-    // nothing; the read-only rows and their "saved but not delivered"
-    // sentence went with the D4 prune, and the ACP cold start renders a
-    // role=status ask that the in-flight ask below already collects), the
-    // three cap refusals (the per-tool add control went with the owner
-    // rule, and its sentence with it), the model/mode
+    // Forty: the delegation section's one sentence on this panel (an
+    // older daemon's named absence), the vocabulary sentences, the ACP
+    // suggestion and the in-flight ask, the load-failed and loading
+    // sentences, the delete-confirm copy, the effort field's own hint, the
+    // feature-list sentences, the three cap refusals, the model/mode
     // refusals, the two profile-cap sentences, the two catalog sentences,
-    // the idle-close field's own hint and the off toggle's note, the shell page
-    // intro (scenario 24 collects it through the surface; the title stays out), the tick notes (including the
-    // open-dialog clause on the row tick), the no-spawn-prompt sentence on
-    // rows without one, the discard check's sentence, the legacy-denials
-    // line, the save-in-flight sentence, the icon field's hint, the
-    // empty-list line, and the standing
-    // copy with its counter (whose numbers are tokenised, so every scenario
-    // renders it into one net entry), and the standing box's keep-it-short
-    // hint under its textarea. A new sentence that does not come
-    // through a scenario here moves this number; so does a sentence a
-    // scenario stopped rendering.
-    expect(sentences).toHaveLength(54);
+    // the idle-close and icon hints, the auto-accept and peer-restriction
+    // notes, the discard check's sentence, the legacy-denials line, the
+    // save-in-flight sentence, the empty-list line, and the standing
+    // refusal. A new sentence that does not come through a scenario here
+    // moves this number; so does a sentence a scenario stopped rendering.
+    expect(sentences).toHaveLength(40);
     for (let i = 0; i < sentences.length; i++) {
       for (let j = i + 1; j < sentences.length; j++) {
         const a = sentences[i]!;

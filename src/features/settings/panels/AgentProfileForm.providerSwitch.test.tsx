@@ -226,7 +226,7 @@ describe("Settings agents panel — new profile form: provider switch and querie
 
     const model = editor.querySelector<HTMLInputElement>('[aria-label="Model"]');
     const mode = editor.querySelector<HTMLInputElement>('[aria-label="Mode"]');
-    const thinking = editor.querySelector<HTMLInputElement>('[aria-label="Thinking option"]');
+    const thinking = editor.querySelector<HTMLInputElement>('[aria-label="Effort"]');
     if (!model || !mode || !thinking) throw new Error("the cleared fields did not render");
     expect(thinking.value).toBe("");
     await typeText(model, "claude-opus-4-6");
@@ -296,7 +296,7 @@ describe("Settings agents panel — new profile form: provider switch and querie
     };
     expect(field("Model").value).toBe("grok-4");
     expect(field("Mode").value).toBe("reflect");
-    expect(field("Thinking option").value).toBe("high");
+    expect(field("Effort").value).toBe("high");
 
     // A wrong pick: the new provider's own vocabulary is empty, not the old
     // provider's — but the stored feature key rides along untouched. It is not
@@ -308,7 +308,7 @@ describe("Settings agents panel — new profile form: provider switch and querie
     await typeText(providerSelect, "claude");
     expect(field("Model").value).toBe("");
     expect(field("Mode").value).toBe("");
-    expect(field("Thinking option").value).toBe("");
+    expect(field("Effort").value).toBe("");
 
     // Text typed under the wrong provider is dropped with that provider's
     // own fields; switching back restores what grok held.
@@ -316,7 +316,7 @@ describe("Settings agents panel — new profile form: provider switch and querie
     await typeText(providerSelect, "grok");
     expect(field("Model").value).toBe("grok-4");
     expect(field("Mode").value).toBe("reflect");
-    expect(field("Thinking option").value).toBe("high");
+    expect(field("Effort").value).toBe("high");
 
     const save = Array.from(editor.querySelectorAll<HTMLButtonElement>("button")).find(
       (candidate) => candidate.textContent === "Save",
@@ -328,7 +328,8 @@ describe("Settings agents panel — new profile form: provider switch and querie
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
     const sent = vi.mocked(agentProfilesSet).mock.calls[0]?.[0] as AgentProfilesDocument;
     // The round trip: switch away, type, switch back, save — the stored row
-    // is what goes out, stored features included.
-    expect(sent.profiles[0]).toEqual(stored);
+    // is what goes out, stored features included, beside the serving-
+    // provider key the new form writes.
+    expect(sent.profiles[0]).toEqual({ ...stored, modelProvider: null });
   });
 });
