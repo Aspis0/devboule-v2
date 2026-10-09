@@ -35,7 +35,6 @@ const proof = assembleCssProof([
   read("src/features/settings/diagnostics.css"),
   read("src/features/settings/devices.css"),
   read("src/features/oracle/oracle.css"),
-  read("src/features/settings/general.css"),
   read("src/features/settings/providers.css"),
   read("src/features/settings/profiles.css"),
   read("src/features/settings/projects.css"),

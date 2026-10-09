@@ -48,7 +48,6 @@ const bundlePaths = [
   "src/features/settings/diagnostics.css",
   "src/features/settings/devices.css",
   "src/features/oracle/oracle.css",
-  "src/features/settings/general.css",
   "src/features/settings/providers.css",
   "src/features/settings/profiles.css",
   "src/features/settings/projects.css",

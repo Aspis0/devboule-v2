@@ -431,7 +431,6 @@ describe("devices card geometry (real stylesheets, no app launch)", () => {
     for (const sheet of [
       "src/features/settings/providers.css",
       "src/features/settings/profiles.css",
-      "src/features/settings/general.css",
       "src/features/settings/diagnostics.css",
       "src/features/settings/projects.css",
     ]) {
@@ -468,8 +467,7 @@ describe("devices card geometry (real stylesheets, no app launch)", () => {
         ".provider-version",
       ],
       "src/features/settings/profiles.css": [],
-      "src/features/settings/general.css": [],
-      "src/features/settings/diagnostics.css": [".retention-limit-input", ".diagnostics-row dd"],
+      "src/features/settings/diagnostics.css": [".retention-limit-input"],
       "src/features/settings/projects.css": [],
     };
     let scanned = 0;

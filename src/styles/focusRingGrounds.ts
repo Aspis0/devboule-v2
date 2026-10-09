@@ -78,11 +78,6 @@ export const DIRECT_RING_GROUNDS: readonly DirectRingGround[] = [
     match: ".settings-add:focus-visible",
     ground: card,
   },
-  {
-    file: "src/features/settings/general.css",
-    match: ".machine-segment-option:focus-within",
-    ground: card,
-  },
   { file: "src/features/settings/providers.css", match: ".prov-chev:focus-visible", ground: card },
   {
     file: "src/features/settings/settings.css",

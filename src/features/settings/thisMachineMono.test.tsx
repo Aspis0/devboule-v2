@@ -32,7 +32,6 @@ import { setThemePreference } from "../../lib/theme";
 
 const SHEETS = [
   "settings.css",
-  "general.css",
   "providers.css",
   "profiles.css",
   "devices.css",

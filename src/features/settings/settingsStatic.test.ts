@@ -40,14 +40,6 @@ function settingsTsx(name: string): string {
   return readFileSync(resolve(import.meta.dirname, name), "utf8");
 }
 
-/** True when the sheet defines a rule for exactly this selector — a scoped
- * accommodation like `.card > .name:first-child` does not count. */
-function definesBareRule(css: string, selector: string): boolean {
-  const stripped = css.replace(/\/\*[\s\S]*?\*\//g, "");
-  const escaped = selector.replace(/[^a-z0-9]/gi, "\\$&");
-  return new RegExp(`(^|[,}])\\s*${escaped}\\s*\\{`).test(stripped);
-}
-
 /** Every selector in the sheet whose rule sets a monospace family, @-blocks
  * included. The same walker the computed suites use, so a responsive tweak
  * cannot smuggle a mono face past the allowlist below. */
@@ -114,27 +106,9 @@ describe("Settings static contracts", () => {
     for (const css of [profiles, diagnostics, projects, devices]) {
       expect(css.replace(/\/\*[\s\S]*?\*\//g, "")).not.toContain(".settings-subheading");
     }
-    // general.css may borrow the shell's label for its card heads, never
-    // re-declare it: a scoped spacing accommodation is not a definition.
-    const general = settingsCss("general.css");
-    expect(general).toContain(".settings-subheading");
-    expect(definesBareRule(general, ".settings-subheading")).toBe(false);
     const rule = /\.settings-subheading\s*\{([^}]*)\}/.exec(shell)?.[1] ?? "";
     expect(rule).toContain("font-size: 12px");
     expect(rule).toContain("font-weight: 500");
-  });
-
-  it("zeroes the card-head margins in the author rule, never relying on UA defaults", () => {
-    // N2: happy-dom ships no UA sheet, so no computed style can see the
-    // h3's margin-block-end — the guard asserts the author rule that
-    // zeroes it. One block head per card plus explicit zeroes is what
-    // makes the Appearance and Editing heads render identical spacing.
-    const general = settingsCss("general.css");
-    const body =
-      /\.machine-card\s*>\s*\.settings-subheading:first-child\s*\{([^}]*)\}/.exec(general)?.[1] ??
-      "";
-    expect(body, "the head accommodation rule is missing").not.toBe("");
-    expect(body).toMatch(/margin\s*:\s*0|margin-block-end\s*:\s*0/);
   });
 
   it("carries no styling ghost classes on the This-machine markup", () => {
@@ -167,12 +141,11 @@ describe("Settings static contracts", () => {
 
   it("carries mono only where the house allows it", () => {
     // F6: every settings sheet scanned, @-blocks included, against an
-    // explicit allowlist. general.css is not on it: no mono may ever be
+    // explicit allowlist. No mono may ever be
     // declared on a This-machine page. A new mono face anywhere else fails
     // here until its selector is declared — and justified — below.
     const sheets = [
       "settings.css",
-      "general.css",
       "providers.css",
       "profiles.css",
       "devices.css",
@@ -180,7 +153,8 @@ describe("Settings static contracts", () => {
     ] as const;
     const allowlist = new Map<string, readonly string[]>([
       ["settings.css", [".settings-card-meta", ".settings-card-value"]],
-      ["general.css", []],
+      ["rows.css", []],
+      ["settingsSwitch.css", []],
       [
         "providers.css",
         [

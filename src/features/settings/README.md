@@ -17,8 +17,8 @@ surface settings, Default send by local storage, and journal retention by
 tool-policy reads live in `providerStatus.ts`.
 
 Each page owns its stylesheet (`providers.css`, `profiles.css`, `devices.css`,
-`general.css` for the This-machine components, `diagnostics.css` which also
-carries the transcript-history section rendered on the Diagnostics page);
+`rows.css` for the shared row pattern, `settingsSwitch.css` for the switch,
+`diagnostics.css` for the retry pill, copy note and retention input);
 `settings.css` holds base tokens, the shell, and the shared card/stack
 primitives every page renders inside — later slices read it but do not edit
 it. The transcript-history rules live with the Diagnostics page, not with the
