@@ -56,7 +56,7 @@ export const SETTINGS_MENU: readonly SettingsMenuGroup[] = [
       {
         id: "shortcuts",
         label: "Shortcuts",
-        intro: "Keyboard shortcuts for working in the app.",
+        intro: "",
       },
       {
         id: "notifications",

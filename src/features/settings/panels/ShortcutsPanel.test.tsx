@@ -47,7 +47,7 @@ describe("ShortcutsPanel", () => {
 
   it("groups the rows under the five scopes, in order", async () => {
     await renderPanel();
-    const headings = Array.from(container.querySelectorAll("h3")).map(
+    const headings = Array.from(container.querySelectorAll(".settings-section-label")).map(
       (heading) => heading.textContent,
     );
     expect(headings).toEqual(["Tabs", "Composer", "Navigation", "Panel", "Browser"]);
