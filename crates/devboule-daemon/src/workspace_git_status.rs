@@ -38,7 +38,7 @@ fn status_of(root: &Path) -> WorkspaceGitStatus {
         Probe::NotInstalled => return missing_git(),
         Probe::InsideRepository => return caveat(INSIDE_A_REPOSITORY),
         // Not a directory (also: the folder vanished after the registry had
-        // cached it), a probe git did not answer, or git missing.
+        // cached it), or a probe git did not answer.
         Probe::Refused(message) => return unavailable(message),
     }
     let arguments = [
