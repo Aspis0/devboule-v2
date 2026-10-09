@@ -268,6 +268,108 @@ impl PeerLinks {
             .retain(|_, link| link.lease_count() > 0 || link.is_serving());
     }
 
+    /// Open one session's live stream on the host, waiting on its worker.
+    ///
+    /// The connection is the local app connection; relayed events go back to
+    /// it through the normal writer, so nothing a local handler owns is held
+    /// while the peer is talked to.
+    pub(crate) fn attach(
+        &self,
+        device_id: &str,
+        session_id: &str,
+        subscription_id: u64,
+        conn: Arc<ConnHandle>,
+    ) -> LinkAnswer {
+        let link = {
+            let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+            if inner.pending_reads >= MAX_PENDING_READS {
+                return LinkAnswer::Failed(
+                    RemoteHostState::Busy,
+                    busy_sentence(MAX_PENDING_READS, "reads"),
+                );
+            }
+            inner.pending_reads += 1;
+            inner.links.get(device_id).cloned()
+        };
+        let (answer_tx, answer_rx) = std::sync::mpsc::sync_channel(1);
+        let Some(link) = link else {
+            self.finish_read();
+            return LinkAnswer::Failed(RemoteHostState::Offline, offline_sentence().to_string());
+        };
+        if let Some(failure) = link.failure() {
+            self.finish_read();
+            return failure;
+        }
+        let Some(_permit) = link.try_read_permit() else {
+            self.finish_read();
+            return LinkAnswer::Failed(
+                RemoteHostState::Busy,
+                busy_sentence(1, "read in flight on this link"),
+            );
+        };
+        if !link.queue_attach(
+            link.generation(),
+            session_id.to_string(),
+            subscription_id,
+            conn,
+            answer_tx,
+        ) {
+            self.finish_read();
+            return LinkAnswer::Failed(RemoteHostState::Offline, offline_sentence().to_string());
+        }
+        let answer = answer_rx
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap_or_else(|_| {
+                LinkAnswer::Failed(RemoteHostState::Offline, offline_sentence().to_string())
+            });
+        self.finish_read();
+        answer
+    }
+
+    /// Close one session's live stream. A stream this daemon no longer has is
+    /// still an `Accepted`: the local subscription is gone either way.
+    pub(crate) fn detach(
+        &self,
+        device_id: &str,
+        session_id: &str,
+        subscription_id: u64,
+    ) -> LinkAnswer {
+        let link = {
+            let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+            if inner.pending_reads >= MAX_PENDING_READS {
+                return LinkAnswer::Accepted;
+            }
+            inner.pending_reads += 1;
+            inner.links.get(device_id).cloned()
+        };
+        let (answer_tx, answer_rx) = std::sync::mpsc::sync_channel(1);
+        let Some(link) = link else {
+            self.finish_read();
+            return LinkAnswer::Accepted;
+        };
+        let Some(_permit) = link.try_read_permit() else {
+            self.finish_read();
+            // The stream is closed locally even when the worker is busy; the
+            // peer's copy dies with the next transport.
+            link.remove_subscription(subscription_id);
+            return LinkAnswer::Accepted;
+        };
+        if !link.queue_detach(
+            link.generation(),
+            session_id.to_string(),
+            subscription_id,
+            answer_tx,
+        ) {
+            self.finish_read();
+            return LinkAnswer::Accepted;
+        }
+        let answer = answer_rx
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap_or(LinkAnswer::Accepted);
+        self.finish_read();
+        answer
+    }
+
     /// Read one list over the host's link, waiting on its worker.
     ///
     /// Called from a worker thread of the *local* connection, never from that

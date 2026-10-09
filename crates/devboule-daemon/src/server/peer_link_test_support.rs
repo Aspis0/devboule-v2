@@ -8,8 +8,9 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use devboule_protocol::{
-    Capability, ClientMessage, DaemonHello, DaemonMessage, Project, WireError, Workspace,
-    WorkspaceIsolation, PROTOCOL_MIN_VERSION, PROTOCOL_VERSION,
+    Capability, ClientMessage, DaemonHello, DaemonMessage, Project, SessionEvent,
+    SessionEventEnvelope, WireError, Workspace, WorkspaceIsolation, PROTOCOL_MIN_VERSION,
+    PROTOCOL_VERSION,
 };
 
 use crate::framing::Framed;
@@ -100,6 +101,26 @@ impl Responder {
 
     pub(crate) fn stop(&self) {
         let _ = self.stop.send(());
+    }
+
+    /// Queue one relayed session event for the serve loop to send on the
+    /// subscription the attach opened.
+    pub(crate) fn push_session_event(&self, subscription_id: u64, data: &str) {
+        self.pushes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(DaemonMessage::SubscriptionEvent {
+                subscription_id,
+                envelope: SessionEventEnvelope {
+                    session_id: "session-1".to_string(),
+                    generation: 1,
+                    transcript_seq: None,
+                    event: SessionEvent::Output {
+                        seq: 1,
+                        data: data.to_string(),
+                    },
+                },
+            });
     }
 
     /// Queue one workspace-change push for the serve loop to send.
@@ -307,6 +328,46 @@ fn serve(
             ClientMessage::Ping { id } => {
                 if knobs.answers_pings.load(Ordering::SeqCst) {
                     let _ = framed.send(&DaemonMessage::Pong { id, ts_ms: 1 });
+                }
+            }
+            ClientMessage::SessionAttach {
+                id,
+                subscription_id,
+                ..
+            } => {
+                if requests.send(message.clone()).is_err() {
+                    return;
+                }
+                if framed
+                    .send(&DaemonMessage::SessionAttached {
+                        id,
+                        subscription_id,
+                        resume: None,
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+                // One replayed event proves the relay; a test can push more.
+                let _ = framed.send(&DaemonMessage::SubscriptionEvent {
+                    subscription_id,
+                    envelope: SessionEventEnvelope {
+                        session_id: "session-1".to_string(),
+                        generation: 1,
+                        transcript_seq: None,
+                        event: SessionEvent::Output {
+                            seq: 1,
+                            data: "replayed".to_string(),
+                        },
+                    },
+                });
+            }
+            ClientMessage::SessionDetach { id, .. } => {
+                if requests.send(message.clone()).is_err() {
+                    return;
+                }
+                if framed.send(&DaemonMessage::Ok { id }).is_err() {
+                    return;
                 }
             }
             request => {

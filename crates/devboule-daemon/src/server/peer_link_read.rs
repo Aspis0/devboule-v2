@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use devboule_protocol::{caps, DaemonMessage, RemoteHostList, RemoteHostState};
+use devboule_protocol::{caps, ClientMessage, DaemonMessage, RemoteHostList, RemoteHostState};
 
 use super::peer_link::{offline_sentence, sentence_for, state_for, unsupported_sentence};
 use super::peer_link_state::{HostLink, LinkAnswer, LinkCommand};
@@ -29,7 +29,10 @@ pub(crate) fn serve_read(
         generation,
         list,
         answer,
-    } = command;
+    } = command
+    else {
+        return;
+    };
     // The row is re-read before every request, not only at dial time: the link
     // may have been up for hours, and a revoke is a decision the user just
     // took rather than a transport fact that shows up on its own.
@@ -103,14 +106,15 @@ fn wait_for_reply(
                 continue;
             }
         }
-        // A workspace push that lands mid-read is recorded and shown before
-        // the read's own answer is matched; it names no request, so it must
-        // never be mistaken for the reply.
+        // A push that lands mid-read is handled before the read's own answer
+        // is matched; it names no request, so it must never be mistaken for
+        // the reply.
         super::peer_link_worker::record_workspace_change(
             link,
             session.hello.protocol_version,
             &message,
         );
+        forward_subscription(link, &message);
         if reply_id(&message) != Some(request_id) {
             continue;
         }
@@ -125,6 +129,185 @@ fn wait_for_reply(
         };
     }
     LinkAnswer::Failed(RemoteHostState::Offline, offline_sentence().to_string())
+}
+
+/// Relay one subscription event if the frame is one. `false` for every other
+/// frame, so a caller can fall through to its own matching.
+fn forward_subscription(link: &HostLink, message: &DaemonMessage) -> bool {
+    let DaemonMessage::SubscriptionEvent {
+        subscription_id,
+        envelope,
+    } = message
+    else {
+        return false;
+    };
+    link.forward_event(*subscription_id, envelope);
+    true
+}
+
+/// Open one session's live stream on the far side and register the local
+/// subscription the events come back to.
+///
+/// The subscription is registered before the request leaves, so a replayed
+/// event that overtakes the attach reply is not lost; every refusal removes
+/// it again. The far side's session scope and the `sessions` capability are
+/// the trust floor: this daemon relays only what the peer's own `SessionAttach`
+/// answered, and it names no session of its own.
+pub(crate) fn serve_attach(
+    state: &Arc<ServerState>,
+    link: &HostLink,
+    session: &mut LinkSession,
+    command: LinkCommand,
+    request_id: u64,
+    read_deadline: Duration,
+) {
+    let LinkCommand::Attach {
+        generation,
+        session_id,
+        subscription_id,
+        conn,
+        answer,
+    } = command
+    else {
+        return;
+    };
+    if let Err(step) = peer_row(state, &link.device_id) {
+        let _ = answer.send(LinkAnswer::Failed(state_for(step), sentence_for(step)));
+        return;
+    }
+    if generation != link.generation() {
+        let _ = answer.send(LinkAnswer::Failed(
+            RemoteHostState::Offline,
+            offline_sentence().to_string(),
+        ));
+        return;
+    }
+    if !session
+        .hello
+        .capabilities
+        .iter()
+        .any(|agreed| agreed.as_str() == caps::SESSIONS)
+    {
+        let _ = answer.send(LinkAnswer::Failed(
+            RemoteHostState::Unsupported,
+            unsupported_sentence().to_string(),
+        ));
+        return;
+    }
+    link.register_subscription(subscription_id, conn, session_id.clone());
+    if session
+        .framed
+        .send(&ClientMessage::SessionAttach {
+            id: request_id,
+            session_id,
+            subscription_id,
+            from_cursor: None,
+        })
+        .is_err()
+    {
+        link.remove_subscription(subscription_id);
+        let _ = answer.send(LinkAnswer::Failed(
+            RemoteHostState::Offline,
+            offline_sentence().to_string(),
+        ));
+        return;
+    }
+    let deadline = Instant::now() + read_deadline;
+    while Instant::now() < deadline {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let Ok(message) = session.framed.recv_timeout(left) else {
+            break;
+        };
+        if let DaemonMessage::Pong { id, .. } = &message {
+            if *id >= PROBE_ID_BASE {
+                session.outstanding_since = None;
+                session.misses = 0;
+                continue;
+            }
+        }
+        super::peer_link_worker::record_workspace_change(
+            link,
+            session.hello.protocol_version,
+            &message,
+        );
+        if forward_subscription(link, &message) {
+            continue;
+        }
+        match message {
+            DaemonMessage::SessionAttached { id, .. } if id == request_id => {
+                let _ = answer.send(LinkAnswer::Accepted);
+                return;
+            }
+            DaemonMessage::Error(error) if error.id == Some(request_id) => {
+                link.remove_subscription(subscription_id);
+                let _ = answer.send(LinkAnswer::Refused(error));
+                return;
+            }
+            _ => {}
+        }
+    }
+    link.remove_subscription(subscription_id);
+    let _ = answer.send(LinkAnswer::Failed(
+        RemoteHostState::Offline,
+        offline_sentence().to_string(),
+    ));
+}
+
+/// Close one session's live stream. The local subscription goes first, so no
+/// event is relayed after the app asked to stop, and the peer's answer is
+/// advisory: a link that is going away still leaves the local close standing.
+pub(crate) fn serve_detach(
+    link: &HostLink,
+    session: &mut LinkSession,
+    command: LinkCommand,
+    request_id: u64,
+    read_deadline: Duration,
+) {
+    let LinkCommand::Detach {
+        generation,
+        session_id,
+        subscription_id,
+        answer,
+    } = command
+    else {
+        return;
+    };
+    link.remove_subscription(subscription_id);
+    if generation != link.generation()
+        || session
+            .framed
+            .send(&ClientMessage::SessionDetach {
+                id: request_id,
+                session_id,
+                subscription_id,
+            })
+            .is_err()
+    {
+        let _ = answer.send(LinkAnswer::Accepted);
+        return;
+    }
+    let deadline = Instant::now() + read_deadline;
+    while Instant::now() < deadline {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let Ok(message) = session.framed.recv_timeout(left) else {
+            break;
+        };
+        if let DaemonMessage::Pong { id, .. } = &message {
+            if *id >= PROBE_ID_BASE {
+                session.outstanding_since = None;
+                session.misses = 0;
+                continue;
+            }
+        }
+        forward_subscription(link, &message);
+        if matches!(message, DaemonMessage::Ok { .. } | DaemonMessage::Error(..))
+            && reply_id(&message) == Some(request_id)
+        {
+            let _ = answer.send(LinkAnswer::Accepted);
+            return;
+        }
+    }
+    let _ = answer.send(LinkAnswer::Accepted);
 }
 
 /// The request id a reply answers, or `None` for a frame that is not a reply.

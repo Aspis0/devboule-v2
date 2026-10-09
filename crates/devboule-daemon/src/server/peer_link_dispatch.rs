@@ -51,6 +51,84 @@ pub(super) fn dispatch_remote_host(
             state.peer_links.unwatch(conn.id, &device_id);
             DaemonMessage::Ok { id }
         }
+        ClientMessage::RemoteHostAttach {
+            id,
+            device_id,
+            session_id,
+            subscription_id,
+        } => {
+            // Local-only by construction (peer_policy denies it to every cap
+            // set); the check here is the belt to that suspenders.
+            if conn.conn_peer.is_some() {
+                return DaemonMessage::Error(
+                    WireError::new(
+                        ErrorCode::InvalidRequest,
+                        "a peer cannot open a stream through this daemon",
+                    )
+                    .with_id(id),
+                );
+            }
+            match state.peer_links.attach(
+                &device_id,
+                &session_id,
+                subscription_id,
+                Arc::clone(conn),
+            ) {
+                LinkAnswer::Accepted => DaemonMessage::Ok { id },
+                LinkAnswer::Refused(error) => DaemonMessage::Error(error.with_id(id)),
+                LinkAnswer::Failed(state, sentence) => DaemonMessage::Error(
+                    WireError::new(
+                        if state == RemoteHostState::Busy {
+                            ErrorCode::OperationConflict
+                        } else {
+                            ErrorCode::Io
+                        },
+                        sentence,
+                    )
+                    .with_id(id),
+                ),
+                LinkAnswer::Body(_) => DaemonMessage::Error(
+                    WireError::new(ErrorCode::Internal, "an attach is not a list read").with_id(id),
+                ),
+            }
+        }
+        ClientMessage::RemoteHostDetach {
+            id,
+            device_id,
+            session_id,
+            subscription_id,
+        } => {
+            if conn.conn_peer.is_some() {
+                return DaemonMessage::Error(
+                    WireError::new(
+                        ErrorCode::InvalidRequest,
+                        "a peer cannot close a stream through this daemon",
+                    )
+                    .with_id(id),
+                );
+            }
+            match state
+                .peer_links
+                .detach(&device_id, &session_id, subscription_id)
+            {
+                LinkAnswer::Accepted => DaemonMessage::Ok { id },
+                LinkAnswer::Refused(error) => DaemonMessage::Error(error.with_id(id)),
+                LinkAnswer::Failed(state, sentence) => DaemonMessage::Error(
+                    WireError::new(
+                        if state == RemoteHostState::Busy {
+                            ErrorCode::OperationConflict
+                        } else {
+                            ErrorCode::Io
+                        },
+                        sentence,
+                    )
+                    .with_id(id),
+                ),
+                LinkAnswer::Body(_) => DaemonMessage::Error(
+                    WireError::new(ErrorCode::Internal, "a detach is not a list read").with_id(id),
+                ),
+            }
+        }
         ClientMessage::RemoteHostList {
             id,
             device_id,
@@ -61,6 +139,9 @@ pub(super) fn dispatch_remote_host(
                 device_id,
                 body,
             },
+            LinkAnswer::Accepted => DaemonMessage::Error(
+                WireError::new(ErrorCode::Internal, "a list read is not an attach").with_id(id),
+            ),
             // The remote's own refusal: its code and reason travel back intact,
             // so the host's empty state says what the far machine said.
             LinkAnswer::Refused(error) => DaemonMessage::Error(error.with_id(id)),
@@ -91,5 +172,7 @@ pub(super) fn is_remote_host(request: &ClientMessage) -> bool {
         ClientMessage::RemoteHostWatch { .. }
             | ClientMessage::RemoteHostUnwatch { .. }
             | ClientMessage::RemoteHostList { .. }
+            | ClientMessage::RemoteHostAttach { .. }
+            | ClientMessage::RemoteHostDetach { .. }
     )
 }

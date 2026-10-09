@@ -59,6 +59,32 @@ impl ConnOut {
         self.cvar.notify_all();
     }
 
+    /// Queue a relayed remote-session event, dropping the oldest queued
+    /// relayed event when the connection already holds `cap` of them. A slow
+    /// reader must never make the link worker block, and the newest events are
+    /// the ones a transcript needs when it catches up; the snapshot the app
+    /// loads on reconnect is the backstop for what was dropped.
+    pub fn enqueue_relayed_event(&self, reply: DaemonMessage, cap: usize) {
+        let mut inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        let relayed = inner
+            .replies
+            .iter()
+            .filter(|message| matches!(message, DaemonMessage::RemoteHostEvent { .. }))
+            .count();
+        if relayed >= cap {
+            if let Some(index) = inner
+                .replies
+                .iter()
+                .position(|message| matches!(message, DaemonMessage::RemoteHostEvent { .. }))
+            {
+                inner.replies.remove(index);
+            }
+        }
+        inner.replies.push_back(reply);
+        inner.wake_generation = inner.wake_generation.wrapping_add(1);
+        self.cvar.notify_all();
+    }
+
     pub fn pull_replies(&self) -> VecDeque<DaemonMessage> {
         let mut inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
         std::mem::take(&mut inner.replies)

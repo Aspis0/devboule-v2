@@ -24,7 +24,7 @@ use devboule_protocol::{
 
 use super::peer_dial::{connect_and_handshake, DialStep};
 use super::peer_link::{sentence_for, state_for, LinkTuning};
-use super::peer_link_read::serve_read;
+use super::peer_link_read::{serve_attach, serve_detach, serve_read};
 use super::peer_link_state::{HostLink, LinkAnswer, LinkCommand};
 use super::ServerState;
 use crate::framing::Framed;
@@ -137,7 +137,17 @@ fn run(
         match queue.try_recv() {
             Ok(command) => {
                 reads += 1;
-                serve_read(&state, &link, open, command, reads, tuning.read_deadline);
+                match command {
+                    LinkCommand::Read { .. } => {
+                        serve_read(&state, &link, open, command, reads, tuning.read_deadline);
+                    }
+                    LinkCommand::Attach { .. } => {
+                        serve_attach(&state, &link, open, command, reads, tuning.read_deadline);
+                    }
+                    LinkCommand::Detach { .. } => {
+                        serve_detach(&link, open, command, reads, tuning.read_deadline);
+                    }
+                }
                 continue;
             }
             Err(mpsc::TryRecvError::Disconnected) => {
@@ -192,6 +202,13 @@ fn keepalive(
             }
         }
         record_workspace_change(link, session.hello.protocol_version, &message);
+        if let DaemonMessage::SubscriptionEvent {
+            subscription_id,
+            envelope,
+        } = &message
+        {
+            link.forward_event(*subscription_id, envelope);
+        }
     }
     if let Some(sent) = session.outstanding_since {
         if sent.elapsed() >= tuning.pong_timeout {
@@ -341,6 +358,9 @@ fn open(state: &Arc<ServerState>, link: &HostLink) -> Result<LinkSession, DialSt
     // A new transport re-baselines the host's counter: a host that restarted
     // resets its revision, and the old value must not outrank the new link's.
     link.clear_remote_revision();
+    // The old generation's subscriptions died with it: the app reattaches on
+    // the online edge, and a stale attach must never relay into this link.
+    link.clear_subscriptions();
     Ok(LinkSession {
         framed,
         hello: remote,
@@ -371,7 +391,9 @@ pub(super) fn refuse_reads_until(queue: &Receiver<LinkCommand>, step: DialStep, 
     loop {
         let left = wake.saturating_duration_since(Instant::now());
         match queue.recv_timeout(left) {
-            Ok(LinkCommand::Read { answer, .. }) => {
+            Ok(LinkCommand::Read { answer, .. })
+            | Ok(LinkCommand::Attach { answer, .. })
+            | Ok(LinkCommand::Detach { answer, .. }) => {
                 let _ = answer.send(LinkAnswer::Failed(state_for(step), sentence_for(step)));
             }
             Err(mpsc::RecvTimeoutError::Timeout) => return,

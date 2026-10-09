@@ -23,6 +23,8 @@ use crate::session::ConnHandle;
 pub(crate) enum LinkAnswer {
     /// The remote daemon's own body, carried through unchanged.
     Body(RemoteHostListBody),
+    /// The far side accepted an attach or a detach.
+    Accepted,
     /// The remote refused; its own error code and reason, intact.
     Refused(WireError),
     /// The link could not carry the read: the state the host row should show,
@@ -40,7 +42,35 @@ pub(crate) enum LinkCommand {
         list: RemoteHostList,
         answer: SyncSender<LinkAnswer>,
     },
+    /// Open one session's live stream on the far side. The connection is the
+    /// local app connection the relayed events go back to.
+    Attach {
+        generation: u64,
+        session_id: String,
+        subscription_id: u64,
+        conn: Arc<ConnHandle>,
+        answer: SyncSender<LinkAnswer>,
+    },
+    /// Close one session's live stream.
+    Detach {
+        generation: u64,
+        session_id: String,
+        subscription_id: u64,
+        answer: SyncSender<LinkAnswer>,
+    },
 }
+
+/// One live remote session stream: which local connection receives its events,
+/// and which remote session they belong to.
+struct Subscription {
+    conn: Arc<ConnHandle>,
+    session_id: String,
+}
+
+/// How many relayed events one local connection may hold before the oldest is
+/// dropped. Bounded so a stopped reader cannot grow this daemon without limit,
+/// and large enough that a transcript burst is not visibly thinned.
+pub(crate) const MAX_RELAYED_EVENTS_PER_CONNECTION: usize = 256;
 
 /// The largest workspace revision accepted as a link's baseline. A real
 /// counter advances once per project/workspace mutation, so this is far beyond
@@ -66,6 +96,11 @@ pub(crate) struct HostLink {
     /// so a second is refused rather than queued behind a link that may never
     /// come back.
     inflight: AtomicBool,
+    /// The live remote-session streams this link carries, by local
+    /// subscription id. Cleared when a new transport replaces the old one: the
+    /// app reattaches on the online edge, and a generation that is gone must
+    /// never relay into the one that replaced it.
+    subscriptions: Mutex<HashMap<u64, Subscription>>,
     /// The last status handed to the watchers, so an unchanged poll is not a
     /// flood: one change, one push. Compared before the coalescer, so an
     /// identical state is dropped rather than parked as a trailing duplicate.
@@ -97,6 +132,7 @@ impl HostLink {
             leases_changed: Condvar::new(),
             generation: AtomicU64::new(0),
             inflight: AtomicBool::new(false),
+            subscriptions: Mutex::new(HashMap::new()),
             published: Mutex::new(None),
             status_coalescer: Mutex::new(super::remote_status::StatusCoalescer::new(status_window)),
             remote_revision: Mutex::new(None),
@@ -299,6 +335,133 @@ impl HostLink {
                 .is_ok(),
             None => false,
         }
+    }
+
+    /// Queue one attach for this link's worker, against the generation the
+    /// caller read. `false` means nobody is holding the link any more.
+    pub(crate) fn queue_attach(
+        &self,
+        generation: u64,
+        session_id: String,
+        subscription_id: u64,
+        conn: Arc<ConnHandle>,
+        answer: SyncSender<LinkAnswer>,
+    ) -> bool {
+        let slot = self
+            .worker
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        match slot.as_ref() {
+            Some((_, commands)) => commands
+                .try_send(LinkCommand::Attach {
+                    generation,
+                    session_id,
+                    subscription_id,
+                    conn,
+                    answer,
+                })
+                .is_ok(),
+            None => false,
+        }
+    }
+
+    /// Queue one detach for this link's worker.
+    pub(crate) fn queue_detach(
+        &self,
+        generation: u64,
+        session_id: String,
+        subscription_id: u64,
+        answer: SyncSender<LinkAnswer>,
+    ) -> bool {
+        let slot = self
+            .worker
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        match slot.as_ref() {
+            Some((_, commands)) => commands
+                .try_send(LinkCommand::Detach {
+                    generation,
+                    session_id,
+                    subscription_id,
+                    answer,
+                })
+                .is_ok(),
+            None => false,
+        }
+    }
+
+    /// Register a live stream before its request leaves, so an event that
+    /// overtakes the attach reply is already addressed to a connection.
+    pub(crate) fn register_subscription(
+        &self,
+        subscription_id: u64,
+        conn: Arc<ConnHandle>,
+        session_id: String,
+    ) {
+        self.subscriptions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(subscription_id, Subscription { conn, session_id });
+    }
+
+    /// Drop one live stream. `false` means it was not registered (a detach
+    /// after a reconnect, or a second detach).
+    pub(crate) fn remove_subscription(&self, subscription_id: u64) -> bool {
+        self.subscriptions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&subscription_id)
+            .is_some()
+    }
+
+    /// Relay one event to the local connection that opened the stream. A
+    /// subscription that is gone (detached, or fenced by a reconnect) drops
+    /// the event: the app reloads the transcript snapshot on reattach.
+    pub(crate) fn forward_event(
+        &self,
+        subscription_id: u64,
+        envelope: &devboule_protocol::SessionEventEnvelope,
+    ) -> bool {
+        let conn = {
+            let subscriptions = self
+                .subscriptions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            match subscriptions.get(&subscription_id) {
+                Some(subscription) => Arc::clone(&subscription.conn),
+                None => return false,
+            }
+        };
+        let session_id = {
+            let subscriptions = self
+                .subscriptions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            match subscriptions.get(&subscription_id) {
+                Some(subscription) => subscription.session_id.clone(),
+                None => return false,
+            }
+        };
+        conn.outbound.enqueue_relayed_event(
+            DaemonMessage::RemoteHostEvent {
+                device_id: self.device_id.clone(),
+                session_id,
+                subscription_id,
+                envelope: envelope.clone(),
+            },
+            MAX_RELAYED_EVENTS_PER_CONNECTION,
+        );
+        true
+    }
+
+    /// Drop every live stream. Called when a new transport replaces the old
+    /// one (and when the link retires): the generation that carried them is
+    /// gone, and the app reattaches on the next online edge.
+    pub(crate) fn clear_subscriptions(&self) {
+        self.subscriptions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
     }
 
     /// Leave the queue behind, if it is still the one this worker installed.

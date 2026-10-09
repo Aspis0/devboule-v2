@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use devboule_protocol::{DaemonMessage, RemoteHostState, RemoteHostStatus, WorkspaceIsolation};
 
 use super::harness::Harness;
+use super::peer_link_test_support::eventually;
 
 /// A watch that joins a link already up is answered with the state the link is
 /// in now, and moves nothing: the lease that was there first is told nothing,
@@ -214,7 +215,203 @@ fn a_status_burst_delivers_one_immediate_and_one_trailing_value() {
     );
 }
 
-/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones
+/// One relayed event carries the host it came from, the remote session and
+/// the local subscription the app opened, in one frame the app can route
+/// without guessing: two machines may mint the same session id.
+#[test]
+fn an_attach_relays_session_events_with_the_host_and_subscription() {
+    let harness = Harness::start("peer-link-attach");
+    harness.watch();
+    harness.wait_online(&harness.conn);
+
+    let answer = harness
+        .links
+        .attach("b", "session-1", 7, Arc::clone(&harness.conn));
+    assert!(
+        matches!(answer, super::LinkAnswer::Accepted),
+        "the attach is accepted: {answer:?}"
+    );
+
+    // The replayed event the fake peer sends right after the attach.
+    let mut events = Vec::new();
+    eventually("the replayed event reaches the app", || {
+        events = harness
+            .conn
+            .outbound
+            .pull_replies()
+            .into_iter()
+            .filter_map(|reply| match reply {
+                DaemonMessage::RemoteHostEvent {
+                    device_id,
+                    session_id,
+                    subscription_id,
+                    envelope,
+                } => Some((device_id, session_id, subscription_id, envelope)),
+                _ => None,
+            })
+            .collect();
+        events
+            .iter()
+            .any(|(_, _, subscription_id, _)| *subscription_id == 7)
+    });
+    let (device_id, session_id, subscription_id, envelope) = &events[0];
+    assert_eq!(device_id, "b");
+    assert_eq!(session_id, "session-1");
+    assert_eq!(*subscription_id, 7);
+    match &envelope.event {
+        devboule_protocol::SessionEvent::Output { data, .. } => assert_eq!(data, "replayed"),
+        other => panic!("expected the replayed output, got {other:?}"),
+    }
+
+    // A later push on the same subscription relays too.
+    harness.responder.push_session_event(7, "later");
+    eventually("a pushed event relays", || {
+        harness
+            .conn
+            .outbound
+            .pull_replies()
+            .into_iter()
+            .any(|reply| {
+                matches!(
+                    reply,
+                    DaemonMessage::RemoteHostEvent {
+                        subscription_id: 7,
+                        ..
+                    }
+                )
+            })
+    });
+}
+
+/// A detach removes the local subscription first, so nothing is relayed after
+/// the app asked to stop.
+#[test]
+fn a_detach_stops_the_relay() {
+    let harness = Harness::start("peer-link-detach");
+    harness.watch();
+    harness.wait_online(&harness.conn);
+
+    let answer = harness
+        .links
+        .attach("b", "session-1", 7, Arc::clone(&harness.conn));
+    assert!(matches!(answer, super::LinkAnswer::Accepted));
+    eventually("the attach lands", || {
+        harness
+            .conn
+            .outbound
+            .pull_replies()
+            .into_iter()
+            .any(|reply| matches!(reply, DaemonMessage::RemoteHostEvent { .. }))
+    });
+
+    let answer = harness.links.detach("b", "session-1", 7);
+    assert!(matches!(answer, super::LinkAnswer::Accepted));
+    harness.responder.push_session_event(7, "after-detach");
+
+    let quiet = Instant::now() + Duration::from_millis(400);
+    while Instant::now() < quiet {
+        assert!(
+            !harness
+                .conn
+                .outbound
+                .pull_replies()
+                .into_iter()
+                .any(|reply| matches!(reply, DaemonMessage::RemoteHostEvent { .. })),
+            "an event after a detach must not be relayed"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A new transport fences the old generation's subscriptions: the app
+/// reattaches on the online edge, and a stale attach never relays into the
+/// link that replaced it.
+#[test]
+fn a_generation_change_drops_the_subscriptions() {
+    let link = super::HostLink::new("b".to_string(), Duration::from_secs(1), Duration::ZERO);
+    let conn = remote_conn_handle(3, "b");
+    let envelope = devboule_protocol::SessionEventEnvelope {
+        session_id: "session-1".to_string(),
+        generation: 1,
+        transcript_seq: None,
+        event: devboule_protocol::SessionEvent::Output {
+            seq: 1,
+            data: "x".to_string(),
+        },
+    };
+    link.register_subscription(7, Arc::clone(&conn), "session-1".to_string());
+    assert!(link.forward_event(7, &envelope));
+    link.clear_subscriptions();
+    assert!(
+        !link.forward_event(7, &envelope),
+        "a subscription cleared with its generation relays nothing"
+    );
+    assert!(conn.outbound.pull_replies().len() <= 1);
+}
+
+/// The relayed-event queue is bounded: a stopped reader keeps the newest
+/// events and drops the oldest, and the link worker never blocks.
+#[test]
+fn the_relayed_event_queue_drops_the_oldest_at_the_cap() {
+    let conn = crate::outbound::ConnOut::new();
+    let cap = crate::server::peer_link_state::MAX_RELAYED_EVENTS_PER_CONNECTION;
+    for index in 0..cap + 44 {
+        conn.enqueue_relayed_event(
+            DaemonMessage::RemoteHostEvent {
+                device_id: "b".to_string(),
+                session_id: "session-1".to_string(),
+                subscription_id: 7,
+                envelope: devboule_protocol::SessionEventEnvelope {
+                    session_id: "session-1".to_string(),
+                    generation: 1,
+                    transcript_seq: None,
+                    event: devboule_protocol::SessionEvent::Output {
+                        seq: index as u64,
+                        data: index.to_string(),
+                    },
+                },
+            },
+            cap,
+        );
+    }
+    let queued: Vec<_> = conn
+        .pull_replies()
+        .into_iter()
+        .filter_map(|reply| match reply {
+            DaemonMessage::RemoteHostEvent { envelope, .. } => Some(envelope),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(queued.len(), cap, "the queue holds exactly its cap");
+    match &queued[0].event {
+        devboule_protocol::SessionEvent::Output { data, .. } => {
+            assert_eq!(data, "44", "the oldest events were dropped first");
+        }
+        other => panic!("expected an output, got {other:?}"),
+    }
+}
+
+/// A revoked peer cannot be attached to: the row is re-read on the way in,
+/// exactly as it is before a read.
+#[test]
+fn an_attach_to_a_revoked_peer_is_refused() {
+    let harness = Harness::start("peer-link-attach-revoked");
+    harness.watch();
+    harness.wait_online(&harness.conn);
+    harness.state.peer_revoke("b", 7).expect("revoke");
+
+    let answer = harness
+        .links
+        .attach("b", "session-1", 7, Arc::clone(&harness.conn));
+    match answer {
+        super::LinkAnswer::Failed(state, _) => {
+            assert_eq!(state, RemoteHostState::NeedsPairing);
+        }
+        other => panic!("a revoked peer must refuse the attach, got {other:?}"),
+    }
+}
+
+/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones
 /// must continue it, a replay or a poisoned value moves nothing, and a new
 /// transport re-baselines.
 #[test]
