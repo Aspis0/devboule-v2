@@ -77,6 +77,11 @@ describe("TurnFooter", () => {
     expect(copy).toContain("stopped: length");
   });
 
+  it("names the disclosure for everything it can hold, not only tokens", async () => {
+    const container = await renderFooter(finished());
+    expect(container.querySelector("summary")?.getAttribute("aria-label")).toBe("Turn details");
+  });
+
   it("draws nothing for a normal end that carried no usage", async () => {
     const container = await renderFooter(finished({ usage: undefined }));
     expect(container.querySelector(".turn-footer")).toBeNull();

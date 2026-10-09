@@ -57,7 +57,7 @@ export function TurnFooter({
   return (
     <div className="turn-footer">
       <details className="turn-footer-detail">
-        <summary className="turn-footer-detail-trigger" aria-label="Turn token detail" />
+        <summary className="turn-footer-detail-trigger" aria-label="Turn details" />
         <div className="turn-footer-detail-copy">{detail}</div>
       </details>
     </div>
