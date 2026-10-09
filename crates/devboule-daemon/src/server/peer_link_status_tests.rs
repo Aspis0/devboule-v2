@@ -542,7 +542,82 @@ fn an_attach_to_a_revoked_peer_is_refused() {
     }
 }
 
-/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones
+/// The relayed queue never loses a state, a terminal exit or a permission
+/// card, and a bulk-transcript overflow is marked with one gap so the app can
+/// replay instead of missing chunks silently.
+#[test]
+fn an_overflow_marks_a_gap_and_keeps_every_important_event() {
+    fn envelope(event: devboule_protocol::SessionEvent) -> devboule_protocol::SessionEventEnvelope {
+        devboule_protocol::SessionEventEnvelope {
+            session_id: "session-1".to_string(),
+            generation: 1,
+            transcript_seq: None,
+            event,
+        }
+    }
+    fn relayed(conn: &Arc<crate::session::ConnHandle>) -> Vec<DaemonMessage> {
+        conn.outbound
+            .pull_replies()
+            .into_iter()
+            .filter(|reply| {
+                matches!(
+                    reply,
+                    DaemonMessage::RemoteHostEvent { .. } | DaemonMessage::RemoteHostGap { .. }
+                )
+            })
+            .collect()
+    }
+
+    let cap = crate::server::peer_link_state::MAX_RELAYED_EVENTS_PER_CONNECTION;
+    let link = super::HostLink::new("b".to_string(), Duration::from_secs(1), Duration::ZERO);
+    let conn = remote_conn_handle(3, "b");
+    link.register_subscription(7, Arc::clone(&conn), "session-1".to_string());
+
+    for index in 0..cap + 44 {
+        link.forward_event(
+            7,
+            &envelope(devboule_protocol::SessionEvent::Output {
+                seq: index as u64,
+                data: index.to_string(),
+            }),
+        );
+    }
+    let overflow = relayed(&conn);
+    let gaps = overflow
+        .iter()
+        .filter(|reply| matches!(reply, DaemonMessage::RemoteHostGap { .. }))
+        .count();
+    assert_eq!(gaps, 1, "one overflow sends one gap marker");
+    let kept = overflow
+        .iter()
+        .filter(|reply| matches!(reply, DaemonMessage::RemoteHostEvent { .. }))
+        .count();
+    assert!(
+        kept <= cap,
+        "the queue stays bounded by its cap for bulk events: {kept}"
+    );
+
+    // Important events are never dropped, even past the cap.
+    for _ in 0..cap + 10 {
+        link.forward_event(7, &envelope(devboule_protocol::SessionEvent::Detached));
+    }
+    let important = relayed(&conn)
+        .into_iter()
+        .filter(|reply| match reply {
+            DaemonMessage::RemoteHostEvent { envelope, .. } => {
+                matches!(envelope.event, devboule_protocol::SessionEvent::Detached)
+            }
+            _ => false,
+        })
+        .count();
+    assert_eq!(
+        important,
+        cap + 10,
+        "a state event is never dropped by the bounded queue"
+    );
+}
+
+/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones
 /// must continue it, a replay or a poisoned value moves nothing, and a new
 /// transport re-baselines.
 #[test]

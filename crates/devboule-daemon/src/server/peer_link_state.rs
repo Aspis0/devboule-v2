@@ -101,6 +101,9 @@ pub(crate) struct HostLink {
     /// app reattaches on the online edge, and a generation that is gone must
     /// never relay into the one that replaced it.
     subscriptions: Mutex<HashMap<u64, Subscription>>,
+    /// Streams already told about a drop, so one overflow sends one gap
+    /// marker; a re-attach (a fresh subscription) clears the mark.
+    gapped: Mutex<std::collections::HashSet<u64>>,
     /// Peer detaches that could not be sent the moment the app asked (the
     /// link was serving a read). The worker drains them at its next idle
     /// turn, so the host stops streaming instead of being left running by a
@@ -138,6 +141,7 @@ impl HostLink {
             generation: AtomicU64::new(0),
             inflight: AtomicBool::new(false),
             subscriptions: Mutex::new(HashMap::new()),
+            gapped: Mutex::new(std::collections::HashSet::new()),
             deferred_detaches: Mutex::new(Vec::new()),
             published: Mutex::new(None),
             status_coalescer: Mutex::new(super::remote_status::StatusCoalescer::new(status_window)),
@@ -404,6 +408,10 @@ impl HostLink {
         conn: Arc<ConnHandle>,
         session_id: String,
     ) {
+        self.gapped
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&subscription_id);
         self.subscriptions
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -413,6 +421,10 @@ impl HostLink {
     /// Drop one live stream. `false` means it was not registered (a detach
     /// after a reconnect, or a second detach).
     pub(crate) fn remove_subscription(&self, subscription_id: u64) -> bool {
+        self.gapped
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&subscription_id);
         self.subscriptions
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -448,16 +460,35 @@ impl HostLink {
                 None => return false,
             }
         };
-        conn.outbound.enqueue_relayed_event(
+        let dropped = conn.outbound.enqueue_relayed_event(
             DaemonMessage::RemoteHostEvent {
                 device_id: self.device_id.clone(),
-                session_id,
+                session_id: session_id.clone(),
                 subscription_id,
                 envelope: envelope.clone(),
             },
             MAX_RELAYED_EVENTS_PER_CONNECTION,
         );
+        if dropped && self.mark_gapped(subscription_id) {
+            conn.outbound.enqueue_relayed_event(
+                DaemonMessage::RemoteHostGap {
+                    device_id: self.device_id.clone(),
+                    session_id,
+                    subscription_id,
+                },
+                MAX_RELAYED_EVENTS_PER_CONNECTION,
+            );
+        }
         true
+    }
+
+    /// Whether this overflow is the first for the stream; `true` means the
+    /// caller should send the one gap marker.
+    fn mark_gapped(&self, subscription_id: u64) -> bool {
+        self.gapped
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(subscription_id)
     }
 
     /// Drop every live stream. Called when a new transport replaces the old

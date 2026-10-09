@@ -14,7 +14,7 @@ use tauri::State;
 
 use devboule_daemon::DaemonClient;
 use devboule_protocol::{
-    ErrorCode, RemoteHostList, RemoteHostListBody, RemoteHostStatus, RemoteRelayedEvent,
+    ErrorCode, RemoteHostList, RemoteHostListBody, RemoteHostStatus, RemoteRelayMessage,
 };
 
 use super::blocking::off_main_thread;
@@ -75,11 +75,11 @@ pub async fn remote_session_attach(
     device_id: String,
     session_id: String,
     subscription_id: u64,
-    ch: Channel<RemoteRelayedEvent>,
+    ch: Channel<RemoteRelayMessage>,
 ) -> Result<(), CommandError> {
     let client = require_client(&bridge)?;
-    let sink = Arc::new(move |event: RemoteRelayedEvent| {
-        let _ = ch.send(event);
+    let sink = Arc::new(move |message: RemoteRelayMessage| {
+        let _ = ch.send(message);
     });
     client.on_remote_host_event(sink);
     off_main_thread(move || client.remote_host_attach(&device_id, &session_id, subscription_id))

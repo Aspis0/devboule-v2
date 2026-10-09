@@ -4,18 +4,18 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { remoteHostList, remoteSessionAttach, remoteSessionDetach } from "../../lib/tauri";
-import type { RemoteRelayedEvent, Session } from "../../types/ipc";
+import type { RemoteRelayMessage, Session } from "../../types/ipc";
 import { RemoteWorkspaceSurface } from "./RemoteWorkspaceSurface";
 
-const mockEventHandlers: ((event: RemoteRelayedEvent) => void)[] = [];
+const mockEventHandlers: ((message: RemoteRelayMessage) => void)[] = [];
 
 vi.mock("../../lib/tauri", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/tauri")>()),
   remoteHostList: vi.fn(),
   remoteSessionAttach: vi.fn(),
   remoteSessionDetach: vi.fn(),
-  createRemoteEventChannel: vi.fn((onEvent: (event: RemoteRelayedEvent) => void) => {
-    mockEventHandlers.push(onEvent);
+  createRemoteEventChannel: vi.fn((onMessage: (message: RemoteRelayMessage) => void) => {
+    mockEventHandlers.push(onMessage);
     return {} as never;
   }),
 }));
@@ -56,8 +56,8 @@ describe("the remote workspace surface", () => {
     await flush();
   }
 
-  function emit(event: RemoteRelayedEvent): void {
-    for (const handler of mockEventHandlers) handler(event);
+  function emit(message: RemoteRelayMessage): void {
+    for (const handler of mockEventHandlers) handler(message);
   }
 
   beforeEach(() => {
@@ -95,6 +95,7 @@ describe("the remote workspace surface", () => {
 
     await act(async () => {
       emit({
+        kind: "event",
         deviceId: "device-one",
         sessionId: "session-one",
         subscriptionId: 1,
@@ -107,6 +108,60 @@ describe("the remote workspace surface", () => {
     });
     await flush();
     expect(container.textContent).toContain("hello remote");
+  });
+
+  it("replays a gapped stream on a fresh subscription", async () => {
+    await render(true);
+    const chip = [...container.querySelectorAll<HTMLButtonElement>("[role='tab']")][0];
+    await act(async () => {
+      chip?.click();
+    });
+    await flush();
+    await act(async () => {
+      emit({
+        kind: "event",
+        deviceId: "device-one",
+        sessionId: "session-one",
+        subscriptionId: 1,
+        envelope: {
+          sessionId: "session-one",
+          generation: 1,
+          event: { type: "output", seq: 1, data: "before the gap" },
+        },
+      });
+    });
+    await flush();
+    expect(container.textContent).toContain("before the gap");
+
+    await act(async () => {
+      emit({
+        kind: "gap",
+        deviceId: "device-one",
+        sessionId: "session-one",
+        subscriptionId: 1,
+      });
+    });
+    await flush();
+    expect(remoteSessionDetach).toHaveBeenCalledWith("device-one", "session-one", 1);
+    expect(remoteSessionAttach).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(remoteSessionAttach).mock.calls.at(-1)?.[2]).toBe(2);
+    expect(container.textContent).not.toContain("before the gap");
+
+    await act(async () => {
+      emit({
+        kind: "event",
+        deviceId: "device-one",
+        sessionId: "session-one",
+        subscriptionId: 2,
+        envelope: {
+          sessionId: "session-one",
+          generation: 1,
+          event: { type: "output", seq: 2, data: "replayed after the gap" },
+        },
+      });
+    });
+    await flush();
+    expect(container.textContent).toContain("replayed after the gap");
   });
 
   it("shows one short offline state and reattaches when the host returns", async () => {
@@ -128,6 +183,7 @@ describe("the remote workspace surface", () => {
 
     await act(async () => {
       emit({
+        kind: "event",
         deviceId: "device-one",
         sessionId: "session-one",
         subscriptionId: 2,

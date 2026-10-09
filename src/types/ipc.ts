@@ -2522,6 +2522,21 @@ export interface RemoteRelayedEvent {
   };
 }
 
+/**
+ * One relayed stream that lost bulk events to its bounded queue: the app
+ * closes this subscription and re-attaches, which replays the transcript.
+ * States, terminal exits and permission cards are never dropped.
+ */
+export interface RemoteHostGap {
+  deviceId: string;
+  sessionId: string;
+  subscriptionId: number;
+}
+
+export type RemoteRelayMessage =
+  | ({ kind: "event" } & RemoteRelayedEvent)
+  | ({ kind: "gap" } & RemoteHostGap);
+
 export interface RemoteHostStatus {
   deviceId: string;
   state: RemoteHostState;

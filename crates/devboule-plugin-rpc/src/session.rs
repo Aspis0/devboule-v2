@@ -355,8 +355,10 @@ impl PluginSession {
                         // The inventory push answers no request either: it is
                         // a broadcast on a peer link, never a plugin reply.
                         | DaemonMessage::HostWorkspaceChanged { .. }
-                        // A relayed remote-session event is a broadcast too.
+                        // A relayed remote-session event is a broadcast too,
+                        // gap marker included.
                         | DaemonMessage::RemoteHostEvent { .. }
+                        | DaemonMessage::RemoteHostGap { .. }
                         | DaemonMessage::BrowserExecuteRequest(_) => None,
                     };
                     if message_id == Some(id) {

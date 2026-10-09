@@ -2232,6 +2232,14 @@ pub enum DaemonMessage {
         subscription_id: u64,
         envelope: SessionEventEnvelope,
     },
+    /// The relayed stream lost bulk events to its bounded queue. The app
+    /// closes the subscription and attaches again, which replays the
+    /// transcript; a gap is never papered over with a silent drop.
+    RemoteHostGap {
+        device_id: String,
+        session_id: String,
+        subscription_id: u64,
+    },
     /// Everything the Devices panel needs in one reply, already projected for
     /// the connection's role: a local client sees the full rows, a remote peer
     /// sees a subset (`devboule-daemon/src/server.rs`).

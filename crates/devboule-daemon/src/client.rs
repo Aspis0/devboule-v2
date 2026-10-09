@@ -16,11 +16,12 @@ use devboule_protocol::{
     ClientHello, ClientMessage, Cursor, DaemonHello, DaemonMessage, DaemonStatusBody, ErrorCode,
     JournalRetention, JournalUsage, OwnerId, PairingSecret, PeerRow, PermissionOutcome,
     Persistence, Project, PromptAttachment, ProviderInfo, RemoteHostList, RemoteHostListBody,
-    RemoteHostStatus, RemoteRelayedEvent, ResumeResult, RetentionPatch, Session, SessionEvent,
-    SessionEventEnvelope, SessionKind, SessionResumeInfo, SessionResumeOutcome,
-    SessionStateSnapshot, SessionTask, StoredAttachment, SubscriptionId, WireError, Workspace,
-    WorkspaceDirectory, WorkspaceFileContent, WorkspaceFileMutation, WorkspaceFilePreview,
-    WorkspaceGitFileDiff, WorkspaceGitLog, WorkspaceGitStatus, WorkspaceIsolation,
+    RemoteHostStatus, RemoteRelayMessage, RemoteRelayedEvent, ResumeResult, RetentionPatch,
+    Session, SessionEvent, SessionEventEnvelope, SessionKind, SessionResumeInfo,
+    SessionResumeOutcome, SessionStateSnapshot, SessionTask, StoredAttachment, SubscriptionId,
+    WireError, Workspace, WorkspaceDirectory, WorkspaceFileContent, WorkspaceFileMutation,
+    WorkspaceFilePreview, WorkspaceGitFileDiff, WorkspaceGitLog, WorkspaceGitStatus,
+    WorkspaceIsolation,
 };
 
 use crate::diagnostics::DiagnosticsReport;
@@ -144,7 +145,7 @@ pub type RemoteHostStatusHandler = Arc<dyn Fn(RemoteHostStatus) + Send + Sync>;
 /// One relayed remote-session event, handed to the surface that opened the
 /// stream. One slot for the process: the event carries its host and
 /// subscription, so the surface multiplexes.
-pub type RemoteHostEventHandler = Arc<dyn Fn(RemoteRelayedEvent) + Send + Sync>;
+pub type RemoteHostEventHandler = Arc<dyn Fn(RemoteRelayMessage) + Send + Sync>;
 
 struct PendingSubscription {
     subscription_id: SubscriptionId,
@@ -2935,12 +2936,34 @@ fn client_read_loop(inner: Arc<ClientInner>) {
                         .unwrap_or_else(|err| err.into_inner())
                         .clone();
                     if let Some(handler) = handler {
-                        handler(RemoteRelayedEvent {
+                        handler(RemoteRelayMessage::Event(Box::new(RemoteRelayedEvent {
                             device_id: device_id.clone(),
                             session_id: session_id.clone(),
                             subscription_id: *subscription_id,
                             envelope: envelope.clone(),
-                        });
+                        })));
+                    }
+                    continue;
+                }
+                // The stream lost bulk events: the app replays by closing
+                // this subscription and attaching again.
+                if let DaemonMessage::RemoteHostGap {
+                    device_id,
+                    session_id,
+                    subscription_id,
+                } = &message
+                {
+                    let handler = inner
+                        .remote_host_event_handler
+                        .lock()
+                        .unwrap_or_else(|err| err.into_inner())
+                        .clone();
+                    if let Some(handler) = handler {
+                        handler(RemoteRelayMessage::Gap(devboule_protocol::RemoteHostGap {
+                            device_id: device_id.clone(),
+                            session_id: session_id.clone(),
+                            subscription_id: *subscription_id,
+                        }));
                     }
                     continue;
                 }
@@ -3116,8 +3139,10 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         // the link's own reader decides what to do with it.
         | DaemonMessage::HostWorkspaceChanged { .. }
         // The relayed remote-session event answers no local request either:
-        // the connection's remote-attach subscription carries it.
+        // the connection's remote-attach subscription carries it, and the
+        // gap marker rides the same subscription.
         | DaemonMessage::RemoteHostEvent { .. }
+        | DaemonMessage::RemoteHostGap { .. }
         // A command for the browser host answers no request either; the
         // reader queues it for the host before this match runs.
         | DaemonMessage::BrowserExecuteRequest(_) => None,

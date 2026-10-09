@@ -774,6 +774,23 @@ pub struct FinishArtifact {
 /// payload the frontend already parses.
 // `PartialEq` without `Eq`: `AgentFinished` carries `TurnUsage`, whose
 // `cost_usd` is a float.
+impl SessionEvent {
+    /// Bulk transcript: words whose loss can be repaired by replaying the
+    /// stream, as opposed to a state, a status, a terminal exit or a
+    /// permission card, which must never be dropped from a bounded relay
+    /// queue. The line between the two is what the relay's gap marker means.
+    pub fn is_bulk_transcript(&self) -> bool {
+        matches!(
+            self,
+            Self::Output { .. }
+                | Self::AgentMessage { .. }
+                | Self::AgentUserMessage { .. }
+                | Self::AgentStderr { .. }
+                | Self::AgentThought { .. }
+        )
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(
     tag = "type",

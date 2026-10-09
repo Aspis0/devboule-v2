@@ -6,7 +6,7 @@ import {
   remoteSessionDetach,
   type RemoteEventChannel,
 } from "../../lib/tauri";
-import type { RemoteRelayedEvent, Session, SessionEvent } from "../../types/ipc";
+import type { RemoteRelayMessage, Session, SessionEvent } from "../../types/ipc";
 
 interface RemoteWorkspaceSurfaceProps {
   deviceId: string;
@@ -46,6 +46,10 @@ export function RemoteWorkspaceSurface({
   const [openSessionId, setOpenSessionId] = useState<string | null>(null);
   const [lines, setLines] = useState<readonly string[]>([]);
   const [streamState, setStreamState] = useState<"idle" | "streaming" | "offline">("idle");
+  // A gap marker (the relay dropped bulk events) closes the stream and
+  // re-attaches with a fresh subscription, which replays the transcript; the
+  // counter is what makes the attach effect run again for the same session.
+  const [resyncNonce, setResyncNonce] = useState(0);
   const subscriptionRef = useRef(0);
   const openRef = useRef<string | null>(null);
 
@@ -89,16 +93,24 @@ export function RemoteWorkspaceSurface({
     const subscriptionId = subscriptionRef.current;
     setLines([]);
     setStreamState("streaming");
-    const channel: RemoteEventChannel = createRemoteEventChannel((event: RemoteRelayedEvent) => {
-      if (event.deviceId !== deviceId || event.sessionId !== openSessionId) return;
-      if (event.subscriptionId !== subscriptionId) return;
-      const line = lineOf(event.envelope.event);
+    const channel: RemoteEventChannel = createRemoteEventChannel((message: RemoteRelayMessage) => {
+      if (message.deviceId !== deviceId || message.sessionId !== openSessionId) return;
+      if (message.subscriptionId !== subscriptionId) return;
+      if (message.kind === "gap") {
+        // The relay lost bulk events. Close this subscription and re-attach:
+        // the host replays the transcript, so nothing stays silently missing.
+        void remoteSessionDetach(deviceId, openSessionId, subscriptionId).catch(() => undefined);
+        setLines([]);
+        setResyncNonce((value) => value + 1);
+        return;
+      }
+      const line = lineOf(message.envelope.event);
       if (line !== null) setLines((current) => [...current, line]);
     });
     void remoteSessionAttach(deviceId, openSessionId, subscriptionId, channel).catch(() => {
       setStreamState("offline");
     });
-  }, [deviceId, hostOnline, openSessionId]);
+  }, [deviceId, hostOnline, openSessionId, resyncNonce]);
 
   // Give the stream back when the surface leaves.
   useEffect(

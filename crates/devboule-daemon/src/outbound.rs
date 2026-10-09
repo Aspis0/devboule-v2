@@ -59,30 +59,36 @@ impl ConnOut {
         self.cvar.notify_all();
     }
 
-    /// Queue a relayed remote-session event, dropping the oldest queued
-    /// relayed event when the connection already holds `cap` of them. A slow
-    /// reader must never make the link worker block, and the newest events are
-    /// the ones a transcript needs when it catches up; the snapshot the app
-    /// loads on reconnect is the backstop for what was dropped.
-    pub fn enqueue_relayed_event(&self, reply: DaemonMessage, cap: usize) {
+    /// Queue a relayed remote-session event. At the cap the oldest *bulk
+    /// transcript* event goes first — a state, a status, a terminal exit or a
+    /// permission card is never dropped, even when that lets the queue exceed
+    /// the cap by their count. Returns whether a bulk event was dropped, which
+    /// the caller turns into a gap marker so the app replays instead of
+    /// silently missing chunks. A slow reader never makes the link worker
+    /// block.
+    pub fn enqueue_relayed_event(&self, reply: DaemonMessage, cap: usize) -> bool {
         let mut inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
         let relayed = inner
             .replies
             .iter()
             .filter(|message| matches!(message, DaemonMessage::RemoteHostEvent { .. }))
             .count();
+        let mut dropped = false;
         if relayed >= cap {
-            if let Some(index) = inner
-                .replies
-                .iter()
-                .position(|message| matches!(message, DaemonMessage::RemoteHostEvent { .. }))
-            {
+            if let Some(index) = inner.replies.iter().position(|message| match message {
+                DaemonMessage::RemoteHostEvent { envelope, .. } => {
+                    envelope.event.is_bulk_transcript()
+                }
+                _ => false,
+            }) {
                 inner.replies.remove(index);
+                dropped = true;
             }
         }
         inner.replies.push_back(reply);
         inner.wake_generation = inner.wake_generation.wrapping_add(1);
         self.cvar.notify_all();
+        dropped
     }
 
     pub fn pull_replies(&self) -> VecDeque<DaemonMessage> {

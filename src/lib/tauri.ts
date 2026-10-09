@@ -33,7 +33,7 @@ import type {
   RemoteHostList,
   RemoteHostListBody,
   RemoteHostStatus,
-  RemoteRelayedEvent,
+  RemoteRelayMessage,
   AttachmentReference,
   ResumeResult,
   SavedLogin,
@@ -742,7 +742,7 @@ export type BrowserChannel = Channel<BrowserUpdate>;
 export type SessionChannel = Channel<SessionAttachMessage>;
 export type SessionStateChannel = Channel<SessionStateSnapshot[]>;
 export type RemoteHostStatusChannel = Channel<RemoteHostStatus>;
-export type RemoteEventChannel = Channel<RemoteRelayedEvent>;
+export type RemoteEventChannel = Channel<RemoteRelayMessage>;
 
 export function createSessionChannel(
   onEvent?: (event: SessionAttachMessage) => void,
@@ -763,9 +763,9 @@ export function createRemoteHostStatusChannel(
 }
 
 export function createRemoteEventChannel(
-  onEvent?: (event: RemoteRelayedEvent) => void,
+  onMessage?: (message: RemoteRelayMessage) => void,
 ): RemoteEventChannel {
-  return new Channel<RemoteRelayedEvent>(onEvent ?? (() => undefined));
+  return new Channel<RemoteRelayMessage>(onMessage ?? (() => undefined));
 }
 
 export function invokeTyped<K extends CommandName>(

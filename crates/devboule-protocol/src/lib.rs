@@ -144,7 +144,8 @@ pub use messages::{
 pub use plugin::WorkspaceRootBody;
 pub use project::{Project, Workspace, WorkspaceIsolation};
 pub use remote_host::{
-    RemoteHostList, RemoteHostListBody, RemoteHostState, RemoteHostStatus, RemoteRelayedEvent,
+    RemoteHostGap, RemoteHostList, RemoteHostListBody, RemoteHostState, RemoteHostStatus,
+    RemoteRelayMessage, RemoteRelayedEvent,
 };
 pub use resume::{SessionResumeInfo, SessionResumeOutcome, SessionResumeReason, SessionResumeTail};
 pub use session::{

@@ -133,6 +133,30 @@ pub struct RemoteRelayedEvent {
     pub envelope: crate::SessionEventEnvelope,
 }
 
+/// One relayed stream that lost bulk events to its bounded queue. The app
+/// resyncs by closing this subscription and attaching again — the host
+/// replays the transcript — so a slow reader gets a marked gap and a replay
+/// instead of silently missing chunks. Every other kind of event is never
+/// dropped, so this marker only ever stands for lost transcript bulk.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteHostGap {
+    pub device_id: String,
+    pub session_id: String,
+    pub subscription_id: u64,
+}
+
+/// What one remote stream sends the app: an event, or the marker that bulk
+/// events were dropped and the stream must be replayed.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RemoteRelayMessage {
+    /// Boxed: an envelope is far larger than a gap marker, and the union
+    /// travels per event.
+    Event(Box<RemoteRelayedEvent>),
+    Gap(RemoteHostGap),
+}
+
 /// One host's state change, pushed to the connections that watch that host.
 /// Camel-cased like every other frame the app reads.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
