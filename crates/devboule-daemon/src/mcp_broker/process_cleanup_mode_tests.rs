@@ -50,7 +50,10 @@ fn registration() -> RegisteredSession {
     }
 }
 
-fn live_session(state: &Arc<ServerState>, mode: &str) -> Arc<crate::session::SessionRuntime> {
+pub(super) fn live_session(
+    state: &Arc<ServerState>,
+    mode: &str,
+) -> Arc<crate::session::SessionRuntime> {
     let runtime = crate::session::insert_test_live_agent_with_kind(
         &state.sessions,
         SESSION,
@@ -173,34 +176,46 @@ fn member_pair() -> (std::process::Child, u32) {
 /// Both pids enter the session's own proof: the job's list on Windows, the
 /// group it leads on unix.
 fn prove_members(state: &Arc<ServerState>, root_pid: u32, member_pid: u32) {
+    #[cfg(windows)]
+    {
+        join_session(state, root_pid);
+        join_session(state, member_pid);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = member_pid;
+        let proof = state
+            .sessions
+            .live_process_roots()
+            .into_iter()
+            .find(|proof| proof.id == SESSION)
+            .expect("the live session's proof");
+        proof.job.assign_group(root_pid).expect("own the group");
+    }
+}
+
+/// Puts one of our own children into the session's job, as the daemon puts a
+/// launched provider in. A child spawned later by a member joins by itself.
+#[cfg(windows)]
+pub(super) fn join_session(state: &Arc<ServerState>, pid: u32) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+    };
+
     let proof = state
         .sessions
         .live_process_roots()
         .into_iter()
         .find(|proof| proof.id == SESSION)
         .expect("the live session's proof");
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::Foundation::CloseHandle;
-        use windows_sys::Win32::System::Threading::{
-            OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
-        };
-
-        for pid in [root_pid, member_pid] {
-            let handle = unsafe { OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid) };
-            assert!(!handle.is_null(), "open our own child {pid}");
-            proof.job.assign(handle).expect("our child joins the job");
-            unsafe { CloseHandle(handle) };
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = member_pid;
-        proof.job.assign_group(root_pid).expect("own the group");
-    }
+    let handle = unsafe { OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid) };
+    assert!(!handle.is_null(), "open our own child {pid}");
+    proof.job.assign(handle).expect("our child joins the job");
+    unsafe { CloseHandle(handle) };
 }
 
-fn run_cleanup(state: &Arc<ServerState>) -> Value {
+pub(super) fn run_cleanup(state: &Arc<ServerState>) -> Value {
     let id = json!("pm-cleanup");
     let message = json!({"params": {"arguments": {}}});
     cleanup(
@@ -215,7 +230,7 @@ fn run_cleanup(state: &Arc<ServerState>) -> Value {
     .expect("cleanup replies")
 }
 
-fn terminated_pids(reply: &Value) -> Vec<u64> {
+pub(super) fn terminated_pids(reply: &Value) -> Vec<u64> {
     reply
         .pointer("/result/structuredContent/terminated")
         .and_then(Value::as_array)
@@ -225,7 +240,7 @@ fn terminated_pids(reply: &Value) -> Vec<u64> {
 
 /// The approval's own audit row: the journal thread writes it, so the raw
 /// connection polls until it lands rather than guessing at a flush.
-fn audit_outcome(state: &Arc<ServerState>) -> String {
+pub(super) fn audit_outcome(state: &Arc<ServerState>) -> String {
     let path = state.paths.journal_file();
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {

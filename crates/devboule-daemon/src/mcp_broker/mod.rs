@@ -970,6 +970,9 @@ mod creation_mode_road_tests;
 /// The peer door refuses a name with no rule, and every served name has one.
 #[cfg(test)]
 mod peer_fail_closed_tests;
+/// The cleanup on the direct launch shape, with real processes on Windows.
+#[cfg(all(test, windows))]
+mod process_cleanup_launch_tests;
 /// The cleanup card follows the session's mode: automatic approves and still
 /// records itself; asking shows the card first. Cleanup signals exist on
 /// Windows and macOS only.
