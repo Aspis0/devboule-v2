@@ -1908,7 +1908,11 @@ fn stopping_terminal_leaves_a_child_its_shell_detached() {
     );
     let client = harness.client("tree-stop-detached");
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create detach session");
     let received = Arc::new(Mutex::new(Vec::new()));
     client
@@ -1958,7 +1962,11 @@ fn stopping_terminal_kills_its_attached_child() {
     );
     let client = harness.client("tree-stop-attached");
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create attached session");
     let _received = Arc::new(Mutex::new(Vec::new()));
     client
