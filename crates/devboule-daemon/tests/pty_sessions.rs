@@ -9,6 +9,10 @@
 
 #![cfg(windows)]
 
+#[path = "scratch_workspace/mod.rs"]
+mod scratch_workspace;
+use scratch_workspace::scratch_workspace;
+
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Child;
@@ -539,7 +543,11 @@ fn real_pty_spawn_read_resize_and_teardown() {
     queue_command(&harness.paths, cmd_echo("DEVBOULE_PTY_OK"));
     let client = harness.client("echo");
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create");
     let received = Arc::new(Mutex::new(Vec::new()));
     let subscription = client
@@ -564,7 +572,11 @@ fn pty_session_interrupt_is_rejected_for_terminal_sessions() {
     queue_command(&harness.paths, cmd_keep());
     let client = harness.client("interrupt");
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create terminal session");
     // The client refuses an interrupt that has no attachment before the
     // frame is sent; attach so the terminal-kind refusal is what answers.
@@ -606,7 +618,11 @@ fn real_pty_detach_keeps_screen_state_and_close_reaps_child() {
     );
     let client = harness.client("detach");
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create");
     let received = Arc::new(Mutex::new(Vec::new()));
     client
@@ -711,7 +727,11 @@ fn output_flows_to_an_attached_client() {
     queue_command(&harness.paths, cmd_echo("DEVBOULE_ATTACHED"));
     let client = harness.client("flow");
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create");
     let received = Arc::new(Mutex::new(Vec::new()));
     client
@@ -734,7 +754,11 @@ fn detach_stops_delivery_without_killing_the_process() {
     );
     let client = harness.client("live");
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create");
     let received = Arc::new(Mutex::new(Vec::new()));
     client
@@ -770,7 +794,11 @@ fn reattach_with_a_cursor_synchronises_screen_state() {
     let done_file = harness.dir.join("cursor.done");
     let client = harness.client("cursor");
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create");
     let first = Arc::new(Mutex::new(Vec::new()));
     client
@@ -902,7 +930,11 @@ fn detach_reattach_cursor_never_delivers_a_sequence_twice() {
     queue_command(&harness.paths, cmd_keep());
     let client = Arc::new(harness.client("cursor-duplicate"));
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create");
 
     let delivered = Arc::new(Mutex::new(Vec::<u64>::new()));
@@ -1063,7 +1095,11 @@ fn shutdown_drain_never_delivers_a_pending_sequence_twice() {
     queue_command(&harness.paths, cmd_keep());
     let client = Arc::new(harness.client("shutdown-duplicate"));
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create");
 
     let baseline = Arc::new(Mutex::new(Vec::<u64>::new()));
@@ -1218,7 +1254,7 @@ fn two_clients_can_both_attach() {
     let a = harness.client("one");
     let b = harness.client("two");
     let session = a
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(Some(scratch_workspace(&a)), SessionKind::Terminal, None)
         .expect("create");
     let a_events = Arc::new(Mutex::new(Vec::new()));
     let b_events = Arc::new(Mutex::new(Vec::new()));
@@ -1277,7 +1313,11 @@ fn killing_the_daemon_surfaces_exit_on_the_attached_client() {
     queue_command(&harness.paths, cmd_keep());
     let client = harness.client("kill");
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create");
     let received = Arc::new(Mutex::new(Vec::new()));
     client
@@ -1314,7 +1354,11 @@ fn session_process_exit_reports_through_the_envelope() {
     queue_command(&harness.paths, cmd_gated_exit(&ready_file));
     let client = harness.client("exit");
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create");
     let received = Arc::new(Mutex::new(Vec::new()));
     client
@@ -1350,7 +1394,11 @@ fn external_shell_kill_reaches_the_attached_client() {
     queue_command(&harness.paths, cmd_keep_with_pid_file(&pid_file));
     let client = harness.client("external-kill");
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create");
     let received = Arc::new(Mutex::new(Vec::new()));
     client
@@ -1392,11 +1440,19 @@ fn state_broadcast_reaches_unattached_client_after_external_kill() {
 
     queue_command(&harness.paths, cmd_keep_with_pid_file(&first_pid_file));
     let first = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create first session");
     queue_command(&harness.paths, cmd_keep_with_pid_file(&second_pid_file));
     let second = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create second session");
     let first_pid = wait_for_pid_file(&first_pid_file, Duration::from_secs(10));
     let _second_pid = wait_for_pid_file(&second_pid_file, Duration::from_secs(10));
@@ -1437,7 +1493,11 @@ fn state_broadcast_settles_on_ended_for_an_exit_transition() {
         .expect("watch sessions");
     queue_command(&harness.paths, cmd_keep_with_pid_file(&pid_file));
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create session");
     let pid = wait_for_pid_file(&pid_file, Duration::from_secs(10));
     terminate_process_from_outside(pid);
@@ -1500,7 +1560,11 @@ fn closing_session_kills_its_grandchild_at_the_os() {
     );
     let client = harness.client("tree-close");
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create tree session");
     let _received = Arc::new(Mutex::new(Vec::new()));
     client
@@ -1528,7 +1592,11 @@ fn killing_daemon_kills_every_session_tree_at_the_os() {
     );
     let client = harness.client("tree-daemon-kill");
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create daemon tree session");
     let _received = Arc::new(Mutex::new(Vec::new()));
     client
@@ -1559,7 +1627,11 @@ fn closing_one_session_does_not_kill_the_other_session_tree() {
         cmd_spawn_long_lived_child_with_pid_file(FIRST_MARKER, &first_pid_file),
     );
     let first = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create first tree session");
     let _first_received = Arc::new(Mutex::new(Vec::new()));
     client
@@ -1577,7 +1649,11 @@ fn closing_one_session_does_not_kill_the_other_session_tree() {
         cmd_spawn_long_lived_child_with_pid_file(SECOND_MARKER, &second_pid_file),
     );
     let second = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create second tree session");
     let _second_received = Arc::new(Mutex::new(Vec::new()));
     client
@@ -1622,7 +1698,11 @@ fn opening_and_closing_sessions_does_not_leak_daemon_handles() {
     for index in 0..32 {
         queue_command(&harness.paths, cmd_keep());
         let session = client
-            .session_create(None, SessionKind::Terminal, None)
+            .session_create(
+                Some(scratch_workspace(&client)),
+                SessionKind::Terminal,
+                None,
+            )
             .unwrap_or_else(|error| panic!("create session {index}: {error}"));
         client
             .session_close(&session.id)
@@ -1731,13 +1811,21 @@ fn a_terminal_can_be_created_after_the_last_one_is_closed() {
         );
     }
     let first = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("first create");
     client
         .session_close(&first.id)
         .expect("close the last terminal");
     let second = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("a terminal must be creatable after the last one was closed");
     println!(
         "JOB_TREE after_last_close first={} second={}",
@@ -1765,7 +1853,11 @@ fn a_terminal_can_be_created_after_the_last_one_is_stopped() {
         );
     }
     let first = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("first create");
     let received = Arc::new(Mutex::new(Vec::new()));
     client
@@ -1775,7 +1867,11 @@ fn a_terminal_can_be_created_after_the_last_one_is_stopped() {
         .session_stop(&first.id)
         .expect("stop the last terminal");
     let second = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("a terminal must be creatable after the last one was stopped");
     println!(
         "JOB_TREE after_last_stop first={} second={}",
@@ -1791,7 +1887,11 @@ fn stale_generation_is_a_mismatch_not_a_silent_stream() {
     queue_command(&harness.paths, cmd_keep());
     let client = harness.client("gen");
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create");
     let err = client
         .session_attach(
@@ -1819,7 +1919,11 @@ fn detach_does_not_trip_idle_exit() {
     queue_command(&harness.paths, cmd_keep());
     let client = harness.client("idle-detach");
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create");
     // Detach addresses an attached subscription; without one the client
     // refuses the request locally.
@@ -1863,7 +1967,11 @@ fn real_pty_channel_flood_correctness() {
     );
     let client = harness.client("flood");
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create");
     // (bytes, chunks, last_seq, reordered, done, max snapshot boundary)
     let observed = Arc::new(Mutex::new((
@@ -2154,7 +2262,11 @@ fn daemon_echo_timings() -> Vec<EchoTiming> {
     queue_command(&harness.paths, cmd_keep());
     let client = harness.client("latency");
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create latency session");
     let (tx, rx) = mpsc::channel::<(Instant, String)>();
     let handler: EventHandler = Arc::new(move |envelope| {
@@ -2284,7 +2396,11 @@ fn real_pty_channel_file_transport_ab_benchmark() {
     queue_command(&harness.paths, benchmark_file_command(&file_path));
     let client = harness.client("bench");
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create");
     let diagnostics = Arc::new(Mutex::new(BenchmarkDiagnostics::new()));
     let observed = Arc::new(Mutex::new((
@@ -2484,7 +2600,11 @@ fn killed_daemon_replays_scrollback_as_recovered() {
     queue_command(&harness.paths, cmd_keep());
     let client = harness.client("journal-kill");
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create");
     let session_id = session.id.clone();
     let received = Arc::new(Mutex::new(Vec::new()));
@@ -2560,7 +2680,11 @@ fn clean_exit_reopens_as_ended_not_recovered() {
     queue_command(&harness.paths, cmd_echo(MARKER));
     let client = harness.client("journal-end");
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create");
     let session_id = session.id.clone();
     let received = Arc::new(Mutex::new(Vec::new()));
@@ -2653,7 +2777,11 @@ fn journal_outlives_the_256kib_ring() {
     );
     let client = harness.client("ring");
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create");
     let session_id = session.id.clone();
     let received = Arc::new(Mutex::new(Vec::new()));
@@ -2763,7 +2891,11 @@ fn stale_generation_on_recovered_session_is_a_mismatch() {
     queue_command(&harness.paths, cmd_echo(MARKER));
     let client = harness.client("gen");
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create");
     let session_id = session.id.clone();
     let received = Arc::new(Mutex::new(Vec::new()));
@@ -2815,7 +2947,11 @@ fn journal_growth_after_13mb_flood() {
     queue_command(&harness.paths, benchmark_file_command(&file_path));
     let client = harness.client("growth");
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create");
     let observed = Arc::new(Mutex::new(Vec::<(u64, String)>::new()));
     let observed_for_handler = Arc::clone(&observed);
@@ -3223,7 +3359,11 @@ fn attach_during_flood_delivers_every_sequence_once() {
     );
     let client = harness.client("attach-flood");
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create");
 
     // All events across every attach epoch, in arrival order.
@@ -3424,7 +3564,11 @@ fn control_traffic_is_answered_within_bound_during_flood() {
     );
     let client = Arc::new(harness.client("control"));
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create");
 
     let done = Arc::new(AtomicBool::new(false));
@@ -3633,7 +3777,11 @@ fn archiving_a_terminal_ends_its_conhost() {
     queue_command(&harness.paths, cmd_keep());
     let client = harness.client("archive");
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create");
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {

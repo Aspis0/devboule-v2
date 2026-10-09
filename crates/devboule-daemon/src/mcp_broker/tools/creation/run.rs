@@ -110,6 +110,12 @@ pub(in crate::mcp_broker) fn create_agent(
         }
         _ => creator.workspace_id.clone(),
     };
+    // A child starts in its creator's workspace. A creator that has none (an
+    // older session) cannot give one, and the child would start in the
+    // daemon's own directory.
+    if workspace_id.is_none() {
+        return tool_error(id, "A child needs a workspace. The caller has none.");
+    }
     let cwd = match state
         .sessions
         .resolve_child_cwd(workspace_id.as_deref(), request.cwd.as_deref())

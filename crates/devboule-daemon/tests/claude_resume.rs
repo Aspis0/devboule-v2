@@ -11,6 +11,10 @@
 #[path = "claude_common/mod.rs"]
 mod common;
 
+#[path = "scratch_workspace/mod.rs"]
+mod scratch_workspace;
+use scratch_workspace::scratch_workspace;
+
 use std::time::Duration;
 
 use devboule_protocol::{
@@ -92,7 +96,7 @@ fn claude_resume_after_daemon_death_reuses_the_row() {
     let mut harness = common::Harness::spawn();
     let client = std::sync::Arc::new(harness.client());
     let session = client
-        .session_create(None, SessionKind::Claude, None)
+        .session_create(Some(scratch_workspace(&client)), SessionKind::Claude, None)
         .expect("create Claude session");
     assert_eq!(session.kind, SessionKind::Claude);
     assert_eq!(session.provider.as_deref(), Some("claude"));
@@ -219,7 +223,7 @@ fn claude_resume_accepts_the_old_acp_tag() {
     let mut harness = common::Harness::spawn();
     let client = harness.client();
     let session = client
-        .session_create(None, SessionKind::Claude, None)
+        .session_create(Some(scratch_workspace(&client)), SessionKind::Claude, None)
         .expect("create Claude session");
     let (events, handler) = common::collect_events();
     client
@@ -275,7 +279,7 @@ fn claude_resume_refuses_a_deleted_history_by_name() {
     let mut harness = common::Harness::spawn();
     let client = harness.client();
     let session = client
-        .session_create(None, SessionKind::Claude, None)
+        .session_create(Some(scratch_workspace(&client)), SessionKind::Claude, None)
         .expect("create Claude session");
     let (events, handler) = common::collect_events();
     client
@@ -335,7 +339,7 @@ fn claude_resume_of_a_deleted_history_ends_the_offer() {
     let mut harness = common::Harness::spawn();
     let client = harness.client();
     let session = client
-        .session_create(None, SessionKind::Claude, None)
+        .session_create(Some(scratch_workspace(&client)), SessionKind::Claude, None)
         .expect("create Claude session");
     let (events, handler) = common::collect_events();
     client
@@ -431,7 +435,7 @@ fn claude_resume_of_an_unreadable_history_keeps_the_offer() {
     let mut harness = common::Harness::spawn();
     let client = harness.client();
     let session = client
-        .session_create(None, SessionKind::Claude, None)
+        .session_create(Some(scratch_workspace(&client)), SessionKind::Claude, None)
         .expect("create Claude session");
     let (events, handler) = common::collect_events();
     client

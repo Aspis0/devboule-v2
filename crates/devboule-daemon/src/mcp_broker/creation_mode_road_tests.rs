@@ -81,11 +81,14 @@ fn tick_probe_profile(state: &Arc<ServerState>) {
 }
 
 fn creator(state: &Arc<ServerState>, id: &str) -> Arc<crate::session::SessionRuntime> {
-    let runtime = crate::session::insert_test_live_agent_with_kind(
+    // A child starts in its creator's workspace, so the creator needs a real one.
+    let (workspace, _root) = super::terminal_write_harness::project_workspace(state, id);
+    let runtime = crate::session::insert_test_live_session_in_workspace(
         &state.sessions,
         id,
         owner(),
         SessionKind::Claude,
+        &workspace,
     );
     // Test inserts carry no kind; the road reads it, so it is set the way
     // the spawn path sets it for every live session.

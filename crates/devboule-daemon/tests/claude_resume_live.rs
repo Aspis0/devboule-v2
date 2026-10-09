@@ -22,6 +22,10 @@
 #[path = "claude_common/mod.rs"]
 mod common;
 
+#[path = "scratch_workspace/mod.rs"]
+mod scratch_workspace;
+use scratch_workspace::scratch_workspace;
+
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -200,7 +204,7 @@ fn claude_resume_continues_the_providers_conversation() {
     let mut harness = common::Harness::spawn();
     let client = std::sync::Arc::new(harness.client());
     let session = client
-        .session_create(None, SessionKind::Claude, None)
+        .session_create(Some(scratch_workspace(&client)), SessionKind::Claude, None)
         .expect("create Claude session");
 
     let word = fresh_word();
@@ -324,7 +328,7 @@ fn claude_resume_continues_the_providers_conversation() {
     // context. It must fail the assertion the resumed session just passed,
     // or the assertion proves nothing about context.
     let control = client
-        .session_create(None, SessionKind::Claude, None)
+        .session_create(Some(scratch_workspace(&client)), SessionKind::Claude, None)
         .expect("create the control session");
     let (control_events, control_handler) = common::collect_observed();
     client

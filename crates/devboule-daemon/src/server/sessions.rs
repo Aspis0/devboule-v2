@@ -800,6 +800,18 @@ fn session_create(
     idempotency_key: Option<String>,
     initial_size: Option<(u16, u16)>,
 ) -> DaemonMessage {
+    // A session starts inside a workspace. A create that names none is refused
+    // before anything is journaled or spawned, so it never starts in the
+    // daemon's own directory.
+    if workspace_id.is_none() {
+        return DaemonMessage::Error(
+            WireError::new(
+                ErrorCode::InvalidRequest,
+                "A session needs a workspace. Open a project first.",
+            )
+            .with_id(id),
+        );
+    }
     // The name is checked, and trimmed, before anything is touched: the value
     // the daemon stores is the value it judged, and a name it refused is
     // refused before the idempotency table sees the request (S5-09).

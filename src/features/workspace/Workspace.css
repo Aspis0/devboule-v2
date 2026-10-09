@@ -106,6 +106,13 @@
   color: var(--ink);
 }
 
+/* Waiting, not broken: the same outline in quieter ink, with no hover fill. */
+.workspace-empty-action:disabled {
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: default;
+}
+
 .workspace-collapsed-panel:hover,
 .workspace-collapsed-panel:focus-visible {
   background: var(--surface);

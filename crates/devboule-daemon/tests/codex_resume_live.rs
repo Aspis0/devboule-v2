@@ -22,6 +22,10 @@
 #[path = "claude_common/mod.rs"]
 mod common;
 
+#[path = "scratch_workspace/mod.rs"]
+mod scratch_workspace;
+use scratch_workspace::scratch_workspace;
+
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -179,7 +183,7 @@ fn codex_resume_continues_the_providers_thread() {
     let mut harness = common::Harness::spawn();
     let client = harness.client();
     let session = client
-        .session_create(None, SessionKind::Codex, None)
+        .session_create(Some(scratch_workspace(&client)), SessionKind::Codex, None)
         .expect("create Codex session");
 
     let word = fresh_word();
@@ -294,7 +298,7 @@ fn codex_resume_continues_the_providers_thread() {
     // context. It must fail the assertion the resumed session just passed,
     // or the assertion proves nothing about context.
     let control = client
-        .session_create(None, SessionKind::Codex, None)
+        .session_create(Some(scratch_workspace(&client)), SessionKind::Codex, None)
         .expect("create the control session");
     let (control_events, control_handler) = common::collect_observed();
     client

@@ -1382,15 +1382,71 @@ describe("the + new-tab menu", () => {
     expect(surface?.getAttribute("data-autofocus")).toBe("false");
   });
 
-  it("disables Terminal when no workspace is selected and creates nothing", async () => {
+  it("disables every + entry when no workspace is selected, says why, and creates nothing", async () => {
     vi.mocked(workspacesList).mockResolvedValue([]);
     ({ container, unmount } = await renderWorkspace());
 
     await openMenu(container);
-    expect(menuItem(container, "Terminal").disabled).toBe(true);
+    for (const label of ["Agent", "Terminal", "Browser"]) {
+      expect(menuItem(container, label).disabled).toBe(true);
+    }
+    const reason = document.getElementById("workspace-new-tab-reason");
+    expect(reason?.textContent).toBe("No workspace is selected.");
 
     await act(async () => menuItem(container, "Terminal").click());
     await act(async () => undefined);
+    expect(sessionCreate).not.toHaveBeenCalled();
+  });
+
+  it("with no project, the empty pane offers the add-project action and no agent flow", async () => {
+    vi.mocked(projectsList).mockResolvedValue([]);
+    vi.mocked(workspacesList).mockResolvedValue([]);
+    ({ container, unmount } = await renderWorkspace());
+
+    expect(container.querySelector(".workspace-empty-title")?.textContent).toBe("No project yet");
+    expect(container.textContent).not.toContain("Open an agent");
+    const action = container.querySelector<HTMLButtonElement>(".workspace-empty-action");
+    expect(action?.textContent).toBe("New project");
+    expect(action?.disabled).toBe(false);
+
+    await act(async () => action!.click());
+    await act(async () => undefined);
+    expect(document.getElementById("workspace-project-dialog-title")?.textContent).toBe(
+      "Add project",
+    );
+    expect(sessionCreate).not.toHaveBeenCalled();
+  });
+
+  it("the empty pane's Open an agent waits while a create is in flight", async () => {
+    vi.mocked(sessionsList).mockResolvedValue([]);
+    const pending = deferred<Session>();
+    vi.mocked(sessionCreate).mockImplementationOnce(() => pending.promise);
+    ({ container, unmount } = await renderWorkspace());
+
+    await openMenu(container);
+    await act(async () => menuItem(container, "Terminal").click());
+    await act(async () => undefined);
+
+    // The controller drops a second create silently, so the action waits.
+    const action = container.querySelector<HTMLButtonElement>(".workspace-empty-action");
+    expect(action?.disabled).toBe(true);
+
+    await act(async () => {
+      pending.resolve(terminal("session-2", "shell two"));
+    });
+    await act(async () => undefined);
+  });
+
+  it("with a project but no workspace selected, Open an agent is disabled and says why", async () => {
+    vi.mocked(workspacesList).mockResolvedValue([]);
+    ({ container, unmount } = await renderWorkspace());
+
+    const action = container.querySelector<HTMLButtonElement>(".workspace-empty-action");
+    expect(action?.textContent).toBe("Open an agent");
+    expect(action?.disabled).toBe(true);
+    expect(container.querySelector(".workspace-empty-state")?.textContent).toContain(
+      "No workspace is selected.",
+    );
     expect(sessionCreate).not.toHaveBeenCalled();
   });
 

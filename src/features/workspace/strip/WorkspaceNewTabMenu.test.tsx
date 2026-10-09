@@ -1,15 +1,15 @@
 // @vitest-environment happy-dom
 
 // The + menu component in isolation: which entries disable (a create in
-// flight disables both; without a selected workspace Terminal alone waits)
-// and the menu-scoped keyboard — Home/End and wrapping arrows among the
-// ENABLED entries, and Escape closing with focus back on the trigger. Tab
+// flight disables all; without a selected workspace all wait, and the menu
+// says why), and the menu-scoped keyboard — Home/End and wrapping arrows among
+// the ENABLED entries, and Escape closing with focus back on the trigger. Tab
 // closing is pinned through the real wiring in WorkspaceNewTab.test.tsx.
 
 import { act, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { WorkspaceNewTabMenu } from "./WorkspaceNewTabMenu";
+import { NO_WORKSPACE_REASON_ID, WorkspaceNewTabMenu } from "./WorkspaceNewTabMenu";
 
 interface HarnessProps {
   creating: boolean;
@@ -82,9 +82,11 @@ function renderMenu(options: { creating?: boolean; workspaceSelected?: boolean }
     if (element === null) throw new Error("trigger did not render");
     return element;
   };
+  const reason = (): HTMLElement | null => document.getElementById(NO_WORKSPACE_REASON_ID);
   return {
     ...menu,
     entry,
+    reason,
     trigger,
     unmount: () => {
       act(() => {
@@ -115,11 +117,21 @@ describe("the + menu entries and keys", () => {
     expect(menu.entry("Browser").disabled).toBe(true);
   });
 
-  it("disables Terminal and Browser when no workspace is selected", () => {
+  it("disables every entry when no workspace is selected, and says why", () => {
     const menu = render({ workspaceSelected: false });
-    expect(menu.entry("Agent").disabled).toBe(false);
+    expect(menu.entry("Agent").disabled).toBe(true);
     expect(menu.entry("Terminal").disabled).toBe(true);
     expect(menu.entry("Browser").disabled).toBe(true);
+    const reason = menu.reason();
+    expect(reason?.textContent).toBe("No workspace is selected.");
+    expect(menu.entry("Agent").getAttribute("aria-describedby")).toBe(reason?.id);
+    expect(menu.entry("Browser").getAttribute("aria-describedby")).toBe(reason?.id);
+  });
+
+  it("shows no reason while a workspace is selected", () => {
+    const menu = render();
+    expect(menu.reason()).toBeNull();
+    expect(menu.entry("Agent").getAttribute("aria-describedby")).toBeNull();
   });
 
   it("Home and End move to the first and last entries from real focus positions", () => {
@@ -135,22 +147,6 @@ describe("the + menu entries and keys", () => {
     expect(document.activeElement).toBe(browser);
     act(() => {
       browser.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }));
-    });
-    expect(document.activeElement).toBe(agent);
-  });
-
-  it("End and ArrowDown skip a disabled entry: Agent keeps focus", () => {
-    // The only enabled entry keeps focus: the arrows never move into a
-    // disabled entry, so the menu cannot get stuck on one.
-    const menu = render({ workspaceSelected: false });
-    const agent = menu.entry("Agent");
-    act(() => agent.focus());
-    act(() => {
-      agent.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-    });
-    expect(document.activeElement).toBe(agent);
-    act(() => {
-      agent.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
     });
     expect(document.activeElement).toBe(agent);
   });

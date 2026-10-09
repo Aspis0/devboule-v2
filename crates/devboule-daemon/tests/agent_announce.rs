@@ -3,6 +3,10 @@
 
 #![cfg(windows)]
 
+#[path = "scratch_workspace/mod.rs"]
+mod scratch_workspace;
+use scratch_workspace::scratch_workspace;
+
 use std::path::PathBuf;
 use std::process::Child;
 use std::sync::{Arc, Mutex};
@@ -154,7 +158,11 @@ fn pty_stub_announces_over_the_named_pipe() {
 
     let client = harness.client();
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create");
     let events = Arc::new(Mutex::new(Vec::new()));
     let handler: EventHandler = {
@@ -297,7 +305,11 @@ fn spawn_stub_life(
 fn attached_terminal(harness: &Harness) -> (DaemonClient, String, Arc<Mutex<Vec<SessionEvent>>>) {
     let client = harness.client();
     let session = client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create");
     let events = Arc::new(Mutex::new(Vec::new()));
     let handler: EventHandler = {

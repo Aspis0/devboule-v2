@@ -5073,11 +5073,15 @@ fn a_create_through_the_route_delivers_the_stored_spawn_prompt() {
     .expect("the user row parses");
     let owner = owner("mcp-route-spawn-user", "mcp-route-spawn-client");
     let creator = "s.route-spawn".to_string();
-    crate::session::insert_test_live_agent_with_kind(
+    // The child starts in its creator's workspace, so the creator needs a real one.
+    let (workspace, _root) =
+        super::terminal_write_harness::project_workspace(&state, "route-spawn");
+    crate::session::insert_test_live_session_in_workspace(
         &state.sessions,
         &creator,
         owner.clone(),
         SessionKind::Pi,
+        &workspace,
     );
     // The once-per-session card is already spent: the gate starts closed on
     // the creator's first reservation, and the answer path opens it — the

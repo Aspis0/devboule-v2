@@ -2,14 +2,58 @@
 //! count as an ask, and that a framed ask reaches the PTY it names.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
-use devboule_protocol::{ClientMessage, DaemonMessage, OwnerId, SessionKind};
+use devboule_protocol::{ClientMessage, DaemonMessage, OwnerId, SessionKind, WorkspaceIsolation};
 
 use super::dispatch;
 use super::git_workers::test_support::wait_for_worker_reply;
 use super::sessions::create_size;
 use super::ServerState;
 use crate::session::{test_terminal_geometry, ConnHandle};
+
+/// A project and its workspace, added over the same wire the create uses: a
+/// session names a workspace or is refused, so the create needs one first.
+fn scratch_workspace(state: &Arc<ServerState>, owner: &OwnerId, conn: &Arc<ConnHandle>) -> String {
+    let folder = state.sessions.runtime_dir().join("Project");
+    std::fs::create_dir_all(&folder).expect("project folder");
+    let project = match wire_reply(
+        state,
+        owner,
+        conn,
+        ClientMessage::ProjectAdd {
+            id: 2,
+            path: folder.to_string_lossy().into_owned(),
+        },
+    ) {
+        DaemonMessage::Project { project, .. } => project,
+        other => panic!("the project must be added: {other:?}"),
+    };
+    match wire_reply(
+        state,
+        owner,
+        conn,
+        ClientMessage::WorkspaceCreate {
+            id: 3,
+            project_id: project.id,
+            isolation: WorkspaceIsolation::Local,
+            branch: None,
+        },
+    ) {
+        DaemonMessage::Workspace { workspace, .. } => workspace.id,
+        other => panic!("the workspace must be created: {other:?}"),
+    }
+}
+
+fn wire_reply(
+    state: &Arc<ServerState>,
+    owner: &OwnerId,
+    conn: &Arc<ConnHandle>,
+    message: ClientMessage,
+) -> DaemonMessage {
+    let inline = dispatch(state, owner, message, conn, true, true, true, true);
+    inline.unwrap_or_else(|| wait_for_worker_reply(conn, &mut VecDeque::new()))
+}
 
 /// Only a complete pair inside the bounds is a size. A column below the
 /// screen's floor, zero, a half, an oversized axis, or an axis-legal pair
@@ -43,12 +87,13 @@ fn a_framed_create_size_reaches_the_pty() {
     let state = ServerState::new("create-size-wire".to_string());
     let owner = OwnerId::new("S-1-5-21-create-size-wire", "create-size-client").expect("owner");
     let conn = ConnHandle::new(1);
+    let workspace_id = scratch_workspace(&state, &owner, &conn);
     let inline = dispatch(
         &state,
         &owner,
         ClientMessage::SessionCreate {
             id: 1,
-            workspace_id: None,
+            workspace_id: Some(workspace_id),
             kind: SessionKind::Terminal,
             provider: None,
             mode: None,

@@ -172,6 +172,10 @@ mod peer_listener_unix_tests;
 mod create_size_tests;
 
 #[cfg(test)]
+#[path = "server/create_workspace_tests.rs"]
+mod create_workspace_tests;
+
+#[cfg(test)]
 #[path = "server/browser_host_tests.rs"]
 mod browser_host_tests;
 

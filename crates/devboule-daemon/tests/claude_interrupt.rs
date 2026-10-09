@@ -11,6 +11,10 @@
 #[path = "claude_common/mod.rs"]
 mod common;
 
+#[path = "scratch_workspace/mod.rs"]
+mod scratch_workspace;
+use scratch_workspace::scratch_workspace;
+
 use std::time::Duration;
 
 use devboule_protocol::{SessionEvent, SessionKind};
@@ -65,7 +69,7 @@ fn setup(name: &str) -> InterruptEnv {
     let harness = common::Harness::spawn();
     let client = std::sync::Arc::new(harness.client());
     let session = client
-        .session_create(None, SessionKind::Claude, None)
+        .session_create(Some(scratch_workspace(&client)), SessionKind::Claude, None)
         .expect("create Claude session");
     let (events, handler) = common::collect_events();
     client

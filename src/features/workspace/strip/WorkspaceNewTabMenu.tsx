@@ -25,13 +25,16 @@ interface WorkspaceNewTabMenuProps {
   triggerRef: RefObject<HTMLButtonElement | null>;
   /** A session create is in flight: every entry waits, the controller would drop the create. */
   creating: boolean;
-  /** No workspace is selected: a terminal would start in the daemon's own directory, so the entry waits. */
+  /** No workspace is selected: every entry waits, and the menu says why in plain words. */
   workspaceSelected: boolean;
   onAgent: () => void;
   onTerminal: () => void;
   onBrowser: () => void;
   onClose: () => void;
 }
+
+/** The visible reason a disabled menu says it waits; the entries point at it. */
+export const NO_WORKSPACE_REASON_ID = "workspace-new-tab-reason";
 
 interface NewTabEntry {
   label: string;
@@ -157,22 +160,13 @@ export function WorkspaceNewTabMenu({
     moveMenuFocus(rootRef.current, event);
   };
 
+  // Every tab belongs to a workspace: with none selected there is nowhere to
+  // open an agent, a terminal or a page, so every entry waits and says why.
+  const waiting = creating || !workspaceSelected;
   const entries: NewTabEntry[] = [
-    { label: "Agent", glyph: AGENT_GLYPH, disabled: creating, onSelect: onAgent },
-    {
-      label: "Terminal",
-      glyph: TERMINAL_GLYPH,
-      disabled: creating || !workspaceSelected,
-      onSelect: onTerminal,
-    },
-    {
-      label: "Browser",
-      glyph: BROWSER_GLYPH,
-      // A page belongs to a workspace: a browser tab opens in the selected
-      // one, and with no workspace selected there is none to open it in.
-      disabled: creating || !workspaceSelected,
-      onSelect: onBrowser,
-    },
+    { label: "Agent", glyph: AGENT_GLYPH, disabled: waiting, onSelect: onAgent },
+    { label: "Terminal", glyph: TERMINAL_GLYPH, disabled: waiting, onSelect: onTerminal },
+    { label: "Browser", glyph: BROWSER_GLYPH, disabled: waiting, onSelect: onBrowser },
   ];
 
   return (
@@ -193,12 +187,18 @@ export function WorkspaceNewTabMenu({
           key={entry.label}
           ref={index === 0 ? firstEntryRef : undefined}
           disabled={entry.disabled}
+          aria-describedby={workspaceSelected ? undefined : NO_WORKSPACE_REASON_ID}
           onClick={entry.onSelect}
         >
           {entry.glyph}
           <span className="workspace-surface-name">{entry.label}</span>
         </button>
       ))}
+      {workspaceSelected ? null : (
+        <div id={NO_WORKSPACE_REASON_ID} className="workspace-menu-label">
+          No workspace is selected.
+        </div>
+      )}
     </AnchoredPopover>
   );
 }

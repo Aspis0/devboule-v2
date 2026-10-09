@@ -44,6 +44,10 @@
 #[path = "claude_common/mod.rs"]
 mod common;
 
+#[path = "scratch_workspace/mod.rs"]
+mod scratch_workspace;
+use scratch_workspace::scratch_workspace;
+
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -220,7 +224,7 @@ fn pi_resume_continues_the_providers_session() {
     let mut harness = common::Harness::spawn();
     let client = harness.client();
     let session = client
-        .session_create(None, SessionKind::Pi, None)
+        .session_create(Some(scratch_workspace(&client)), SessionKind::Pi, None)
         .expect("create Pi session");
 
     let word = PRIME_WORD;
@@ -357,7 +361,7 @@ fn pi_resume_continues_the_providers_session() {
     // context. It must fail the assertion the resumed session just passed,
     // or the assertion proves nothing about context.
     let control = client
-        .session_create(None, SessionKind::Pi, None)
+        .session_create(Some(scratch_workspace(&client)), SessionKind::Pi, None)
         .expect("create the control session");
     let (control_events, control_handler) = common::collect_observed();
     client

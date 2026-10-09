@@ -34,7 +34,7 @@ use devboule_daemon::{
 };
 use devboule_protocol::{
     AgentMessageState, ClientHello, ClientMessage, DaemonMessage, ErrorCode, OwnerId, PeerRole,
-    SessionEvent, SessionKind, UserMessageKind,
+    SessionEvent, SessionKind, UserMessageKind, WorkspaceIsolation,
 };
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -1109,9 +1109,28 @@ fn a_paired_daemon_delivers_an_agent_message_and_replays_its_receipt_once() {
     pair_as_daemons(&a, &b, &address_b, &b_self.device_id);
 
     // ---- B grows a live agent the paired daemon may write into -------------
+    // The wire refuses an agent with no workspace, so B gets a scratch one.
+    let project_dir = devboule_daemon::test_dirs::test_temp_dir("peer-link workspace");
+    std::fs::create_dir_all(&project_dir).expect("B's project dir");
+    let project = match b.pipe.expect(ClientMessage::ProjectAdd {
+        id: b.pipe.id(),
+        path: project_dir.to_string_lossy().into_owned(),
+    }) {
+        DaemonMessage::Project { project, .. } => project,
+        other => panic!("B must add its project: {other:?}"),
+    };
+    let workspace = match b.pipe.expect(ClientMessage::WorkspaceCreate {
+        id: b.pipe.id(),
+        project_id: project.id.clone(),
+        isolation: WorkspaceIsolation::Local,
+        branch: None,
+    }) {
+        DaemonMessage::Workspace { workspace, .. } => workspace,
+        other => panic!("B must create its workspace: {other:?}"),
+    };
     let created = b.pipe.expect(ClientMessage::SessionCreate {
         id: b.pipe.id(),
-        workspace_id: None,
+        workspace_id: Some(workspace.id.clone()),
         kind: SessionKind::Acp,
         provider: Some("devboule-acp-stub".to_string()),
         mode: None,

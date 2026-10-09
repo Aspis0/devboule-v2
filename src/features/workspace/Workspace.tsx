@@ -167,6 +167,11 @@ const SESSION_QUEUE_CAPABILITY = "session.queue";
 const ATTACHMENTS_GIF_WEBP_CAPABILITY = "attachments.gif_webp";
 /** The negotiated capability the composer's chunked file upload is gated on. */
 const ATTACHMENTS_UPLOAD_CAPABILITY = "attachments.upload";
+/** Said wherever a tab or agent is asked for with no workspace selected. */
+const NO_WORKSPACE_SENTENCE = "No workspace is selected.";
+const NO_WORKSPACE_ERROR: ErrorSentence = { sentence: NO_WORKSPACE_SENTENCE, detail: null };
+/** The empty pane's reason, linked to its disabled action. */
+const EMPTY_PANE_REASON_ID = "workspace-empty-reason";
 
 export { WorkspacePermissionCard, formatPermissionCommand };
 
@@ -1586,9 +1591,15 @@ export function Workspace({
 
   const handleNewSession = useCallback(
     (trigger: HTMLButtonElement | null) => {
+      // An agent belongs to a workspace: with none selected the provider flow
+      // never opens, and the line says why instead.
+      if (selectedKey === null) {
+        setProviderError(NO_WORKSPACE_ERROR);
+        return;
+      }
       void chooseProvider({ kind: "strip" }, addSessionToWorkspace, trigger ?? undefined);
     },
-    [addSessionToWorkspace, chooseProvider],
+    [addSessionToWorkspace, chooseProvider, selectedKey],
   );
   const dismissNewTabMenu = useCallback(() => setNewTabMenuOpen(false), []);
   // The menu's Agent entry: the flow the "+" owned before the menu, focused
@@ -1631,10 +1642,16 @@ export function Workspace({
   }, [armTerminalFocus, createAndShowSession, dismissNewTabMenu, selectedKey, selectedWorkspaceId]);
   // The menu's Browser entry: a page in the selected workspace, focused. It
   // creates no daemon session, so it does not wait for the strip's focus rule
-  // — the address bar takes focus itself once the page is up.
+  // — the address bar takes focus itself once the page is up. The entry waits
+  // without a workspace, so this guard only answers a road that got past it:
+  // it says why, never nothing.
   const handleNewTabBrowser = useCallback(() => {
     dismissNewTabMenu();
-    if (selectedKey !== null) openBrowserFor(selectedKey);
+    if (selectedKey === null) {
+      setProviderError(NO_WORKSPACE_ERROR);
+      return;
+    }
+    openBrowserFor(selectedKey);
   }, [dismissNewTabMenu, openBrowserFor, selectedKey]);
   const pickProvider = useCallback((provider: ProviderInfo) => {
     setProviderPicker(null);
@@ -2274,22 +2291,44 @@ export function Workspace({
                 {/* The empty state never carries the error: the failure has its
                 one line under the strip, and this pane stays what the spec
                 says it is (SPEC-regions "Empty and error"). */}
-                {sessionsLoading ? (
+                {sessionsLoading || projectsLoading ? (
                   <div role="status" className="workspace-empty-note">
                     Loading sessions…
+                  </div>
+                ) : selectedKey === null && projects.length === 0 ? (
+                  // No project at all: the one action is the same add-project
+                  // flow the sidebar's "+" opens.
+                  <div className="workspace-empty-state" role="status">
+                    <p className="workspace-empty-title">No project yet</p>
+                    <button
+                      type="button"
+                      className="workspace-empty-action"
+                      onClick={openProjectDialog}
+                    >
+                      New project
+                    </button>
                   </div>
                 ) : (
                   <div className="workspace-empty-state" role="status">
                     <p className="workspace-empty-title">No tabs yet</p>
                     {/* The spec's one outline action: the same agent flow as
-                    "+ → Agent", from the "+" itself. */}
+                    "+ → Agent", from the "+" itself. It waits while a create or
+                    a provider choice is in flight, and without a selected
+                    workspace it says why. */}
                     <button
                       type="button"
                       className="workspace-empty-action"
                       onClick={handleNewTabAgent}
+                      disabled={selectedKey === null || addDisabled}
+                      aria-describedby={selectedKey === null ? EMPTY_PANE_REASON_ID : undefined}
                     >
                       Open an agent
                     </button>
+                    {selectedKey === null ? (
+                      <p id={EMPTY_PANE_REASON_ID} className="workspace-empty-note">
+                        {NO_WORKSPACE_SENTENCE}
+                      </p>
+                    ) : null}
                   </div>
                 )}
               </div>

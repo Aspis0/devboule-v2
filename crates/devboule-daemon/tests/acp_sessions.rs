@@ -13,6 +13,10 @@
 
 #![cfg(windows)]
 
+#[path = "scratch_workspace/mod.rs"]
+mod scratch_workspace;
+use scratch_workspace::scratch_workspace;
+
 use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1405,7 +1409,11 @@ fn acp_startup_failure_includes_agent_stderr() {
     let test = AcpTest::new(&["--fail-initialize"]);
     let error = test
         .client
-        .session_create(None, SessionKind::Acp, None)
+        .session_create(
+            Some(scratch_workspace(&test.client)),
+            SessionKind::Acp,
+            None,
+        )
         .expect_err("startup failure");
     assert!(
         error
@@ -1439,7 +1447,11 @@ fn acp_handshake_failure_ends_the_journal_row_and_records_provider_failure() {
 
     let error = test
         .client
-        .session_create(None, SessionKind::Acp, None)
+        .session_create(
+            Some(scratch_workspace(&test.client)),
+            SessionKind::Acp,
+            None,
+        )
         .expect_err("a session/new handshake error must reject the create");
     assert!(
         error.to_string().contains("stub credentials expired"),
@@ -2564,7 +2576,11 @@ fn set_model_on_terminal_session_is_rejected() {
     let test = AcpTest::new(&[]);
     let session = test
         .client
-        .session_create(None, SessionKind::Terminal, None)
+        .session_create(
+            Some(scratch_workspace(&test.client)),
+            SessionKind::Terminal,
+            None,
+        )
         .expect("create terminal session");
     let error = test
         .client
@@ -4139,7 +4155,11 @@ impl AcpTest {
     fn create_session(&self) -> devboule_protocol::Session {
         let session = self
             .client
-            .session_create(None, SessionKind::Acp, None)
+            .session_create(
+                Some(scratch_workspace(&self.client)),
+                SessionKind::Acp,
+                None,
+            )
             .expect("create ACP session");
         assert_eq!(session.kind, SessionKind::Acp);
         assert_eq!(session.title, "Agent");
@@ -4291,7 +4311,7 @@ fn grok_prompt_completes_with_fragments_and_end_turn() {
     let harness = Harness::spawn();
     let client = harness.client();
     let session = client
-        .session_create(None, SessionKind::Acp, None)
+        .session_create(Some(scratch_workspace(&client)), SessionKind::Acp, None)
         .expect("create grok ACP session");
     let events = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
     let received = Arc::clone(&events);
@@ -4762,7 +4782,11 @@ impl Slice5Test {
     fn creator_session(&self) -> devboule_protocol::Session {
         let session = self
             .client
-            .session_create(None, SessionKind::Acp, None)
+            .session_create(
+                Some(scratch_workspace(&self.client)),
+                SessionKind::Acp,
+                None,
+            )
             .expect("the creator's own session");
         assert_eq!(session.kind, SessionKind::Acp);
         assert_eq!(session.created_by, None, "a human's session has no parent");
@@ -6950,7 +6974,7 @@ fn the_unattended_marker_survives_a_daemon_restart_and_a_resume() {
     let session = test
         .client
         .session_create_with(
-            None,
+            Some(scratch_workspace(&test.client)),
             SessionKind::Acp,
             None,
             Some("auto_accept".to_string()),
@@ -7248,7 +7272,11 @@ fn a_mute_provider_is_refused_by_the_first_answer_budget_and_says_which_one_fire
 
     let error = test
         .client
-        .session_create(None, SessionKind::Acp, None)
+        .session_create(
+            Some(scratch_workspace(&test.client)),
+            SessionKind::Acp,
+            None,
+        )
         .expect_err("a provider that never answers never becomes a session");
     let wire = match error {
         devboule_daemon::DaemonError::Handshake(wire) => wire,
