@@ -284,6 +284,7 @@ fn devices_reply(
                     revoked_at: record.revoked_at,
                     caps: Vec::new(),
                     paired_by_user: None,
+                    hosts_workspaces: record.hosts_workspaces,
                     online: state.is_peer_online(&record.device_id),
                 })
                 .collect();

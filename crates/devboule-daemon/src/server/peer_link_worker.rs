@@ -260,10 +260,12 @@ pub(crate) fn peer_row(state: &Arc<ServerState>, device_id: &str) -> Result<Peer
     if row.is_revoked() {
         return Err(DialStep::Revoked);
     }
-    if !row.legacy_dialable {
-        // A peer with no v30 daemon hint has no listener we know of and no
-        // host lists; refusing here keeps the app from dialling whatever owns
-        // an ephemeral port now.
+    if !row.hosts_workspaces && !row.legacy_dialable {
+        // A peer recorded as a client has no host lists to serve; refusing
+        // here keeps the app from dialling whatever owns an ephemeral port
+        // now. The recorded host fact is the gate: a roleless host is dialable
+        // the moment its pairing (or an authenticated hello) says so, and a
+        // migrated v30 daemon keeps its hint.
         return Err(DialStep::NoListenPort);
     }
     Ok(row)

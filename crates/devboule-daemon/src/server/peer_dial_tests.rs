@@ -543,3 +543,35 @@ fn a_dial_advertises_this_devices_workspace_presence() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The dial gate: a peer is dialable when it is a host — the recorded
+/// `hosts_workspaces` fact, or a migrated v30 daemon hint — and not otherwise.
+#[test]
+fn the_dial_gate_follows_the_hosted_workspace_record() {
+    use super::super::peer_link_worker::peer_row;
+
+    let state = ServerState::new("peer-dial-gate".into());
+    let keypair = pinned_keypair();
+    let mut row = dial_row("127.0.0.1:1".to_string(), &keypair.public);
+    row.legacy_dialable = false;
+    row.hosts_workspaces = true;
+    state.peer_upsert(row.clone()).expect("upsert");
+    assert!(
+        peer_row(&state, "b").is_ok(),
+        "a roleless host is dialable on the recorded fact alone"
+    );
+
+    row.hosts_workspaces = false;
+    state.peer_upsert(row.clone()).expect("upsert");
+    assert!(
+        matches!(peer_row(&state, "b"), Err(DialStep::NoListenPort)),
+        "a client device is not dialled"
+    );
+
+    row.legacy_dialable = true;
+    state.peer_upsert(row).expect("upsert");
+    assert!(
+        peer_row(&state, "b").is_ok(),
+        "the migrated v30 hint stays dialable"
+    );
+}

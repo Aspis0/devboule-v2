@@ -1645,6 +1645,7 @@ pub fn peer_row(server: &Arc<ServerState>, record: &PeerRecord) -> PeerRow {
         revoked_at: record.revoked_at,
         caps: record.caps.clone(),
         paired_by_user: record.paired_by_user.clone(),
+        hosts_workspaces: record.hosts_workspaces,
         online: server.is_peer_online(&record.device_id),
     }
 }

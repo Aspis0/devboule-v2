@@ -3182,6 +3182,15 @@ pub struct PeerRow {
     /// The SID this daemon paired the peer from, or `None` on a platform with
     /// no SID or for a peer paired before the value was recorded.
     pub paired_by_user: Option<String>,
+    /// Whether this daemon recorded the peer as hosting workspaces: the fact
+    /// that makes it dialable and worth a sidebar section. Recorded by the
+    /// pairing ceremony (the v30 daemon tag, or the roleless payload's own
+    /// bit) and by an authenticated hello that claims hosting; never widened
+    /// by a claim that denies it. A payload that predates the field (a v31
+    /// daemon's device rows) decodes as not hosting, which is the direction
+    /// that dials nothing rather than the wrong thing.
+    #[serde(default)]
+    pub hosts_workspaces: bool,
     /// Whether this peer has a live connection right now.
     pub online: bool,
 }

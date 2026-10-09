@@ -372,6 +372,7 @@ fn the_v32_devices_wire_contract_carries_no_role() {
         revoked_at: None,
         caps: vec!["view".to_string()],
         paired_by_user: Some("S-1-5-21-1".to_string()),
+        hosts_workspaces: true,
         online: true,
     };
     let row_json = serde_json::to_value(&row).expect("json");
@@ -466,6 +467,7 @@ fn the_v30_projection_carries_the_legacy_role_word_and_nothing_else() {
         revoked_at: None,
         caps: vec!["view".to_string()],
         paired_by_user: Some("S-1-5-21-1".to_string()),
+        hosts_workspaces: true,
         online: true,
     };
     let projected = PeerRow {
@@ -595,6 +597,7 @@ fn the_devices_wire_contract_round_trips_with_its_exact_field_names() {
         revoked_at: None,
         caps: vec!["view".to_string()],
         paired_by_user: Some("S-1-5-21-1".to_string()),
+        hosts_workspaces: true,
         online: true,
     };
     let self_info = SelfInfo {
