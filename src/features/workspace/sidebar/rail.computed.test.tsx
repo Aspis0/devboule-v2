@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 
 // The rail's hierarchy through the real stylesheets: the selection is a neutral
-// fill with ochre only as a thin marker on its edge, the second line is quiet
-// and mono, and an agent row stays within the rail's type sizes.
+// fill with ochre only as a thin marker on its edge, and the second line is
+// quiet and mono.
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -32,39 +32,18 @@ describe("the rail's hierarchy", () => {
     "selects with a neutral fill and a thin ochre marker, never an ochre fill, in the %s theme",
     (theme) => {
       const css = assembleCssProof(sheets, theme);
-      css.inject([
-        ".workspace-row",
-        ".workspace-row-selected",
-        ".workspace-agent-row",
-        ".workspace-agent-row-active",
-      ]);
+      css.inject([".workspace-row", ".workspace-row-selected"]);
       const workspaceRow = el("button", "workspace-row workspace-row-selected");
-      const agentRow = el("button", "workspace-agent-row workspace-agent-row-active");
-      document.body.append(workspaceRow, agentRow);
+      document.body.append(workspaceRow);
 
-      for (const row of [workspaceRow, agentRow]) {
-        const style = getComputedStyle(row);
-        expect(style.backgroundColor).toBe(css.token("--fill-selected-soft"));
-        expect(style.backgroundColor).not.toBe(css.token("--accent"));
-        // The marker: a 2px inset on the leading edge, in the accent.
-        expect(style.boxShadow).toBe(`inset 2px 0 0 ${css.token("--accent")}`);
-      }
+      const style = getComputedStyle(workspaceRow);
+      expect(style.backgroundColor).toBe(css.token("--fill-selected-soft"));
+      expect(style.backgroundColor).not.toBe(css.token("--accent"));
+      // The marker: a 2px inset on the leading edge, in the accent.
+      expect(style.boxShadow).toBe(`inset 2px 0 0 ${css.token("--accent")}`);
       workspaceRow.remove();
-      agentRow.remove();
     },
   );
-
-  it("carries one marker: the selected workspace gives it to the agent in front", () => {
-    const css = assembleCssProof(sheets, "light");
-    css.inject([".workspace-row", ".workspace-row-selected", ".workspace-row-agent-focused"]);
-    const row = el("button", "workspace-row workspace-row-selected workspace-row-agent-focused");
-    document.body.append(row);
-
-    expect(getComputedStyle(row).boxShadow).not.toContain(css.token("--accent"));
-    // Its neutral fill stays: only the ochre edge moves to the agent row.
-    expect(getComputedStyle(row).backgroundColor).toBe(css.token("--fill-selected-soft"));
-    row.remove();
-  });
 
   it("sets the branch in mono and quiet, with the totals at the far edge", () => {
     const css = assembleCssProof(sheets, "light");
@@ -86,21 +65,5 @@ describe("the rail's hierarchy", () => {
     expect(getComputedStyle(branch).textOverflow).toBe("ellipsis");
     expect(getComputedStyle(totals).marginLeft).toBe("auto");
     sub.remove();
-  });
-
-  it("keeps an agent row to the rail's two sizes, 13px over 12px", () => {
-    const css = assembleCssProof(sheets, "light");
-    css.inject([".workspace-agent-name", ".workspace-agent-sub", ".workspace-agent-rows"]);
-    const name = el("span", "workspace-agent-name", "Tighten handoff");
-    const sub = el("span", "workspace-agent-sub", "idle · 1h");
-    const list = el("div", "workspace-agent-rows");
-    list.append(name, sub);
-    document.body.append(list);
-
-    expect(getComputedStyle(name).fontSize).toBe("13px");
-    expect(getComputedStyle(sub).fontSize).toBe("12px");
-    expect(getComputedStyle(sub).color).toBe(css.token("--muted"));
-    expect(getComputedStyle(list).marginLeft).toBe("24px");
-    list.remove();
   });
 });

@@ -152,7 +152,7 @@ export const DIRECT_RING_GROUNDS: readonly DirectRingGround[] = [
   },
   {
     file: "src/features/workspace/sidebar/sidebar.css",
-    match: ".workspace-row-selected:not(.workspace-row-agent-focused)",
+    match: ".workspace-row-selected",
     ground: "--fill-selected-soft",
   },
   {

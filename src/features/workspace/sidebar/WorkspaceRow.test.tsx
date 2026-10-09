@@ -70,7 +70,6 @@ describe("the workspace row's one line", () => {
           projectName={facts.projectName ?? "devboule"}
           hostName={facts.hostName ?? "This PC"}
           selected={false}
-          agentFocused={false}
           stat={facts.stat}
           branch={facts.branch}
           onSelect={vi.fn()}

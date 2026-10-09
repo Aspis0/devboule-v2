@@ -338,28 +338,8 @@
 }
 
 /* The selection is a neutral fill; ochre is only the thin marker on its edge. */
-.workspace-row-selected:not(.workspace-row-agent-focused),
-.workspace-agent-row-active {
+.workspace-row-selected {
   box-shadow: inset 2px 0 0 var(--accent);
-}
-
-/* One marker at a time: the agent in front has it, else the selected workspace. */
-
-.workspace-agent-more {
-  margin-left: var(--space-8);
-  padding: var(--space-2) var(--space-8);
-  color: var(--muted);
-  font-size: var(--type-meta);
-  text-align: left;
-  background: transparent;
-  border-radius: var(--radius-6);
-  cursor: pointer;
-}
-
-.workspace-agent-more:hover,
-.workspace-agent-more:focus-visible {
-  color: var(--ink);
-  background: var(--fill-hover);
 }
 
 /* The name over its branch and what is uncommitted: two lines, no taller than
@@ -421,69 +401,6 @@
 
 .workspace-row-selected .workspace-row-sub {
   color: var(--ink);
-}
-
-/* The agents of the selected workspace, nested under its row. */
-.workspace-agent-rows {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin-left: var(--space-24);
-}
-
-.workspace-agent-row {
-  display: grid;
-  grid-template-columns: 14px minmax(0, 1fr);
-  column-gap: var(--space-6);
-  align-items: center;
-  width: 100%;
-  min-width: 0;
-  padding: var(--space-4) var(--space-8);
-  color: var(--ink);
-  text-align: left;
-  background: transparent;
-  border-radius: var(--radius-6);
-  cursor: pointer;
-}
-
-.workspace-agent-row:hover,
-.workspace-agent-row:focus-visible {
-  background: var(--fill-hover);
-}
-
-.workspace-agent-row-active,
-.workspace-agent-row-active:hover,
-.workspace-agent-row-active:focus-visible {
-  background: var(--fill-selected-soft);
-}
-
-.workspace-agent-name {
-  min-width: 0;
-  overflow: hidden;
-  font-size: var(--type-small);
-  line-height: 16px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-agent-sub {
-  grid-column: 2;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: var(--type-meta);
-  line-height: 16px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-agent-row-active .workspace-agent-sub {
-  color: var(--ink);
-}
-
-.workspace-agent-row .strip-kind {
-  grid-row: 1;
-  color: var(--ink-soft);
 }
 
 .workspace-row-title {

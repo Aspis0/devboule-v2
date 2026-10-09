@@ -89,9 +89,6 @@ function treeProps(over: Partial<WorkspaceTreeProps> = {}): WorkspaceTreeProps {
     providerMenu: null,
     stats: STATS,
     branches: BRANCHES,
-    agentRows: new Map(),
-    activeSessionId: null,
-    onOpenAgent: vi.fn(),
     hostNames: new Map(),
     ...over,
   };

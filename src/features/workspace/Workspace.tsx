@@ -104,7 +104,6 @@ import { MIN_LEFT_WIDTH, MIN_RIGHT_WIDTH, useWorkspacePanelResize } from "./work
 import { keyOfWorkspace, useWorkspaceProjects } from "./workspaceProjects";
 import { getLastSelectedWorkspaceKey, setLastSelectedWorkspaceKey } from "./lastSelectedWorkspace";
 import { Sidebar } from "./sidebar/Sidebar";
-import { useStableAgentRows } from "./sidebar/agentRowViews";
 import { hostNames } from "./sidebar/hostNames";
 import type { WorkspaceTreeProps } from "./sidebar/WorkspaceTree";
 import { HistoryPanel } from "../history/HistoryPanel";
@@ -1397,21 +1396,6 @@ export function Workspace({
     },
     [sessions, openSession, standDownToolTab],
   );
-  // The rail's agent rows open a session by id. It reads the roster at click
-  // time, so the callback the rows hold stays the same across roster pushes.
-  const handleOpenAgentRow = useCallback(
-    (sessionId: string) => {
-      const session = sharedSessionController()
-        .getState()
-        .sessions.find((row) => row.id === sessionId);
-      if (session !== undefined) {
-        handleReopenSession(session);
-      } else {
-        void refreshSessions();
-      }
-    },
-    [handleReopenSession, refreshSessions],
-  );
   const handleOpenSubagent = useCallback(
     (sessionId: string) => {
       const session = sessions.find((row) => row.id === sessionId);
@@ -2027,7 +2011,6 @@ export function Workspace({
     [providerAnchor, providerPicker, dismissProviderPicker, openProvidersSettings, pickProvider],
   );
 
-  const agentRows = useStableAgentRows(sessions);
   // What the daemon's status poll hands out every 2 s is a new object even
   // when nothing changed; the rail compares the fields its dot reads, so an
   // unchanged daemon keeps its identity and the rail's memo holds.
@@ -2057,9 +2040,6 @@ export function Workspace({
       providerMenu: providerAnchor?.kind === "project" ? providerMenu : null,
       stats: workspaceStats,
       branches: workspaceBranches,
-      agentRows,
-      activeSessionId: panes.upperToolId === null ? selectedSessionId : null,
-      onOpenAgent: handleOpenAgentRow,
       hostNames: hostNameMap,
     }),
     [
@@ -2078,10 +2058,6 @@ export function Workspace({
       providerMenu,
       workspaceStats,
       workspaceBranches,
-      agentRows,
-      panes.upperToolId,
-      selectedSessionId,
-      handleOpenAgentRow,
       hostNameMap,
     ],
   );

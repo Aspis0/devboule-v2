@@ -93,8 +93,6 @@ export interface WorkspaceRowProps {
    * fallback when the project heading already said the workspace's name. */
   hostName: string;
   selected: boolean;
-  /** An agent listed under this row is the tab in front: it carries the marker. */
-  agentFocused: boolean;
   stat: WorkspaceStat | undefined;
   /** The branch the workspace's last status read reported; it also speaks the
    *  row when the project's name above already said this workspace's name. */
@@ -117,7 +115,6 @@ export const WorkspaceRow = memo(function WorkspaceRow({
   projectName,
   hostName,
   selected,
-  agentFocused,
   stat,
   branch,
   onSelect,
@@ -366,8 +363,8 @@ export const WorkspaceRow = memo(function WorkspaceRow({
             type="button"
             ref={rowRef}
             className={`workspace-row${selected ? " workspace-row-selected" : ""}${
-              agentFocused ? " workspace-row-agent-focused" : ""
-            }${twoLines ? " workspace-row-two" : ""}`}
+              twoLines ? " workspace-row-two" : ""
+            }`}
             onClick={() => {
               if (workspaceKey !== null) onSelect(workspaceKey);
             }}

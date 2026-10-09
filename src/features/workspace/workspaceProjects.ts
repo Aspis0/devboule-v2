@@ -154,8 +154,8 @@ function workspaceViewFromIndex(
     (session) => session.state.type !== "ended" && session.unattended === "yes",
   );
   // Actually running a turn, not merely live: the roster's turn status says
-  // so, the same predicate the agent rows read. A live terminal holds its
-  // process, so it still counts — only agents answer to turn status.
+  // so. A live terminal holds its process, so it still counts — only agents
+  // answer to turn status.
   const running = live.filter(
     (session) => !isAgentKind(session.kind) || session.activity === "working",
   );
