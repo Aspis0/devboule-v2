@@ -207,8 +207,10 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// (`SessionAttachmentDelete`), gated on `attachments.delete`. Protocol 28
 /// adds the background-task list (`SessionTasksGet` and `tasks_snapshot`),
 /// both gated on `session.tasks`: the request would kill an older reader,
-/// and so would the event.
-pub const PROTOCOL_VERSION: u32 = 28;
+/// and so would the event. Protocol 29 adds `gitMissing` to the
+/// `workspace_git` status reply: an optional key with a serde default, so an
+/// older daemon's reply still decodes (as `false`) and the floor stays put.
+pub const PROTOCOL_VERSION: u32 = 29;
 /// Oldest dialect this crate still accepts. Protocols 17, 18 and 20 added only
 /// optional fields, so a v16 peer still interoperates — it just shows no
 /// command chip, turn time, cache, cost or chat-image thumbnails until

@@ -3417,6 +3417,22 @@ fn reply_status(message: &DaemonMessage) -> WorkspaceGitStatus {
     }
 }
 
+/// `gitMissing` is an optional key: a daemon of the dialect before it sends no
+/// such key, and a payload without it must still decode, as `false`. The
+/// dialect that added it is the one this crate speaks.
+#[test]
+fn workspace_git_status_without_git_missing_decodes_for_older_daemons() {
+    assert_eq!(crate::PROTOCOL_VERSION, 29);
+    let older = r#"{"type":"workspace_git","id":7,"status":{"isGit":false,"dirty":false,"branch":null,"totals":{"additions":0,"deletions":0},"rows":[],"error":null}}"#;
+    let DaemonMessage::WorkspaceGit { status, .. } =
+        serde_json::from_str::<DaemonMessage>(older).expect("parse an older reply")
+    else {
+        panic!("not a workspace git reply");
+    };
+    assert!(!status.git_missing);
+    assert!(!status.is_git);
+}
+
 /// The workspace git-log frame and its reply, pinned to the exact words
 /// TypeScript reads (`src/types/ipc.ts`): the `type` tags, the camelCase
 /// keys, the four `status` words in `snake_case`, and `error`/`baseRef`
