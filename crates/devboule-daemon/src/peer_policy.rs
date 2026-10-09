@@ -471,7 +471,9 @@ pub fn peer_allows(caps: &[String], request: &ClientMessage) -> PeerDecision {
         | ClientMessage::RemoteHostPermissionRespond { .. }
         | ClientMessage::RemoteHostClose { .. }
         | ClientMessage::RemoteHostStop { .. }
-        | ClientMessage::RemoteHostProviders { .. } => PeerDecision::Deny("remote_hosts"),
+        | ClientMessage::RemoteHostProviders { .. }
+        | ClientMessage::RemoteHostSetModel { .. }
+        | ClientMessage::RemoteHostSetMode { .. } => PeerDecision::Deny("remote_hosts"),
         // Being the place agents' browser commands run is the local app's job.
         // A paired device reaches a browser only through the per-device grant
         // the MCP tools check (a later slice), never by registering as a host
@@ -1726,6 +1728,19 @@ pub(crate) mod tests {
                 id: 12,
                 device_id: "b".to_string(),
             },
+            ClientMessage::RemoteHostSetModel {
+                id: 13,
+                device_id: "b".to_string(),
+                session_id: "s.a.1".to_string(),
+                model_id: None,
+                effort: None,
+            },
+            ClientMessage::RemoteHostSetMode {
+                id: 14,
+                device_id: "b".to_string(),
+                session_id: "s.a.1".to_string(),
+                mode_id: "default".to_string(),
+            },
             // The browser host, all three frames: local-only like the link
             // above, refused to a peer by name.
             ClientMessage::BrowserHostRegister {
@@ -1995,6 +2010,8 @@ pub(crate) mod tests {
             ClientMessage::RemoteHostClose { .. } => Some("remote_hosts"),
             ClientMessage::RemoteHostStop { .. } => Some("remote_hosts"),
             ClientMessage::RemoteHostProviders { .. } => Some("remote_hosts"),
+            ClientMessage::RemoteHostSetModel { .. } => Some("remote_hosts"),
+            ClientMessage::RemoteHostSetMode { .. } => Some("remote_hosts"),
             ClientMessage::BrowserHostRegister { .. } => Some("browser.host"),
             ClientMessage::BrowserHostUnregister { .. } => Some("browser.host"),
             ClientMessage::BrowserExecuteResponse { .. } => Some("browser.host"),
@@ -2901,6 +2918,8 @@ pub(crate) mod tests {
             ClientMessage::RemoteHostClose { .. } => local("remote_hosts"),
             ClientMessage::RemoteHostStop { .. } => local("remote_hosts"),
             ClientMessage::RemoteHostProviders { .. } => local("remote_hosts"),
+            ClientMessage::RemoteHostSetModel { .. } => local("remote_hosts"),
+            ClientMessage::RemoteHostSetMode { .. } => local("remote_hosts"),
             ClientMessage::RemoteHostUnwatch { .. } => local("remote_hosts"),
             ClientMessage::RemoteHostList { .. } => local("remote_hosts"),
             ClientMessage::BrowserHostRegister { .. } => local("browser.host"),
@@ -2916,7 +2935,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 100;
+    pub(crate) const VARIANT_COUNT: usize = 102;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -3021,6 +3040,8 @@ pub(crate) mod tests {
             ClientMessage::RemoteHostClose { .. } => "RemoteHostClose",
             ClientMessage::RemoteHostStop { .. } => "RemoteHostStop",
             ClientMessage::RemoteHostProviders { .. } => "RemoteHostProviders",
+            ClientMessage::RemoteHostSetModel { .. } => "RemoteHostSetModel",
+            ClientMessage::RemoteHostSetMode { .. } => "RemoteHostSetMode",
             ClientMessage::RemoteHostUnwatch { .. } => "RemoteHostUnwatch",
             ClientMessage::RemoteHostList { .. } => "RemoteHostList",
             ClientMessage::BrowserHostRegister { .. } => "BrowserHostRegister",
@@ -3523,6 +3544,19 @@ pub(crate) mod tests {
             ClientMessage::RemoteHostProviders {
                 id: 12,
                 device_id: "b".to_string(),
+            },
+            ClientMessage::RemoteHostSetModel {
+                id: 13,
+                device_id: "b".to_string(),
+                session_id: "s.a.1".to_string(),
+                model_id: None,
+                effort: None,
+            },
+            ClientMessage::RemoteHostSetMode {
+                id: 14,
+                device_id: "b".to_string(),
+                session_id: "s.a.1".to_string(),
+                mode_id: "default".to_string(),
             },
             ClientMessage::BrowserHostRegister {
                 id: 1,

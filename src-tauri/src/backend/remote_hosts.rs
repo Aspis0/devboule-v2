@@ -423,3 +423,31 @@ pub async fn remote_host_providers(
         unreadable_dirs,
     })
 }
+
+/// Switch the model of one session on a paired host.
+#[tauri::command]
+pub async fn remote_host_set_model(
+    bridge: State<'_, DaemonBridge>,
+    device_id: String,
+    session_id: String,
+    model_id: Option<String>,
+    effort: Option<String>,
+) -> Result<(), CommandError> {
+    require_session_id(&session_id)?;
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.remote_host_set_model(&device_id, &session_id, model_id, effort))
+        .await
+}
+
+/// Switch the mode of one session on a paired host.
+#[tauri::command]
+pub async fn remote_host_set_mode(
+    bridge: State<'_, DaemonBridge>,
+    device_id: String,
+    session_id: String,
+    mode_id: String,
+) -> Result<(), CommandError> {
+    require_session_id(&session_id)?;
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.remote_host_set_mode(&device_id, &session_id, &mode_id)).await
+}

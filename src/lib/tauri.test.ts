@@ -23,6 +23,8 @@ import {
   providersRefresh,
   remoteHostClaim,
   remoteHostClose,
+  remoteHostSetModel,
+  remoteHostSetMode,
   remoteHostCreate,
   remoteHostInterrupt,
   remoteHostPermissionRespond,
@@ -1131,6 +1133,8 @@ describe("remote operate command wrappers", () => {
     await remoteHostClose("device-b", "s.owner.1", "key-4");
     await remoteHostStop("device-b", "s.owner.1", 3);
     await remoteHostProviders("device-b");
+    await remoteHostSetModel("device-b", "s.owner.1", "model-x", null);
+    await remoteHostSetMode("device-b", "s.owner.1", "default");
 
     expect(invoke).toHaveBeenNthCalledWith(1, "remote_host_resize", {
       deviceId: "device-b",
@@ -1161,6 +1165,16 @@ describe("remote operate command wrappers", () => {
     });
     expect(invoke).toHaveBeenNthCalledWith(6, "remote_host_providers", {
       deviceId: "device-b",
+    });
+    expect(invoke).toHaveBeenNthCalledWith(7, "remote_host_set_model", {
+      deviceId: "device-b",
+      sessionId: "s.owner.1",
+      modelId: "model-x",
+    });
+    expect(invoke).toHaveBeenNthCalledWith(8, "remote_host_set_mode", {
+      deviceId: "device-b",
+      sessionId: "s.owner.1",
+      modeId: "default",
     });
   });
 
@@ -1214,6 +1228,13 @@ describe("remote operate command wrappers", () => {
     expect(COMMAND_ARG_KEYS.remote_host_close).toEqual(["deviceId", "sessionId", "idempotencyKey"]);
     expect(COMMAND_ARG_KEYS.remote_host_stop).toEqual(["deviceId", "sessionId", "subscriptionId"]);
     expect(COMMAND_ARG_KEYS.remote_host_providers).toEqual(["deviceId"]);
+    expect(COMMAND_ARG_KEYS.remote_host_set_model).toEqual([
+      "deviceId",
+      "sessionId",
+      "modelId",
+      "effort",
+    ]);
+    expect(COMMAND_ARG_KEYS.remote_host_set_mode).toEqual(["deviceId", "sessionId", "modeId"]);
   });
 });
 

@@ -444,6 +444,41 @@ pub(super) fn dispatch_remote_host(
                 },
             )
         }
+        ClientMessage::RemoteHostSetModel {
+            id,
+            device_id,
+            session_id,
+            model_id,
+            effort,
+        } => {
+            if let Some(refused) = app_only(conn, id) {
+                return refused;
+            }
+            let answer = state
+                .peer_links
+                .operate_set_model(&device_id, session_id, model_id, effort);
+            operate_answer(id, &device_id, answer, |id, _, answer| match answer {
+                LinkAnswer::Accepted => Some(DaemonMessage::Ok { id }),
+                _ => None,
+            })
+        }
+        ClientMessage::RemoteHostSetMode {
+            id,
+            device_id,
+            session_id,
+            mode_id,
+        } => {
+            if let Some(refused) = app_only(conn, id) {
+                return refused;
+            }
+            let answer = state
+                .peer_links
+                .operate_set_mode(&device_id, session_id, mode_id);
+            operate_answer(id, &device_id, answer, |id, _, answer| match answer {
+                LinkAnswer::Accepted => Some(DaemonMessage::Ok { id }),
+                _ => None,
+            })
+        }
         other => DaemonMessage::Error(WireError::new(
             ErrorCode::InvalidRequest,
             format!("{} is not a remote-host frame", other.name()),
@@ -470,5 +505,7 @@ pub(super) fn is_remote_host(request: &ClientMessage) -> bool {
             | ClientMessage::RemoteHostClose { .. }
             | ClientMessage::RemoteHostStop { .. }
             | ClientMessage::RemoteHostProviders { .. }
+            | ClientMessage::RemoteHostSetModel { .. }
+            | ClientMessage::RemoteHostSetMode { .. }
     )
 }

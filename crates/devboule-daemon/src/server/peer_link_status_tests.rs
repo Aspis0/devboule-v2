@@ -841,6 +841,19 @@ fn a_peer_connection_cannot_operate_a_remote_host() {
             id: 9,
             device_id: "b".to_string(),
         },
+        ClientMessage::RemoteHostSetModel {
+            id: 10,
+            device_id: "b".to_string(),
+            session_id: "session-1".to_string(),
+            model_id: None,
+            effort: None,
+        },
+        ClientMessage::RemoteHostSetMode {
+            id: 11,
+            device_id: "b".to_string(),
+            session_id: "session-1".to_string(),
+            mode_id: "default".to_string(),
+        },
     ] {
         let name = request.name();
         match dispatch(request) {

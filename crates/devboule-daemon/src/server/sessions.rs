@@ -748,6 +748,8 @@ pub(super) fn dispatch_session(
         | ClientMessage::RemoteHostClose { .. }
         | ClientMessage::RemoteHostStop { .. }
         | ClientMessage::RemoteHostProviders { .. }
+        | ClientMessage::RemoteHostSetModel { .. }
+        | ClientMessage::RemoteHostSetMode { .. }
         // Nor are the browser-host frames: `dispatch_immediate` answers them.
         | ClientMessage::BrowserHostRegister { .. }
         | ClientMessage::BrowserHostUnregister { .. }

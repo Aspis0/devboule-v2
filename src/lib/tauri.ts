@@ -329,6 +329,13 @@ export type CommandArgs = {
   remote_host_close: { deviceId: string; sessionId: string; idempotencyKey?: string | null };
   remote_host_stop: { deviceId: string; sessionId: string; subscriptionId: number };
   remote_host_providers: { deviceId: string };
+  remote_host_set_model: {
+    deviceId: string;
+    sessionId: string;
+    modelId?: string | null;
+    effort?: string | null;
+  };
+  remote_host_set_mode: { deviceId: string; sessionId: string; modeId: string };
   sessions_unwatch: undefined;
   providers_list: undefined;
   providers_refresh: undefined;
@@ -553,6 +560,8 @@ type CommandResults = {
   remote_host_stop: void;
   /** The host's own provider catalog, for the remote create picker. */
   remote_host_providers: ProviderCatalog;
+  remote_host_set_model: void;
+  remote_host_set_mode: void;
   /**
    * The STORED policy rows only (`DaemonMessage::ToolPolicy` minus its
    * request id). A provider with no row is enabled by default: the panel
@@ -782,6 +791,8 @@ export const COMMAND_ARG_KEYS = {
   remote_host_close: ["deviceId", "sessionId", "idempotencyKey"],
   remote_host_stop: ["deviceId", "sessionId", "subscriptionId"],
   remote_host_providers: ["deviceId"],
+  remote_host_set_model: ["deviceId", "sessionId", "modelId", "effort"],
+  remote_host_set_mode: ["deviceId", "sessionId", "modeId"],
   tool_policy_get: [],
   tool_policy_set: ["providerId", "enabled", "disabledTools"],
   provider_set_enabled: ["providerId", "enabled"],
@@ -1694,6 +1705,22 @@ export const remoteHostStop = (deviceId: string, sessionId: string, subscription
 /** Read a paired host's provider catalog, for the remote create picker. */
 export const remoteHostProviders = (deviceId: string) =>
   invokeTyped("remote_host_providers", { deviceId });
+/** Switch the model of one session on a paired host. */
+export const remoteHostSetModel = (
+  deviceId: string,
+  sessionId: string,
+  modelId?: string | null,
+  effort?: string | null,
+) =>
+  invokeTyped("remote_host_set_model", {
+    deviceId,
+    sessionId,
+    ...(modelId === undefined || modelId === null ? {} : { modelId }),
+    ...(effort === undefined || effort === null ? {} : { effort }),
+  });
+/** Switch the mode of one session on a paired host. */
+export const remoteHostSetMode = (deviceId: string, sessionId: string, modeId: string) =>
+  invokeTyped("remote_host_set_mode", { deviceId, sessionId, modeId });
 
 /**
  * The STORED tool-policy rows (`DaemonMessage::ToolPolicy` minus its request

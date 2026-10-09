@@ -756,6 +756,44 @@ impl PeerLinks {
             LinkCommand::Providers { generation, answer }
         })
     }
+
+    /// Switch the model of one session on the host.
+    pub(crate) fn operate_set_model(
+        &self,
+        device_id: &str,
+        session_id: String,
+        model_id: Option<String>,
+        effort: Option<String>,
+    ) -> LinkAnswer {
+        let wait = self.operate_wait(false);
+        self.operate(device_id, wait, false, |generation, answer| {
+            LinkCommand::SetModel {
+                generation,
+                session_id,
+                model_id,
+                effort,
+                answer,
+            }
+        })
+    }
+
+    /// Switch the mode of one session on the host.
+    pub(crate) fn operate_set_mode(
+        &self,
+        device_id: &str,
+        session_id: String,
+        mode_id: String,
+    ) -> LinkAnswer {
+        let wait = self.operate_wait(false);
+        self.operate(device_id, wait, false, |generation, answer| {
+            LinkCommand::SetMode {
+                generation,
+                session_id,
+                mode_id,
+                answer,
+            }
+        })
+    }
 }
 
 // The three refusals the app can see, and the one sentence each carries.

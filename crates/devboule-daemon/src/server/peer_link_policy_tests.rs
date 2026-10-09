@@ -144,6 +144,19 @@ fn a_peer_may_not_reach_a_link() {
             id: 12,
             device_id: "b".to_string(),
         },
+        ClientMessage::RemoteHostSetModel {
+            id: 13,
+            device_id: "b".to_string(),
+            session_id: "s.a.1".to_string(),
+            model_id: None,
+            effort: None,
+        },
+        ClientMessage::RemoteHostSetMode {
+            id: 14,
+            device_id: "b".to_string(),
+            session_id: "s.a.1".to_string(),
+            mode_id: "default".to_string(),
+        },
     ] {
         assert_eq!(
             peer_allows(&["view".to_string(), CAP_ADMIN.to_string()], &request),
@@ -382,6 +395,15 @@ fn remote_operate_calls_are_the_peers_own_session_frames() {
         harness
             .links
             .operate_stop("b", "far-session".to_string(), 1),
+        harness.links.operate_set_model(
+            "b",
+            "far-session".to_string(),
+            Some("model-x".to_string()),
+            None,
+        ),
+        harness
+            .links
+            .operate_set_mode("b", "far-session".to_string(), "default".to_string()),
     ] {
         assert!(
             matches!(answer, LinkAnswer::Accepted),

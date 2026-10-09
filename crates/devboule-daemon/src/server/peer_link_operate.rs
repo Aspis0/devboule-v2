@@ -558,6 +558,78 @@ pub(crate) fn serve_stop(
     );
 }
 
+/// Switch the model of one session on the far side.
+pub(crate) fn serve_set_model(
+    state: &Arc<ServerState>,
+    link: &HostLink,
+    session: &mut LinkSession,
+    command: LinkCommand,
+    request_id: u64,
+    read_deadline: Duration,
+) {
+    let LinkCommand::SetModel {
+        generation,
+        session_id,
+        model_id,
+        effort,
+        answer,
+    } = command
+    else {
+        return;
+    };
+    let request = ClientMessage::SessionSetModel {
+        id: request_id,
+        session_id,
+        model_id,
+        effort,
+    };
+    serve_ok_shaped(
+        state,
+        link,
+        session,
+        generation,
+        &answer,
+        request,
+        request_id,
+        read_deadline,
+    );
+}
+
+/// Switch the mode of one session on the far side.
+pub(crate) fn serve_set_mode(
+    state: &Arc<ServerState>,
+    link: &HostLink,
+    session: &mut LinkSession,
+    command: LinkCommand,
+    request_id: u64,
+    read_deadline: Duration,
+) {
+    let LinkCommand::SetMode {
+        generation,
+        session_id,
+        mode_id,
+        answer,
+    } = command
+    else {
+        return;
+    };
+    let request = ClientMessage::SessionSetMode {
+        id: request_id,
+        session_id,
+        mode_id,
+    };
+    serve_ok_shaped(
+        state,
+        link,
+        session,
+        generation,
+        &answer,
+        request,
+        request_id,
+        read_deadline,
+    );
+}
+
 /// Read the far side's provider catalog, for the create picker.
 pub(crate) fn serve_providers(
     state: &Arc<ServerState>,

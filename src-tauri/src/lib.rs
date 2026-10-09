@@ -213,6 +213,8 @@ pub fn run() {
             backend::remote_hosts::remote_host_close,
             backend::remote_hosts::remote_host_stop,
             backend::remote_hosts::remote_host_providers,
+            backend::remote_hosts::remote_host_set_model,
+            backend::remote_hosts::remote_host_set_mode,
             backend::tool_policy::tool_policy_get,
             backend::tool_policy::tool_policy_set,
             backend::agent_profiles::agent_profiles_get,

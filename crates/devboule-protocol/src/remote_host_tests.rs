@@ -355,8 +355,31 @@ fn the_remote_operate_frames_round_trip_with_their_fields() {
         serde_json::from_value(serde_json::to_value(&stop).expect("json")).expect("back");
     assert_eq!(back, stop);
 
-    let providers = ClientMessage::RemoteHostProviders {
+    let set_model = ClientMessage::RemoteHostSetModel {
         id: 19,
+        device_id: "b".to_string(),
+        session_id: "s1".to_string(),
+        model_id: Some("model-x".to_string()),
+        effort: None,
+    };
+    assert_eq!(set_model.name(), "RemoteHostSetModel");
+    let back: ClientMessage =
+        serde_json::from_value(serde_json::to_value(&set_model).expect("json")).expect("back");
+    assert_eq!(back, set_model);
+
+    let set_mode = ClientMessage::RemoteHostSetMode {
+        id: 20,
+        device_id: "b".to_string(),
+        session_id: "s1".to_string(),
+        mode_id: "default".to_string(),
+    };
+    assert_eq!(set_mode.name(), "RemoteHostSetMode");
+    let back: ClientMessage =
+        serde_json::from_value(serde_json::to_value(&set_mode).expect("json")).expect("back");
+    assert_eq!(back, set_mode);
+
+    let providers = ClientMessage::RemoteHostProviders {
+        id: 21,
         device_id: "b".to_string(),
     };
     assert_eq!(providers.name(), "RemoteHostProviders");

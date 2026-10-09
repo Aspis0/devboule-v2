@@ -315,6 +315,8 @@ pub(super) fn dispatch_immediate(
         | ClientMessage::RemoteHostClose { .. }
         | ClientMessage::RemoteHostStop { .. }
         | ClientMessage::RemoteHostProviders { .. }
+        | ClientMessage::RemoteHostSetModel { .. }
+        | ClientMessage::RemoteHostSetMode { .. }
         | ClientMessage::RemoteHostList { .. } => DaemonMessage::Error(WireError::new(
             ErrorCode::InvalidRequest,
             "remote host frames are dispatched by the async wrapper",

@@ -420,6 +420,8 @@ fn request_id(request: &ClientMessage) -> Option<u64> {
         | ClientMessage::SessionPermissionRespond { id, .. }
         | ClientMessage::SessionClose { id, .. }
         | ClientMessage::SessionStop { id, .. }
+        | ClientMessage::SessionSetModel { id, .. }
+        | ClientMessage::SessionSetMode { id, .. }
         | ClientMessage::ProvidersList { id } => Some(*id),
         _ => None,
     }
@@ -499,7 +501,9 @@ fn operate_reply(request: &ClientMessage, id: u64) -> Option<DaemonMessage> {
         | ClientMessage::SessionInterrupt { .. }
         | ClientMessage::SessionPermissionRespond { .. }
         | ClientMessage::SessionClose { .. }
-        | ClientMessage::SessionStop { .. } => DaemonMessage::Ok { id },
+        | ClientMessage::SessionStop { .. }
+        | ClientMessage::SessionSetModel { .. }
+        | ClientMessage::SessionSetMode { .. } => DaemonMessage::Ok { id },
         ClientMessage::ProvidersList { .. } => DaemonMessage::Providers {
             id,
             providers: Vec::new(),

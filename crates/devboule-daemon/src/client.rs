@@ -2280,6 +2280,50 @@ impl DaemonClient {
         }
     }
 
+    /// Switch the model of one session on a paired host.
+    pub fn remote_host_set_model(
+        &self,
+        device_id: &str,
+        session_id: &str,
+        model_id: Option<String>,
+        effort: Option<String>,
+    ) -> Result<(), DaemonError> {
+        self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::RemoteHostSetModel {
+            id,
+            device_id: device_id.to_string(),
+            session_id: session_id.to_string(),
+            model_id,
+            effort,
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Switch the mode of one session on a paired host.
+    pub fn remote_host_set_mode(
+        &self,
+        device_id: &str,
+        session_id: &str,
+        mode_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::RemoteHostSetMode {
+            id,
+            device_id: device_id.to_string(),
+            session_id: session_id.to_string(),
+            mode_id: mode_id.to_string(),
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     /// Read a paired host's provider catalog, for the create picker.
     pub fn remote_host_providers(
         &self,

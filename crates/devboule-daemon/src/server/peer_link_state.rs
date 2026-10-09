@@ -151,6 +151,21 @@ pub(crate) enum LinkCommand {
         generation: u64,
         answer: SyncSender<LinkAnswer>,
     },
+    /// Switch the model of one session on the far side.
+    SetModel {
+        generation: u64,
+        session_id: String,
+        model_id: Option<String>,
+        effort: Option<String>,
+        answer: SyncSender<LinkAnswer>,
+    },
+    /// Switch the mode of one session on the far side.
+    SetMode {
+        generation: u64,
+        session_id: String,
+        mode_id: String,
+        answer: SyncSender<LinkAnswer>,
+    },
     /// The row was revoked: drop the transport now, streams included.
     Revoke,
 }

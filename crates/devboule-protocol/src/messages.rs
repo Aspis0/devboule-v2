@@ -656,6 +656,29 @@ pub enum ClientMessage {
         id: u64,
         device_id: String,
     },
+    /// Switch the model of one session on a paired host. Local-only: the
+    /// daemon maps it to the peer's own `SessionSetModel` on the held link.
+    /// The peer's `admin` grant and the target session's scope decide the
+    /// answer, exactly as they do for a local switch.
+    RemoteHostSetModel {
+        id: u64,
+        device_id: String,
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
+    },
+    /// Switch the mode of one session on a paired host. Local-only: the
+    /// daemon maps it to the peer's own `SessionSetMode` on the held link.
+    /// The peer's `send` grant, the mode policy and the target session's
+    /// scope decide the answer, exactly as they do for a local switch.
+    RemoteHostSetMode {
+        id: u64,
+        device_id: String,
+        session_id: String,
+        mode_id: String,
+    },
     /// Register this connection as the browser host: the place that runs
     /// browser commands for agents. The reply is
     /// [`DaemonMessage::BrowserHostRegistered`], and from then on the daemon
@@ -1601,6 +1624,8 @@ impl ClientMessage {
             | Self::RemoteHostClose { id, .. }
             | Self::RemoteHostStop { id, .. }
             | Self::RemoteHostProviders { id, .. }
+            | Self::RemoteHostSetModel { id, .. }
+            | Self::RemoteHostSetMode { id, .. }
             | Self::BrowserHostRegister { id, .. }
             | Self::BrowserHostUnregister { id, .. }
             | Self::BrowserExecuteResponse { id, .. }
@@ -1766,6 +1791,8 @@ impl ClientMessage {
             | Self::RemoteHostInterrupt { .. }
             | Self::RemoteHostStop { .. }
             | Self::RemoteHostProviders { .. }
+            | Self::RemoteHostSetModel { .. }
+            | Self::RemoteHostSetMode { .. }
             | Self::BrowserHostRegister { .. }
             | Self::BrowserHostUnregister { .. }
             | Self::BrowserExecuteResponse { .. }
@@ -1855,6 +1882,8 @@ impl ClientMessage {
             Self::RemoteHostClose { .. } => "RemoteHostClose",
             Self::RemoteHostStop { .. } => "RemoteHostStop",
             Self::RemoteHostProviders { .. } => "RemoteHostProviders",
+            Self::RemoteHostSetModel { .. } => "RemoteHostSetModel",
+            Self::RemoteHostSetMode { .. } => "RemoteHostSetMode",
             Self::BrowserHostRegister { .. } => "BrowserHostRegister",
             Self::BrowserHostUnregister { .. } => "BrowserHostUnregister",
             Self::BrowserExecuteResponse { .. } => "BrowserExecuteResponse",
@@ -2060,6 +2089,8 @@ impl ClientMessage {
             | Self::RemoteHostPermissionRespond { .. }
             | Self::RemoteHostClose { .. }
             | Self::RemoteHostStop { .. }
+            | Self::RemoteHostSetModel { .. }
+            | Self::RemoteHostSetMode { .. }
             // Registering or leaving decides which process runs the agents'
             // browser commands, which is the fact an audit row would name.
             | Self::BrowserHostRegister { .. }
