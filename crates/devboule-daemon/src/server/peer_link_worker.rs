@@ -160,6 +160,18 @@ fn run(
                     LinkCommand::Detach { .. } => {
                         serve_detach(&link, open, command, reads, tuning.read_deadline);
                     }
+                    LinkCommand::Revoke => {
+                        // The row is gone: the transport and every stream on
+                        // it go with it, and there is nothing to reconnect to.
+                        link.clear_subscriptions();
+                        link.publish(status(
+                            &link,
+                            RemoteHostState::NeedsPairing,
+                            Some(sentence_for(DialStep::Revoked)),
+                        ));
+                        link.retire();
+                        return;
+                    }
                 }
                 continue;
             }
@@ -409,6 +421,9 @@ pub(super) fn refuse_reads_until(queue: &Receiver<LinkCommand>, step: DialStep, 
             | Ok(LinkCommand::Detach { answer, .. }) => {
                 let _ = answer.send(LinkAnswer::Failed(state_for(step), sentence_for(step)));
             }
+            // A revoke during a backoff is served by the next loop turn,
+            // which sees the flag through the queue once the backoff ends.
+            Ok(LinkCommand::Revoke) => {}
             Err(mpsc::RecvTimeoutError::Timeout) => return,
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 thread::sleep(left);

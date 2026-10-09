@@ -617,7 +617,50 @@ fn an_overflow_marks_a_gap_and_keeps_every_important_event() {
     );
 }
 
-/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones
+/// Revoking a host closes the outbound link and its streams at once, without
+/// waiting for the next probe, and a fresh attach is refused.
+#[test]
+fn revoking_a_host_closes_its_link_and_streams_immediately() {
+    let harness = Harness::start("peer-link-revoke");
+    harness.watch();
+    harness.wait_online(&harness.conn);
+    assert!(matches!(
+        harness
+            .links
+            .attach("b", "session-1", 7, Arc::clone(&harness.conn)),
+        super::LinkAnswer::Accepted
+    ));
+    eventually("the stream relays", || {
+        harness
+            .conn
+            .outbound
+            .pull_replies()
+            .into_iter()
+            .any(|reply| matches!(reply, DaemonMessage::RemoteHostEvent { .. }))
+    });
+
+    harness.state.peer_revoke("b", 7).expect("revoke the row");
+    harness.links.revoke("b");
+
+    eventually("the watcher is told the pairing is gone", || {
+        harness
+            .statuses()
+            .iter()
+            .any(|(state, _)| *state == RemoteHostState::NeedsPairing)
+    });
+    // The transport is dropped, so later pushes on the dead stream relay
+    // nowhere, and a fresh attach is refused before any frame leaves.
+    harness.responder.push_session_event(7, "after-revoke");
+    let refused = harness
+        .links
+        .attach("b", "session-1", 8, Arc::clone(&harness.conn));
+    match refused {
+        super::LinkAnswer::Failed(RemoteHostState::NeedsPairing, _) => {}
+        other => panic!("a revoked host must refuse the attach, got {other:?}"),
+    }
+}
+
+/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones/// The revision rule itself: a link's first number is its baseline, later ones
 /// must continue it, a replay or a poisoned value moves nothing, and a new
 /// transport re-baselines.
 #[test]

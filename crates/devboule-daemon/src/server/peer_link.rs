@@ -331,6 +331,30 @@ impl PeerLinks {
         answer
     }
 
+    /// Close a revoked host's link now: its streams stop with it, and the
+    /// watchers are told the pairing is gone. Called next to
+    /// `revoke_peer_connections`, so an inbound close and an outbound close
+    /// happen at the same moment rather than one probe apart.
+    pub(crate) fn revoke(&self, device_id: &str) {
+        let link = {
+            let inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+            inner.links.get(device_id).cloned()
+        };
+        let Some(link) = link else {
+            return;
+        };
+        link.clear_subscriptions();
+        link.publish(RemoteHostStatus {
+            device_id: device_id.to_string(),
+            state: RemoteHostState::NeedsPairing,
+            last_failure: Some(needs_pairing_sentence().to_string()),
+            revision: None,
+        });
+        if !link.queue_revoke() {
+            link.retire();
+        }
+    }
+
     /// Close one session's live stream.
     ///
     /// The local close is unconditional and first: whatever the link can do,

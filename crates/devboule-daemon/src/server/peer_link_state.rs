@@ -58,6 +58,8 @@ pub(crate) enum LinkCommand {
         subscription_id: u64,
         answer: SyncSender<LinkAnswer>,
     },
+    /// The row was revoked: drop the transport now, streams included.
+    Revoke,
 }
 
 /// One live remote session stream: which local connection receives its events,
@@ -396,6 +398,20 @@ impl HostLink {
                     answer,
                 })
                 .is_ok(),
+            None => false,
+        }
+    }
+
+    /// Queue the immediate close a revoke asks for. The worker drops the
+    /// transport (and every stream on it) on its next turn; `false` means no
+    /// worker is there to take it.
+    pub(crate) fn queue_revoke(&self) -> bool {
+        let slot = self
+            .worker
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        match slot.as_ref() {
+            Some((_, commands)) => commands.try_send(LinkCommand::Revoke).is_ok(),
             None => false,
         }
     }

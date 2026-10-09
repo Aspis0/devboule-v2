@@ -82,6 +82,7 @@ pub(super) fn dispatch_devices(
                     // that recorded it, so at most one already-decoded frame
                     // is processed afterwards (design §8 R8).
                     let closed = state.revoke_peer_connections(&device_id);
+                    state.peer_links.revoke(&device_id);
                     let _ = closed;
                     match state.peer_get(&device_id) {
                         Ok(Some(record)) => DaemonMessage::PeerUpdated {
@@ -135,6 +136,7 @@ pub(super) fn dispatch_devices(
                             // this row no longer grants. The flag is what drops
                             // it, on that connection's own next turn.
                             state.revoke_peer_connections(&device_id);
+                            state.peer_links.revoke(&device_id);
                             match state.peer_get(&device_id) {
                                 Ok(Some(refreshed)) => DaemonMessage::PeerUpdated {
                                     id,
