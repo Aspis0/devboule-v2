@@ -59,6 +59,11 @@ describe("hideUntrustedFrame", () => {
     expect(shown).not.toContain("devboule");
   });
 
+  it("drops a second complete fence that follows the first, in the same result", () => {
+    const text = `${HEAD}\none\ncontent-end 0123456789abcdef\n\n${HEAD}\ntwo\ncontent-end 0123456789abcdef`;
+    expect(hideUntrustedFrame(text)).toBe("one\n\ntwo");
+  });
+
   it("drops a header that is still streaming in, before its nonce line has arrived", () => {
     expect(hideUntrustedFrame("[devboule: untrusted content]\nsource: browser page\nprov")).toBe(
       "",
