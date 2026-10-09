@@ -110,22 +110,58 @@ describe("the + menu entries and keys", () => {
     return menu;
   }
 
-  it("disables every entry while a create is in flight", () => {
+  it("marks every entry aria-disabled while a create is in flight", () => {
     const menu = render({ creating: true });
-    expect(menu.entry("Agent").disabled).toBe(true);
-    expect(menu.entry("Terminal").disabled).toBe(true);
-    expect(menu.entry("Browser").disabled).toBe(true);
+    for (const label of ["Agent", "Terminal", "Browser"]) {
+      expect(menu.entry(label).getAttribute("aria-disabled")).toBe("true");
+      expect(menu.entry(label).disabled).toBe(false);
+    }
   });
 
-  it("disables every entry when no workspace is selected, and says why", () => {
+  it("marks every entry aria-disabled when no workspace is selected, and says why", () => {
     const menu = render({ workspaceSelected: false });
-    expect(menu.entry("Agent").disabled).toBe(true);
-    expect(menu.entry("Terminal").disabled).toBe(true);
-    expect(menu.entry("Browser").disabled).toBe(true);
+    for (const label of ["Agent", "Terminal", "Browser"]) {
+      expect(menu.entry(label).getAttribute("aria-disabled")).toBe("true");
+      expect(menu.entry(label).disabled).toBe(false);
+    }
     const reason = menu.reason();
     expect(reason?.textContent).toBe("No workspace is selected.");
     expect(menu.entry("Agent").getAttribute("aria-describedby")).toBe(reason?.id);
     expect(menu.entry("Browser").getAttribute("aria-describedby")).toBe(reason?.id);
+  });
+
+  it("keeps a waiting menu reachable by keyboard: focus, arrows, End and Escape", () => {
+    // A disabled attribute would drop these entries from focus and leave the
+    // reason unreachable; aria-disabled keeps them in the keyboard path.
+    const menu = render({ workspaceSelected: false });
+    const agent = menu.entry("Agent");
+    const terminal = menu.entry("Terminal");
+    const browser = menu.entry("Browser");
+    expect(document.activeElement).toBe(agent);
+    act(() => {
+      agent.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+    expect(document.activeElement).toBe(terminal);
+    act(() => {
+      terminal.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
+    });
+    expect(document.activeElement).toBe(browser);
+    act(() => {
+      browser.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(menu.onClose).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(menu.trigger());
+  });
+
+  it("does nothing when a waiting entry is activated", () => {
+    const menu = render({ workspaceSelected: false });
+    act(() => menu.entry("Agent").click());
+    act(() => menu.entry("Terminal").click());
+    act(() => menu.entry("Browser").click());
+    expect(menu.onAgent).not.toHaveBeenCalled();
+    expect(menu.onTerminal).not.toHaveBeenCalled();
+    expect(menu.onBrowser).not.toHaveBeenCalled();
+    expect(menu.onClose).not.toHaveBeenCalled();
   });
 
   it("shows no reason while a workspace is selected", () => {

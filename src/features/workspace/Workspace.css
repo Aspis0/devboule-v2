@@ -1643,6 +1643,16 @@
   background: var(--surface-muted);
 }
 
+/* Waiting, not broken: quieter ink and no hover fill. Focus still shows. */
+.workspace-surface-option[aria-disabled="true"] {
+  color: var(--ink-soft);
+  cursor: default;
+}
+
+.workspace-surface-option[aria-disabled="true"]:hover {
+  background: transparent;
+}
+
 .workspace-surface-option .workspace-status-dot {
   width: 6px;
   height: 6px;

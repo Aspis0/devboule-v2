@@ -1388,7 +1388,7 @@ describe("the + new-tab menu", () => {
 
     await openMenu(container);
     for (const label of ["Agent", "Terminal", "Browser"]) {
-      expect(menuItem(container, label).disabled).toBe(true);
+      expect(menuItem(container, label).getAttribute("aria-disabled")).toBe("true");
     }
     const reason = document.getElementById("workspace-new-tab-reason");
     expect(reason?.textContent).toBe("No workspace is selected.");

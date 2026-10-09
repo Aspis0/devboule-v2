@@ -186,9 +186,11 @@ export function WorkspaceNewTabMenu({
           className="workspace-surface-option"
           key={entry.label}
           ref={index === 0 ? firstEntryRef : undefined}
-          disabled={entry.disabled}
+          // A waiting entry stays focusable: a disabled attribute would take it
+          // out of the keyboard path, and the reason below would be unreachable.
+          aria-disabled={entry.disabled || undefined}
           aria-describedby={workspaceSelected ? undefined : NO_WORKSPACE_REASON_ID}
-          onClick={entry.onSelect}
+          onClick={entry.disabled ? undefined : entry.onSelect}
         >
           {entry.glyph}
           <span className="workspace-surface-name">{entry.label}</span>
