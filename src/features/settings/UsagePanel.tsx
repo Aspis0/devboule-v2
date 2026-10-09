@@ -14,6 +14,7 @@ import {
   planWindowLabel,
   planWindowMeta,
 } from "../workspace/contextUsageView";
+import { SettingsAdvanced, SettingsRow, SettingsSection } from "./rows";
 
 const LOADING_COPY = "Listing the configured providers…";
 
@@ -30,7 +31,7 @@ function reportsPlanUsage(provider: ProviderInfo): boolean {
   return provider.protocol === "stream-json" || provider.protocol === "codex-app-server";
 }
 
-/** The quiet line under a provider heading with no reading stored. A
+/** The one short line under a provider heading with no reading stored. A
     protocol the catalog omitted (an older daemon sends no field) is no
     answer: it takes the neutral line, never a claim about what the provider
     can report. */
@@ -38,23 +39,21 @@ function noReadingCopy(provider: ProviderInfo): string {
   if (provider.protocol != null && !reportsPlanUsage(provider)) {
     return "This provider does not report plan usage.";
   }
-  if (provider.enabled === false) {
-    return "No plan reading yet — the provider is switched off, so no session can send one.";
-  }
-  return "No plan reading yet — one appears here when a session of this provider sends it.";
+  if (provider.enabled === false) return "No plan reading yet — provider off.";
+  return "No plan reading yet.";
 }
 
-/** One window of a plan reading: label, percent and reset, then the bar. A
+/** One window of a plan reading: label and reset on the row, then the bar. A
     field the frame did not carry renders nothing — never a stand-in zero. */
 function PlanWindowRow({ planWindow, nowMs }: { planWindow: PlanWindow; nowMs: number }) {
   const meta = planWindowMeta(planWindow, nowMs);
   const barPercent = planWindowBarPercent(planWindow);
   return (
     <div className="plan-window">
-      <div className="settings-card settings-value-row">
-        <span className="settings-card-title">{planWindowLabel(planWindow.durationMins)}</span>
-        {meta !== null ? <span className="settings-card-value">{meta}</span> : null}
-      </div>
+      <SettingsRow
+        title={planWindowLabel(planWindow.durationMins)}
+        control={meta !== null ? <span>{meta}</span> : null}
+      />
       {barPercent !== null ? (
         <div className="plan-window-bar" aria-hidden="true">
           <div className="plan-window-fill" style={{ width: `${barPercent}%` }} />
@@ -67,12 +66,9 @@ function PlanWindowRow({ planWindow, nowMs }: { planWindow: PlanWindow; nowMs: n
 function PlanReadingRows({ plan, nowMs }: { plan: PlanUsage; nowMs: number }) {
   const credits = planCreditsCopy(plan.credits);
   return (
-    <div className="settings-stack settings-stack-spaced">
+    <>
       {plan.planLabel !== undefined ? (
-        <div className="settings-card settings-value-row">
-          <span className="settings-card-title">Plan</span>
-          <span className="settings-card-value">{plan.planLabel}</span>
-        </div>
+        <SettingsRow title="Plan" control={<span>{plan.planLabel}</span>} />
       ) : null}
       {plan.windows.map((planWindow, index) => (
         <PlanWindowRow
@@ -82,28 +78,26 @@ function PlanReadingRows({ plan, nowMs }: { plan: PlanUsage; nowMs: number }) {
         />
       ))}
       {credits !== null ? (
-        <div className="settings-card settings-value-row">
-          <span className="settings-card-title">{credits.title}</span>
-          <span className="settings-card-value">{credits.value}</span>
-        </div>
+        <SettingsRow title={credits.title} control={<span>{credits.value}</span>} />
       ) : null}
-    </div>
+    </>
   );
 }
 
-/** One provider's group: its name, then its latest plan reading or the quiet
+/** One provider's section: its name, then its latest plan reading or the one
     line that says why there is none. `usePlanUsage` re-renders only this
-    group when the provider's next frame lands. */
+    section when the provider's next frame lands. */
 function ProviderPlanGroup({ provider, nowMs }: { provider: ProviderInfo; nowMs: number }) {
   const plan = usePlanUsage(provider.id);
   return (
     <section aria-label={`Plan usage: ${provider.id}`}>
-      <h3 className="settings-subheading">{provider.id}</h3>
-      {plan === null || !planFrameHasContent(plan) ? (
-        <p className="settings-page-empty">{noReadingCopy(provider)}</p>
-      ) : (
-        <PlanReadingRows plan={plan} nowMs={nowMs} />
-      )}
+      <SettingsSection label={provider.id}>
+        {plan === null || !planFrameHasContent(plan) ? (
+          <p className="settings-status">{noReadingCopy(provider)}</p>
+        ) : (
+          <PlanReadingRows plan={plan} nowMs={nowMs} />
+        )}
+      </SettingsSection>
     </section>
   );
 }
@@ -148,7 +142,7 @@ export function UsagePanel() {
       ) : installed === null ? (
         <div role="status">{LOADING_COPY}</div>
       ) : installed.length === 0 ? (
-        <p className="settings-page-empty" role="status">
+        <p className="settings-status" role="status">
           {providerEmptySentence(unreadableDirs)}
         </p>
       ) : (
@@ -156,6 +150,9 @@ export function UsagePanel() {
           <ProviderPlanGroup key={provider.id} provider={provider} nowMs={nowMs} />
         ))
       )}
+      <SettingsAdvanced>
+        <p>Usage is never fetched: a provider that has not sent a reading shows none.</p>
+      </SettingsAdvanced>
     </div>
   );
 }

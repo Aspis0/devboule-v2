@@ -83,17 +83,13 @@ describe("the Usage settings page", () => {
     );
     await renderPanel();
 
-    expect(section("claude")?.textContent).toContain(
-      "No plan reading yet — one appears here when a session of this provider sends it.",
-    );
+    expect(section("claude")?.textContent).toContain("No plan reading yet.");
     // A provider the daemon cannot produce plan usage for says so, instead of
     // promising a reading that can never arrive.
     expect(section("grok")?.textContent).toContain("This provider does not report plan usage.");
     expect(section("grok")?.textContent).not.toContain("No plan reading yet");
     // A switched-off provider cannot start the session that would send one.
-    expect(section("codex")?.textContent).toContain(
-      "the provider is switched off, so no session can send one",
-    );
+    expect(section("codex")?.textContent).toContain("No plan reading yet — provider off.");
     // A provider the catalogue only offers (not installed) has no plan to read.
     expect(section("ghost")).toBeNull();
   });
@@ -116,9 +112,7 @@ describe("the Usage settings page", () => {
     expect(section("grok")?.textContent).toContain("does not report");
     // Switched off with no protocol answer, the true line is the
     // switched-off one: no session can send a reading.
-    expect(section("grok-off")?.textContent).toContain(
-      "the provider is switched off, so no session can send one",
-    );
+    expect(section("grok-off")?.textContent).toContain("No plan reading yet — provider off.");
     expect(section("grok-off")?.textContent).not.toContain("does not report");
   });
 
