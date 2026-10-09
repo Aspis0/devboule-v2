@@ -1,4 +1,4 @@
-import { memo, useMemo, useState, type ReactNode } from "react";
+import { memo, useMemo, type ReactNode } from "react";
 import type { ToolChatItem } from "../../../lib/toolCallGroups";
 import { hideUntrustedFrame } from "../../../lib/untrustedFrame";
 import { ExternalLink } from "../../../components/ExternalLink";
@@ -15,6 +15,7 @@ import { entryFrame } from "./entryFrame";
 import { ChatImageThumbnails } from "./ChatImageThumbnails";
 import { isScreenshotRow, rowShowsNoOutput } from "../daemonToolVerb";
 import { ToolIcon } from "./ToolIcon";
+import { useOpenedRow } from "./openedRows";
 import { ToolOutput, type OutputExpansion } from "./ToolOutput";
 import { diffStats, failureExcerpt, outputLines } from "./toolOutputView";
 
@@ -82,7 +83,7 @@ export const ToolRow = memo(function ToolRow({
     (isPlan && item.output.length > 0) ||
     bodyImages;
   // The line starts closed; only the person's own open shows the output.
-  const [opened, setOpened] = useState(false);
+  const [opened, setOpened] = useOpenedRow(item.id);
   const toolClassName = `${className}${isPlan ? " is-plan" : ""}${running ? " is-running" : ""}${failed ? " is-failed" : ""}${cancelled ? " is-cancelled" : ""}${interrupted ? ` ${INTERRUPTED_TOOL_CLASS}` : ""}`;
   const line: ReactNode = (
     <>

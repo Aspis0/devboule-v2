@@ -1,8 +1,10 @@
+import { useState } from "react";
 import type { AgentChatItem } from "../../../lib/agentSession";
 import { isToolCallGroup } from "../../../lib/toolCallGroups";
 import type { ChatFileLinks } from "../../../lib/chatFilePaths";
 import type { A2aNameSource } from "../A2aMessageCard";
 import { TranscriptRow } from "./TranscriptRow";
+import { createOpenedRows, OpenedRowsContext } from "./openedRows";
 import { useTranscriptEntries } from "./useTranscriptEntries";
 
 type RowContext = "none" | "fileLinks" | "a2aNames" | "transcriptEnded" | "streamingThought";
@@ -40,18 +42,23 @@ export function TranscriptRows({
   streamingThoughtId,
 }: TranscriptRowsProps) {
   const entries = useTranscriptEntries(items, recoveredAttach, pendingPlanToolCallId);
-  return entries.map((entry) => {
-    const role = isToolCallGroup(entry) ? "tool" : entry.role;
-    const context = ROLE_CONTEXT[role];
-    return (
-      <TranscriptRow
-        key={entry.id}
-        entry={entry}
-        a2aNames={context === "a2aNames" ? a2aNames : undefined}
-        fileLinks={context === "fileLinks" ? fileLinks : null}
-        transcriptEnded={context === "transcriptEnded" && transcriptEnded}
-        isStreamingThought={context === "streamingThought" && entry.id === streamingThoughtId}
-      />
-    );
-  });
+  const [openedRows] = useState(createOpenedRows);
+  return (
+    <OpenedRowsContext.Provider value={openedRows}>
+      {entries.map((entry) => {
+        const role = isToolCallGroup(entry) ? "tool" : entry.role;
+        const context = ROLE_CONTEXT[role];
+        return (
+          <TranscriptRow
+            key={entry.id}
+            entry={entry}
+            a2aNames={context === "a2aNames" ? a2aNames : undefined}
+            fileLinks={context === "fileLinks" ? fileLinks : null}
+            transcriptEnded={context === "transcriptEnded" && transcriptEnded}
+            isStreamingThought={context === "streamingThought" && entry.id === streamingThoughtId}
+          />
+        );
+      })}
+    </OpenedRowsContext.Provider>
+  );
 }
