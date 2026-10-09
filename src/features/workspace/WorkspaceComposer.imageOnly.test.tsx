@@ -169,9 +169,15 @@ describe("WorkspaceComposer image-only queue", () => {
 });
 
 describe("WorkspaceComposer pasted images", () => {
-  function paste(files: File[]): Event {
+  function paste(files: File[], text = ""): Event {
     const event = new Event("paste", { bubbles: true, cancelable: true });
-    Object.defineProperty(event, "clipboardData", { value: { files, types: ["Files"] } });
+    Object.defineProperty(event, "clipboardData", {
+      value: {
+        files,
+        types: files.length > 0 ? ["Files"] : ["text/plain"],
+        getData: (type: string) => (type === "text/plain" ? text : ""),
+      },
+    });
     return event;
   }
 
@@ -208,5 +214,21 @@ describe("WorkspaceComposer pasted images", () => {
       textarea().dispatchEvent(event);
     });
     expect(event.defaultPrevented).toBe(false);
+  });
+
+  it("inserts pasted text at the caret and attaches the pasted files", async () => {
+    const onSend = vi.fn();
+    await renderComposer(onSend, { imageOnlyAccepted: true });
+    await typeText("hello world");
+    textarea().setSelectionRange(5, 5);
+    const event = paste([pngFile()], " big");
+    await act(async () => {
+      textarea().dispatchEvent(event);
+    });
+    await act(async () => {});
+    expect(event.defaultPrevented).toBe(true);
+    expect(textarea().value).toBe("hello big world");
+    expect(textarea().selectionStart).toBe(9);
+    expect(container.querySelector('[data-testid="composer-image-preview"]')).not.toBeNull();
   });
 });

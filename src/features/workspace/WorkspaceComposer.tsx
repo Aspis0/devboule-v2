@@ -318,12 +318,31 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
     [disabled, takeFiles],
   );
 
-  // A paste that carries files takes them like a drop; a text paste stays text.
+  // The caret a mixed paste leaves behind, applied once the text has rendered.
+  const pasteCaretRef = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const caret = pasteCaretRef.current;
+    if (caret === null || textareaRef.current === null) return;
+    pasteCaretRef.current = null;
+    textareaRef.current.setSelectionRange(caret, caret);
+  }, [input]);
+
+  // A paste that carries files takes them like a drop. Text that rides with the
+  // files lands at the caret, since the files' default would drop it. A text-only
+  // paste stays native.
   const handlePaste = useCallback(
     (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
       const pasted = Array.from(event.clipboardData?.files ?? []);
       if (pasted.length === 0 || disabled) return;
       event.preventDefault();
+      const text = event.clipboardData?.getData("text/plain") ?? "";
+      if (text !== "") {
+        const element = event.currentTarget;
+        const start = element.selectionStart;
+        const end = element.selectionEnd;
+        pasteCaretRef.current = start + text.length;
+        setInput(element.value.slice(0, start) + text + element.value.slice(end));
+      }
       takeFiles(pasted);
     },
     [disabled, takeFiles],
