@@ -37,10 +37,9 @@ export interface DesignFolderControlProps {
 }
 
 /**
- * The folder this canvas is attached to, and the control that changes it. The
- * attachment is optional: the canvas shows what the user generates, and a folder
- * only decides which directory the agent reads and writes. The trigger always
- * says the word "folder" so the route is findable without opening the menu.
+ * The folder this canvas is attached to, and the control that changes it. A run
+ * starts in that folder, so generation waits until one is attached. The trigger
+ * always says the word "folder" so the route is findable without opening the menu.
  */
 export const DesignFolderControl = memo(function DesignFolderControl({
   folders,
@@ -152,10 +151,6 @@ export const DesignFolderControl = memo(function DesignFolderControl({
           aria-label="Choose a folder"
         >
           <div className="design-agent-picker-label">Folder for this canvas</div>
-          <p className="design-folder-note">
-            Optional. The canvas shows what you generate; attaching a folder lets the agent read and
-            write files in it.
-          </p>
           {loading && folders.length === 0 ? (
             <div className="design-agent-picker-status">Loading folders.</div>
           ) : (

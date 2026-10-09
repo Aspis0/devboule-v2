@@ -120,13 +120,6 @@
   line-height: 1;
 }
 
-.design-folder-note {
-  margin: 0 0 6px;
-  color: var(--silence);
-  font-size: var(--type-small);
-  line-height: var(--leading-body);
-}
-
 .design-folder-record {
   /* The flex child that carries the nowrap path: its automatic min-width
      would hold the column open past the popover's edge. */

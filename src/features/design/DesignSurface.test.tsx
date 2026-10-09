@@ -4862,6 +4862,23 @@ describe("Design chrome, composer and folder attachment", () => {
     await act(async () => root.unmount());
   });
 
+  it("opens the folder popover with no explanatory note", async () => {
+    const { container, root } = await renderDesign(createHost());
+    await act(settle);
+
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[data-design-folder-trigger="true"]',
+    );
+    if (trigger === null) throw new Error("Folder control missing");
+    await act(async () => trigger.click());
+
+    const picker = container.querySelector("#design-folder-picker");
+    expect(picker).not.toBeNull();
+    expect(container.querySelector(".design-folder-note")).toBeNull();
+    expect(picker?.textContent).not.toContain("Optional");
+    await act(async () => root.unmount());
+  });
+
   it("names the attached folder by its directory", async () => {
     skillSettingsMocks.loadWorkspace.mockResolvedValueOnce(WORKSPACE.id);
     const { container, root } = await renderDesign(createHost());
