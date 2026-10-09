@@ -51,7 +51,7 @@
   cursor: pointer;
 }
 
-.settings-choice input {
+.settings-choices .settings-choice input {
   accent-color: var(--control-on);
 }
 

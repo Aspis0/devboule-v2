@@ -81,4 +81,30 @@ describe("shared row pattern (live stylesheets)", () => {
     expect(getComputedStyle(value).textOverflow).toBe("ellipsis");
     expect(getComputedStyle(value).whiteSpace).toBe("nowrap");
   });
+  it("holds the radio colour by specificity, not by sheet order", () => {
+    // The rows' radios tie global.css input[type="radio"] at (0,1,1). A later
+    // sheet with another value must not win: the synthetic last sheet stands
+    // in for that rule and the choice colour must still hold.
+    const adversarial = assembleCssProof([
+      read("src/styles/tokens.css"),
+      read("src/styles/global.css"),
+      read("src/features/settings/rows.css"),
+      'input[type="radio"] { accent-color: #123456; }',
+    ]);
+    adversarial.inject([".settings-choices .settings-choice input", 'input[type="radio"]']);
+    const list = document.createElement("div");
+    list.className = "settings-choices";
+    const choice = document.createElement("label");
+    choice.className = "settings-choice";
+    const input = document.createElement("input");
+    input.type = "radio";
+    choice.appendChild(input);
+    list.appendChild(choice);
+    document.body.appendChild(list);
+    const style = getComputedStyle(input);
+    // --control-on aliases --ink; token() reads one level, so name the base.
+    expect((style as unknown as { accentColor: string }).accentColor).toBe(
+      adversarial.token("--ink"),
+    );
+  });
 });
