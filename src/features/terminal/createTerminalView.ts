@@ -46,8 +46,8 @@ function paletteColor(host: HTMLElement, variable: string): string {
  * text and the ANSI tones always belong to one theme. The ground is
  * `--terminal-ground`, the surface the host and frame paint: anything else
  * lets the viewport's fill diverge from the frame and show as a line at the
- * box's edge. ANSI black is the ink in the light theme and the ground in the
- * dark one, so it stays visible on the ground in both.
+ * box's edge. ANSI black is a readable ink in both themes, never the ground:
+ * shell text printed in black would otherwise vanish on the ground.
  */
 export function terminalTheme(color: (variable: string) => string) {
   return {

@@ -323,7 +323,9 @@
   --tone-unattended-text: #a893cf;
 
   --terminal-ground: #131312;
-  --terminal-black: #131312;
+  /* Readable as text on the ground (4.7:1); the ground itself would make
+     shell text printed in ANSI black disappear. */
+  --terminal-black: #808079;
   /* 3.7:1 on the ground at the old #6e6e68; this is the one dark terminal
      value that moved, to reach the 4.5:1 floor the light theme already meets. */
   --terminal-dim: #8f8f88;

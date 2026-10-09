@@ -347,6 +347,7 @@ describe("the selected row and the focus ring", () => {
  */
 const TERMINAL_TEXT_ON_GROUND: ReadonlyArray<{ text: string; why: string }> = [
   { text: "--ink", why: "the default foreground and bright white" },
+  { text: "--terminal-black", why: "ANSI black, as text" },
   { text: "--terminal-dim", why: "ANSI bright black" },
   { text: "--danger", why: "ANSI red" },
   { text: "--tone-live", why: "ANSI green and cyan" },
