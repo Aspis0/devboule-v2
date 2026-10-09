@@ -183,7 +183,7 @@ describe("Settings removed placeholder rows", () => {
     await act(async () => undefined);
 
     expect(container.textContent).toContain("live-project");
-    expect(container.textContent).toContain("Add project");
+    expect(container.querySelector('[aria-label="Add project"]')).not.toBeNull();
     expect(container.textContent).not.toContain("Worktree defaults");
     expect(container.textContent).not.toContain("Base branch");
     expect(container.textContent).not.toContain("Setup script");

@@ -146,7 +146,9 @@ describe("Settings projects", () => {
     expect(container.textContent).toContain("D:\\real-project.worktrees\\feature-y-1a2b3c");
     // The project's own line: exactly one, never repeated per workspace.
     const projectPaths = [
-      ...container.querySelectorAll(".settings-project-card .settings-card-meta"),
+      ...container.querySelectorAll(
+        "[data-settings-project] .settings-row-description, [data-settings-project] .settings-card-meta",
+      ),
     ].filter((meta) => meta.textContent === "D:\\real-project");
     expect(projectPaths).toHaveLength(1);
   });
@@ -172,13 +174,15 @@ describe("Settings projects", () => {
     ]);
     await renderProjects();
 
-    const lines = [...container.querySelectorAll(".settings-project-card .settings-card-meta")].map(
-      (meta) => meta.textContent,
-    );
+    const lines = [
+      ...container.querySelectorAll(
+        "[data-settings-project] .settings-row-description, [data-settings-project] .settings-card-meta",
+      ),
+    ].map((meta) => meta.textContent);
     // The project's own line, then each row named by its title: the shared
     // folder path prints once, never once per record.
     expect(lines).toEqual(["D:\\real-project", "real-project", "real-project 2"]);
-    expect(container.querySelector(".proj-name")?.textContent).toBe("real-project");
+    expect(container.querySelector(".settings-row-title")?.textContent).toBe("real-project");
     expect(container.textContent).toContain("2 workspaces");
   });
 
@@ -248,7 +252,7 @@ describe("Settings projects", () => {
     vi.mocked(projectAdd).mockResolvedValueOnce(added);
     await renderProjects();
 
-    const add = container.querySelector<HTMLButtonElement>(".settings-dashed-action");
+    const add = container.querySelector<HTMLButtonElement>('button[aria-label="Add project"]');
     if (!add) throw new Error("Add project control did not render");
     await act(async () => add.click());
     const choose = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
@@ -271,21 +275,21 @@ describe("Settings projects", () => {
     expect(container.textContent).toContain("D:\\canonical-project");
   });
 
-  it("wraps the project rows in one house card", async () => {
+  it("lists each project as one row under the Projects label", async () => {
     await renderProjects();
 
-    const card = container.querySelector(".proj-card");
-    if (card === null) throw new Error("project house card did not render");
-    expect(card.querySelectorAll(".settings-project-card")).toHaveLength(1);
-    expect(card.textContent).toContain("real-project");
+    const section = container.querySelector("[data-settings-section]");
+    if (section === null) throw new Error("projects section did not render");
+    expect(section.querySelector(".settings-section-label")?.textContent).toBe("Projects");
+    expect(section.querySelectorAll("[data-settings-project]")).toHaveLength(1);
+    expect(section.textContent).toContain("real-project");
   });
 
-  it("holds loading, error, rows and the Add action in one spaced stack", async () => {
+  it("puts the Add action in the section head as a labelled glyph", async () => {
     await renderProjects();
 
-    const stack = container.querySelector(".proj-stack");
-    if (stack === null) throw new Error("project stack did not render");
-    expect(stack.querySelector(".proj-card")).not.toBeNull();
-    expect(stack.querySelector(".settings-dashed-action")?.textContent).toContain("Add project");
+    const add = container.querySelector(".settings-section-action button");
+    expect(add?.getAttribute("aria-label")).toBe("Add project");
+    expect(add?.textContent).toBe("+");
   });
 });

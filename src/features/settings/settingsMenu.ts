@@ -103,8 +103,7 @@ export const SETTINGS_MENU: readonly SettingsMenuGroup[] = [
       {
         id: "projects",
         label: "Projects",
-        intro:
-          "A project is a git repository or any directory this daemon can reach. Workspaces live inside it.",
+        intro: "",
       },
       {
         id: "oracle",

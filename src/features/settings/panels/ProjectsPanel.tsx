@@ -5,7 +5,9 @@ import { workspaceDisplayTitles } from "../../../lib/workspaceTitles";
 import { ErrorText } from "../../../components/ErrorText";
 import { NewProjectDialog } from "../../../components/NewProjectDialog";
 import type { Project, Workspace } from "../../../types/ipc";
+import { SettingsAdvanced, SettingsRow, SettingsSection } from "../rows";
 import "../projects.css";
+
 export function ProjectsPanel() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [workspacesByProject, setWorkspacesByProject] = useState<Record<string, Workspace[]>>({});
@@ -66,49 +68,53 @@ export function ProjectsPanel() {
 
   return (
     <div id="settings-panel-projects">
-      <div className="proj-stack">
-        {loading ? <div role="status">Loading projects…</div> : null}
-        {error !== null ? (
-          <div role="alert">
-            <ErrorText
-              sentence={error.sentence}
-              detail={error.detail}
-              id="settings-projects-error"
-            />
-            <button type="button" onClick={() => void loadProjects()}>
-              Retry
-            </button>
-          </div>
-        ) : null}
-        {error === null && projects.length > 0 ? (
-          <div className="proj-card">
-            {projects.map((project) => {
+      {loading ? <div role="status">Loading projects…</div> : null}
+      {error !== null ? (
+        <div role="alert">
+          <ErrorText sentence={error.sentence} detail={error.detail} id="settings-projects-error" />
+          <button type="button" onClick={() => void loadProjects()}>
+            Retry
+          </button>
+        </div>
+      ) : null}
+      <SettingsSection
+        label="Projects"
+        action={
+          <button
+            type="button"
+            className="settings-add"
+            aria-label="Add project"
+            title="Add project"
+            ref={addProjectRef}
+            onClick={() => setDialogOpen(true)}
+          >
+            +
+          </button>
+        }
+      >
+        {error === null
+          ? projects.map((project) => {
               const workspaces = workspacesByProject[project.id];
-              const workspaceCount = workspaces?.length;
               const workspaceError = workspaceErrors[project.id];
               // A local workspace's path IS its project's path by construction,
               // so a path line renders only where a row's checkout differs.
               const titles = workspaceDisplayTitles(workspaces ?? []);
+              const count = workspaces?.length ?? 0;
               return (
-                <div className="proj-row settings-project-card" key={project.id}>
-                  <span className="settings-card-copy">
-                    <span className="settings-card-title proj-name">{project.name}</span>
-                    <span className="settings-card-meta">{project.path}</span>
-                    {(workspaces ?? []).map((workspace) => (
-                      // Render what the daemon sent: no project-path
-                      // fallback, no joined path. Same contract as Session.cwd.
-                      <Fragment key={workspace.id}>
-                        <span className="settings-card-meta">
-                          {titles.get(workspace.id) ?? workspace.title}
+                <div data-settings-project key={project.id}>
+                  <SettingsRow
+                    title={project.name}
+                    description={project.path}
+                    control={
+                      workspaceError !== undefined ? null : (
+                        <span>
+                          {count} workspace{count === 1 ? "" : "s"}
                         </span>
-                        {workspace.path && workspace.path !== project.path ? (
-                          <span className="settings-card-meta">{workspace.path}</span>
-                        ) : null}
-                      </Fragment>
-                    ))}
-                  </span>
+                      )
+                    }
+                  />
                   {workspaceError !== undefined ? (
-                    <span role="alert">
+                    <div role="alert">
                       <ErrorText
                         sentence={`Workspaces unavailable: ${workspaceError.sentence}`}
                         detail={workspaceError.detail}
@@ -117,29 +123,39 @@ export function ProjectsPanel() {
                       <button type="button" onClick={() => void loadProjects()}>
                         Retry
                       </button>
-                    </span>
+                    </div>
                   ) : (
-                    <span className="settings-card-value">
-                      {workspaceCount ?? 0} workspace{workspaceCount === 1 ? "" : "s"}
-                    </span>
+                    <SettingsAdvanced>
+                      {(workspaces ?? []).map((workspace) => (
+                        // Render what the daemon sent: no project-path
+                        // fallback, no joined path. Same contract as Session.cwd.
+                        <Fragment key={workspace.id}>
+                          <span className="settings-card-meta">
+                            {titles.get(workspace.id) ?? workspace.title}
+                          </span>
+                          {workspace.path && workspace.path !== project.path ? (
+                            <span className="settings-card-meta">{workspace.path}</span>
+                          ) : null}
+                        </Fragment>
+                      ))}
+                    </SettingsAdvanced>
                   )}
                 </div>
               );
-            })}
-          </div>
-        ) : null}
+            })
+          : null}
         {!loading && error === null && projects.length === 0 ? (
-          <div role="status">No projects registered</div>
+          <p className="settings-status" role="status">
+            No projects registered
+          </p>
         ) : null}
-        <button
-          className="settings-dashed-action"
-          type="button"
-          ref={addProjectRef}
-          onClick={() => setDialogOpen(true)}
-        >
-          <span aria-hidden="true">+</span>Add project
-        </button>
-      </div>
+      </SettingsSection>
+      <SettingsAdvanced>
+        <p>
+          A project is a git repository or any directory this daemon can reach. Workspaces live
+          inside it.
+        </p>
+      </SettingsAdvanced>
 
       <NewProjectDialog open={dialogOpen} onClose={closeDialog} onCreate={handleProjectAdded} />
     </div>
