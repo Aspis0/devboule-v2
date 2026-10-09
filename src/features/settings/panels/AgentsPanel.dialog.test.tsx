@@ -397,4 +397,45 @@ describe("Settings agents panel — the profile dialog", () => {
     expect(editor).not.toBeNull();
     expect(editor?.querySelector<HTMLInputElement>("input")?.value).toBe("Scout");
   });
+
+  it("keeps a new profile's draft through Keep editing, and drops it on Discard", async () => {
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+
+    await act(async () => newProfileButton().click());
+    await act(async () => undefined);
+    const nameField = dom.container.querySelector<HTMLInputElement>(
+      '.edit-card input[aria-label="Profile name"]',
+    );
+    if (!nameField) throw new Error("create name field did not render");
+    await typeText(nameField, "Scout");
+
+    // Cancel with a dirty create form arms the discard step, not a close.
+    await act(async () => dialogButton("Cancel").click());
+    await act(async () => undefined);
+    expect(dom.container.querySelector(".edit-scrim")).not.toBeNull();
+    expect(dom.container.textContent).toContain("Discard unsaved changes?");
+
+    // Keep editing remounts the form with the draft in its fields.
+    await act(async () => dialogButton("Keep editing").click());
+    await act(async () => undefined);
+    const kept = dom.container.querySelector<HTMLInputElement>(
+      '.edit-card input[aria-label="Profile name"]',
+    );
+    if (!kept) throw new Error("create form did not return after Keep editing");
+    expect(kept.value).toBe("Scout");
+
+    // Discarding abandons the draft: the next open starts blank.
+    await act(async () => dialogButton("Cancel").click());
+    await act(async () => undefined);
+    await act(async () => dialogButton("Discard").click());
+    await act(async () => undefined);
+    expect(dom.container.querySelector(".edit-scrim")).toBeNull();
+    await act(async () => newProfileButton().click());
+    await act(async () => undefined);
+    const fresh = dom.container.querySelector<HTMLInputElement>(
+      '.edit-card input[aria-label="Profile name"]',
+    );
+    if (!fresh) throw new Error("create form did not reopen");
+    expect(fresh.value).toBe("");
+  });
 });

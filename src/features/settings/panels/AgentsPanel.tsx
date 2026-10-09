@@ -272,9 +272,12 @@ export function AgentProfilesPanel() {
     }
   }, [pendingFocus]);
   const [deleteArmedId, setDeleteArmedId] = useState<string | null>(null);
-  // The open dialog's unsaved draft, keyed to its row. It lives HERE, not in
-  // the dialog's own state, because the dialog unmounts when its row is
-  // removed by an in-flight delete and remounts on that delete's revert.
+  // The dialogs' unsaved drafts. They live HERE, not in the forms' own
+  // state: the discard confirm unmounts the form, and a draft kept locally
+  // would remount blank after Keep editing; the edit draft additionally
+  // survives its row being removed and reverted by an in-flight delete.
+  // Closing a dialog abandons its draft.
+  const [createDraft, setCreateDraft] = useState<ProfileFormSeed | null>(null);
   const [editorDraft, setEditorDraft] = useState<(ProfileFormSeed & { id: string }) | null>(null);
   const [catalog, setCatalog] = useState<ProviderCatalog | null>(null);
   const [catalogError, setCatalogError] = useState<ErrorSentence | null>(null);
@@ -397,6 +400,7 @@ export function AgentProfilesPanel() {
   function closeDialog() {
     setDialog(null);
     setEditorDraft(null);
+    setCreateDraft(null);
     const opener = returnFocusRef.current;
     if (
       opener !== null &&
@@ -745,13 +749,14 @@ export function AgentProfilesPanel() {
             <AgentProfileForm
               mode="create"
               hideHeading
-              seed={EMPTY_PROFILE_FORM_SEED}
+              seed={createDraft ?? EMPTY_PROFILE_FORM_SEED}
               providers={installedProviders}
               catalogLoading={catalog === null && catalogError === null}
               catalogError={catalogError}
               vocabularySupported={providerVocabularySupported}
               busy={busy}
               onCreate={createProfile}
+              onSeedChange={setCreateDraft}
               onDirty={markDirty}
               formError={error}
               onCancel={requestClose}
