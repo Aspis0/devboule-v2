@@ -56,9 +56,9 @@ const UNAVAILABLE_RETRY_AFTER: std::time::Duration = std::time::Duration::from_s
 /// an install or removal.
 const STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
-/// Bounded per-provider pi answers. The snapshot has no TTL of its own: pi's
-/// catalog is read once per run (failures cool down and retry), while the
-/// vocabulary query's 30-minute TTL keeps serving the mapped axes.
+/// Bounded per-provider pi answers. The snapshot has no TTL of its own:
+/// failures cool down and retry, successes age past ten minutes into a
+/// refresh, and the vocabulary query maps whatever the slot holds.
 #[derive(Default)]
 pub(crate) struct PiModelsProbeCache {
     answers: std::sync::Mutex<std::collections::HashMap<PiModelsKey, ProbeEntry>>,
