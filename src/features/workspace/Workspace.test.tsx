@@ -2064,9 +2064,10 @@ describe("Workspace sessions", () => {
       (button) => button.textContent?.includes("History"),
     );
     if (!history) throw new Error("History button did not render");
-    expect(history.getAttribute("aria-controls")).toBe("workspace-history-panel");
+    expect(history.hasAttribute("aria-controls")).toBe(false);
     await act(async () => history.click());
     await act(async () => undefined);
+    expect(history.getAttribute("aria-controls")).toBe("workspace-history-panel");
     expect(container.querySelector("#workspace-history-panel")).not.toBeNull();
     expect(container.textContent).not.toContain("Saved build history");
     expect(container.textContent).toContain("No agents in History.");

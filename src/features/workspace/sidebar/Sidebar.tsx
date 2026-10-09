@@ -258,7 +258,7 @@ export const Sidebar = memo(function Sidebar({
                 onClick={onToggleHistory}
                 aria-label="History"
                 aria-current={historyOpen ? "true" : undefined}
-                aria-controls="workspace-history-panel"
+                aria-controls={historyOpen ? "workspace-history-panel" : undefined}
               >
                 <svg
                   className="sidebar-action-icon"

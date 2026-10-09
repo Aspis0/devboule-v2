@@ -209,9 +209,19 @@ describe("the sidebar's top actions", () => {
     await render({ historyOpen: true });
 
     expect(namedButton("History").getAttribute("aria-current")).toBe("true");
+    expect(namedButton("History").getAttribute("aria-controls")).toBe(
+      "workspace-history-panel",
+    );
     // The sidebar keeps the tree: no History panel takes its place.
     expect(container.querySelector("#workspace-history-panel")).toBeNull();
     expect(container.querySelector(".workspace-row")).not.toBeNull();
+  });
+
+  it("leaves aria-controls off History while the page is closed", async () => {
+    await render({ historyOpen: false });
+
+    // The panel id mounts only with the page; the reference must not dangle.
+    expect(namedButton("History").hasAttribute("aria-controls")).toBe(false);
   });
 
   it("sends History clicks to the page opener", async () => {
