@@ -388,6 +388,12 @@ fn catalog_acp_command(
 /// Resolve a direct executable plus argument vector. The JSON-array override
 /// is intentional: it has no shell grammar and therefore remains correct for
 /// executable paths containing spaces.
+///
+/// The `DEVBOULE_ACP_COMMAND` override is a development seam: it is honored
+/// in test/debug builds only (`cfg(debug_assertions)`), so a release daemon
+/// never spawns a program named by its environment. Anyone who can set a
+/// release daemon's environment could otherwise choose the program it runs
+/// as an "agent".
 pub(super) fn resolve_command(_paths: &RuntimePaths) -> Result<PtyCommand, WireError> {
     let cwd = std::env::current_dir().map_err(|error| {
         WireError::new(
@@ -396,7 +402,7 @@ pub(super) fn resolve_command(_paths: &RuntimePaths) -> Result<PtyCommand, WireE
         )
     })?;
     let (provider_id, mut argv): (Option<String>, Vec<String>) = match std::env::var(COMMAND_ENV) {
-        Ok(argv) => {
+        Ok(argv) if cfg!(debug_assertions) => {
             let provider_id = std::env::var(COMMAND_PROVIDER_ENV)
                 .ok()
                 .filter(|id| !id.trim().is_empty());
@@ -409,7 +415,11 @@ pub(super) fn resolve_command(_paths: &RuntimePaths) -> Result<PtyCommand, WireE
             })?;
             (provider_id, argv)
         }
-        Err(_) => {
+        // Set in a release build, or unset anywhere: the override is not
+        // live, so the catalog decides. A set-but-ignored variable falls
+        // through here rather than refusing, because refusing would turn
+        // every inherited developer environment into a broken daemon.
+        Ok(_) | Err(_) => {
             let agent = crate::provider_catalog::first_acp_available().ok_or_else(|| {
                 WireError::new(
                     ErrorCode::Io,
@@ -449,7 +459,11 @@ pub(super) fn resolve_named(id: &str, paths: &RuntimePaths) -> Result<PtyCommand
     // Direct-command test providers have no catalog entry. Keep this narrow:
     // only the exact provider identity paired with DEVBOULE_ACP_COMMAND may
     // use the override, preserving the normal named catalog resolution path.
-    if std::env::var(COMMAND_ENV).is_ok()
+    // The override itself is a development seam (`resolve_command`): in a
+    // release build this block never runs, so the named road is always the
+    // catalog road there.
+    if cfg!(debug_assertions)
+        && std::env::var(COMMAND_ENV).is_ok()
         && std::env::var(COMMAND_PROVIDER_ENV).ok().as_deref() == Some(id)
     {
         let command = resolve_command(paths)?;
