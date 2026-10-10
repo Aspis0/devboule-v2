@@ -237,10 +237,7 @@ function normalizeRoot(root: string): WorkspaceRoot | null {
 }
 
 // Compare root components, not prefixes: a sibling like repo2 is outside repo.
-function absoluteSpellingOf(
-  candidate: { drive: string | null },
-  resolved: string[],
-): string {
+function absoluteSpellingOf(candidate: { drive: string | null }, resolved: string[]): string {
   return candidate.drive === null
     ? `/${resolved.join("/")}`
     : `${candidate.drive}:/${resolved.join("/")}`;

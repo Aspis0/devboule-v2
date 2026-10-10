@@ -59,11 +59,7 @@ export function isOutsidePath(path: string): boolean {
  * fallback for outside-workspace spellings. */
 export function isAbsolutePath(path: string): boolean {
   const trimmed = path.trim();
-  return (
-    trimmed.startsWith("/") ||
-    /^[A-Za-z]:[\\/]/.test(trimmed) ||
-    trimmed.startsWith("\\\\")
-  );
+  return trimmed.startsWith("/") || /^[A-Za-z]:[\\/]/.test(trimmed) || trimmed.startsWith("\\\\");
 }
 
 /** Mirrors `OUTSIDE_THE_WORKSPACE` in `workspace_git_support.rs`: the

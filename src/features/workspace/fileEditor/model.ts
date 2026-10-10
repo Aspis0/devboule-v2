@@ -161,7 +161,14 @@ export class FileEditorModel {
     if (this.snapshot.status === "conflict") {
       status = "conflict";
     }
-    this.setSnapshot({ ...this.snapshot, status, content: merged, modified, error: null, saveWarning: null });
+    this.setSnapshot({
+      ...this.snapshot,
+      status,
+      content: merged,
+      modified,
+      error: null,
+      saveWarning: null,
+    });
     if (status === "dirty") this.scheduleAutosave();
     else this.clearAutosave();
   }

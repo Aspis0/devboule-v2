@@ -20,7 +20,12 @@ import { fileTabMode, setFileTabMode, type FileTabMode } from "./fileTabMode";
 import { OpenInEditorAction } from "./OpenInEditorAction";
 import { useWorkspaceFilePreview, type PreviewCell } from "./useWorkspaceFilePreview";
 import { EditableFilePane } from "./EditableFilePane";
-import { isOutsidePath, isAbsolutePath, OUTSIDE_WORKSPACE, EDITOR_MIN_DIALECT } from "./fileEditor/useEditableFile";
+import {
+  isOutsidePath,
+  isAbsolutePath,
+  OUTSIDE_WORKSPACE,
+  EDITOR_MIN_DIALECT,
+} from "./fileEditor/useEditableFile";
 import { toolContentKey } from "./toolContentCache";
 import { LOCAL_HOST_ID, parseWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
 import { refreshWorkspaceDaemon, useWorkspaceDaemon } from "./workspaceDaemon";
@@ -95,8 +100,7 @@ function isEditorFile(reply: WorkspaceFileContent | null, path: string): boolean
   if (reply.status === "binary" || reply.status === "too_large") return false;
   if (reply.status === "refused")
     return (
-      reply.error === DOES_NOT_EXIST ||
-      (reply.error === OUTSIDE_WORKSPACE && isAbsolutePath(path))
+      reply.error === DOES_NOT_EXIST || (reply.error === OUTSIDE_WORKSPACE && isAbsolutePath(path))
     );
   return (
     reply.status === "ok" &&

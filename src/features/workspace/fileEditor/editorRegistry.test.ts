@@ -48,7 +48,12 @@ function modelWith(content: string, writes: string[]) {
   const session = {
     write: async (input: { content: string }): Promise<WorkspaceFileWriteResult> => {
       writes.push(input.content);
-      return { status: "written" as const, modifiedAt: 101, size: input.content.length, revision: "x" };
+      return {
+        status: "written" as const,
+        modifiedAt: 101,
+        size: input.content.length,
+        revision: "x",
+      };
     },
   };
   return new FileEditorModel({ file, session });
@@ -121,9 +126,7 @@ describe("editorRegistry", () => {
       // answer instead of counting microtasks.
       const deadline = Date.now() + 1000;
       while (
-        !vi
-          .mocked(invoke)
-          .mock.calls.some(([command]) => command === "editors_flushed") &&
+        !vi.mocked(invoke).mock.calls.some(([command]) => command === "editors_flushed") &&
         Date.now() < deadline
       ) {
         await new Promise((resolve) => setTimeout(resolve, 5));

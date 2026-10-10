@@ -168,7 +168,7 @@ it("updates only assistant rows and uses the replacement file opener", async () 
   await act(async () =>
     container.querySelector<HTMLButtonElement>('button[title="src/live.ts"]')!.click(),
   );
-  expect(nextOpen).toHaveBeenCalledWith("src/live.ts");
+  expect(nextOpen).toHaveBeenCalledWith("/repo/src/live.ts");
   expect(open).not.toHaveBeenCalled();
 });
 

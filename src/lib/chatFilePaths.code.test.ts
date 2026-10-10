@@ -137,9 +137,9 @@ describe("spaces in prose", () => {
 
   it("rejects a spaced POSIX absolute path without hiding a later separate file", () => {
     const text = "edit /home/u/New folder/repo/src/a.ts then src/b.ts";
-    expect(scanChatFilePaths(text, "/home/u/New folder/repo").map((token) => token.link)).toMatchObject([
-      { relativePath: "src/b.ts" },
-    ]);
+    expect(
+      scanChatFilePaths(text, "/home/u/New folder/repo").map((token) => token.link),
+    ).toMatchObject([{ relativePath: "src/b.ts" }]);
   });
 
   it("rejects an absolute path with several spaces as a whole", () => {
