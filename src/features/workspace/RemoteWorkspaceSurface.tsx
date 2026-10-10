@@ -17,6 +17,7 @@ import {
   type RemoteEventChannel,
 } from "../../lib/tauri";
 import { errorSentence } from "../../lib/errorSentence";
+import { isCommandError } from "../../lib/commandError";
 import { useMenuOpen } from "../../lib/menuOpen";
 import {
   remoteWorkspaceStoreKey,
@@ -150,6 +151,10 @@ export function RemoteWorkspaceSurface({
   const chainRef = useRef<Promise<void>>(Promise.resolve());
   const operationRef = useRef(0);
   const lastAttachAtRef = useRef(0);
+  // Consecutive busy rejections of the current target: the backoff for the
+  // retry below. Reset by a success, a tab switch and an offline period —
+  // it belongs to one attach intent, not to the surface.
+  const attachRetryRef = useRef(0);
   // A gap is a data event, not a flapping edge: its reattach is immediate,
   // but a transcript that overflows the relay on every replay must not loop.
   // One resync per backoff window; gaps inside it mean the replay itself is
@@ -335,10 +340,12 @@ export function RemoteWorkspaceSurface({
       }
       if (token !== operationRef.current) return;
       if (target === null) {
+        attachRetryRef.current = 0;
         setStreamState("idle");
         return;
       }
       if (!hostOnline) {
+        attachRetryRef.current = 0;
         setStreamState("offline");
         // Coming back is a fresh edge: the debounce window does not survive
         // an offline period.
@@ -441,13 +448,32 @@ export function RemoteWorkspaceSurface({
       try {
         await remoteSessionAttach(deviceId, target, subscriptionId, channel);
         if (token === operationRef.current && subscriptionRef.current === subscriptionId) {
+          attachRetryRef.current = 0;
           setAttached({ sessionId: target, subscriptionId });
         }
-      } catch {
-        if (token === operationRef.current) {
-          setAttached(null);
-          setStreamState("offline");
+      } catch (cause: unknown) {
+        if (token !== operationRef.current) return;
+        setAttached(null);
+        // A busy link is not a dead host: the host is starting a session.
+        // Retry with backoff on a fresh subscription instead of painting
+        // offline; every other failure still goes offline. The forced
+        // reattach detaches the stale subscription first, so a lost reply
+        // cannot leave the host streaming to nobody. The timer dies with
+        // the surface, a tab switch, or the next operation on the chain.
+        if (isCommandError(cause) && cause.code === "operation_conflict" && hostOnline) {
+          const attempt = attachRetryRef.current;
+          attachRetryRef.current = Math.min(attempt + 1, 4);
+          const delay = Math.min(1000 * 2 ** attempt, 8000);
+          forceReattachRef.current = true;
+          if (reattachTimerRef.current !== null) clearTimeout(reattachTimerRef.current);
+          reattachTimerRef.current = setTimeout(() => {
+            reattachTimerRef.current = null;
+            setResyncNonce((value) => value + 1);
+          }, delay);
+          return;
         }
+        attachRetryRef.current = 0;
+        setStreamState("offline");
       }
     });
     chainRef.current = run;

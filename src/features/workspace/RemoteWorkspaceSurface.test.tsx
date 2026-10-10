@@ -243,6 +243,35 @@ describe("the remote workspace surface", () => {
     expect(calls.at(-1)?.[1]).toBe("session-two");
   });
 
+  it("retries a busy attach with backoff instead of painting offline", async () => {
+    vi.useFakeTimers();
+    vi.mocked(remoteSessionAttach).mockRejectedValueOnce({
+      code: "operation_conflict",
+      message: "This daemon is still starting a session on this host.",
+    });
+    await render(true);
+    const chip = [...container.querySelectorAll<HTMLButtonElement>("[role='tab']")][0];
+    await act(async () => {
+      chip?.click();
+    });
+    await flush();
+    expect(remoteSessionAttach).toHaveBeenCalledTimes(1);
+    const first = vi.mocked(remoteSessionAttach).mock.calls.at(-1)?.[2] as number;
+    // Busy is not offline: the transcript stays up and no offline word shows.
+    expect(container.querySelector(".workspace-remote-offline")).toBeNull();
+    expect(container.querySelector(".workspace-remote-transcript")).not.toBeNull();
+
+    vi.mocked(remoteSessionAttach).mockResolvedValue(undefined);
+    await act(async () => {
+      vi.advanceTimersByTime(1500);
+    });
+    await flush();
+    expect(remoteSessionAttach).toHaveBeenCalledTimes(2);
+    const second = vi.mocked(remoteSessionAttach).mock.calls.at(-1)?.[2] as number;
+    expect(second).not.toBe(first);
+    vi.useRealTimers();
+  });
+
   it("bounds the transcript and batches its appends", async () => {
     await render(true);
     const chip = [...container.querySelectorAll<HTMLButtonElement>("[role='tab']")][0];
