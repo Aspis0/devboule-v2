@@ -367,6 +367,32 @@ describe("FileEditorModel", () => {
     expect(model.getSnapshot().lineSeparator).toBe("\r\n");
   });
 
+  test("keeps each line's own ending on edit", async () => {
+    const { model, session } = makeModel({ content: "one\r\ntwo\nthree\r" });
+
+    // The view joins every line with the first-found separator, so the
+    // middle and last lines arrive normalised; the model maps them back.
+    model.edit("one\r\nTWO\r\nthree\r\n");
+    expect(model.getSnapshot().content).toBe("one\r\nTWO\nthree\r");
+
+    await model.save();
+    expect(session.writes.at(-1)).toMatchObject({
+      content: "one\r\nTWO\nthree\r",
+    });
+  });
+
+  test("keeps the joined form when lines are added or removed", async () => {
+    const { model, session } = makeModel({ content: "one\r\ntwo\n" });
+
+    model.edit("one\r\nextra\r\ntwo\r\n");
+    await model.save();
+
+    // No 1:1 line mapping exists, so the joined form stands (documented).
+    expect(session.writes.at(-1)).toMatchObject({
+      content: "one\r\nextra\r\ntwo\r\n",
+    });
+  });
+
   test("reloads a clean editor when the disk version changes", async () => {
     const { model, session } = makeModel();
     session.file = {

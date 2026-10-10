@@ -146,12 +146,17 @@ export class FileEditorModel {
   edit(content: string): void {
     if (this.disposed || content === this.snapshot.content) return;
     this.reloadRequested = false;
-    const modified = content !== this.persistedContent;
+    // The view joins every line with the first-found separator, so a
+    // mixed-ending file would normalise wholesale on the first keystroke.
+    // Merge each edited line back onto its persisted terminator instead;
+    // added or removed lines keep the joined form (documented fallback).
+    const merged = mergeLineEndings(this.persistedContent, content, this.snapshot.lineSeparator);
+    const modified = merged !== this.persistedContent;
     let status: FileEditorStatus = modified ? "dirty" : "clean";
     if (this.snapshot.status === "conflict") {
       status = "conflict";
     }
-    this.setSnapshot({ ...this.snapshot, status, content, modified, error: null });
+    this.setSnapshot({ ...this.snapshot, status, content: merged, modified, error: null });
     if (status === "dirty") this.scheduleAutosave();
     else this.clearAutosave();
   }
@@ -481,6 +486,37 @@ function detectLineSeparator(content: string): FileLineSeparator {
     if (character === 13) return content.charCodeAt(index + 1) === 10 ? "\r\n" : "\r";
   }
   return "\n";
+}
+
+/** Rejoin edited lines onto persisted terminators, one line each. The
+ * view hands back the whole document joined with a single separator, so
+ * without this every line but the first style would flip on first edit.
+ * When the edit adds or removes lines there is no 1:1 mapping and the
+ * joined form stands (the fallback Paseo's whole-document join is). */
+export function mergeLineEndings(
+  persisted: string,
+  edited: string,
+  separator: FileLineSeparator,
+): string {
+  const base = splitLines(persisted);
+  const next = edited.split(separator);
+  if (next.length !== base.lines.length) return edited;
+  return next.map((line, index) => line + (base.endings[index] ?? "")).join("");
+}
+
+function splitLines(content: string): { lines: string[]; endings: string[] } {
+  const lines: string[] = [];
+  const endings: string[] = [];
+  const pattern = /\r\n|\r|\n/g;
+  let start = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(content)) !== null) {
+    lines.push(content.slice(start, match.index));
+    endings.push(match[0]);
+    start = match.index + match[0].length;
+  }
+  lines.push(content.slice(start));
+  return { lines, endings };
 }
 
 function observationVersion(observation: FileEditorObservation): WorkspaceFileVersion {
