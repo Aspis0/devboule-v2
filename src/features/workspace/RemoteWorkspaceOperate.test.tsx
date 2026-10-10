@@ -372,6 +372,20 @@ describe("the remote operate surface", () => {
     expect(typeof send?.idempotencyKey).toBe("string");
   });
 
+  it("keeps a refused prompt in the composer with one short error", async () => {
+    vi.mocked(remoteHostSend).mockRejectedValueOnce(new Error("The host is busy."));
+    await render();
+    await openSession("session-one");
+    const drivers = composerDrivers(container);
+    await drivers.type("do not eat this");
+    await drivers.press("Enter");
+    await flush();
+
+    // The text survives the refusal instead of disappearing with it.
+    expect(drivers.textarea().value).toBe("do not eat this");
+    expect(container.textContent).toContain("The host is busy.");
+  });
+
   it("answers the host's permission card as the human, with no card of its own", async () => {
     await render();
     const subscription = await openSession("session-one");

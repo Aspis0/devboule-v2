@@ -79,6 +79,12 @@ interface WorkspaceComposerProps {
     attachments: readonly PromptAttachment[],
     fileReferences?: readonly AttachmentReference[],
   ) => void | Promise<unknown>;
+  /** Wait for the text-only answer and keep the text when it fails.
+   * Absent, imageless sends keep the fire-and-forget they always had (the
+   * local surface, whose sends essentially never fail synchronously).
+   * Set for sends that cross a link: a refusal or a lost reply hands the
+   * text back instead of eating the prompt. */
+  confirmSend?: boolean;
   /** The resolved setting: Enter queues while the turn runs (the permission rule flips it to steer). */
   enterQueues?: boolean;
   onStop?: () => void;
@@ -137,6 +143,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   onSend,
   onQueue,
   enterQueues = false,
+  confirmSend = false,
   onStop,
   taskPill = null,
   backgroundPill = null,
@@ -358,14 +365,31 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   const sendInput = useCallback(() => {
     const text = input.trim();
     if ((!text && !imageOnlySendable) || disabled || sendingImages || filesBlocked) return;
-    // Imageless sends keep the fire-and-forget they always had. A send that
-    // carries anything else takes a snapshot and waits for the answer: the
+    // Imageless sends keep the fire-and-forget they always had, unless the
+    // parent asked to confirm them (`confirmSend`, for sends that cross a
+    // link). A send that carries anything else takes a snapshot and waits for the answer: the
     // picks stay put as sending and clear only on success, so a failure keeps
     // the submission whole without a hand-back. The parent clears its files
     // once its own send settles.
     if (attachedImages.length === 0 && fileReferences.length === 0) {
-      onSend(text, attachedImages);
+      if (!confirmSend) {
+        onSend(text, attachedImages);
+        setInput("");
+        return;
+      }
+      // A send across a link: the answer may be a refusal or a lost reply,
+      // and the prompt must survive either. The text clears while the send
+      // is in flight and comes back stacked above any newer typing on
+      // failure — the same hand-back the image path has always done.
       setInput("");
+      void Promise.resolve()
+        .then(() => onSend(text, attachedImages))
+        .then(
+          (sent) => {
+            if (!sent) setInput((current) => combine(text, current));
+          },
+          () => setInput((current) => combine(text, current)),
+        );
       return;
     }
     const snapshot = attachedImages;
@@ -389,6 +413,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
       );
   }, [
     attachedImages,
+    confirmSend,
     imageOnlySendable,
     disabled,
     fileReferences,

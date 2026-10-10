@@ -563,12 +563,27 @@ export function RemoteWorkspaceSurface({
     setCreateFailed(null);
   }, [setCreateFailed]);
 
+  // One short line for the last failed operate: sends, answers, closes and
+  // terminal writes never fail silently (P1-3/P2-4). Cleared by the next
+  // success, and by leaving the session it belongs to.
+  const [opError, setOpError] = useState<string | null>(null);
+  useEffect(() => {
+    setOpError(null);
+  }, [openSessionId]);
+  // The terminal pane reports per-write; null clears after a success.
+  const handlePaneError = useCallback((cause: unknown) => {
+    if (cause === null) setOpError(null);
+    else setOpError(errorSentence(cause).sentence);
+  }, []);
+
   const closeSession = useCallback(
     async (sessionId: string) => {
       try {
         await remoteHostClose(deviceId, sessionId);
-      } catch {
-        // The roster below says whether it went.
+        setOpError(null);
+      } catch (cause: unknown) {
+        // The roster below says whether it went; the line says why not.
+        setOpError(errorSentence(cause).sentence);
       }
       await load();
     },
@@ -579,8 +594,9 @@ export function RemoteWorkspaceSurface({
     async (sessionId: string, subscriptionId: number) => {
       try {
         await remoteHostStop(deviceId, sessionId, subscriptionId);
-      } catch {
-        // The roster below says whether it went.
+        setOpError(null);
+      } catch (cause: unknown) {
+        setOpError(errorSentence(cause).sentence);
       }
       await load();
     },
@@ -596,8 +612,9 @@ export function RemoteWorkspaceSurface({
 
   const stopTurn = useCallback(() => {
     if (attached === null || attached.sessionId !== openSessionId) return;
-    void remoteHostInterrupt(deviceId, attached.sessionId, attached.subscriptionId).catch(
-      () => undefined,
+    void remoteHostInterrupt(deviceId, attached.sessionId, attached.subscriptionId).then(
+      () => setOpError(null),
+      (cause: unknown) => setOpError(errorSentence(cause).sentence),
     );
   }, [attached, deviceId, openSessionId]);
 
@@ -709,20 +726,28 @@ export function RemoteWorkspaceSurface({
       {openSessionId === null ? null : streamState === "offline" || !hostOnline ? (
         <p className="workspace-remote-offline">offline</p>
       ) : openSession !== null && !openIsAgent ? (
-        <RemoteTerminalPane
-          key={`${deviceId}:${openSession.id}`}
-          deviceId={deviceId}
-          sessionId={openSession.id}
-          title={openSession.title}
-          attached={attached !== null && attached.sessionId === openSession.id ? attached : null}
-          writersRef={terminalWritersRef}
-          onArchive={
-            attached !== null && attached.sessionId === openSession.id
-              ? () => void archiveSession(openSession.id, attached.subscriptionId)
-              : undefined
-          }
-          onClose={() => void closeSession(openSession.id)}
-        />
+        <>
+          <RemoteTerminalPane
+            key={`${deviceId}:${openSession.id}`}
+            deviceId={deviceId}
+            sessionId={openSession.id}
+            title={openSession.title}
+            attached={attached !== null && attached.sessionId === openSession.id ? attached : null}
+            writersRef={terminalWritersRef}
+            onArchive={
+              attached !== null && attached.sessionId === openSession.id
+                ? () => void archiveSession(openSession.id, attached.subscriptionId)
+                : undefined
+            }
+            onClose={() => void closeSession(openSession.id)}
+            onError={handlePaneError}
+          />
+          {opError === null ? null : (
+            <p className="workspace-remote-error" role="alert">
+              {opError}
+            </p>
+          )}
+        </>
       ) : (
         <div className="workspace-remote-transcript" role="log" aria-label="Remote transcript">
           {lines.map((line, index) => (
@@ -781,6 +806,7 @@ export function RemoteWorkspaceSurface({
                 queueAllowed={false}
                 disabled={!sendReady}
                 disabledReason={sendReady ? null : hostOnline ? "Connecting." : "offline"}
+                confirmSend
                 onSend={async (text, attachments, fileReferences) => {
                   if (attached === null || attached.sessionId !== openSessionId) return false;
                   try {
@@ -793,13 +819,22 @@ export function RemoteWorkspaceSurface({
                       attachmentReferences: fileReferences,
                       idempotencyKey: crypto.randomUUID(),
                     });
+                    setOpError(null);
                     return true;
-                  } catch {
+                  } catch (cause: unknown) {
+                    // The text (and any images) stay put — `confirmSend`
+                    // hands them back — and one short line says why.
+                    setOpError(errorSentence(cause).sentence);
                     return false;
                   }
                 }}
                 onStop={stopTurn}
               />
+              {opError === null ? null : (
+                <p className="workspace-remote-error" role="alert">
+                  {opError}
+                </p>
+              )}
             </div>
           )}
         </div>
@@ -822,6 +857,7 @@ function RemoteTerminalPane({
   writersRef,
   onArchive,
   onClose,
+  onError,
 }: {
   deviceId: string;
   sessionId: string;
@@ -830,6 +866,8 @@ function RemoteTerminalPane({
   writersRef: React.MutableRefObject<Map<string, (data: string) => void>>;
   onArchive: (() => void) | undefined;
   onClose: () => void;
+  /** One short line for a failed write; the pane shows nothing itself. */
+  onError: (cause: unknown) => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<TerminalViewHandle | null>(null);
@@ -858,12 +896,18 @@ function RemoteTerminalPane({
           sessionId,
           subscriptionId: live.subscriptionId,
           text: data,
-        }).catch(() => undefined);
+        }).then(
+          () => onError(null),
+          (cause: unknown) => onError(cause),
+        );
       },
       onCtrlC: () => {
         const live = attachedRef.current;
         if (live === null || live.sessionId !== sessionId) return;
-        void remoteHostInterrupt(deviceId, sessionId, live.subscriptionId).catch(() => undefined);
+        void remoteHostInterrupt(deviceId, sessionId, live.subscriptionId).then(
+          () => onError(null),
+          (cause: unknown) => onError(cause),
+        );
       },
     });
     viewRef.current = view;
@@ -877,8 +921,9 @@ function RemoteTerminalPane({
             const cols = view.cols();
             const rows = view.rows();
             if (cols <= 0 || rows <= 0) return;
-            void remoteHostResize(deviceId, sessionId, live.subscriptionId, cols, rows).catch(
-              () => undefined,
+            void remoteHostResize(deviceId, sessionId, live.subscriptionId, cols, rows).then(
+              () => onError(null),
+              (cause: unknown) => onError(cause),
             );
           });
     const element = hostRef.current;
@@ -888,7 +933,7 @@ function RemoteTerminalPane({
       view.dispose();
       viewRef.current = null;
     };
-  }, [deviceId, sessionId]);
+  }, [deviceId, onError, sessionId]);
 
   // Claim at attach makes the first resize deterministic: the pane fits the
   // grid it is seen on instead of the daemon's default. Runs when the
@@ -910,11 +955,12 @@ function RemoteTerminalPane({
             await remoteHostResize(deviceId, sessionId, subscriptionId, cols, rows);
           }
         }
-      } catch {
-        // The roster says whether it went; a miss here is not a pane error.
+      } catch (cause: unknown) {
+        // The roster says whether it went; the line says why not.
+        onError(cause);
       }
     })();
-  }, [attached, deviceId, sessionId]);
+  }, [attached, deviceId, onError, sessionId]);
 
   return (
     <div className="workspace-remote-terminal">
