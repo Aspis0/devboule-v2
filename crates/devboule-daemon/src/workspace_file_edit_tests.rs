@@ -21,7 +21,8 @@ use devboule_protocol::{
 use super::{
     classify_target, expand_user_path, open_app_file, open_workspace_file, version_app_file,
     version_workspace_file, write_app_file, write_workspace_file, TargetState, BINARY,
-    LINK_TARGET_MISSING, MAX_EDITABLE_FILE_BYTES, PARENT_MISSING, READ_ONLY, TOO_LARGE, UNSTATABLE,
+    CREATE_INTENT, LINK_TARGET_MISSING, MAX_EDITABLE_FILE_BYTES, PARENT_MISSING, READ_ONLY,
+    TOO_LARGE, UNSTATABLE,
 };
 use crate::workspace_git_diff::NOT_A_FILE;
 
@@ -98,6 +99,7 @@ fn a_write_with_the_fresh_version_lands_and_restamps() {
         b"two\n",
         Some(modified_at),
         revision.as_deref(),
+        false,
     );
 
     match result {
@@ -133,6 +135,7 @@ fn a_stale_write_conflicts_with_the_fresh_version() {
         b"local\n",
         Some(modified_at),
         revision.as_deref(),
+        false,
     );
 
     match result {
@@ -169,6 +172,7 @@ fn a_missing_file_opens_empty_and_the_first_save_creates_it() {
         b"born\n",
         None,
         None,
+        true,
     );
     assert!(
         matches!(result, WorkspaceFileWriteResult::Written { .. }),
@@ -185,7 +189,15 @@ fn a_create_names_no_version_but_finds_a_file_conflicts() {
     let dir = Dir::fresh("create-races");
     dir.write("a.txt", "there\n");
 
-    let result = write_workspace_file(&dir.root, dir.workspace_id(), "a.txt", b"new\n", None, None);
+    let result = write_workspace_file(
+        &dir.root,
+        dir.workspace_id(),
+        "a.txt",
+        b"new\n",
+        None,
+        None,
+        false,
+    );
 
     assert!(
         matches!(result, WorkspaceFileWriteResult::Conflict { .. }),
@@ -208,6 +220,7 @@ fn a_create_without_a_parent_is_an_error_not_a_tree() {
         b"new\n",
         None,
         None,
+        true,
     );
     assert!(
         matches!(
@@ -243,6 +256,7 @@ fn binary_bytes_are_refused_in_both_directions() {
         b"text\n",
         Some(modified_at),
         revision.as_deref(),
+        false,
     );
     assert!(
         matches!(
@@ -303,6 +317,7 @@ fn the_cap_fits_the_worst_frame_with_margin() {
         content: "\u{1}".repeat(MAX_EDITABLE_FILE_BYTES as usize),
         expected_modified_at: Some(0),
         expected_revision: None,
+        create: false,
     };
     let encoded = serde_json::to_vec(&request).expect("the write must encode");
     assert!(
@@ -333,6 +348,7 @@ fn the_cap_holds_in_both_directions() {
         &big,
         Some(modified_at),
         revision.as_deref(),
+        false,
     );
     assert!(
         matches!(
@@ -366,6 +382,7 @@ fn a_bom_round_trips_byte_for_byte() {
         &next,
         Some(modified_at),
         revision.as_deref(),
+        false,
     );
     assert!(
         matches!(result, WorkspaceFileWriteResult::Written { .. }),
@@ -393,6 +410,7 @@ fn line_endings_travel_verbatim() {
         b"one\r\ntwo\r\nthree\r\n",
         Some(modified_at),
         revision.as_deref(),
+        false,
     );
     assert!(
         matches!(result, WorkspaceFileWriteResult::Written { .. }),
@@ -413,7 +431,15 @@ fn a_folder_is_not_a_file_on_either_road() {
     assert_eq!(file.status, WorkspaceFileContentStatus::Refused);
     assert_eq!(file.error.as_deref(), Some(NOT_A_FILE));
 
-    let result = write_workspace_file(&dir.root, dir.workspace_id(), "sub", b"x", Some(0), None);
+    let result = write_workspace_file(
+        &dir.root,
+        dir.workspace_id(),
+        "sub",
+        b"x",
+        Some(0),
+        None,
+        false,
+    );
     assert!(
         matches!(
             &result,
@@ -489,6 +515,7 @@ fn an_absolute_path_opens_and_writes_the_real_file() {
         b"edited\n",
         Some(modified_at),
         revision.as_deref(),
+        false,
     );
     assert!(
         matches!(result, WorkspaceFileWriteResult::Written { .. }),
@@ -515,7 +542,7 @@ fn an_app_create_needs_its_parent_like_the_workspace_one() {
     assert_eq!(file.error.as_deref(), Some(PARENT_MISSING));
 
     assert!(matches!(
-        write_app_file(&missing, b"new\n", None, None),
+        write_app_file(&missing, b"new\n", None, None, true),
         WorkspaceFileWriteResult::Error { .. }
     ));
 }
@@ -530,7 +557,7 @@ fn a_relative_app_path_is_refused_not_joined() {
         WorkspaceFileVersion::Error { .. }
     ));
     assert!(matches!(
-        write_app_file("relative/path.txt", b"x", None, None),
+        write_app_file("relative/path.txt", b"x", None, None, false),
         WorkspaceFileWriteResult::Error { .. }
     ));
 }
@@ -594,6 +621,7 @@ fn every_new_frame_is_denied_to_every_peer() {
             content: "x".to_string(),
             expected_modified_at: None,
             expected_revision: None,
+            create: false,
         }),
         PeerDecision::Allow
     ));
@@ -612,6 +640,7 @@ fn every_new_frame_is_denied_to_every_peer() {
             content: "x".to_string(),
             expected_modified_at: None,
             expected_revision: None,
+            create: false,
         },
         ClientMessage::RemoteHostFileOpen {
             id: 1,
@@ -633,6 +662,7 @@ fn every_new_frame_is_denied_to_every_peer() {
             content: "x".to_string(),
             expected_modified_at: None,
             expected_revision: None,
+            create: false,
         },
     ] {
         assert!(
@@ -651,6 +681,7 @@ fn every_new_frame_is_denied_to_every_peer() {
                 content: "x".to_string(),
                 expected_modified_at: None,
                 expected_revision: None,
+                create: false,
             }
         ),
         PeerDecision::Deny(_)
@@ -725,7 +756,7 @@ fn an_unstatable_path_is_a_failed_check_not_a_missing_file() {
 
     // And a create aimed at it errors instead of replacing whatever is
     // behind the failed stat.
-    let result = write_workspace_file(&dir.root, dir.workspace_id(), weird, b"x", None, None);
+    let result = write_workspace_file(&dir.root, dir.workspace_id(), weird, b"x", None, None, true);
     assert!(
         matches!(
             &result,
@@ -756,6 +787,7 @@ fn an_app_write_lands_in_the_target_and_keeps_the_link() {
         b"through\n",
         Some(modified_at),
         revision.as_deref(),
+        false,
     );
     assert!(
         matches!(result, WorkspaceFileWriteResult::Written { .. }),
@@ -799,7 +831,7 @@ fn a_dangling_link_is_an_error_never_a_create() {
         WorkspaceFileVersion::Error { .. }
     ));
     assert!(matches!(
-        write_app_file(&spelling, b"x", None, None),
+        write_app_file(&spelling, b"x", None, None, true),
         WorkspaceFileWriteResult::Error { .. }
     ));
     assert!(
@@ -834,6 +866,7 @@ fn a_read_only_file_refuses_the_write_with_its_sentence() {
         b"two\n",
         Some(modified_at),
         revision.as_deref(),
+        false,
     );
     assert!(
         matches!(
@@ -885,6 +918,7 @@ fn a_replace_keeps_attributes_and_creation_time() {
         b"two\n",
         Some(modified_at),
         revision.as_deref(),
+        false,
     );
     assert!(
         matches!(result, WorkspaceFileWriteResult::Written { .. }),
@@ -923,6 +957,7 @@ fn a_replace_keeps_owner() {
         b"two\n",
         Some(modified_at),
         revision.as_deref(),
+        false,
     );
     assert!(
         matches!(result, WorkspaceFileWriteResult::Written { .. }),
@@ -1094,6 +1129,7 @@ fn a_write_sweeps_only_its_own_stale_litter() {
         b"two\n",
         Some(modified_at),
         revision.as_deref(),
+        false,
     );
     assert!(
         matches!(result, WorkspaceFileWriteResult::Written { .. }),
@@ -1105,4 +1141,31 @@ fn a_write_sweeps_only_its_own_stale_litter() {
     assert!(other.exists(), "another file's litter is not this write's");
     std::fs::remove_file(&fresh).expect("cleanup");
     std::fs::remove_file(&other).expect("cleanup");
+}
+
+#[test]
+fn a_versionless_write_without_create_creates_nothing() {
+    let dir = Dir::fresh("create-intent");
+    std::fs::create_dir_all(dir.root.join("sub")).expect("parent");
+
+    // The file is genuinely missing and the parent exists — but without
+    // an explicit create intent the write is refused, so a stale or
+    // replayed versionless frame can never conjure a file.
+    let result = write_workspace_file(
+        &dir.root,
+        dir.workspace_id(),
+        "sub/new.txt",
+        b"born\n",
+        None,
+        None,
+        false,
+    );
+    assert!(
+        matches!(
+            &result,
+            WorkspaceFileWriteResult::Error { error } if error == CREATE_INTENT
+        ),
+        "{result:?}"
+    );
+    assert!(!dir.root.join("sub/new.txt").exists());
 }

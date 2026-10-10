@@ -190,6 +190,36 @@ pub(super) fn peer_refusal_before_mode(
             }));
         }
     }
+    // File content writes author bytes anywhere in a checkout — new power
+    // beside the file mutations the grant already opens — so a peer
+    // reaches them only over the relay's own link: a machine peer to a
+    // device a local user paired. The sending side confines relay
+    // initiation to its local app (the `app_only` door on every
+    // `RemoteHost*` frame); this side verifies the link, never the
+    // payload. Client-scoped devices, unknown links and (by the policy
+    // above) every non-`admin` grant keep the refusal. Reads stay on
+    // the grant alone.
+    if let ClientMessage::WorkspaceFileWrite { .. } = request {
+        if let Some(ConnPeer::Remote {
+            scope,
+            paired_by_user,
+            ..
+        }) = conn_peer
+        {
+            let relay =
+                *scope == crate::peer_policy::PeerScope::PeerDevice && paired_by_user.is_some();
+            if !relay {
+                let error = WireError::new(
+                    ErrorCode::CapabilityNotSupported,
+                    crate::peer_policy::PEER_FILE_WRITE_HUMAN_ONLY,
+                );
+                return Some(DaemonMessage::Error(match request.request_id() {
+                    Some(id) => error.with_id(id),
+                    None => error,
+                }));
+            }
+        }
+    }
     let scope = match request {
         // Attaching is reading: a machine peer reaches the pairing user's
         // sessions here, and only here.

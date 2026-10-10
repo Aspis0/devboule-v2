@@ -389,3 +389,105 @@ fn a_client_scoped_create_keeps_mode_vetting_even_same_user() {
         );
     }
 }
+
+/// File content writes author bytes anywhere in a checkout, so a peer
+/// reaches them only over the relay's own link: a machine peer to a
+/// device a local user paired. Client-scoped devices, unknown links and
+/// local... (local connections never reach this gate at all) keep the
+/// refusal; reads stay on the grant alone.
+#[test]
+fn file_content_write_needs_the_relay_machine_link() {
+    use crate::peer_policy::{CAP_ADMIN, PEER_FILE_WRITE_HUMAN_ONLY};
+    let state = ServerState::new("peer-gate-file-write".into());
+    let owner = OwnerId::new("local-user", "local-process").expect("owner");
+    let write = || ClientMessage::WorkspaceFileWrite {
+        id: 1,
+        workspace_id: "w".to_string(),
+        path: "a.txt".to_string(),
+        content: "x".to_string(),
+        expected_modified_at: None,
+        expected_revision: None,
+        create: true,
+    };
+
+    // The relay's own link: a machine peer to a paired device.
+    let machine = ConnHandle::with_peer_caps(
+        8,
+        None,
+        Some(ConnPeer::Remote {
+            device_id: "dev-pc".to_string(),
+            scope: PeerScope::PeerDevice,
+            paired_by_user: Some("local-user".to_string()),
+            binding: TransportBinding::tailnet("nstable", "node", "user@example.com"),
+        }),
+        [CAP_ADMIN.to_string()].to_vec(),
+        QuitIntent::default(),
+    );
+    assert!(
+        peer_refusal_before_mode(&state, &owner, &write(), &machine.conn_peer).is_none(),
+        "the relay's machine link carries the human's write"
+    );
+
+    // A client-scoped device (phone, agent-shaped connection) is not the
+    // relay, whatever it holds.
+    let phone = ConnHandle::with_peer_caps(
+        9,
+        None,
+        Some(ConnPeer::Remote {
+            device_id: "dev-phone".to_string(),
+            scope: PeerScope::PairedUser,
+            paired_by_user: Some("local-user".to_string()),
+            binding: TransportBinding::tailnet("nstable", "node", "user@example.com"),
+        }),
+        [CAP_ADMIN.to_string()].to_vec(),
+        QuitIntent::default(),
+    );
+    let refused = peer_refusal_before_mode(&state, &owner, &write(), &phone.conn_peer);
+    assert!(
+        matches!(
+            refused,
+            Some(DaemonMessage::Error(ref error))
+                if error.code == devboule_protocol::ErrorCode::CapabilityNotSupported
+                    && error.message == PEER_FILE_WRITE_HUMAN_ONLY
+        ),
+        "a client device must not author file content: {refused:?}"
+    );
+
+    // An unknown link (never paired) is not the relay either.
+    let stranger = ConnHandle::with_peer_caps(
+        10,
+        None,
+        Some(ConnPeer::Remote {
+            device_id: "dev-unknown".to_string(),
+            scope: PeerScope::PeerDevice,
+            paired_by_user: None,
+            binding: TransportBinding::tailnet("nstable", "node", "user@example.com"),
+        }),
+        [CAP_ADMIN.to_string()].to_vec(),
+        QuitIntent::default(),
+    );
+    assert!(
+        peer_refusal_before_mode(&state, &owner, &write(), &stranger.conn_peer).is_some(),
+        "an unpaired link must not author file content"
+    );
+
+    // Reads stay on the grant alone: the open and the poll are the
+    // windowed read's siblings, not content writes.
+    for read in [
+        ClientMessage::WorkspaceFileOpen {
+            id: 2,
+            workspace_id: "w".to_string(),
+            path: "a.txt".to_string(),
+        },
+        ClientMessage::WorkspaceFileVersion {
+            id: 3,
+            workspace_id: "w".to_string(),
+            path: "a.txt".to_string(),
+        },
+    ] {
+        assert!(
+            peer_refusal_before_mode(&state, &owner, &read, &phone.conn_peer).is_none(),
+            "reads stay on the administrative grant: {read:?}"
+        );
+    }
+}

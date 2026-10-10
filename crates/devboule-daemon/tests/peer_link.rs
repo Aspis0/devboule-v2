@@ -2726,6 +2726,10 @@ fn a_host_opens_and_writes_a_file_on_its_peer_over_loopback() {
 
     pair_devices(&a, &b, &address_b, &b_self.device_id);
     let (_b_project, b_workspace) = create_project_and_workspace(&b, "files");
+    // Both sides host: the relay's file writes travel machine links, so
+    // the sender must be a workspace host for the far gate to let the
+    // write through.
+    let (_a_project, _a_workspace) = create_project_and_workspace(&a, "a-files");
 
     // A watches B and waits for the link, like the workspace loopback test.
     let id = a.pipe.id();
@@ -2795,6 +2799,7 @@ fn a_host_opens_and_writes_a_file_on_its_peer_over_loopback() {
             content: "hello from A\n".to_string(),
             expected_modified_at: None,
             expected_revision: None,
+            create: true,
         },
         |frame| match frame {
             DaemonMessage::RemoteHostFileWrite { result, .. } => Some(result.clone()),
@@ -2847,6 +2852,7 @@ fn a_host_opens_and_writes_a_file_on_its_peer_over_loopback() {
             content: "stale\n".to_string(),
             expected_modified_at: Some(0),
             expected_revision: None,
+            create: false,
         },
         |frame| match frame {
             DaemonMessage::RemoteHostFileWrite { result, .. } => Some(result.clone()),
@@ -2896,6 +2902,7 @@ fn a_host_opens_and_writes_a_file_on_its_peer_over_loopback() {
             content: "second from A\n".to_string(),
             expected_modified_at: Some(modified_at),
             expected_revision: revision,
+            create: false,
         },
         |frame| match frame {
             DaemonMessage::RemoteHostFileWrite { result, .. } => Some(result.clone()),

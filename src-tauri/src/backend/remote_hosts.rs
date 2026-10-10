@@ -483,6 +483,7 @@ pub async fn remote_host_file_version(
 
 /// Write one such file, with the caller's expected version carried through
 /// to the host's own write.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn remote_host_file_write(
     bridge: State<'_, DaemonBridge>,
@@ -492,6 +493,7 @@ pub async fn remote_host_file_write(
     content: String,
     expected_modified_at: Option<i64>,
     expected_revision: Option<String>,
+    create: bool,
 ) -> Result<WorkspaceFileWriteResult, CommandError> {
     let client = require_client(&bridge)?;
     off_main_thread(move || {
@@ -502,6 +504,7 @@ pub async fn remote_host_file_write(
             &content,
             expected_modified_at,
             expected_revision,
+            create,
         )
     })
     .await

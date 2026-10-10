@@ -279,7 +279,7 @@ describe("WorkspaceFileTab editing", () => {
     await saveNow();
 
     expect(workspaceFileEditorWrite).toHaveBeenCalledTimes(1);
-    // A create names no expected version.
-    expect(vi.mocked(workspaceFileEditorWrite).mock.calls[0]?.slice(3)).toEqual([null, null]);
+    // A create names no expected version but an explicit intent.
+    expect(vi.mocked(workspaceFileEditorWrite).mock.calls[0]?.slice(3)).toEqual([null, null, true]);
   });
 });

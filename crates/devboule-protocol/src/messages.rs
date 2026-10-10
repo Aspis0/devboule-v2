@@ -716,6 +716,11 @@ pub enum ClientMessage {
         expected_modified_at: Option<i64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_revision: Option<String>,
+        /// Set for a create: a write that names no expected version
+        /// creates nothing unless this says so, so an accidental
+        /// versionless write can never conjure a file.
+        #[serde(default)]
+        create: bool,
     },
     /// Register this connection as the browser host: the place that runs
     /// browser commands for agents. The reply is
@@ -1208,10 +1213,12 @@ pub enum ClientMessage {
     /// `expected_revision` for `expectedRevision`). A **write** like
     /// [`Self::WorkspaceFileRename`]: the folder comes from `workspace_id`
     /// and `path` is confined before anything opens. No expected version
-    /// is a create: it succeeds only when the file is missing — the parent
-    /// folder must already exist, parents are never made silently — and
-    /// answers `conflict` with the ready version when anything is already
-    /// there. The content travels verbatim: BOM and line endings are the
+    /// plus `create` is a create: it succeeds only when the file is
+    /// missing — the parent folder must already exist, parents are never
+    /// made silently — and answers `conflict` with the ready version when
+    /// anything is already there. A versionless write without `create` is
+    /// refused outright, so only an explicit create intent conjures a
+    /// file. The content travels verbatim: BOM and line endings are the
     /// editor's, never normalised here. The reply is
     /// [`DaemonMessage::WorkspaceFileWrite`].
     WorkspaceFileWrite {
@@ -1225,6 +1232,11 @@ pub enum ClientMessage {
         expected_modified_at: Option<i64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_revision: Option<String>,
+        /// Set for a create: a write that names no expected version
+        /// creates nothing unless this says so, so an accidental
+        /// versionless write can never conjure a file.
+        #[serde(default)]
+        create: bool,
     },
     /// Open one file anywhere on this machine for the in-app editor: an
     /// absolute path or a `~` path (for example
@@ -1256,6 +1268,11 @@ pub enum ClientMessage {
         expected_modified_at: Option<i64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_revision: Option<String>,
+        /// Set for a create: a write that names no expected version
+        /// creates nothing unless this says so, so an accidental
+        /// versionless write can never conjure a file.
+        #[serde(default)]
+        create: bool,
     },
     /// Rename one entry inside a workspace — the Files panel's inline rename.
     /// A **write**: the daemon resolves the folder from `workspace_id`,

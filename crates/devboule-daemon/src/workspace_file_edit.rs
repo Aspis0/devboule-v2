@@ -18,11 +18,12 @@
 //!
 //! - A missing file is not an error here. Paseo answers ENOENT and the
 //!   editor stays shut; the open answers empty content with a `missing`
-//!   version, and a write that names no expected version creates the file
-//!   (owner decision). A write that names no version while anything is
-//!   already there answers `conflict` with the ready version, so a retry
-//!   after an outside creator lands on the conflict road, never on a
-//!   silent overwrite.
+//!   version, and a write that names no expected version plus `create`
+//!   creates the file (owner decision). A versionless write without
+//!   `create` is refused, and a write that names no version while
+//!   anything is already there answers `conflict` with the ready version,
+//!   so a retry after an outside creator lands on the conflict road,
+//!   never on a silent overwrite.
 //! - Parent folders are never made silently: when the parent is missing
 //!   the write answers `the parent folder does not exist` and nothing is
 //!   created.
@@ -107,6 +108,11 @@ fn is_read_only(metadata: &std::fs::Metadata) -> bool {
 /// check, never a missing file — offering those as empty editors would
 /// let a create replace a file the daemon simply could not see.
 const UNSTATABLE: &str = "the file could not be checked";
+
+/// The sentence a versionless write without `create` answers with. Only
+/// an explicit create intent conjures a file: an accidental versionless
+/// write — a stale client, a replayed frame — creates nothing.
+const CREATE_INTENT: &str = "a write that names no version creates nothing unless create is set";
 
 /// The sentence an app-file road answers with when the path is not
 /// absolute (after `~` expansion). Ours: the human names a file on this
@@ -218,6 +224,7 @@ pub(crate) fn reply_version(
 }
 
 /// The editor's write for one workspace file.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn reply_write(
     state: &ServerState,
     id: u64,
@@ -226,6 +233,7 @@ pub(crate) fn reply_write(
     content: &str,
     expected_modified_at: Option<i64>,
     expected_revision: Option<&str>,
+    create: bool,
 ) -> DaemonMessage {
     let result = match state.sessions.workspace_cwd(workspace_id) {
         Ok(root) => write_workspace_file(
@@ -235,6 +243,7 @@ pub(crate) fn reply_write(
             content.as_bytes(),
             expected_modified_at,
             expected_revision,
+            create,
         ),
         Err(error) => return DaemonMessage::Error(error.with_id(id)),
     };
@@ -270,6 +279,7 @@ pub(crate) fn reply_app_write(
     content: &str,
     expected_modified_at: Option<i64>,
     expected_revision: Option<&str>,
+    create: bool,
 ) -> DaemonMessage {
     let _ = state;
     DaemonMessage::AppFileWrite {
@@ -279,6 +289,7 @@ pub(crate) fn reply_app_write(
             content.as_bytes(),
             expected_modified_at,
             expected_revision,
+            create,
         ),
     }
 }
@@ -402,6 +413,7 @@ fn write_workspace_file(
     content: &[u8],
     expected_modified_at: Option<i64>,
     expected_revision: Option<&str>,
+    create: bool,
 ) -> WorkspaceFileWriteResult {
     // Paseo encodes first and measures bytes: `content` is characters on
     // the wire, the cap is bytes on the disk.
@@ -441,6 +453,9 @@ fn write_workspace_file(
                             path: requested.to_string(),
                         },
                     };
+                }
+                if !create {
+                    return error(CREATE_INTENT);
                 }
                 match parent_is_dir(&target) {
                     Some(true) => create_file(&target, content),
@@ -1217,6 +1232,7 @@ fn write_app_file(
     content: &[u8],
     expected_modified_at: Option<i64>,
     expected_revision: Option<&str>,
+    create: bool,
 ) -> WorkspaceFileWriteResult {
     if content.len() as u64 > MAX_EDITABLE_FILE_BYTES {
         return error(TOO_LARGE);
@@ -1235,6 +1251,9 @@ fn write_app_file(
                         path: spelling,
                     },
                 };
+            }
+            if !create {
+                return error(CREATE_INTENT);
             }
             match parent_is_dir(&target) {
                 Some(true) => create_file(&target, content),

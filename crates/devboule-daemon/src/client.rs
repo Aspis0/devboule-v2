@@ -1570,8 +1570,8 @@ impl DaemonClient {
 
     /// Write one workspace file from the in-app editor: `written` with the
     /// new stamp, `conflict` with the fresh version, or `error`. No
-    /// expected version is a create — it succeeds only when the file is
-    /// missing, and the parent folder must already exist.
+    /// expected version plus `create` is a create — it succeeds only when
+    /// the file is missing, and the parent folder must already exist.
     pub fn workspace_file_write(
         &self,
         workspace_id: &str,
@@ -1579,6 +1579,7 @@ impl DaemonClient {
         content: &str,
         expected_modified_at: Option<i64>,
         expected_revision: Option<String>,
+        create: bool,
     ) -> Result<WorkspaceFileWriteResult, DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::WorkspaceFileWrite {
@@ -1588,6 +1589,7 @@ impl DaemonClient {
             content: content.to_string(),
             expected_modified_at,
             expected_revision,
+            create,
         })? {
             DaemonMessage::WorkspaceFileWrite { result, .. } => Ok(result),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
@@ -1631,6 +1633,7 @@ impl DaemonClient {
         content: &str,
         expected_modified_at: Option<i64>,
         expected_revision: Option<String>,
+        create: bool,
     ) -> Result<WorkspaceFileWriteResult, DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::AppFileWrite {
@@ -1639,6 +1642,7 @@ impl DaemonClient {
             content: content.to_string(),
             expected_modified_at,
             expected_revision,
+            create,
         })? {
             DaemonMessage::AppFileWrite { result, .. } => Ok(result),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
@@ -2508,6 +2512,7 @@ impl DaemonClient {
 
     /// Write one such file, with the caller's expected version carried
     /// through to the host's own write.
+    #[allow(clippy::too_many_arguments)]
     pub fn remote_host_file_write(
         &self,
         device_id: &str,
@@ -2516,6 +2521,7 @@ impl DaemonClient {
         content: &str,
         expected_modified_at: Option<i64>,
         expected_revision: Option<String>,
+        create: bool,
     ) -> Result<WorkspaceFileWriteResult, DaemonError> {
         self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
         let id = self.alloc_id();
@@ -2527,6 +2533,7 @@ impl DaemonClient {
             content: content.to_string(),
             expected_modified_at,
             expected_revision,
+            create,
         })? {
             DaemonMessage::RemoteHostFileWrite { result, .. } => Ok(result),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),

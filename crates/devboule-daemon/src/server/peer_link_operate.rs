@@ -860,6 +860,7 @@ pub(crate) fn serve_file_write(
         content,
         expected_modified_at,
         expected_revision,
+        create,
         answer,
     } = command
     else {
@@ -884,6 +885,7 @@ pub(crate) fn serve_file_write(
             content,
             expected_modified_at,
             expected_revision,
+            create,
         })
         .is_err()
     {

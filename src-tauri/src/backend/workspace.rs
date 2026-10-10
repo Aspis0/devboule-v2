@@ -357,6 +357,7 @@ pub async fn workspace_file_editor_write(
     content: String,
     expected_modified_at: Option<i64>,
     expected_revision: Option<String>,
+    create: bool,
 ) -> Result<WorkspaceFileWriteResult, CommandError> {
     let client = require_client(&bridge)?;
     off_main_thread(move || {
@@ -366,6 +367,7 @@ pub async fn workspace_file_editor_write(
             &content,
             expected_modified_at,
             expected_revision,
+            create,
         )
     })
     .await
@@ -406,10 +408,17 @@ pub async fn app_file_write(
     content: String,
     expected_modified_at: Option<i64>,
     expected_revision: Option<String>,
+    create: bool,
 ) -> Result<WorkspaceFileWriteResult, CommandError> {
     let client = require_client(&bridge)?;
     off_main_thread(move || {
-        client.app_file_write(&path, &content, expected_modified_at, expected_revision)
+        client.app_file_write(
+            &path,
+            &content,
+            expected_modified_at,
+            expected_revision,
+            create,
+        )
     })
     .await
 }

@@ -845,8 +845,9 @@ impl PeerLinks {
         })
     }
 
-    /// Write one such file, with the same create-or-check semantics the
-    /// peer serves locally.
+    /// Write one such file, with the caller's expected version and
+    /// create intent carried through to the host's own write.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn operate_file_write(
         &self,
         device_id: &str,
@@ -855,6 +856,7 @@ impl PeerLinks {
         content: String,
         expected_modified_at: Option<i64>,
         expected_revision: Option<String>,
+        create: bool,
     ) -> LinkAnswer {
         let wait = self.operate_wait(false);
         self.operate(device_id, wait, false, |generation, answer| {
@@ -865,6 +867,7 @@ impl PeerLinks {
                 content,
                 expected_modified_at,
                 expected_revision,
+                create,
                 answer,
             }
         })

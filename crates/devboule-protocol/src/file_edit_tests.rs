@@ -54,6 +54,7 @@ fn the_editor_frames_carry_their_ids_and_names() {
         content: "one".to_string(),
         expected_modified_at: Some(7),
         expected_revision: Some("3:7".to_string()),
+        create: false,
     };
     assert_eq!(write.request_id(), Some(9));
     assert!(write.is_state_changing());
@@ -80,6 +81,7 @@ fn the_editor_frames_carry_their_ids_and_names() {
         content: "x".to_string(),
         expected_modified_at: None,
         expected_revision: None,
+        create: false,
     };
     assert_eq!(app_write.request_id(), Some(12));
     assert!(app_write.is_state_changing());
@@ -92,6 +94,7 @@ fn the_editor_frames_carry_their_ids_and_names() {
         content: "one".to_string(),
         expected_modified_at: Some(7),
         expected_revision: None,
+        create: false,
     };
     assert_eq!(remote_write.request_id(), Some(13));
     assert!(remote_write.is_state_changing());
@@ -100,4 +103,25 @@ fn the_editor_frames_carry_their_ids_and_names() {
 #[test]
 fn the_file_edit_dialect_is_33() {
     assert_eq!(PROTOCOL_VERSION, 33);
+}
+
+#[test]
+fn a_create_is_an_explicit_intent_on_the_wire() {
+    // Absent on an old frame decodes as false: a versionless write
+    // without it creates nothing.
+    let decoded: ClientMessage = serde_json::from_value(serde_json::json!({
+        "type": "workspace_file_write",
+        "id": 1,
+        "workspaceId": "w",
+        "path": "a.ts",
+        "content": "x",
+    }))
+    .expect("a v33 write decodes");
+    assert!(
+        matches!(
+            decoded,
+            ClientMessage::WorkspaceFileWrite { create: false, .. }
+        ),
+        "{decoded:?}"
+    );
 }

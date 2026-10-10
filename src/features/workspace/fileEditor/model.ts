@@ -38,6 +38,7 @@ export interface FileEditorSession {
     content: string;
     expectedModifiedAt?: number | null;
     expectedRevision?: string | null;
+    create?: boolean;
   }): Promise<WorkspaceFileWriteResult>;
 }
 
@@ -337,6 +338,7 @@ export class FileEditorModel {
         content: serializedContent,
         expectedModifiedAt: null,
         expectedRevision: null,
+        create: true,
       });
     } catch (error) {
       if (this.disposed || sequence !== this.saveSequence) return;

@@ -94,12 +94,20 @@ async function writeTarget(
   content: string,
   expectedModifiedAt: number | null | undefined,
   expectedRevision: string | null | undefined,
+  create: boolean,
 ): Promise<WorkspaceFileWriteResult> {
   const at = expectedModifiedAt ?? null;
   const revision = expectedRevision ?? null;
   switch (target.kind) {
     case "workspace":
-      return workspaceFileEditorWrite(target.workspaceId, target.path, content, at, revision);
+      return workspaceFileEditorWrite(
+        target.workspaceId,
+        target.path,
+        content,
+        at,
+        revision,
+        create,
+      );
     case "remote":
       return remoteHostFileWrite(
         target.deviceId,
@@ -108,9 +116,10 @@ async function writeTarget(
         content,
         at,
         revision,
+        create,
       );
     case "outside":
-      return appFileWrite(target.path, content, at, revision);
+      return appFileWrite(target.path, content, at, revision, create);
   }
 }
 
@@ -199,6 +208,7 @@ export function useEditableFile(
               input.content,
               input.expectedModifiedAt,
               input.expectedRevision,
+              input.create ?? false,
             ),
         },
         ...(openedMissing ? { missing: true } : {}),

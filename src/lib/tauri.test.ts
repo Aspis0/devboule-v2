@@ -932,7 +932,7 @@ describe("file editor command wrappers", () => {
     };
     vi.mocked(invoke).mockResolvedValue(result as never);
 
-    const answer = await workspaceFileEditorWrite("w.1", "a.txt", "two\n", 7, "4:7");
+    const answer = await workspaceFileEditorWrite("w.1", "a.txt", "two\n", 7, "4:7", false);
 
     expect(invoke).toHaveBeenCalledWith("workspace_file_editor_write", {
       workspaceId: "w.1",
@@ -940,6 +940,7 @@ describe("file editor command wrappers", () => {
       content: "two\n",
       expectedModifiedAt: 7,
       expectedRevision: "4:7",
+      create: false,
     });
     expect(answer).toEqual(result);
   });
@@ -958,12 +959,13 @@ describe("file editor command wrappers", () => {
       revision: "3:9",
     };
     vi.mocked(invoke).mockResolvedValue(created as never);
-    await appFileWrite("/n", "new\n", null, null);
+    await appFileWrite("/n", "new\n", null, null, true);
     expect(invoke).toHaveBeenCalledWith("app_file_write", {
       path: "/n",
       content: "new\n",
       expectedModifiedAt: null,
       expectedRevision: null,
+      create: true,
     });
   });
 
@@ -986,7 +988,7 @@ describe("file editor command wrappers", () => {
     });
 
     vi.mocked(invoke).mockResolvedValue({ status: "error", error: "x" } as never);
-    await remoteHostFileWrite("d.1", "w.9", "n.txt", "x", 1, "r");
+    await remoteHostFileWrite("d.1", "w.9", "n.txt", "x", 1, "r", false);
     expect(invoke).toHaveBeenCalledWith("remote_host_file_write", {
       deviceId: "d.1",
       workspaceId: "w.9",
@@ -994,6 +996,7 @@ describe("file editor command wrappers", () => {
       content: "x",
       expectedModifiedAt: 1,
       expectedRevision: "r",
+      create: false,
     });
     vi.mocked(invoke).mockResolvedValue(file.version as never);
     await remoteHostFileVersion("d.1", "w.9", "n.txt");

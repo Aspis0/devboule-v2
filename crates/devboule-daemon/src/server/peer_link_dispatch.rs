@@ -556,6 +556,7 @@ pub(super) fn dispatch_remote_host(
             content,
             expected_modified_at,
             expected_revision,
+            create,
         } => {
             if let Some(refused) = app_only(conn, id) {
                 return refused;
@@ -567,6 +568,7 @@ pub(super) fn dispatch_remote_host(
                 content,
                 expected_modified_at,
                 expected_revision,
+                create,
             );
             operate_answer(
                 id,

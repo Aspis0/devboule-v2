@@ -40,6 +40,7 @@ class FileSession implements FileEditorSession {
     content: string;
     expectedModifiedAt?: number | null;
     expectedRevision?: string | null;
+    create?: boolean;
   }> = [];
   nextWrite: WorkspaceFileWriteResult | Error | null = null;
   private pendingWrite: Promise<WorkspaceFileWriteResult> | null = null;
@@ -53,6 +54,7 @@ class FileSession implements FileEditorSession {
     content: string;
     expectedModifiedAt?: number | null;
     expectedRevision?: string | null;
+    create?: boolean;
   }): Promise<WorkspaceFileWriteResult> {
     this.writes.push(input);
     if (this.pendingWrite) return this.pendingWrite;
@@ -567,7 +569,7 @@ describe("FileEditorModel", () => {
     await model.save();
 
     expect(session.writes).toEqual([
-      { content: "born\n", expectedModifiedAt: null, expectedRevision: null },
+      { content: "born\n", expectedModifiedAt: null, expectedRevision: null, create: true },
     ]);
     expect(model.getSnapshot()).toMatchObject({ status: "clean", modified: false });
     expect(model.getSnapshot().observedVersion.status).toBe("ready");

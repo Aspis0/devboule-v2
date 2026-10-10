@@ -172,6 +172,15 @@ pub const ACP_MODES_UNVETTED_MESSAGE: &str =
 pub const PEER_ATTACHMENTS_UNSUPPORTED: &str =
     "attachments from a paired device are not accepted yet";
 
+/// Why a file content-write from a paired device outside the relay's own
+/// machine link is refused (`server/peer_gate.rs`). Content writes and
+/// creates author bytes anywhere in a checkout — new power beside the
+/// renames and deletes the administrative grant already opens — so a peer
+/// reaches them only over a machine link to a device a local user paired,
+/// which is what the relay's link is. Client-scoped devices and unknown
+/// links keep the refusal; reads stay on the grant alone.
+pub const PEER_FILE_WRITE_HUMAN_ONLY: &str = "file content writes are human-originated only";
+
 /// Rendered pages one composer turn may carry (the app's own cap).
 const BUDGET_PAGES_PER_TURN: u64 = 200;
 /// What one rendered PDF page weighs once stored.
@@ -1775,6 +1784,7 @@ pub(crate) mod tests {
                 content: "guide\n".to_string(),
                 expected_modified_at: None,
                 expected_revision: None,
+                create: false,
             },
             // The browser host, all three frames: local-only like the link
             // above, refused to a peer by name.
@@ -1924,6 +1934,7 @@ pub(crate) mod tests {
                 content: "guide\n".to_string(),
                 expected_modified_at: None,
                 expected_revision: None,
+                create: false,
             },
             ClientMessage::AppFileOpen {
                 id: 1,
@@ -1939,6 +1950,7 @@ pub(crate) mod tests {
                 content: "note\n".to_string(),
                 expected_modified_at: None,
                 expected_revision: None,
+                create: false,
             },
             ClientMessage::WorkspaceFileRename {
                 id: 1,
@@ -3465,6 +3477,7 @@ pub(crate) mod tests {
                 content: "guide\n".to_string(),
                 expected_modified_at: None,
                 expected_revision: None,
+                create: false,
             },
             ClientMessage::AppFileOpen {
                 id: 1,
@@ -3480,6 +3493,7 @@ pub(crate) mod tests {
                 content: "note\n".to_string(),
                 expected_modified_at: None,
                 expected_revision: None,
+                create: false,
             },
             ClientMessage::WorkspaceFileRename {
                 id: 1,
@@ -3703,6 +3717,7 @@ pub(crate) mod tests {
                 content: "guide\n".to_string(),
                 expected_modified_at: None,
                 expected_revision: None,
+                create: false,
             },
             ClientMessage::BrowserHostRegister {
                 id: 1,

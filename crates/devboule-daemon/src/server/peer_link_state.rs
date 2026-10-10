@@ -195,6 +195,7 @@ pub(crate) enum LinkCommand {
         content: String,
         expected_modified_at: Option<i64>,
         expected_revision: Option<String>,
+        create: bool,
         answer: SyncSender<LinkAnswer>,
     },
     /// The row was revoked: drop the transport now, streams included.

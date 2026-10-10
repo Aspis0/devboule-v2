@@ -273,6 +273,7 @@ pub(super) fn dispatch_journal(
             content,
             expected_modified_at,
             expected_revision,
+            create,
         } => crate::workspace_file_edit::reply_write(
             state,
             id,
@@ -281,6 +282,7 @@ pub(super) fn dispatch_journal(
             &content,
             expected_modified_at,
             expected_revision.as_deref(),
+            create,
         ),
         // The human's own files: app-only one layer up (the peer gate
         // refuses these frames to every peer, and no agent or MCP tool
@@ -298,6 +300,7 @@ pub(super) fn dispatch_journal(
             content,
             expected_modified_at,
             expected_revision,
+            create,
         } => crate::workspace_file_edit::reply_app_write(
             state,
             id,
@@ -305,6 +308,7 @@ pub(super) fn dispatch_journal(
             &content,
             expected_modified_at,
             expected_revision.as_deref(),
+            create,
         ),
         // The two write acts: keyed like the other keyed writes here (a
         // retry with the same key replays the first success instead of

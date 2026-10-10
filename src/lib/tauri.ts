@@ -149,6 +149,7 @@ export type CommandArgs = {
     content: string;
     expectedModifiedAt?: number | null;
     expectedRevision?: string | null;
+    create: boolean;
   };
   app_file_open: { path: string };
   app_file_version: { path: string };
@@ -157,6 +158,7 @@ export type CommandArgs = {
     content: string;
     expectedModifiedAt?: number | null;
     expectedRevision?: string | null;
+    create: boolean;
   };
   editor_targets_list: undefined;
   /** One http(s) URL for the system browser, never the webview. */
@@ -365,6 +367,7 @@ export type CommandArgs = {
     content: string;
     expectedModifiedAt?: number | null;
     expectedRevision?: string | null;
+    create: boolean;
   };
   sessions_unwatch: undefined;
   providers_list: undefined;
@@ -708,10 +711,11 @@ export const COMMAND_ARG_KEYS = {
     "content",
     "expectedModifiedAt",
     "expectedRevision",
+    "create",
   ],
   app_file_open: ["path"],
   app_file_version: ["path"],
-  app_file_write: ["path", "content", "expectedModifiedAt", "expectedRevision"],
+  app_file_write: ["path", "content", "expectedModifiedAt", "expectedRevision", "create"],
   editor_targets_list: [],
   open_external_url: ["url"],
   session_create: ["workspaceId", "kind", "provider", "mode", "cols", "rows"],
@@ -853,6 +857,7 @@ export const COMMAND_ARG_KEYS = {
     "content",
     "expectedModifiedAt",
     "expectedRevision",
+    "create",
   ],
   tool_policy_get: [],
   tool_policy_set: ["providerId", "enabled", "disabledTools"],
@@ -1116,6 +1121,7 @@ export const workspaceFileEditorWrite = (
   content: string,
   expectedModifiedAt?: number | null,
   expectedRevision?: string | null,
+  create?: boolean,
 ) =>
   invokeTyped("workspace_file_editor_write", {
     workspaceId,
@@ -1123,6 +1129,7 @@ export const workspaceFileEditorWrite = (
     content,
     expectedModifiedAt,
     expectedRevision,
+    create: create ?? false,
   });
 /**
  * Open one file anywhere on this machine — an absolute path or a `~`
@@ -1139,7 +1146,15 @@ export const appFileWrite = (
   content: string,
   expectedModifiedAt?: number | null,
   expectedRevision?: string | null,
-) => invokeTyped("app_file_write", { path, content, expectedModifiedAt, expectedRevision });
+  create?: boolean,
+) =>
+  invokeTyped("app_file_write", {
+    path,
+    content,
+    expectedModifiedAt,
+    expectedRevision,
+    create: create ?? false,
+  });
 /**
  * Stage one workspace file for the panel's full-size preview: the daemon
  * confines the path exactly as the read above does, refuses what that read
@@ -1838,7 +1853,8 @@ export const remoteHostFileOpen = (deviceId: string, workspaceId: string, path: 
 /** The version of one such file: the observation poll over the held link. */
 export const remoteHostFileVersion = (deviceId: string, workspaceId: string, path: string) =>
   invokeTyped("remote_host_file_version", { deviceId, workspaceId, path });
-/** Write one such file, with the caller's expected version carried through. */
+/** Write one such file, with the caller's expected version and create
+ * intent carried through. */
 export const remoteHostFileWrite = (
   deviceId: string,
   workspaceId: string,
@@ -1846,6 +1862,7 @@ export const remoteHostFileWrite = (
   content: string,
   expectedModifiedAt?: number | null,
   expectedRevision?: string | null,
+  create?: boolean,
 ) =>
   invokeTyped("remote_host_file_write", {
     deviceId,
@@ -1854,6 +1871,7 @@ export const remoteHostFileWrite = (
     content,
     expectedModifiedAt,
     expectedRevision,
+    create: create ?? false,
   });
 
 /**
