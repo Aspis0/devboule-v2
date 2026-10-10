@@ -26,6 +26,10 @@ export interface PendingRemoteCreate {
   provider: ProviderInfo | undefined;
   /** The short sentence the failure banner shows. */
   error: string;
+  /** The provider read failed before any provider was chosen: Retry
+   * re-reads the catalog (back to the picker) instead of creating a
+   * provider-less session with a stale key. */
+  awaitingProvider?: boolean;
 }
 
 const pending = new Map<WorkspaceKey, PendingRemoteCreate>();

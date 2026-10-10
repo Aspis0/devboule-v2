@@ -315,6 +315,45 @@ describe("the remote operate surface", () => {
     expect(lastCreateKey()).toBe(key);
   });
 
+  it("returns a failed provider read to the picker, never to a provider-less create", async () => {
+    vi.mocked(remoteHostProviders).mockRejectedValueOnce(new Error("The host is busy."));
+    await render();
+    const add = container.querySelector<HTMLButtonElement>("button[aria-label='New remote tab']");
+    await act(async () => {
+      add?.click();
+    });
+    await flush();
+    const agentEntry = [...document.querySelectorAll<HTMLButtonElement>("[role='menuitem']")].find(
+      (button) => button.textContent === "Agent",
+    );
+    await act(async () => {
+      agentEntry?.click();
+    });
+    await flush();
+
+    // The read failed before any provider was chosen: no create went out.
+    expect(vi.mocked(remoteHostCreate)).not.toHaveBeenCalled();
+    const retry = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Retry",
+    );
+    expect(retry).toBeDefined();
+    // Retry re-reads the catalog; the host now answers with one provider,
+    // which goes straight through — with a provider, not without one.
+    await act(async () => {
+      retry?.click();
+    });
+    await flush();
+    expect(vi.mocked(remoteHostProviders)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(remoteHostCreate)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(remoteHostCreate)).toHaveBeenCalledWith({
+      deviceId: "device-one",
+      workspaceId: "workspace-one",
+      kind: "claude",
+      provider: null,
+      idempotencyKey: expect.any(String),
+    });
+  });
+
   it("keeps the retry identity across a workspace switch", async () => {
     vi.mocked(remoteHostCreate).mockRejectedValueOnce(new Error("The host stopped answering."));
     await render();

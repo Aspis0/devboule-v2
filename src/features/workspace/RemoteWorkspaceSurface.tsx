@@ -97,6 +97,10 @@ interface CreateFailed {
    * its own, because after a transport failure the outcome is unknown. */
   key: string;
   message: string;
+  /** The provider read failed before any provider was chosen: Retry
+   * re-reads the catalog (back to the picker) instead of creating a
+   * provider-less session with a stale key. */
+  awaitingProvider?: boolean;
 }
 
 /**
@@ -191,6 +195,7 @@ export function RemoteWorkspaceSurface({
             provider: storedFailure.provider,
             key: storedFailure.key,
             message: storedFailure.error,
+            awaitingProvider: storedFailure.awaitingProvider,
           },
     [storedFailure],
   );
@@ -208,6 +213,7 @@ export function RemoteWorkspaceSurface({
               kind: failed.kind,
               provider: failed.provider,
               error: failed.message,
+              awaitingProvider: failed.awaitingProvider,
             },
       );
     },
@@ -531,11 +537,14 @@ export function RemoteWorkspaceSurface({
     try {
       catalog = (await remoteHostProviders(deviceId)).providers;
     } catch (cause: unknown) {
+      // No provider was ever chosen: Retry re-reads the catalog instead
+      // of creating a provider-less session (P2-8).
       setCreateFailed({
         kind: "agent",
         provider: undefined,
         key: crypto.randomUUID(),
         message: errorSentence(cause).sentence,
+        awaitingProvider: true,
       });
       return;
     }
@@ -556,8 +565,14 @@ export function RemoteWorkspaceSurface({
   const retryCreate = useCallback(() => {
     const failed = createFailed;
     if (failed === null) return;
+    // A failure before any provider was chosen goes back to the picker;
+    // anything else retries the create with the minted key.
+    if (failed.awaitingProvider) {
+      void handleNewAgent();
+      return;
+    }
     void doCreate(failed.kind, failed.provider, failed.key);
-  }, [createFailed, doCreate]);
+  }, [createFailed, doCreate, handleNewAgent]);
 
   const dismissCreateFailed = useCallback(() => {
     setCreateFailed(null);
