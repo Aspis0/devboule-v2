@@ -65,13 +65,15 @@ describe("providers row geometry (real stylesheets, no app launch)", () => {
     expect(getComputedStyle(box("prov-name")).fontSize).toBe("14px");
   });
 
-  it("sizes the Devboule-tools switch at 34x20 with the on fill", () => {
+  it("sizes the Devboule-tools switch at 34x20 with the live-green on fill", () => {
     proof.inject([".prov-switch", ".prov-switch-on"]);
     const toggle = box("prov-switch prov-switch-on");
     const style = getComputedStyle(toggle);
     expect(style.width).toBe("34px");
     expect(style.height).toBe("20px");
-    expect(proof.rulesFor(".prov-switch-on")).toContain(proof.token("--ink"));
+    // The on state is the live tone, not the neutral ink: in dark theme the
+    // ink track matched the off track, so the two states could not be told apart.
+    expect(proof.rulesFor(".prov-switch-on")).toContain(proof.token("--tone-live"));
   });
 
   it("keeps the status line at 12 with the live dot on the live tone", () => {

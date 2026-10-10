@@ -189,8 +189,10 @@
   background: var(--panel-card);
 }
 
+/* The on state is the live green, not the neutral ink: in dark theme the
+   ink track read the same as the off track. */
 .prov-switch-on {
-  background: var(--control-on);
+  background: var(--tone-live);
 }
 
 .prov-switch-on > i {

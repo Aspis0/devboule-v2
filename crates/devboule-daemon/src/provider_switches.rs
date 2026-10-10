@@ -5,20 +5,28 @@
 //! the moment it decides (the read-cadence rule `delegation_store.rs` states
 //! for its switch), so turning a provider off stops the next start rather
 //! than the next restart. The store is one JSON document beside the journal
-//! (`provider-switches.json`) holding the ids switched **off** — absent
-//! means on, which is also the first-run state, so the file only ever names
-//! the exceptions. This is deliberately not a row on the tool-policy
-//! document: that row gates the daemon's tools, this switch gates the
-//! provider itself, and one door must never imply the other.
+//! (`provider-switches.json`) naming only the choices a person made: `disabled`
+//! lists the ids switched **off**, `enabled` the ids switched **on**. An id in
+//! neither list has no choice yet and takes its default: on when the provider
+//! is installed and is not an on-demand npx wrapper, off otherwise. So a first
+//! run starts with the detected CLIs on and everything else off, and a CLI
+//! installed later is on by default the next time the catalogue is read. This
+//! is deliberately not a row on the tool-policy document: that row gates the
+//! daemon's tools, this switch gates the provider itself, and one door must
+//! never imply the other.
+//!
+//! The start gates refuse only a provider a person switched off
+//! ([`ProviderSwitchStore::is_off`]); a provider with no choice and no install
+//! fails at its own spawn with the honest "not installed" answer, so no gate
+//! has to re-walk the PATH to decide.
 //!
 //! A document that cannot be read or parsed is quarantined like a corrupt
-//! tool-policy file, and the store then reads all-on. Unlike delegation
-//! (whose failure must withhold autonomous answers), a provider switch is
-//! availability config and all-on is the default the file's absence also
-//! means; the quarantine is logged, so re-saving the switches in Settings
-//! is discoverable rather than silent.
+//! tool-policy file, and the store then reads every provider at its default.
+//! Unlike delegation (whose failure must withhold autonomous answers), a
+//! provider switch is availability config; the quarantine is logged, so
+//! re-saving the switches in Settings is discoverable rather than silent.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -56,14 +64,17 @@ impl std::fmt::Display for SwitchError {
     }
 }
 
-/// The stored document: the canonical ids switched off, sorted on write so
-/// the file is deterministic. `deny_unknown_fields` refuses a document
-/// carrying anything else, the way the delegation switch refuses a shape
-/// it does not hold.
+/// The stored document: the canonical ids a person switched off and on,
+/// each list sorted on write so the file is deterministic. `deny_unknown_fields`
+/// refuses a document carrying anything else, the way the delegation switch
+/// refuses a shape it does not hold.
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct SwitchesDocument {
+    #[serde(default)]
     disabled: Vec<String>,
+    #[serde(default)]
+    enabled: Vec<String>,
 }
 
 /// The one plain sentence every spawn, probe and vocabulary refusal answers
@@ -76,79 +87,105 @@ pub(crate) fn disabled_sentence(provider_id: &str) -> String {
     )
 }
 
-/// Refuse a start for a switched-off provider: canonicalise the id the way
-/// the set door does, then read the store at this moment. Unknown ids —
-/// nothing the set door could have switched off — read as on.
+/// The default a provider with no choice takes: on when it is installed here,
+/// never for an on-demand npx wrapper (its row says nothing is installed for
+/// it, so it starts off until a person switches it on).
+pub(crate) fn default_on(agent: &crate::provider_catalog::InstalledAgent) -> bool {
+    agent.installed && agent.origin != crate::provider_catalog::ProviderOrigin::NpxWrapper
+}
+
+/// Refuse a start for a provider a person switched off: canonicalise the id
+/// the way the set door does, then read the store at this moment. Unknown
+/// ids and ids with no choice are not refused here.
 pub(crate) fn refuse_if_disabled(
     switches: &ProviderSwitchStore,
     provider_id: &str,
 ) -> Result<(), WireError> {
     let canonical = crate::provider_catalog::catalog_provider_id(provider_id)
         .unwrap_or_else(|| provider_id.to_string());
-    if switches.is_enabled(&canonical) {
-        Ok(())
-    } else {
+    if switches.is_off(&canonical) {
         Err(WireError::new(
             ErrorCode::InvalidRequest,
             disabled_sentence(&canonical),
         ))
+    } else {
+        Ok(())
     }
 }
 
-/// The switch, in memory, with the file as its durable copy.
+/// The switch, in memory, with the file as its durable copy. Each id maps to
+/// the choice a person made: `true` switched on, `false` switched off.
 ///
 /// One mutex covers the set and the write, the same shape as the tool-policy
 /// and delegation stores: two writes arriving together must not interleave
 /// their read-and-replace of the file.
 pub(crate) struct ProviderSwitchStore {
     path: PathBuf,
-    inner: Mutex<HashSet<String>>,
+    inner: Mutex<HashMap<String, bool>>,
 }
 
 impl ProviderSwitchStore {
     /// Read `runtime_dir/provider-switches.json`.
     ///
-    /// A missing file is the normal first run: every provider reads on. A
-    /// file that cannot be read or parsed is quarantined — moved aside
-    /// first, best effort, never overwritten — and the store reads all-on
-    /// with one log line naming the file and the reason.
+    /// A missing file is the normal first run: every provider has no choice
+    /// and takes its default. A file that cannot be read or parsed is
+    /// quarantined — moved aside first, best effort, never overwritten — and
+    /// the store reads every provider at its default with one log line naming
+    /// the file and the reason.
     pub(crate) fn load(runtime_dir: &Path) -> Self {
         let path = runtime_dir.join(SWITCHES_FILE);
-        let disabled = match read_switches(&path) {
-            Ok(disabled) => disabled,
+        let choices = match read_switches(&path) {
+            Ok(choices) => choices,
             Err(reason) => {
                 match quarantine(&path) {
                     Some(kept) => eprintln!(
-                        "provider-switches: {} is unusable ({reason}); moved to {} and starting with every provider on",
+                        "provider-switches: {} is unusable ({reason}); moved to {} and starting with every provider at its default",
                         path.display(),
                         kept.display()
                     ),
                     None => eprintln!(
-                        "provider-switches: {} is unusable ({reason}); it could not be moved aside, starting with every provider on",
+                        "provider-switches: {} is unusable ({reason}); it could not be moved aside, starting with every provider at its default",
                         path.display()
                     ),
                 }
-                HashSet::new()
+                HashMap::new()
             }
         };
         Self {
             path,
-            inner: Mutex::new(disabled),
+            inner: Mutex::new(choices),
         }
     }
 
-    /// Whether `provider_id` — a canonical catalog spelling — may start.
-    /// Absent means on: the file only names the exceptions.
-    pub(crate) fn is_enabled(&self, provider_id: &str) -> bool {
-        !self
-            .inner
+    fn choice(&self, provider_id: &str) -> Option<bool> {
+        self.inner
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .contains(provider_id)
+            .get(provider_id)
+            .copied()
     }
 
-    /// Switch one provider off or back on and persist before the in-memory
-    /// copy moves. A failed write leaves both as they were. Unknown ids are
+    /// Whether `provider_id` — a canonical catalog spelling — is on: the
+    /// person's choice when there is one, otherwise `installed_default`
+    /// (installed and not an on-demand wrapper, decided by the caller).
+    pub(crate) fn is_enabled(&self, provider_id: &str, installed_default: bool) -> bool {
+        self.choice(provider_id).unwrap_or(installed_default)
+    }
+
+    /// [`Self::is_enabled`] for a catalog row, with the default decided once
+    /// by [`default_on`].
+    pub(crate) fn is_enabled_for(&self, agent: &crate::provider_catalog::InstalledAgent) -> bool {
+        self.is_enabled(&agent.id, default_on(agent))
+    }
+
+    /// Whether a person switched `provider_id` off. Gates ask this, not
+    /// [`Self::is_enabled`]: an id with no choice is never refused here.
+    pub(crate) fn is_off(&self, provider_id: &str) -> bool {
+        self.choice(provider_id) == Some(false)
+    }
+
+    /// Switch one provider off or on and persist before the in-memory copy
+    /// moves. A failed write leaves both as they were. Unknown ids are
     /// refused: nothing the catalog does not publish can be switched.
     pub(crate) fn set(&self, provider_id: &str, enabled: bool) -> Result<(), SwitchError> {
         let id = provider_id.trim();
@@ -167,23 +204,17 @@ impl ProviderSwitchStore {
         let canonical = crate::provider_catalog::catalog_provider_id(id).ok_or_else(|| {
             SwitchError::InvalidRequest(format!("'{id}' is not a provider the catalog publishes"))
         })?;
-        let mut disabled = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-        let mut next = disabled.clone();
-        if enabled {
-            next.remove(canonical.as_str());
-        } else {
-            if next.len() >= crate::tool_policy::MAX_POLICY_ROWS
-                && !next.contains(canonical.as_str())
-            {
-                return Err(SwitchError::InvalidRequest(format!(
-                    "too many providers switched off; the limit is {}",
-                    crate::tool_policy::MAX_POLICY_ROWS
-                )));
-            }
-            next.insert(canonical);
+        let mut choices = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        let mut next = choices.clone();
+        if next.len() >= crate::tool_policy::MAX_POLICY_ROWS && !next.contains_key(&canonical) {
+            return Err(SwitchError::InvalidRequest(format!(
+                "too many providers have a switch set; the limit is {}",
+                crate::tool_policy::MAX_POLICY_ROWS
+            )));
         }
+        next.insert(canonical, enabled);
         write_switches(&self.path, &next)?;
-        *disabled = next;
+        *choices = next;
         Ok(())
     }
 }
@@ -191,17 +222,18 @@ impl ProviderSwitchStore {
 /// Read the file, canonicalising built-in aliases while retaining ids that
 /// are temporarily absent from the live catalog (including user rows).
 ///
-/// A missing, 0-byte or whitespace-only file reads all-on (the first run).
-/// A leading UTF-8 BOM is stripped, so a Notepad save loads as written.
-fn read_switches(path: &Path) -> Result<HashSet<String>, String> {
+/// A missing, 0-byte or whitespace-only file holds no choices (the first
+/// run). A leading UTF-8 BOM is stripped, so a Notepad save loads as written.
+/// When an id is named in both lists, the off choice wins.
+fn read_switches(path: &Path) -> Result<HashMap<String, bool>, String> {
     let bytes =
         match crate::config_read::read_config_file(path, crate::tool_policy::MAX_POLICY_FILE_BYTES)
             .map_err(|error| error.to_string())?
         {
-            // Absent and blank both read all-on: a blank switches file holds
-            // nothing to destroy.
+            // Absent and blank both hold no choices: a blank switches file
+            // holds nothing to destroy.
             crate::config_read::ConfigFile::Absent | crate::config_read::ConfigFile::Blank => {
-                return Ok(HashSet::new());
+                return Ok(HashMap::new());
             }
             crate::config_read::ConfigFile::Present(bytes) => bytes,
         };
@@ -211,35 +243,47 @@ fn read_switches(path: &Path) -> Result<HashSet<String>, String> {
             path.display()
         )
     })?;
-    let mut admitted = HashSet::new();
+    let mut admitted: HashMap<String, bool> = HashMap::new();
     let mut discarded_id = false;
-    for id in document.disabled {
-        let id = id.trim();
-        if id.is_empty() || id.len() > crate::tool_policy::MAX_POLICY_NAME_BYTES {
-            discarded_id = true;
-            continue;
+    for (ids, on) in [(document.enabled, true), (document.disabled, false)] {
+        for id in ids {
+            let id = id.trim();
+            if id.is_empty() || id.len() > crate::tool_policy::MAX_POLICY_NAME_BYTES {
+                discarded_id = true;
+                continue;
+            }
+            let canonical =
+                crate::provider_catalog::catalog_provider_id(id).unwrap_or_else(|| id.to_string());
+            if !admitted.contains_key(&canonical)
+                && admitted.len() >= crate::tool_policy::MAX_POLICY_ROWS
+            {
+                discarded_id = true;
+                continue;
+            }
+            admitted.insert(canonical, on);
         }
-        let canonical =
-            crate::provider_catalog::catalog_provider_id(id).unwrap_or_else(|| id.to_string());
-        if !admitted.contains(&canonical) && admitted.len() >= crate::tool_policy::MAX_POLICY_ROWS {
-            discarded_id = true;
-            continue;
-        }
-        admitted.insert(canonical);
     }
     if discarded_id {
-        eprintln!("provider-switches: ignored invalid or excess disabled provider ids");
+        eprintln!("provider-switches: ignored invalid or excess provider ids");
     }
     Ok(admitted)
 }
 
-fn write_switches(path: &Path, disabled: &HashSet<String>) -> io::Result<()> {
-    let mut sorted: Vec<&str> = disabled.iter().map(String::as_str).collect();
-    sorted.sort_unstable();
-    let bytes = serde_json::to_vec_pretty(&SwitchesDocument {
-        disabled: sorted.into_iter().map(str::to_string).collect(),
-    })
-    .map_err(io::Error::other)?;
+fn write_switches(path: &Path, choices: &HashMap<String, bool>) -> io::Result<()> {
+    let mut disabled: Vec<String> = choices
+        .iter()
+        .filter(|(_, on)| !**on)
+        .map(|(id, _)| id.clone())
+        .collect();
+    let mut enabled: Vec<String> = choices
+        .iter()
+        .filter(|(_, on)| **on)
+        .map(|(id, _)| id.clone())
+        .collect();
+    disabled.sort_unstable();
+    enabled.sort_unstable();
+    let bytes = serde_json::to_vec_pretty(&SwitchesDocument { disabled, enabled })
+        .map_err(io::Error::other)?;
     crate::atomic::write_protected_bytes(path, &bytes)
 }
 
@@ -265,11 +309,13 @@ mod tests {
     }
 
     #[test]
-    fn an_absent_file_reads_every_provider_on() {
-        let dir = temp_dir("absent");
+    fn a_first_run_leaves_installed_providers_on_and_the_rest_off() {
+        let dir = temp_dir("first-run");
         let store = ProviderSwitchStore::load(&dir);
-        assert!(store.is_enabled("claude"));
-        assert!(store.is_enabled("grok"));
+        assert!(store.is_enabled("claude", true), "installed starts on");
+        assert!(!store.is_enabled("grok", false), "not installed starts off");
+        assert!(!store.is_off("claude"), "no choice is not a refusal");
+        assert!(!store.is_off("grok"), "no choice is not a refusal");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -278,22 +324,26 @@ mod tests {
         let dir = temp_dir("round-trip");
         let store = ProviderSwitchStore::load(&dir);
         store.set("grok", false).expect("switch off");
-        assert!(!store.is_enabled("grok"));
-        assert!(store.is_enabled("claude"));
+        assert!(store.is_off("grok"));
+        assert!(!store.is_off("claude"));
         // Aliases and case resolve to the catalog spelling on the way in.
         store.set("GROK", true).expect("switch back on");
-        assert!(store.is_enabled("grok"));
+        assert!(store.is_enabled("grok", false));
+        assert!(!store.is_off("grok"));
         // A fresh load reads the durable copy, not the memory.
         store.set("claude", false).expect("switch Claude off");
         let reopened = ProviderSwitchStore::load(&dir);
         assert!(
-            !reopened.is_enabled("claude"),
+            reopened.is_off("claude"),
             "reload reads the persisted off state"
         );
         store.set("qwen", false).expect("second switch off");
         let reread = ProviderSwitchStore::load(&dir);
-        assert!(!reread.is_enabled("qwen"));
-        assert!(reread.is_enabled("grok"));
+        assert!(reread.is_off("qwen"));
+        assert!(
+            reread.is_enabled("grok", false),
+            "an explicit on survives a reload even when the provider is not installed"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -309,9 +359,9 @@ mod tests {
             error.to_string().contains("not-a-provider"),
             "the refusal names the id: {error}"
         );
-        assert!(store.is_enabled("not-a-provider"));
+        assert!(store.is_enabled("not-a-provider", true));
         assert!(
-            !store.is_enabled("grok"),
+            store.is_off("grok"),
             "refusing an unknown id preserves existing switches"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -327,7 +377,7 @@ mod tests {
         .expect("seed a previously saved user provider switch");
         let store = ProviderSwitchStore::load(&dir);
         assert!(
-            !store.is_enabled("user-provider.example"),
+            store.is_off("user-provider.example"),
             "loading without the user row must preserve its saved off state"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -345,18 +395,26 @@ mod tests {
 
         let store = ProviderSwitchStore::load(&dir);
 
+        assert!(store.is_off("grok"), "the saved OFF state must survive");
         assert!(
-            !store.is_enabled("grok"),
-            "the saved OFF state must survive"
-        );
-        assert!(
-            !store.is_enabled("claude"),
+            store.is_off("claude"),
             "valid rows after the bad id survive"
         );
         assert!(
-            store.is_enabled("qwen"),
-            "providers absent from the file stay ON"
+            !store.is_off("qwen") && store.is_enabled("qwen", true),
+            "providers absent from the file keep their default"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_explicit_on_choice_in_the_file_is_honoured() {
+        let dir = temp_dir("explicit-on");
+        std::fs::create_dir_all(&dir).expect("create runtime directory");
+        std::fs::write(dir.join(SWITCHES_FILE), br#"{"enabled":["grok"]}"#).expect("seed");
+        let store = ProviderSwitchStore::load(&dir);
+        assert!(store.is_enabled("grok", false));
+        assert!(!store.is_off("grok"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -367,14 +425,14 @@ mod tests {
         bytes.extend(br#"{"disabled":["grok"]}"#);
         std::fs::write(dir.join(SWITCHES_FILE), &bytes).expect("seed");
         let store = ProviderSwitchStore::load(&dir);
-        assert!(!store.is_enabled("grok"), "the off state survives the BOM");
-        assert!(store.is_enabled("claude"));
+        assert!(store.is_off("grok"), "the off state survives the BOM");
+        assert!(!store.is_off("claude"));
         assert!(dir.join(SWITCHES_FILE).is_file());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn an_empty_or_whitespace_switches_file_reads_all_on_and_is_left() {
+    fn an_empty_or_whitespace_switches_file_holds_no_choices_and_is_left() {
         for (tag, bytes) in [
             ("empty", b"".as_slice()),
             ("whitespace", b"  \n ".as_slice()),
@@ -383,19 +441,19 @@ mod tests {
             let dir = temp_dir(tag);
             std::fs::write(dir.join(SWITCHES_FILE), bytes).expect("seed");
             let store = ProviderSwitchStore::load(&dir);
-            assert!(store.is_enabled("grok"), "{tag} is a first run");
-            assert!(store.is_enabled("claude"));
+            assert!(!store.is_off("grok"), "{tag} is a first run");
+            assert!(store.is_enabled("claude", true));
             assert!(dir.join(SWITCHES_FILE).is_file(), "{tag} is left alone");
             let _ = std::fs::remove_dir_all(&dir);
         }
     }
 
     #[test]
-    fn a_damaged_file_quarantines_into_all_on() {
+    fn a_damaged_file_quarantines_into_every_provider_at_its_default() {
         let dir = temp_dir("damaged");
         std::fs::write(dir.join(SWITCHES_FILE), b"{nope").expect("seed damage");
         let store = ProviderSwitchStore::load(&dir);
-        assert!(store.is_enabled("grok"));
+        assert!(!store.is_off("grok"));
         assert!(
             std::fs::read_dir(&dir).expect("list").any(|entry| entry
                 .expect("entry")
@@ -404,6 +462,55 @@ mod tests {
                 .contains("quarantined")),
             "the damaged file is moved aside, not deleted"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn catalog_row(
+        installed: bool,
+        origin: crate::provider_catalog::ProviderOrigin,
+    ) -> crate::provider_catalog::InstalledAgent {
+        crate::provider_catalog::InstalledAgent {
+            id: "grok".to_string(),
+            aliases: &[],
+            installed,
+            executable: PathBuf::from("grok"),
+            prefix_args: Vec::new(),
+            acp_command: None,
+            stream_json_command: None,
+            rpc_command: None,
+            app_server_command: None,
+            authentication: crate::provider_catalog::AuthenticationStatus::Unknown,
+            origin,
+            launch_args: None,
+            pickable: None,
+            installed_version: None,
+            latest_version: None,
+            install_channel: crate::provider_catalog::InstallChannel::Native,
+            npm_package: None,
+            tools: Vec::new(),
+            spawn_path_env: None,
+            launch_directory: None,
+        }
+    }
+
+    #[test]
+    fn the_default_is_on_for_an_installed_provider_and_off_for_the_rest() {
+        use crate::provider_catalog::ProviderOrigin;
+        assert!(default_on(&catalog_row(true, ProviderOrigin::UserBinary)));
+        assert!(!default_on(&catalog_row(false, ProviderOrigin::UserBinary)));
+        assert!(
+            !default_on(&catalog_row(true, ProviderOrigin::NpxWrapper)),
+            "an on-demand wrapper says nothing is installed for it, so it starts off"
+        );
+    }
+
+    #[test]
+    fn the_catalog_row_reads_its_default_when_no_choice_is_saved() {
+        use crate::provider_catalog::ProviderOrigin;
+        let dir = temp_dir("row-default");
+        let store = ProviderSwitchStore::load(&dir);
+        assert!(store.is_enabled_for(&catalog_row(true, ProviderOrigin::UserBinary)));
+        assert!(!store.is_enabled_for(&catalog_row(false, ProviderOrigin::UserBinary)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

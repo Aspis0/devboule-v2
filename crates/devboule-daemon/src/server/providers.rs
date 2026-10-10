@@ -32,7 +32,7 @@ pub(super) fn providers_reply(
         .into_iter()
         .map(|agent| {
             let authentication = state.provider_health(&agent.id);
-            let enabled = state.provider_switches.is_enabled(&agent.id);
+            let enabled = state.provider_switches.is_enabled_for(&agent);
             let auth_check = if check_auth {
                 state.check_provider_auth(&agent, auth_force)
             } else if enabled {
@@ -153,6 +153,7 @@ fn wire_provider(
     let auth_status = auth_check.as_ref().map(|check| check.status.to_string());
     let auth_reason = auth_check.as_ref().map(|check| check.reason.to_string());
     let auth_checked_at = auth_check.map(|check| check.checked_at);
+    let enabled = state.provider_switches.is_enabled_for(&agent);
     let installed_version = match agent.install_channel {
         crate::provider_catalog::InstallChannel::Native => agent
             .installed_version
@@ -177,11 +178,7 @@ fn wire_provider(
         protocol: crate::provider_catalog::chat_protocol(&agent).map(str::to_string),
         origin: agent.installed.then(|| agent.origin.as_wire().to_string()),
         launch_args: agent.launch_args,
-        pickable: if state.provider_switches.is_enabled(&agent.id) {
-            agent.pickable
-        } else {
-            Some(false)
-        },
+        pickable: if enabled { agent.pickable } else { Some(false) },
         installed_version,
         latest_version,
         agent_version: state.provider_version(&agent.id),
@@ -191,7 +188,7 @@ fn wire_provider(
         tools: agent.tools,
         // The row's own switch, read at this moment: an off provider hides
         // from the picker downstream, so the row must say so here.
-        enabled: state.provider_switches.is_enabled(&agent.id),
+        enabled,
     }
 }
 
@@ -359,7 +356,7 @@ pub(super) fn probe_native_version(
 ) -> Option<(String, CliVersionFingerprint)> {
     // A switched-off provider is never probed: no process starts for it,
     // so the cached version (read without a process) is all the row shows.
-    if !state.provider_switches.is_enabled(&agent.id) {
+    if state.provider_switches.is_off(&agent.id) {
         return None;
     }
     #[cfg(test)]

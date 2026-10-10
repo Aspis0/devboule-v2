@@ -831,7 +831,7 @@ fn a_disabled_provider_is_unpickable_in_the_providers_reply() {
         .provider_switches
         .set("claude", false)
         .expect("disable the catalog provider");
-    assert!(!state.provider_switches.is_enabled("claude"));
+    assert!(state.provider_switches.is_off("claude"));
     let reply = super::providers::providers_reply(&state, 71, false, true, false);
     let DaemonMessage::Providers { providers, .. } = reply else {
         panic!("providers reply expected, got {reply:?}");

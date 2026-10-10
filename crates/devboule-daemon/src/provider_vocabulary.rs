@@ -255,7 +255,7 @@ pub(crate) fn provider_vocabulary_reply(
     // No cache shortcut for a switched-off provider: serving the cache
     // would keep a dead provider's form alive, and probing would start
     // its process. One sentence either way.
-    if !state.provider_switches.is_enabled(&canonical) {
+    if state.provider_switches.is_off(&canonical) {
         return DaemonMessage::Error(
             WireError::new(
                 ErrorCode::InvalidRequest,

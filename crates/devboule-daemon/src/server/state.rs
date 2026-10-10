@@ -1118,7 +1118,7 @@ impl ServerState {
         // The OFF gate and the installed gate sit above the reuse window: a
         // switched-off or removed provider is never served from the cache,
         // however fresh it is.
-        if !self.provider_switches.is_enabled(&agent.id) {
+        if self.provider_switches.is_off(&agent.id) {
             return None;
         }
         if !agent.installed || agent.origin == crate::provider_catalog::ProviderOrigin::NpxWrapper {
@@ -1253,7 +1253,7 @@ impl ServerState {
     ) -> crate::claude_catalog::ClaudeCatalogSnapshot {
         // A switched-off Claude is never probed: the fallback table answers
         // without a process, the way an absent Claude does.
-        if !self.provider_switches.is_enabled("claude") {
+        if self.provider_switches.is_off("claude") {
             return crate::claude_catalog::ClaudeCatalogSnapshot::provisional(
                 crate::claude_catalog::fallback_models(),
             );
