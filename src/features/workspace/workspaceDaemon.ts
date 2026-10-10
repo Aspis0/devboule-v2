@@ -189,6 +189,15 @@ function tick(): void {
   readDevices();
 }
 
+/** Re-read the daemon status (and devices) now instead of waiting for the
+ * next tick: the stale tabs' Retry. A daemon upgraded mid-session opens
+ * those tabs on its own when the new version lands; this only hurries
+ * the check. No mounted reader, no poll to hurry. */
+export function refreshWorkspaceDaemon(): void {
+  if (readers.size === 0) return;
+  tick();
+}
+
 function addReader(reader: Reader): () => void {
   const first = readers.size === 0;
   const firstDeviceReader = deviceReaders === 0 && reader.wantsDevices;

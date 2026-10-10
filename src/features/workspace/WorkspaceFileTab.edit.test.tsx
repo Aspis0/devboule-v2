@@ -315,6 +315,47 @@ describe("WorkspaceFileTab editing", () => {
     expect(container.textContent).toContain("Update the daemon to edit files.");
   });
 
+  it("retries the version check and opens on upgrade", async () => {
+    vi.mocked(daemonStatus).mockResolvedValue({
+      state: "connected",
+      pid: 1,
+      instanceId: "1",
+      protocolVersion: 32,
+      clients: 1,
+      capabilities: [],
+      message: null,
+    } as never);
+    await renderTab();
+    expect(container.querySelector('[data-testid="file-source-editor"]')).toBeNull();
+
+    // The daemon upgrades mid-session: Retry hurries the check instead
+    // of waiting for the next tick, and the editor opens on the fresh
+    // version.
+    vi.mocked(daemonStatus).mockResolvedValue({
+      state: "connected",
+      pid: 1,
+      instanceId: "1",
+      protocolVersion: 34,
+      clients: 1,
+      capabilities: [],
+      message: null,
+    } as never);
+    const retry = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Retry",
+    );
+    if (!retry) throw new Error("the stale note offered no retry");
+    await act(async () => {
+      retry.click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-testid="file-source-editor"]')).not.toBeNull();
+    expect(workspaceFileEditorOpen).toHaveBeenCalledWith(WORKSPACE, "a.txt");
+  });
+
   it("keeps the buffer across a re-click instead of re-opening", async () => {
     await renderTab();
     await type("unsaved ");

@@ -23,7 +23,7 @@ import { EditableFilePane } from "./EditableFilePane";
 import { isOutsidePath, isAbsolutePath, OUTSIDE_WORKSPACE, EDITOR_MIN_DIALECT } from "./fileEditor/useEditableFile";
 import { toolContentKey } from "./toolContentCache";
 import { LOCAL_HOST_ID, parseWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
-import { useWorkspaceDaemon } from "./workspaceDaemon";
+import { refreshWorkspaceDaemon, useWorkspaceDaemon } from "./workspaceDaemon";
 import "./fileTab.css";
 
 /** `.md` and `.markdown`, case-insensitive: Preview's only kinds. */
@@ -176,7 +176,7 @@ export function WorkspaceFileTab({
         </div>
       );
     }
-    if (stale) return <StaleDaemonNote />;
+    if (stale) return <StaleDaemonNote what="edit files" />;
     return (
       <div className="workspace-file-tab">
         <EditorTabHeader workspaceId={null} path={path} seg={null} />
@@ -227,13 +227,22 @@ function EditorTabHeader({
   );
 }
 
-/** What a tab shows when the daemon predates the editor: the file stays
- * readable below, and this says why it is not editable. Short, because
- * the fix is a restart, not a decision. */
-function StaleDaemonNote(): ReactNode {
+/** What a stale tab shows when the daemon predates the road it needs:
+ * the file stays unreadable (no frame can fetch it), this says why,
+ * and Retry hurries the version check — an upgraded daemon opens the
+ * tab on its own when the new version lands. Short, because the fix is
+ * a restart, not a decision. */
+export function StaleDaemonNote({ what }: { what: string }): ReactNode {
   return (
     <div className="workspace-diff-note" role="status">
-      Update the daemon to edit files.
+      <span>Update the daemon to {what}.</span>{" "}
+      <button
+        type="button"
+        className="workspace-secondary-action"
+        onClick={() => refreshWorkspaceDaemon()}
+      >
+        Retry
+      </button>
     </div>
   );
 }
@@ -420,7 +429,7 @@ function LocalWorkspaceFileTab({
         ) : null}
         <OpenInEditorAction workspaceId={workspaceId} path={path} />
       </header>
-      {staleKnown ? <StaleDaemonNote /> : null}
+      {staleKnown ? <StaleDaemonNote what="edit files" /> : null}
       {body}
     </div>
   );

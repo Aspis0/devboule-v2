@@ -3,6 +3,7 @@ import { ErrorText } from "../../components/ErrorText";
 import type { WorkspaceKey } from "./hosts/hostIdentity";
 import { useWorkspaceDaemon } from "./workspaceDaemon";
 import { REMOTE_PANELS_MIN_DIALECT } from "./RemoteFilesSurface";
+import { StaleDaemonNote } from "./WorkspaceFileTab";
 import { ChangesTreeView } from "./ChangesTreeView";
 import { useRemoteWorkspaceChanges } from "./useRemoteWorkspaceChanges";
 import "./panel/changes.css";
@@ -45,9 +46,7 @@ export const RemoteChangesSurface = memo(function RemoteChangesSurface({
     return (
       <div tabIndex={-1} role="region" aria-label="Changes" className="workspace-changes">
         {stale ? (
-          <div className="workspace-changes-state" role="status">
-            Update the daemon to see this workspace.
-          </div>
+          <StaleDaemonNote what="see this workspace" />
         ) : (
           <div className="workspace-changes-state" role="status">
             Loading changes…

@@ -4,6 +4,7 @@ import { ErrorText } from "../../components/ErrorText";
 import type { WorkspaceKey } from "./hosts/hostIdentity";
 import { useWorkspaceDaemon } from "./workspaceDaemon";
 import { EDITOR_MIN_DIALECT } from "./fileEditor/useEditableFile";
+import { StaleDaemonNote } from "./WorkspaceFileTab";
 import { FilesTreeView } from "./FilesTreeView";
 import { useRemoteWorkspaceFiles } from "./useRemoteWorkspaceFiles";
 import "./panel/files.css";
@@ -75,9 +76,7 @@ export const RemoteFilesSurface = memo(function RemoteFilesSurface({
     return (
       <div tabIndex={-1} role="region" aria-label="Files" className="workspace-files">
         {stale ? (
-          <div className="workspace-files-state" role="status">
-            Update the daemon to see this workspace.
-          </div>
+          <StaleDaemonNote what="see this workspace" />
         ) : (
           <div className="workspace-files-state" role="status">
             Loading files…
