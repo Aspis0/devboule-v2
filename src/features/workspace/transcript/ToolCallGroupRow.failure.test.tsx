@@ -44,8 +44,8 @@ function turn(): ToolCallGroup {
       kind: "execute",
       title: "pnpm test",
       command: "pnpm test",
+      // A real failure: the provider reports it, with no exit code to read.
       status: "failed",
-      exitCode: 1,
       output:
         "> vitest run\n\n FAIL  summary.test.ts\nAssertionError: expected 1 to be 2\n  at summary.ts:58",
     }),

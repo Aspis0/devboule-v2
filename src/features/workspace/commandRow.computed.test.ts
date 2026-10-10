@@ -56,7 +56,6 @@ describe("command row computed styles", () => {
         ".workspace-chat-tool",
         ".workspace-chat-tool-text",
         ".workspace-command-chip",
-        ".workspace-command-dot",
         ".workspace-command-exit",
       ]);
 
@@ -69,13 +68,11 @@ describe("command row computed styles", () => {
       chip.className = "workspace-command-chip";
       chip.textContent = "pnpm vitest checkout";
       block.append(chip);
-      // A line carries only a non-zero exit, so its one mark is the failure mark.
-      const dot = document.createElement("span");
-      dot.className = "workspace-command-dot";
+      // A line carries only a non-zero exit: a muted number, never a red mark.
       const exitText = document.createElement("span");
       exitText.className = "workspace-command-exit";
       exitText.textContent = "exit 1";
-      summary.append(block, dot, exitText);
+      summary.append(block, exitText);
       row.append(summary);
       document.body.append(row);
 
@@ -98,6 +95,7 @@ describe("command row computed styles", () => {
       expect(css.rulesFor(".workspace-command-dot")).toContain("display: none");
       expect(getComputedStyle(dot).color).not.toBe(css.token("--danger"));
 
+      // The exit is a number in the muted ink, not a failure colour.
       const exitStyle = getComputedStyle(exitText);
       expect(exitStyle.color).toBe(css.token("--muted"));
       expect(exitStyle.whiteSpace).toBe("nowrap");

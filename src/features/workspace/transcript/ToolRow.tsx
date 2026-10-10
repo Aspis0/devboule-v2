@@ -20,6 +20,7 @@ import { ToolIcon } from "./ToolIcon";
 import { useOpenedRow } from "./openedRows";
 import { ToolOutput, type OutputExpansion } from "./ToolOutput";
 import { diffStats, failureExcerpt, outputLines } from "./toolOutputView";
+import { isFailedToolCall } from "./toolFailure";
 
 export const ToolRow = memo(function ToolRow({
   item,
@@ -40,7 +41,7 @@ export const ToolRow = memo(function ToolRow({
   // Devboule's own agent calls read as one sentence; their raw result waits behind the click.
   const devboule = useMemo(() => devbouleToolLine(item, phase), [item, phase]);
   const linkUrl = model.linkUrl;
-  const failed = item.kind !== "plan" && status === "failed";
+  const failed = item.kind !== "plan" && isFailedToolCall(item);
   const isPlan = item.kind === "plan";
   const planDecision =
     isPlan && ["Approved", "Rejected", "Withdrawn"].includes(item.title) ? item.title : undefined;

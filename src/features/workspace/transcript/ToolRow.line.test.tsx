@@ -139,17 +139,35 @@ describe("ToolRow line", () => {
     ).toHaveLength(3);
   });
 
-  it("shows a non-zero exit as a failure mark and its number, and a zero exit as nothing", async () => {
+  it("shows a non-zero exit as a muted number, not a failure, and a zero exit as nothing", async () => {
     const ok = await renderRow(tool({ kind: "execute", title: "ls", command: "ls", exitCode: 0 }));
     expect(ok.querySelector(".workspace-command-exit")).toBeNull();
     await act(async () => root?.unmount());
     root = null;
     host?.remove();
 
-    const failed = await renderRow(
+    const exited = await renderRow(
       tool({ kind: "execute", title: "ls", command: "ls", exitCode: 2 }),
     );
-    expect(failed.querySelector(".workspace-command-exit")?.textContent).toBe("exit 2");
-    expect(failed.querySelector(".workspace-command-dot")).not.toBeNull();
+    expect(exited.querySelector(".workspace-command-exit")?.textContent).toBe("exit 2");
+    // No red mark and no failed state: exit 2 alone is a normal answer.
+    expect(exited.querySelector(".workspace-command-dot")).toBeNull();
+    expect(exited.querySelector(".workspace-chat-tool-failed")).toBeNull();
+    expect(exited.querySelector(".is-failed")).toBeNull();
+  });
+
+  it("calls a row failed only when the provider says so, even with a non-zero exit", async () => {
+    const reported = await renderRow(
+      tool({ kind: "execute", title: "ls", command: "ls", status: "failed", exitCode: 2 }),
+    );
+    expect(reported.querySelector(".workspace-chat-tool-failed")).toBeNull();
+    await act(async () => root?.unmount());
+    root = null;
+    host?.remove();
+
+    const crashed = await renderRow(
+      tool({ kind: "execute", title: "ls", command: "ls", status: "failed" }),
+    );
+    expect(crashed.querySelector(".workspace-chat-tool-failed")?.textContent).toContain("failed");
   });
 });

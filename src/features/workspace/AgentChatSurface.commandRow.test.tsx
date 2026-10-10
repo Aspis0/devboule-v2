@@ -134,7 +134,7 @@ describe("command tool row", () => {
     return parts.join(" ");
   }
 
-  it("renders the failed Codex pair as a chip and one exit-1 mark", async () => {
+  it("renders a provider's failed call with its exit number", async () => {
     await mount();
     await act(async () => {
       channelHarness.active?.(CODEX_CALL);
@@ -166,11 +166,8 @@ describe("command tool row", () => {
     expect(chip.getAttribute("title")).toBe("git status");
     expect(container.innerHTML).not.toContain("pwsh.exe");
     expect(textBlock.querySelector(".workspace-chat-tool-summary-text")).toBeNull();
-    const dot = row.querySelector(".workspace-command-dot");
-    if (dot === null) throw new Error("exit dot did not render");
-    // The dot is decoration: the visible sentence carries the code.
-    expect(dot.getAttribute("aria-hidden")).toBe("true");
-    expect(dot.getAttribute("aria-label")).toBeNull();
+    // No red mark: the exit is the muted sentence alone.
+    expect(row.querySelector(".workspace-command-dot")).toBeNull();
     expect(row.querySelector(".workspace-command-exit")?.textContent).toBe("exit 1");
     const summary = row.querySelector(".workspace-chat-tool-summary");
     if (summary === null) throw new Error("summary did not render");

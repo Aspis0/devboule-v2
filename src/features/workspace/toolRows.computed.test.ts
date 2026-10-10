@@ -242,16 +242,15 @@ describe("tool row computed styles", () => {
 
       const row = el("div", "workspace-chat-entry workspace-chat-tool is-running");
       const summary = el("div", "workspace-chat-tool-summary");
-      const mark = el("span", "workspace-command-dot");
       const failed = el("span", "workspace-chat-tool-failed", "failed");
       const running = el("span", "workspace-chat-tool-running");
       const exit = el("span", "workspace-command-exit", "exit 2");
-      summary.append(exit, running, failed, mark);
+      summary.append(exit, running, failed);
       row.append(summary);
       document.body.append(row);
 
-      const order = [mark, failed, running, exit].map((node) => getComputedStyle(node).order);
-      expect(order).toEqual(["1", "2", "3", "5"]);
+      const order = [failed, running, exit].map((node) => getComputedStyle(node).order);
+      expect(order).toEqual(["2", "3", "5"]);
       expect(getComputedStyle(exit).marginInlineStart).toBe("auto");
       const dot = getComputedStyle(running);
       expect(dot.width).toBe("6px");

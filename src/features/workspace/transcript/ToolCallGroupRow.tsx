@@ -6,6 +6,7 @@ import {
   isToolRunningStatus,
 } from "../interruptedTool";
 import { entryFrame } from "./entryFrame";
+import { isFailedToolCall } from "./toolFailure";
 import type { OutputExpansion } from "./ToolOutput";
 import { ToolRow } from "./ToolRow";
 
@@ -56,7 +57,8 @@ export function ToolCallGroupRow({
   const anyRunning = group.items.some((item) => isToolRunningStatus(item.status));
   const interrupted = transcriptEnded && anyRunning;
   const running = anyRunning && !transcriptEnded;
-  const failedCount = group.items.filter((item) => item.status.toLowerCase() === "failed").length;
+  // Only the provider's failed status counts; a non-zero exit alone is a muted number.
+  const failedCount = group.items.filter(isFailedToolCall).length;
   const failed = failedCount > 0;
   const className = `${frame.className} workspace-chat-tool-group${running ? " is-running" : ""}${failed ? " is-failed" : ""}${interrupted ? ` ${INTERRUPTED_TOOL_CLASS}` : ""}`;
   return (
