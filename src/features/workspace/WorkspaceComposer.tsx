@@ -860,7 +860,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
               </svg>
             </button>
           ) : null}
-          {streaming && onStop ? (
+          {(streaming || turnActive) && onStop ? (
             <button
               type="button"
               className="workspace-stop-action"

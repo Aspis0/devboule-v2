@@ -170,6 +170,22 @@ fn insert_child_with_killer_delayed(
 }
 
 #[test]
+fn composer_stop_interrupts_a_turn_before_any_output() {
+    let (dir, registry) = registry();
+    let owner = test_owner("composer-user", "composer-client");
+    let (runtime, interrupted) = registry.insert_test_child_with_interrupt_ack(
+        "composer-stop",
+        owner.clone(),
+        "composer-parent",
+    );
+    runtime.begin_turn();
+    registry.interrupt("composer-stop", &owner).expect("stop");
+    assert!(interrupted.load(Ordering::Acquire));
+    assert!(!runtime.is_running_turn());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn cancel_interrupts_a_running_turn_and_resolves_the_parked_cards() {
     let (dir, registry) = registry();
     let owner = test_owner("c1a-cancel-user", "c1a-cancel-client");

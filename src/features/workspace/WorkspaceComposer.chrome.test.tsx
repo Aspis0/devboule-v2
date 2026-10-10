@@ -139,6 +139,16 @@ describe("the composer's box", () => {
 });
 
 describe("the send control", () => {
+  it("keeps Stop available between output events while the turn is active", async () => {
+    await renderComposer({ streaming: false, turnActive: true });
+    expect(container.querySelector(".workspace-send-action")).toBeNull();
+    const stop = container.querySelector<HTMLButtonElement>(".workspace-stop-action");
+    expect(stop).not.toBeNull();
+    await act(async () => stop?.click());
+    expect(onStop).toHaveBeenCalledTimes(1);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
   it("is a button named Send that sends the typed text", async () => {
     await renderComposer();
     await drive.type("hello");
@@ -233,13 +243,11 @@ describe("the queue action", () => {
     expect(queue.getAttribute("aria-label")).toBe("Send and interrupt");
     const paths = [...queue.querySelectorAll("path")].map((path) => path.getAttribute("d"));
     expect(paths).toEqual(["M12 19V5", "m5 12 7-7 7 7"]);
-    // No stream runs here, so the plain send button stands beside it: two
-    // identical send arrows, both sending. Named so the pair reads as the
-    // interrupt state's normal chrome, not a doubled control.
+    // The running turn keeps Stop beside the send-and-interrupt action.
     const buttons = container.querySelectorAll(
       '[data-testid="composer-queue-action"], .workspace-send-action',
     );
-    expect(buttons).toHaveLength(2);
+    expect(buttons).toHaveLength(1);
     for (const button of buttons) {
       const drawn = [...button.querySelectorAll("path")].map((path) => path.getAttribute("d"));
       expect(drawn).toEqual(["M12 19V5", "m5 12 7-7 7 7"]);
