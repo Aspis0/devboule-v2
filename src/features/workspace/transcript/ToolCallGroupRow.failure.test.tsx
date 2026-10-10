@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
-// A failure is never behind a click: a group that holds one shows that call,
-// line and excerpt, under the group line while the rest stays collapsed.
+// A group is one closed summary row. A failure is a muted word on the group and
+// on its call, never a red box, and the call's excerpt waits behind a click.
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -71,26 +71,69 @@ async function renderGroup(group: ToolCallGroup): Promise<HTMLElement> {
   return host;
 }
 
-describe("a group that holds a failure", () => {
-  it("stands the failed call's line and excerpt under the closed group line", async () => {
-    const container = await renderGroup(turn());
-    const group = container.querySelector<HTMLDetailsElement>("details.workspace-chat-tool-group");
-    const summary = group?.querySelector("summary");
-    if (group === null || summary === null || summary === undefined) {
-      throw new Error("the group did not render");
-    }
-    await act(async () => summary.click());
-    expect(group.open).toBe(false);
+/** The person opens a line: the disclosure's own toggle, as the browser fires it. */
+async function openLine(details: HTMLDetailsElement): Promise<void> {
+  await act(async () => {
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+  });
+}
 
-    const failures = container.querySelector(".workspace-chat-tool-group-failures");
-    if (failures === null) throw new Error("the failure is behind the group's click");
-    expect(group.contains(failures)).toBe(false);
-    // Only the failed call stands outside: the others stay in the closed body.
-    expect(failures.querySelectorAll(".workspace-chat-tool")).toHaveLength(1);
-    expect(failures.querySelector(".workspace-command-chip")?.textContent).toBe("pnpm test");
-    expect(failures.querySelector(".workspace-chat-tool-failed")?.textContent).toContain("failed");
+function groupOf(container: HTMLElement): HTMLDetailsElement {
+  const group = container.querySelector<HTMLDetailsElement>("details.workspace-chat-tool-group");
+  if (group === null) throw new Error("the group did not render");
+  return group;
+}
+
+describe("a group that holds a failure", () => {
+  it("renders one closed summary with a muted failure count and no call count or cross", async () => {
+    const container = await renderGroup(turn());
+    const group = groupOf(container);
+    expect(group.open).toBe(false);
+    expect(container.textContent).not.toContain("tool calls");
+    expect(container.textContent).not.toContain("✗");
+    expect(group.querySelector(".workspace-chat-tool-group-failed")?.textContent).toBe("1 failed");
+  });
+
+  it("shows no failure count when no call failed", async () => {
+    const grouped = groupToolCalls([
+      tool("a", { kind: "read", title: "a.ts", locations: [{ path: "a.ts" }] }),
+      tool("b", { kind: "read", title: "b.ts", locations: [{ path: "b.ts" }] }),
+    ]);
+    const group = grouped[0];
+    if (group === undefined || !isToolCallGroup(group)) throw new Error("no group");
+    const container = await renderGroup(group);
+    expect(container.querySelector(".workspace-chat-tool-group-failed")).toBeNull();
+    expect(container.querySelector(".workspace-chat-tool-group-failures")).toBeNull();
+  });
+
+  it("keeps the failed call inside the group body, never outside it", async () => {
+    const container = await renderGroup(turn());
+    const group = groupOf(container);
+    const summary = group.querySelector("summary");
+    if (summary === null) throw new Error("the group has no summary");
+    await act(async () => summary.click());
+    expect(container.querySelector(".workspace-chat-tool-group-failures")).toBeNull();
+    expect(group.querySelectorAll(".workspace-chat-tool")).toHaveLength(4);
+  });
+
+  it("shows the failed call as a muted word, and its excerpt only after the call is clicked", async () => {
+    const container = await renderGroup(turn());
+    const group = groupOf(container);
+    await act(async () => group.querySelector("summary")?.click());
+    const failedRow = container.querySelector<HTMLElement>(
+      ".workspace-chat-tool-group-body .workspace-chat-tool.is-failed",
+    );
+    if (failedRow === null) throw new Error("the failed call did not render");
+    const failedWord = failedRow.querySelector(".workspace-chat-tool-failed");
+    expect(failedWord?.textContent).toBe("failed");
+    expect(container.querySelector(".workspace-chat-tool-output.is-failure")).toBeNull();
+
+    const details = failedRow.querySelector<HTMLDetailsElement>("details");
+    if (details === null) throw new Error("the failed call has no line");
+    await openLine(details);
     const excerpt = Array.from(
-      failures.querySelectorAll(
+      failedRow.querySelectorAll(
         ".workspace-chat-tool-output.is-failure .workspace-chat-tool-output-line",
       ),
     ).map((line) => line.textContent);
@@ -99,58 +142,35 @@ describe("a group that holds a failure", () => {
       "AssertionError: expected 1 to be 2",
       "  at summary.ts:58",
     ]);
-    // Mounted once: the failure is outside the group while it is closed, not also in its body.
-    expect(group.querySelectorAll(".workspace-chat-tool")).toHaveLength(3);
-    expect(
-      group.querySelector(".workspace-chat-tool-group-body .workspace-chat-tool-failed"),
-    ).toBeNull();
-  });
-
-  it("does not show the failure twice while the group is open", async () => {
-    const container = await renderGroup(turn());
-    const group = container.querySelector<HTMLDetailsElement>("details.workspace-chat-tool-group");
-    if (group === null) throw new Error("the group did not render");
-
-    expect(group.open).toBe(true);
-    expect(container.querySelector(".workspace-chat-tool-group-failures")).toBeNull();
-    expect(container.querySelectorAll(".workspace-chat-tool-output.is-failure")).toHaveLength(1);
   });
 
   it("keeps a failure's expanded output when the group opens and closes", async () => {
     const container = await renderGroup(turn());
+    const group = groupOf(container);
+    const summary = group.querySelector("summary");
+    if (summary === null) throw new Error("the group has no summary");
+    await act(async () => summary.click());
+    const details = container.querySelector<HTMLDetailsElement>(
+      ".workspace-chat-tool-group-body .workspace-chat-tool.is-failed details",
+    );
+    if (details === null) throw new Error("the failed call has no line");
+    await openLine(details);
     const failureLines = () =>
       container.querySelectorAll(
         ".workspace-chat-tool-output.is-failure .workspace-chat-tool-output-line",
       );
-    const group = container.querySelector<HTMLDetailsElement>("details.workspace-chat-tool-group");
-    const summary = group?.querySelector("summary");
     const expand = container.querySelector<HTMLButtonElement>(
       ".workspace-chat-tool-output.is-failure .workspace-chat-tool-more",
     );
-    if (group === null || summary === null || summary === undefined || expand === null) {
-      throw new Error("the group or its failure excerpt did not render");
-    }
+    if (expand === null) throw new Error("the failure excerpt has no expander");
     expect(failureLines()).toHaveLength(3);
     await act(async () => expand.click());
     expect(failureLines()).toHaveLength(5);
 
     await act(async () => summary.click());
     expect(group.open).toBe(false);
-    expect(failureLines()).toHaveLength(5);
-
     await act(async () => summary.click());
     expect(group.open).toBe(true);
     expect(failureLines()).toHaveLength(5);
-  });
-
-  it("leaves a group with no failure as one closed line", async () => {
-    const grouped = groupToolCalls([
-      tool("a", { kind: "read", title: "a.ts" }),
-      tool("b", { kind: "read", title: "b.ts" }),
-    ]);
-    const group = grouped[0];
-    if (group === undefined || !isToolCallGroup(group)) throw new Error("no group");
-    const container = await renderGroup(group);
-    expect(container.querySelector(".workspace-chat-tool-group-failures")).toBeNull();
   });
 });

@@ -16,10 +16,9 @@ export function ToolCallGroupRow({
   group: ToolCallGroup;
   transcriptEnded: boolean;
 }) {
-  // A group opens on its own, so each call's quiet line shows without a first click.
-  const [open, setOpen] = useState(true);
-  // A failed call mounts twice, inside the open group and outside the closed
-  // one, so each call's "show all" state lives here where both mounts see it.
+  // A group is one closed line, like Paseo's: the person opens it to see its calls.
+  const [open, setOpen] = useState(false);
+  // A call's "show all" state lives here, so a re-render of the group keeps it.
   const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(() => new Set());
   // A call keeps one expansion object for as long as its flag holds, so a
   // re-render of the group hands unchanged rows the same prop and their memo hits.
@@ -57,57 +56,33 @@ export function ToolCallGroupRow({
   const anyRunning = group.items.some((item) => isToolRunningStatus(item.status));
   const interrupted = transcriptEnded && anyRunning;
   const running = anyRunning && !transcriptEnded;
-  const failures = group.items.filter((item) => item.status.toLowerCase() === "failed");
-  const failed = failures.length > 0;
-  // Closed, the failed calls stand outside the group; they are mounted once.
-  const bodyItems =
-    open || !failed ? group.items : group.items.filter((item) => !failures.includes(item));
-  const callCount = `${group.items.length} tool calls`;
+  const failedCount = group.items.filter((item) => item.status.toLowerCase() === "failed").length;
+  const failed = failedCount > 0;
   const className = `${frame.className} workspace-chat-tool-group${running ? " is-running" : ""}${failed ? " is-failed" : ""}${interrupted ? ` ${INTERRUPTED_TOOL_CLASS}` : ""}`;
   return (
-    <>
-      <details className={className} open={open} style={frame.style} onToggle={onToggle}>
-        <summary className="workspace-chat-tool-group-summary" aria-expanded={open}>
-          <span className="workspace-chat-tool-group-count">{callCount}</span>
-          <span className="workspace-chat-tool-group-summary-text">{group.summary}</span>
-          {interrupted ? (
-            <span className="workspace-chat-tool-interrupted">{INTERRUPTED_TOOL_COPY}</span>
-          ) : null}
-          {failed ? (
-            <span className="workspace-chat-tool-failed">
-              <span aria-hidden="true">✗ </span>
-              failed
-            </span>
-          ) : null}
-          {running ? (
-            <span className="workspace-chat-tool-running" role="img" aria-label="Running" />
-          ) : null}
-        </summary>
-        <div className="workspace-chat-tool-group-body">
-          {bodyItems.map((item) => (
-            <ToolRow
-              key={item.id}
-              item={item}
-              transcriptEnded={transcriptEnded}
-              expansion={expansions.get(item.id)}
-            />
-          ))}
-        </div>
-      </details>
-      {/* A failure is never behind a click: while the group is closed its failed
-          calls stand under the group line, line and excerpt both. */}
-      {open || !failed ? null : (
-        <div className="workspace-chat-tool-group-failures">
-          {failures.map((item) => (
-            <ToolRow
-              key={item.id}
-              item={item}
-              transcriptEnded={transcriptEnded}
-              expansion={expansions.get(item.id)}
-            />
-          ))}
-        </div>
-      )}
-    </>
+    <details className={className} open={open} style={frame.style} onToggle={onToggle}>
+      <summary className="workspace-chat-tool-group-summary" aria-expanded={open}>
+        <span className="workspace-chat-tool-group-summary-text">{group.summary}</span>
+        {failed ? (
+          <span className="workspace-chat-tool-group-failed">{`${failedCount} failed`}</span>
+        ) : null}
+        {interrupted ? (
+          <span className="workspace-chat-tool-interrupted">{INTERRUPTED_TOOL_COPY}</span>
+        ) : null}
+        {running ? (
+          <span className="workspace-chat-tool-running" role="img" aria-label="Running" />
+        ) : null}
+      </summary>
+      <div className="workspace-chat-tool-group-body">
+        {group.items.map((item) => (
+          <ToolRow
+            key={item.id}
+            item={item}
+            transcriptEnded={transcriptEnded}
+            expansion={expansions.get(item.id)}
+          />
+        ))}
+      </div>
+    </details>
   );
 }

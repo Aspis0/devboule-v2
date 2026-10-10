@@ -114,7 +114,7 @@ describe("ToolRow line", () => {
     expect(container.querySelector(".workspace-chat-tool-summary")?.tagName).toBe("SUMMARY");
   });
 
-  it("keeps a failed call's mark and its short excerpt on the line", async () => {
+  it("keeps a failed call's mark on the line, and its short excerpt behind a click", async () => {
     const container = await renderRow(
       tool({
         kind: "execute",
@@ -124,7 +124,14 @@ describe("ToolRow line", () => {
         output: lines(5, "err"),
       }),
     );
-    expect(container.querySelector(".workspace-chat-tool-failed")?.textContent).toContain("failed");
+    expect(container.querySelector(".workspace-chat-tool-failed")?.textContent).toBe("failed");
+    expect(container.querySelector(".workspace-chat-tool-output.is-failure")).toBeNull();
+    const details = container.querySelector("details");
+    if (details === null) throw new Error("the failed call had nothing to open");
+    await act(async () => {
+      details.open = true;
+      details.dispatchEvent(new Event("toggle"));
+    });
     expect(
       container.querySelectorAll(
         ".workspace-chat-tool-output.is-failure .workspace-chat-tool-output-line",

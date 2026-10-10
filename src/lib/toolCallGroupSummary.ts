@@ -61,14 +61,15 @@ function pluralize(count: number, one: string, other: string): string {
 }
 
 /**
- * Join summary parts: two parts join with "and", three or more use ", "
- * with "and" before the last, and the first character is uppercased.
+ * Join summary parts with ", ", and "and" before the last one from three on:
+ * "Edited 2 files, ran 8 commands" and "Edited 1 file, ran 2 commands, and read
+ * 1 file". The first character is uppercased.
  */
 function joinSummaryParts(parts: string[], conjunction: string): string {
   if (parts.length === 0) return "";
   let joined = parts[0] ?? "";
   if (parts.length === 2) {
-    joined = `${parts[0]} ${conjunction} ${parts[1]}`;
+    joined = `${parts[0]}, ${parts[1]}`;
   } else if (parts.length > 2) {
     joined = `${parts.slice(0, -1).join(", ")}, ${conjunction} ${parts.at(-1)}`;
   }
@@ -85,7 +86,7 @@ export function summarizeToolCallGroup(items: readonly ToolChatItem[]): string {
     [summary.readFileCount, "read {{count}} file", "read {{count}} files"],
     [summary.searchCount, "searched {{count}} time", "searched {{count}} times"],
     [summary.browserCallCount, "used {{count}} browser tool", "used {{count}} browser tools"],
-    [summary.otherToolCount, "used {{count}} other tool", "used {{count}} other tools"],
+    [summary.otherToolCount, "used {{count}} tool", "used {{count}} tools"],
   ] as const;
   for (const [count, one, other] of entries) {
     if (count > 0) parts.push(pluralize(count, one, other));

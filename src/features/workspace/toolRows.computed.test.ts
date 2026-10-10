@@ -137,7 +137,7 @@ describe("tool row computed styles", () => {
         "details",
         "workspace-chat-entry workspace-chat-tool workspace-chat-tool-group",
       );
-      const count = el("span", "workspace-chat-tool-group-count", "3 tool calls");
+      const count = el("span", "workspace-chat-tool-group-failed", "1 failed");
       const groupText = el("span", "workspace-chat-tool-group-summary-text", "Ran 1 command");
       group.append(el("summary", "workspace-chat-tool-group-summary"), count, groupText);
       row.append(summary);
@@ -171,7 +171,7 @@ describe("tool row computed styles", () => {
   );
 
   it.each(["light", "dark"] as const)(
-    "boxes only a failure's excerpt, in the danger tone, in the %s theme",
+    "shows a failure muted, with its excerpt unboxed and no danger tone, in the %s theme",
     (theme: CssTheme) => {
       const css = assembleCssProof(sheets, theme);
       injectToolRules(css);
@@ -188,16 +188,16 @@ describe("tool row computed styles", () => {
 
       const ground = css.token("--ground-center");
       expect(noWidth(getComputedStyle(plain).borderTopWidth)).toBe(true);
+      // No box: an excerpt opens like any other output, never framed in red.
       const box = getComputedStyle(excerpt);
-      expect(box.borderTopWidth).toBe("1px");
-      expect(box.borderTopColor).toBe(css.token("--danger"));
-      expect(box.borderRadius).toBe("8px");
+      expect(noWidth(box.borderTopWidth)).toBe(true);
       expect(unpainted(box.backgroundColor)).toBe(true);
-      for (const danger of [lines, more, failed]) {
-        expect(getComputedStyle(danger).color).toBe(css.token("--danger"));
+      expect(getComputedStyle(failed).color).toBe(css.token("--muted"));
+      expect(getComputedStyle(lines).color).not.toBe(css.token("--danger"));
+      for (const muted of [failed, excerpt]) {
         expect(
-          contrastRatio(getComputedStyle(danger).color, ground!),
-          danger.className,
+          contrastRatio(getComputedStyle(muted).color, ground!),
+          muted.className,
         ).toBeGreaterThanOrEqual(4.5);
       }
 
@@ -291,7 +291,7 @@ describe("tool row computed styles", () => {
       "workspace-chat-entry workspace-chat-tool workspace-chat-tool-group",
     );
     const summary = el("summary", "workspace-chat-tool-group-summary");
-    const count = el("span", "workspace-chat-tool-group-count", "3 tool calls");
+    const count = el("span", "workspace-chat-tool-group-summary-text", "Ran 3 commands");
     const body = el("div", "workspace-chat-tool-group-body");
     summary.append(count);
     group.append(summary, body);
@@ -299,12 +299,20 @@ describe("tool row computed styles", () => {
 
     expect(unpainted(getComputedStyle(group).backgroundColor)).toBe(true);
     expect(unpainted(getComputedStyle(summary).backgroundColor)).toBe(true);
-    expect(getComputedStyle(count).color).toBe(css.token("--ink-soft"));
+    expect(getComputedStyle(count).color).toBe(css.token("--muted"));
     const bodyStyle = getComputedStyle(body);
     expect(bodyStyle.marginInlineStart).toBe("12px");
     expect(bodyStyle.flexDirection).toBe("column");
     expect(bodyStyle.gap).not.toBe("4px");
 
     group.remove();
+  });
+
+  it("never shrinks a tool's verb to its first letter: the target yields the room, not the verb", () => {
+    // The label used to shrink inside the line's flex row, so "Run" drew as "R.".
+    const css = assembleCssProof(sheets, "light");
+    injectToolRules(css);
+    expect(css.rulesFor(".workspace-chat-tool-label")).toContain("flex: none");
+    expect(css.rulesFor(".workspace-chat-tool-label")).not.toContain("flex: 0 1 auto");
   });
 });

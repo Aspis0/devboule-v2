@@ -138,6 +138,17 @@ describe("summarizeToolCallGroup", () => {
     expect(summary).toBe("Edited 1 file, ran 2 commands, and read 1 file");
   });
 
+  it("joins two parts with a comma, the way Paseo's row reads them", () => {
+    const edit = (path: string): ToolItem =>
+      tool({ title: path, kind: "edit", locations: [{ path }] });
+    const commands = Array.from({ length: 8 }, (_, index) =>
+      tool({ title: `step ${index}`, kind: "execute" }),
+    );
+    expect(summarizeToolCallGroup([edit("src/a.ts"), edit("src/b.ts"), ...commands])).toBe(
+      "Edited 2 files, ran 8 commands",
+    );
+  });
+
   it("dedupes edited files by path only", () => {
     const edit = (path: string): ToolItem =>
       tool({ title: path, kind: "edit", locations: [{ path }] });
@@ -150,7 +161,7 @@ describe("summarizeToolCallGroup", () => {
       tool({ title: "same title", kind: "edit" }),
       tool({ title: "same title", kind: "edit" }),
     ]);
-    expect(summary).toBe("Used 2 other tools");
+    expect(summary).toBe("Used 2 tools");
   });
 
   it("counts browser calls as their own kind, not as other tools", () => {
@@ -165,7 +176,7 @@ describe("summarizeToolCallGroup", () => {
         tool({ title: "click e33", kind: "browser" }),
         tool({ title: "git status", kind: "execute" }),
       ]),
-    ).toBe("Ran 1 command and used 1 browser tool");
+    ).toBe("Ran 1 command, used 1 browser tool");
   });
 
   it("counts a browser row the daemon could not kind as a browser call", () => {
@@ -181,7 +192,7 @@ describe("summarizeToolCallGroup", () => {
       expect(
         summarizeToolCallGroup([row, tool({ title: "git status", kind: "execute" })]),
         row.title,
-      ).toBe("Ran 1 command and used 1 browser tool");
+      ).toBe("Ran 1 command, used 1 browser tool");
     }
   });
 });

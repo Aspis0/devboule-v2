@@ -94,11 +94,9 @@ describe("command row computed styles", () => {
       expect(chipStyle.overflow).toBe("hidden");
       expect(chipStyle.minWidth).toBe("12ch");
 
-      // The mark is a glyph in the danger colour; the sentence is what carries the code.
-      const dotStyle = getComputedStyle(dot);
-      expect(dotStyle.color).toBe(css.token("--danger"));
-      expect(["", "transparent", "rgba(0, 0, 0, 0)"]).toContain(dotStyle.backgroundColor);
-      expect(contrastRatio(dotStyle.color, ground!)).toBeGreaterThanOrEqual(3);
+      // An exit is the number alone: the dot is hidden, and no danger colour is drawn.
+      expect(css.rulesFor(".workspace-command-dot")).toContain("display: none");
+      expect(getComputedStyle(dot).color).not.toBe(css.token("--danger"));
 
       const exitStyle = getComputedStyle(exitText);
       expect(exitStyle.color).toBe(css.token("--muted"));

@@ -127,7 +127,7 @@ describe("ToolRow output", () => {
     expect(container.querySelector(".workspace-chat-tool-output.is-plain")).not.toBeNull();
   });
 
-  it("stands a failure's first three lines under the line without a click", async () => {
+  it("keeps a failure's first three lines behind the line's click, as a muted word on the line", async () => {
     const container = await renderRow(
       tool({
         kind: "execute",
@@ -137,8 +137,9 @@ describe("ToolRow output", () => {
         output: lines(5, "err"),
       }),
     );
-    expect(container.querySelector("details")).toBeNull();
-    expect(container.querySelector(".workspace-chat-tool-failed")?.textContent).toContain("failed");
+    expect(container.querySelector(".workspace-chat-tool-failed")?.textContent).toBe("failed");
+    expect(container.querySelector(".workspace-chat-tool-output.is-failure")).toBeNull();
+    await openLine(container);
     const excerpt = container.querySelector(".workspace-chat-tool-output.is-failure");
     if (excerpt === null) throw new Error("the failure drew no excerpt");
     expect(excerpt.querySelectorAll(".workspace-chat-tool-output-line")).toHaveLength(3);
@@ -181,6 +182,7 @@ describe("ToolRow output", () => {
     const container = await renderRow(
       tool({ kind: "execute", title: "t", command: "t", status: "failed", output: log }),
     );
+    await openLine(container);
     const shown = Array.from(
       container.querySelectorAll(
         ".workspace-chat-tool-output.is-failure .workspace-chat-tool-output-line",
@@ -243,6 +245,7 @@ describe("ToolRow output", () => {
         output: lines(5, "err"),
       }),
     );
+    await openLine(failed);
     expect(
       failed.querySelector(".workspace-chat-tool-output-lines")?.hasAttribute("tabindex"),
     ).toBe(false);

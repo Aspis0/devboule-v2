@@ -42,7 +42,7 @@ afterEach(async () => {
 });
 
 describe("TranscriptRows grouping", () => {
-  it("opens a group of consecutive calls, showing each call's line", async () => {
+  it("keeps a group of consecutive calls closed, with each call in its body", async () => {
     await act(async () =>
       root?.render(
         <TranscriptRows
@@ -59,13 +59,14 @@ describe("TranscriptRows grouping", () => {
 
     const group = host.querySelector<HTMLDetailsElement>("details.workspace-chat-tool-group");
     if (group === null) throw new Error("three consecutive calls did not form a group");
-    expect(group.open).toBe(true);
+    // The group is one closed line; its three calls sit in the body.
+    expect(group.open).toBe(false);
     const lines = group.querySelectorAll(
       ".workspace-chat-tool-group-body .workspace-chat-tool-label",
     );
     expect(lines).toHaveLength(3);
-    expect(group.querySelector(".workspace-chat-tool-group-count")?.textContent).toBe(
-      "3 tool calls",
+    expect(group.querySelector(".workspace-chat-tool-group-summary-text")?.textContent).toBe(
+      "Read 3 files",
     );
   });
 });

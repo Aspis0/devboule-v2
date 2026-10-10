@@ -51,8 +51,8 @@ export const ToolRow = memo(function ToolRow({
   const screenshot = isScreenshotRow(item.kind, item.title);
   // The line starts closed; only the person's own open shows the output.
   const [opened, setOpened] = useOpenedRow(item.id);
-  // The output is split only for a line the person opened, or for a failure's excerpt.
-  const needsLines = (opened || failed) && !quiet;
+  // The output is split only for a line the person opened.
+  const needsLines = opened && !quiet;
   const lines = useMemo(
     () => (needsLines ? outputLines(hideUntrustedFrame(item.output)) : []),
     [item.output, needsLines],
@@ -61,14 +61,10 @@ export const ToolRow = memo(function ToolRow({
   // A file row's summary is the path itself, so it prints with forward slashes.
   const isPathRow = isEdit || item.kind === "read";
   const isDiff = useMemo(() => isEdit && diffStats(lines) !== null, [isEdit, lines]);
-  // A failure's words stand under its line without a click; every other
-  // output waits behind the line.
+  // A failure opens to its excerpt, never to a box: the words wait behind the
+  // line like every other output.
   const excerpt = useMemo(() => (failed ? failureExcerpt(lines) : []), [failed, lines]);
-  // A failed call that prints nothing on success still opens to its whole output.
-  const bodyLines = useMemo(
-    () => (isPlan || (failed && !noOutputRow) ? [] : lines),
-    [failed, isPlan, lines, noOutputRow],
-  );
+  const bodyLines = useMemo(() => (isPlan || failed ? [] : lines), [failed, isPlan, lines]);
   const locations = useMemo(
     () =>
       (item.locations ?? []).filter(
@@ -81,7 +77,7 @@ export const ToolRow = memo(function ToolRow({
   const picture = screenshot && hasImages;
   const bodyImages = hasImages && !picture && !noOutputRow;
   // Decided from the raw output, so a closed line does not split it to know it has some.
-  const bodyOutput = !isPlan && (noOutputRow ? failed : !failed) && item.output.trim().length > 0;
+  const bodyOutput = !isPlan && !quiet && item.output.trim().length > 0;
   const hasBody =
     linkUrl !== undefined ||
     locations.length > 0 ||
@@ -117,12 +113,7 @@ export const ToolRow = memo(function ToolRow({
       {interrupted ? (
         <span className="workspace-chat-tool-interrupted">{INTERRUPTED_TOOL_COPY}</span>
       ) : null}
-      {failed ? (
-        <span className="workspace-chat-tool-failed">
-          {item.exitCode === undefined ? <span aria-hidden="true">✗ </span> : null}
-          failed
-        </span>
-      ) : null}
+      {failed ? <span className="workspace-chat-tool-failed">failed</span> : null}
       {running ? (
         <span className="workspace-chat-tool-running" role="img" aria-label="Running" />
       ) : null}
@@ -160,6 +151,14 @@ export const ToolRow = memo(function ToolRow({
                   ))}
                 </div>
               ) : null}
+              {excerpt.length > 0 ? (
+                <ToolOutput
+                  lines={lines}
+                  collapsed={excerpt}
+                  tone="failure"
+                  expansion={expansion}
+                />
+              ) : null}
               {bodyLines.length > 0 ? (
                 <ToolOutput
                   lines={bodyLines}
@@ -185,9 +184,6 @@ export const ToolRow = memo(function ToolRow({
         <div className="workspace-chat-tool-picture">
           <ChatImageThumbnails images={item.images} noun="Screenshot" />
         </div>
-      ) : null}
-      {excerpt.length > 0 ? (
-        <ToolOutput lines={lines} collapsed={excerpt} tone="failure" expansion={expansion} />
       ) : null}
     </div>
   );

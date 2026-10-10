@@ -122,7 +122,7 @@ describe("ToolRow browser and capture", () => {
     expect(keys.querySelector("details")).not.toBeNull();
   });
 
-  it("shows a failed browser call's short error under the line, with the frame left out", async () => {
+  it("shows a failed browser call's short error once the line is opened, with the frame left out", async () => {
     const failure = [
       "[devboule: untrusted content]",
       "source: browser page",
@@ -135,14 +135,21 @@ describe("ToolRow browser and capture", () => {
     const container = await renderRow(
       tool({ kind: "browser", title: "click e33", status: "failed", output: failure }),
     );
-    expect(container.querySelector(".workspace-chat-tool-failed")?.textContent).toContain("failed");
+    expect(container.querySelector(".workspace-chat-tool-failed")?.textContent).toBe("failed");
+    expect(container.querySelector(".workspace-chat-tool-output.is-failure")).toBeNull();
+    const details = container.querySelector("details");
+    if (details === null) throw new Error("the failed call had nothing to open");
+    await act(async () => {
+      details.open = true;
+      details.dispatchEvent(new Event("toggle"));
+    });
     const excerpt = container.querySelector(".workspace-chat-tool-output.is-failure");
     expect(excerpt?.textContent).toContain("element e33 was not found on the page");
     expect(container.textContent).not.toContain("devboule");
     expect(container.textContent).not.toContain(NONCE);
   });
 
-  it("keeps a failed browser call's whole output behind the line, not drawn", async () => {
+  it("keeps a failed browser call's rest of the output behind the excerpt's expander", async () => {
     const container = await renderRow(
       tool({
         kind: "browser",
@@ -158,6 +165,11 @@ describe("ToolRow browser and capture", () => {
       details.open = true;
       details.dispatchEvent(new Event("toggle"));
     });
+    // The excerpt shows three lines; its expander opens the rest.
+    expect(details.querySelectorAll(".workspace-chat-tool-output-line")).toHaveLength(3);
+    const expand = details.querySelector<HTMLButtonElement>(".workspace-chat-tool-more");
+    if (expand === null) throw new Error("the excerpt has no expander");
+    await act(async () => expand.click());
     expect(details.querySelectorAll(".workspace-chat-tool-output-line")).toHaveLength(4);
   });
 });

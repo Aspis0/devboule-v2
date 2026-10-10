@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 // A closed line does not split or scan its output: a streamed result grows with
-// every update, and only a line the person opened, or a failure's excerpt, needs it.
+// every update, and only a line the person opened needs it.
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -78,8 +78,15 @@ describe("ToolRow closed output", () => {
     expect(outputLines).toHaveBeenCalled();
   });
 
-  it("still reads a failure's output for its excerpt, with the line closed", async () => {
-    await renderRow(tool({ status: "failed", output: BIG }));
+  it("leaves a failure's excerpt unread until the line is opened, like any output", async () => {
+    const container = await renderRow(tool({ status: "failed", output: BIG }));
+    expect(outputLines).not.toHaveBeenCalled();
+    const details = container.querySelector("details");
+    if (details === null) throw new Error("the failed row had nothing to open");
+    await act(async () => {
+      details.open = true;
+      details.dispatchEvent(new Event("toggle"));
+    });
     expect(outputLines).toHaveBeenCalled();
   });
 

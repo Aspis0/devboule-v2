@@ -607,7 +607,6 @@
    assistant text that follows one, stay on the 4 px rhythm. */
 .workspace-chat-tool + .workspace-chat-assistant,
 .workspace-chat-tool-group + .workspace-chat-assistant,
-.workspace-chat-tool-group-failures + .workspace-chat-assistant,
 .workspace-chat-thought + .workspace-chat-assistant {
   margin-top: var(--space-4);
 }
@@ -791,10 +790,11 @@
   overflow: hidden;
 }
 
-/* The verb keeps its seat, and a long tool name ends in an ellipsis before it
-   can crowd the target out of its own. */
+/* The verb keeps its whole word: a long tool name ends in an ellipsis, but the
+   target yields the space, never the verb ("R." was this label shrunk to one
+   letter). */
 .workspace-chat-tool-label {
-  flex: 0 1 auto;
+  flex: none;
   min-width: 0;
   max-width: 28ch;
   overflow: hidden;
@@ -816,32 +816,32 @@
   white-space: nowrap;
 }
 
-.workspace-chat-tool-group-count {
+/* A group's failure count: muted, and only when a call failed. */
+.workspace-chat-tool-group-failed {
   flex: none;
-  color: var(--ink-soft);
+  color: var(--muted);
+  white-space: nowrap;
 }
 
-.workspace-chat-tool-group-summary-text::before {
+.workspace-chat-tool-group-failed::before {
   content: "·";
-  margin-inline: 0 var(--space-8);
+  margin-inline-end: var(--space-8);
 }
 
-/* A non-zero exit is the only exit a line shows, as a failure mark and its number. */
+/* An exit code is a small muted marker, never a failure colour. */
 .workspace-command-dot {
   order: 1;
   flex: none;
-  color: var(--danger);
+  display: none;
 }
 
-.workspace-command-dot::before {
-  content: "✗";
-}
-
+/* A failed call says so in a muted word: nothing failed in the colour sense
+   unless the provider reports a real error, and an exit alone never does. */
 .workspace-chat-tool-failed {
   order: 2;
   flex: none;
-  color: var(--danger);
-  font-weight: var(--weight-heading);
+  color: var(--muted);
+  white-space: nowrap;
 }
 
 .workspace-chat-tool-running {
@@ -949,17 +949,9 @@
   color: var(--diff-text-hunk);
 }
 
-/* A failure's words are the one tool output that is boxed, and they stand
-   under the line without a click. */
+/* A failure's words open like any other output: muted, no box, no red. */
 .workspace-chat-tool-output.is-failure {
-  margin: var(--space-2) 0 var(--space-4);
-  padding: var(--space-6) var(--space-12);
-  border: 1px solid var(--danger);
-  border-radius: var(--radius-8);
-}
-
-.workspace-chat-tool-output.is-failure .workspace-chat-tool-output-lines {
-  color: var(--danger);
+  color: var(--muted);
 }
 
 .workspace-chat-tool-more {
@@ -971,10 +963,6 @@
   font: inherit;
   text-decoration: underline;
   text-underline-offset: var(--space-2);
-}
-
-.workspace-chat-tool-output.is-failure .workspace-chat-tool-more {
-  color: var(--danger);
 }
 
 .workspace-chat-tool.is-plan .workspace-chat-tool-body {
@@ -1018,8 +1006,7 @@
   text-decoration: underline;
 }
 
-.workspace-chat-tool-group-body,
-.workspace-chat-tool-group-failures {
+.workspace-chat-tool-group-body {
   display: flex;
   flex-direction: column;
   margin-inline-start: var(--space-12);

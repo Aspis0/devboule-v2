@@ -3846,6 +3846,8 @@ describe("AgentChatSurface", () => {
     if (group === null) throw new Error("tool group did not render");
     const groupSummary = group.querySelector("summary");
     if (groupSummary === null) throw new Error("group summary did not render");
+    expect(group.open).toBe(false);
+    await act(async () => groupSummary.click());
     expect(group.open).toBe(true);
     const innerRows = group.querySelectorAll<HTMLDetailsElement>(
       ".workspace-chat-tool-group-body > .workspace-chat-tool",
@@ -3930,21 +3932,26 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    // Both calls form one group; closed, its failure stands outside it, the running call inside.
+    // Both calls form one group: closed, its summary counts the failure in muted words.
     const groupSummary = container.querySelector<HTMLElement>(
       "details.workspace-chat-tool-group > summary",
     );
+    expect(container.querySelector(".workspace-chat-tool-group-failed")?.textContent).toBe(
+      "1 failed",
+    );
     await act(async () => groupSummary?.click());
-    const failure = container.querySelector(".workspace-chat-tool-group-failures");
     const body = container.querySelector(".workspace-chat-tool-group-body");
-    if (failure === null || body === null) throw new Error("the group did not render");
-    const singleFailure = failure.querySelector(".workspace-chat-tool-failed");
-    // The failure says so in words; the cross is decoration beside it.
-    expect(singleFailure?.textContent).toBe("✗ failed");
-    expect(singleFailure?.querySelector("[aria-hidden]")?.textContent).toBe("✗ ");
+    if (body === null) throw new Error("the group did not render");
+    expect(container.querySelector(".workspace-chat-tool-group-failures")).toBeNull();
+    const failedRow = body.querySelector(".workspace-chat-tool.is-failed");
+    const singleFailure = failedRow?.querySelector(".workspace-chat-tool-failed");
+    // The failure says so in a muted word, with no cross and no red box.
+    expect(singleFailure?.textContent).toBe("failed");
+    expect(container.textContent).not.toContain("✗");
     expect(body.querySelector('.workspace-chat-tool-running[aria-label="Running"]')).not.toBeNull();
-    const located = body.querySelector<HTMLDetailsElement>(".workspace-chat-tool-details");
-    if (located === null) throw new Error("the located row had nothing to open");
+    // The read row is the second one with a disclosure: the failed call's is first.
+    const located = body.querySelectorAll<HTMLDetailsElement>(".workspace-chat-tool-details")[1];
+    if (located === undefined) throw new Error("the located row had nothing to open");
     await act(async () => {
       located.open = true;
       located.dispatchEvent(new Event("toggle"));
@@ -3986,7 +3993,7 @@ describe("AgentChatSurface", () => {
     }
   });
 
-  it("renders three consecutive tools as one open group with the overview summary", async () => {
+  it("renders three consecutive tools as one closed group with the overview summary", async () => {
     root = createRoot(container);
     await act(async () => {
       root.render(<AgentChatSurface daemonState="connected" sessionId="tool-group-agent" />);
@@ -4022,11 +4029,9 @@ describe("AgentChatSurface", () => {
     const groups = container.querySelectorAll("details.workspace-chat-tool-group");
     expect(groups).toHaveLength(1);
     const group = groups[0];
-    expect(group.hasAttribute("open")).toBe(true);
-    expect(group.querySelector("summary")?.getAttribute("aria-expanded")).toBe("true");
-    expect(group.querySelector(".workspace-chat-tool-group-count")?.textContent).toBe(
-      "3 tool calls",
-    );
+    expect(group.hasAttribute("open")).toBe(false);
+    expect(group.querySelector("summary")?.getAttribute("aria-expanded")).toBe("false");
+    expect(container.textContent).not.toContain("tool calls");
     expect(group.querySelector(".workspace-chat-tool-group-summary-text")?.textContent).toBe(
       "Edited 1 file, ran 1 command, and read 1 file",
     );
@@ -4061,13 +4066,13 @@ describe("AgentChatSurface", () => {
     if (group === null) throw new Error("tool group did not render");
     const summary = group.querySelector("summary");
     if (summary === null) throw new Error("tool group summary did not render");
-    expect(group.open).toBe(true);
-    await act(async () => summary.click());
     expect(group.open).toBe(false);
-    expect(summary.getAttribute("aria-expanded")).toBe("false");
     await act(async () => summary.click());
     expect(group.open).toBe(true);
     expect(summary.getAttribute("aria-expanded")).toBe("true");
+    await act(async () => summary.click());
+    expect(group.open).toBe(false);
+    expect(summary.getAttribute("aria-expanded")).toBe("false");
   });
 
   it("keeps parent and subagent tools in separate runs with the subagent frame", async () => {
@@ -4162,7 +4167,10 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    expect(running?.querySelector(".workspace-chat-tool-failed")?.textContent).toBe("✗ failed");
+    expect(running?.querySelector(".workspace-chat-tool-group-failed")?.textContent).toBe(
+      "1 failed",
+    );
+    expect(running?.querySelector(".workspace-chat-tool-failed")?.textContent).toBe("failed");
   });
 
   it("keeps an expanded group open and updates its count as tools stream in", async () => {
@@ -4193,6 +4201,9 @@ describe("AgentChatSurface", () => {
     if (group === null) throw new Error("tool group did not render");
     const summary = group.querySelector("summary");
     if (summary === null) throw new Error("tool group summary did not render");
+    // Every group starts closed: the person opens it, and it stays open as tools stream in.
+    expect(group.open).toBe(false);
+    await act(async () => summary.click());
     expect(group.open).toBe(true);
     const conversation = container.querySelector<HTMLElement>(".workspace-conversation");
     if (conversation === null) throw new Error("conversation did not render");
@@ -4218,9 +4229,9 @@ describe("AgentChatSurface", () => {
     expect(updatedGroup?.open).toBe(true);
     expect(updatedGroup?.querySelector("summary")?.getAttribute("aria-expanded")).toBe("true");
     expect(conversation.scrollTop).toBe(80);
-    expect(updatedGroup?.querySelector(".workspace-chat-tool-group-count")?.textContent).toBe(
-      "3 tool calls",
-    );
+    expect(
+      updatedGroup?.querySelector(".workspace-chat-tool-group-summary-text")?.textContent,
+    ).toBe("Used 3 tools");
   });
 });
 

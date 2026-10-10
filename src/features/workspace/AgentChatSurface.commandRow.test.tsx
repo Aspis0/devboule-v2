@@ -151,8 +151,9 @@ describe("command tool row", () => {
 
     const row = onlyRow();
     expect(row.classList.contains("is-failed")).toBe(true);
-    // A failure's words stand under the line, so there is nothing to open.
-    expect(row.querySelector("details")).toBeNull();
+    // A failure's words open on the line's click, like any other output.
+    const details = row.querySelector("details");
+    if (details === null) throw new Error("the failed row had nothing to open");
     // A command row reads as its verb and the command.
     expect(row.querySelector(".workspace-chat-tool-label")?.textContent).toBe("Run");
     // The text block comes from the real row output, not a test fixture.
@@ -174,8 +175,12 @@ describe("command tool row", () => {
     const summary = row.querySelector(".workspace-chat-tool-summary");
     if (summary === null) throw new Error("summary did not render");
     expect(accessibleName(summary)).toBe("Run Command git status exit 1 failed");
-    // The failure label is always said; the code's own mark stands in for the cross.
+    // The failure label is always said, as a muted word; the exit stays a number.
     expect(row.querySelector(".workspace-chat-tool-failed")?.textContent).toBe("failed");
+    await act(async () => {
+      details.open = true;
+      details.dispatchEvent(new Event("toggle"));
+    });
     expect(row.querySelector(".workspace-chat-tool-output")?.textContent).toContain(
       "fatal: not a git repository",
     );

@@ -182,6 +182,16 @@ it("updates only the last assistant when its text changes", async () => {
   ).toContain("appended");
 });
 
+/** The person opens a failed call's line: the disclosure toggle, as the browser fires it. */
+async function openFailedLine(rowSelector: string): Promise<void> {
+  const details = container.querySelector<HTMLDetailsElement>(rowSelector + " details");
+  if (details === null) throw new Error("the failed call had nothing to open");
+  await act(async () => {
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+  });
+}
+
 it("updates only the affected group and member when a tool status changes", async () => {
   await act(async () =>
     channelHarness.active?.({
@@ -194,6 +204,8 @@ it("updates only the affected group and member when a tool status changes", asyn
   expect(counts()).toEqual({ ...unchanged, execute: 1, group: 1 });
   expect(container.querySelector(".workspace-chat-tool-group.is-failed")).not.toBeNull();
   expect(container.querySelector(".workspace-chat-tool-group.is-running")).toBeNull();
+  // The failure words wait behind the failed call's own line.
+  await openFailedLine(".workspace-chat-tool-group-body .workspace-chat-tool.is-failed");
   expect(container.textContent).toContain("Failure output");
 });
 
@@ -220,6 +232,7 @@ it("updates only the last standalone tool when its status changes", async () => 
   expect(
     vi.mocked(toolRowDisplay).mock.calls.map(([item]) => [item.toolCallId, item.status]),
   ).toEqual([["last-tool", "failed"]]);
+  await openFailedLine(".workspace-chat-tool.is-failed");
   expect(container.querySelector(".workspace-chat-tool.is-failed")?.textContent).toContain(
     "Last failure",
   );
