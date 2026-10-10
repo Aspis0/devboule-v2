@@ -259,6 +259,18 @@ export const Sidebar = memo(function Sidebar({
               <button
                 type="button"
                 className="sidebar-action"
+                ref={addProjectRef}
+                onClick={onAddProject}
+                aria-label="New project"
+              >
+                <span className="sidebar-action-icon" aria-hidden="true">
+                  +
+                </span>
+                <span className="sidebar-action-label">New project</span>
+              </button>
+              <button
+                type="button"
+                className="sidebar-action"
                 onClick={onToggleHistory}
                 aria-label="History"
                 aria-current={historyOpen ? "true" : undefined}
@@ -319,13 +331,7 @@ export const Sidebar = memo(function Sidebar({
               <WorkspaceTree {...tree} />
             </div>
 
-            <SidebarFooter
-              onAddProject={onAddProject}
-              addProjectRef={addProjectRef}
-              onOpenSettings={onOpenSettings}
-              daemon={daemon}
-              note={daemonNote}
-            />
+            <SidebarFooter onOpenSettings={onOpenSettings} daemon={daemon} note={daemonNote} />
           </div>
         )}
       </aside>

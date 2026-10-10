@@ -1,4 +1,3 @@
-import type { RefObject } from "react";
 import type { DaemonStatus } from "../../../types/ipc";
 import { errorSentence } from "../../../lib/errorSentence";
 
@@ -26,8 +25,6 @@ export function daemonLabel(status: DaemonStatus): string {
 }
 
 export interface SidebarFooterProps {
-  onAddProject: () => void;
-  addProjectRef: RefObject<HTMLButtonElement | null>;
   onOpenSettings: () => void;
   daemon: DaemonStatus;
   /** The restart-recovery sentence, when a restart attempt failed. */
@@ -35,35 +32,20 @@ export interface SidebarFooterProps {
 }
 
 /**
- * The sidebar's bottom icon row: add project, settings, and the daemon's
- * status dot. The dot is the only thing drawn at rest; what it stands for
- * rides in the tooltip a pointer reads, in the status text a screen reader
- * reads, and in a tip a keyboard focus reveals — no browser shows `title` on
- * focus, so the tab stop carries its own.
+ * The sidebar's bottom icon row: settings and the daemon's status dot. The
+ * dot is the only thing drawn at rest; what it stands for rides in the tooltip
+ * a pointer reads, in the status text a screen reader reads, and in a tip a
+ * keyboard focus reveals — no browser shows `title` on focus, so the tab stop
+ * carries its own. Creating a project lives at the top, with the other
+ * creation commands.
  */
-export function SidebarFooter({
-  onAddProject,
-  addProjectRef,
-  onOpenSettings,
-  daemon,
-  note,
-}: SidebarFooterProps) {
+export function SidebarFooter({ onOpenSettings, daemon, note }: SidebarFooterProps) {
   const tooltip = [daemonLabel(daemon), note].filter((part) => part !== null).join(" · ");
   return (
     <div className="workspace-sidebar-footer">
       {/* A group, not a toolbar: the buttons keep their own tab stops, so no
           toolbar keyboard pattern is claimed. */}
       <div className="sidebar-icon-row" role="group" aria-label="Sidebar">
-        <button
-          type="button"
-          className="workspace-icon-button sidebar-icon-button"
-          ref={addProjectRef}
-          onClick={onAddProject}
-          title="New project"
-          aria-label="New project"
-        >
-          <span aria-hidden="true">+</span>
-        </button>
         <button
           type="button"
           className="workspace-icon-button sidebar-icon-button"

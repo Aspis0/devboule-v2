@@ -41,15 +41,7 @@ describe("the sidebar foot's status dot", () => {
   async function render(daemon: DaemonStatus, note: string | null = null): Promise<HTMLElement> {
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <SidebarFooter
-          onAddProject={vi.fn()}
-          addProjectRef={{ current: null }}
-          onOpenSettings={vi.fn()}
-          daemon={daemon}
-          note={note}
-        />,
-      );
+      root.render(<SidebarFooter onOpenSettings={vi.fn()} daemon={daemon} note={note} />);
     });
     const foot = container.querySelector<HTMLElement>(".workspace-sidebar-footer");
     if (foot === null) throw new Error("the foot did not render");
@@ -62,30 +54,20 @@ describe("the sidebar foot's status dot", () => {
     return status;
   }
 
-  it("is an icon row: New project, Settings, and the daemon dot", async () => {
-    const onAddProject = vi.fn();
+  it("is an icon row: Settings and the daemon dot, and no project button", async () => {
     const onOpenSettings = vi.fn();
     root = createRoot(container);
     await act(async () => {
-      root.render(
-        <SidebarFooter
-          onAddProject={onAddProject}
-          addProjectRef={{ current: null }}
-          onOpenSettings={onOpenSettings}
-          daemon={CONNECTED}
-          note={null}
-        />,
-      );
+      root.render(<SidebarFooter onOpenSettings={onOpenSettings} daemon={CONNECTED} note={null} />);
     });
 
     const row = container.querySelector<HTMLElement>('.sidebar-icon-row[role="group"]');
     if (row === null) throw new Error("the icon row did not render");
-    const add = row.querySelector<HTMLButtonElement>('button[aria-label="New project"]');
+    // New project moved to the top with the other creation commands.
+    expect(row.querySelector('button[aria-label="New project"]')).toBeNull();
     const settings = row.querySelector<HTMLButtonElement>('button[aria-label="Settings"]');
-    if (!add || !settings) throw new Error("the icon row's buttons did not render");
-    await act(async () => add.click());
+    if (!settings) throw new Error("the icon row's buttons did not render");
     await act(async () => settings.click());
-    expect(onAddProject).toHaveBeenCalledTimes(1);
     expect(onOpenSettings).toHaveBeenCalledTimes(1);
     expect(row.querySelector(".sidebar-foot")).not.toBeNull();
     // The old bottom-of-sidebar History is gone from the foot.

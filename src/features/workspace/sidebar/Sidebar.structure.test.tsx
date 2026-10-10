@@ -294,23 +294,34 @@ describe("the sidebar's top actions", () => {
     expect(onNewWorkspace.mock.calls[0][1]).toBe("project-alpha");
   });
 
-  it("closes the foot with an icon row: New project, Settings, and the daemon dot", async () => {
-    const onAddProject = vi.fn();
+  it("closes the foot with an icon row: Settings and the daemon dot", async () => {
     const onOpenSettings = vi.fn();
-    await render({ onAddProject, onOpenSettings });
+    await render({ onOpenSettings });
 
     // The old bottom-of-sidebar History is gone.
     expect(container.querySelector(".workspace-history-button")).toBeNull();
     const foot = container.querySelector<HTMLElement>(".workspace-sidebar-footer");
     if (foot === null) throw new Error("the foot did not render");
-    const add = foot.querySelector<HTMLButtonElement>('button[aria-label="New project"]');
     const settings = foot.querySelector<HTMLButtonElement>('button[aria-label="Settings"]');
-    if (!add || !settings) throw new Error("the icon row did not render");
-    await act(async () => add.click());
+    if (!settings) throw new Error("the icon row did not render");
     await act(async () => settings.click());
-    expect(onAddProject).toHaveBeenCalledTimes(1);
     expect(onOpenSettings).toHaveBeenCalledTimes(1);
+    expect(foot.querySelector('button[aria-label="New project"]')).toBeNull();
     expect(foot.querySelector(".workspace-status-dot")).not.toBeNull();
+  });
+
+  it("puts New project among the creation commands at the top, not in the foot", async () => {
+    const onAddProject = vi.fn();
+    await render({ onAddProject });
+
+    const actions = [...container.querySelectorAll<HTMLButtonElement>(".sidebar-actions > button")];
+    expect(actions.map((button) => button.getAttribute("aria-label"))).toEqual([
+      "New workspace",
+      "New project",
+      "History",
+    ]);
+    await act(async () => namedButton("New project").click());
+    expect(onAddProject).toHaveBeenCalledTimes(1);
   });
 
   it("names every row and action for a screen reader", async () => {
