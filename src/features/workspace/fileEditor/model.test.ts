@@ -381,6 +381,30 @@ describe("FileEditorModel", () => {
     });
   });
 
+  test("carries the save warning and clears it on edit", async () => {
+    const { model, session } = makeModel({ content: "one\n" });
+    session.nextWrite = {
+      status: "written",
+      modifiedAt: 101,
+      size: 4,
+      revision: "4:101",
+      warning: "the file's group could not be preserved",
+    };
+
+    model.edit("two\n");
+    await model.save();
+
+    // The bytes landed, so the editor is clean — and the shortfall is
+    // reported in the snapshot (and the bar) instead of silence.
+    expect(model.getSnapshot()).toMatchObject({
+      status: "clean",
+      saveWarning: "the file's group could not be preserved",
+    });
+
+    model.edit("three\n");
+    expect(model.getSnapshot().saveWarning).toBeNull();
+  });
+
   test("keeps the joined form when lines are added or removed", async () => {
     const { model, session } = makeModel({ content: "one\r\ntwo\n" });
 

@@ -112,6 +112,7 @@ export function EditableFilePane({
           lineCount={snapshot.content.split("\n").length}
           editorStatus={snapshot.status}
           cursor={cursor}
+          saveWarning={snapshot.saveWarning}
         />
       </header>
       {failure !== null ? (

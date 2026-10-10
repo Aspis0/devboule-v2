@@ -105,9 +105,12 @@ fn a_write_with_the_fresh_version_lands_and_restamps() {
     match result {
         WorkspaceFileWriteResult::Written {
             modified_at: _,
+            warning: None,
             size,
             revision,
         } => {
+            // A clean write preserves everything and says nothing: the
+            // warning only rides failures (pinned separately).
             assert_eq!(size, 4);
             assert!(!revision.is_empty());
         }
@@ -1263,4 +1266,48 @@ fn an_absolute_outside_spelling_is_refused_on_every_road() {
         ),
         WorkspaceFileWriteResult::Error { .. }
     ));
+}
+
+#[test]
+fn identity_preservation_reports_instead_of_silence() {
+    // A target that cannot even be statted names its shortfall: the
+    // write would land the bytes on a temp whose ownership is unknown.
+    let missing = std::path::Path::new("/devboule/never/there.txt");
+    let temp = std::path::Path::new("/devboule/never/there.tmp");
+    // Unix stats the owner first; Windows reads attributes first. Either
+    // way a missing target reports instead of preserving silence.
+    #[cfg(unix)]
+    assert_eq!(
+        super::preserve_identity(missing, temp),
+        Some("the file's owner could not be read")
+    );
+    #[cfg(windows)]
+    assert_eq!(
+        super::preserve_identity(missing, temp),
+        Some("the file's attributes could not be read")
+    );
+}
+
+#[test]
+fn a_clean_write_carries_no_warning() {
+    let dir = Dir::fresh("no-warning");
+    dir.write("a.txt", "one\n");
+    let file = open_workspace_file(&dir.root, dir.workspace_id(), "a.txt");
+    let (_, modified_at, revision) = ready_of(file.version.as_ref().expect("version"));
+    let result = write_workspace_file(
+        &dir.root,
+        dir.workspace_id(),
+        "a.txt",
+        b"two\n",
+        Some(modified_at),
+        revision.as_deref(),
+        false,
+    );
+    assert!(
+        matches!(
+            result,
+            WorkspaceFileWriteResult::Written { warning: None, .. }
+        ),
+        "{result:?}"
+    );
 }

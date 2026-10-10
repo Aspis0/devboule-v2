@@ -752,8 +752,9 @@ fn replace_file(
     // the name: owner on Unix, attributes/timestamps/DACL on Windows.
     // Best-effort (a preservation failure must not fail the write; the
     // read-only refusal above is the hard gate) and mtime-neutral, so
-    // the recheck below still compares what the check compared.
-    preserve_identity(target, &temporary);
+    // the recheck below still compares what the check compared. A short
+    // warning travels with the result instead of silence.
+    let identity_warning = preserve_identity(target, &temporary);
     let proceed = recheck();
     match proceed {
         Recheck::Conflict => {
@@ -783,6 +784,7 @@ fn replace_file(
                 modified_at,
                 size,
                 revision,
+                warning: identity_warning.map(str::to_string),
             }
         }
         Err(_) => error(DOES_NOT_EXIST),
@@ -795,44 +797,63 @@ fn replace_file(
 /// DACL, so an edited hidden/system file stays one and a restricted file
 /// keeps its explicit ACEs instead of inheriting the directory's.
 /// Best-effort throughout and mtime-neutral: a preservation failure
-/// never fails the write (the read-only refusal is the hard gate).
-fn preserve_identity(target: &Path, temp: &Path) {
+/// never fails the write (the read-only refusal is the hard gate) — it
+/// returns the short warning the result carries instead.
+fn preserve_identity(target: &Path, temp: &Path) -> Option<&'static str> {
     #[cfg(unix)]
-    preserve_owner(target, temp);
+    {
+        preserve_owner(target, temp)
+    }
     #[cfg(windows)]
-    preserve_windows_metadata(target, temp);
+    {
+        preserve_windows_metadata(target, temp)
+    }
     #[cfg(not(any(unix, windows)))]
     {
         let _ = (target, temp);
+        None
     }
 }
 
 /// `chown` the temp to the target's owner and group. Succeeds for the
-/// common case (same owner); anything else is left to the OS refusal,
-/// which the rename surfaces honestly.
+/// common case (same owner); a group the caller may not take (not a
+/// member of it) keeps the temp's group instead of failing the owner
+/// too — `chown` takes `-1` for "leave this half alone". Each step
+/// reports its own shortfall; the rename surfaces honestly whatever is
+/// left.
 #[cfg(unix)]
-fn preserve_owner(target: &Path, temp: &Path) {
+fn preserve_owner(target: &Path, temp: &Path) -> Option<&'static str> {
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::MetadataExt;
     let (Ok(metadata), Some(path)) = (
         std::fs::metadata(target),
         std::ffi::CString::new(temp.as_os_str().as_bytes()).ok(),
     ) else {
-        return;
+        return Some("the file's owner could not be read");
     };
     // SAFETY: `path` is a live NUL-terminated copy of the temp path;
-    // `chown` reads exactly that on success and the return is ignored.
+    // `chown` reads exactly that on success. `(uid_t)-1` leaves that half
+    // alone; each return says which halves moved.
     unsafe {
-        libc::chown(path.as_ptr(), metadata.uid(), metadata.gid());
+        if libc::chown(path.as_ptr(), metadata.uid(), metadata.gid()) == 0 {
+            return None;
+        }
+        if libc::chown(path.as_ptr(), metadata.uid(), u32::MAX) == 0 {
+            return Some("the file's group could not be preserved");
+        }
+        if libc::chown(path.as_ptr(), u32::MAX, metadata.gid()) == 0 {
+            return Some("the file's owner could not be preserved");
+        }
     }
+    Some("the file's owner and group could not be preserved")
 }
 
 /// Copy attributes, creation time and the DACL from the target onto the
-/// temp. Every step is fallible and every failure is ignored: partial
-/// preservation still beats the directory default on every attribute
-/// that did copy.
+/// temp. Every step is fallible; partial preservation still beats the
+/// directory default on every attribute that did copy — and the first
+/// shortfall travels back as the write's warning instead of silence.
 #[cfg(windows)]
-fn preserve_windows_metadata(target: &Path, temp: &Path) {
+fn preserve_windows_metadata(target: &Path, temp: &Path) -> Option<&'static str> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::Security::{
@@ -852,14 +873,27 @@ fn preserve_windows_metadata(target: &Path, temp: &Path) {
 
     let target_wide = wide(target);
     let temp_wide = wide(temp);
+    // The first shortfall wins the warning; every step still runs, so
+    // one failure cannot hide behind another and partial preservation
+    // still lands wherever it can.
+    let mut warning: Option<&'static str> = None;
+    let mut warn = |sentence: &'static str| {
+        if warning.is_none() {
+            warning = Some(sentence);
+        }
+    };
     // Attributes first: they ride the rename, and setting them on the
     // temp cannot disturb the recheck (no content or mtime involved).
     // INVALID_FILE_ATTRIBUTES is the failure word, not an attribute.
     let attributes = unsafe { GetFileAttributesW(target_wide.as_ptr()) };
-    if attributes != INVALID_FILE_ATTRIBUTES {
+    if attributes == INVALID_FILE_ATTRIBUTES {
+        warn("the file's attributes could not be read");
+    } else {
         // NORMAL is "no other attributes": writing it onto the temp is
         // a no-op the API documents, so no special case is needed.
-        let _ = unsafe { SetFileAttributesW(temp_wide.as_ptr(), attributes) };
+        if unsafe { SetFileAttributesW(temp_wide.as_ptr(), attributes) } == 0 {
+            warn("the file's attributes could not be preserved");
+        }
     }
     // The two handles: the target for reading its clock and DACL, the
     // temp for writing them. WRITE_DAC without GENERIC_WRITE cannot
@@ -876,7 +910,8 @@ fn preserve_windows_metadata(target: &Path, temp: &Path) {
         )
     };
     if source == INVALID_HANDLE_VALUE {
-        return;
+        warn("the file's timestamps could not be read");
+        return warning;
     }
     let dest: HANDLE = unsafe {
         CreateFileW(
@@ -891,7 +926,8 @@ fn preserve_windows_metadata(target: &Path, temp: &Path) {
     };
     if dest == INVALID_HANDLE_VALUE {
         unsafe { CloseHandle(source) };
-        return;
+        warn("the file's identity could not be preserved");
+        return warning;
     }
     // Creation time only: access and write times stay the temp's, so the
     // version stamp the write reports still describes this write.
@@ -906,7 +942,11 @@ fn preserve_windows_metadata(target: &Path, temp: &Path) {
     } != 0
     {
         let created = unsafe { created.assume_init() };
-        unsafe { SetFileTime(dest, &created, std::ptr::null(), std::ptr::null()) };
+        if unsafe { SetFileTime(dest, &created, std::ptr::null(), std::ptr::null()) } == 0 {
+            warn("the file's timestamps could not be preserved");
+        }
+    } else {
+        warn("the file's timestamps could not be read");
     }
     // The DACL: sized first, then read and written. Owner and group
     // stay the temp's (copying those needs a privilege this process
@@ -921,7 +961,9 @@ fn preserve_windows_metadata(target: &Path, temp: &Path) {
             &mut needed,
         )
     };
-    if needed > 0 && needed < 1024 * 1024 {
+    if needed == 0 || needed >= 1024 * 1024 {
+        warn("the file's permissions could not be read");
+    } else {
         let mut descriptor = vec![0u8; needed as usize];
         if unsafe {
             GetKernelObjectSecurity(
@@ -931,19 +973,23 @@ fn preserve_windows_metadata(target: &Path, temp: &Path) {
                 needed,
                 &mut needed,
             )
-        } != 0
+        } == 0
         {
-            unsafe {
-                SetKernelObjectSecurity(
-                    dest,
-                    DACL_SECURITY_INFORMATION,
-                    descriptor.as_ptr() as PSECURITY_DESCRIPTOR,
-                )
-            };
+            warn("the file's permissions could not be read");
+        } else if unsafe {
+            SetKernelObjectSecurity(
+                dest,
+                DACL_SECURITY_INFORMATION,
+                descriptor.as_ptr() as PSECURITY_DESCRIPTOR,
+            )
+        } == 0
+        {
+            warn("the file's permissions could not be preserved");
         }
     }
     unsafe { CloseHandle(source) };
     unsafe { CloseHandle(dest) };
+    warning
 }
 
 /// The temp name's stem: the target's own file name, sanitized. That name

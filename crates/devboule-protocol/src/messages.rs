@@ -3357,7 +3357,11 @@ pub enum WorkspaceFileVersion {
 /// The outcome of one editor write: Paseo's `written|conflict|error`.
 /// `written` carries the new stamp; `conflict` carries the fresh version
 /// the write lost to, for the Overwrite/Reload road; `error` carries the
-/// sentence that stopped it.
+/// sentence that stopped it. `written` may also carry a `warning` when
+/// the bytes landed but the target's identity did not fully follow
+/// (owner, attributes, timestamps or DACL — best-effort preservation).
+/// The warning is additive and skippable on the wire, so older readers
+/// ignore it without a dialect move.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum WorkspaceFileWriteResult {
@@ -3366,6 +3370,10 @@ pub enum WorkspaceFileWriteResult {
         modified_at: i64,
         size: u64,
         revision: String,
+        /// Best-effort identity preservation fell short; absent when the
+        /// target kept everything. Never a path, only the failed class.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        warning: Option<String>,
     },
     Conflict {
         version: WorkspaceFileVersion,

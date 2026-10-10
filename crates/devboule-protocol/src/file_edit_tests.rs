@@ -39,10 +39,36 @@ fn the_file_edit_wire_words_are_exact() {
             modified_at: 7,
             size: 3,
             revision: "3:7".to_string(),
+            warning: None,
         })
         .expect("json"),
         serde_json::json!({"status": "written", "modifiedAt": 7, "size": 3, "revision": "3:7"}),
     );
+}
+
+#[test]
+fn a_written_without_warning_decodes_and_a_warning_survives() {
+    // Older daemons send no warning: the default fills it, so the
+    // dialect does not move for an additive skippable field.
+    let decoded: WorkspaceFileWriteResult = serde_json::from_value(
+        serde_json::json!({"status": "written", "modifiedAt": 7, "size": 3, "revision": "3:7"}),
+    )
+    .expect("an old written decodes");
+    assert!(matches!(
+        decoded,
+        WorkspaceFileWriteResult::Written { warning: None, .. }
+    ));
+    let warned: WorkspaceFileWriteResult = serde_json::from_value(
+        serde_json::json!({"status": "written", "modifiedAt": 7, "size": 3, "revision": "3:7", "warning": "the file's group could not be preserved"}),
+    )
+    .expect("a warned written decodes");
+    assert!(matches!(
+        warned,
+        WorkspaceFileWriteResult::Written {
+            warning: Some(_),
+            ..
+        }
+    ));
 }
 
 #[test]

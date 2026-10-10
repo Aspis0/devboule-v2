@@ -20,6 +20,10 @@ export interface FileEditorSnapshot {
   version: WorkspaceFileVersion;
   observedVersion: WorkspaceFileVersion;
   error: string | null;
+  /** The last save's identity warning, if the bytes landed but the
+   * target's owner, attributes or permissions did not fully follow.
+   * Cleared by the next edit or save. */
+  saveWarning: string | null;
 }
 
 export type FileConflictCallout =
@@ -116,6 +120,7 @@ export class FileEditorModel {
       version: input.file.version,
       observedVersion: input.file.version,
       error: null,
+      saveWarning: null,
     };
   }
 
@@ -156,7 +161,7 @@ export class FileEditorModel {
     if (this.snapshot.status === "conflict") {
       status = "conflict";
     }
-    this.setSnapshot({ ...this.snapshot, status, content: merged, modified, error: null });
+    this.setSnapshot({ ...this.snapshot, status, content: merged, modified, error: null, saveWarning: null });
     if (status === "dirty") this.scheduleAutosave();
     else this.clearAutosave();
   }
@@ -258,7 +263,7 @@ export class FileEditorModel {
     const content = this.snapshot.content;
     const hasBom = this.hasBom;
     this.observedWhileSaving = null;
-    this.setSnapshot({ ...this.snapshot, status: "saving", error: null });
+    this.setSnapshot({ ...this.snapshot, status: "saving", error: null, saveWarning: null });
     const serializedContent = hasBom ? String.fromCharCode(0xfeff) + content : content;
     let result: WorkspaceFileWriteResult;
     try {
@@ -273,12 +278,18 @@ export class FileEditorModel {
         ...this.snapshot,
         status: "error",
         error: error instanceof Error ? error.message : String(error),
+        saveWarning: null,
       });
       return;
     }
     if (this.disposed || sequence !== this.saveSequence) return;
     if (result.status === "error") {
-      this.setSnapshot({ ...this.snapshot, status: "error", error: result.error });
+      this.setSnapshot({
+        ...this.snapshot,
+        status: "error",
+        error: result.error,
+        saveWarning: null,
+      });
       return;
     }
     if (result.status === "conflict") {
@@ -307,6 +318,7 @@ export class FileEditorModel {
         version: writtenVersion,
         observedVersion: pendingVersion,
         error: null,
+        saveWarning: result.warning ?? null,
       });
       return;
     }
@@ -320,6 +332,7 @@ export class FileEditorModel {
       version: settledVersion,
       observedVersion: settledVersion,
       error: null,
+      saveWarning: result.warning ?? null,
     });
     if (modified) this.scheduleAutosave();
   }
@@ -335,7 +348,7 @@ export class FileEditorModel {
     const content = this.snapshot.content;
     const hasBom = this.hasBom;
     this.observedWhileSaving = null;
-    this.setSnapshot({ ...this.snapshot, status: "saving", error: null });
+    this.setSnapshot({ ...this.snapshot, status: "saving", error: null, saveWarning: null });
     const serializedContent = hasBom ? String.fromCharCode(0xfeff) + content : content;
     let result: WorkspaceFileWriteResult;
     try {
@@ -351,12 +364,18 @@ export class FileEditorModel {
         ...this.snapshot,
         status: "error",
         error: error instanceof Error ? error.message : String(error),
+        saveWarning: null,
       });
       return;
     }
     if (this.disposed || sequence !== this.saveSequence) return;
     if (result.status === "error") {
-      this.setSnapshot({ ...this.snapshot, status: "error", error: result.error });
+      this.setSnapshot({
+        ...this.snapshot,
+        status: "error",
+        error: result.error,
+        saveWarning: null,
+      });
       return;
     }
     if (result.status === "conflict") {
@@ -384,6 +403,7 @@ export class FileEditorModel {
       version: writtenVersion,
       observedVersion: writtenVersion,
       error: null,
+      saveWarning: result.warning ?? null,
     });
     if (modified) this.scheduleAutosave();
   }
@@ -402,6 +422,7 @@ export class FileEditorModel {
       version: file.version,
       observedVersion: file.version,
       error: null,
+      saveWarning: null,
     });
   }
 
@@ -419,6 +440,7 @@ export class FileEditorModel {
       modified: this.snapshot.content !== this.persistedContent,
       observedVersion: version,
       error: version.status === "error" ? version.error : null,
+      saveWarning: null,
     });
   }
 

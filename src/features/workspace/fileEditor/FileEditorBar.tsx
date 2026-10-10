@@ -19,11 +19,15 @@ export function FileEditorBar({
   lineCount,
   editorStatus,
   cursor,
+  saveWarning,
 }: {
   size: number;
   lineCount?: number;
   editorStatus?: FileEditorStatus;
   cursor?: { line: number; column: number };
+  /** The last save's identity warning, if the bytes landed but the
+   * target's owner, attributes or permissions did not fully follow. */
+  saveWarning?: string | null;
 }) {
   return (
     <div className="file-editor-bar" data-testid="file-editor-bar">
@@ -42,6 +46,11 @@ export function FileEditorBar({
           <span className="file-editor-saving" role="status" aria-label="Saving" />
         ) : null}
         {editorStatus === "error" ? <span className="file-editor-error">Save failed</span> : null}
+        {saveWarning ? (
+          <span className="file-editor-meta" role="status" title={saveWarning}>
+            {saveWarning}
+          </span>
+        ) : null}
         {cursor ? (
           <span className="file-editor-meta">
             Ln {cursor.line}, Col {cursor.column}

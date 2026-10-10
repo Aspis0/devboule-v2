@@ -388,7 +388,15 @@ export type WorkspaceFileVersion =
  * road; `error` carries the sentence that stopped it.
  */
 export type WorkspaceFileWriteResult =
-  | { status: "written"; modifiedAt: number; size: number; revision: string }
+  | {
+      status: "written";
+      modifiedAt: number;
+      size: number;
+      revision: string;
+      /** Best-effort identity preservation fell short; absent when the
+       * target kept everything. Never a path, only the failed class. */
+      warning?: string | null;
+    }
   | { status: "conflict"; version: WorkspaceFileVersion }
   | { status: "error"; error: string };
 
@@ -398,7 +406,7 @@ export type WorkspaceFileWriteResult =
  * (empty when missing — the first save creates it), whether the bytes
  * start with a UTF-8 BOM (restored byte-for-byte on save), and the
  * version a write echoes back; `refused` carries the sentence and claims
- * nothing else. Never over 1 MiB, never binary, never undecodable bytes:
+ * nothing else. Never over 128 KiB, never binary, never undecodable bytes:
  * those are refusals, not content.
  */
 export interface WorkspaceEditableFile {
