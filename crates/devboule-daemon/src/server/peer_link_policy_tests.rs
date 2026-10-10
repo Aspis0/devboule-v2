@@ -710,3 +710,50 @@ fn a_redialed_link_forgets_the_retired_transports_revoke() {
         other => panic!("a read after the redial must flow, got {other:?}"),
     }
 }
+
+/// Fix 5: the worker's queue holds one call. A call that loses the queue
+/// to another answers `Busy`, never `Offline`: losing a microsecond race
+/// must read as a busy host, not a dead one. Driven directly — the public
+/// permits serialize before the queue, so only the queue primitives can
+/// stage the loss deterministically.
+#[test]
+fn a_call_losing_the_worker_queue_answers_busy_not_offline() {
+    use crate::server::peer_link_state::{HostLink, LinkCommand};
+    use std::sync::mpsc;
+
+    fn providers(answer: mpsc::SyncSender<LinkAnswer>) -> LinkCommand {
+        LinkCommand::Providers {
+            generation: 0,
+            answer,
+        }
+    }
+    // No worker serving: a lost queue means nobody holds the link.
+    let idle = HostLink::new("b".to_string(), Duration::from_secs(1), Duration::ZERO);
+    match super::PeerLinks::queue_lost(&idle) {
+        LinkAnswer::Failed(state, _) => assert_eq!(
+            state,
+            RemoteHostState::Offline,
+            "with no worker the link is down"
+        ),
+        other => panic!("expected offline, got {other:?}"),
+    }
+    // A worker serving: the loser reads busy.
+    let serving = HostLink::new("b".to_string(), Duration::from_secs(1), Duration::ZERO);
+    let (commands_tx, _commands_rx) = mpsc::sync_channel(1);
+    serving
+        .serve(commands_tx)
+        .expect("install the worker queue");
+    let (answer_tx, _answer_rx) = mpsc::sync_channel(1);
+    assert!(serving.queue_operate(providers(answer_tx.clone())));
+    assert!(
+        !serving.queue_operate(providers(answer_tx)),
+        "the one-slot queue fills"
+    );
+    match super::PeerLinks::queue_lost(&serving) {
+        LinkAnswer::Failed(state, sentence) => {
+            assert_eq!(state, RemoteHostState::Busy);
+            assert_eq!(sentence, super::queue_busy_sentence());
+        }
+        other => panic!("a call losing the queue must fail busy, got {other:?}"),
+    }
+}

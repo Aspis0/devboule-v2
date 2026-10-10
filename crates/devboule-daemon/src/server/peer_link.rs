@@ -337,7 +337,7 @@ impl PeerLinks {
             answer_tx,
         ) {
             self.finish_read();
-            return LinkAnswer::Failed(RemoteHostState::Offline, offline_sentence().to_string());
+            return Self::queue_lost(&link);
         }
         let answer = answer_rx
             .recv_timeout(Duration::from_secs(30))
@@ -454,7 +454,7 @@ impl PeerLinks {
         };
         if !link.queue_read(link.generation(), list, answer_tx) {
             self.finish_read();
-            return LinkAnswer::Failed(RemoteHostState::Offline, offline_sentence().to_string());
+            return Self::queue_lost(&link);
         }
         // A queued read is answered by the worker: when it dials (a refusal
         // or a read), and while it waits out a backoff. The cases that wait
@@ -519,10 +519,7 @@ impl PeerLinks {
             };
             if !link.queue_operate(build(link.generation(), answer_tx)) {
                 self.finish_read();
-                return LinkAnswer::Failed(
-                    RemoteHostState::Offline,
-                    offline_sentence().to_string(),
-                );
+                return Self::queue_lost(&link);
             }
             let answer = answer_rx.recv_timeout(wait).unwrap_or_else(|_| {
                 LinkAnswer::Failed(RemoteHostState::Offline, offline_sentence().to_string())
@@ -545,13 +542,27 @@ impl PeerLinks {
         };
         if !link.queue_operate(build(link.generation(), answer_tx)) {
             self.finish_read();
-            return LinkAnswer::Failed(RemoteHostState::Offline, offline_sentence().to_string());
+            return Self::queue_lost(&link);
         }
         let answer = answer_rx.recv_timeout(wait).unwrap_or_else(|_| {
             LinkAnswer::Failed(RemoteHostState::Offline, offline_sentence().to_string())
         });
         self.finish_read();
         answer
+    }
+
+    /// The one-slot worker queue refused a call the permits admitted: a
+    /// serving worker means another call is ahead in the queue (busy, with
+    /// a sentence that says to wait), while a retired worker means nobody
+    /// is holding the link at all (offline). The race is microseconds wide
+    /// — the worker takes a queued call within one loop turn — but the
+    /// loser must still read busy, never a dead host.
+    pub(crate) fn queue_lost(link: &HostLink) -> LinkAnswer {
+        if link.is_serving() {
+            LinkAnswer::Failed(RemoteHostState::Busy, queue_busy_sentence())
+        } else {
+            LinkAnswer::Failed(RemoteHostState::Offline, offline_sentence().to_string())
+        }
     }
 
     /// How long one operate caller holds for the worker's answer: the read
@@ -828,6 +839,12 @@ pub(crate) fn busy_sentence(limit: usize, unit: &str) -> String {
 /// queueing behind it and timing out as `offline`.
 pub(crate) fn create_busy_sentence() -> String {
     "This daemon is still starting a session on this host.".to_string()
+}
+
+/// The refusal a call gets when it loses the worker's one-slot queue to
+/// another call: wait and ask again, the host is up.
+pub(crate) fn queue_busy_sentence() -> String {
+    "Another call is already queued on this host.".to_string()
 }
 
 /// The host row a failed dial belongs to, and the sentence that goes with it.
