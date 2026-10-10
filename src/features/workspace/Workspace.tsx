@@ -1586,6 +1586,7 @@ export function Workspace({
         : {
             kind: session.kind,
             title: sessionTitle(session),
+            provider: session.provider ?? session.kind,
           };
     },
     [sessions],

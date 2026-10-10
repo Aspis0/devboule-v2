@@ -161,7 +161,7 @@ describe("the Tasks tab's rows", () => {
   it("marks each row with its provider's real mark, never a letter", async () => {
     const withClaude: AgentTasksContext = {
       ...context([task({ id: "c", childSessionId: "c" })]),
-      childInfo: () => ({ kind: "claude", title: "Explore auth" }),
+      childInfo: () => ({ kind: "claude", title: "Explore auth", provider: "claude" }),
     };
     await render(withClaude);
 
@@ -182,10 +182,22 @@ describe("the Tasks tab's rows", () => {
     expect(rowFor("Orphan agent").querySelector('[data-mark="agent"]')).not.toBeNull();
   });
 
+  it("keeps an ACP child's provider on its row, where no glyph exists for it", async () => {
+    const acp: AgentTasksContext = {
+      ...context([task({ id: "acp-child", title: "Grok task", childSessionId: "acp-child" })]),
+      childInfo: () => ({ kind: "acp", title: "Grok task", provider: "grok" }),
+    };
+    await render(acp);
+
+    const row = rowFor("Grok task");
+    expect(row.querySelector('[data-mark="agent"]')).not.toBeNull();
+    expect(row.getAttribute("title")).toContain("grok");
+  });
+
   it("names a row from the roster when the daemon sent it with no title", async () => {
     const named: AgentTasksContext = {
       ...context([task({ title: "", state: "finished", endedAtMs: 2_000 })]),
-      childInfo: () => ({ kind: "codex", title: "Continue Kalsa website" }),
+      childInfo: () => ({ kind: "codex", title: "Continue Kalsa website", provider: "codex" }),
     };
     await render(named);
 
@@ -355,7 +367,7 @@ describe("the duration clock", () => {
           childSessionId: "done",
         }),
       ]),
-      childInfo: () => ({ kind: "claude", title: "Done" }),
+      childInfo: () => ({ kind: "claude", title: "Done", provider: "claude" }),
     };
     await render(fresh);
     clock.reads = 0;

@@ -125,6 +125,7 @@ function TaskGroup({ label, tasks, now, stopping, childInfo, onOpen, onStop }: T
               stopping={task.childSessionId !== undefined && stopping.has(task.childSessionId)}
               childKind={child?.kind}
               childTitle={child?.title}
+              childProvider={child?.provider}
               onOpen={onOpen}
               onStop={onStop}
             />
@@ -144,6 +145,8 @@ interface TaskRowProps {
   /** The child's provider kind and roster title, as scalars so a settled row's memo holds. */
   childKind: SessionKind | undefined;
   childTitle: string | undefined;
+  /** The provider id: a row names it on hover, even where no glyph exists for it. */
+  childProvider: string | undefined;
   onOpen: (childSessionId: string) => void;
   onStop: (task: SessionTask) => Promise<void>;
 }
@@ -166,6 +169,7 @@ const TaskRow = memo(function TaskRow({
   stopping,
   childKind,
   childTitle,
+  childProvider,
   onOpen,
   onStop,
 }: TaskRowProps) {
@@ -183,6 +187,7 @@ const TaskRow = memo(function TaskRow({
   const word = taskStateWord(task.state);
   // The model and the tool count are the row's detail: they wait behind a hover.
   const detail = [
+    childProvider,
     task.model,
     task.toolCallCount === undefined ? undefined : toolCountText(task.toolCallCount),
   ]
