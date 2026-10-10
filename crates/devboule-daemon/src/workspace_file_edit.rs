@@ -634,10 +634,14 @@ fn parent_is_dir(target: &Path) -> Option<bool> {
 /// `conflict`, never overwritten.
 fn create_file(target: &Path, content: &[u8]) -> WorkspaceFileWriteResult {
     replace_file(target, content, None, || {
-        // The create's own TOCTOU: still missing proceeds, appeared
-        // conflicts, unstatable refuses — `exists` is false on every
-        // error and would let a create replace a file the daemon
-        // cannot see, so the stat is classified, not booleanised.
+        // The create's own TOCTOU, narrowed but not closed: still missing
+        // proceeds, appeared conflicts, unstatable refuses — `exists` is
+        // false on every error and would let a create replace a file the
+        // daemon cannot see, so the stat is classified, not booleanised.
+        // A file that arrives between this recheck and the rename still
+        // wins the race and is replaced: no atomic create-or-fail rename
+        // exists on every platform this daemon ships, so the window is
+        // declared here rather than assumed away.
         match classify_target(target) {
             TargetState::Absent => Recheck::Proceed,
             TargetState::Present(_) => Recheck::Conflict,
@@ -658,8 +662,9 @@ enum Recheck {
 /// Atomically replace (or create) `target` with `content`: Paseo's temp
 /// file in the same folder, `sync`, `rename`. `recheck` runs after the
 /// temp file is synced and before the rename; on `Conflict` the write
-/// becomes [`conflict_from_target`]. The temp file is removed on every
-/// exit.
+/// becomes [`conflict_from_target`], on `Refuse` the sentence it carries.
+/// The temp file is removed on every exit. The recheck narrows the
+/// create/replace race; it does not close it — see `create_file`.
 fn replace_file(
     target: &Path,
     content: &[u8],
