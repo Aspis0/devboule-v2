@@ -20,9 +20,10 @@ import { fileTabMode, setFileTabMode, type FileTabMode } from "./fileTabMode";
 import { OpenInEditorAction } from "./OpenInEditorAction";
 import { useWorkspaceFilePreview, type PreviewCell } from "./useWorkspaceFilePreview";
 import { EditableFilePane } from "./EditableFilePane";
-import { isOutsidePath } from "./fileEditor/useEditableFile";
+import { isOutsidePath, EDITOR_MIN_DIALECT } from "./fileEditor/useEditableFile";
 import { toolContentKey } from "./toolContentCache";
 import { LOCAL_HOST_ID, parseWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
+import { useWorkspaceDaemon } from "./workspaceDaemon";
 import "./fileTab.css";
 
 /** `.md` and `.markdown`, case-insensitive: Preview's only kinds. */
@@ -141,10 +142,17 @@ export function WorkspaceFileTab({
   cache: Map<string, PreviewCell>;
 }) {
   const { hostId, workspaceId } = parseWorkspaceKey(workspaceKey);
+  // The editor frames need a daemon that speaks them (dialect 33+). A
+  // stale daemon cannot decode them and would drop the connection, so
+  // the tab stays read-only with a short note instead of sending.
+  const daemon = useWorkspaceDaemon();
+  const canEdit =
+    daemon.protocolVersion === null || daemon.protocolVersion >= EDITOR_MIN_DIALECT;
   // A paired host's file and the human's own outside file never take the
   // windowed road: the windowed read confines to the local workspace, so
   // it cannot serve either. Both edit straight in the tab.
   if (hostId !== LOCAL_HOST_ID || isOutsidePath(path)) {
+    if (!canEdit) return <StaleDaemonNote />;
     return <EditableFilePane workspaceKey={workspaceKey} path={path} refreshNonce={refreshNonce} />;
   }
   return (
@@ -154,7 +162,19 @@ export function WorkspaceFileTab({
       path={path}
       refreshNonce={refreshNonce}
       cache={cache}
+      canEdit={canEdit}
     />
+  );
+}
+
+/** What a tab shows when the daemon predates the editor: the file stays
+ * readable below, and this says why it is not editable. Short, because
+ * the fix is a restart, not a decision. */
+function StaleDaemonNote(): ReactNode {
+  return (
+    <div className="workspace-diff-note" role="status">
+      Update the daemon to edit files.
+    </div>
   );
 }
 
@@ -164,12 +184,15 @@ function LocalWorkspaceFileTab({
   path,
   refreshNonce,
   cache,
+  canEdit,
 }: {
   workspaceKey: WorkspaceKey;
   workspaceId: string;
   path: string;
   refreshNonce: number;
   cache: Map<string, PreviewCell>;
+  /** False when the daemon predates the editor frames: read-only. */
+  canEdit: boolean;
 }) {
   const errorId = useId();
   // What the daemon is addressed by, read off the tab's own key.
@@ -208,7 +231,7 @@ function LocalWorkspaceFileTab({
   const reply = preview.reply;
   const text = reply !== null && reply.status === "ok" && reply.kind === "text" ? reply : null;
 
-  if (isEditorFile(reply) && (!markdown || mode === "source")) {
+  if (canEdit && isEditorFile(reply) && (!markdown || mode === "source")) {
     return (
       <div className="workspace-file-tab">
         {markdown ? (
@@ -328,6 +351,7 @@ function LocalWorkspaceFileTab({
         ) : null}
         <OpenInEditorAction workspaceId={workspaceId} path={path} />
       </header>
+      {!canEdit ? <StaleDaemonNote /> : null}
       {body}
     </div>
   );

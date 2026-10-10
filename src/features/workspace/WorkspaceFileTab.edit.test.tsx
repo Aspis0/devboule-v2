@@ -26,9 +26,11 @@ vi.mock("../../lib/tauri", () => ({
   remoteHostFileOpen: vi.fn(),
   remoteHostFileVersion: vi.fn(),
   remoteHostFileWrite: vi.fn(),
+  daemonStatus: vi.fn(),
 }));
 
 import {
+  daemonStatus,
   workspaceFileEditorOpen,
   workspaceFileEditorVersion,
   workspaceFileEditorWrite,
@@ -88,6 +90,15 @@ describe("WorkspaceFileTab editing", () => {
     document.body.appendChild(container);
     vi.mocked(workspaceFileRead).mockResolvedValue(windowed() as never);
     vi.mocked(workspaceFileEditorOpen).mockResolvedValue(opened("one\n"));
+    vi.mocked(daemonStatus).mockResolvedValue({
+      state: "connected",
+      pid: 1,
+      instanceId: "1",
+      protocolVersion: 34,
+      clients: 1,
+      capabilities: [],
+      message: null,
+    } as never);
     vi.mocked(workspaceFileEditorVersion).mockResolvedValue({
       status: "ready",
       workspaceId: WORKSPACE,
@@ -281,5 +292,24 @@ describe("WorkspaceFileTab editing", () => {
     expect(workspaceFileEditorWrite).toHaveBeenCalledTimes(1);
     // A create names no expected version but an explicit intent.
     expect(vi.mocked(workspaceFileEditorWrite).mock.calls[0]?.slice(3)).toEqual([null, null, true]);
+  });
+
+  it("stays read-only with a note against a stale daemon", async () => {
+    vi.mocked(daemonStatus).mockResolvedValue({
+      state: "connected",
+      pid: 1,
+      instanceId: "1",
+      protocolVersion: 32,
+      clients: 1,
+      capabilities: [],
+      message: null,
+    } as never);
+    await renderTab();
+
+    // The editor frames would kill a v32 connection, so they never
+    // leave: no editor, a short note, and the windowed body instead.
+    expect(workspaceFileEditorOpen).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="file-source-editor"]')).toBeNull();
+    expect(container.textContent).toContain("Update the daemon to edit files.");
   });
 });

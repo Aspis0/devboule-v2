@@ -65,6 +65,11 @@ export function resolveEditableTarget(
   return { kind: "workspace", workspaceId, path };
 }
 
+/** Oldest daemon dialect the editor frames need: mirrors
+ * `FILE_EDIT_MIN_VERSION` in `devboule-protocol` (a relay checks the far
+ * hello against it; the tab checks the local daemon the same way). */
+export const EDITOR_MIN_DIALECT = 33;
+
 const POLL_MS = 5000;
 
 async function openTarget(target: EditableFileTarget): Promise<WorkspaceEditableFile> {
