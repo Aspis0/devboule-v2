@@ -1914,6 +1914,21 @@ impl SessionRegistry {
             .map_err(Into::into)
     }
 
+    /// The transcript search the sidebar sends: the owner's own transcripts,
+    /// read within the search's time budget.
+    pub(crate) fn search_transcripts(
+        &self,
+        owner: &OwnerId,
+        query: &str,
+    ) -> Result<crate::journal_search::TranscriptSearch, WireError> {
+        let deadline = std::time::Instant::now() + crate::journal_search::SEARCH_TIME_BUDGET;
+        self.journal
+            .as_ref()
+            .ok_or_else(journal_unavailable)?
+            .search_transcripts(&owner.user, query, deadline)
+            .map_err(Into::into)
+    }
+
     pub fn journal_retention_get(&self) -> Result<JournalRetention, WireError> {
         self.journal
             .as_ref()

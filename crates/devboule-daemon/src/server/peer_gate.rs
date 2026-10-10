@@ -444,6 +444,7 @@ pub(super) fn peer_mode_refusal_for_conn(
         ClientMessage::SessionPermissionRespond { .. } => None,
         ClientMessage::SessionReportAgent { .. } => None,
         ClientMessage::SessionsList { .. } => None,
+        ClientMessage::SessionsSearch { .. } => None,
         ClientMessage::SessionsWatch { .. } => None,
         ClientMessage::SessionsUnwatch { .. } => None,
         ClientMessage::SessionsPresence { .. } => None,
@@ -745,6 +746,7 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::Shutdown { .. }
         | ClientMessage::SessionCreate { .. }
         | ClientMessage::SessionsList { .. }
+        | ClientMessage::SessionsSearch { .. }
         | ClientMessage::SessionsWatch { .. }
         | ClientMessage::SessionsUnwatch { .. }
         | ClientMessage::SessionsPresence { .. }

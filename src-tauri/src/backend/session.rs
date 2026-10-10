@@ -12,8 +12,8 @@ use tauri::State;
 use devboule_daemon::{DaemonClient, DiagnosticsReport, SessionStateHandler};
 use devboule_protocol::{
     ActiveTurnBehavior, AttachmentReference, ErrorCode, PermissionOutcome, Persistence,
-    PersistenceKind, PromptAttachment, ResumeResult, SessionResumeInfo, SessionTask,
-    StoredAttachment, SubscriptionId, MAX_WRITE_BYTES,
+    PersistenceKind, PromptAttachment, ResumeResult, SessionResumeInfo, SessionSearchHit,
+    SessionTask, StoredAttachment, SubscriptionId, MAX_WRITE_BYTES,
 };
 use serde::Serialize;
 
@@ -685,6 +685,24 @@ pub async fn session_tasks(
 pub async fn sessions_list(bridge: State<'_, DaemonBridge>) -> Result<Vec<Session>, CommandError> {
     let client = require_client(&bridge)?;
     off_main_thread(move || client.sessions_list()).await
+}
+
+/// The sidebar's transcript search: the matches, and whether a cap stopped it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSearchReply {
+    hits: Vec<SessionSearchHit>,
+    truncated: bool,
+}
+
+#[tauri::command]
+pub async fn sessions_search(
+    bridge: State<'_, DaemonBridge>,
+    query: String,
+) -> Result<SessionSearchReply, CommandError> {
+    let client = require_client(&bridge)?;
+    let (hits, truncated) = off_main_thread(move || client.sessions_search(&query)).await?;
+    Ok(SessionSearchReply { hits, truncated })
 }
 
 #[tauri::command]

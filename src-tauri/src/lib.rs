@@ -168,6 +168,7 @@ pub fn run() {
             backend::journal::journal_retention_set,
             backend::journal::session_delete,
             backend::session::sessions_list,
+            backend::session::sessions_search,
             backend::session::daemon_diagnostics,
             backend::session::sessions_watch,
             backend::session::sessions_unwatch,

@@ -237,6 +237,7 @@ impl PluginSession {
                         | DaemonMessage::Shutdown { id, .. }
                         | DaemonMessage::Session { id, .. }
                         | DaemonMessage::Sessions { id, .. }
+                        | DaemonMessage::SessionsSearch { id, .. }
                         | DaemonMessage::SessionTasks { id, .. }
                         // A plugin backend never asks for a task list; listed
                         // like every other id-carrying reply so the match

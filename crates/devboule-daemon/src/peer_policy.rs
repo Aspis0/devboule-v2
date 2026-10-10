@@ -337,6 +337,9 @@ pub fn peer_allows(caps: &[String], request: &ClientMessage) -> PeerDecision {
         // process. `admin` does not open it, and the reason names an act no
         // capability can hold.
         ClientMessage::WorkspaceOpenRoot { .. } => PeerDecision::Deny("workspace.open"),
+        // Transcript text is the person's own conversation: it stays on the
+        // machine that holds the journal, whatever a paired device may view.
+        ClientMessage::SessionsSearch { .. } => PeerDecision::Deny("sessions.search"),
         // The human's own files outside any workspace: local-only like the
         // open root, for the stronger reason — an absolute host path must
         // never travel to a paired device, and no agent or MCP tool speaks
@@ -2096,6 +2099,7 @@ pub(crate) mod tests {
             ClientMessage::PeerSetCaps { .. } => Some("peer.set_caps"),
             ClientMessage::PeerRevoke { .. } => Some("peer.revoke"),
             ClientMessage::WorkspaceOpenRoot { .. } => Some("workspace.open"),
+            ClientMessage::SessionsSearch { .. } => Some("sessions.search"),
             ClientMessage::AppFileOpen { .. } => Some("workspace.open"),
             ClientMessage::AppFileVersion { .. } => Some("workspace.open"),
             ClientMessage::AppFileWrite { .. } => Some("workspace.open"),
@@ -2984,6 +2988,7 @@ pub(crate) mod tests {
             ClientMessage::WorkspaceFileVersion { .. } => administrative(),
             ClientMessage::WorkspaceFileWrite { .. } => administrative(),
             ClientMessage::WorkspaceOpenRoot { .. } => local("workspace.open"),
+            ClientMessage::SessionsSearch { .. } => local("sessions.search"),
             ClientMessage::AppFileOpen { .. } => local("workspace.open"),
             ClientMessage::AppFileVersion { .. } => local("workspace.open"),
             ClientMessage::AppFileWrite { .. } => local("workspace.open"),
@@ -3095,6 +3100,7 @@ pub(crate) mod tests {
             ClientMessage::SessionPermissionRespond { .. } => "SessionPermissionRespond",
             ClientMessage::SessionReportAgent { .. } => "SessionReportAgent",
             ClientMessage::SessionsList { .. } => "SessionsList",
+            ClientMessage::SessionsSearch { .. } => "SessionsSearch",
             ClientMessage::SessionTasksGet { .. } => "SessionTasksGet",
             ClientMessage::SessionsWatch { .. } => "SessionsWatch",
             ClientMessage::SessionsUnwatch { .. } => "SessionsUnwatch",

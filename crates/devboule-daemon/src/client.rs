@@ -1271,6 +1271,27 @@ impl DaemonClient {
         }
     }
 
+    /// The transcript search: the matches, and whether a cap stopped it. The
+    /// capability gate runs first: a daemon from before protocol 35 cannot
+    /// deserialize `SessionsSearch`, and the connection would die on it.
+    pub fn sessions_search(
+        &self,
+        query: &str,
+    ) -> Result<(Vec<devboule_protocol::SessionSearchHit>, bool), DaemonError> {
+        self.require_agreed(devboule_protocol::caps::SESSIONS_SEARCH)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionsSearch {
+            id,
+            query: query.to_string(),
+        })? {
+            DaemonMessage::SessionsSearch {
+                hits, truncated, ..
+            } => Ok((hits, truncated)),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     pub fn session_tasks(&self, session_id: &str) -> Result<(Vec<SessionTask>, u32), DaemonError> {
         // The capability gate is first, for the reason
         // [`DaemonClient::require_agreed`] gives: a daemon from before
@@ -3698,6 +3719,7 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::Shutdown { id, .. }
         | DaemonMessage::Session { id, .. }
         | DaemonMessage::Sessions { id, .. }
+        | DaemonMessage::SessionsSearch { id, .. }
         | DaemonMessage::SessionTasks { id, .. }
         | DaemonMessage::Projects { id, .. }
         | DaemonMessage::Project { id, .. }

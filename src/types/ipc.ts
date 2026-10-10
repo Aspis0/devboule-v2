@@ -1397,6 +1397,26 @@ export interface SessionTask {
   toolCallCount?: number;
 }
 
+/** Who wrote the text a transcript search matched. */
+export type SearchAuthor = "person" | "agent";
+
+/** One transcript match: the journal position it sits at, who wrote it, and the words around it. */
+export interface SessionSearchHit {
+  sessionId: string;
+  generation: number;
+  seq: number;
+  /** The event's own message id, when it has one: the transcript row it opens at. */
+  messageId: string | null;
+  author: SearchAuthor;
+  snippet: string;
+}
+
+/** The `SessionsSearch` reply: the matches, newest session first, and whether a cap stopped the scan. */
+export interface SessionSearchReply {
+  hits: SessionSearchHit[];
+  truncated: boolean;
+}
+
 /** The `SessionTasks` reply: the list as derived now, and the rows past the cap. */
 export interface SessionTaskList {
   tasks: SessionTask[];

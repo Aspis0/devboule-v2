@@ -154,6 +154,7 @@ import type {
   ProviderInfo,
   Session,
   SessionKind,
+  SessionSearchHit,
 } from "../../types/ipc";
 import { isAgentKind } from "../../types/ipc";
 import {
@@ -165,6 +166,7 @@ import {
   type AttentionTarget,
 } from "../../lib/tauri";
 import { workspaceFileIndex } from "./workspaceFileIndex";
+import type { TranscriptSearchProps } from "./sidebar/TranscriptSearchResults";
 import { isCommandError } from "../../lib/commandError";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import "./Workspace.css";
@@ -188,6 +190,7 @@ const SESSION_QUEUE_CAPABILITY = "session.queue";
 const ATTACHMENTS_GIF_WEBP_CAPABILITY = "attachments.gif_webp";
 /** The negotiated capability the composer's chunked file upload is gated on. */
 const ATTACHMENTS_UPLOAD_CAPABILITY = "attachments.upload";
+const SESSIONS_SEARCH_CAPABILITY = "sessions.search";
 /** Said wherever a tab or agent is asked for with no workspace selected. */
 const NO_WORKSPACE_SENTENCE = "No workspace is selected.";
 const NO_WORKSPACE_ERROR: ErrorSentence = { sentence: NO_WORKSPACE_SENTENCE, detail: null };
@@ -350,6 +353,13 @@ export function Workspace({
   const tasksVisible = activeSidePanel === "tasks" && !rightCollapsed;
   const tasksUnseen = useTasksAttention(paneAgent, tasksVisible);
   const [historyOpen, setHistoryOpen] = useState(false);
+  // The message the sidebar's search opened a session at: the transcript scrolls
+  // to it once. The nonce makes a second open of the same message scroll again.
+  const [transcriptFocus, setTranscriptFocus] = useState<{
+    sessionId: string;
+    messageId: string | null;
+    nonce: number;
+  } | null>(null);
   const [historySearch, setHistorySearch] = useState("");
   const [historyHost, setHistoryHost] = useState("all");
   const [permissionQueue, setPermissionQueue] =
@@ -939,6 +949,21 @@ export function Workspace({
   // Every stand-down routes through here. The landed create is the only caller
   // that may skip it (guarded below); the roster reconcile never calls it.
   const standDownToolTab = useCallback(() => writeToolTab(null), [writeToolTab]);
+  const transcriptSearchCanSearch = daemon.capabilities.includes(SESSIONS_SEARCH_CAPABILITY);
+  const openTranscriptHit = useCallback(
+    (hit: SessionSearchHit) => {
+      const session = sessions.find((row) => row.id === hit.sessionId);
+      if (session === undefined) return;
+      standDownToolTab();
+      openSession(session);
+      setTranscriptFocus((previous) => ({
+        sessionId: hit.sessionId,
+        messageId: hit.messageId,
+        nonce: (previous?.nonce ?? 0) + 1,
+      }));
+    },
+    [openSession, sessions, standDownToolTab],
+  );
   // A click on the already-active tool tab re-reads it: the pane keeps the
   // old content until the new read lands (each pane owns that), so this is
   // only the nudge, never a remount.
@@ -2060,6 +2085,17 @@ export function Workspace({
   // The rail's bundle, stable across renders that change nothing it shows:
   // without this the inline literal below is a new identity every render
   // and the rail re-traverses its tree on every session and daemon update.
+  const transcriptSearch: TranscriptSearchProps = useMemo(
+    () => ({
+      canSearch: transcriptSearchCanSearch,
+      titleOf: (sessionId: string) => {
+        const session = sessions.find((row) => row.id === sessionId);
+        return session === undefined ? "Session" : sessionTitle(session);
+      },
+      onOpen: openTranscriptHit,
+    }),
+    [openTranscriptHit, sessions, transcriptSearchCanSearch],
+  );
   const sidebarTree: WorkspaceTreeProps = useMemo(
     () => ({
       projects: visibleProjects,
@@ -2122,6 +2158,7 @@ export function Workspace({
           daemon={sidebarDaemon}
           daemonNote={restartFailureNote}
           tree={sidebarTree}
+          transcripts={transcriptSearch}
         />
 
         <main className="workspace-center-panel" ref={centerRef}>
@@ -2357,6 +2394,14 @@ export function Workspace({
                           sessionId={paneSession.id}
                           fileLinks={chatFileLinks}
                           loadFileIndex={loadPaneFileIndex}
+                          focusMessage={
+                            transcriptFocus?.sessionId === paneSession.id
+                              ? {
+                                  messageId: transcriptFocus.messageId,
+                                  nonce: transcriptFocus.nonce,
+                                }
+                              : null
+                          }
                           observedState={paneSession.state}
                           initialGoal={paneSession.goal}
                           activity={paneSession.activity}

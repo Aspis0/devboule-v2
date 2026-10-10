@@ -6,6 +6,7 @@ import { moveMenuFocus } from "../strip/menuNav";
 import type { DaemonStatus } from "../../../types/ipc";
 import type { WorkspaceProject } from "../workspaceProjects";
 import { SidebarFooter } from "./SidebarFooter";
+import { TranscriptSearchResults, type TranscriptSearchProps } from "./TranscriptSearchResults";
 import { WorkspaceTree, type WorkspaceTreeProps } from "./WorkspaceTree";
 import "./sidebar.css";
 
@@ -27,6 +28,8 @@ export interface SidebarProps {
   addProjectRef: React.RefObject<HTMLButtonElement | null>;
   /** The workspace rows' live facts and the create flows, one level down. */
   tree: WorkspaceTreeProps;
+  /** The message matches under the search field. Absent: the search matches titles only. */
+  transcripts?: TranscriptSearchProps;
   daemon: DaemonStatus;
   daemonNote: string | null;
 }
@@ -57,6 +60,7 @@ export const Sidebar = memo(function Sidebar({
   onOpenSettings,
   addProjectRef,
   tree,
+  transcripts,
   daemon,
   daemonNote,
 }: SidebarProps) {
@@ -309,6 +313,9 @@ export const Sidebar = memo(function Sidebar({
             </div>
 
             <div className="workspace-scroll sidebar-body">
+              {transcripts !== undefined && searchValue.trim() !== "" ? (
+                <TranscriptSearchResults query={searchValue} {...transcripts} />
+              ) : null}
               <WorkspaceTree {...tree} />
             </div>
 

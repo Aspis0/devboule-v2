@@ -2874,6 +2874,8 @@ fn session_paths_of(request: &ClientMessage) -> Option<&'static [&'static str]> 
         ClientMessage::SessionDetach { .. } => None,
         ClientMessage::SessionReportAgent { .. } => None,
         ClientMessage::SessionsList { .. } => None,
+        // Owner-scoped and touches no workspace path, like the roster read.
+        ClientMessage::SessionsSearch { .. } => None,
         // A roster-filtered read like the list above it: the owner scope is
         // inside `session_tasks`, and it touches no workspace paths.
         ClientMessage::SessionTasksGet { .. } => None,

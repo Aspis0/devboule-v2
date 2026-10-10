@@ -379,6 +379,17 @@ pub(super) fn dispatch_session(
             Ok(sessions) => DaemonMessage::Sessions { id, sessions },
             Err(error) => DaemonMessage::Error(error.with_id(id)),
         },
+        // Local only: the peer gate refuses this frame to every paired device.
+        ClientMessage::SessionsSearch { id, query } => {
+            match state.sessions.search_transcripts(owner, &query) {
+                Ok(search) => DaemonMessage::SessionsSearch {
+                    id,
+                    hits: search.hits,
+                    truncated: search.truncated,
+                },
+                Err(error) => DaemonMessage::Error(error.with_id(id)),
+            }
+        }
         // One session's background-task list, derived fresh: the roster
         // answers which sessions exist, this answers what one of them runs.
         // The capability gate ran in dispatch; the owner scope is inside.

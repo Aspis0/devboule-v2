@@ -168,6 +168,9 @@ interface AgentChatSurfaceProps {
   fileLinks?: ChatFileLinks | null;
   /** The workspace's file paths for the composer's "@" menu. Absent: no "@" menu. */
   loadFileIndex?: () => Promise<readonly string[]>;
+  /** A message the sidebar search opened this session at: the transcript scrolls
+   * to its row once per nonce. Null for an ordinary open. */
+  focusMessage?: { messageId: string | null; nonce: number } | null;
   /** The roster's turn status, read by the composer's send predicate. Absent until the workspace passes it. */
   activity?: AgentActivityState;
   observedState?: SessionState | null;
@@ -373,6 +376,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   onAgentChange,
   fileLinks = null,
   loadFileIndex,
+  focusMessage = null,
   activity,
   observedState = null,
   initialGoal = null,
@@ -832,9 +836,35 @@ export const AgentChatSurface = memo(function AgentChatSurface({
       focusComposer,
     ],
   );
+  // The search's message: its transcript row carries the message id as its
+  // anchor, so the scroll finds the row there and nowhere else.
+  // The row may not be on screen yet: an opened session replays its transcript
+  // after the first commit. So the target waits here, and each commit looks for
+  // it until it is found.
+  const shellRef = useRef<HTMLDivElement | null>(null);
+  const pendingFocusRef = useRef<string | null>(null);
+  const focusNonce = focusMessage?.nonce;
+  const focusMessageId = focusMessage?.messageId ?? null;
+  useEffect(() => {
+    if (focusNonce !== undefined) pendingFocusRef.current = focusMessageId;
+  }, [focusNonce, focusMessageId]);
+  useEffect(() => {
+    const target = pendingFocusRef.current;
+    const shell = shellRef.current;
+    if (target === null || shell === null) return;
+    for (const anchor of shell.querySelectorAll<HTMLElement>("[data-turn-anchor]")) {
+      if (anchor.dataset.turnAnchor === target) {
+        anchor.scrollIntoView({ block: "center" });
+        pendingFocusRef.current = null;
+        return;
+      }
+    }
+  });
+
   return (
     <div
       id={id}
+      ref={shellRef}
       className="workspace-agent-shell"
       role="tabpanel"
       aria-label="Agent chat"

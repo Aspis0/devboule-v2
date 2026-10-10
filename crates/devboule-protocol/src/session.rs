@@ -1996,6 +1996,29 @@ impl UserMessageKind {
     }
 }
 
+/// Who wrote the text a [`SessionSearchHit`] matched: the person, or the agent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchAuthor {
+    Person,
+    Agent,
+}
+
+/// One match from `sessions.search`: the journal position the transcript shows
+/// the matching event under, who wrote it, and the words around the match.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSearchHit {
+    pub session_id: String,
+    pub generation: u64,
+    pub seq: u64,
+    /// The event's own message id, when it has one: the transcript row the
+    /// app opens the hit at is matched by it.
+    pub message_id: Option<String>,
+    pub author: SearchAuthor,
+    pub snippet: String,
+}
+
 #[cfg(test)]
 #[path = "session_tests.rs"]
 mod tests;

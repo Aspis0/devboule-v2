@@ -157,11 +157,11 @@ pub use session::{
     FinishArtifactPartMetadata, NoticeSeverity, PermissionEnvVar, PermissionOption,
     PermissionOutcome, PermissionQuestion, PermissionQuestionOption, PermissionRequestKind,
     Persistence, PersistenceKind, PlanCredits, PlanWindow, QueuedMessage, ResumeResult,
-    ScreenCursor, Session, SessionEvent, SessionKind, SessionModeStateView, SessionModeView,
-    SessionModel, SessionModelEffort, SessionOrigin, SessionOriginKind, SessionState,
-    SessionStateSnapshot, SessionTask, SessionTaskKind, SessionTaskState, SubagentTaskStatus,
-    SubscriptionId, ToolLocation, TranscriptIntegrity, TurnUsage, UnattendedState,
-    UserMessageAuthor, UserMessageKind, NOTHING_OWED_CURSOR,
+    ScreenCursor, SearchAuthor, Session, SessionEvent, SessionKind, SessionModeStateView,
+    SessionModeView, SessionModel, SessionModelEffort, SessionOrigin, SessionOriginKind,
+    SessionSearchHit, SessionState, SessionStateSnapshot, SessionTask, SessionTaskKind,
+    SessionTaskState, SubagentTaskStatus, SubscriptionId, ToolLocation, TranscriptIntegrity,
+    TurnUsage, UnattendedState, UserMessageAuthor, UserMessageKind, NOTHING_OWED_CURSOR,
 };
 pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_character};
 
@@ -259,7 +259,10 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// Protocol 36 adds `AgentFinished.at_ms`, the finish time, so a turn’s length
 /// can be read from its start and its finish on replay as well as live. Also
 /// optional.
-pub const PROTOCOL_VERSION: u32 = 36;
+///
+/// Protocol 37 adds `SessionsSearch` (the sidebar's transcript search), local
+/// only, behind the `sessions.search` capability. Same new-variant rule.
+pub const PROTOCOL_VERSION: u32 = 37;
 /// Oldest dialect whose daemon speaks the in-app editor frames
 /// (`WorkspaceFileOpen` / `Version` / `Write` and their app-file spellings).
 /// A relay checks the far hello against this before writing one: an older
@@ -396,6 +399,11 @@ pub mod caps {
     /// as it always has; it just does not see a reading that lands while it is
     /// attached.
     pub const SESSION_PLAN_USAGE: &str = "session.plan_usage";
+
+    /// `sessions.search`: the daemon answers `SessionsSearch` with the matches
+    /// in the transcripts. A client that did not agree the name must not send
+    /// the frame, since an older daemon would refuse it as an unknown message.
+    pub const SESSIONS_SEARCH: &str = "sessions.search";
 
     /// Prompt-attachment deposits (`SessionDeposit`/`SessionDeposited`).
     ///
@@ -980,6 +988,9 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     // The live meter: the daemon publishes a reading to a connection only when
     // both ends offered the name, so it must be in the daemon's list too.
     capabilities.push(Capability::new(caps::SESSION_PLAN_USAGE));
+    // The transcript search: the daemon answers `SessionsSearch` only to a
+    // connection that offered the name.
+    capabilities.push(Capability::new(caps::SESSIONS_SEARCH));
     // The workspace-host presence bit: both daemons speak it in their v31
     // hello, so the name must be offered by both ends of a peer connection
     // for the announcement to survive the intersection. It grants nothing.
@@ -1091,6 +1102,9 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // keeps it, and a reading that lands while attached reaches the screen only
     // when it was agreed.
     capabilities.push(Capability::new(caps::SESSION_PLAN_USAGE));
+    // Same pairing, for the transcript search: the app offers it so the
+    // sidebar's search can send `SessionsSearch` at all.
+    capabilities.push(Capability::new(caps::SESSIONS_SEARCH));
     // Same pairing, for the workspace-host presence bit: the name must be in
     // both lists or a peer connection could never speak the announcement.
     capabilities.push(Capability::new(caps::HOSTED_WORKSPACES));

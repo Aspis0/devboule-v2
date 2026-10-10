@@ -56,6 +56,7 @@ import type {
   SessionKind,
   SessionStateSnapshot,
   SessionTaskList,
+  SessionSearchReply,
   RetentionPatch,
 } from "../types/ipc";
 import { errorSentence } from "./errorSentence";
@@ -298,6 +299,7 @@ export type CommandArgs = {
   journal_retention_set: RetentionPatch;
   session_delete: { id: Id };
   sessions_list: undefined;
+  sessions_search: { query: string };
   sessions_watch: { ch: SessionStateChannel };
   remote_host_watch: { deviceId: string; ch: RemoteHostStatusChannel };
   remote_host_unwatch: { deviceId: string };
@@ -543,6 +545,7 @@ type CommandResults = {
   journal_retention_set: JournalRetention;
   session_delete: void;
   sessions_list: Session[];
+  sessions_search: SessionSearchReply;
   sessions_watch: void;
   sessions_unwatch: void;
   providers_list: ProviderCatalog;
@@ -777,6 +780,7 @@ export const COMMAND_ARG_KEYS = {
   journal_retention_set: ["maxAgeMs", "maxBytes", "maxSessions", "sessionMaxBytes"],
   session_delete: ["id"],
   sessions_list: [],
+  sessions_search: ["query"],
   sessions_watch: ["ch"],
   sessions_unwatch: [],
   providers_list: [],
@@ -1515,6 +1519,8 @@ export const journalRetentionSet = (patch: RetentionPatch) =>
   invokeTyped("journal_retention_set", patch);
 export const sessionDelete = (id: Id) => invokeTyped("session_delete", { id });
 export const sessionsList = () => invokeTyped("sessions_list");
+/** The sidebar's transcript search: what the person and the agent wrote that holds `query`. */
+export const sessionsSearch = (query: string) => invokeTyped("sessions_search", { query });
 export const sessionsWatch = (ch: SessionStateChannel) => invokeTyped("sessions_watch", { ch });
 export const sessionsUnwatch = () => invokeTyped("sessions_unwatch");
 /**

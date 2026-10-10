@@ -11,7 +11,7 @@ use crate::resume::SessionResumeInfo;
 use crate::session::{
     ActiveTurnBehavior, AgentActivityState, AgentTaskState, Cursor, PermissionOutcome, Persistence,
     ResumeResult, Session, SessionEvent, SessionKind, SessionModeView, SessionModel,
-    SubscriptionId,
+    SessionSearchHit, SubscriptionId,
 };
 
 /// The role a device was paired as under protocol 30: `"client"` or
@@ -993,6 +993,14 @@ pub enum ClientMessage {
     SessionsList {
         id: u64,
     },
+    /// Case-insensitive search over what the person and the agent wrote in each
+    /// session's transcript. Local clients only: transcript text never goes to a
+    /// paired device through this frame. The reply is
+    /// [`DaemonMessage::SessionsSearch`].
+    SessionsSearch {
+        id: u64,
+        query: String,
+    },
     SessionsWatch {
         id: u64,
     },
@@ -1814,6 +1822,7 @@ impl ClientMessage {
             | Self::SessionPermissionRespond { id, .. }
             | Self::SessionReportAgent { id, .. }
             | Self::SessionsList { id }
+            | Self::SessionsSearch { id, .. }
             | Self::SessionsWatch { id }
             | Self::SessionsUnwatch { id }
             | Self::SessionsPresence { id, .. }
@@ -1982,6 +1991,7 @@ impl ClientMessage {
             | Self::SessionSetFeature { .. }
             | Self::SessionReportAgent { .. }
             | Self::SessionsList { .. }
+            | Self::SessionsSearch { .. }
             | Self::SessionsWatch { .. }
             | Self::SessionsUnwatch { .. }
             | Self::SessionsPresence { .. }
@@ -2094,6 +2104,7 @@ impl ClientMessage {
             Self::SessionPermissionRespond { .. } => "SessionPermissionRespond",
             Self::SessionReportAgent { .. } => "SessionReportAgent",
             Self::SessionsList { .. } => "SessionsList",
+            Self::SessionsSearch { .. } => "SessionsSearch",
             Self::SessionsWatch { .. } => "SessionsWatch",
             Self::SessionsUnwatch { .. } => "SessionsUnwatch",
             Self::SessionsPresence { .. } => "SessionsPresence",
@@ -2166,6 +2177,7 @@ impl ClientMessage {
             | Self::Status { .. }
             | Self::DaemonDiagnostics { .. }
             | Self::SessionsList { .. }
+            | Self::SessionsSearch { .. }
             | Self::SessionTasksGet { .. }
             | Self::SessionsWatch { .. }
             | Self::JournalUsage { .. }
@@ -2369,6 +2381,14 @@ pub enum DaemonMessage {
     Sessions {
         id: u64,
         sessions: Vec<Session>,
+    },
+    /// The reply to [`ClientMessage::SessionsSearch`]: the matches, newest
+    /// session first, and whether the search stopped at its session, hit or
+    /// time cap before it had read everything.
+    SessionsSearch {
+        id: u64,
+        hits: Vec<SessionSearchHit>,
+        truncated: bool,
     },
     /// The reply to [`ClientMessage::SessionTasksGet`]: the session's
     /// background-task list as derived at the moment of the request,
