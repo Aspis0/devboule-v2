@@ -1402,9 +1402,21 @@ fn request_skipping_pushes<T>(
     message: ClientMessage,
     wanted: impl FnMut(&DaemonMessage) -> Option<T>,
 ) -> Option<T> {
+    request_skipping_pushes_with_timeout(peer, message, Duration::from_secs(30), wanted)
+}
+
+/// The same wait with an explicit budget. Creates carry the client create
+/// budget (210 s: the host runs the provider handshake inline), so a
+/// create step that kept the 30 s default would give up while the host is
+/// still starting the session and read the silence as a failure (P1-1).
+fn request_skipping_pushes_with_timeout<T>(
+    peer: &Peer,
+    message: ClientMessage,
+    timeout: Duration,
+    wanted: impl FnMut(&DaemonMessage) -> Option<T>,
+) -> Option<T> {
     peer.pipe.framed.send(&message).ok()?;
-    peer.pipe
-        .recv_until(Instant::now() + Duration::from_secs(30), wanted)
+    peer.pipe.recv_until(Instant::now() + timeout, wanted)
 }
 
 #[test]
@@ -1905,7 +1917,7 @@ fn a_host_creates_and_operates_sessions_on_its_peer_over_loopback() {
     );
     let (port_a, port_b) = two_free_ports();
     let a = Peer::spawn_with_env("s4-op-a", port_a, &[("DEVBOULE_PEER_LOOPBACK", "1")]);
-    let b = Peer::spawn_with_env(
+    let mut b = Peer::spawn_with_env(
         "s4-op-b",
         port_b,
         &[
@@ -1957,12 +1969,15 @@ fn a_host_creates_and_operates_sessions_on_its_peer_over_loopback() {
     }
 
     // ---- create an agent on B from A ------------------------------------
+    // Creates wait above the client create budget (P3-3): the host runs
+    // the provider handshake inline, and the step must not surrender
+    // while the host is still starting the session.
     let create_on_b = |workspace: &str,
                        kind: SessionKind,
                        provider: Option<String>,
                        key: &str|
      -> devboule_protocol::Session {
-        request_skipping_pushes(
+        request_skipping_pushes_with_timeout(
             &a,
             ClientMessage::RemoteHostCreate {
                 id: a.pipe.id(),
@@ -1976,6 +1991,7 @@ fn a_host_creates_and_operates_sessions_on_its_peer_over_loopback() {
                 cols: None,
                 rows: None,
             },
+            Duration::from_secs(240),
             |frame| match frame {
                 DaemonMessage::RemoteHostSession { session, .. } => Some(session.clone()),
                 _ => None,
@@ -2271,6 +2287,178 @@ fn a_host_creates_and_operates_sessions_on_its_peer_over_loopback() {
         !inventory(&b).contains(&b_own_terminal.id),
         "the close landed on B"
     );
+
+    // ---- the transport dies mid-create: unknown outcome, then one retry --
+    // B journals the row at create start (fast) while the stub handshake
+    // runs (slow): poll B's roster for the journaled row, then kill B
+    // inside the handshake. The agent create is used because a terminal
+    // spawn finishes in milliseconds — uncatchable mid-flight. The
+    // in-flight create must error rather than hang or duplicate, and the
+    // explicit retry with the same key must make exactly one live session.
+    let live_in = |workspace: &str| -> Vec<String> {
+        request_skipping_pushes(
+            &a,
+            ClientMessage::RemoteHostList {
+                id: a.pipe.id(),
+                device_id: b_self.device_id.clone(),
+                list: devboule_protocol::RemoteHostList::Sessions,
+            },
+            |frame| match frame {
+                DaemonMessage::RemoteHostList {
+                    body: devboule_protocol::RemoteHostListBody::Sessions { rows },
+                    ..
+                } => Some(
+                    rows.iter()
+                        .filter(|session| {
+                            session.workspace_id.as_deref() == Some(workspace)
+                                && session.state.is_live()
+                        })
+                        .map(|session| session.id.clone())
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            },
+        )
+        .expect("the link roster")
+    };
+    let baseline: Vec<String> = inventory(&b);
+    let killed_id = std::thread::scope(|scope| {
+        let creating = scope.spawn(|| {
+            request_skipping_pushes_with_timeout(
+                &a,
+                ClientMessage::RemoteHostCreate {
+                    id: a.pipe.id(),
+                    device_id: b_self.device_id.clone(),
+                    workspace_id: Some(b_workspace.clone()),
+                    kind: SessionKind::Acp,
+                    provider: Some("devboule-acp-stub".to_string()),
+                    mode: None,
+                    display_name: None,
+                    idempotency_key: Some("s4-killed-1".to_string()),
+                    cols: None,
+                    rows: None,
+                },
+                Duration::from_secs(240),
+                // An error is an answer too: the test must not sit out the
+                // ceiling waiting for a session that will never come.
+                |frame| match frame {
+                    DaemonMessage::RemoteHostSession { session, .. } => {
+                        Some(Some(session.id.clone()))
+                    }
+                    DaemonMessage::Error(..) => Some(None),
+                    _ => None,
+                },
+            )
+        });
+        // B journals before it spawns: the row appears while the outcome
+        // is still unknown.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let found = loop {
+            let ids = inventory(&b);
+            if let Some(id) = ids.iter().find(|id| !baseline.contains(id)) {
+                break Some(id.clone());
+            }
+            assert!(Instant::now() < deadline, "B never started the create");
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        b.child
+            .as_mut()
+            .expect("B's child")
+            .kill()
+            .expect("kill B mid-create");
+        b.child.as_mut().expect("B's child").wait().expect("reap B");
+        let answered = creating.join().expect("the create thread");
+        match answered {
+            // Cut off mid-handshake: the outcome is unknown, never a
+            // duplicate.
+            Some(None) => {}
+            // Answered just before the kill landed: the same session the
+            // roster already showed, not a second one.
+            Some(Some(id)) => assert_eq!(
+                Some(&id),
+                found.as_ref(),
+                "a completed create answers its own session"
+            ),
+            None => panic!("the cut-off create never answered"),
+        }
+        found
+    });
+    // Restart B on the same dir, port, identity and env: the journal — and
+    // the killed row — come back with it.
+    {
+        let mut command = Command::new(daemon_bin());
+        command
+            .env("DEVBOULE_RUNTIME_DIR", &b.dir)
+            .env("DEVBOULE_PEER_PORT", port_b.to_string())
+            .env("DEVBOULE_SECRET_STORE", "file")
+            .env("DEVBOULE_PEER_LOOPBACK", "1")
+            .env("DEVBOULE_ACP_COMMAND", stub_argv.as_str())
+            .env("DEVBOULE_ACP_PROVIDER_ID", "devboule-acp-stub")
+            .env("DEVBOULE_ACP_STUB_PERMISSION_DELAY_MS", "200")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+        }
+        let mut child = command.spawn().expect("restart B");
+        let sink = Arc::clone(&b.stderr);
+        if let Some(mut pipe) = child.stderr.take() {
+            std::thread::spawn(move || {
+                use std::io::Read;
+                let mut buffer = [0u8; 4096];
+                let deadline = Instant::now() + Duration::from_secs(180);
+                while Instant::now() < deadline {
+                    match pipe.read(&mut buffer) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => sink
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .push_str(&String::from_utf8_lossy(&buffer[..read])),
+                    }
+                }
+            });
+        }
+        b.child = Some(child);
+        b.pipe = wait_until_pipe(&RuntimePaths::from_dir(&b.dir), "s4-op-b-restart");
+    }
+    // A's held lease redials the same address on its own: wait for the
+    // link to come back, then retry with the same key.
+    let online = a.pipe.recv_until(
+        Instant::now() + Duration::from_secs(60),
+        |frame| match frame {
+            DaemonMessage::RemoteHostStatus {
+                device_id, state, ..
+            } if device_id == &b_self.device_id
+                && *state == devboule_protocol::RemoteHostState::Online =>
+            {
+                Some(())
+            }
+            _ => None,
+        },
+    );
+    assert!(online.is_some(), "the link to restarted B never came back");
+    let retried_killed = create_on_b(
+        &b_workspace,
+        SessionKind::Acp,
+        Some("devboule-acp-stub".to_string()),
+        "s4-killed-1",
+    );
+    let live_after = live_in(&b_workspace);
+    assert_eq!(
+        live_after,
+        vec![retried_killed.id.clone()],
+        "the retry makes exactly one live session; the killed row recovers dead: {live_after:?}"
+    );
+    if let Some(killed) = killed_id {
+        assert_ne!(
+            killed, retried_killed.id,
+            "the restart cleared the in-memory receipt, so the retry mints afresh"
+        );
+        assert!(!live_after.contains(&killed), "the killed row is not live");
+    }
 
     // ---- drop the link: a create fails instead of duplicating ------------
     for (peer, other) in [(&a, &b_self.device_id), (&b, &a_self.device_id)] {
