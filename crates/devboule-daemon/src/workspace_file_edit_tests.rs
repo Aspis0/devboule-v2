@@ -21,7 +21,7 @@ use devboule_protocol::{
 use super::{
     classify_target, expand_user_path, open_app_file, open_workspace_file, version_app_file,
     version_workspace_file, write_app_file, write_workspace_file, TargetState, BINARY,
-    LINK_TARGET_MISSING, MAX_EDITABLE_FILE_BYTES, PARENT_MISSING, TOO_LARGE, UNSTATABLE,
+    LINK_TARGET_MISSING, MAX_EDITABLE_FILE_BYTES, PARENT_MISSING, READ_ONLY, TOO_LARGE, UNSTATABLE,
 };
 use crate::workspace_git_diff::NOT_A_FILE;
 
@@ -809,4 +809,126 @@ fn a_dangling_link_is_an_error_never_a_create() {
             .is_symlink(),
         "a failed write must not touch the link"
     );
+}
+
+#[test]
+fn a_read_only_file_refuses_the_write_with_its_sentence() {
+    let dir = Dir::fresh("readonly");
+    dir.write("a.txt", "one\n");
+    let target = dir.root.join("a.txt");
+    let previous = std::fs::metadata(&target).expect("stat").permissions();
+    let mut permissions = previous.clone();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&target, permissions).expect("readonly");
+
+    // The file still opens: it looks editable, which is exactly why the
+    // save must name its refusal.
+    let file = open_workspace_file(&dir.root, dir.workspace_id(), "a.txt");
+    assert_eq!(file.status, WorkspaceFileContentStatus::Ok);
+    let (_, modified_at, revision) = ready_of(file.version.as_ref().expect("version"));
+
+    let result = write_workspace_file(
+        &dir.root,
+        dir.workspace_id(),
+        "a.txt",
+        b"two\n",
+        Some(modified_at),
+        revision.as_deref(),
+    );
+    assert!(
+        matches!(
+            &result,
+            WorkspaceFileWriteResult::Error { error } if error == READ_ONLY
+        ),
+        "{result:?}"
+    );
+    // Restored before the asserts so the temp dir below always cleans
+    // up, on Windows as well as Unix.
+    std::fs::set_permissions(&target, previous).expect("writable");
+    assert_eq!(
+        std::fs::read(&target).expect("read back"),
+        b"one\n",
+        "a refused write moves no byte"
+    );
+}
+
+/// An edited hidden file stays hidden and keeps its creation time: the
+/// temp carries the target's identity across the rename instead of
+/// inheriting the directory's.
+#[cfg(windows)]
+#[test]
+fn a_replace_keeps_attributes_and_creation_time() {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::{SetFileAttributesW, FILE_ATTRIBUTE_HIDDEN};
+
+    let dir = Dir::fresh("identity");
+    dir.write("a.txt", "one\n");
+    let target = dir.root.join("a.txt");
+    let wide: Vec<u16> = target.as_os_str().encode_wide().chain([0]).collect();
+    assert_ne!(
+        unsafe { SetFileAttributesW(wide.as_ptr(), FILE_ATTRIBUTE_HIDDEN) },
+        0,
+        "setup: hide the file"
+    );
+    let created_before = std::fs::metadata(&target)
+        .expect("stat")
+        .created()
+        .expect("creation time");
+
+    let file = open_workspace_file(&dir.root, dir.workspace_id(), "a.txt");
+    let (_, modified_at, revision) = ready_of(file.version.as_ref().expect("version"));
+    let result = write_workspace_file(
+        &dir.root,
+        dir.workspace_id(),
+        "a.txt",
+        b"two\n",
+        Some(modified_at),
+        revision.as_deref(),
+    );
+    assert!(
+        matches!(result, WorkspaceFileWriteResult::Written { .. }),
+        "{result:?}"
+    );
+
+    let after = std::fs::metadata(&target).expect("stat");
+    assert_ne!(
+        after.file_attributes() & FILE_ATTRIBUTE_HIDDEN,
+        0,
+        "hidden survives the replace"
+    );
+    assert_eq!(
+        after.created().expect("creation time"),
+        created_before,
+        "creation time survives the replace"
+    );
+}
+
+/// The temp takes the target's owner and group across the rename.
+#[cfg(unix)]
+#[test]
+fn a_replace_keeps_owner() {
+    use std::os::unix::fs::MetadataExt;
+    let dir = Dir::fresh("owner");
+    dir.write("a.txt", "one\n");
+    let target = dir.root.join("a.txt");
+    let before = std::fs::metadata(&target).expect("stat");
+
+    let file = open_workspace_file(&dir.root, dir.workspace_id(), "a.txt");
+    let (_, modified_at, revision) = ready_of(file.version.as_ref().expect("version"));
+    let result = write_workspace_file(
+        &dir.root,
+        dir.workspace_id(),
+        "a.txt",
+        b"two\n",
+        Some(modified_at),
+        revision.as_deref(),
+    );
+    assert!(
+        matches!(result, WorkspaceFileWriteResult::Written { .. }),
+        "{result:?}"
+    );
+
+    let after = std::fs::metadata(&target).expect("stat");
+    assert_eq!((after.uid(), after.gid()), (before.uid(), before.gid()));
 }

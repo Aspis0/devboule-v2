@@ -79,6 +79,28 @@ const BINARY: &str = "Binary files cannot be edited";
 /// The sentence a create answers with when the parent folder is not there.
 /// Ours, in this daemon's own words: parents are never made silently.
 const PARENT_MISSING: &str = "the parent folder does not exist";
+/// The sentence a write to a read-only target answers with. The file
+/// opens fine and looks editable, so the refusal has to say exactly why
+/// the save did not land — before any byte moves.
+const READ_ONLY: &str = "the file is read-only";
+
+/// Whether the target refuses writes: no `0200` bit on Unix, the
+/// read-only attribute on Windows. Checked before anything stages, so a
+/// read-only file never eats an edit with a shrug.
+fn is_read_only(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o222 == 0
+    }
+    #[cfg(not(unix))]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_READONLY: u32 = 0x1;
+        metadata.file_attributes() & FILE_ATTRIBUTE_READONLY != 0
+    }
+}
+
 /// The sentence a stat that fails for any reason but absence answers
 /// with. Absence opens empty and creates; anything else (an ACL that
 /// denies even the stat, an I/O error, an offline share) is a failed
@@ -454,6 +476,12 @@ fn write_present(
     if !metadata.is_file() {
         return error(NOT_A_FILE);
     }
+    // Read-only is refused before anything stages: the file opens
+    // fine and looks editable, so a silent failure here would eat
+    // the edit.
+    if is_read_only(metadata) {
+        return error(READ_ONLY);
+    }
     if metadata.len() > MAX_EDITABLE_FILE_BYTES {
         return error(TOO_LARGE);
     }
@@ -680,6 +708,12 @@ fn replace_file(
         let _ = std::fs::remove_file(&temporary);
         return error(io_sentence(&io_error));
     }
+    // The temp carries the target's identity before the rename claims
+    // the name: owner on Unix, attributes/timestamps/DACL on Windows.
+    // Best-effort (a preservation failure must not fail the write; the
+    // read-only refusal above is the hard gate) and mtime-neutral, so
+    // the recheck below still compares what the check compared.
+    preserve_identity(target, &temporary);
     let proceed = recheck();
     match proceed {
         Recheck::Conflict => {
@@ -714,6 +748,163 @@ fn replace_file(
         }
         Err(_) => error(DOES_NOT_EXIST),
     }
+}
+
+/// Carry the target's identity onto the staged temp before the rename
+/// claims the name. Unix: the owner follows (mode already travels via
+/// the create mode above). Windows: attributes, creation time and the
+/// DACL, so an edited hidden/system file stays one and a restricted file
+/// keeps its explicit ACEs instead of inheriting the directory's.
+/// Best-effort throughout and mtime-neutral: a preservation failure
+/// never fails the write (the read-only refusal is the hard gate).
+fn preserve_identity(target: &Path, temp: &Path) {
+    #[cfg(unix)]
+    preserve_owner(target, temp);
+    #[cfg(windows)]
+    preserve_windows_metadata(target, temp);
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (target, temp);
+    }
+}
+
+/// `chown` the temp to the target's owner and group. Succeeds for the
+/// common case (same owner); anything else is left to the OS refusal,
+/// which the rename surfaces honestly.
+#[cfg(unix)]
+fn preserve_owner(target: &Path, temp: &Path) {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+    let (Ok(metadata), Some(path)) = (
+        std::fs::metadata(target),
+        std::ffi::CString::new(temp.as_os_str().as_bytes()).ok(),
+    ) else {
+        return;
+    };
+    // SAFETY: `path` is a live NUL-terminated copy of the temp path;
+    // `chown` reads exactly that on success and the return is ignored.
+    unsafe {
+        libc::chown(path.as_ptr(), metadata.uid(), metadata.gid());
+    }
+}
+
+/// Copy attributes, creation time and the DACL from the target onto the
+/// temp. Every step is fallible and every failure is ignored: partial
+/// preservation still beats the directory default on every attribute
+/// that did copy.
+#[cfg(windows)]
+fn preserve_windows_metadata(target: &Path, temp: &Path) {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Security::{
+        GetKernelObjectSecurity, SetKernelObjectSecurity, DACL_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, GetFileAttributesW, GetFileTime, SetFileAttributesW, SetFileTime,
+        FILE_ATTRIBUTE_NORMAL, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, INVALID_FILE_ATTRIBUTES, OPEN_EXISTING,
+        READ_CONTROL, WRITE_DAC,
+    };
+
+    fn wide(path: &Path) -> Vec<u16> {
+        path.as_os_str().encode_wide().chain([0]).collect()
+    }
+
+    let target_wide = wide(target);
+    let temp_wide = wide(temp);
+    // Attributes first: they ride the rename, and setting them on the
+    // temp cannot disturb the recheck (no content or mtime involved).
+    // INVALID_FILE_ATTRIBUTES is the failure word, not an attribute.
+    let attributes = unsafe { GetFileAttributesW(target_wide.as_ptr()) };
+    if attributes != INVALID_FILE_ATTRIBUTES {
+        // NORMAL is "no other attributes": writing it onto the temp is
+        // a no-op the API documents, so no special case is needed.
+        let _ = unsafe { SetFileAttributesW(temp_wide.as_ptr(), attributes) };
+    }
+    // The two handles: the target for reading its clock and DACL, the
+    // temp for writing them. WRITE_DAC without GENERIC_WRITE cannot
+    // touch a byte, which is the point — identity only.
+    let source: HANDLE = unsafe {
+        CreateFileW(
+            target_wide.as_ptr(),
+            FILE_READ_ATTRIBUTES | READ_CONTROL,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            std::ptr::null_mut(),
+        )
+    };
+    if source == INVALID_HANDLE_VALUE {
+        return;
+    }
+    let dest: HANDLE = unsafe {
+        CreateFileW(
+            temp_wide.as_ptr(),
+            FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | WRITE_DAC,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            std::ptr::null_mut(),
+        )
+    };
+    if dest == INVALID_HANDLE_VALUE {
+        unsafe { CloseHandle(source) };
+        return;
+    }
+    // Creation time only: access and write times stay the temp's, so the
+    // version stamp the write reports still describes this write.
+    let mut created = std::mem::MaybeUninit::uninit();
+    if unsafe {
+        GetFileTime(
+            source,
+            created.as_mut_ptr(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    } != 0
+    {
+        let created = unsafe { created.assume_init() };
+        unsafe { SetFileTime(dest, &created, std::ptr::null(), std::ptr::null()) };
+    }
+    // The DACL: sized first, then read and written. Owner and group
+    // stay the temp's (copying those needs a privilege this process
+    // rarely holds, and asking would fail the common case).
+    let mut needed = 0u32;
+    unsafe {
+        GetKernelObjectSecurity(
+            source,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            0,
+            &mut needed,
+        )
+    };
+    if needed > 0 && needed < 1024 * 1024 {
+        let mut descriptor = vec![0u8; needed as usize];
+        if unsafe {
+            GetKernelObjectSecurity(
+                source,
+                DACL_SECURITY_INFORMATION,
+                descriptor.as_mut_ptr() as PSECURITY_DESCRIPTOR,
+                needed,
+                &mut needed,
+            )
+        } != 0
+        {
+            unsafe {
+                SetKernelObjectSecurity(
+                    dest,
+                    DACL_SECURITY_INFORMATION,
+                    descriptor.as_ptr() as PSECURITY_DESCRIPTOR,
+                )
+            };
+        }
+    }
+    unsafe { CloseHandle(source) };
+    unsafe { CloseHandle(dest) };
 }
 
 /// An empty editor for a file that is not there: empty content and a
@@ -972,6 +1163,9 @@ fn write_app_file(
                 Ok(metadata) => {
                     if !metadata.is_file() {
                         return error(NOT_A_FILE);
+                    }
+                    if is_read_only(&metadata) {
+                        return error(READ_ONLY);
                     }
                     if metadata.len() > MAX_EDITABLE_FILE_BYTES {
                         return error(TOO_LARGE);
