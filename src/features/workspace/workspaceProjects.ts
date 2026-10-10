@@ -48,14 +48,10 @@ export interface WorkspaceView extends HostWorkspace {
   /** What the row's second line counts. */
   agents: WorkspaceAgents;
   /**
-   * Milliseconds since the last output this workspace's own sessions
-   * reported — the shortest silence among them, so the row can print when it
-   * last spoke. Null when no roster row reports one, which is unknown, never
-   * "long ago".
+   * The row's status dot: the approval owed, else a turn in progress, else
+   * nothing. Activity only; a session running unattended is still running.
    */
-  elapsedMs: number | null;
-  /** The row's state dot, in the tab chips' vocabulary. */
-  stateDot: "pulse" | "attention" | "unattended" | null;
+  stateDot: "pulse" | "attention" | null;
 }
 
 /** The UI's name for a workspace: it is never the value the daemon is sent. */
@@ -173,18 +169,6 @@ export function buildSessionIndex(sessions: readonly Session[]): Map<WorkspaceKe
   return index;
 }
 
-/** The shortest silence among the roster rows: the instant the workspace
- * last spoke, as an elapsed time so the row can read a clock of its own. */
-function shortestElapsed(sessions: readonly Session[]): number | null {
-  let shortest: number | null = null;
-  for (const session of sessions) {
-    const elapsed = session.elapsedMs;
-    if (typeof elapsed !== "number" || !Number.isFinite(elapsed)) continue;
-    if (shortest === null || elapsed < shortest) shortest = elapsed;
-  }
-  return shortest;
-}
-
 function workspaceViewFromIndex(
   workspace: HostWorkspace,
   sessionsOfWorkspace: readonly Session[],
@@ -192,9 +176,6 @@ function workspaceViewFromIndex(
 ): WorkspaceView {
   const live = sessionsOfWorkspace.filter((session) => session.state.type === "live");
   const waiting = sessionsOfWorkspace.filter(sessionNeedsApproval);
-  const unattended = sessionsOfWorkspace.some(
-    (session) => session.state.type !== "ended" && session.unattended === "yes",
-  );
   // Actually running a turn, not merely live: the roster's turn status says
   // so. A live terminal holds its process, so it still counts — only agents
   // answer to turn status.
@@ -205,15 +186,7 @@ function workspaceViewFromIndex(
     ...workspace,
     displayTitle,
     agents: { working: running.length, waiting: waiting.length },
-    elapsedMs: shortestElapsed(sessionsOfWorkspace),
-    stateDot:
-      waiting.length > 0
-        ? "attention"
-        : unattended
-          ? "unattended"
-          : running.length > 0
-            ? "pulse"
-            : null,
+    stateDot: waiting.length > 0 ? "attention" : running.length > 0 ? "pulse" : null,
   };
 }
 

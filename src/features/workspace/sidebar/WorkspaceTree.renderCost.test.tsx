@@ -17,13 +17,13 @@ import type { WorkspaceStat } from "./useWorkspaceStats";
 /** The row's own render, counted: one per row that actually re-rendered. */
 const counters = vi.hoisted(() => ({ rowRenders: 0 }));
 
-vi.mock("./rowFact", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./rowFact")>();
+vi.mock("./rowStatus", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./rowStatus")>();
   return {
     ...actual,
-    rowFact: (...args: Parameters<typeof actual.rowFact>) => {
+    rowStatus: (...args: Parameters<typeof actual.rowStatus>) => {
       counters.rowRenders += 1;
-      return actual.rowFact(...args);
+      return actual.rowStatus(...args);
     },
   };
 });
@@ -37,7 +37,6 @@ const workspace = (id: string, title: string): WorkspaceView => ({
   isolation: "worktree",
   path: `C:\\dev\\worktrees\\${id}`,
   agents: { working: 0, waiting: 0 },
-  elapsedMs: null,
   stateDot: null,
 });
 

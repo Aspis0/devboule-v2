@@ -52,12 +52,12 @@ function parentFolder(path: string): string | null {
 }
 
 /**
- * The project tree: every project keeps its header — avatar, name, workspace
- * count — above its rows and a "+ New workspace" row below them, and a header
- * whose name a row would only repeat carries the folder the project sits in
- * instead of leaving two identical headers. What a row prints beside its name
- * is decided by the row itself (WorkspaceRow). The rail lists workspaces only:
- * an agent is reached through its tab.
+ * The project tree: every project keeps its header — its square badge and
+ * name, with the "+" that starts a workspace and the kebab that removes the
+ * project at its far edge — above its rows. No count: the rows are the count.
+ * Two projects sharing a name are told apart by the folder each sits in. What
+ * a row prints is decided by the row itself (WorkspaceRow). The rail lists
+ * workspaces only: an agent is reached through its tab.
  */
 export function WorkspaceTree({
   projects,
@@ -139,25 +139,22 @@ export function WorkspaceTree({
               </span>
               <span className="workspace-project-name">{project.name}</span>
               {folder === null ? null : <span className="workspace-project-folder">{folder}</span>}
-              <span className="workspace-project-count">
-                {project.workspaceError === undefined ? (
-                  <>
-                    <span aria-hidden="true">{project.workspaces.length}</span>
-                    <span className="sr-only">
-                      {project.workspaces.length === 1
-                        ? "1 workspace"
-                        : `${project.workspaces.length} workspaces`}
-                    </span>
-                  </>
-                ) : (
-                  <span className="sr-only">workspaces could not be loaded</span>
-                )}
-              </span>
               {project.hostId === LOCAL_HOST_ID ? (
-                <ProjectMenu
-                  projectName={project.name}
-                  onRemove={() => onRemoveProject(project.id)}
-                />
+                <>
+                  <button
+                    type="button"
+                    className="workspace-project-new"
+                    onClick={(event) => onNewWorkspace(event.currentTarget, project.id)}
+                    aria-label={`New workspace in ${project.name}`}
+                    title="New workspace"
+                  >
+                    <span aria-hidden="true">+</span>
+                  </button>
+                  <ProjectMenu
+                    projectName={project.name}
+                    onRemove={() => onRemoveProject(project.id)}
+                  />
+                </>
               ) : null}
             </div>
             {project.workspaceError !== undefined ? (
@@ -186,7 +183,6 @@ export function WorkspaceTree({
                     key={key ?? workspace.id}
                     workspace={workspace}
                     workspaceKey={key}
-                    projectName={project.name}
                     hostName={hostLabel(hostNames, workspace.hostId)}
                     selected={selected}
                     stat={key === null ? undefined : stats.get(key)}
@@ -199,18 +195,6 @@ export function WorkspaceTree({
                   />
                 );
               })}
-              {/* A remote project's "+ New workspace" belongs to its host and
-                  is not built yet; it must never fall through to this daemon. */}
-              {project.hostId === LOCAL_HOST_ID ? (
-                <button
-                  type="button"
-                  className="workspace-project-new"
-                  onClick={(event) => onNewWorkspace(event.currentTarget, project.id)}
-                  aria-label={`New workspace in ${project.name}`}
-                >
-                  <span aria-hidden="true">+</span> New workspace
-                </button>
-              ) : null}
             </div>
             {providerMenuAnchorProjectId === project.id ? providerMenu : null}
           </div>

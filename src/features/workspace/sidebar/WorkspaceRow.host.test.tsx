@@ -1,9 +1,9 @@
 // @vitest-environment happy-dom
 
-// The workspace row's per-row host line (slice sidebar-like-paseo): the host
-// rides a small second line with a server glyph, diff stats sit on the right
-// when known, and a workspace named like its project never repeats that name
-// — it is titled by its branch, or by its host when no branch is known.
+// The workspace row of a remote host: its host rides the meta line with a
+// server glyph, the row says offline in one word when the host does not answer,
+// and no menu is offered for it. A local row never names its host, and its
+// title is always the workspace's own name — the host never stands in for it.
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -27,13 +27,12 @@ function workspace(over: Partial<WorkspaceView> = {}): WorkspaceView {
     isolation: "local",
     path: "C:\\code\\alpha",
     agents: { working: 0, waiting: 0 },
-    elapsedMs: null,
     stateDot: null,
     ...over,
   };
 }
 
-describe("the workspace row's host line", () => {
+describe("the workspace row of a local workspace", () => {
   let container: HTMLDivElement;
   let root: Root;
 
@@ -49,14 +48,7 @@ describe("the workspace row's host line", () => {
 
   async function render(
     view: WorkspaceView,
-    facts: {
-      stat?: WorkspaceStat;
-      branch?: string;
-      projectName?: string;
-      hostName?: string;
-      remote?: boolean;
-      hostOffline?: boolean;
-    } = {},
+    facts: { stat?: WorkspaceStat; branch?: string; hostName?: string } = {},
   ): Promise<HTMLElement> {
     root = createRoot(container);
     await act(async () => {
@@ -64,7 +56,6 @@ describe("the workspace row's host line", () => {
         <WorkspaceRow
           workspace={view}
           workspaceKey={localWorkspaceKey(view.id)}
-          projectName={facts.projectName ?? "Alpha"}
           hostName={facts.hostName ?? "This PC"}
           selected={false}
           stat={facts.stat}
@@ -72,8 +63,6 @@ describe("the workspace row's host line", () => {
           onSelect={vi.fn()}
           onRename={vi.fn(async () => null)}
           onArchive={vi.fn(async () => null)}
-          remote={facts.remote}
-          hostOffline={facts.hostOffline}
         />,
       );
     });
@@ -82,47 +71,38 @@ describe("the workspace row's host line", () => {
     return row;
   }
 
-  it("prints the host on a small second line with a server glyph", async () => {
-    const row = await render(workspace(), { branch: "main" });
+  it("prints no host line for this PC: the meta line holds the branch alone", async () => {
+    const row = await render(workspace(), { branch: "main", hostName: "This PC" });
 
-    const sub = row.querySelector<HTMLElement>(".workspace-row-sub");
-    if (sub === null) throw new Error("the row has no second line");
-    expect(sub.textContent).toContain("This PC");
-    const glyph = sub.querySelector("svg.workspace-row-host-glyph");
-    if (glyph === null) throw new Error("the host line has no server glyph");
-    expect(glyph.getAttribute("aria-hidden")).toBe("true");
+    expect(row.querySelector(".workspace-row-host")).toBeNull();
+    expect(row.querySelector(".workspace-row-host-glyph")).toBeNull();
+    expect(row.textContent).not.toContain("This PC");
   });
 
-  it("keeps diff stats on the right when known", async () => {
+  it("prints the diff stats on the meta line's far end, the additions and deletions apart", async () => {
     const row = await render(workspace(), { branch: "main", stat: STAT });
 
-    expect(row.querySelector(".workspace-row-totals")?.textContent).toBe("+352 −66");
+    const totals = row.querySelector(".workspace-row-totals");
+    expect(totals?.querySelector(".workspace-row-add")?.textContent).toBe("+352");
+    expect(totals?.querySelector(".workspace-row-del")?.textContent).toBe("−66");
   });
 
-  it("titles a same-named workspace by its branch, never the project name twice", async () => {
+  it("keeps the title as the workspace's own name even when it matches the project's", async () => {
     const row = await render(workspace({ title: "Alpha", displayTitle: "Alpha" }), {
       branch: "feature-x",
-      projectName: "Alpha",
     });
 
-    expect(row.querySelector(".workspace-row-title")?.textContent).toBe("feature-x");
+    expect(row.querySelector(".workspace-row-title")?.textContent).toBe("Alpha");
+    expect(row.querySelector(".workspace-row-branch")?.textContent).toBe("feature-x");
   });
 
-  it("titles a same-named workspace by its host when no branch is known", async () => {
+  it("never titles a row by its host, even when no branch is known", async () => {
     const row = await render(workspace({ title: "Alpha", displayTitle: "Alpha" }), {
-      projectName: "Alpha",
       hostName: "Marcolenovo",
     });
 
-    const title = row.querySelector(".workspace-row-title")?.textContent ?? "";
-    expect(title).toBe("Marcolenovo");
-    expect(title).not.toBe("Alpha");
-  });
-
-  it("names the host for a screen reader", async () => {
-    const row = await render(workspace(), { branch: "main", hostName: "Marcolenovo" });
-
-    expect(row.getAttribute("aria-label")).toContain("Marcolenovo");
+    expect(row.querySelector(".workspace-row-title")?.textContent).toBe("Alpha");
+    expect(row.textContent).not.toContain("Marcolenovo");
   });
 });
 
@@ -140,18 +120,22 @@ describe("the row of a remote host", () => {
     container.remove();
   });
 
-  async function render(facts: { remote?: boolean; hostOffline?: boolean }): Promise<HTMLElement> {
+  async function render(facts: {
+    remote?: boolean;
+    hostOffline?: boolean;
+    branch?: string;
+    hostName?: string;
+  }): Promise<HTMLElement> {
     root = createRoot(container);
     await act(async () => {
       root.render(
         <WorkspaceRow
           workspace={workspace({ hostId: "device-one" as HostId, isolation: "local" })}
           workspaceKey={null}
-          projectName="Alpha"
-          hostName="Marcolenovo"
+          hostName={facts.hostName ?? "Marcolenovo"}
           selected={false}
           stat={undefined}
-          branch={undefined}
+          branch={facts.branch}
           onSelect={vi.fn()}
           onRename={vi.fn(async () => null)}
           onArchive={vi.fn(async () => null)}
@@ -164,6 +148,17 @@ describe("the row of a remote host", () => {
     if (row === null) throw new Error("the workspace row did not render");
     return row;
   }
+
+  it("prints its host on the meta line with a server glyph, beside the branch", async () => {
+    const row = await render({ remote: true, hostOffline: false, branch: "main" });
+
+    const host = row.querySelector(".workspace-row-sub .workspace-row-host");
+    expect(host?.textContent).toContain("Marcolenovo");
+    expect(host?.querySelector("svg.workspace-row-host-glyph")?.getAttribute("aria-hidden")).toBe(
+      "true",
+    );
+    expect(row.querySelector(".workspace-row-branch")?.textContent).toBe("main");
+  });
 
   it("marks an offline host with one short word, never a paragraph", async () => {
     const row = await render({ remote: true, hostOffline: true });
@@ -179,8 +174,9 @@ describe("the row of a remote host", () => {
     expect(row.querySelector(".workspace-row-offline")).toBeNull();
   });
 
-  it("offers no rename or delete menu on a remote row", async () => {
+  it("offers no kebab and no menu on a remote row", async () => {
     const row = await render({ remote: true, hostOffline: false });
+    expect(row.parentElement?.querySelector(".workspace-row-kebab")).toBeNull();
 
     await act(async () => {
       row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));

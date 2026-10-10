@@ -26,7 +26,6 @@ const project: WorkspaceProject = {
       isolation: "local",
       path: "C:\\devboule-v2",
       agents: { working: 0, waiting: 0 },
-      elapsedMs: null,
       stateDot: null,
     },
     {
@@ -38,7 +37,6 @@ const project: WorkspaceProject = {
       isolation: "local",
       path: "C:\\devboule-v2",
       agents: { working: 0, waiting: 0 },
-      elapsedMs: null,
       stateDot: null,
     },
   ],
@@ -172,9 +170,9 @@ describe("the sidebar's workspace rows", () => {
     const titles = rowButtons().map(
       (row) => row.querySelector(".workspace-row-title")?.textContent,
     );
-    // The first row's numbered title still matches the project name, so the
-    // row speaks its host instead; the second row keeps its numbered title.
-    expect(titles).toEqual(["This PC", "devboule-v2 2"]);
+    // Each row keeps its own name as its title: the first is the project's
+    // name, never the host's, and the second is numbered by creation order.
+    expect(titles).toEqual(["devboule-v2", "devboule-v2 2"]);
   });
 
   it("opens Rename from the row's context menu and saves with Enter", async () => {

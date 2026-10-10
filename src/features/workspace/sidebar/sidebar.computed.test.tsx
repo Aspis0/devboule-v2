@@ -82,15 +82,14 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     expect(getComputedStyle(row).width).toBe("100%");
   });
 
-  it("prints one line: a 14px name, a 12px fact, and no mono in the rail", () => {
+  it("prints the name at 14px and the meta line at 12px, with no mono face on the row", () => {
     expect(rulesFor(".workspace-row-title")).toContain("font-size: 14px");
     expect(rulesFor(".workspace-row-title")).toContain("font-weight: 500");
-    expect(rulesFor(".workspace-row-fact")).toContain("font-size: 12px");
-    expect(rulesFor(".workspace-row-fact")).toContain("font-variant-numeric: tabular-nums");
-    expect(rulesFor(".workspace-row-fact")).toContain(`color: ${token("--muted")}`);
-    // Neither rule may name a mono face: the rail's rows carry no code of
-    // their own.
-    expect(rulesFor(".workspace-row-fact")).not.toContain("JetBrains Mono");
+    expect(rulesFor(".workspace-row-sub")).toContain("font-size: 12px");
+    expect(rulesFor(".workspace-row-sub")).toContain(`color: ${token("--muted")}`);
+    expect(rulesFor(".workspace-row-totals")).toContain("font-variant-numeric: tabular-nums");
+    // The rail's rows carry no code face of their own: the branch alone is mono.
+    expect(rulesFor(".workspace-row-title")).not.toContain("JetBrains Mono");
     expect(rulesFor(".workspace-row")).not.toContain("JetBrains Mono");
   });
 
@@ -110,28 +109,28 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     expect(getComputedStyle(selected).borderRadius).toBe("6px");
   });
 
-  it("brightens the selected row's fact to the primary ink, the only tone that clears its fill", () => {
+  it("the selected row's meta line brightens to the primary ink, the only tone that clears its fill", () => {
     // The fill is warm and light; muted misses the 6.97 floor on it in both
-    // themes, so the fact paints with the name's own tone there.
-    expect(rulesFor(".workspace-row-selected .workspace-row-fact")).toContain(
+    // themes, so the meta line paints with the name's own tone there.
+    expect(rulesFor(".workspace-row-selected .workspace-row-sub")).toContain(
       `color: ${token("--ink")}`,
     );
   });
 
-  it("avatars hold exactly one letter at 16px, the project avatar beside it", async () => {
-    inject([".sidebar-avatar-workspace", ".sidebar-avatar-project", ".sidebar-avatar"]);
+  it("the status dot is an 8px disc in the row's first slot, and the project badge stays 16px", async () => {
+    inject([".workspace-row-status", ".sidebar-avatar-project", ".sidebar-avatar"]);
     await renderWorkspace();
-    const avatar = document.querySelector<HTMLElement>(".sidebar-avatar-workspace");
-    if (avatar === null) throw new Error("workspace avatar did not render");
-    // One grapheme, never the truncated first cut.
-    expect(avatar.textContent).toHaveLength(1);
-    expect(avatar.textContent).not.toContain("…");
-    expect(getComputedStyle(avatar).width).toBe("16px");
-    expect(getComputedStyle(avatar).borderRadius).toBe("6px");
+    const dot = document.querySelector<HTMLElement>(".workspace-row-status");
+    if (dot === null) throw new Error("the status dot did not render");
+    expect(getComputedStyle(dot).width).toBe("8px");
+    expect(getComputedStyle(dot).height).toBe("8px");
+    expect(getComputedStyle(dot).borderRadius).toBe("999px");
+    expect(dot.parentElement?.firstElementChild).toBe(dot);
 
     const projectAvatar = document.querySelector<HTMLElement>(".sidebar-avatar-project");
     if (projectAvatar === null) throw new Error("project avatar did not render");
     expect(getComputedStyle(projectAvatar).width).toBe("16px");
+    expect(getComputedStyle(projectAvatar).borderRadius).toBe("6px");
   });
 
   it("project header and foot carry their spec padding", async () => {

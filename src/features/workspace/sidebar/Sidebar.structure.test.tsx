@@ -50,7 +50,6 @@ function workspace(over: Partial<WorkspaceView> = {}): WorkspaceView {
     path: "C:/code/alpha",
     displayTitle: "shell one",
     agents: { working: 0, waiting: 0 },
-    elapsedMs: null,
     stateDot: null,
     ...over,
   };

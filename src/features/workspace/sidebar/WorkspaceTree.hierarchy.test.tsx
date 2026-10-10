@@ -22,7 +22,6 @@ const workspace = (id: string, title: string): WorkspaceView => ({
   isolation: "worktree",
   path: `C:\\dev\\${id}`,
   agents: { working: 0, waiting: 0 },
-  elapsedMs: null,
   stateDot: null,
 });
 
@@ -78,20 +77,23 @@ async function render(over: Partial<WorkspaceTreeProps> = {}): Promise<void> {
 }
 
 describe("the project and its workspaces", () => {
-  it("counts the project's workspaces at its header, and says the count to a screen reader", async () => {
+  it("heads each project with its badge, a + that starts a workspace, and a kebab: no count", async () => {
     await render();
 
-    const count = container.querySelector(".workspace-project-count");
-    expect(count?.querySelector("[aria-hidden]")?.textContent).toBe("2");
-    expect(count?.querySelector(".sr-only")?.textContent).toBe("2 workspaces");
+    const head = container.querySelector(".sidebar-project-head");
+    expect(head?.querySelector(".sidebar-avatar-project")?.textContent).toBe("a");
+    expect(head?.querySelector('button[aria-label="New workspace in acme-web"]')).not.toBeNull();
+    expect(head?.querySelector('button[aria-label="Actions for acme-web"]')).not.toBeNull();
+    expect(container.querySelector(".workspace-project-count")).toBeNull();
   });
 
-  it("lists the project's workspaces, and closes the list with the new-workspace row", async () => {
+  it("lists the project's workspaces, and no row closes the list: the + sits in the header", async () => {
     await render();
 
     const items = container.querySelector(".workspace-project-items");
     const children = [...(items?.children ?? [])].map((child) => child.className);
-    expect(children).toEqual(["workspace-row-wrap", "workspace-row-wrap", "workspace-project-new"]);
+    expect(children).toEqual(["workspace-row-wrap", "workspace-row-wrap"]);
+    expect(items?.querySelector(".workspace-project-new")).toBeNull();
   });
 
   it("nests no agents under a workspace: the tabs hold those", async () => {
@@ -110,7 +112,7 @@ describe("the project and its workspaces", () => {
     expect(container.querySelectorAll(".workspace-row-agent-focused")).toHaveLength(0);
   });
 
-  it("keeps a selected workspace's counts drawn: a waiting subagent shows nowhere else", async () => {
+  it("shows a selected workspace's approval owed as the attention dot, with no count printed", async () => {
     const busy: WorkspaceProject = {
       ...PROJECT,
       workspaces: [
@@ -124,22 +126,22 @@ describe("the project and its workspaces", () => {
     };
     await render({ projects: [busy] });
 
-    const fact = container.querySelector(".workspace-row-selected .workspace-row-fact");
-    // The waiting one is a subagent the rail never listed.
-    expect(fact?.textContent).toContain("1 waiting");
-    expect(fact?.querySelector(".sr-only")).toBeNull();
+    const row = container.querySelector(".workspace-row-selected");
+    expect(row?.querySelector(".workspace-row-status-attention")).not.toBeNull();
+    expect(row?.getAttribute("aria-label")).toContain("needs you");
+    expect(row?.textContent).not.toContain("waiting");
   });
 
-  it("shows no count, and says so, for a project whose workspaces did not load", async () => {
+  it("shows no count for a project whose workspaces did not load, and says why in its alert", async () => {
     await render({
       projects: [
         { ...PROJECT, workspaces: [], workspaceError: { sentence: "Pipe busy" } as never },
       ],
     });
 
-    const count = container.querySelector(".workspace-project-count");
-    expect(count?.querySelector("[aria-hidden]")).toBeNull();
-    expect(count?.textContent).not.toContain("0");
-    expect(count?.querySelector(".sr-only")?.textContent).toBe("workspaces could not be loaded");
+    expect(container.querySelector(".workspace-project-count")).toBeNull();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "Could not load this project's workspaces",
+    );
   });
 });

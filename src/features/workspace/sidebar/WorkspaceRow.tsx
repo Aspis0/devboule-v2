@@ -11,15 +11,14 @@ import {
 import { ErrorText } from "../../../components/ErrorText";
 import { ConfirmDialog } from "../../../components/ConfirmDialog";
 import type { ErrorSentence } from "../../../lib/errorSentence";
-import { firstGrapheme } from "../../../lib/graphemeBound";
 import { isImeComposition } from "../../../lib/imeComposition";
 import { useMenuOpen } from "../../../lib/menuOpen";
 import { validateWorkspaceTitle } from "../../../lib/workspaceTitles";
 import { moveMenuFocus } from "../strip/menuNav";
 import type { WorkspaceView } from "../workspaceProjects";
 import type { WorkspaceKey } from "../hosts/hostIdentity";
-import { avatarStyle } from "./avatars";
-import { rowFact } from "./rowFact";
+import { compactLineCount } from "./diffCount";
+import { rowStatus } from "./rowStatus";
 import type { WorkspaceStat } from "./useWorkspaceStats";
 
 /**
@@ -52,21 +51,6 @@ function focusSurvivor(target: HTMLElement | null, panel: Element | null): void 
 }
 
 /**
- * A workspace named like its project prints the branch instead: the heading
- * above already said this name, and a row never says it twice. With no branch
- * known the row prints its host — the only other short truth about it.
- */
-function rowLabel(
-  workspace: WorkspaceView,
-  projectName: string,
-  branch: string | undefined,
-  hostName: string,
-): string {
-  if (workspace.displayTitle !== projectName) return workspace.displayTitle;
-  return branch ?? hostName;
-}
-
-/**
  * What a tooltip carries for a row: where the workspace lives, what branch it
  * sits on and what is uncommitted — the facts the row itself does not print.
  */
@@ -88,14 +72,11 @@ export interface WorkspaceRowProps {
   /** The row's identity in the UI; null only when the daemon's id is blank,
    * and a row the UI cannot name cannot be selected. */
   workspaceKey: WorkspaceKey | null;
-  projectName: string;
-  /** The row's host as a short label; the second line, and the title's
-   * fallback when the project heading already said the workspace's name. */
+  /** The row's host as a short label: the meta line of a remote row. */
   hostName: string;
   selected: boolean;
   stat: WorkspaceStat | undefined;
-  /** The branch the workspace's last status read reported; it also speaks the
-   *  row when the project's name above already said this workspace's name. */
+  /** The branch the workspace's last status read reported, for the meta line. */
   branch: string | undefined;
   onSelect: (workspaceKey: WorkspaceKey) => void;
   /** Persists a new title and answers with the refusal, if one came back. */
@@ -121,7 +102,6 @@ const OFFLINE_LABEL = "offline";
 export const WorkspaceRow = memo(function WorkspaceRow({
   workspace,
   workspaceKey,
-  projectName,
   hostName,
   selected,
   stat,
@@ -328,28 +308,18 @@ export const WorkspaceRow = memo(function WorkspaceRow({
     void saveRename();
   };
 
-  const fact = rowFact(workspace);
-  const label = rowLabel(workspace, projectName, branch, hostName);
-  // The second line: the branch in mono unless it already is the title, and
-  // the host with its glyph unless the title already said it. What is
-  // uncommitted rides on the right.
-  const subBranch = branch !== undefined && branch !== label ? branch : null;
-  const subHost = hostName !== label ? hostName : null;
-  const totals =
-    stat !== undefined && stat.additions + stat.deletions > 0
-      ? `+${stat.additions} −${stat.deletions}`
-      : null;
-  const twoLines =
-    subBranch !== null || subHost !== null || totals !== null || (remote && hostOffline);
-  // The visible label leads the name; a branch or host standing in for the
-  // title is followed by the title, so the row stays findable by what it is
-  // called — and the name says each thing once, never the project's name twice.
-  const nameParts = [label];
+  // The title is the workspace's own name, always: the host never stands in
+  // for it. The meta line below it carries the branch, the remote host, and
+  // what is uncommitted, and it exists only when one of those has something
+  // to say.
+  const status = rowStatus(workspace);
+  const subHost = remote ? hostName : null;
+  const totals = stat !== undefined && stat.additions + stat.deletions > 0 ? stat : null;
+  const twoLines = branch !== undefined || subHost !== null || totals !== null;
+  const nameParts = [workspace.displayTitle, status.label];
+  if (branch !== undefined) nameParts.push(branch);
+  if (subHost !== null) nameParts.push(subHost);
   if (remote && hostOffline) nameParts.push(OFFLINE_LABEL);
-  if (label !== workspace.displayTitle) nameParts.push(workspace.displayTitle);
-  if (!nameParts.includes(projectName)) nameParts.push(projectName);
-  if (subHost !== null && !nameParts.includes(hostName)) nameParts.push(hostName);
-  if (fact !== null) nameParts.push(...fact.parts.map((part) => part.text));
   const ariaLabel = nameParts.join(", ");
   const detail = rowDetail(workspace, branch, stat);
   return (
@@ -394,43 +364,19 @@ export const WorkspaceRow = memo(function WorkspaceRow({
             onKeyDown={onRowKeyDown}
           >
             <span
-              className="sidebar-avatar sidebar-avatar-workspace"
-              style={avatarStyle(workspace.id)}
+              className={`workspace-row-status workspace-row-status-${status.tone}${
+                status.tone === "running" ? " dot-pulse" : ""
+              }`}
               aria-hidden="true"
-            >
-              {firstGrapheme(workspace.displayTitle)}
-            </span>
+            />
             <span className="workspace-row-body">
               <span className="workspace-row-line">
-                <span className="workspace-row-title">{label}</span>
-                {fact === null ? null : (
-                  <span className="workspace-row-fact">
-                    {fact.dot === null ? null : (
-                      <span
-                        aria-hidden="true"
-                        className={`sidebar-row-dot sidebar-row-dot-${fact.dot}${
-                          fact.dot === "pulse" ? " dot-pulse" : ""
-                        }`}
-                      />
-                    )}
-                    {fact.parts.map((part, index) => (
-                      <span
-                        key={part.text}
-                        className={part.attention ? "sidebar-row-waiting" : undefined}
-                      >
-                        {/* A flex item trims its own leading space, so the space
-                          before the dot cannot be an ordinary one. */}
-                        {index > 0 ? " · " : ""}
-                        {part.text}
-                      </span>
-                    ))}
-                  </span>
-                )}
+                <span className="workspace-row-title">{workspace.displayTitle}</span>
               </span>
               {twoLines ? (
                 <span className="workspace-row-line workspace-row-sub">
-                  {subBranch === null ? null : (
-                    <span className="workspace-row-branch">{subBranch}</span>
+                  {branch === undefined ? null : (
+                    <span className="workspace-row-branch">{branch}</span>
                   )}
                   {subHost === null ? null : (
                     <span className="workspace-row-host">
@@ -455,7 +401,16 @@ export const WorkspaceRow = memo(function WorkspaceRow({
                   {remote && hostOffline ? (
                     <span className="workspace-row-offline">{OFFLINE_LABEL}</span>
                   ) : null}
-                  {totals === null ? null : <span className="workspace-row-totals">{totals}</span>}
+                  {totals === null ? null : (
+                    <span className="workspace-row-totals">
+                      <span className="workspace-row-add">
+                        +{compactLineCount(totals.additions)}
+                      </span>{" "}
+                      <span className="workspace-row-del">
+                        −{compactLineCount(totals.deletions)}
+                      </span>
+                    </span>
+                  )}
                 </span>
               ) : null}
             </span>

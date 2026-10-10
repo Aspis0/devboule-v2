@@ -93,29 +93,6 @@ describe("workspaceView", () => {
     expect(workspaceView(workspace, []).agents).toEqual({ working: 0, waiting: 0 });
   });
 
-  it("carries the shortest silence across the workspace's own sessions", () => {
-    // A workspace's last activity is its most recent output, so the row keeps
-    // the elapsed time of the session that spoke last.
-    const view = workspaceView(workspace, [
-      session({ id: "quiet", elapsedMs: 900_000 }),
-      session({ id: "talked", elapsedMs: 4_000 }),
-      session({ id: "other", workspaceId: "workspace-2", elapsedMs: 1 }),
-    ]);
-    expect(view.elapsedMs).toBe(4_000);
-  });
-
-  it("carries no elapsed time when no roster row reports one", () => {
-    const recovered = session({
-      state: {
-        type: "recovered",
-        generation: 2,
-        integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
-      },
-      elapsedMs: null,
-    });
-    expect(workspaceView(workspace, [recovered]).elapsedMs).toBeNull();
-  });
-
   it("counts only the workspace's own sessions", () => {
     const view = workspaceView(workspace, [
       session({
@@ -135,9 +112,14 @@ describe("workspaceView", () => {
     const attention = session({ attention: { reason: "permission", atMs: 1 } });
     const unattendedSession = session({ unattended: "yes" });
     expect(workspaceView(workspace, [attention, unattendedSession]).stateDot).toBe("attention");
-    expect(workspaceView(workspace, [unattendedSession]).stateDot).toBe("unattended");
     expect(workspaceView(workspace, [session({ activity: "working" })]).stateDot).toBe("pulse");
     expect(workspaceView(workspace, []).stateDot).toBeNull();
+    // Unattended is a permission mode, never activity: an idle unattended row has no dot.
+    expect(workspaceView(workspace, [unattendedSession]).stateDot).toBeNull();
+    // ...and a running unattended one is running, not "unattended".
+    expect(
+      workspaceView(workspace, [session({ unattended: "yes", activity: "working" })]).stateDot,
+    ).toBe("pulse");
   });
 
   it("leaves settled, silent and empty workspaces dotless", () => {

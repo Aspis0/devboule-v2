@@ -652,7 +652,7 @@ describe("Workspace sessions", () => {
     // A live session is the norm: the row says nothing about it in words —
     // the running dot breathes, and the isolation word is gone (spec).
     expect(row?.textContent).not.toContain("live session");
-    expect(row?.querySelector(".sidebar-row-dot-pulse")).not.toBeNull();
+    expect(row?.querySelector(".workspace-row-status-running")).not.toBeNull();
     // Hover or focus says where the workspace lives and what it sits on.
     expect(row?.title).toBe("C:\\devboule · main");
   });

@@ -25,7 +25,6 @@ const workspace = (projectId: string, id: string, title: string, path: string): 
   isolation: "worktree",
   path,
   agents: { working: 0, waiting: 0 },
-  elapsedMs: null,
   stateDot: null,
 });
 
@@ -172,27 +171,33 @@ describe("the tree's identity", () => {
     expect(groups()).toEqual(["paperlab-studio"]);
   });
 
-  it("lets the branch speak for a row whose name its header printed", async () => {
+  it("keeps the row's own name as its title, and the branch on its meta line", async () => {
     await render({ projects: [TWIN_A] });
 
-    const title = container.querySelector<HTMLElement>(".workspace-row-title");
-    expect(title?.textContent).toBe("main");
+    const row = container.querySelector<HTMLElement>(".workspace-row");
+    expect(row?.querySelector(".workspace-row-title")?.textContent).toBe("design-sandbox");
+    expect(row?.querySelector(".workspace-row-branch")?.textContent).toBe("main");
   });
 
-  it("speaks the branch where the header printed the name, keeps the name where it did not", async () => {
+  it("titles every row by its own name, whatever its header printed", async () => {
     await render({ projects: [SOLO] });
 
     expect(
       [...container.querySelectorAll<HTMLElement>(".workspace-row-title")].map(
         (el) => el.textContent,
       ),
-    ).toEqual(["feat/sidebar", "figures"]);
+    ).toEqual(["paperlab-studio", "figures"]);
+    expect(container.querySelector(".workspace-row-branch")?.textContent).toBe("feat/sidebar");
   });
 
   it("names an unknown host without leaking its raw id", async () => {
-    const gone = project("p-g", "field", "C:\\field", [
-      { ...workspace("p-g", "w-g", "field work", "C:\\field"), hostId: "peer-gone" as never },
-    ]);
+    // A remote project: its rows carry the host on their meta line.
+    const gone: WorkspaceProject = {
+      ...project("p-g", "field", "C:\\field", [
+        { ...workspace("p-g", "w-g", "field work", "C:\\field"), hostId: "peer-gone" as never },
+      ]),
+      hostId: "peer-gone" as never,
+    };
     await render({ projects: [gone] });
 
     const host = container.querySelector(".workspace-row-host");

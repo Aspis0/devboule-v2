@@ -1,9 +1,9 @@
-/* sidebar.css — the sidebar region's look (SPEC-regions.md "Sidebar"): the
-   40px wordmark row, the top actions (New workspace, History, Search — one
-   row each), project headers with avatars, workspace rows (avatar, name, one
-   trailing fact, host second line) with a "+ New workspace" row closing each
-   project, and the bottom icon row. Behaviour class names (workspace-row,
-   workspace-project-new, …) are kept so the suite keeps pinning the same
+/* sidebar.css — the sidebar region's look: the 40px wordmark row, the top
+   actions (New workspace, New project, History, Search — one row each),
+   project headers (square badge, name, "+" and kebab on the far edge), and
+   workspace rows (status dot, name, a meta line of branch, remote host and
+   the compact diff). The bottom icon row keeps Settings and the daemon dot.
+   Behaviour class names are kept so the suite keeps pinning the same
    behaviours. */
 
 .sidebar-top {
@@ -264,35 +264,22 @@
   font-size: var(--type-meta);
 }
 
-.sidebar-avatar-workspace {
-  width: 16px;
-  height: 16px;
-  font-size: var(--type-meta);
-  font-weight: var(--weight-label);
-}
-
-/* How many workspaces the project holds, at the header's far edge. */
-.workspace-project-count {
-  margin-left: auto;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-
-/* The row closing each project: always visible, never hover-only. */
+/* The project's "+": an icon at the header's far edge, quiet until pointed at. */
 .workspace-project-new {
-  display: flex;
-  align-items: center;
-  gap: var(--space-6);
-  width: 100%;
-  min-width: 0;
-  padding: var(--space-4) var(--space-12);
-  color: var(--muted);
-  background: transparent;
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  padding: 0;
   border: 0;
   border-radius: var(--radius-6);
-  font-size: var(--type-meta);
+  color: var(--muted);
+  background: transparent;
+  font-size: var(--type-interface);
+  line-height: 1;
   cursor: pointer;
-  white-space: nowrap;
 }
 
 .workspace-project-new:hover,
@@ -393,10 +380,45 @@
 }
 
 .workspace-row-totals {
-  margin-left: auto;
+  display: inline-flex;
   flex: none;
+  gap: var(--space-6);
+  margin-left: auto;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+.workspace-row-add {
+  color: var(--diff-text-add);
+}
+
+.workspace-row-del {
+  color: var(--diff-text-del);
+}
+
+/* The status dot, in the slot the letter avatar held: running breathes,
+   needs you is solid in the attention tone, idle is a hollow ring. A row
+   always holds the slot, so the names line up. */
+.workspace-row-status {
+  display: inline-block;
+  flex: none;
+  box-sizing: border-box;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+}
+
+.workspace-row-status-running {
+  background: var(--tone-live);
+}
+
+.workspace-row-status-attention {
+  background: var(--tone-attention);
+}
+
+.workspace-row-status-idle {
+  border: 1px solid var(--muted);
+  background: transparent;
 }
 
 .workspace-row-selected .workspace-row-sub {
@@ -413,32 +435,6 @@
   line-height: var(--leading-dense);
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* The row's one trailing fact, 12px against the name: what the workspace is
-   doing, else when it last spoke, else what is uncommitted — muted, except
-   the approval owed, which keeps the attention tone. It never wraps: the name
-   is what gives way. */
-.workspace-row-fact {
-  display: flex;
-  flex: none;
-  align-items: center;
-  color: var(--muted);
-  font-size: var(--type-meta);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-/* The dot is spaced by its own margin: a gap on the fact would double every
-   separator the parts print between themselves. */
-.workspace-row-fact .sidebar-row-dot {
-  margin-right: var(--space-4);
-}
-
-/* The selected fill is warm and light, and --ink is the only text tone that
-   clears 6.97:1 on it in both themes, so the fact brightens with the row. */
-.workspace-row-selected .workspace-row-fact {
-  color: var(--ink);
 }
 
 /* The row wraps its button so the context menu and the title editor are
@@ -560,34 +556,6 @@
   top: 50%;
   right: var(--space-6);
   transform: translateY(-50%);
-}
-
-/* An agent stopped on the user's approval is the one part of the row that
-   asks something of them. */
-.sidebar-row-waiting {
-  color: var(--tone-attention-text);
-}
-
-/* The agent dot beside the fact, in the tab chips' vocabulary. Idle rows
-   show none; a running row breathes. */
-.sidebar-row-dot {
-  display: inline-block;
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: var(--radius-full);
-}
-
-.sidebar-row-dot-pulse {
-  background: var(--tone-live);
-}
-
-.sidebar-row-dot-attention {
-  background: var(--tone-attention);
-}
-
-.sidebar-row-dot-unattended {
-  background: var(--tone-unattended);
 }
 
 .workspace-empty {
