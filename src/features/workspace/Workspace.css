@@ -1019,13 +1019,19 @@
   display: none;
 }
 
-/* A failed call says so in a muted word: nothing failed in the colour sense
-   unless the provider reports a real error, and an exit alone never does. */
+/* A failed call says so in a muted word at the line's right edge: nothing failed
+   in the colour sense unless the provider reports a real error, and an exit alone
+   never does. The exit number follows the word when there is one. */
 .workspace-chat-tool-failed {
   order: 2;
   flex: none;
+  margin-inline-start: auto;
   color: var(--muted);
   white-space: nowrap;
+}
+
+.workspace-chat-tool.is-failed .workspace-command-exit {
+  margin-inline-start: var(--space-8);
 }
 
 .workspace-chat-tool-running {
