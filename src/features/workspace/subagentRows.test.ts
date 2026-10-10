@@ -60,13 +60,13 @@ describe("a managed child's pill status", () => {
       "ended with code 1",
       { type: "ended", generation: 1, code: 1, integrity: complete },
       undefined,
-      "failed",
+      "stopped",
     ],
     [
       "ended with no code",
       { type: "ended", generation: 1, code: null, integrity: complete },
       undefined,
-      "failed",
+      "stopped",
     ],
     [
       "ended with code 0 and a stale working activity",
@@ -175,8 +175,8 @@ describe("the rows one parent's pill lists", () => {
     expect(countSubagentStatuses(rows)).toEqual({
       running: 2,
       finished: 0,
-      failed: 2,
-      stopped: 0,
+      failed: 1,
+      stopped: 1,
       unknown: 0,
     });
   });

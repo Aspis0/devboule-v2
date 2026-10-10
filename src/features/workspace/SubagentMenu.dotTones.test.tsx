@@ -85,11 +85,12 @@ function rowDot(title: string): Element | null {
   return row?.querySelector(".workspace-subagent-status-dot") ?? null;
 }
 
-describe("subagent dots: a failed child is red, a child waiting on a person is ochre", () => {
-  it("paints a failed child's row dot with the failed class and no other state class", async () => {
+describe("subagent dots: a child waiting on a person is ochre, an exit code is not a failure", () => {
+  it("paints a child that ended on an exit code as stopped, never failed", async () => {
     await renderParent([failedChild]);
     const dot = rowDot("Crashed child");
-    expect(dot?.classList.contains("workspace-subagent-status-failed")).toBe(true);
+    expect(dot?.classList.contains("workspace-subagent-status-stopped")).toBe(true);
+    expect(dot?.classList.contains("workspace-subagent-status-failed")).toBe(false);
     expect(dot?.classList.contains("workspace-subagent-status-attention")).toBe(false);
   });
 
@@ -112,6 +113,7 @@ describe("subagent dots: a failed child is red, a child waiting on a person is o
   it("keeps a failed child off the pill: its failure shows in the list the pill opens", async () => {
     await renderParent([failedChild]);
     const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
+    expect(pill?.getAttribute("aria-label")).not.toContain("failed");
     expect(pill?.querySelector(".workspace-subagent-status-failed")).toBeNull();
     expect(pill?.textContent).not.toContain("failed");
   });

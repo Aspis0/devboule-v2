@@ -163,6 +163,7 @@ describe("the subagent menu's archive outcome", () => {
     await openMenu();
 
     const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
+    // An ended child with an exit code is stopped, not failed: the pill counts only the working one.
     expect(pill?.getAttribute("aria-label")).toBe("Subagents: 1 working");
 
     await pressArchiveAction();

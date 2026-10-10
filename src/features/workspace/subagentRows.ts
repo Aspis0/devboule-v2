@@ -41,8 +41,11 @@ function childStatus(
     case "silent":
       if (activity === "working" || activity === "blocked") return "running";
       return activity === "idle" ? "finished" : "unknown";
+    // An exit code alone is no verdict: a child that ended without a clean
+    // exit is closed, not failed. A provider-reported failure is the only
+    // thing that makes it failed, and an ended session carries none.
     case "ended":
-      return state.code === 0 ? "finished" : "failed";
+      return state.code === 0 ? "finished" : "stopped";
     case "recovered":
       return "stopped";
     case undefined:
