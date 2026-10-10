@@ -175,6 +175,10 @@ export function useEditableFile(
   // re-opening, so the buffer, the conflict banner and the undo history
   // survive the click.
   const [openNonce, setOpenNonce] = useState(0);
+  // A manual reopen (the failure banner's Retry) holds `reopening` true
+  // across the async open, so the button disables instead of launching
+  // concurrent polls. Target changes re-open silently and never touch it.
+  const reopenArmed = useRef(false);
   const road = useRef(target);
   road.current = target;
   const cell = useRef<ObservationCell | null>(null);
@@ -191,6 +195,13 @@ export function useEditableFile(
     setFailure(null);
     setModel(null);
     cell.current = null;
+    const finish = () => {
+      setLoading(false);
+      if (reopenArmed.current) {
+        reopenArmed.current = false;
+        setReopening(false);
+      }
+    };
     void (async () => {
       let opened: WorkspaceEditableFile;
       try {
@@ -198,13 +209,13 @@ export function useEditableFile(
       } catch (cause: unknown) {
         if (!live) return;
         setFailure(cause instanceof Error ? cause.message : String(cause));
-        setLoading(false);
+        finish();
         return;
       }
       if (!live) return;
       if (opened.status !== "ok" || opened.content === null || opened.version === null) {
         setFailure(opened.error ?? "The file could not be opened.");
-        setLoading(false);
+        finish();
         return;
       }
       const openedMissing = opened.version.status === "missing";
@@ -252,7 +263,7 @@ export function useEditableFile(
       }
       modelRef.current = next;
       setModel(next);
-      setLoading(false);
+      finish();
     })();
     return () => {
       live = false;
@@ -404,9 +415,9 @@ export function useEditableFile(
     cell.current?.poll();
   }, []);
   const reopen = useCallback(() => {
+    reopenArmed.current = true;
     setReopening(true);
     setOpenNonce((nonce) => nonce + 1);
-    setReopening(false);
   }, []);
 
   return { model, loading, failure, refresh, reopen, reopening };
