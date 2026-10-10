@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { DaemonStatus, Session } from "../../../types/ipc";
-import { usePlanRecordedAt, useAllPlanUsage } from "../../../lib/planUsageStore";
+import { usePlanRecordedAt, usePlanUsage } from "../../../lib/planUsageStore";
 import type { PlanUsage } from "../../../types/ipc";
 import { activeSessionAttention, sessionAttentionLabel } from "../sessionAttention";
 import { rosterStateDisplay } from "../sessionStateDisplay";
@@ -100,7 +100,6 @@ function ProviderUsage({ plan, nowMs }: { plan: PlanUsage; nowMs: number }) {
  * that has sent no usage, or none with a percent in it, simply has no meter.
  */
 export function StatusBar({ agent, daemon, progress = null }: StatusBarProps) {
-  const frames = useAllPlanUsage();
   const nowMs = useMinuteClock();
   const reading = useAgentReading(agent?.sessionId ?? null);
   // A plan step counts only while the agent is on one: idle reads idle.
@@ -113,12 +112,9 @@ export function StatusBar({ agent, daemon, progress = null }: StatusBarProps) {
   const stateTone =
     agent === null ? "border" : (agent.attentionTone ?? (agent.working ? "green" : "border"));
   const tooltip = daemonLabel(daemon);
-  // Only the focused agent's provider: the bar answers for the session in front of the person.
-  const focusedProvider = agent?.providerId ?? null;
-  const focusedPlan =
-    focusedProvider === null
-      ? undefined
-      : frames.find((plan) => plan.providerId === focusedProvider);
+  // Only the focused agent's provider is subscribed: a frame for any other provider
+  // leaves this bar as it is.
+  const focusedPlan = usePlanUsage(agent?.providerId ?? null) ?? undefined;
   return (
     <div className="workspace-status-bar" role="group" aria-label="Status">
       {/* Always mounted, so the words that arrive in it are announced. */}
