@@ -85,7 +85,7 @@ export function menuPlacement(
 /** Sets the open's side and cap on the menu and brings the selected row
  * along: the open effect and its resize paths share it, so a recompute
  * can never drift from the open. */
-function placeMenu(trigger: HTMLElement, menu: HTMLElement): void {
+export function placeMenu(trigger: HTMLElement, menu: HTMLElement): void {
   const placed = menuPlacement(trigger, menu);
   if (placed.maxHeight > 0) menu.style.maxHeight = `${placed.maxHeight}px`;
   if (placed.below) {

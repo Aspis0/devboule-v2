@@ -1,0 +1,65 @@
+/* The app's select: the field's surface, edge, radius and padding, with the
+   composer listbox's menu (PickerChip.css) opened from under it. */
+.app-select {
+  position: relative;
+  min-width: 0;
+}
+
+.app-select-trigger {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  width: 100%;
+  min-width: 0;
+  height: var(--control-default);
+  padding: var(--space-4) 8px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: var(--type-interface);
+  text-align: left;
+}
+
+.app-select-trigger:disabled {
+  color: var(--silence);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.app-select-trigger:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.app-select-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-select-caret {
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.app-select-menu {
+  left: 0;
+  right: 0;
+  min-width: 0;
+  max-width: none;
+  width: 100%;
+}
+
+.app-select-menu .workspace-mode-option:disabled {
+  color: var(--silence);
+  cursor: not-allowed;
+}
