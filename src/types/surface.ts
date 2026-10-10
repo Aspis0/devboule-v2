@@ -17,6 +17,11 @@ export interface SurfaceDefinition {
    * first segment of the URLs its files are served on.
    */
   plugin?: string;
+  /**
+   * Whether the crescent (the top bar) lists this surface. A plugin surface that is
+   * left out is still resolved and opened from elsewhere, such as the marketplace.
+   */
+  inTopBar?: boolean;
 }
 
 export const SURFACES: readonly SurfaceDefinition[] = [
@@ -26,6 +31,15 @@ export const SURFACES: readonly SurfaceDefinition[] = [
     eyebrow: "sessions · projects · worktrees",
     description: "The workspace surface will host projects, sessions, terminals, and permissions.",
     tone: "terracotta",
+  },
+  {
+    key: "polis",
+    label: "Polis",
+    eyebrow: "the codebase as a city",
+    description: "The Polis surface will mount the isometric codebase view from the v1 port.",
+    tone: "purple",
+    plugin: "polis",
+    inTopBar: false,
   },
   {
     key: "design",

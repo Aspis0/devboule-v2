@@ -21,7 +21,9 @@ interface ShellProps {
   children: ReactNode;
 }
 
-const SURFACE_KEYS = SURFACES.map((surface) => surface.key) satisfies SurfaceKey[];
+const SURFACE_KEYS = SURFACES.filter((surface) => surface.inTopBar !== false).map(
+  (surface) => surface.key,
+) satisfies SurfaceKey[];
 
 /**
  * What a point in the crescent is offering.

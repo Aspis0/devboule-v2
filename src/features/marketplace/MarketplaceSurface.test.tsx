@@ -2,11 +2,14 @@
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { chooseAndInstall } from "../plugins/install";
 import { useAppStore } from "../../store/appStore";
 import type { PluginEntry, PluginInventory } from "../../types/ipc";
 import { FREE_SKILL, MOCK_MARKETPLACE_ENTRIES } from "./mockData";
 import { MarketplaceSurface, skillIsInstallable } from "./MarketplaceSurface";
+
+vi.mock("../plugins/install", () => ({ chooseAndInstall: vi.fn(async () => true) }));
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -115,7 +118,34 @@ describe("MarketplaceSurface", () => {
 
     expect(polis.querySelector('[data-action="buy"]')).toBeNull();
     expect(polis.querySelector(".marketplace-price")?.textContent).not.toBe("$12");
-    expect(polis.textContent).toContain("Install from the crescent +.");
+    expect(polis.querySelector('[data-action="install-plugin"]')).not.toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("installs Polis from the marketplace through the crescent's folder flow", async () => {
+    useAppStore.setState({ plugins: inventory([]) });
+    const { container, root } = await renderMarketplace();
+    const polis = container.querySelector<HTMLElement>('[data-entry-id="polis"]');
+    const install = polis?.querySelector<HTMLButtonElement>('[data-action="install-plugin"]');
+    if (!install) throw new Error("Polis install control missing");
+
+    await act(async () => install.click());
+
+    expect(chooseAndInstall).toHaveBeenCalledWith("polis", "Polis");
+    await act(async () => root.unmount());
+  });
+
+  it("opens an installed Polis from the marketplace, since the top bar no longer shows it", async () => {
+    const select = vi.fn();
+    useAppStore.setState({ plugins: inventory([READY_POLIS]), selectSurface: select });
+    const { container, root } = await renderMarketplace();
+    const polis = container.querySelector<HTMLElement>('[data-entry-id="polis"]');
+    const open = polis?.querySelector<HTMLButtonElement>('[data-action="open-plugin"]');
+    if (!open) throw new Error("Polis open control missing");
+
+    await act(async () => open.click());
+
+    expect(select).toHaveBeenCalledWith("polis");
     await act(async () => root.unmount());
   });
 

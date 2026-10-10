@@ -4,6 +4,8 @@ import { useMemo, useState } from "react";
 import { pluginState } from "../../lib/plugins";
 import { ErrorText } from "../../components/ErrorText";
 import { useAppStore } from "../../store/appStore";
+import { SURFACES } from "../../types/surface";
+import { chooseAndInstall } from "../plugins/install";
 import { MOCK_MARKETPLACE_ENTRIES, type MarketplaceEntry, type MarketplaceKind } from "./mockData";
 
 type MarketplaceFilter = "all" | MarketplaceKind;
@@ -26,6 +28,7 @@ export function MarketplaceSurface() {
   const installSkill = useAppStore((state) => state.installSkill);
   const plugins = useAppStore((state) => state.plugins);
   const pluginsProblem = useAppStore((state) => state.pluginsProblem);
+  const selectSurface = useAppStore((state) => state.selectSurface);
   const installedSkillIds = useMemo(
     () => new Set(installedSkills.map((skill) => skill.id)),
     [installedSkills],
@@ -104,6 +107,8 @@ export function MarketplaceSurface() {
             {entries.map((entry) => {
               const installed = installedSkillIds.has(entry.id);
               const installedPlugin = entry.kind === "plugin" ? pluginStates.get(entry.id) : null;
+              // A plugin the app has a surface for opens from here; the top bar need not list it.
+              const pluginSurface = SURFACES.find((surface) => surface.plugin === entry.id);
               return (
                 <li
                   className="marketplace-row"
@@ -136,28 +141,49 @@ export function MarketplaceSurface() {
                         {installed ? "Installed" : "Install"}
                       </button>
                     ) : entry.kind === "plugin" ? (
-                      <span
-                        className={`marketplace-plugin-status${installedPlugin?.kind === "ready" ? " marketplace-plugin-status-ready" : ""}`}
-                      >
-                        {installedPlugin?.kind === "ready" ? (
-                          "Installed"
-                        ) : installedPlugin?.kind === "unknown" ? (
-                          <ErrorText
-                            sentence={`Install status unavailable — ${installedPlugin.problem}`}
-                            detail={pluginsProblem?.detail ?? null}
-                            // The entry's own id: this ErrorText sits inside a
-                            // map, so a fixed id would collide the moment a
-                            // second plugin row reports "unknown".
-                            id={`marketplace-plugin-problem-${entry.id}`}
-                          />
-                        ) : installedPlugin?.kind === "refused" ? (
-                          "Installed but unavailable"
-                        ) : plugins === null ? (
-                          "Checking plugin status."
-                        ) : (
-                          "Install from the crescent +."
-                        )}
-                      </span>
+                      <>
+                        <span
+                          className={`marketplace-plugin-status${installedPlugin?.kind === "ready" ? " marketplace-plugin-status-ready" : ""}`}
+                        >
+                          {installedPlugin?.kind === "ready" ? (
+                            "Installed"
+                          ) : installedPlugin?.kind === "unknown" ? (
+                            <ErrorText
+                              sentence={`Install status unavailable — ${installedPlugin.problem}`}
+                              detail={pluginsProblem?.detail ?? null}
+                              // The entry's own id: this ErrorText sits inside a
+                              // map, so a fixed id would collide the moment a
+                              // second plugin row reports "unknown".
+                              id={`marketplace-plugin-problem-${entry.id}`}
+                            />
+                          ) : installedPlugin?.kind === "refused" ? (
+                            "Installed but unavailable"
+                          ) : plugins === null ? (
+                            "Checking plugin status."
+                          ) : (
+                            "Not installed."
+                          )}
+                        </span>
+                        {pluginSurface === undefined ? null : installedPlugin?.kind === "ready" ? (
+                          <button
+                            type="button"
+                            className="marketplace-action"
+                            data-action="open-plugin"
+                            onClick={() => selectSurface(pluginSurface.key)}
+                          >
+                            Open
+                          </button>
+                        ) : installedPlugin?.kind === "absent" ? (
+                          <button
+                            type="button"
+                            className="marketplace-action marketplace-action-install"
+                            data-action="install-plugin"
+                            onClick={() => void chooseAndInstall(entry.id, entry.name)}
+                          >
+                            Install
+                          </button>
+                        ) : null}
+                      </>
                     ) : (
                       <button
                         type="button"
