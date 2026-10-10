@@ -2,9 +2,15 @@ import { memo, useId, useState } from "react";
 import type { WorkspaceFileEntry } from "../../types/ipc";
 import { ErrorText } from "../../components/ErrorText";
 import type { WorkspaceKey } from "./hosts/hostIdentity";
+import { useWorkspaceDaemon } from "./workspaceDaemon";
+import { EDITOR_MIN_DIALECT } from "./fileEditor/useEditableFile";
 import { FilesTreeView } from "./FilesTreeView";
 import { useRemoteWorkspaceFiles } from "./useRemoteWorkspaceFiles";
 import "./panel/files.css";
+
+/** Oldest daemon dialect the remote panels need: the list and status
+ * relay frames are new in 34. Mirrors the editor's own gate. */
+export const REMOTE_PANELS_MIN_DIALECT = EDITOR_MIN_DIALECT + 1;
 
 /**
  * The Files panel for a paired host's workspace: the host's own tree
@@ -25,7 +31,20 @@ export const RemoteFilesSurface = memo(function RemoteFilesSurface({
   workspaceId: string;
   onOpenFile?: (workspaceKey: WorkspaceKey, path: string) => void;
 }) {
-  const { cells, expanded, toggle, refresh } = useRemoteWorkspaceFiles(deviceId, workspaceId);
+  // The list and status relays are new frames: a stale daemon cannot
+  // decode them and would drop the connection, so the panels stay shut
+  // with a short note instead of sending. An unknown version (connecting)
+  // waits rather than risks the link: the data hooks take null ids until
+  // the version is known fresh.
+  const daemon = useWorkspaceDaemon();
+  const version = daemon.protocolVersion;
+  const known = version !== null;
+  const stale = version !== null && version < REMOTE_PANELS_MIN_DIALECT;
+  const gated = !known || stale;
+  const { cells, expanded, toggle, refresh } = useRemoteWorkspaceFiles(
+    gated ? null : deviceId,
+    gated ? null : workspaceId,
+  );
   const [selection, setSelection] = useState<string | null>(null);
 
   const findEntry = (path: string): WorkspaceFileEntry | null => {
@@ -51,6 +70,22 @@ export const RemoteFilesSurface = memo(function RemoteFilesSurface({
   const rootReply = root?.reply ?? null;
   const loading = rootReply === null && rootFailure === null;
   const listId = useId();
+
+  if (gated) {
+    return (
+      <div tabIndex={-1} role="region" aria-label="Files" className="workspace-files">
+        {stale ? (
+          <div className="workspace-files-state" role="status">
+            Update the daemon to see this workspace.
+          </div>
+        ) : (
+          <div className="workspace-files-state" role="status">
+            Loading files…
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div tabIndex={-1} role="region" aria-label="Files" className="workspace-files">

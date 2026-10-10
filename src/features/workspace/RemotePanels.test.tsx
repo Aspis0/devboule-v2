@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceDirectory, WorkspaceFileEntry, WorkspaceGitStatus } from "../../types/ipc";
 
 vi.mock("../../lib/tauri", () => ({
+  daemonStatus: vi.fn(),
   remoteHostFilesList: vi.fn(),
   remoteHostGitStatus: vi.fn(),
   remoteHostFileOpen: vi.fn(),
@@ -24,6 +25,7 @@ vi.mock("../../lib/tauri", () => ({
 }));
 
 import {
+  daemonStatus,
   remoteHostFilesList,
   remoteHostFileOpen,
   remoteHostFileWrite,
@@ -78,6 +80,15 @@ describe("remote panels", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    vi.mocked(daemonStatus).mockResolvedValue({
+      state: "connected",
+      pid: 1,
+      instanceId: "1",
+      protocolVersion: 34,
+      clients: 1,
+      capabilities: [],
+      message: null,
+    } as never);
     vi.mocked(remoteHostFilesList).mockResolvedValue(
       listing([entry("docs", "dir"), entry("note.txt", "file")]),
     );
@@ -175,5 +186,23 @@ describe("remote panels", () => {
 
     expect(remoteHostFileOpen).toHaveBeenCalledWith(DEVICE, WORKSPACE, "note.txt");
     expect(container.querySelector('[data-testid="file-source-editor"]')).not.toBeNull();
+  });
+
+  it("keeps remote panels shut with a note against a stale daemon", async () => {
+    vi.mocked(daemonStatus).mockResolvedValue({
+      state: "connected",
+      pid: 1,
+      instanceId: "1",
+      protocolVersion: 33,
+      clients: 1,
+      capabilities: [],
+      message: null,
+    } as never);
+
+    await render(
+      <FilesSurface workspaceKey={remoteKeyFor(DEVICE, WORKSPACE)} onOpenFile={() => undefined} />,
+    );
+    expect(remoteHostFilesList).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Update the daemon to see this workspace.");
   });
 });

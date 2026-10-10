@@ -144,16 +144,31 @@ export function WorkspaceFileTab({
   const { hostId, workspaceId } = parseWorkspaceKey(workspaceKey);
   // The editor frames need a daemon that speaks them (dialect 33+). A
   // stale daemon cannot decode them and would drop the connection, so
-  // the tab stays read-only with a short note instead of sending.
+  // the tab stays read-only with a short note instead of sending. An
+  // unknown version (connecting) waits rather than risks the link.
   const daemon = useWorkspaceDaemon();
-  const canEdit = daemon.protocolVersion === null || daemon.protocolVersion >= EDITOR_MIN_DIALECT;
+  const version = daemon.protocolVersion;
+  const known = version !== null;
+  const stale = version !== null && version < EDITOR_MIN_DIALECT;
+  const canEdit = known && !stale;
   // A paired host's file and the human's own outside file never take the
   // windowed road: the windowed read confines to the local workspace, so
   // it cannot serve either. Both edit straight in the tab, under the
   // same header as local files — minus the external-editor pencil, which
   // can only open folders this machine holds.
   if (hostId !== LOCAL_HOST_ID || isOutsidePath(path)) {
-    if (!canEdit) return <StaleDaemonNote />;
+    if (!known) {
+      return daemon.state === "connected" ? (
+        <div className="workspace-diff-note" role="status">
+          Loading file…
+        </div>
+      ) : (
+        <div className="workspace-diff-note" role="alert">
+          {daemon.message ?? "daemon unreachable"}
+        </div>
+      );
+    }
+    if (stale) return <StaleDaemonNote />;
     return (
       <div className="workspace-file-tab">
         <EditorTabHeader workspaceId={null} path={path} seg={null} />
@@ -169,6 +184,7 @@ export function WorkspaceFileTab({
       refreshNonce={refreshNonce}
       cache={cache}
       canEdit={canEdit}
+      staleKnown={stale}
     />
   );
 }
@@ -221,6 +237,7 @@ function LocalWorkspaceFileTab({
   refreshNonce,
   cache,
   canEdit,
+  staleKnown,
 }: {
   workspaceKey: WorkspaceKey;
   workspaceId: string;
@@ -229,6 +246,8 @@ function LocalWorkspaceFileTab({
   cache: Map<string, PreviewCell>;
   /** False when the daemon predates the editor frames: read-only. */
   canEdit: boolean;
+  /** True when that staleness is confirmed (not merely unknown). */
+  staleKnown: boolean;
 }) {
   const errorId = useId();
   // What the daemon is addressed by, read off the tab's own key.
@@ -393,7 +412,7 @@ function LocalWorkspaceFileTab({
         ) : null}
         <OpenInEditorAction workspaceId={workspaceId} path={path} />
       </header>
-      {!canEdit ? <StaleDaemonNote /> : null}
+      {staleKnown ? <StaleDaemonNote /> : null}
       {body}
     </div>
   );

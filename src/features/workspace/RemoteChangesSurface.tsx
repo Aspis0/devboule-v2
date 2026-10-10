@@ -1,6 +1,8 @@
 import { memo, useState } from "react";
 import { ErrorText } from "../../components/ErrorText";
 import type { WorkspaceKey } from "./hosts/hostIdentity";
+import { useWorkspaceDaemon } from "./workspaceDaemon";
+import { REMOTE_PANELS_MIN_DIALECT } from "./RemoteFilesSurface";
 import { ChangesTreeView } from "./ChangesTreeView";
 import { useRemoteWorkspaceChanges } from "./useRemoteWorkspaceChanges";
 import "./panel/changes.css";
@@ -23,13 +25,37 @@ export const RemoteChangesSurface = memo(function RemoteChangesSurface({
   workspaceId: string;
   onOpenFile?: (workspaceKey: WorkspaceKey, path: string) => void;
 }) {
-  const { reply, failure, refresh } = useRemoteWorkspaceChanges(deviceId, workspaceId);
+  const daemon = useWorkspaceDaemon();
+  const version = daemon.protocolVersion;
+  const known = version !== null;
+  const stale = version !== null && version < REMOTE_PANELS_MIN_DIALECT;
+  const gated = !known || stale;
+  const { reply, failure, refresh } = useRemoteWorkspaceChanges(
+    gated ? null : deviceId,
+    gated ? null : workspaceId,
+  );
   const [selection, setSelection] = useState<string | null>(null);
 
   const openPath = (path: string): void => {
     setSelection(path);
     if (onOpenFile !== undefined) onOpenFile(workspaceKey, path);
   };
+
+  if (gated) {
+    return (
+      <div tabIndex={-1} role="region" aria-label="Changes" className="workspace-changes">
+        {stale ? (
+          <div className="workspace-changes-state" role="status">
+            Update the daemon to see this workspace.
+          </div>
+        ) : (
+          <div className="workspace-changes-state" role="status">
+            Loading changes…
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div tabIndex={-1} role="region" aria-label="Changes" className="workspace-changes">

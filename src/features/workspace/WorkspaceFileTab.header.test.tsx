@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceEditableFile, WorkspaceFileContent } from "../../types/ipc";
 
 vi.mock("../../lib/tauri", () => ({
+  daemonStatus: vi.fn(),
   workspaceFileRead: vi.fn(),
   workspaceFilePreviewStage: vi.fn(),
   workspaceFilePreviewUnstage: vi.fn(),
@@ -23,6 +24,7 @@ vi.mock("../../lib/tauri", () => ({
 }));
 
 import {
+  daemonStatus,
   editorTargetsList,
   workspaceFileEditorOpen,
   workspaceFileOpen,
@@ -83,6 +85,15 @@ describe("WorkspaceFileTab header", () => {
     resetFileTabModeForTests();
     container = document.createElement("div");
     document.body.appendChild(container);
+    vi.mocked(daemonStatus).mockResolvedValue({
+      state: "connected",
+      pid: 1,
+      instanceId: "1",
+      protocolVersion: 34,
+      clients: 1,
+      capabilities: [],
+      message: null,
+    } as never);
     vi.mocked(workspaceFileRead).mockResolvedValue(content());
     vi.mocked(workspaceFileEditorOpen).mockResolvedValue(editableFile({ content: "hello\n" }));
     vi.mocked(workspaceFileOpen).mockResolvedValue(undefined);
