@@ -2233,6 +2233,90 @@ fn a_host_creates_and_operates_sessions_on_its_peer_over_loopback() {
         "the answered turn runs to its end on B and A sees it"
     );
 
+    // ---- the human's image lands stripped, like a local send --------------
+    // The bytes travel inline over the link; B's send handler runs them
+    // through the same materialize walk as a local send, so the stored
+    // copy carries no metadata chunks. Privacy rule: EXIF stripped at the
+    // boundary, pinned end to end for the peer road.
+    fn png_with_text_chunk() -> Vec<u8> {
+        fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            out.extend_from_slice(kind);
+            out.extend_from_slice(data);
+            out.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+        }
+        let mut out = vec![137, 80, 78, 71, 13, 10, 26, 10];
+        chunk(&mut out, b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0]);
+        chunk(&mut out, b"tEXt", b"note\0shot on a phone");
+        chunk(
+            &mut out,
+            b"IDAT",
+            &[0x78, 0x9c, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01],
+        );
+        chunk(&mut out, b"IEND", &[]);
+        out
+    }
+    fn png_files_under(dir: &std::path::Path) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return found;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.is_dir() {
+                found.extend(png_files_under(&path));
+            } else if path.is_file() {
+                found.push(path);
+            }
+        }
+        found
+    }
+    let png = png_with_text_chunk();
+    assert!(
+        png.windows(4).any(|window| window == b"tEXt"),
+        "the fixture carries a metadata chunk"
+    );
+    let image_send = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostSend {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+            session_id: agent.id.clone(),
+            subscription_id: 11,
+            text: "look at this".to_string(),
+            attachments: vec![devboule_protocol::PromptAttachment {
+                name: "shot.png".to_string(),
+                mime_type: "image/png".to_string(),
+                data: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &png),
+            }],
+            active_turn_behavior: None,
+            idempotency_key: None,
+            attachment_references: Vec::new(),
+        },
+        |frame| match frame {
+            DaemonMessage::RemoteHostSent { .. } => Some(()),
+            _ => None,
+        },
+    );
+    assert!(image_send.is_some(), "the human's image send lands");
+    // The reply comes after planning, so the stored copy is already on
+    // disk: every PNG-signature file under B's dir must be stripped.
+    let mut stripped = false;
+    for path in png_files_under(&b.dir) {
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
+            assert!(
+                !bytes.windows(4).any(|window| window == b"tEXt"),
+                "B's stored copy keeps metadata: {}",
+                path.display()
+            );
+            stripped = true;
+        }
+    }
+    assert!(stripped, "the image reached B's store");
+
     // ---- the host's own sessions accept human writes from A --------------
     // B's human starts a terminal locally on B; A drives it over the link
     // under the human scope (P1-3): attach, type, resize, close.
