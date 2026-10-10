@@ -286,3 +286,65 @@ fn the_pairing_humans_writes_skip_the_peer_only_refusals() {
         "a stranger may not switch into a prompt-skipping mode"
     );
 }
+
+/// A create names no session, so the human bypass keys on the pairing — but
+/// only on a machine peer. A client-scoped device keeps R3's vetting even
+/// when the pairing is the local user's own: the mode gate's comment
+/// promises it.
+#[test]
+fn a_client_scoped_create_keeps_mode_vetting_even_same_user() {
+    let state = ServerState::new("peer-gate-create-scope".into());
+    let create = ClientMessage::SessionCreate {
+        id: 1,
+        workspace_id: None,
+        kind: SessionKind::Claude,
+        provider: None,
+        mode: Some("acceptEdits".to_string()),
+        display_name: None,
+        idempotency_key: None,
+        cols: None,
+        rows: None,
+    };
+    let phone = ConnHandle::with_peer_caps(
+        9,
+        None,
+        Some(ConnPeer::Remote {
+            device_id: "dev-phone".to_string(),
+            scope: PeerScope::PairedUser,
+            paired_by_user: state.local_user_sid(),
+            binding: TransportBinding::tailnet("nstable", "node", "user@example.com"),
+        }),
+        [CAP_VIEW.to_string(), CAP_SEND.to_string()].to_vec(),
+        QuitIntent::default(),
+    );
+    assert_eq!(
+        peer_mode_refusal_for_conn(&state, &create, &phone.conn_peer),
+        Some(crate::peer_policy::PROMPT_SKIPPING_REFUSED),
+        "a client-scoped create is vetted whatever the pairing"
+    );
+    #[cfg(windows)]
+    {
+        // Same-user machine peer: the create will be human-owned, so the
+        // human names its mode like a local choice.
+        let pc = ConnHandle::with_peer_caps(
+            10,
+            None,
+            Some(ConnPeer::Remote {
+                device_id: "dev-pc".to_string(),
+                scope: PeerScope::PeerDevice,
+                paired_by_user: state.local_user_sid(),
+                binding: TransportBinding::tailnet("nstable", "node", "user@example.com"),
+            }),
+            [CAP_VIEW.to_string(), CAP_SEND.to_string()].to_vec(),
+            QuitIntent::default(),
+        );
+        assert!(
+            state.local_user_sid().is_some(),
+            "the bypass needs a local SID to compare against"
+        );
+        assert!(
+            peer_mode_refusal_for_conn(&state, &create, &pc.conn_peer).is_none(),
+            "the pairing human names the mode of their own create"
+        );
+    }
+}

@@ -281,9 +281,12 @@ pub(super) fn peer_mode_refusal_for_conn(
             .is_some_and(|owner| crate::peer_policy::paired_human_scope(conn_peer, owner.as_str()))
     };
     // A create has no session yet: human means the pairing is this user's
-    // own — exactly when the create will be human-owned (P1-2).
+    // own on a machine peer — exactly when the create will be human-owned
+    // (P1-2). Client-scoped devices keep the vetting even same-user: the
+    // comment above promises it, and R3's ACP rule pins it.
     let human_create = match conn_peer {
         Some(ConnPeer::Remote {
+            scope: crate::peer_policy::PeerScope::PeerDevice,
             paired_by_user: Some(paired),
             ..
         }) => state.local_user_sid().as_deref() == Some(paired.as_str()),
