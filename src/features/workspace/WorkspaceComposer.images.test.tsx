@@ -202,11 +202,12 @@ describe("WorkspaceComposer handed-back images", () => {
 describe("WorkspaceComposer image sends", () => {
   async function renderSending(
     onSend: (text: string, attachments: readonly PromptAttachment[]) => Promise<boolean>,
+    overrides: Partial<ComponentProps<typeof WorkspaceComposer>> = {},
   ) {
     const mocks = { onSend: vi.fn(), onQueue: vi.fn() };
     root = createRoot(container);
     await act(async () => {
-      root.render(<WorkspaceComposer {...composerProps(mocks)} onSend={onSend} />);
+      root.render(<WorkspaceComposer {...composerProps(mocks)} onSend={onSend} {...overrides} />);
     });
   }
 
@@ -276,6 +277,23 @@ describe("WorkspaceComposer image sends", () => {
     expect(onSend).toHaveBeenCalledTimes(1);
     expect(container.querySelector('[data-testid="composer-image-preview"]')).not.toBeNull();
     expect(imageInput().disabled).toBe(false);
+  });
+
+  it("keeps the text with the images on failure", async () => {
+    const onSend = vi.fn(async () => false);
+    await renderSending(onSend, { restoreTextOnFailure: true });
+    await pickAndType();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!.click();
+    });
+    await act(async () => {});
+    // The submission stays whole: images kept above, and the words handed
+    // back instead of dropped with them.
+    expect(container.querySelector('[data-testid="composer-image-preview"]')).not.toBeNull();
+    const textarea = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Message the agent"]',
+    );
+    expect(textarea?.value).toBe("look at this");
   });
 
   it("ignores a second submit while a send is in flight", async () => {

@@ -848,6 +848,7 @@ export function RemoteWorkspaceSurface({
                 disabled={!sendReady}
                 disabledReason={sendReady ? null : hostOnline ? "Connecting." : "offline"}
                 confirmSend
+                restoreTextOnFailure
                 onSend={async (text, attachments, fileReferences) => {
                   if (attached === null || attached.sessionId !== openSessionId) return false;
                   try {

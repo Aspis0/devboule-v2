@@ -85,6 +85,13 @@ interface WorkspaceComposerProps {
    * Set for sends that cross a link: a refusal or a lost reply hands the
    * text back instead of eating the prompt. */
   confirmSend?: boolean;
+  /** Restore the text in the composer when an image send fails. Absent, a
+   * failed image send keeps the picked images and the parent hands the
+   * text back (the local surface's draft hand-back); set for sends whose
+   * parent has no hand-back, so a failure keeps the whole submission.
+   * Keeping the images while dropping the words would orphan half the
+   * prompt. */
+  restoreTextOnFailure?: boolean;
   /** The resolved setting: Enter queues while the turn runs (the permission rule flips it to steer). */
   enterQueues?: boolean;
   onStop?: () => void;
@@ -144,6 +151,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   onQueue,
   enterQueues = false,
   confirmSend = false,
+  restoreTextOnFailure = false,
   onStop,
   taskPill = null,
   backgroundPill = null,
@@ -407,13 +415,23 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
           setSendingImages(false);
           if (sent) {
             setAttachedImages((current) => current.filter((image) => !snapshot.includes(image)));
+          } else if (restoreTextOnFailure) {
+            // A failed image send keeps the whole submission: the picks
+            // stay put above, and the text comes back stacked above any
+            // newer typing. Without a parent hand-back this is the only
+            // copy of the words.
+            setInput((current) => combine(text, current));
           }
         },
-        () => setSendingImages(false),
+        () => {
+          setSendingImages(false);
+          if (restoreTextOnFailure) setInput((current) => combine(text, current));
+        },
       );
   }, [
     attachedImages,
     confirmSend,
+    restoreTextOnFailure,
     imageOnlySendable,
     disabled,
     fileReferences,
