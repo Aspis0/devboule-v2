@@ -1583,7 +1583,10 @@ export function Workspace({
       const session = sessions.find((row) => row.id === sessionId);
       return session === undefined
         ? undefined
-        : { kind: session.kind, title: sessionTitle(session) };
+        : {
+            kind: session.kind,
+            title: sessionTitle(session),
+          };
     },
     [sessions],
   );

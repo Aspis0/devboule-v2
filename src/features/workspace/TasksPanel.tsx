@@ -107,23 +107,29 @@ interface TaskGroupProps {
 }
 
 function TaskGroup({ label, tasks, now, stopping, childInfo, onOpen, onStop }: TaskGroupProps) {
+  const childOf = (task: SessionTask) =>
+    task.childSessionId === undefined ? undefined : childInfo?.(task.childSessionId);
   return (
     <section className="tasks-panel-group" aria-label={label}>
       <h3 className="tasks-panel-heading">{label}</h3>
       <ul className="tasks-panel-list">
-        {tasks.map((task) => (
-          <TaskRow
-            key={task.id}
-            task={task}
-            groupLabel={label}
-            // Only a running row reads the clock; a settled one is not re-rendered by the tick.
-            now={task.state === "running" ? now : null}
-            stopping={task.childSessionId !== undefined && stopping.has(task.childSessionId)}
-            info={task.childSessionId === undefined ? undefined : childInfo?.(task.childSessionId)}
-            onOpen={onOpen}
-            onStop={onStop}
-          />
-        ))}
+        {tasks.map((task) => {
+          const child = childOf(task);
+          return (
+            <TaskRow
+              key={task.id}
+              task={task}
+              groupLabel={label}
+              // Only a running row reads the clock; a settled one is not re-rendered by the tick.
+              now={task.state === "running" ? now : null}
+              stopping={task.childSessionId !== undefined && stopping.has(task.childSessionId)}
+              childKind={child?.kind}
+              childTitle={child?.title}
+              onOpen={onOpen}
+              onStop={onStop}
+            />
+          );
+        })}
       </ul>
     </section>
   );
@@ -135,7 +141,9 @@ interface TaskRowProps {
   groupLabel: string;
   now: number | null;
   stopping: boolean;
-  info: { kind: SessionKind; title: string } | undefined;
+  /** The child's provider kind and roster title, as scalars so a settled row's memo holds. */
+  childKind: SessionKind | undefined;
+  childTitle: string | undefined;
   onOpen: (childSessionId: string) => void;
   onStop: (task: SessionTask) => Promise<void>;
 }
@@ -146,9 +154,9 @@ const UNTITLED_LABEL: Record<SessionTask["kind"], string> = {
 };
 
 /** The mark a row opens with: the child's provider, or the terminal glyph for a command. */
-function rowMarkKind(task: SessionTask, info: TaskRowProps["info"]): SessionKind {
+function rowMarkKind(task: SessionTask, childKind: SessionKind | undefined): SessionKind {
   if (task.kind === "command") return "terminal";
-  return info?.kind ?? "acp";
+  return childKind ?? "acp";
 }
 
 const TaskRow = memo(function TaskRow({
@@ -156,7 +164,8 @@ const TaskRow = memo(function TaskRow({
   groupLabel,
   now,
   stopping,
-  info,
+  childKind,
+  childTitle,
   onOpen,
   onStop,
 }: TaskRowProps) {
@@ -170,7 +179,7 @@ const TaskRow = memo(function TaskRow({
   const duration = span === null ? null : formatTaskDuration(span);
   // A row names its title whatever the daemon sent: the roster's title stands in for an empty one.
   const title =
-    task.title.trim() !== "" ? task.title : info?.title.trim() || UNTITLED_LABEL[task.kind];
+    task.title.trim() !== "" ? task.title : childTitle?.trim() || UNTITLED_LABEL[task.kind];
   const word = taskStateWord(task.state);
   // The model and the tool count are the row's detail: they wait behind a hover.
   const detail = [
@@ -182,7 +191,7 @@ const TaskRow = memo(function TaskRow({
   return (
     <li className="tasks-panel-row" data-state={task.state} title={detail || undefined}>
       <span className="tasks-panel-mark">
-        <StripKindMark kind={rowMarkKind(task, info)} />
+        <StripKindMark kind={rowMarkKind(task, childKind)} />
       </span>
       {childSessionId === undefined ? (
         <span className="tasks-panel-title">{title}</span>

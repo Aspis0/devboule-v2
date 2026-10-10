@@ -339,6 +339,34 @@ describe("the duration clock", () => {
     expect(clock.reads).toBe(1);
   });
 
+  it("keeps a settled row out of the clock's re-renders when the roster hands back fresh objects", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(66_000));
+    // Workspace builds a new child-info object on every call; a settled row must not care.
+    const fresh: AgentTasksContext = {
+      ...context([
+        task({ startedAtMs: 1_000 }),
+        task({
+          id: "done",
+          title: "Done",
+          state: "finished",
+          startedAtMs: 1_000,
+          endedAtMs: 5_000,
+          childSessionId: "done",
+        }),
+      ]),
+      childInfo: () => ({ kind: "claude", title: "Done" }),
+    };
+    await render(fresh);
+    clock.reads = 0;
+
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+    });
+
+    expect(clock.reads).toBe(1);
+  });
+
   it("counts a running row up once a second", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(66_000));
