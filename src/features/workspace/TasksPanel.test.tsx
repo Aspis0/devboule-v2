@@ -57,6 +57,7 @@ function context(
   return {
     sessionId: "parent-1",
     source: fakeTaskSource({ epoch: "e1", revision: 1, tasks, omitted }),
+    childInfo: () => undefined,
     onOpenAgent,
     onStopAgent,
   };
@@ -149,11 +150,60 @@ describe("the Tasks tab's rows", () => {
     expect(rowFor("Halted").textContent).toContain("Stopped");
   });
 
-  it("shows the model and the tool count of a running agent when the daemon gave them", async () => {
+  it("keeps the model and the tool count behind a hover, not in the line", async () => {
     await render(context([task({ model: "test-model", toolCallCount: 1 })]));
 
-    expect(rowFor("Explore auth").textContent).toContain("test-model");
-    expect(rowFor("Explore auth").textContent).toContain("1 tool");
+    expect(rowFor("Explore auth").getAttribute("title")).toBe("test-model · 1 tool");
+    expect(rowFor("Explore auth").textContent).not.toContain("test-model");
+    expect(rowFor("Explore auth").textContent).not.toContain("1 tool");
+  });
+
+  it("marks each row with its provider's real mark, never a letter", async () => {
+    const withClaude: AgentTasksContext = {
+      ...context([task({ id: "c", childSessionId: "c" })]),
+      childInfo: () => ({ kind: "claude", title: "Explore auth" }),
+    };
+    await render(withClaude);
+
+    const mark = rowFor("Explore auth").querySelector(".tasks-panel-mark");
+    expect(mark?.querySelector('[data-mark="burst"]')).not.toBeNull();
+    expect(mark?.textContent).toBe("");
+  });
+
+  it("gives a command the terminal mark and an agent with no roster row the generic one", async () => {
+    await render(
+      context([
+        task({ id: "cmd-1", kind: "command", title: "npm test" }),
+        task({ id: "orphan", title: "Orphan agent", childSessionId: "orphan" }),
+      ]),
+    );
+
+    expect(rowFor("npm test").querySelector('[data-mark="terminal"]')).not.toBeNull();
+    expect(rowFor("Orphan agent").querySelector('[data-mark="agent"]')).not.toBeNull();
+  });
+
+  it("names a row from the roster when the daemon sent it with no title", async () => {
+    const named: AgentTasksContext = {
+      ...context([task({ title: "", state: "finished", endedAtMs: 2_000 })]),
+      childInfo: () => ({ kind: "codex", title: "Continue Kalsa website" }),
+    };
+    await render(named);
+
+    expect(titles()).toEqual(["Continue Kalsa website"]);
+  });
+
+  it("shows the state word only when the group heading does not already say it", async () => {
+    await render(
+      context([
+        task({ id: "run", title: "Still going" }),
+        task({ id: "done", title: "Done one", state: "finished", endedAtMs: 4_000 }),
+        task({ id: "stop", title: "Stopped one", state: "cancelled", endedAtMs: 4_000 }),
+      ]),
+    );
+
+    expect(rowFor("Still going").querySelector(".tasks-panel-word")).toBeNull();
+    expect(rowFor("Done one").querySelector(".tasks-panel-word")).toBeNull();
+    expect(rowFor("Stopped one").querySelector(".tasks-panel-word")?.textContent).toBe("Stopped");
   });
 
   it("says how many rows the publish cap left out", async () => {

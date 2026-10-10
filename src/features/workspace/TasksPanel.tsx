@@ -4,8 +4,9 @@
 import { memo, useCallback, useMemo, useRef, useState } from "react";
 import { useConfirmAsk } from "../../components/ConfirmHost";
 import { formatTaskDuration, taskStateWord, toolCountText } from "../../lib/backgroundTaskText";
-import type { SessionTask } from "../../types/ipc";
+import type { SessionKind, SessionTask } from "../../types/ipc";
 import { groupTasks } from "./backgroundTaskGroups";
+import { StripKindMark } from "./strip/StripKindMark";
 import type { AgentTasksContext } from "./sidePanelRegistry";
 import { useBackgroundTaskState } from "./useBackgroundTaskState";
 import { useTaskClock } from "./useTaskClock";
@@ -69,6 +70,7 @@ export function TasksPanel({ tasks }: TasksPanelProps) {
           tasks={groups.running}
           now={now}
           stopping={stopping}
+          childInfo={tasks?.childInfo}
           onOpen={openAgent}
           onStop={stop}
         />
@@ -79,6 +81,7 @@ export function TasksPanel({ tasks }: TasksPanelProps) {
           tasks={groups.finished}
           now={now}
           stopping={stopping}
+          childInfo={tasks?.childInfo}
           onOpen={openAgent}
           onStop={stop}
         />
@@ -98,11 +101,12 @@ interface TaskGroupProps {
   tasks: SessionTask[];
   now: number;
   stopping: ReadonlySet<string>;
+  childInfo: AgentTasksContext["childInfo"] | undefined;
   onOpen: (childSessionId: string) => void;
   onStop: (task: SessionTask) => Promise<void>;
 }
 
-function TaskGroup({ label, tasks, now, stopping, onOpen, onStop }: TaskGroupProps) {
+function TaskGroup({ label, tasks, now, stopping, childInfo, onOpen, onStop }: TaskGroupProps) {
   return (
     <section className="tasks-panel-group" aria-label={label}>
       <h3 className="tasks-panel-heading">{label}</h3>
@@ -111,9 +115,11 @@ function TaskGroup({ label, tasks, now, stopping, onOpen, onStop }: TaskGroupPro
           <TaskRow
             key={task.id}
             task={task}
+            groupLabel={label}
             // Only a running row reads the clock; a settled one is not re-rendered by the tick.
             now={task.state === "running" ? now : null}
             stopping={task.childSessionId !== undefined && stopping.has(task.childSessionId)}
+            info={task.childSessionId === undefined ? undefined : childInfo?.(task.childSessionId)}
             onOpen={onOpen}
             onStop={onStop}
           />
@@ -125,13 +131,35 @@ function TaskGroup({ label, tasks, now, stopping, onOpen, onStop }: TaskGroupPro
 
 interface TaskRowProps {
   task: SessionTask;
+  /** The heading the row sits under: its state word shows only when it adds to that. */
+  groupLabel: string;
   now: number | null;
   stopping: boolean;
+  info: { kind: SessionKind; title: string } | undefined;
   onOpen: (childSessionId: string) => void;
   onStop: (task: SessionTask) => Promise<void>;
 }
 
-const TaskRow = memo(function TaskRow({ task, now, stopping, onOpen, onStop }: TaskRowProps) {
+const UNTITLED_LABEL: Record<SessionTask["kind"], string> = {
+  agent: "Untitled subagent",
+  command: "Untitled command",
+};
+
+/** The mark a row opens with: the child's provider, or the terminal glyph for a command. */
+function rowMarkKind(task: SessionTask, info: TaskRowProps["info"]): SessionKind {
+  if (task.kind === "command") return "terminal";
+  return info?.kind ?? "acp";
+}
+
+const TaskRow = memo(function TaskRow({
+  task,
+  groupLabel,
+  now,
+  stopping,
+  info,
+  onOpen,
+  onStop,
+}: TaskRowProps) {
   const childSessionId = task.kind === "agent" ? task.childSessionId : undefined;
   const span =
     now !== null
@@ -140,30 +168,35 @@ const TaskRow = memo(function TaskRow({ task, now, stopping, onOpen, onStop }: T
         ? null
         : task.endedAtMs - task.startedAtMs;
   const duration = span === null ? null : formatTaskDuration(span);
-  const details = [
+  // A row names its title whatever the daemon sent: the roster's title stands in for an empty one.
+  const title =
+    task.title.trim() !== "" ? task.title : info?.title.trim() || UNTITLED_LABEL[task.kind];
+  const word = taskStateWord(task.state);
+  // The model and the tool count are the row's detail: they wait behind a hover.
+  const detail = [
     task.model,
     task.toolCallCount === undefined ? undefined : toolCountText(task.toolCallCount),
-  ].filter((detail): detail is string => detail !== undefined);
+  ]
+    .filter((part): part is string => part !== undefined)
+    .join(" · ");
   return (
-    <li className="tasks-panel-row" data-state={task.state}>
+    <li className="tasks-panel-row" data-state={task.state} title={detail || undefined}>
+      <span className="tasks-panel-mark">
+        <StripKindMark kind={rowMarkKind(task, info)} />
+      </span>
       {childSessionId === undefined ? (
-        <span className="tasks-panel-title">{task.title}</span>
+        <span className="tasks-panel-title">{title}</span>
       ) : (
         <button
           type="button"
           className="tasks-panel-title tasks-panel-open"
           onClick={() => onOpen(childSessionId)}
         >
-          {task.title}
+          {title}
         </button>
       )}
-      <span className="tasks-panel-word">{taskStateWord(task.state)}</span>
+      {word === groupLabel ? null : <span className="tasks-panel-word">{word}</span>}
       {duration === null ? null : <span className="tasks-panel-meta">{duration}</span>}
-      {details.map((detail) => (
-        <span key={detail} className="tasks-panel-meta">
-          {detail}
-        </span>
-      ))}
       {task.state === "running" && childSessionId !== undefined ? (
         <button
           type="button"

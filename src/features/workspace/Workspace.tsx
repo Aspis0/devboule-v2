@@ -1578,6 +1578,15 @@ export function Workspace({
     },
     [sessions, handleReopenSession, refreshSessions],
   );
+  const childInfoOf = useCallback(
+    (sessionId: string) => {
+      const session = sessions.find((row) => row.id === sessionId);
+      return session === undefined
+        ? undefined
+        : { kind: session.kind, title: sessionTitle(session) };
+    },
+    [sessions],
+  );
   const reportPaneAgent = useCallback(
     (sessionId: string, agent: BackgroundTaskSource | null) =>
       setPaneAgent(agent === null ? null : { sessionId, source: agent }),
@@ -1610,11 +1619,12 @@ export function Workspace({
         ? {
             sessionId: paneSession.id,
             source: paneAgent.source,
+            childInfo: childInfoOf,
             onOpenAgent: openTaskAgent,
             onStopAgent: stopAgent,
           }
         : null,
-    [paneSession, paneAgent, openTaskAgent, stopAgent],
+    [paneSession, paneAgent, childInfoOf, openTaskAgent, stopAgent],
   );
   // A failed resume leaves the row's verdict changed on the daemon side; the
   // bar must not keep its offer on the roster data this surface already held.

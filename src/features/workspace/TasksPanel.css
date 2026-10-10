@@ -44,6 +44,13 @@
   white-space: nowrap;
 }
 
+.tasks-panel-mark {
+  display: inline-flex;
+  flex: none;
+  align-self: center;
+  color: var(--muted);
+}
+
 .tasks-panel-title {
   min-width: 0;
   overflow: hidden;

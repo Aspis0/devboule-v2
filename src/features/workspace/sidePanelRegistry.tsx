@@ -7,12 +7,15 @@ import type { PanelIconName } from "./panel/PanelIcon";
 import type { WorkspaceKey } from "./hosts/hostIdentity";
 import type { FileToolTabKind } from "./strip/toolTabs";
 import type { BackgroundTaskSource } from "./useBackgroundTaskState";
+import type { SessionKind } from "../../types/ipc";
 
 /** The selected agent session's background tasks, as the Tasks tab shows them. */
 export interface AgentTasksContext {
   sessionId: string;
   /** The session's task lane: the tab reads the list from it and re-renders on its changes. */
   source: BackgroundTaskSource;
+  /** The provider kind and roster title of a child the roster holds, for its row's mark and name. */
+  childInfo: (childSessionId: string) => { kind: SessionKind; title: string } | undefined;
   /** Opens the child's transcript in the main pane. */
   /** Returns a sentence for the user when the child cannot be opened. */
   onOpenAgent: (childSessionId: string) => string | null;
