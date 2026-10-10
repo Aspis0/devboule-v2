@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { DesignAgentSession } from "./designHost";
 import type { AgentSessionState } from "../../lib/agentSession";
 import type { ProviderInfo } from "../../types/ipc";
@@ -10,6 +10,7 @@ import { useProviderConsent } from "../workspace/useProviderConsent";
 import { requiresConsent } from "../workspace/workspaceSessions";
 import { modelLabel as modelDisplayLabel } from "../workspace/modelLabel";
 import { confirmedEffort, manifestModel } from "./designMessageModel";
+import { lastErrorText } from "./designPickerError";
 import { liveEffortOptions } from "../workspace/liveEffortOptions";
 
 interface DesignAgentPickerProps {
@@ -51,16 +52,12 @@ export function DesignAgentPicker({
   const sessionUnavailable = sessionClosed || sessionErrored;
   // `fail()` in agentSession.ts records the message only as an error item in the
   // transcript; the state carries no dedicated error field, so read it back here.
-  let sessionErrorText: string | null = null;
-  if (agentState !== null) {
-    for (let index = agentState.items.length - 1; index >= 0; index -= 1) {
-      const item = agentState.items[index];
-      if (item.role === "error") {
-        sessionErrorText = item.text;
-        break;
-      }
-    }
-  }
+  // Memoised on the items: a composer keystroke must not walk the transcript again.
+  const items = agentState?.items;
+  const sessionErrorText = useMemo(
+    () => (items === undefined ? null : lastErrorText(items)),
+    [items],
+  );
 
   const modelLabel = sessionClosed
     ? "Session closed"
