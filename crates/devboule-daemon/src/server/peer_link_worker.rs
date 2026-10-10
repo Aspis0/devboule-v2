@@ -221,7 +221,6 @@ fn run(
                     LinkCommand::FileWrite { .. } => {
                         serve_file_write(&state, &link, open, command, reads, tuning.read_deadline);
                     }
-                    }
                     LinkCommand::Revoke => {
                         // The row is gone: the transport and every stream on
                         // it go with it, and there is nothing to reconnect to.

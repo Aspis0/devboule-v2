@@ -198,8 +198,6 @@ pub(crate) enum LinkCommand {
         answer: SyncSender<LinkAnswer>,
     },
     /// The row was revoked: drop the transport now, streams included.
-    },
-    /// The row was revoked: drop the transport now, streams included.
     Revoke,
 }
 

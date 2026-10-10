@@ -144,12 +144,15 @@ pub(super) fn dispatch_remote_host(
                 LinkAnswer::Body(_) => DaemonMessage::Error(
                     WireError::new(ErrorCode::Internal, "an attach is not a list read").with_id(id),
                 ),
-                LinkAnswer::Created(_) | LinkAnswer::Sent(_) | LinkAnswer::Providers { .. } | LinkAnswer::FileOpened(_) | LinkAnswer::FileVersion(_) | LinkAnswer::FileWrite(_) => {
-                    DaemonMessage::Error(
-                        WireError::new(ErrorCode::Internal, "an attach is not an operate call")
-                            .with_id(id),
-                    )
-                }
+                LinkAnswer::Created(_)
+                | LinkAnswer::Sent(_)
+                | LinkAnswer::Providers { .. }
+                | LinkAnswer::FileOpened(_)
+                | LinkAnswer::FileVersion(_)
+                | LinkAnswer::FileWrite(_) => DaemonMessage::Error(
+                    WireError::new(ErrorCode::Internal, "an attach is not an operate call")
+                        .with_id(id),
+                ),
             }
         }
         ClientMessage::RemoteHostDetach {
@@ -181,12 +184,15 @@ pub(super) fn dispatch_remote_host(
                 LinkAnswer::Body(_) => DaemonMessage::Error(
                     WireError::new(ErrorCode::Internal, "a detach is not a list read").with_id(id),
                 ),
-                LinkAnswer::Created(_) | LinkAnswer::Sent(_) | LinkAnswer::Providers { .. } | LinkAnswer::FileOpened(_) | LinkAnswer::FileVersion(_) | LinkAnswer::FileWrite(_) => {
-                    DaemonMessage::Error(
-                        WireError::new(ErrorCode::Internal, "a detach is not an operate call")
-                            .with_id(id),
-                    )
-                }
+                LinkAnswer::Created(_)
+                | LinkAnswer::Sent(_)
+                | LinkAnswer::Providers { .. }
+                | LinkAnswer::FileOpened(_)
+                | LinkAnswer::FileVersion(_)
+                | LinkAnswer::FileWrite(_) => DaemonMessage::Error(
+                    WireError::new(ErrorCode::Internal, "a detach is not an operate call")
+                        .with_id(id),
+                ),
             }
         }
         ClientMessage::RemoteHostList {
@@ -220,12 +226,15 @@ pub(super) fn dispatch_remote_host(
                     )
                     .with_id(id),
                 ),
-                LinkAnswer::Created(_) | LinkAnswer::Sent(_) | LinkAnswer::Providers { .. } | LinkAnswer::FileOpened(_) | LinkAnswer::FileVersion(_) | LinkAnswer::FileWrite(_) => {
-                    DaemonMessage::Error(
-                        WireError::new(ErrorCode::Internal, "a list read is not an operate call")
-                            .with_id(id),
-                    )
-                }
+                LinkAnswer::Created(_)
+                | LinkAnswer::Sent(_)
+                | LinkAnswer::Providers { .. }
+                | LinkAnswer::FileOpened(_)
+                | LinkAnswer::FileVersion(_)
+                | LinkAnswer::FileWrite(_) => DaemonMessage::Error(
+                    WireError::new(ErrorCode::Internal, "a list read is not an operate call")
+                        .with_id(id),
+                ),
             }
         }
         ClientMessage::RemoteHostCreate {

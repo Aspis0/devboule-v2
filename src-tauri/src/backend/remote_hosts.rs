@@ -451,6 +451,8 @@ pub async fn remote_host_set_mode(
     require_session_id(&session_id)?;
     let client = require_client(&bridge)?;
     off_main_thread(move || client.remote_host_set_mode(&device_id, &session_id, &mode_id)).await
+}
+
 /// Open one file in a workspace on a paired host, for the in-app editor.
 /// Human-originated, like every operate command — no confirmation card:
 /// the human controls everything on any paired PC. The reply is the

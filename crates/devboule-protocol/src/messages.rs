@@ -717,7 +717,6 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_revision: Option<String>,
     },
-    },
     /// Register this connection as the browser host: the place that runs
     /// browser commands for agents. The reply is
     /// [`DaemonMessage::BrowserHostRegistered`], and from then on the daemon
