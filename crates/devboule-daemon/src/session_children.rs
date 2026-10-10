@@ -1021,18 +1021,16 @@ impl super::SessionRegistry {
         let _ = self.deliver_to_creator(&creator, &owner, &envelope, Some(child), None);
     }
 
-    /// Read-only activity answer for one agent session: the derived headline,
-    /// the hook's last state beside it (never merged), the idle age, and the
-    /// bounded tail of the in-memory kind feed.
+    /// Read-only activity answer for one agent session, curated: the derived
+    /// state, the last messages as text, tool-call counts and the files the
+    /// tool calls touched. No ids, sequence numbers or per-chunk entries.
     ///
     /// Roster scope, deliberately: any session of the caller's own owner
     /// still in the live map — a commissioned child, a person-started
     /// session, or a recently ended one, which reads `unknown` with
-    /// whatever feed survives in memory. A closed transcript is not found.
-    /// Reading is not acting, and the roster already shows these rows. Metadata
-    /// only — kinds, seqs, timestamps and the display name the roster
-    /// already discloses; no payload text, no hook message. The broker
-    /// resolves display names before calling, so this takes the exact id.
+    /// whatever digest survives in memory. A closed transcript is not found.
+    /// Reading is not acting, and the roster already shows these rows. The
+    /// broker resolves display names before calling, so this takes the exact id.
     pub(crate) fn agent_activity(
         &self,
         child: &str,
@@ -1061,39 +1059,18 @@ impl super::SessionRegistry {
             AgentActivityState::Blocked => "blocked",
             AgentActivityState::Unknown => "unknown",
         };
-        let (hook_str, hook_seq) = match runtime.hook_activity() {
-            Some((state, seq)) => (
-                Some(match state {
-                    AgentActivityState::Idle => "idle",
-                    AgentActivityState::Working => "working",
-                    AgentActivityState::Blocked => "blocked",
-                    AgentActivityState::Unknown => "unknown",
-                }),
-                seq,
-            ),
-            None => (None, None),
-        };
-        let idle_ms = runtime
-            .activity_idle_at(Instant::now())
-            .map(|idle| idle.as_millis().try_into().unwrap_or(u64::MAX));
-        let recent: Vec<serde_json::Value> = runtime
-            .recent_activity(limit)
-            .into_iter()
-            .map(|mark| serde_json::json!({"seq": mark.seq, "kind": mark.kind, "tsMs": mark.ts_ms}))
-            .collect();
+        let digest = runtime.activity_digest();
+        let (done, failed, running) = digest.tool_counts();
         let display_name = session
             .display_name
             .clone()
             .unwrap_or_else(|| session.title.clone());
         Ok(serde_json::json!({
-            "sessionId": session.id,
-            "displayName": display_name,
-            "activity": activity_str,
-            "hookActivity": hook_str,
-            "hookSeq": hook_seq,
-            "idleMs": idle_ms,
-            "lastSeq": runtime.last_seq(),
-            "recent": recent,
+            "name": display_name,
+            "state": activity_str,
+            "lastMessages": digest.last_messages(limit),
+            "toolCalls": {"done": done, "failed": failed, "running": running},
+            "filesTouched": digest.files(),
         }))
     }
 

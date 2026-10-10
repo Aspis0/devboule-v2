@@ -852,11 +852,11 @@ export default function (pi) {
   pi.registerTool({
     name: "devboule_agent_activity",
     label: "Read Devboule agent activity",
-    description: `Reads what one live agent session of your own owner has been doing: its current activity (working, idle, blocked or unknown), how long since it last published, and its recent event kinds with timestamps. Metadata only, never transcript text. Name the session by id or display name; limit caps the recent lines (default 10, max 50; 0 returns the state with no recent lines). Do not read it in a loop to wait for a child: the child's finish reaches you as a message.`,
+    description: `Reads what one live agent session of your own owner has been doing: its state (working, idle, blocked or unknown), the last messages it wrote, as text, the tool calls it made by status (done, failed, running) and the files those calls touched. Name the session by id or display name; limit caps the messages (default 10, max 50; 0 returns the state and counts only). Do not read it in a loop to wait for a child: the child's finish reaches you as a message.`,
     parameters: Type.Object(
       {
         session: Type.String({ description: "The id or display name of one live agent session of your own owner." }),
-        limit: Type.Optional(Type.Integer({ minimum: 0, maximum: 50, description: "How many recent event lines to return. Default 10, max 50." })),
+        limit: Type.Optional(Type.Integer({ minimum: 0, maximum: 50, description: "How many of the last messages to return. Default 10, max 50." })),
       },
       { required: ["session"], additionalProperties: false },
     ),

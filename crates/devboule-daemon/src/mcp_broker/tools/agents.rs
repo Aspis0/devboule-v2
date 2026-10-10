@@ -170,6 +170,38 @@ pub(in crate::mcp_broker) fn set_profile(
     }
 }
 
+/// The curated activity answer as the caller reads it in the tool's text: the
+/// state line with the tool-call counts, the files touched, then each message.
+/// The structured document carries the same facts for a program to read.
+fn activity_text(document: &Value) -> String {
+    let name = document["name"].as_str().unwrap_or_default();
+    let state = document["state"].as_str().unwrap_or_default();
+    let calls = &document["toolCalls"];
+    let mut lines = vec![format!(
+        "{name}: {state}. Tool calls: {} done, {} failed, {} running.",
+        calls["done"], calls["failed"], calls["running"]
+    )];
+    let files: Vec<&str> = document["filesTouched"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    if !files.is_empty() {
+        lines.push(format!("Files touched: {}.", files.join(", ")));
+    }
+    for message in document["lastMessages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        lines.push(String::new());
+        lines.push(message.to_string());
+    }
+    lines.join("\n")
+}
+
 pub(in crate::mcp_broker) fn activity(
     state: &Arc<ServerState>,
     registration: &RegisteredSession,
@@ -225,9 +257,7 @@ pub(in crate::mcp_broker) fn activity(
         .agent_activity(&target, &registration.owner, limit)
     {
         Ok(document) => {
-            let text = serde_json::to_string(&document).map_err(|error| {
-                json!({"jsonrpc":"2.0", "id": id, "error": {"code": -32603, "message": format!("Could not encode agent activity: {error}")}})
-            })?;
+            let text = activity_text(&document);
             Ok(Some(json!({
                 "jsonrpc": "2.0",
                 "id": id,

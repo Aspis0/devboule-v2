@@ -7,9 +7,10 @@
 //! a bounded in-memory ring of recent event kinds. The tool reads both; the
 //! hook's last state rides alongside, never merged, so the two cannot fight.
 
+use std::collections::VecDeque;
 use std::time::Duration;
 
-use devboule_protocol::{AgentActivityState, SessionEvent};
+use devboule_protocol::{AgentActivityState, SessionEvent, ToolLocation};
 
 /// Recent lines returned when the caller names no limit. Ten kinds fit one
 /// glance and already separate working from blocked from quiet.
@@ -138,6 +139,163 @@ pub fn event_kind(event: &SessionEvent) -> &'static str {
     }
 }
 
+/// Characters kept of one message's text; the rest is cut and marked with `…`.
+pub const DIGEST_TEXT_CAP: usize = 2_000;
+/// Distinct tool calls the digest keeps; the oldest goes first.
+pub const DIGEST_TOOL_CAP: usize = 256;
+/// Distinct files the digest keeps; the first seen stay.
+pub const DIGEST_FILE_CAP: usize = 100;
+
+/// One agent message as the digest keeps it: the text so far and whether it was cut.
+#[derive(Clone, Debug, Default)]
+struct DigestMessage {
+    text: String,
+    cut: bool,
+}
+
+impl DigestMessage {
+    fn push(&mut self, chunk: &str) {
+        if self.cut {
+            return;
+        }
+        let room = DIGEST_TEXT_CAP.saturating_sub(self.text.chars().count());
+        if chunk.chars().count() <= room {
+            self.text.push_str(chunk);
+        } else {
+            self.text.extend(chunk.chars().take(room));
+            self.cut = true;
+        }
+    }
+
+    fn rendered(&self) -> String {
+        if self.cut {
+            format!("{}…", self.text)
+        } else {
+            self.text.clone()
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ToolRecord {
+    id: String,
+    status: String,
+}
+
+/// The text side of one agent's publishes, beside the metadata feed: its last
+/// messages, each tool call's latest status and the files those calls touched.
+/// The central publisher feeds it the same events the feed sees, so it shows
+/// what the transcript shows. Bounded at every step; nothing here is journaled.
+#[derive(Clone, Debug, Default)]
+pub struct ActivityDigest {
+    messages: VecDeque<DigestMessage>,
+    /// Whether the last published event was a message chunk, so the next chunk
+    /// continues that message instead of starting one.
+    message_open: bool,
+    tools: VecDeque<ToolRecord>,
+    files: Vec<String>,
+}
+
+impl ActivityDigest {
+    /// Fold one published event in. Only message chunks, tool calls and their
+    /// updates change the digest; everything else ends an open message.
+    pub fn record(&mut self, event: &SessionEvent) {
+        match event {
+            SessionEvent::AgentMessage { text, .. } => {
+                if !self.message_open {
+                    self.messages.push_back(DigestMessage::default());
+                    if self.messages.len() > ACTIVITY_MAX_LIMIT {
+                        self.messages.pop_front();
+                    }
+                }
+                if let Some(message) = self.messages.back_mut() {
+                    message.push(text);
+                }
+                self.message_open = true;
+                return;
+            }
+            SessionEvent::AgentToolCall {
+                tool_call_id,
+                status,
+                locations,
+                ..
+            } => {
+                self.upsert_tool(tool_call_id, Some(status));
+                self.note_files(locations.as_deref());
+            }
+            SessionEvent::AgentToolUpdate {
+                tool_call_id,
+                status,
+                locations,
+                ..
+            } => {
+                self.upsert_tool(tool_call_id, status.as_deref());
+                self.note_files(locations.as_deref());
+            }
+            _ => {}
+        }
+        self.message_open = false;
+    }
+
+    /// The last `limit` messages, oldest first, each as its text so far.
+    pub fn last_messages(&self, limit: usize) -> Vec<String> {
+        let skip = self.messages.len().saturating_sub(limit);
+        self.messages
+            .iter()
+            .skip(skip)
+            .map(DigestMessage::rendered)
+            .collect()
+    }
+
+    /// Tool calls by their latest status: `(done, failed, running)`.
+    pub fn tool_counts(&self) -> (usize, usize, usize) {
+        self.tools
+            .iter()
+            .fold((0, 0, 0), |(done, failed, running), tool| {
+                match tool.status.as_str() {
+                    "completed" => (done + 1, failed, running),
+                    "failed" => (done, failed + 1, running),
+                    _ => (done, failed, running + 1),
+                }
+            })
+    }
+
+    /// The distinct paths the tool calls touched, first seen first.
+    pub fn files(&self) -> &[String] {
+        &self.files
+    }
+
+    fn upsert_tool(&mut self, id: &str, status: Option<&str>) {
+        match self.tools.iter_mut().find(|tool| tool.id == id) {
+            Some(tool) => {
+                if let Some(status) = status {
+                    tool.status = status.to_string();
+                }
+            }
+            None => {
+                self.tools.push_back(ToolRecord {
+                    id: id.to_string(),
+                    status: status.unwrap_or("pending").to_string(),
+                });
+                if self.tools.len() > DIGEST_TOOL_CAP {
+                    self.tools.pop_front();
+                }
+            }
+        }
+    }
+
+    fn note_files(&mut self, locations: Option<&[ToolLocation]>) {
+        for location in locations.unwrap_or_default() {
+            if self.files.len() >= DIGEST_FILE_CAP {
+                return;
+            }
+            if !self.files.contains(&location.path) {
+                self.files.push(location.path.clone());
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,5 +365,145 @@ mod tests {
             session_start_source: None,
         };
         assert_eq!(event_kind(&reported), "agent_reported");
+    }
+
+    fn message(text: &str) -> SessionEvent {
+        SessionEvent::AgentMessage {
+            message_id: None,
+            text: text.to_string(),
+            parent_tool_use_id: None,
+            spawn_depth: None,
+            images: Vec::new(),
+        }
+    }
+
+    fn call(id: &str, status: &str, path: Option<&str>) -> SessionEvent {
+        SessionEvent::AgentToolCall {
+            tool_call_id: id.to_string(),
+            title: format!("tool {id}"),
+            status: status.to_string(),
+            kind: None,
+            locations: path.map(|path| {
+                vec![ToolLocation {
+                    path: path.to_string(),
+                    line: None,
+                }]
+            }),
+            subagent_type: None,
+            parent_tool_use_id: None,
+            spawn_depth: None,
+            command: None,
+            exit_code: None,
+            background: None,
+        }
+    }
+
+    fn update(id: &str, status: &str, path: Option<&str>) -> SessionEvent {
+        SessionEvent::AgentToolUpdate {
+            tool_call_id: id.to_string(),
+            status: Some(status.to_string()),
+            text: None,
+            title: None,
+            kind: None,
+            locations: path.map(|path| {
+                vec![ToolLocation {
+                    path: path.to_string(),
+                    line: None,
+                }]
+            }),
+            parent_tool_use_id: None,
+            spawn_depth: None,
+            command: None,
+            exit_code: None,
+            replace: false,
+            images: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn streamed_chunks_of_one_message_read_as_one_message() {
+        let mut digest = ActivityDigest::default();
+        for chunk in ["Hel", "lo ", "there"] {
+            digest.record(&message(chunk));
+        }
+        assert_eq!(digest.last_messages(10), vec!["Hello there".to_string()]);
+    }
+
+    #[test]
+    fn a_tool_call_ends_one_message_and_the_next_starts_a_new_one() {
+        let mut digest = ActivityDigest::default();
+        digest.record(&message("first"));
+        digest.record(&message("-part"));
+        digest.record(&call("t1", "completed", None));
+        digest.record(&message("second"));
+        assert_eq!(
+            digest.last_messages(10),
+            vec!["first-part".to_string(), "second".to_string()]
+        );
+    }
+
+    #[test]
+    fn thoughts_are_not_messages() {
+        let mut digest = ActivityDigest::default();
+        digest.record(&SessionEvent::AgentThought {
+            message_id: None,
+            text: "hmm".to_string(),
+            parent_tool_use_id: None,
+            spawn_depth: None,
+        });
+        assert!(digest.last_messages(10).is_empty());
+    }
+
+    #[test]
+    fn the_limit_takes_the_most_recent_messages_and_the_ring_is_bounded() {
+        let mut digest = ActivityDigest::default();
+        let total = ACTIVITY_MAX_LIMIT + 5;
+        for index in 0..total {
+            digest.record(&message(&format!("m{index}")));
+            digest.record(&call(&format!("t{index}"), "completed", None));
+        }
+        let kept = digest.last_messages(ACTIVITY_MAX_LIMIT);
+        assert_eq!(kept.len(), ACTIVITY_MAX_LIMIT);
+        assert_eq!(kept.last().map(String::as_str), Some("m54"));
+        assert_eq!(
+            digest.last_messages(3),
+            vec!["m52".to_string(), "m53".to_string(), "m54".to_string()]
+        );
+        assert!(digest.last_messages(0).is_empty());
+    }
+
+    #[test]
+    fn a_long_message_is_cut_and_marked() {
+        let mut digest = ActivityDigest::default();
+        digest.record(&message(&"x".repeat(DIGEST_TEXT_CAP * 3)));
+        let text = digest.last_messages(1).pop().expect("the message");
+        assert!(
+            text.chars().count() <= DIGEST_TEXT_CAP + 1,
+            "{}",
+            text.len()
+        );
+        assert!(text.ends_with('…'));
+    }
+
+    #[test]
+    fn tool_calls_count_by_their_latest_status() {
+        let mut digest = ActivityDigest::default();
+        digest.record(&call("t1", "in_progress", None));
+        digest.record(&update("t1", "completed", None));
+        digest.record(&call("t2", "failed", None));
+        digest.record(&call("t3", "in_progress", None));
+        digest.record(&update("t3", "failed", None));
+        digest.record(&call("t4", "pending", None));
+        assert_eq!(digest.tool_counts(), (1, 2, 1));
+    }
+
+    #[test]
+    fn files_touched_are_unique_and_in_first_seen_order() {
+        let mut digest = ActivityDigest::default();
+        digest.record(&call("t1", "in_progress", Some("a.rs")));
+        digest.record(&update("t1", "completed", Some("a.rs")));
+        digest.record(&call("t2", "completed", Some("b.rs")));
+        digest.record(&update("t3", "completed", Some("a.rs")));
+        assert_eq!(digest.files(), ["a.rs".to_string(), "b.rs".to_string()]);
     }
 }

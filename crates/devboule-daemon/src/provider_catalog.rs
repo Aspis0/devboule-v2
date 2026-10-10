@@ -258,7 +258,7 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
     (
         MCP_ACTIVITY_TOOL,
-        "Reads what one live agent session of your own owner has been doing: its current activity (working, idle, blocked or unknown), how long since it last published, and its recent event kinds with timestamps. Metadata only, never transcript text. Name the session by id or display name; limit caps the recent lines (default 10, max 50; 0 returns the state with no recent lines). Do not read it in a loop to wait for a child: the child's finish reaches you as a message.",
+        "Reads what one live agent session of your own owner has been doing: its state (working, idle, blocked or unknown), the last messages it wrote, as text, the tool calls it made by status (done, failed, running) and the files those calls touched. Name the session by id or display name; limit caps the messages (default 10, max 50; 0 returns the state and counts only). Do not read it in a loop to wait for a child: the child's finish reaches you as a message.",
     ),
     (
         MCP_STOP_AGENT_TOOL,
@@ -838,7 +838,7 @@ pub(crate) fn agent_activity_input_schema() -> serde_json::Value {
                 "type": "integer",
                 "minimum": 0,
                 "maximum": 50,
-                "description": "How many recent event lines to return. Default 10, max 50."
+                "description": "How many of the last messages to return. Default 10, max 50."
             }
         },
         "required": ["session"],

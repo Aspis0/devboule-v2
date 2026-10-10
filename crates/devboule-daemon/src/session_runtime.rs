@@ -349,6 +349,9 @@ pub(crate) struct SessionRuntime {
     /// every publish appends, the oldest drops past the cap, and no payload
     /// text is ever kept here.
     activity_feed: Mutex<VecDeque<crate::agent_activity::ActivityMark>>,
+    /// The bounded text digest the activity answer curates from: the last
+    /// messages, tool call statuses and touched files. In memory only.
+    activity_digest: Mutex<crate::agent_activity::ActivityDigest>,
     /// Prompts whose write has begun and whose turn has not yet started:
     /// taken when the send resolves the writer under the session map lock
     /// (`session_messaging.rs`) and given back when the send returns, so the
@@ -695,6 +698,7 @@ impl SessionRuntime {
             recovered_context: Mutex::new(None),
             ingress_chain: Mutex::new(Chain::default()),
             activity_feed: Mutex::new(VecDeque::new()),
+            activity_digest: Mutex::new(crate::agent_activity::ActivityDigest::default()),
             deliveries_in_flight: AtomicU32::new(0),
         }
     }
@@ -2649,10 +2653,22 @@ impl SessionRuntime {
                 feed.pop_front();
             }
         }
+        if let Ok(mut digest) = self.activity_digest.lock() {
+            digest.record(event);
+        }
+    }
+
+    /// A copy of the text digest, taken under its lock and read outside it.
+    pub(crate) fn activity_digest(&self) -> crate::agent_activity::ActivityDigest {
+        self.activity_digest
+            .lock()
+            .map(|digest| digest.clone())
+            .unwrap_or_default()
     }
 
     /// Tail of the feed, oldest first, at most `limit` marks. The caller
     /// clamps the limit; this never touches the journal.
+    #[cfg(test)]
     pub(crate) fn recent_activity(&self, limit: usize) -> Vec<crate::agent_activity::ActivityMark> {
         self.activity_feed
             .lock()
@@ -2763,17 +2779,18 @@ impl SessionRuntime {
             .map(|last| now.saturating_duration_since(last))
     }
 
-    /// Last allocated stream sequence, for the activity answer's `lastSeq`.
-    /// It can run ahead of the feed's last mark: unmarked paths consume
-    /// sequences too (see `record_activity`).
+    /// Last allocated stream sequence. Read by tests; the activity answer
+    /// no longer carries it.
+    #[cfg(test)]
     pub(crate) fn last_seq(&self) -> u64 {
         self.lock_stream()
             .map(|stream| stream.next_seq.saturating_sub(1))
             .unwrap_or(0)
     }
 
-    /// Hook headline without its text: state plus the hook's own seq. The
-    /// activity answer carries this beside the derived state, never merged.
+    /// Hook headline without its text: state plus the hook's own seq. Read by
+    /// tests; the activity answer derives its state from the daemon's facts.
+    #[cfg(test)]
     pub(crate) fn hook_activity(&self) -> Option<(AgentActivityState, Option<u64>)> {
         self.lock_stream()
             .ok()

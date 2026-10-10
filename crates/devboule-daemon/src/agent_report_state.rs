@@ -31,7 +31,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use devboule_protocol::{AgentActivityState, ErrorCode, WireError};
+#[cfg(test)]
+use devboule_protocol::AgentActivityState;
+use devboule_protocol::{ErrorCode, WireError};
 
 use super::{AcceptedAgentReport, AgentReport, MAX_HOOK_SOURCES};
 
@@ -70,8 +72,8 @@ impl AgentReportState {
     }
 
     /// Headline hook facts without the transcript: state plus the hook's own
-    /// seq. The message stays in the journaled event; the activity answer
-    /// carries metadata only.
+    /// seq. The message stays in the journaled event. Read by tests only.
+    #[cfg(test)]
     pub fn last_state(&self) -> Option<(AgentActivityState, Option<u64>)> {
         self.last.as_ref().map(|last| (last.state, last.seq))
     }

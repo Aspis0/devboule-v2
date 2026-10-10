@@ -46,6 +46,16 @@ fn activity_report(
     }
 }
 
+fn activity_message(text: &str) -> SessionEvent {
+    SessionEvent::AgentMessage {
+        message_id: None,
+        text: text.to_string(),
+        parent_tool_use_id: None,
+        spawn_depth: None,
+        images: Vec::new(),
+    }
+}
+
 #[test]
 fn agent_activity_tells_working_blocked_and_idle_apart() {
     let (_dir, registry, journal) = tmp_delete_registry();
@@ -59,7 +69,9 @@ fn agent_activity_tells_working_blocked_and_idle_apart() {
     registry.commit_agent_child_for_test(creator, "activity-blocked", true);
     registry.commit_agent_child_for_test(creator, "activity-idle", true);
     working.begin_turn();
+    working.publish_agent_event(activity_message("Checking the site."), None);
     working.publish_agent_event(activity_thought(), None);
+    working.publish_agent_event(activity_message("Two pages left."), None);
     blocked.publish_agent_event(activity_thought(), None);
     blocked.begin_turn();
     park_card(&registry, &blocked, "card-activity");
@@ -67,25 +79,22 @@ fn agent_activity_tells_working_blocked_and_idle_apart() {
     let working_answer = registry
         .agent_activity("activity-working", &owner, 10)
         .expect("working child reads");
-    assert_eq!(working_answer["activity"], "working");
-    assert!(working_answer["idleMs"].as_u64().is_some());
-    assert!(working_answer["recent"]
-        .as_array()
-        .is_some_and(|recent| recent.iter().any(|mark| mark["kind"] == "agent_thought")));
+    assert_eq!(working_answer["state"], "working");
+    assert_eq!(working_answer["lastMessages"][0], "Checking the site.");
+    assert_eq!(working_answer["lastMessages"][1], "Two pages left.");
     let blocked_answer = registry
         .agent_activity("activity-blocked", &owner, 10)
         .expect("blocked child reads");
-    assert_eq!(blocked_answer["activity"], "blocked");
+    assert_eq!(blocked_answer["state"], "blocked");
     let idle_answer = registry
         .agent_activity("activity-idle", &owner, 10)
         .expect("idle child reads");
-    assert_eq!(idle_answer["activity"], "idle");
+    assert_eq!(idle_answer["state"], "idle");
     let one_line = registry
         .agent_activity("activity-working", &owner, 1)
         .expect("bounded read");
-    assert!(one_line["recent"]
-        .as_array()
-        .is_some_and(|recent| recent.len() <= 1));
+    assert_eq!(one_line["lastMessages"].as_array().map(Vec::len), Some(1));
+    assert_eq!(one_line["lastMessages"][0], "Two pages left.");
     assert!(registry
         .agent_activity("activity-missing", &owner, 10)
         .is_err());
@@ -119,20 +128,14 @@ fn hook_and_derived_share_a_session_without_fighting() {
         .agent_activity("hook-child", &owner, 10)
         .expect("reads");
     assert_eq!(
-        answer["activity"], "idle",
-        "no turn and no card derives idle"
+        answer["state"], "idle",
+        "no turn and no card derives idle: the hook's word is not the answer"
     );
-    assert_eq!(answer["hookActivity"], "working");
-    assert_eq!(answer["hookSeq"], 5);
     child.begin_turn();
     let answer = registry
         .agent_activity("hook-child", &owner, 10)
         .expect("reads");
-    assert_eq!(answer["activity"], "working", "the derived headline wins");
-    assert_eq!(
-        answer["hookActivity"], "working",
-        "the hook rides beside it"
-    );
+    assert_eq!(answer["state"], "working", "the derived headline wins");
     assert_eq!(
         child.hook_activity(),
         Some((AgentActivityState::Working, Some(5))),

@@ -639,15 +639,19 @@ fn agent_activity_tool_serves_one_agents_metadata() {
     crate::session::insert_test_live_agent(&state.sessions, "activity-caller", owner.clone());
     let child =
         crate::session::insert_test_live_agent(&state.sessions, "activity-child", owner.clone());
-    child.publish_agent_event(
-        SessionEvent::AgentThought {
-            message_id: None,
-            text: "thinking".to_string(),
-            parent_tool_use_id: None,
-            spawn_depth: None,
-        },
-        None,
-    );
+    // Three streamed chunks of one message: the answer reads one message.
+    for chunk in ["Checked the ", "landing page ", "at desktop size."] {
+        child.publish_agent_event(
+            SessionEvent::AgentMessage {
+                message_id: None,
+                text: chunk.to_string(),
+                parent_tool_use_id: None,
+                spawn_depth: None,
+                images: Vec::new(),
+            },
+            None,
+        );
+    }
     let guard = state
         .mcp
         .register("activity-caller", &owner, &SessionKind::Acp)
@@ -675,16 +679,29 @@ fn agent_activity_tool_serves_one_agents_metadata() {
     let body = response_json(&response);
     assert_eq!(body["result"]["isError"], false);
     let doc = &body["result"]["structuredContent"];
-    assert_eq!(doc["sessionId"], "activity-child");
-    assert_eq!(doc["activity"], "idle");
-    let recent = doc["recent"].as_array().expect("recent");
-    assert_eq!(recent.len(), 1);
-    assert_eq!(recent[0]["kind"], "agent_thought");
-    assert!(
-        recent[0].get("text").is_none(),
-        "kinds only, never transcript text"
+    assert_eq!(doc["state"], "idle");
+    assert_eq!(
+        doc["lastMessages"],
+        json!(["Checked the landing page at desktop size."]),
+        "streamed chunks are one message, not one entry per chunk"
     );
-    assert!(doc.get("summary").is_none());
+    assert_eq!(
+        doc["toolCalls"],
+        json!({"done": 0, "failed": 0, "running": 0})
+    );
+    assert_eq!(doc["filesTouched"], json!([]));
+    for internal in ["sessionId", "hookSeq", "idleMs", "lastSeq", "recent"] {
+        assert!(
+            doc.get(internal).is_none(),
+            "no internal {internal} in the curated answer"
+        );
+    }
+    assert!(
+        body["result"]["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("Checked the landing page")),
+        "the text answer reads the messages, not raw JSON"
+    );
     let missing = http_request(
         &state.mcp.url,
         Some(&format!("Bearer {token}")),
@@ -724,7 +741,18 @@ fn agent_activity_tool_serves_one_agents_metadata() {
     );
     // The limit is honored and capped: 0 reads state only, a huge
     // number stops at the cap.
-    for _ in 0..55 {
+    // A thought between two messages ends the first one, so each message stands alone.
+    for index in 0..55 {
+        child.publish_agent_event(
+            SessionEvent::AgentMessage {
+                message_id: None,
+                text: format!("message {index}"),
+                parent_tool_use_id: None,
+                spawn_depth: None,
+                images: Vec::new(),
+            },
+            None,
+        );
         child.publish_agent_event(
             SessionEvent::AgentThought {
                 message_id: None,
@@ -740,22 +768,20 @@ fn agent_activity_tool_serves_one_agents_metadata() {
         Some(&format!("Bearer {token}")),
         r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"devboule_agent_activity","arguments":{"session":"activity-child","limit":5000}}}"#,
     );
-    assert_eq!(
-        response_json(&capped)["result"]["structuredContent"]["recent"]
-            .as_array()
-            .expect("recent")
-            .len(),
-        crate::agent_activity::ACTIVITY_MAX_LIMIT
-    );
+    let capped_messages = response_json(&capped)["result"]["structuredContent"]["lastMessages"]
+        .as_array()
+        .expect("lastMessages")
+        .len();
+    assert_eq!(capped_messages, crate::agent_activity::ACTIVITY_MAX_LIMIT);
     let state_only = http_request(
         &state.mcp.url,
         Some(&format!("Bearer {token}")),
         r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"devboule_agent_activity","arguments":{"session":"activity-child","limit":0}}}"#,
     );
     assert!(
-        response_json(&state_only)["result"]["structuredContent"]["recent"]
+        response_json(&state_only)["result"]["structuredContent"]["lastMessages"]
             .as_array()
-            .expect("recent")
+            .expect("lastMessages")
             .is_empty()
     );
     drop(guard);
