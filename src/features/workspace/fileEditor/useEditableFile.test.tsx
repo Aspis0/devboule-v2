@@ -36,7 +36,12 @@ import {
 } from "../../../lib/tauri";
 import { useEditableFile, type EditableFile } from "./useEditableFile";
 import type { FileEditorModel } from "./model";
-import { localWorkspaceKey, workspaceKey, type HostId, type WorkspaceKey } from "../hosts/hostIdentity";
+import {
+  localWorkspaceKey,
+  workspaceKey,
+  type HostId,
+  type WorkspaceKey,
+} from "../hosts/hostIdentity";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -96,13 +101,13 @@ describe("useEditableFile", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    vi.mocked(workspaceFileEditorOpen).mockResolvedValue(opened("one\n", ready(WORKSPACE, "a.txt")));
+    vi.mocked(workspaceFileEditorOpen).mockResolvedValue(
+      opened("one\n", ready(WORKSPACE, "a.txt")),
+    );
     vi.mocked(workspaceFileEditorVersion).mockResolvedValue(ready(WORKSPACE, "a.txt"));
     vi.mocked(appFileOpen).mockResolvedValue(opened("hi\n", ready("", "/n")));
     vi.mocked(appFileVersion).mockResolvedValue(ready("", "/n"));
-    vi.mocked(remoteHostFileOpen).mockResolvedValue(
-      opened("remote\n", ready(WORKSPACE, "a.txt")),
-    );
+    vi.mocked(remoteHostFileOpen).mockResolvedValue(opened("remote\n", ready(WORKSPACE, "a.txt")));
     vi.mocked(remoteHostFileVersion).mockResolvedValue(ready(WORKSPACE, "a.txt"));
   });
 

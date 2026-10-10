@@ -296,7 +296,8 @@ describe("WorkspaceFileTab editing", () => {
     expect(vi.mocked(workspaceFileEditorWrite).mock.calls[0]?.slice(3)).toEqual([null, null, true]);
   });
 
-  it("stays read-only with a note against a stale daemon", async () => {    vi.mocked(daemonStatus).mockResolvedValue({
+  it("stays read-only with a note against a stale daemon", async () => {
+    vi.mocked(daemonStatus).mockResolvedValue({
       state: "connected",
       pid: 1,
       instanceId: "1",

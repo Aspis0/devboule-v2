@@ -146,8 +146,7 @@ export function WorkspaceFileTab({
   // stale daemon cannot decode them and would drop the connection, so
   // the tab stays read-only with a short note instead of sending.
   const daemon = useWorkspaceDaemon();
-  const canEdit =
-    daemon.protocolVersion === null || daemon.protocolVersion >= EDITOR_MIN_DIALECT;
+  const canEdit = daemon.protocolVersion === null || daemon.protocolVersion >= EDITOR_MIN_DIALECT;
   // A paired host's file and the human's own outside file never take the
   // windowed road: the windowed read confines to the local workspace, so
   // it cannot serve either. Both edit straight in the tab, under the
