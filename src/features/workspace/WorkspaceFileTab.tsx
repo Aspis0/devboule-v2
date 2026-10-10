@@ -150,10 +150,17 @@ export function WorkspaceFileTab({
     daemon.protocolVersion === null || daemon.protocolVersion >= EDITOR_MIN_DIALECT;
   // A paired host's file and the human's own outside file never take the
   // windowed road: the windowed read confines to the local workspace, so
-  // it cannot serve either. Both edit straight in the tab.
+  // it cannot serve either. Both edit straight in the tab, under the
+  // same header as local files — minus the external-editor pencil, which
+  // can only open folders this machine holds.
   if (hostId !== LOCAL_HOST_ID || isOutsidePath(path)) {
     if (!canEdit) return <StaleDaemonNote />;
-    return <EditableFilePane workspaceKey={workspaceKey} path={path} refreshNonce={refreshNonce} />;
+    return (
+      <div className="workspace-file-tab">
+        <EditorTabHeader workspaceId={null} path={path} seg={null} />
+        <EditableFilePane workspaceKey={workspaceKey} path={path} refreshNonce={refreshNonce} />
+      </div>
+    );
   }
   return (
     <LocalWorkspaceFileTab
@@ -164,6 +171,36 @@ export function WorkspaceFileTab({
       cache={cache}
       canEdit={canEdit}
     />
+  );
+}
+
+/** The tab header the editor branch keeps: file name, parent folder,
+ * the Preview/Source split for Markdown, and the external-editor pencil
+ * where it can work (a workspace folder this machine holds — never a
+ * remote or outside path). The editor's own bar below says size, lines
+ * and save state, so the header carries no second helping of those. */
+function EditorTabHeader({
+  workspaceId,
+  path,
+  seg,
+}: {
+  /** Null for remote and outside files: no pencil there. */
+  workspaceId: string | null;
+  path: string;
+  seg: ReactNode;
+}) {
+  return (
+    <header className="workspace-file-tab-header">
+      <StripKindMark kind="file" />
+      <span className="workspace-file-tab-name" title={path}>
+        {basename(path)}
+      </span>
+      <span className="workspace-file-tab-meta">{parentDir(path)}</span>
+      {seg}
+      {workspaceId !== null && !isOutsidePath(path) ? (
+        <OpenInEditorAction workspaceId={workspaceId} path={path} />
+      ) : null}
+    </header>
   );
 }
 
@@ -234,23 +271,29 @@ function LocalWorkspaceFileTab({
   if (canEdit && isEditorFile(reply) && (!markdown || mode === "source")) {
     return (
       <div className="workspace-file-tab">
-        {markdown ? (
-          <div className="workspace-file-tab-seg-row" role="group" aria-label="File view">
-            {(["preview", "source"] as const).map((candidate) => (
-              <button
-                key={candidate}
-                type="button"
-                className={`workspace-file-tab-seg-button${
-                  mode === candidate ? " workspace-file-tab-seg-button-is-on" : ""
-                }`}
-                aria-pressed={mode === candidate}
-                onClick={() => chooseMode(candidate)}
-              >
-                {candidate === "preview" ? "Preview" : "Source"}
-              </button>
-            ))}
-          </div>
-        ) : null}
+        <EditorTabHeader
+          workspaceId={workspaceId}
+          path={path}
+          seg={
+            markdown ? (
+              <div className="workspace-file-tab-seg" role="group" aria-label="File view">
+                {(["preview", "source"] as const).map((candidate) => (
+                  <button
+                    key={candidate}
+                    type="button"
+                    className={`workspace-file-tab-seg-button${
+                      mode === candidate ? " workspace-file-tab-seg-button-is-on" : ""
+                    }`}
+                    aria-pressed={mode === candidate}
+                    onClick={() => chooseMode(candidate)}
+                  >
+                    {candidate === "preview" ? "Preview" : "Source"}
+                  </button>
+                ))}
+              </div>
+            ) : null
+          }
+        />
         <EditableFilePane workspaceKey={workspaceKey} path={path} refreshNonce={refreshNonce} />
       </div>
     );

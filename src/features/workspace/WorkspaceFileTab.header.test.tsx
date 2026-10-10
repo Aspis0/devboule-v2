@@ -231,6 +231,22 @@ describe("WorkspaceFileTab header", () => {
     expect(workspaceFileOpen).toHaveBeenCalledWith(WORKSPACE, "docs/SETUP.md", undefined, "cursor");
   });
 
+  it("keeps the pencil on an editing tab", async () => {
+    await renderTab("src/main.rs");
+
+    // The in-app editor owns the buffer, and the pencil still launches
+    // the user's own editor for the same file.
+    expect(container.querySelector('[data-testid="file-source-editor"]')).not.toBeNull();
+    const button = container.querySelector<HTMLButtonElement>(".open-in-editor-button");
+    if (button === null) throw new Error("the pencil action did not render");
+
+    await act(async () => {
+      button.click();
+    });
+
+    expect(workspaceFileOpen).toHaveBeenCalledWith(WORKSPACE, "src/main.rs", undefined, "cursor");
+  });
+
   it("remembers the mode across tabs for the app run", async () => {
     await renderTab("docs/a.md");
     const buttons = segButtons();

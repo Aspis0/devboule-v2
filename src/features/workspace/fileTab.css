@@ -78,13 +78,6 @@
   background: var(--panel-card);
 }
 
-/* The Preview | Source row above an editing Source. */
-.workspace-file-tab-seg-row {
-  display: flex;
-  justify-content: flex-end;
-  padding: var(--space-4) var(--space-8) 0;
-}
-
 /* Source: the tool pane's own column, mono text with a gutter. The gutter
    numbers are --muted, the pair palette-contrast.test.ts holds at ≥4.5:1
    on --ground-center in both themes. */
