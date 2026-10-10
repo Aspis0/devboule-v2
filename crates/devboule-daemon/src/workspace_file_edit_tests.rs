@@ -1164,9 +1164,10 @@ fn relativize_keeps_relative_spellings_untouched() {
 fn relativize_maps_inside_absolute_spellings_and_refuses_the_rest() {
     use crate::workspace_git_support::relativize;
     // Platform-absolute paths throughout: a bare `/x` is drive-relative
-    // on Windows, so the test builds absolutes by joining (absolute on
-    // every platform) instead of spelling them.
-    let root = std::env::temp_dir().join("devboule-relativize-root");
+    // on Windows, so absolutes are built by joining (absolute on every
+    // platform) under the guarded fixture dir, never `std::env::temp_dir`.
+    let dir = Dir::fresh("relativize-unit");
+    let root = &dir.root;
     let inside = root.join("sub").join("a.txt");
     assert_eq!(
         relativize(&root, &inside.to_string_lossy()),
