@@ -156,18 +156,19 @@ describe("ToolRow line", () => {
     expect(exited.querySelector(".is-failed")).toBeNull();
   });
 
-  it("calls a row failed only when the provider says so, even with a non-zero exit", async () => {
+  it("keeps a provider-reported failure failed, even with a non-zero exit", async () => {
     const reported = await renderRow(
       tool({ kind: "execute", title: "ls", command: "ls", status: "failed", exitCode: 2 }),
     );
-    expect(reported.querySelector(".workspace-chat-tool-failed")).toBeNull();
+    expect(reported.querySelector(".workspace-chat-tool-failed")?.textContent).toContain("failed");
+    expect(reported.querySelector(".workspace-command-exit")?.textContent).toBe("exit 2");
     await act(async () => root?.unmount());
     root = null;
     host?.remove();
 
-    const crashed = await renderRow(
-      tool({ kind: "execute", title: "ls", command: "ls", status: "failed" }),
+    const exitOnly = await renderRow(
+      tool({ kind: "execute", title: "ls", command: "ls", status: "completed", exitCode: 2 }),
     );
-    expect(crashed.querySelector(".workspace-chat-tool-failed")?.textContent).toContain("failed");
+    expect(exitOnly.querySelector(".workspace-chat-tool-failed")).toBeNull();
   });
 });

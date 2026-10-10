@@ -11,8 +11,13 @@ describe("isFailedToolCall", () => {
     expect(isFailedToolCall({ status: "failed", exitCode: 0 })).toBe(true);
   });
 
-  it("does not count a non-zero exit as a failure on its own (git diff, grep)", () => {
-    expect(isFailedToolCall({ status: "failed", exitCode: 1 })).toBe(false);
+  it("keeps a provider-reported failure failed whatever its exit code", () => {
+    expect(isFailedToolCall({ status: "failed", exitCode: 1 })).toBe(true);
+    expect(isFailedToolCall({ status: "failed", exitCode: 2 })).toBe(true);
+  });
+
+  it("does not count a non-zero exit alone as a failure (git diff, grep)", () => {
+    expect(isFailedToolCall({ status: "completed", exitCode: 1 })).toBe(false);
     expect(isFailedToolCall({ status: "completed", exitCode: 2 })).toBe(false);
   });
 

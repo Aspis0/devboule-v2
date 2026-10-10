@@ -141,7 +141,7 @@ describe("command tool row", () => {
       channelHarness.active?.({
         type: "agent_tool_update",
         toolCallId: "exec-1",
-        status: "failed",
+        status: "completed",
         text: "fatal: not a git repository (or any of the parent directories): .git\n",
         kind: "execute",
         command: PWSH_LINE,
