@@ -19,7 +19,7 @@ use super::codex_input_requests::{
     CodexPendingResponse,
 };
 use super::codex_questions::dispatch_question;
-use super::permission_broker::{PermissionBroker, PermissionResponseError};
+use super::permission_broker::{HostDecision, PermissionBroker, PermissionResponseError};
 use super::session_prompt_planning::PlannedStaticPrompt;
 use super::session_runtime::SessionRuntime;
 use super::{
@@ -1038,6 +1038,11 @@ fn approved_plan_prompt(plan: &str) -> String {
     .join("\n\n")
 }
 
+fn rejected_plan_prompt() -> String {
+    "The user did not approve the plan. Do not implement it. Ask what they want changed in the plan."
+        .to_string()
+}
+
 impl CodexStaticPrompt {
     fn new(
         stdin: Arc<Mutex<Option<ChildStdin>>>,
@@ -1053,6 +1058,17 @@ impl CodexStaticPrompt {
         }
     }
 
+    /// What a plan card's decision starts. Allow implements the plan; Deny
+    /// sends the refusal so the agent asks what to change. A steer, a cancel
+    /// or a timeout starts nothing: the steer is itself the person's answer.
+    fn answer_plan(&self, decision: HostDecision, plan: &str, runtime: &Arc<SessionRuntime>) {
+        match decision {
+            HostDecision::Allow => self.send_approved_plan(plan, runtime),
+            HostDecision::Deny => self.send_rejected_plan(runtime),
+            HostDecision::Timeout | HostDecision::Cancelled => {}
+        }
+    }
+
     fn send_approved_plan(&self, plan: &str, runtime: &Arc<SessionRuntime>) {
         if let Err(error) = self.state.set_plan_mode(false) {
             runtime.publish_agent_error(error.message);
@@ -1061,7 +1077,26 @@ impl CodexStaticPrompt {
         if let Some(feature) = self.state.plan_feature_state() {
             let _ = runtime.publish_daemon_event(feature);
         }
-        let text = approved_plan_prompt(plan);
+        if let Err(error) = self.send_follow_up(approved_plan_prompt(plan), runtime) {
+            let _ = self.state.set_plan_mode(true);
+            if let Some(feature) = self.state.plan_feature_state() {
+                let _ = runtime.publish_daemon_event(feature);
+            }
+            runtime.publish_agent_error(error.message);
+        }
+    }
+
+    /// The refusal keeps plan mode on: the agent is still planning, and its
+    /// next message is the question about what to change.
+    fn send_rejected_plan(&self, runtime: &Arc<SessionRuntime>) {
+        if let Err(error) = self.send_follow_up(rejected_plan_prompt(), runtime) {
+            runtime.publish_agent_error(error.message);
+        }
+    }
+
+    /// Sends one daemon-composed follow-up as a Codex turn. The line is
+    /// journalled as the agent's own, never the person's words.
+    fn send_follow_up(&self, text: String, runtime: &Arc<SessionRuntime>) -> Result<(), WireError> {
         let prompt = CodexPlannedPrompt {
             stdin: Arc::clone(&self.stdin),
             next_id: Arc::clone(&self.next_id),
@@ -1072,14 +1107,7 @@ impl CodexStaticPrompt {
                 command_input: None,
             },
         };
-        if let Err(error) = prompt.send() {
-            let _ = self.state.set_plan_mode(true);
-            if let Some(feature) = self.state.plan_feature_state() {
-                let _ = runtime.publish_daemon_event(feature);
-            }
-            runtime.publish_agent_error(WireError::from(error).message);
-            return;
-        }
+        prompt.send().map_err(WireError::from)?;
         // An implementation prompt shows no user-message item of its own
         // (the follow-up path emits no timeline item), so the daemon-composed
         // line is journalled as the agent's own, never the person's words.
@@ -1097,6 +1125,7 @@ impl CodexStaticPrompt {
         if runtime.clear_attention() {
             runtime.request_transition();
         }
+        Ok(())
     }
 }
 
@@ -2333,9 +2362,8 @@ impl CodexReader {
             }
         };
         std::thread::spawn(move || {
-            if broker.wait_for_decision(&pending) == super::permission_broker::HostDecision::Allow {
-                prompt.send_approved_plan(&plan, &runtime);
-            }
+            let decision = broker.wait_for_decision(&pending);
+            prompt.answer_plan(decision, &plan, &runtime);
         });
     }
 
@@ -2613,6 +2641,11 @@ mod plan_card_duplicates_tests;
 #[cfg(test)]
 #[path = "codex_client_plan_card_author_tests.rs"]
 mod plan_card_author_tests;
+
+/// A declined plan sends the refusal; a steer or a cancel starts nothing.
+#[cfg(test)]
+#[path = "codex_client_plan_card_reject_tests.rs"]
+mod plan_card_reject_tests;
 
 /// `mcpServer/elicitation/request` approvals.
 #[cfg(test)]
