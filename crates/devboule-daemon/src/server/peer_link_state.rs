@@ -330,6 +330,14 @@ impl HostLink {
         self.revoked.store(true, Ordering::SeqCst);
     }
 
+    /// Clear the revoke mark after a successful re-dial: the row is live
+    /// again (a caps edit drops the transport without revoking the row),
+    /// so new calls may flow. Called beside the generation bump, which is
+    /// what makes it exactly-once per transport.
+    pub(crate) fn clear_revoked(&self) {
+        self.revoked.store(false, Ordering::SeqCst);
+    }
+
     /// Whether the pairing row was revoked under a running call.
     pub(crate) fn is_revoked(&self) -> bool {
         self.revoked.load(Ordering::SeqCst)

@@ -104,6 +104,30 @@ impl Harness {
             keypair.private.clone().try_into().expect("32 bytes"),
             capabilities,
         );
+        Self::with_responder(instance, tuning, keypair, responder, requests)
+    }
+
+    /// The redial fixture: like [`Self::start`], but the far end keeps
+    /// accepting after a hang-up, so a retired transport can dial again.
+    /// `spawn` stays single-connection on purpose (other tests read a
+    /// refused redial as proof), so this is a separate constructor.
+    pub(crate) fn start_reconnectable(instance: &str) -> Self {
+        let tuning = pacing();
+        let keypair = pinned_keypair();
+        let (responder, requests) = super::peer_link_test_support::spawn_reconnectable(
+            keypair.private.clone().try_into().expect("32 bytes"),
+            current_capabilities(),
+        );
+        Self::with_responder(instance, tuning, keypair, responder, requests)
+    }
+
+    fn with_responder(
+        instance: &str,
+        tuning: LinkTuning,
+        keypair: snow::Keypair,
+        responder: Responder,
+        requests: Receiver<ClientMessage>,
+    ) -> Self {
         let state = crate::server::ServerState::new(instance.to_string());
         state
             .peer_upsert(host_row(responder.address.to_string(), &keypair.public))

@@ -5,7 +5,8 @@
 //! The link never widens a grant: the local daemon asks, the remote's
 //! `run_gate` answers, and the answer is carried through as the remote's own.
 
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use devboule_protocol::{
     caps, Capability, ClientMessage, ErrorCode, PermissionOutcome, RemoteHostList, RemoteHostState,
@@ -661,4 +662,51 @@ fn a_revoke_aborts_an_in_flight_create_with_needs_pairing() {
             other => panic!("a revoked link answers the pairing state: {other:?}"),
         }
     });
+}
+
+/// Fix 2: a caps edit drops the transport without revoking the row, and the
+/// next calls must flow once the link re-dials — not answer the retired
+/// transport's `NeedsPairing` until restart. The revoke mark belongs to one
+/// transport, so the successful hello clears it beside the generation bump.
+#[test]
+fn a_redialed_link_forgets_the_retired_transports_revoke() {
+    // The far end must accept the redial: the single-accept responder
+    // would refuse it by design.
+    let harness = Harness::start_reconnectable("peer-link-caps-edit");
+    harness.watch();
+    eventually("the link comes up", || {
+        harness
+            .statuses()
+            .iter()
+            .any(|(state, _)| *state == RemoteHostState::Online)
+    });
+    match harness.links.read("b", RemoteHostList::Sessions) {
+        LinkAnswer::Body(_) => {}
+        other => panic!("the first read flows: {other:?}"),
+    }
+    // The caps-edit drop: the row stays live, the transport retires.
+    harness.links.revoke("b");
+    // Re-watch until a fresh transport reports online. A watch that lands
+    // before the old worker retired only replays the old state, so this
+    // retries: exactly one of them spawns the redial.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        harness
+            .links
+            .watch(&harness.state, Arc::clone(&harness.conn), "b")
+            .expect("inside the link cap");
+        if harness
+            .statuses()
+            .iter()
+            .any(|(state, _)| *state == RemoteHostState::Online)
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the redial never came online");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    match harness.links.read("b", RemoteHostList::Sessions) {
+        LinkAnswer::Body(_) => {}
+        other => panic!("a read after the redial must flow, got {other:?}"),
+    }
 }

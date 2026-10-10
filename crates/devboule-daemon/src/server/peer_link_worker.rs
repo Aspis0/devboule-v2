@@ -424,6 +424,10 @@ fn open(state: &Arc<ServerState>, link: &HostLink) -> Result<LinkSession, DialSt
     // The far end's hello is what the frame-capability check reads, so it is
     // kept; nothing else about the dial survives into the link.
     link.bump_generation();
+    // A successful hello answers the revoke that retired the last
+    // transport: a caps edit drops the link without revoking the row, and
+    // the new transport must not inherit the old one's `NeedsPairing`.
+    link.clear_revoked();
     // A new transport re-baselines the host's counter: a host that restarted
     // resets its revision, and the old value must not outrank the new link's.
     link.clear_remote_revision();

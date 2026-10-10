@@ -262,6 +262,112 @@ pub(crate) fn spawn(
     )
 }
 
+/// The reconnectable twin of [`spawn`]: the same handshake, hello and serve
+/// loop, but the listener keeps accepting after a hang-up so a redialed
+/// link has something to dial. `spawn` stays single-connection on purpose —
+/// several tests read a refused redial as proof a closed link stays closed —
+/// so the redial case gets its own constructor rather than a flag.
+pub(crate) fn spawn_reconnectable(
+    static_private: [u8; 32],
+    capabilities: Vec<Capability>,
+) -> (Responder, mpsc::Receiver<ClientMessage>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind the responder");
+    let address = listener.local_addr().expect("responder address");
+    let handshakes = Arc::new(AtomicUsize::new(0));
+    let closes = Arc::new(AtomicUsize::new(0));
+    let hellos = Arc::new(AtomicUsize::new(0));
+    let answers_pings = Arc::new(AtomicBool::new(true));
+    let holds_reads = Arc::new(AtomicBool::new(false));
+    let hello_delay_ms = Arc::new(AtomicU64::new(0));
+    let answer_with_wrong_id = Arc::new(AtomicBool::new(false));
+    let refusal = Arc::new(Mutex::new(None));
+    let pushes = Arc::new(Mutex::new(Vec::new()));
+    let (requests_tx, requests_rx) = mpsc::channel();
+    let (stop_tx, stop_rx) = mpsc::channel();
+    let responder = Responder {
+        address,
+        handshakes: Arc::clone(&handshakes),
+        closes: Arc::clone(&closes),
+        hellos: Arc::clone(&hellos),
+        answers_pings: Arc::clone(&answers_pings),
+        holds_reads: Arc::clone(&holds_reads),
+        hello_delay_ms: Arc::clone(&hello_delay_ms),
+        answer_with_wrong_id: Arc::clone(&answer_with_wrong_id),
+        refusal: Arc::clone(&refusal),
+        pushes: Arc::clone(&pushes),
+        stop: stop_tx,
+    };
+    std::thread::spawn(move || {
+        // One served connection at a time, as many as the test redials:
+        // each hang-up returns to the accept, and only `stop` ends the
+        // thread. The accept polls so the thread does not outlive the test
+        // that stopped it.
+        listener.set_nonblocking(true).expect("poll the responder");
+        while stop_rx.try_recv().is_err() {
+            let Ok((stream, _)) = listener.accept() else {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            };
+            // The listener polls; each accepted stream blocks, like `spawn`'s.
+            if stream.set_nonblocking(false).is_err() {
+                continue;
+            }
+            let Ok(session) = responder_handshake(
+                &stream,
+                Instant::now() + HANDSHAKE_DEADLINE,
+                &static_private,
+                PEER_PROLOGUE,
+                None,
+                PEER_NOISE_PATTERN,
+            ) else {
+                continue;
+            };
+            handshakes.fetch_add(1, Ordering::SeqCst);
+            let Ok((reader, writer, closer)) = split_session(&stream, session) else {
+                continue;
+            };
+            let framed = Framed::from_stream(reader, writer, closer);
+            let Ok(ClientMessage::Hello(_)) = framed.recv_timeout(Duration::from_secs(10)) else {
+                continue;
+            };
+            hellos.fetch_add(1, Ordering::SeqCst);
+            let delay = Duration::from_millis(hello_delay_ms.load(Ordering::SeqCst));
+            if !delay.is_zero() {
+                std::thread::sleep(delay);
+            }
+            if framed
+                .send(&DaemonMessage::Hello(DaemonHello {
+                    protocol_version: PROTOCOL_VERSION,
+                    min_protocol_version: PROTOCOL_MIN_VERSION,
+                    daemon_version: "test".to_string(),
+                    instance_id: "held-link-responder".to_string(),
+                    pid: std::process::id(),
+                    capabilities: capabilities.clone(),
+                    workspace_host: None,
+                }))
+                .is_err()
+            {
+                continue;
+            }
+            serve(
+                &framed,
+                &requests_tx,
+                &Serving {
+                    refusal: Arc::clone(&refusal),
+                    answers_pings: Arc::clone(&answers_pings),
+                    holds_reads: Arc::clone(&holds_reads),
+                    wrong_id: Arc::clone(&answer_with_wrong_id),
+                    pushes: Arc::clone(&pushes),
+                },
+                &stop_rx,
+            );
+            closes.fetch_add(1, Ordering::SeqCst);
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+    });
+    (responder, requests_rx)
+}
+
 /// Whether a failed read means "nothing arrived yet" rather than "the far end
 /// is gone".
 ///
