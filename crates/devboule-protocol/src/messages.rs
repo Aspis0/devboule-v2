@@ -722,6 +722,29 @@ pub enum ClientMessage {
         #[serde(default)]
         create: bool,
     },
+    /// List one directory of a workspace on a paired host: the Files
+    /// panel's tree for a remote workspace. Local-only: the daemon maps
+    /// it to the peer's own `WorkspaceFilesList` on the held link. A
+    /// read, so the reply is the host's own directory, carried through
+    /// unchanged; the panel offers no writes behind it. The reply is
+    /// [`DaemonMessage::RemoteHostFiles`].
+    RemoteHostFilesList {
+        id: u64,
+        device_id: String,
+        workspace_id: String,
+        path: String,
+    },
+    /// The uncommitted working-tree state of a workspace on a paired
+    /// host: the Changes panel's rows for a remote workspace. Local-only:
+    /// the daemon maps it to the peer's own `WorkspaceGitStatus` on the
+    /// held link. Read-only — no stage, diff, or commit rides this road;
+    /// a row click opens the file tab instead. The reply is
+    /// [`DaemonMessage::RemoteHostGitStatus`].
+    RemoteHostGitStatus {
+        id: u64,
+        device_id: String,
+        workspace_id: String,
+    },
     /// Register this connection as the browser host: the place that runs
     /// browser commands for agents. The reply is
     /// [`DaemonMessage::BrowserHostRegistered`], and from then on the daemon
@@ -1764,6 +1787,8 @@ impl ClientMessage {
             | Self::RemoteHostFileOpen { id, .. }
             | Self::RemoteHostFileVersion { id, .. }
             | Self::RemoteHostFileWrite { id, .. }
+            | Self::RemoteHostFilesList { id, .. }
+            | Self::RemoteHostGitStatus { id, .. }
             | Self::BrowserHostRegister { id, .. }
             | Self::BrowserHostUnregister { id, .. }
             | Self::BrowserExecuteResponse { id, .. }
@@ -1940,6 +1965,8 @@ impl ClientMessage {
             | Self::RemoteHostFileOpen { .. }
             | Self::RemoteHostFileVersion { .. }
             | Self::RemoteHostFileWrite { .. }
+            | Self::RemoteHostFilesList { .. }
+            | Self::RemoteHostGitStatus { .. }
             | Self::BrowserHostRegister { .. }
             | Self::BrowserHostUnregister { .. }
             | Self::BrowserExecuteResponse { .. }
@@ -2040,6 +2067,8 @@ impl ClientMessage {
             Self::RemoteHostFileOpen { .. } => "RemoteHostFileOpen",
             Self::RemoteHostFileVersion { .. } => "RemoteHostFileVersion",
             Self::RemoteHostFileWrite { .. } => "RemoteHostFileWrite",
+            Self::RemoteHostFilesList { .. } => "RemoteHostFilesList",
+            Self::RemoteHostGitStatus { .. } => "RemoteHostGitStatus",
             Self::BrowserHostRegister { .. } => "BrowserHostRegister",
             Self::BrowserHostUnregister { .. } => "BrowserHostUnregister",
             Self::BrowserExecuteResponse { .. } => "BrowserExecuteResponse",
@@ -2151,6 +2180,8 @@ impl ClientMessage {
             | Self::AppFileVersion { .. }
             | Self::RemoteHostFileOpen { .. }
             | Self::RemoteHostFileVersion { .. }
+            | Self::RemoteHostFilesList { .. }
+            | Self::RemoteHostGitStatus { .. }
             | Self::RemoteHostProviders { .. }
             // An answer to a call the daemon made: it changes no durable state,
             // and a row per answer would be a disk sink a busy host drives.
@@ -2711,6 +2742,21 @@ pub enum DaemonMessage {
         device_id: String,
         #[serde(flatten)]
         result: WorkspaceFileWriteResult,
+    },
+    /// The reply to [`ClientMessage::RemoteHostFilesList`]: the paired
+    /// host's own directory, carried through unchanged. A refusal is not
+    /// an arm here: it comes back as the remote's own [`WireError`].
+    RemoteHostFiles {
+        id: u64,
+        device_id: String,
+        directory: WorkspaceDirectory,
+    },
+    /// The reply to [`ClientMessage::RemoteHostGitStatus`]: the host's
+    /// own working-tree status, carried through unchanged.
+    RemoteHostGitStatus {
+        id: u64,
+        device_id: String,
+        status: WorkspaceGitStatus,
     },
     /// Everything the Devices panel needs in one reply, already projected for
     /// the connection's role: a local client sees the full rows, a remote peer

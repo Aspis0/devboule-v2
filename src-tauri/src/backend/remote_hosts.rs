@@ -17,7 +17,8 @@ use devboule_daemon::DaemonClient;
 use devboule_protocol::{
     AttachmentReference, ErrorCode, PermissionOutcome, PromptAttachment, RemoteHostList,
     RemoteHostListBody, RemoteHostStatus, RemoteRelayMessage, Session, SessionKind, SubscriptionId,
-    WorkspaceEditableFile, WorkspaceFileVersion, WorkspaceFileWriteResult,
+    WorkspaceDirectory, WorkspaceEditableFile, WorkspaceFileVersion, WorkspaceFileWriteResult,
+    WorkspaceGitStatus,
 };
 
 use super::blocking::off_main_thread;
@@ -508,4 +509,31 @@ pub async fn remote_host_file_write(
         )
     })
     .await
+}
+/// List one directory of a workspace on a paired host: the Files
+/// panel's tree for a remote workspace. Read-only — the panel offers no
+/// writes behind the rows the host returns.
+#[tauri::command]
+pub async fn remote_host_files_list(
+    bridge: State<'_, DaemonBridge>,
+    device_id: String,
+    workspace_id: String,
+    path: String,
+) -> Result<WorkspaceDirectory, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.remote_host_files_list(&device_id, &workspace_id, &path)).await
+}
+
+/// The working-tree status of a workspace on a paired host: the Changes
+/// panel's rows for a remote workspace. Read-only by contract — no
+/// stage, diff or commit rides this road; a row click opens the file tab
+/// instead.
+#[tauri::command]
+pub async fn remote_host_git_status(
+    bridge: State<'_, DaemonBridge>,
+    device_id: String,
+    workspace_id: String,
+) -> Result<WorkspaceGitStatus, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.remote_host_git_status(&device_id, &workspace_id)).await
 }

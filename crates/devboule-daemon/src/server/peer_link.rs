@@ -768,6 +768,39 @@ impl PeerLinks {
         })
     }
 
+    /// List one directory of a workspace on the host: the peer's own
+    /// `WorkspaceFilesList` goes out on the held link. Read-only; the
+    /// panel offers no writes behind the rows it returns.
+    pub(crate) fn operate_files_list(
+        &self,
+        device_id: &str,
+        workspace_id: String,
+        path: String,
+    ) -> LinkAnswer {
+        let wait = self.operate_wait(false);
+        self.operate(device_id, wait, false, |generation, answer| {
+            LinkCommand::FilesList {
+                generation,
+                workspace_id,
+                path,
+                answer,
+            }
+        })
+    }
+
+    /// The working-tree status of a workspace on the host. Read-only by
+    /// contract: no stage, diff or commit rides this road.
+    pub(crate) fn operate_git_status(&self, device_id: &str, workspace_id: String) -> LinkAnswer {
+        let wait = self.operate_wait(false);
+        self.operate(device_id, wait, false, |generation, answer| {
+            LinkCommand::GitStatus {
+                generation,
+                workspace_id,
+                answer,
+            }
+        })
+    }
+
     /// Switch the model of one session on the host.
     pub(crate) fn operate_set_model(
         &self,

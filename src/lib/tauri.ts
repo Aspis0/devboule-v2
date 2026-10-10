@@ -360,6 +360,8 @@ export type CommandArgs = {
   remote_host_set_mode: { deviceId: string; sessionId: string; modeId: string };
   remote_host_file_open: { deviceId: string; workspaceId: string; path: string };
   remote_host_file_version: { deviceId: string; workspaceId: string; path: string };
+  remote_host_files_list: { deviceId: string; workspaceId: string; path: string };
+  remote_host_git_status: { deviceId: string; workspaceId: string };
   remote_host_file_write: {
     deviceId: string;
     workspaceId: string;
@@ -604,6 +606,10 @@ type CommandResults = {
   remote_host_file_open: WorkspaceEditableFile;
   remote_host_file_version: WorkspaceFileVersion;
   remote_host_file_write: WorkspaceFileWriteResult;
+  /** The host's own directory: the remote Files panel's tree rows. */
+  remote_host_files_list: WorkspaceDirectory;
+  /** The host's own working-tree status: the remote Changes rows. */
+  remote_host_git_status: WorkspaceGitStatus;
   /**
    * The STORED policy rows only (`DaemonMessage::ToolPolicy` minus its
    * request id). A provider with no row is enabled by default: the panel
@@ -850,6 +856,8 @@ export const COMMAND_ARG_KEYS = {
   remote_host_set_mode: ["deviceId", "sessionId", "modeId"],
   remote_host_file_open: ["deviceId", "workspaceId", "path"],
   remote_host_file_version: ["deviceId", "workspaceId", "path"],
+  remote_host_files_list: ["deviceId", "workspaceId", "path"],
+  remote_host_git_status: ["deviceId", "workspaceId"],
   remote_host_file_write: [
     "deviceId",
     "workspaceId",
@@ -1853,6 +1861,18 @@ export const remoteHostFileOpen = (deviceId: string, workspaceId: string, path: 
 /** The version of one such file: the observation poll over the held link. */
 export const remoteHostFileVersion = (deviceId: string, workspaceId: string, path: string) =>
   invokeTyped("remote_host_file_version", { deviceId, workspaceId, path });
+/**
+ * List one directory of a workspace on a paired host. Read-only: the
+ * panel offers no writes behind the rows the host returns.
+ */
+export const remoteHostFilesList = (deviceId: string, workspaceId: string, path: string) =>
+  invokeTyped("remote_host_files_list", { deviceId, workspaceId, path });
+/**
+ * The working-tree status of a workspace on a paired host. Read-only by
+ * contract: rows open file tabs, nothing stages or commits.
+ */
+export const remoteHostGitStatus = (deviceId: string, workspaceId: string) =>
+  invokeTyped("remote_host_git_status", { deviceId, workspaceId });
 /** Write one such file, with the caller's expected version and create
  * intent carried through. */
 export const remoteHostFileWrite = (

@@ -58,16 +58,26 @@ type WorkspaceRoot = { drive: string | null; segments: string[] };
  * candidate as plain text: outside the root, escaping it, a URL, a bare
  * name, a directory, or anything malformed. */
 export function parseChatFilePath(candidate: string, root: string): ChatFileLink | null {
-  return parseCandidate(candidate, normalizeRoot(root));
+  return parseCandidate(candidate, normalizeRoot(root), isUncRoot(root));
 }
 
 export function parseChatCodeFilePath(candidate: string, root: string): ChatFileLink | null {
-  return parseCandidate(candidate, normalizeRoot(root), true);
+  return parseCandidate(candidate, normalizeRoot(root), isUncRoot(root), true);
+}
+
+/** A root this parser cannot represent: a UNC share (`\\server\…`).
+ * Kept refusing even for absolute spellings — without a drive to
+ * compare, an absolute spelling proves nothing. An absent root (no cwd
+ * known) is different: relative paths stay plain, absolute ones link in
+ * their own spelling. */
+function isUncRoot(root: string): boolean {
+  return root.replace(/\\/g, "/").startsWith("//");
 }
 
 function parseCandidate(
   candidate: string,
   root: WorkspaceRoot | null,
+  uncRoot = false,
   codeSpan = false,
 ): ChatFileLink | null {
   const stripped = codeSpan ? candidate : stripTrailingPunctuation(candidate);
@@ -92,7 +102,7 @@ function parseCandidate(
   if (path.includes("~") && path !== "~" && !path.startsWith("~/")) return null;
   // A bare name needs a by-name lookup this slice does not have.
   if (!path.includes("/") && !path.includes("\\")) return null;
-  const link = resolveAgainstRoot(path, root, line, column);
+  const link = resolveAgainstRoot(path, root, uncRoot, line, column);
   if (link !== null && codeSpan && !matchesDisplayedPath(path, root, link.relativePath))
     return null;
   return link;
@@ -121,6 +131,7 @@ function matchesDisplayedPath(
  * maximal, so a URL is rejected whole instead of leaving a tail behind. */
 export function scanChatFilePaths(text: string, root: string): ChatFilePathToken[] {
   const base = normalizeRoot(root);
+  const unc = isUncRoot(root);
   const tokens: ChatFilePathToken[] = [];
   let start = -1;
   let spacedAbsolute = false;
@@ -135,7 +146,9 @@ export function scanChatFilePaths(text: string, root: string): ChatFilePathToken
     if (onPath || start < 0) continue;
     if (index - start <= MAX_TOKEN_LENGTH) {
       const candidate = stripTrailingPunctuation(text.slice(start, index));
-      const link = hasMarkdownEscape(text, start, index) ? null : parseCandidate(candidate, base);
+      const link = hasMarkdownEscape(text, start, index)
+        ? null
+        : parseCandidate(candidate, base, unc);
       if (link !== null && !spacedAbsolute)
         tokens.push({ start, end: start + candidate.length, link });
       const path = splitPath(candidate);
@@ -220,6 +233,7 @@ function normalizeRoot(root: string): WorkspaceRoot | null {
 function resolveAgainstRoot(
   path: string,
   root: WorkspaceRoot | null,
+  uncRoot: boolean,
   line: number | undefined,
   column: number | undefined,
 ): ChatFileLink | null {
@@ -248,7 +262,17 @@ function resolveAgainstRoot(
       : `${candidate.drive}:/${resolved.join("/")}`;
   // A root this parser cannot represent (a UNC share) keeps refusing:
   // without a drive to compare, an absolute spelling proves nothing.
-  if (root === null) return null;
+  // With no root at all, relative paths stay plain but an absolute
+  // spelling links in its own spelling — the opener routes it (remote
+  // key or app road), never joined to anything.
+  if (root === null) {
+    if (uncRoot) return null;
+    if (!candidate.absolute) {
+      if (candidate.segments[0] !== "~") return null;
+      return { relativePath: `~/${resolved.slice(1).join("/")}`, line, column };
+    }
+    return { relativePath: absoluteSpelling, line, column };
+  }
   if (root.drive !== candidate.drive) return { relativePath: absoluteSpelling, line, column };
   const rootSegments = root.segments;
   if (resolved.length <= rootSegments.length) return null;

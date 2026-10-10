@@ -149,7 +149,9 @@ pub(super) fn dispatch_remote_host(
                 | LinkAnswer::Providers { .. }
                 | LinkAnswer::FileOpened(_)
                 | LinkAnswer::FileVersion(_)
-                | LinkAnswer::FileWrite(_) => DaemonMessage::Error(
+                | LinkAnswer::FileWrite(_)
+                | LinkAnswer::Files(_)
+                | LinkAnswer::GitStatus(_) => DaemonMessage::Error(
                     WireError::new(ErrorCode::Internal, "an attach is not an operate call")
                         .with_id(id),
                 ),
@@ -189,7 +191,9 @@ pub(super) fn dispatch_remote_host(
                 | LinkAnswer::Providers { .. }
                 | LinkAnswer::FileOpened(_)
                 | LinkAnswer::FileVersion(_)
-                | LinkAnswer::FileWrite(_) => DaemonMessage::Error(
+                | LinkAnswer::FileWrite(_)
+                | LinkAnswer::Files(_)
+                | LinkAnswer::GitStatus(_) => DaemonMessage::Error(
                     WireError::new(ErrorCode::Internal, "a detach is not an operate call")
                         .with_id(id),
                 ),
@@ -231,7 +235,9 @@ pub(super) fn dispatch_remote_host(
                 | LinkAnswer::Providers { .. }
                 | LinkAnswer::FileOpened(_)
                 | LinkAnswer::FileVersion(_)
-                | LinkAnswer::FileWrite(_) => DaemonMessage::Error(
+                | LinkAnswer::FileWrite(_)
+                | LinkAnswer::Files(_)
+                | LinkAnswer::GitStatus(_) => DaemonMessage::Error(
                     WireError::new(ErrorCode::Internal, "a list read is not an operate call")
                         .with_id(id),
                 ),
@@ -584,6 +590,57 @@ pub(super) fn dispatch_remote_host(
                 },
             )
         }
+        ClientMessage::RemoteHostFilesList {
+            id,
+            device_id,
+            workspace_id,
+            path,
+        } => {
+            if let Some(refused) = app_only(conn, id) {
+                return refused;
+            }
+            let answer = state
+                .peer_links
+                .operate_files_list(&device_id, workspace_id, path);
+            operate_answer(
+                id,
+                &device_id,
+                answer,
+                |id, device_id, answer| match answer {
+                    LinkAnswer::Files(directory) => Some(DaemonMessage::RemoteHostFiles {
+                        id,
+                        device_id: device_id.to_string(),
+                        directory,
+                    }),
+                    _ => None,
+                },
+            )
+        }
+        ClientMessage::RemoteHostGitStatus {
+            id,
+            device_id,
+            workspace_id,
+        } => {
+            if let Some(refused) = app_only(conn, id) {
+                return refused;
+            }
+            let answer = state
+                .peer_links
+                .operate_git_status(&device_id, workspace_id);
+            operate_answer(
+                id,
+                &device_id,
+                answer,
+                |id, device_id, answer| match answer {
+                    LinkAnswer::GitStatus(status) => Some(DaemonMessage::RemoteHostGitStatus {
+                        id,
+                        device_id: device_id.to_string(),
+                        status,
+                    }),
+                    _ => None,
+                },
+            )
+        }
         other => DaemonMessage::Error(WireError::new(
             ErrorCode::InvalidRequest,
             format!("{} is not a remote-host frame", other.name()),
@@ -615,5 +672,7 @@ pub(super) fn is_remote_host(request: &ClientMessage) -> bool {
             | ClientMessage::RemoteHostFileOpen { .. }
             | ClientMessage::RemoteHostFileVersion { .. }
             | ClientMessage::RemoteHostFileWrite { .. }
+            | ClientMessage::RemoteHostFilesList { .. }
+            | ClientMessage::RemoteHostGitStatus { .. }
     )
 }

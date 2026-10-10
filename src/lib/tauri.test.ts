@@ -29,6 +29,8 @@ import {
   remoteHostFileOpen,
   remoteHostFileVersion,
   remoteHostFileWrite,
+  remoteHostFilesList,
+  remoteHostGitStatus,
   remoteHostInterrupt,
   remoteHostPermissionRespond,
   remoteHostProviders,
@@ -1006,6 +1008,39 @@ describe("file editor command wrappers", () => {
       path: "n.txt",
     });
     expect(COMMAND_ARG_KEYS.remote_host_file_version).toEqual(["deviceId", "workspaceId", "path"]);
+    expect(COMMAND_ARG_KEYS.remote_host_files_list).toEqual(["deviceId", "workspaceId", "path"]);
+    expect(COMMAND_ARG_KEYS.remote_host_git_status).toEqual(["deviceId", "workspaceId"]);
+  });
+
+  it("lists a remote directory and reads remote status", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue({
+      path: "",
+      entries: [],
+      capped: false,
+      skipped: 0,
+      error: null,
+    } as never);
+    await remoteHostFilesList("d.1", "w.9", "");
+    expect(invoke).toHaveBeenCalledWith("remote_host_files_list", {
+      deviceId: "d.1",
+      workspaceId: "w.9",
+      path: "",
+    });
+
+    vi.mocked(invoke).mockResolvedValue({
+      isGit: true,
+      dirty: false,
+      branch: "main",
+      totals: { additions: 0, deletions: 0 },
+      rows: [],
+      error: null,
+    } as never);
+    await remoteHostGitStatus("d.1", "w.9");
+    expect(invoke).toHaveBeenCalledWith("remote_host_git_status", {
+      deviceId: "d.1",
+      workspaceId: "w.9",
+    });
   });
 });
 

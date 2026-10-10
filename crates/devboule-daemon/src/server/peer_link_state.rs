@@ -14,7 +14,8 @@ use std::time::{Duration, Instant};
 
 use devboule_protocol::{
     DaemonMessage, RemoteHostList, RemoteHostListBody, RemoteHostState, RemoteHostStatus,
-    WireError, WorkspaceEditableFile, WorkspaceFileVersion, WorkspaceFileWriteResult,
+    WireError, WorkspaceDirectory, WorkspaceEditableFile, WorkspaceFileVersion,
+    WorkspaceFileWriteResult, WorkspaceGitStatus,
 };
 
 use crate::session::ConnHandle;
@@ -44,6 +45,10 @@ pub(crate) enum LinkAnswer {
     FileVersion(WorkspaceFileVersion),
     /// The host's own write result, carried through unchanged.
     FileWrite(WorkspaceFileWriteResult),
+    /// The host's own directory listing, carried through unchanged.
+    Files(WorkspaceDirectory),
+    /// The host's own working-tree status, carried through unchanged.
+    GitStatus(WorkspaceGitStatus),
     /// The remote refused; its own error code and reason, intact.
     Refused(WireError),
     /// The link could not carry the read: the state the host row should show,
@@ -196,6 +201,19 @@ pub(crate) enum LinkCommand {
         expected_modified_at: Option<i64>,
         expected_revision: Option<String>,
         create: bool,
+        answer: SyncSender<LinkAnswer>,
+    },
+    /// List one directory of a workspace on the far side.
+    FilesList {
+        generation: u64,
+        workspace_id: String,
+        path: String,
+        answer: SyncSender<LinkAnswer>,
+    },
+    /// The working-tree status of a workspace on the far side.
+    GitStatus {
+        generation: u64,
+        workspace_id: String,
         answer: SyncSender<LinkAnswer>,
     },
     /// The row was revoked: drop the transport now, streams included.

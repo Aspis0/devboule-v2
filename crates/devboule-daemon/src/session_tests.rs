@@ -2959,6 +2959,8 @@ fn session_paths_of(request: &ClientMessage) -> Option<&'static [&'static str]> 
         ClientMessage::RemoteHostFileOpen { .. } => None,
         ClientMessage::RemoteHostFileVersion { .. } => None,
         ClientMessage::RemoteHostFileWrite { .. } => None,
+        ClientMessage::RemoteHostFilesList { .. } => None,
+        ClientMessage::RemoteHostGitStatus { .. } => None,
         ClientMessage::RemoteHostUnwatch { .. } => None,
         ClientMessage::RemoteHostList { .. } => None,
         // The browser host answers to the daemon's broker, not to a session.

@@ -2937,4 +2937,97 @@ fn a_host_opens_and_writes_a_file_on_its_peer_over_loopback() {
     )
     .expect("the host's own read never answered");
     assert_eq!(content, Some("second from A\n".to_string()));
+
+    // The panel roads ride the same link: a directory listing and the
+    // working-tree status of the host's workspace, carried through
+    // unchanged.
+    let listed = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostFilesList {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+            workspace_id: b_workspace.clone(),
+            path: String::new(),
+        },
+        |frame| match frame {
+            DaemonMessage::RemoteHostFiles { directory, .. } => Some(directory.clone()),
+            _ => None,
+        },
+    )
+    .expect("the remote listing never answered");
+    assert!(
+        listed.entries.iter().any(|entry| entry.path == "note.txt"),
+        "the created file lists on the host: {entries:?}",
+        entries = listed.entries
+    );
+    let status = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostGitStatus {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+            workspace_id: b_workspace.clone(),
+        },
+        |frame| match frame {
+            DaemonMessage::RemoteHostGitStatus { status, .. } => Some(status.clone()),
+            _ => None,
+        },
+    )
+    .expect("the remote status never answered");
+    // The fresh project dir is not a repository: the host says so
+    // instead of inventing rows.
+    assert!(
+        !status.is_git,
+        "a non-repository answers not-a-repo, never rows: {status:?}"
+    );
+
+    // Inside a repository the created file dirties the host tree: init
+    // where the project lives (hard-requires git, like the read unit
+    // fixture — a silent skip would prove the relay carries nothing).
+    let project_dir = b.dir.join("project-files");
+    let init = std::process::Command::new("git")
+        .arg("init")
+        .arg("--quiet")
+        .current_dir(&project_dir)
+        .output()
+        .expect("git could not be spawned");
+    assert!(init.status.success(), "git init failed");
+    let status = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostGitStatus {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+            workspace_id: b_workspace.clone(),
+        },
+        |frame| match frame {
+            DaemonMessage::RemoteHostGitStatus { status, .. } => Some(status.clone()),
+            _ => None,
+        },
+    )
+    .expect("the remote status never answered");
+    assert!(
+        status.rows.iter().any(|row| row.path.contains("note.txt")),
+        "the created file dirties the host tree: {rows:?}",
+        rows = status.rows
+    );
+
+    // A far-side refusal travels as the remote's own error, never as an
+    // offline verdict: an unknown workspace is the host's answer, intact.
+    let unknown = request_skipping_pushes(
+        &a,
+        ClientMessage::RemoteHostFileOpen {
+            id: a.pipe.id(),
+            device_id: b_self.device_id.clone(),
+            workspace_id: "workspace-that-is-not-there".to_string(),
+            path: "note.txt".to_string(),
+        },
+        |frame| match frame {
+            DaemonMessage::Error(error) => Some(error.clone()),
+            _ => None,
+        },
+    )
+    .expect("the unknown workspace never answered");
+    assert!(
+        !unknown.message.contains("stopped answering"),
+        "a far-side refusal must not read as offline: {unknown:?}"
+    );
 }

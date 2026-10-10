@@ -2510,6 +2510,48 @@ impl DaemonClient {
         }
     }
 
+    /// List one directory of a workspace on a paired host. Read-only:
+    /// the reply is the host's own directory, carried through unchanged.
+    pub fn remote_host_files_list(
+        &self,
+        device_id: &str,
+        workspace_id: &str,
+        path: &str,
+    ) -> Result<WorkspaceDirectory, DaemonError> {
+        self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::RemoteHostFilesList {
+            id,
+            device_id: device_id.to_string(),
+            workspace_id: workspace_id.to_string(),
+            path: path.to_string(),
+        })? {
+            DaemonMessage::RemoteHostFiles { directory, .. } => Ok(directory),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// The working-tree status of a workspace on a paired host.
+    /// Read-only by contract: no stage, diff or commit rides this road.
+    pub fn remote_host_git_status(
+        &self,
+        device_id: &str,
+        workspace_id: &str,
+    ) -> Result<WorkspaceGitStatus, DaemonError> {
+        self.require_agreed(devboule_protocol::caps::REMOTE_HOSTS)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::RemoteHostGitStatus {
+            id,
+            device_id: device_id.to_string(),
+            workspace_id: workspace_id.to_string(),
+        })? {
+            DaemonMessage::RemoteHostGitStatus { status, .. } => Ok(status),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     /// Write one such file, with the caller's expected version carried
     /// through to the host's own write.
     #[allow(clippy::too_many_arguments)]
@@ -3698,6 +3740,8 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::RemoteHostFileOpened { id, .. }
         | DaemonMessage::RemoteHostFileVersion { id, .. }
         | DaemonMessage::RemoteHostFileWrite { id, .. }
+        | DaemonMessage::RemoteHostFiles { id, .. }
+        | DaemonMessage::RemoteHostGitStatus { id, .. }
         | DaemonMessage::InvokeResult { id, .. } => Some(*id),
     }
 }

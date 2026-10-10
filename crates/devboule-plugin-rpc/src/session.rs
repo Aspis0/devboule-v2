@@ -363,6 +363,8 @@ impl PluginSession {
                         | DaemonMessage::RemoteHostFileOpened { id, .. }
                         | DaemonMessage::RemoteHostFileVersion { id, .. }
                         | DaemonMessage::RemoteHostFileWrite { id, .. }
+                        | DaemonMessage::RemoteHostFiles { id, .. }
+                        | DaemonMessage::RemoteHostGitStatus { id, .. }
                         // The browser host answers to the desktop app alone; a
                         // plugin backend never registers one or is sent a command.
                         | DaemonMessage::BrowserHostRegistered { id, .. }

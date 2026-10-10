@@ -26,8 +26,8 @@ use super::peer_dial::{connect_and_handshake, DialStep};
 use super::peer_link::{sentence_for, state_for, LinkTuning};
 use super::peer_link_operate::{
     serve_claim, serve_close, serve_create, serve_file_open, serve_file_version, serve_file_write,
-    serve_interrupt, serve_permission_respond, serve_providers, serve_resize, serve_send,
-    serve_set_mode, serve_set_model, serve_stop,
+    serve_files_list, serve_git_status, serve_interrupt, serve_permission_respond, serve_providers,
+    serve_resize, serve_send, serve_set_mode, serve_set_model, serve_stop,
 };
 use super::peer_link_read::{serve_attach, serve_detach, serve_read};
 use super::peer_link_state::{HostLink, LinkAnswer, LinkCommand};
@@ -198,6 +198,12 @@ fn run(
                     }
                     LinkCommand::Providers { .. } => {
                         serve_providers(&state, &link, open, command, reads, tuning.read_deadline);
+                    }
+                    LinkCommand::FilesList { .. } => {
+                        serve_files_list(&state, &link, open, command, reads, tuning.read_deadline);
+                    }
+                    LinkCommand::GitStatus { .. } => {
+                        serve_git_status(&state, &link, open, command, reads, tuning.read_deadline);
                     }
                     LinkCommand::SetModel { .. } => {
                         serve_set_model(&state, &link, open, command, reads, tuning.read_deadline);
@@ -493,6 +499,8 @@ pub(super) fn refuse_reads_until(queue: &Receiver<LinkCommand>, step: DialStep, 
             | Ok(LinkCommand::Close { answer, .. })
             | Ok(LinkCommand::Stop { answer, .. })
             | Ok(LinkCommand::Providers { answer, .. })
+            | Ok(LinkCommand::FilesList { answer, .. })
+            | Ok(LinkCommand::GitStatus { answer, .. })
             | Ok(LinkCommand::SetModel { answer, .. })
             | Ok(LinkCommand::SetMode { answer, .. })
             | Ok(LinkCommand::FileOpen { answer, .. })

@@ -1,6 +1,7 @@
 import { memo, useCallback, useId, useState } from "react";
 import type { WorkspaceFileEntry } from "../../types/ipc";
 import { LOCAL_HOST_ID, parseWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
+import { RemoteFilesSurface } from "./RemoteFilesSurface";
 import { FilesPreview } from "./FilesPreview";
 import { FilesTreeView, type FilesRenaming } from "./FilesTreeView";
 import { useWorkspaceFileActions } from "./useWorkspaceFileActions";
@@ -116,10 +117,11 @@ export const FilesSurface = memo(function FilesSurface({
   onOpenFile,
 }: FilesSurfaceProps) {
   // What the file reads and every row act are addressed by. A paired
-  // host's workspace never lists here: stripping the host and asking the
-  // local daemon would read the wrong machine. The hooks below take a
-  // null id for one, so they read nothing, and the render branches to the
-  // note instead. File tabs for such workspaces go over the held link.
+  // host's workspace lists over the held link instead (read-only):
+  // stripping the host and asking the local daemon would read the wrong
+  // machine. The hooks below take a null id for one, so they read
+  // nothing, and the render branches to the remote panel. File tabs for
+  // such workspaces go over the same link.
   const hostId = workspaceKey === null ? null : parseWorkspaceKey(workspaceKey).hostId;
   const workspaceId = workspaceKey === null ? null : parseWorkspaceKey(workspaceKey).workspaceId;
   const remote = hostId !== null && hostId !== LOCAL_HOST_ID;
@@ -241,17 +243,14 @@ export const FilesSurface = memo(function FilesSurface({
   // contract) even before a path is considered.
   const listId = useId();
 
-  if (remote) {
+  if (remote && workspaceKey !== null && workspaceId !== null && hostId !== null) {
     return (
-      <div
-        ref={panelRef}
-        tabIndex={-1}
-        role="region"
-        aria-label="Files"
-        className="workspace-files"
-      >
-        <div className="workspace-files-state">This workspace is on another device.</div>
-      </div>
+      <RemoteFilesSurface
+        workspaceKey={workspaceKey}
+        deviceId={hostId}
+        workspaceId={workspaceId}
+        onOpenFile={onOpenFile}
+      />
     );
   }
 

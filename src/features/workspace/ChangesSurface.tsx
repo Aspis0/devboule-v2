@@ -1,6 +1,7 @@
 import { memo, useCallback, useState } from "react";
 import type { WorkspaceGitStatus } from "../../types/ipc";
 import { parseWorkspaceKey, LOCAL_HOST_ID, type WorkspaceKey } from "./hosts/hostIdentity";
+import { RemoteChangesSurface } from "./RemoteChangesSurface";
 import { useWorkspaceChanges } from "./useWorkspaceChanges";
 import type { ErrorSentence } from "../../lib/errorSentence";
 import { isImeComposition } from "../../lib/imeComposition";
@@ -239,9 +240,9 @@ export const ChangesSurface = memo(function ChangesSurface({
   onOpenFile,
 }: ChangesSurfaceProps) {
   // What every read and write below is addressed by. A paired host's
-  // workspace never reads here: stripping the host and asking the local
-  // daemon would read the wrong machine, so the hooks take null and the
-  // render branches to the note instead.
+  // workspace reads over the held link instead (read-only): stripping
+  // the host and asking the local daemon would read the wrong machine,
+  // so the hooks take null and the render branches to the remote panel.
   const hostId = workspaceKey === null ? null : parseWorkspaceKey(workspaceKey).hostId;
   const workspaceId = workspaceKey === null ? null : parseWorkspaceKey(workspaceKey).workspaceId;
   const remote = hostId !== null && hostId !== LOCAL_HOST_ID;
@@ -365,17 +366,14 @@ export const ChangesSurface = memo(function ChangesSurface({
     refreshCommits();
   }, [refresh, refreshCommits]);
 
-  if (remote) {
+  if (remote && workspaceKey !== null && workspaceId !== null && hostId !== null) {
     return (
-      <div
-        ref={panelRef}
-        tabIndex={-1}
-        role="region"
-        aria-label="Changes"
-        className="workspace-changes"
-      >
-        <div className="workspace-changes-state">This workspace is on another device.</div>
-      </div>
+      <RemoteChangesSurface
+        workspaceKey={workspaceKey}
+        deviceId={hostId}
+        workspaceId={workspaceId}
+        onOpenFile={onOpenFile}
+      />
     );
   }
 

@@ -246,7 +246,12 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// originated, no confirmation card). All three rides the `journal`
 /// capability like the other workspace reads and writes; the request frames
 /// are new variants an older reader cannot parse, so the dialect moves.
-pub const PROTOCOL_VERSION: u32 = 33;
+///
+/// Protocol 34 adds the remote panels' reads: `RemoteHostFilesList` (one
+/// directory of a host's workspace) and `RemoteHostGitStatus` (its
+/// working-tree status), both local-only and read-only. Same new-variant
+/// rule, so the dialect moves again.
+pub const PROTOCOL_VERSION: u32 = 34;
 /// Oldest dialect whose daemon speaks the in-app editor frames
 /// (`WorkspaceFileOpen` / `Version` / `Write` and their app-file spellings).
 /// A relay checks the far hello against this before writing one: an older

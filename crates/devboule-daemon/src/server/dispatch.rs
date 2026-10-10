@@ -320,6 +320,8 @@ pub(super) fn dispatch_immediate(
         | ClientMessage::RemoteHostFileOpen { .. }
         | ClientMessage::RemoteHostFileVersion { .. }
         | ClientMessage::RemoteHostFileWrite { .. }
+        | ClientMessage::RemoteHostFilesList { .. }
+        | ClientMessage::RemoteHostGitStatus { .. }
         | ClientMessage::RemoteHostList { .. } => DaemonMessage::Error(WireError::new(
             ErrorCode::InvalidRequest,
             "remote host frames are dispatched by the async wrapper",

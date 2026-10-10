@@ -83,7 +83,12 @@ import {
 } from "./split/splitPanes";
 import { ErrorTriangleIcon } from "./ErrorTriangleIcon";
 import { createToolContentCache, evictToolContent } from "./toolContentCache";
-import { localWorkspaceKey, parseWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
+import {
+  localWorkspaceKey,
+  parseWorkspaceKey,
+  workspaceKey,
+  type WorkspaceKey,
+} from "./hosts/hostIdentity";
 import { activeTabFor, forgetTab, pruneTabMemory, rememberActiveTab } from "./workspaceTabMemory";
 import { useTabSelection } from "./strip/useTabSelection";
 import { sessionTabElementId, useTabCloseFlow } from "./strip/useTabCloseFlow";
@@ -2117,6 +2122,15 @@ export function Workspace({
                 deviceId={selectedRemoteHost.hostId}
                 workspaceId={selectedRemoteHost.workspaceId}
                 hostOnline={hostOnlineMap.get(selectedRemoteHost.hostId) === true}
+                onOpenFile={(path) => {
+                  // A remote workspace's own key: the File tab reads and
+                  // writes over the held link to that host.
+                  const key = workspaceKey(
+                    selectedRemoteHost.hostId,
+                    selectedRemoteHost.workspaceId,
+                  );
+                  if (key !== null) openToolTab(key, path, "file");
+                }}
               />
             )}
             {selectedRemoteHost === null ? (

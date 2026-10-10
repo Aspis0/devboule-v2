@@ -30,6 +30,9 @@ interface ChangesTreeViewProps {
   /** Dismiss the open row menu — the band opening is the outside press. */
   onCloseMenu: () => void;
   acting: boolean;
+  /** No acts and no menus: nothing behind these rows writes (a remote
+   * listing). Row clicks open file tabs instead of diffs. */
+  readOnly?: boolean;
   /** Slice 8's hand-off: open the selected file as a diff tab. Absent until
    * then, and the pencil with it — a control with no destination is a lie. */
   onOpenFile?: (workspaceKey: WorkspaceKey, path: string) => void;
@@ -110,6 +113,7 @@ const FileNode = memo(function FileNode({
   menuPath,
   onToggleMenu,
   acting,
+  readOnly,
   onOpenFile,
   workspaceKey,
 }: {
@@ -125,6 +129,9 @@ const FileNode = memo(function FileNode({
   menuPath: string | null;
   onToggleMenu: (path: string) => void;
   acting: boolean;
+  /** No acts and no menus: nothing behind these rows writes (a remote
+   * listing). Row clicks open file tabs instead of diffs. */
+  readOnly?: boolean;
   onOpenFile?: (workspaceKey: WorkspaceKey, path: string) => void;
   workspaceKey: WorkspaceKey;
 }) {
@@ -166,39 +173,44 @@ const FileNode = memo(function FileNode({
         {countsLabel(row.additions, row.deletions, row.capped)}
       </span>
       <span className="workspace-file-change-actions">
-        <button
-          type="button"
-          className="workspace-file-change-action"
-          disabled={acting}
-          title={`Stage ${path}`}
-          onClick={() => onStage(pathsOf(row))}
-        >
-          Stage
-        </button>
-        <button
-          type="button"
-          className="workspace-file-change-action"
-          disabled={acting}
-          title={`Unstage ${path}`}
-          onClick={() => onUnstage(pathsOf(row))}
-        >
-          Unstage
-        </button>
-        <button
-          type="button"
-          className="workspace-tree-menu-trigger"
-          aria-label={`${path} actions`}
-          aria-expanded={menuPath === path}
-          disabled={acting}
-          onClick={() => onToggleMenu(path)}
-        >
-          ⋯
-        </button>
+        {readOnly ? null : (
+          <>
+            <button
+              type="button"
+              className="workspace-file-change-action"
+              disabled={acting}
+              title={`Stage ${path}`}
+              onClick={() => onStage(pathsOf(row))}
+            >
+              Stage
+            </button>
+            <button
+              type="button"
+              className="workspace-file-change-action"
+              disabled={acting}
+              title={`Unstage ${path}`}
+              onClick={() => onUnstage(pathsOf(row))}
+            >
+              Unstage
+            </button>
+            <button
+              type="button"
+              className="workspace-tree-menu-trigger"
+              aria-label={`${path} actions`}
+              aria-expanded={menuPath === path}
+              disabled={acting}
+              onClick={() => onToggleMenu(path)}
+            >
+              ⋯
+            </button>
+          </>
+        )}
       </span>
       {/* The file open as diff carries the pencil affordance (SPEC-regions):
           slice 8's tab, reached through the one callback this panel owes it —
-          last in the row, where the mockup puts it. */}
-      {selected && onOpenFile ? (
+          last in the row, where the mockup puts it. Hidden on remote rows:
+          the row click itself opens the file tab there. */}
+      {!readOnly && selected && onOpenFile ? (
         <button
           type="button"
           className="workspace-changes-pencil"
@@ -220,8 +232,9 @@ const FileNode = memo(function FileNode({
           here that loses data, and it must be chosen, not hit. This
           panel only ever shows the uncommitted tree, so the control
           exists nowhere else. Its confirmation is the writer hook's
-          own — this menu can reach the discard only through it. */}
-      {menuPath === path ? (
+          own — this menu can reach the discard only through it. No menu
+          on remote rows: nothing there writes. */}
+      {!readOnly && menuPath === path ? (
         <div className="workspace-tree-menu" role="menu">
           <button
             type="button"
@@ -298,6 +311,7 @@ export const ChangesTreeView = memo(function ChangesTreeView({
   onToggleMenu,
   onCloseMenu,
   acting,
+  readOnly = false,
   onOpenFile,
   workspaceKey,
 }: ChangesTreeViewProps) {
@@ -331,6 +345,7 @@ export const ChangesTreeView = memo(function ChangesTreeView({
           menuPath={menuPath}
           onToggleMenu={onToggleMenu}
           acting={acting}
+          readOnly={readOnly}
           onOpenFile={onOpenFile}
           workspaceKey={workspaceKey}
         />

@@ -117,6 +117,8 @@ fn closing_the_far_end_unblocks_the_read() {
         | LinkAnswer::FileOpened(_)
         | LinkAnswer::FileVersion(_)
         | LinkAnswer::FileWrite(_)
+        | LinkAnswer::Files(_)
+        | LinkAnswer::GitStatus(_)
         | LinkAnswer::Providers { .. } => {}
         LinkAnswer::Failed(state, sentence) => {
             assert_eq!(state, RemoteHostState::Offline, "{sentence}")

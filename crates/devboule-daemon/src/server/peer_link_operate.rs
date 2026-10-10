@@ -48,11 +48,11 @@ fn sessions_advertised(session: &LinkSession) -> bool {
 /// The two checks every operate call makes before writing: the pairing row is
 /// live (a revoke that landed while the link was up stops the next call, not
 /// only the next reconnect) and the call was queued against the link that is
-/// still there.
-fn operate_ready(
+/// still there. File calls stop here: they ride no session capability, so
+/// the session check below does not apply to them.
+fn operate_ready_link(
     state: &Arc<ServerState>,
     link: &HostLink,
-    session: &LinkSession,
     generation: u64,
     answer: &std::sync::mpsc::SyncSender<LinkAnswer>,
 ) -> bool {
@@ -65,6 +65,21 @@ fn operate_ready(
             RemoteHostState::Offline,
             offline_sentence().to_string(),
         ));
+        return false;
+    }
+    true
+}
+
+/// The two checks above plus the session capability: session calls need a
+/// far side that speaks sessions, file calls do not.
+fn operate_ready(
+    state: &Arc<ServerState>,
+    link: &HostLink,
+    session: &LinkSession,
+    generation: u64,
+    answer: &std::sync::mpsc::SyncSender<LinkAnswer>,
+) -> bool {
+    if !operate_ready_link(state, link, generation, answer) {
         return false;
     }
     if !sessions_advertised(session) {
@@ -182,6 +197,8 @@ fn reply_id(message: &DaemonMessage) -> Option<u64> {
         DaemonMessage::Session { id, .. }
         | DaemonMessage::SessionSend { id, .. }
         | DaemonMessage::Providers { id, .. }
+        | DaemonMessage::WorkspaceFiles { id, .. }
+        | DaemonMessage::WorkspaceGit { id, .. }
         | DaemonMessage::WorkspaceFileOpened { id, .. }
         | DaemonMessage::WorkspaceFileVersion { id, .. }
         | DaemonMessage::WorkspaceFileWrite { id, .. }
@@ -738,7 +755,7 @@ pub(crate) fn serve_file_open(
     else {
         return;
     };
-    if !operate_ready(state, link, session, generation, &answer) {
+    if !operate_ready_link(state, link, generation, &answer) {
         return;
     }
     if !file_edit_advertised(session) {
@@ -799,7 +816,7 @@ pub(crate) fn serve_file_version(
     else {
         return;
     };
-    if !operate_ready(state, link, session, generation, &answer) {
+    if !operate_ready_link(state, link, generation, &answer) {
         return;
     }
     if !file_edit_advertised(session) {
@@ -866,7 +883,7 @@ pub(crate) fn serve_file_write(
     else {
         return;
     };
-    if !operate_ready(state, link, session, generation, &answer) {
+    if !operate_ready_link(state, link, generation, &answer) {
         return;
     }
     if !file_edit_advertised(session) {
@@ -903,6 +920,117 @@ pub(crate) fn serve_file_write(
         |message| match message {
             DaemonMessage::WorkspaceFileWrite { id, result, .. } if id == request_id => {
                 Some(LinkAnswer::FileWrite(result))
+            }
+            _ if reply_id(&message) == Some(request_id) => Some(LinkAnswer::Failed(
+                RemoteHostState::Offline,
+                offline_sentence().to_string(),
+            )),
+            _ => None,
+        },
+    ));
+}
+/// List one directory of a workspace on the far side, for a remote
+/// Files panel. A read: the peer's own `WorkspaceFilesList` goes out on
+/// the held link and the host's own directory comes back unchanged. No
+/// session capability is involved — the far frames predate the editor —
+/// so only the link itself is checked.
+pub(crate) fn serve_files_list(
+    state: &Arc<ServerState>,
+    link: &HostLink,
+    session: &mut LinkSession,
+    command: LinkCommand,
+    request_id: u64,
+    read_deadline: Duration,
+) {
+    let LinkCommand::FilesList {
+        generation,
+        workspace_id,
+        path,
+        answer,
+    } = command
+    else {
+        return;
+    };
+    if !operate_ready_link(state, link, generation, &answer) {
+        return;
+    }
+    if session
+        .framed
+        .send(&ClientMessage::WorkspaceFilesList {
+            id: request_id,
+            workspace_id,
+            path,
+        })
+        .is_err()
+    {
+        let _ = answer.send(LinkAnswer::Failed(
+            RemoteHostState::Offline,
+            offline_sentence().to_string(),
+        ));
+        return;
+    }
+    let _ = answer.send(wait_for_operate_reply(
+        link,
+        session,
+        request_id,
+        read_deadline,
+        |message| match message {
+            DaemonMessage::WorkspaceFiles { id, directory, .. } if id == request_id => {
+                Some(LinkAnswer::Files(directory))
+            }
+            _ if reply_id(&message) == Some(request_id) => Some(LinkAnswer::Failed(
+                RemoteHostState::Offline,
+                offline_sentence().to_string(),
+            )),
+            _ => None,
+        },
+    ));
+}
+
+/// The working-tree status of a workspace on the far side, for a remote
+/// Changes panel. Read-only by contract: no stage, diff or commit rides
+/// this road, so the panel opens file tabs from the rows instead.
+pub(crate) fn serve_git_status(
+    state: &Arc<ServerState>,
+    link: &HostLink,
+    session: &mut LinkSession,
+    command: LinkCommand,
+    request_id: u64,
+    read_deadline: Duration,
+) {
+    let LinkCommand::GitStatus {
+        generation,
+        workspace_id,
+        answer,
+    } = command
+    else {
+        return;
+    };
+    if !operate_ready_link(state, link, generation, &answer) {
+        return;
+    }
+    if session
+        .framed
+        .send(&ClientMessage::WorkspaceGitStatus {
+            id: request_id,
+            workspace_id,
+        })
+        .is_err()
+    {
+        let _ = answer.send(LinkAnswer::Failed(
+            RemoteHostState::Offline,
+            offline_sentence().to_string(),
+        ));
+        return;
+    }
+    let _ = answer.send(wait_for_operate_reply(
+        link,
+        session,
+        request_id,
+        read_deadline,
+        |message| match message {
+            DaemonMessage::WorkspaceGit { id, status, .. } if id == request_id => {
+                Some(LinkAnswer::GitStatus(status))
             }
             _ if reply_id(&message) == Some(request_id) => Some(LinkAnswer::Failed(
                 RemoteHostState::Offline,

@@ -40,6 +40,8 @@ interface FilesTreeViewProps {
    * kind exists, and the pencil with it. */
   onOpenFile?: (workspaceKey: WorkspaceKey, path: string) => void;
   workspaceKey: WorkspaceKey;
+  /** No row menus: nothing behind this tree writes (a remote listing). */
+  readOnly?: boolean;
 }
 
 /** The mockup's row geometry: 6px pad plus one 14px step per depth — the
@@ -177,6 +179,7 @@ const DirRow = memo(function DirRow({
   renameValue,
   acting,
   menuOpen,
+  readOnly,
   onToggle,
   onToggleMenu,
   onRenameChange,
@@ -194,6 +197,8 @@ const DirRow = memo(function DirRow({
   renameValue: string;
   acting: boolean;
   menuOpen: boolean;
+  /** No row menu: nothing behind this tree writes (a remote listing). */
+  readOnly: boolean;
   onToggle: (path: string) => void;
   onToggleMenu: (path: string) => void;
   onRenameChange: (value: string) => void;
@@ -234,7 +239,7 @@ const DirRow = memo(function DirRow({
           <span className="workspace-tree-label">{entry.name}</span>
         </button>
       )}
-      {beingRenamed ? null : (
+      {beingRenamed || readOnly ? null : (
         <button
           type="button"
           className="workspace-tree-menu-trigger"
@@ -267,6 +272,7 @@ const FileRow = memo(function FileRow({
   renameValue,
   acting,
   menuOpen,
+  readOnly,
   onSelect,
   onToggleMenu,
   onRenameChange,
@@ -285,6 +291,8 @@ const FileRow = memo(function FileRow({
   renameValue: string;
   acting: boolean;
   menuOpen: boolean;
+  /** No row menu: nothing behind this tree writes (a remote listing). */
+  readOnly: boolean;
   onSelect: (path: string) => void;
   onToggleMenu: (path: string) => void;
   onRenameChange: (value: string) => void;
@@ -329,7 +337,7 @@ const FileRow = memo(function FileRow({
           ) : null}
         </button>
       )}
-      {beingRenamed ? null : (
+      {beingRenamed || readOnly ? null : (
         <button
           type="button"
           className="workspace-tree-menu-trigger"
@@ -423,6 +431,7 @@ function FolderGroup({
   onDelete,
   onOpenFile,
   workspaceKey,
+  readOnly = false,
 }: FolderGroupProps): ReactNode {
   const entries = cell?.reply?.entries;
   const sorted = useMemo(() => (entries === undefined ? [] : sortFileEntries(entries)), [entries]);
@@ -486,6 +495,7 @@ function FolderGroup({
                   }
                   acting={acting}
                   menuOpen={menuPath === entry.path}
+                  readOnly={readOnly}
                   onToggle={onToggle}
                   onToggleMenu={onToggleMenu}
                   onRenameChange={onRenameChange}
@@ -520,6 +530,7 @@ function FolderGroup({
                       onDelete={onDelete}
                       onOpenFile={onOpenFile}
                       workspaceKey={workspaceKey}
+                      readOnly={readOnly}
                     />
                   </ul>
                 ) : null}
@@ -535,6 +546,7 @@ function FolderGroup({
                 }
                 acting={acting}
                 menuOpen={menuPath === entry.path}
+                readOnly={readOnly}
                 onSelect={onSelect}
                 onToggleMenu={onToggleMenu}
                 onRenameChange={onRenameChange}
@@ -584,6 +596,7 @@ export const FilesTreeView = memo(function FilesTreeView({
   onDelete,
   onOpenFile,
   workspaceKey,
+  readOnly = false,
 }: FilesTreeViewProps) {
   useMenuOpen(menuPath !== null, onCloseMenu);
   return (
@@ -611,6 +624,7 @@ export const FilesTreeView = memo(function FilesTreeView({
         onDelete={onDelete}
         onOpenFile={onOpenFile}
         workspaceKey={workspaceKey}
+        readOnly={readOnly}
       />
     </ul>
   );

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import {
   allocRemoteSubscriptionId,
   createRemoteEventChannel,
@@ -17,6 +18,7 @@ import {
   type RemoteEventChannel,
 } from "../../lib/tauri";
 import { errorSentence } from "../../lib/errorSentence";
+import { scanChatFilePaths } from "../../lib/chatFilePaths";
 import { isCommandError } from "../../lib/commandError";
 import { useMenuOpen } from "../../lib/menuOpen";
 import {
@@ -42,6 +44,9 @@ interface RemoteWorkspaceSurfaceProps {
   deviceId: string;
   workspaceId: string;
   hostOnline: boolean;
+  /** Open a transcript file link as a File tab on this host. Absent
+   * until the shell passes it; without it paths stay plain text. */
+  onOpenFile?: (path: string) => void;
 }
 
 /** One event as one line of the read-only transcript. Events that are not
@@ -58,6 +63,42 @@ function lineOf(event: SessionEvent): string | null {
     default:
       return null;
   }
+}
+
+/** One transcript line with its file links as buttons. The session's
+ * own cwd (display form, never sent anywhere) resolves relative
+ * spellings; without one only absolute and `~` paths link. Clicking
+ * opens a File tab on this host through the shell's opener. */
+function RemoteTranscriptLine({
+  line,
+  root,
+  onOpenFile,
+}: {
+  line: string;
+  root: string;
+  onOpenFile?: (path: string) => void;
+}) {
+  if (onOpenFile === undefined) return <p>{line}</p>;
+  const tokens = scanChatFilePaths(line, root);
+  if (tokens.length === 0) return <p>{line}</p>;
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+  tokens.forEach((token, index) => {
+    if (token.start > cursor) parts.push(line.slice(cursor, token.start));
+    parts.push(
+      <button
+        key={index}
+        type="button"
+        className="workspace-remote-file-link"
+        onClick={() => onOpenFile(token.link.relativePath)}
+      >
+        {line.slice(token.start, token.end)}
+      </button>,
+    );
+    cursor = token.end;
+  });
+  if (cursor < line.length) parts.push(line.slice(cursor));
+  return <p>{parts}</p>;
 }
 
 /** How many transcript lines one remote tab keeps; older ones are dropped
@@ -124,6 +165,7 @@ export function RemoteWorkspaceSurface({
   deviceId,
   workspaceId,
   hostOnline,
+  onOpenFile,
 }: RemoteWorkspaceSurfaceProps) {
   const [sessions, setSessions] = useState<readonly Session[]>([]);
   const [openSessionId, setOpenSessionId] = useState<string | null>(null);
@@ -792,7 +834,12 @@ export function RemoteWorkspaceSurface({
       ) : (
         <div className="workspace-remote-transcript" role="log" aria-label="Remote transcript">
           {lines.map((line, index) => (
-            <p key={index}>{line}</p>
+            <RemoteTranscriptLine
+              key={index}
+              line={line}
+              root={openSession?.cwd ?? ""}
+              onOpenFile={onOpenFile}
+            />
           ))}
           {openSession === null || openSessionId === null ? null : (
             <div className="workspace-remote-pane">
