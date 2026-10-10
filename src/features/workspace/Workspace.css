@@ -1603,13 +1603,13 @@
   display: block;
   flex: none;
   min-width: 0;
-  height: var(--control-default);
+  height: calc(var(--control-default) + 4px);
   padding: 0 var(--space-8);
   color: var(--muted);
   border-radius: var(--radius-6);
   font-family: var(--font-ui);
-  font-size: var(--type-meta);
-  line-height: var(--control-default);
+  font-size: var(--type-small);
+  line-height: calc(var(--control-default) + 4px);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

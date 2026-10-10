@@ -79,8 +79,6 @@ describe("the restyled labels speak the UI font at 12px or above", () => {
   const UI_FONT_AT_12 = [
     ".workspace-chat-label",
     ".workspace-subagent-pill",
-    ".workspace-mode-chip-trigger",
-    ".workspace-picker-static", // the static single-model label
     ".workspace-composer-hint",
   ];
 
@@ -90,6 +88,19 @@ describe("the restyled labels speak the UI font at 12px or above", () => {
     expect(rules).toContain('font-family: "Inter", system-ui, sans-serif');
     expect(rules).toContain("font-size: 12px");
   });
+
+  // The composer's controls: one step above the meta size, the hit area a notch taller.
+  it.each([".workspace-mode-chip-trigger", ".workspace-picker-static"])(
+    "%s is the UI font at 13px, a notch taller than the default control",
+    (selector) => {
+      const css = assembleCssProof(OWNED_SHEETS);
+      const rules = css.rulesFor(selector);
+      expect(rules).toContain('font-family: "Inter", system-ui, sans-serif');
+      expect(rules).toContain("font-size: 13px");
+      // The default control is 28px; the chip is that plus one notch.
+      expect(rules).toContain("height: calc(28px + 4px);");
+    },
+  );
 
   it("the subagent rows are the UI font at the mockup's 13px", () => {
     // The mockup's row is 13 px (skeleton .sub-row) — above the 12 px floor
