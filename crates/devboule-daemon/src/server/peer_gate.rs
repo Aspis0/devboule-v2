@@ -191,12 +191,14 @@ pub(super) fn peer_refusal_before_mode(
         }
     }
     // File content writes author bytes anywhere in a checkout — new power
-    // beside the file mutations the grant already opens — so a peer
-    // reaches them only over the relay's own link: a machine peer to a
-    // device a local user paired. The sending side confines relay
-    // initiation to its local app (the `app_only` door on every
-    // `RemoteHost*` frame); this side verifies the link, never the
-    // payload. Client-scoped devices, unknown links and (by the policy
+    // beside the file mutations the grant already opens. This side
+    // checks only the link: a machine peer (`PeerDevice` scope) to a
+    // device a local user paired. That is NOT proof the paired human
+    // sent the bytes — no frame carries who on the far machine acted —
+    // it is the strongest statement the receiving side can make. The
+    // sending side confines relay initiation to its local app (the
+    // `app_only` door on every `RemoteHost*` frame); this side verifies
+    // the link, never the payload. Client-scoped devices, unknown links and (by the policy
     // above) every non-`admin` grant keep the refusal. Reads stay on
     // the grant alone.
     if let ClientMessage::WorkspaceFileWrite { .. } = request {

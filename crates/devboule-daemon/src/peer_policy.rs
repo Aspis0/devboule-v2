@@ -175,10 +175,15 @@ pub const PEER_ATTACHMENTS_UNSUPPORTED: &str =
 /// Why a file content-write from a paired device outside the relay's own
 /// machine link is refused (`server/peer_gate.rs`). Content writes and
 /// creates author bytes anywhere in a checkout — new power beside the
-/// renames and deletes the administrative grant already opens — so a peer
-/// reaches them only over a machine link to a device a local user paired,
-/// which is what the relay's link is. Client-scoped devices and unknown
-/// links keep the refusal; reads stay on the grant alone.
+/// renames and deletes the administrative grant already opens. What the
+/// far side checks is only the link: a machine link (`PeerDevice`) to a
+/// device a local user paired. Nothing here proves who on that machine
+/// sent the bytes — no frame can — so the name states the policy's
+/// intent, not a verified fact. The human side lives on the SENDING
+/// daemon: relay initiation is confined to its local app (`app_only` on
+/// every `RemoteHost*` frame), which agents and MCP tools cannot speak.
+/// Client-scoped devices and unknown links keep the refusal; reads stay
+/// on the grant alone.
 pub const PEER_FILE_WRITE_HUMAN_ONLY: &str = "file content writes are human-originated only";
 
 /// Rendered pages one composer turn may carry (the app's own cap).
