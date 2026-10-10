@@ -7,14 +7,18 @@
 // and no agent or MCP tool speaks it).
 //
 // The observation source polls the version (this daemon pushes nothing to
-// the app outside session feeds and host status): every 5 s while mounted
-// and on window focus, plus an explicit refresh the conflict banner's
-// Retry uses. A `missing` poll of a file that was missing at open is not
-// an observation — there is nothing to conflict with yet, and feeding it
-// to the model would paint "Deleted" under an empty editor that never
-// existed. From the first landed write on, every poll is fed verbatim:
-// the model's version turns `ready` exactly then, which is the flag this
-// source watches.
+// the app outside session feeds and host status): a cheap stat every 5 s
+// while mounted and visible, on window focus and visibility, plus an
+// explicit refresh the conflict banner's Retry uses. Bytes are re-read
+// only when the stamp moved past what the model holds — over the peer
+// link especially, where every byte is a relayed round trip. One poll at
+// a time, none while hidden, and a failed re-read feeds nothing (never
+// the buffer as disk content) and retries next poll. A `missing` poll of
+// a file that was missing at open is not an observation — there is
+// nothing to conflict with yet, and feeding it to the model would paint
+// "Deleted" under an empty editor that never existed. From the first
+// landed write on, every poll is fed verbatim: the model's version turns
+// `ready` exactly then, which is the flag this source watches.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -254,54 +258,77 @@ export function useEditableFile(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, openNonce, refreshNonce]);
 
-  // The version poll: a cheap stat, no bytes — except when the stamp
-  // moved, when the bytes are re-read so the model can adopt them (clean)
-  // or conflict on them (dirty). A failed poll keeps the last good
-  // observation and surfaces its sentence beside the editor.
+  // The version poll: a cheap stat, no bytes. Bytes are re-read only
+  // when the stamp moved past what the model holds; a failed re-read
+  // feeds nothing (never the buffer as disk content) and retries next
+  // poll. One poll at a time (a slow remote relay must not stack them
+  // against its own deadline), and none while the tab is hidden.
   useEffect(() => {
     const entry = cell.current;
     const boundModel = model;
     if (!entry || !boundModel) return;
     let live = true;
+    let inflight = false;
     const notify = () => {
-      const entry = cell.current;
-      if (!entry) return;
-      for (const listener of entry.listeners) listener();
+      const current = cell.current;
+      if (!current) return;
+      for (const listener of current.listeners) listener();
     };
     const poll = async () => {
-      const entry = cell.current;
-      if (!entry || !live) return;
+      if (inflight || document.hidden) return;
+      const current = cell.current;
+      if (!current || !live) return;
       // The first landed write turns the version `ready`: from then on
       // every poll is fed verbatim, missing ones included.
-      if (boundModel.getSnapshot().version.status === "ready") entry.openedMissing = false;
+      if (boundModel.getSnapshot().version.status === "ready") current.openedMissing = false;
+      inflight = true;
       let version: WorkspaceFileVersion;
       try {
         version = await versionTarget(road.current);
       } catch (cause: unknown) {
-        if (!live || cell.current !== entry) return;
+        inflight = false;
+        if (!live || cell.current !== current) return;
         setFailure(cause instanceof Error ? cause.message : String(cause));
         return;
       }
-      if (!live || cell.current !== entry) return;
+      if (!live || cell.current !== current) {
+        inflight = false;
+        return;
+      }
       setFailure(null);
       if (version.status === "missing") {
         // Skipped while still a never-created file (see the module note);
         // a deletion from here on.
-        if (entry.openedMissing) return;
-        entry.observation = version;
+        if (current.openedMissing) {
+          inflight = false;
+          return;
+        }
+        current.observation = version;
         notify();
+        inflight = false;
         return;
       }
       if (version.status === "error") {
-        entry.observation = version;
+        current.observation = version;
         notify();
+        inflight = false;
         return;
       }
-      // Ready: re-read the bytes the stamp moved under. A failed re-read
-      // still reports the stamp — the model learns something changed, and
-      // the next poll retries the bytes.
+      // Ready: compare against what the model holds first. An unchanged
+      // stamp is the common case and costs no bytes — over the peer link
+      // especially, where every byte is a relayed round trip.
+      const held = boundModel.getSnapshot().version;
+      const moved =
+        held.status !== "ready" ||
+        held.modifiedAt !== version.modifiedAt ||
+        held.revision !== version.revision ||
+        held.size !== version.size;
+      if (!moved) {
+        inflight = false;
+        return;
+      }
       let content: string | null = null;
-      let bom = entry.bom;
+      let bom = current.bom;
       try {
         const reopened = await openTarget(road.current);
         if (reopened.status === "ok" && reopened.content !== null) {
@@ -309,28 +336,41 @@ export function useEditableFile(
           bom = reopened.hasBom ?? bom;
         }
       } catch {
-        // Kept: the version below still moves the stamp.
+        // Bytes failed: feed nothing and say so. Feeding the buffer as
+        // disk content would paint a spurious conflict, and `reload()`
+        // would then adopt our own bytes as persisted (dirty cleared
+        // without a write). The next poll retries the bytes.
       }
-      if (!live || cell.current !== entry) return;
-      entry.bom = bom;
-      entry.observation = {
+      if (!live || cell.current !== current) {
+        inflight = false;
+        return;
+      }
+      if (content === null) {
+        setFailure("The file could not be re-read.");
+        inflight = false;
+        return;
+      }
+      current.bom = bom;
+      current.observation = {
         status: "ready",
-        file: {
-          content: content ?? boundModel.getSnapshot().content,
-          hasBom: bom,
-          version,
-        },
+        file: { content, hasBom: bom, version },
       };
       notify();
+      inflight = false;
     };
     entry.poll = () => void poll();
     const timer = setInterval(() => void poll(), POLL_MS);
     const onFocus = () => void poll();
+    const onVisible = () => {
+      if (!document.hidden) void poll();
+    };
     window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       live = false;
       clearInterval(timer);
       window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [model]);
 
