@@ -639,6 +639,10 @@ fn a_revoke_aborts_an_in_flight_create_with_needs_pairing() {
             Err(error) => panic!("the create never reached the peer: {error:?}"),
         }
         harness.links.revoke("b");
+        // Force the transport closed too: whichever the waiter observes
+        // first — the mark or the hang-up — the answer is the pairing
+        // state, never Offline. No sleeps: both orders are pinned.
+        harness.responder.stop();
         match creating.join().expect("the create thread") {
             LinkAnswer::Failed(state, _) => assert_eq!(
                 state,

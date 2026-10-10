@@ -107,6 +107,15 @@ fn wait_for_reply(
         }
         let left = deadline.saturating_duration_since(Instant::now());
         let Ok(message) = session.framed.recv_timeout(left) else {
+            // A closed socket after a revoke is still the revoke: check the
+            // mark before classifying, so a real revoke is never reported
+            // as Offline.
+            if link.is_revoked() {
+                return LinkAnswer::Failed(
+                    RemoteHostState::NeedsPairing,
+                    needs_pairing_sentence().to_string(),
+                );
+            }
             return LinkAnswer::Failed(RemoteHostState::Offline, offline_sentence().to_string());
         };
         if let DaemonMessage::Pong { id, .. } = &message {
@@ -237,17 +246,32 @@ pub(crate) fn serve_attach(
         }
         let left = deadline.saturating_duration_since(Instant::now());
         // Sliced like the operate wait so a mid-attach revoke is observed
-        // promptly; a quiet slice loops, a dead transport breaks to the
-        // offline answer below.
+        // promptly. Quiet slices loop on every platform's spelling of
+        // silence; a dead transport breaks below — after checking the
+        // revoke mark, so a real revoke is never reported as Offline.
         let slice = left.min(Duration::from_millis(50));
         let message = match session.framed.recv_timeout(slice) {
             Ok(message) => message,
-            // A quiet slice loops; a dead transport breaks below. Both the
-            // control plane's timeout and the socket's timed-out read are
-            // silence.
             Err(DaemonError::TimedOut(_)) => continue,
-            Err(DaemonError::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut => continue,
-            Err(_) => break,
+            Err(DaemonError::Io(error))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
+                continue
+            }
+            Err(_) => {
+                if link.is_revoked() {
+                    link.remove_subscription(subscription_id);
+                    let _ = answer.send(LinkAnswer::Failed(
+                        RemoteHostState::NeedsPairing,
+                        needs_pairing_sentence().to_string(),
+                    ));
+                    return;
+                }
+                break;
+            }
         };
         if let DaemonMessage::Pong { id, .. } = &message {
             if *id >= PROBE_ID_BASE {

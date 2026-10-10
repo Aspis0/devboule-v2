@@ -102,13 +102,36 @@ fn wait_for_operate_reply(
         let slice = left.min(Duration::from_millis(50));
         let message = match session.framed.recv_timeout(slice) {
             Ok(message) => message,
-            // A quiet slice just loops: the control plane's own timeout
-            // and the socket's timed-out read are both silence, on the
-            // pipe and on the Noise transport alike.
+            // A quiet slice just loops. Silence has three spellings: the
+            // control plane's own timeout, and the socket's timed-out or
+            // would-block read — the Noise transport reports a quiet wait
+            // either way depending on platform (macOS reports WouldBlock
+            // where Windows reports TimedOut). Treating WouldBlock as
+            // fatal ends every sliced wait on its first slice there.
             Err(DaemonError::TimedOut(_)) => continue,
-            Err(DaemonError::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut => continue,
+            Err(DaemonError::Io(error))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
+                continue
+            }
+            // A revoke is ordered before the teardown it triggers, but a
+            // closed socket can still win the race on the way out: check
+            // the mark before classifying, so a real revoke is never
+            // reported as Offline.
             Err(_) => {
-                return LinkAnswer::Failed(RemoteHostState::Offline, offline_sentence().to_string())
+                if link.is_revoked() {
+                    return LinkAnswer::Failed(
+                        RemoteHostState::NeedsPairing,
+                        needs_pairing_sentence().to_string(),
+                    );
+                }
+                return LinkAnswer::Failed(
+                    RemoteHostState::Offline,
+                    offline_sentence().to_string(),
+                );
             }
         };
         if let DaemonMessage::Pong { id, .. } = &message {
