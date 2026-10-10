@@ -213,6 +213,39 @@ source, and that line is the authority for the entry:
   `packages/app/src/assistant-file-links/parse.ts`
   (`resolveRelativePathUnderRoot`; Apache-2.0, Copyright (c) 2025-present
   Mohamed Boudra)
+- `crates/devboule-daemon/src/workspace_file_edit.rs` —
+  `packages/server/src/server/file-explorer/service.ts` (`readExplorerFile`,
+  `getExplorerFileVersion`, `writeExplorerFile`, `fileRevision`,
+  `matchesExpectedRevision`, `isLikelyBinary`, `isValidUtf8`,
+  `MAX_EDITABLE_FILE_BYTES`, commit `b6e8ca89`)
+- `crates/devboule-daemon/src/workspace_file_edit_tests.rs` — covers the
+  port above; the cases are Devboule's own (missing creates, parent
+  refusal, atomic replace, outside-workspace roads, the peer/agent
+  boundary)
+- `crates/devboule-protocol/src/file_edit_tests.rs` —
+  `packages/protocol/src/messages.ts` (`FileVersion`, `FileWriteResult`,
+  the `fs.file.*` frames) and `packages/protocol/src/messages.file-editing.test.ts`
+  (commit `b6e8ca89`)
+- `src/features/workspace/fileEditor/model.ts` —
+  `packages/app/src/file-pane/editor/model.ts` (copied verbatim modulo the
+  wire types, commit `b6e8ca89`)
+- `src/features/workspace/fileEditor/model.test.ts` —
+  `packages/app/src/file-pane/editor/model.test.ts` (every case kept; only
+  the version stamps changed, commit `b6e8ca89`)
+- `src/features/workspace/fileEditor/extensions.ts` —
+  `packages/app/src/file-pane/editor/extensions.web.ts` (the base
+  extensions and the theme hook; per-language grammars and vim left out,
+  commit `b6e8ca89`)
+- `src/features/workspace/fileEditor/FileEditorView.tsx` —
+  `packages/app/src/file-pane/editor/view.web.tsx` (the CodeMirror host;
+  vim mode and the find panel left out, commit `b6e8ca89`)
+- `src/features/workspace/fileEditor/FileEditorBar.tsx` —
+  `packages/app/src/file-pane/bar.tsx` (commit `b6e8ca89`)
+- `src/features/workspace/fileEditor/FileConflictAlert.tsx` —
+  `packages/app/src/file-pane/conflict-alert.tsx` (commit `b6e8ca89`)
+- `src/features/workspace/EditableFilePane.tsx` —
+  `packages/app/src/file-pane/pane.tsx` (the `EditableFilePane`, mapped
+  onto this app's header, dialog and styling, commit `b6e8ca89`)
 - `src/lib/toolCallGroups.ts` — `packages/app/src/i18n/resources/en.ts:1853-1879`
   (the `toolCallGroup.*` strings)
 - `src/features/workspace/browserUrl.ts` — `src/shared/browser-url.ts`
