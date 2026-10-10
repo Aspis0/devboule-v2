@@ -30,6 +30,8 @@ vi.mock("../../lib/tauri", () => ({
 }));
 
 import {
+  appFileOpen,
+  appFileWrite,
   daemonStatus,
   workspaceFileEditorOpen,
   workspaceFileEditorVersion,
@@ -294,8 +296,7 @@ describe("WorkspaceFileTab editing", () => {
     expect(vi.mocked(workspaceFileEditorWrite).mock.calls[0]?.slice(3)).toEqual([null, null, true]);
   });
 
-  it("stays read-only with a note against a stale daemon", async () => {
-    vi.mocked(daemonStatus).mockResolvedValue({
+  it("stays read-only with a note against a stale daemon", async () => {    vi.mocked(daemonStatus).mockResolvedValue({
       state: "connected",
       pid: 1,
       instanceId: "1",
@@ -362,5 +363,41 @@ describe("WorkspaceFileTab editing", () => {
 
     expect(workspaceFileEditorWrite).toHaveBeenCalledTimes(1);
     expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("edits an outside file on the app road", async () => {
+    vi.mocked(appFileOpen).mockResolvedValue({
+      status: "ok",
+      content: "hi\n",
+      hasBom: false,
+      version: {
+        status: "ready",
+        workspaceId: "",
+        path: "/home/u/note.md",
+        size: 3,
+        modifiedAt: 100,
+        revision: "3:100",
+      },
+      size: 3,
+      error: null,
+    });
+    vi.mocked(appFileWrite).mockResolvedValue({
+      status: "written",
+      modifiedAt: 101,
+      size: 4,
+      revision: "4:101",
+    });
+    await renderTab("/home/u/note.md");
+
+    // The windowed workspace road never sees an outside path.
+    expect(workspaceFileRead).not.toHaveBeenCalled();
+    expect(appFileOpen).toHaveBeenCalledWith("/home/u/note.md");
+    expect(container.querySelector('[data-testid="file-source-editor"]')).not.toBeNull();
+
+    await type("hey ");
+    await saveNow();
+
+    expect(appFileWrite).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(appFileWrite).mock.calls[0]?.[0]).toBe("/home/u/note.md");
   });
 });
