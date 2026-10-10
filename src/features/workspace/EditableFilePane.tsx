@@ -42,6 +42,31 @@ export function EditableFilePane({
     setAskingReload(false);
   }, [path, workspaceKey]);
 
+  // While the reload ask is up the buffer must not save underneath it:
+  // suspend the pending autosave, resume on either answer. The manual
+  // save and the conflict roads are untouched — only the timer pauses.
+  useEffect(() => {
+    if (!askingReload || !model) return;
+    const resume = model.suspendAutosave();
+    return resume;
+  }, [askingReload, model]);
+
+  // Window close or quit with an unsaved or in-flight buffer: flush
+  // first, then let the browser ask. The save is already on the wire
+  // when the dialog opens; staying keeps the banner (and the failure,
+  // if the save failed), leaving keeps whatever landed.
+  useEffect(() => {
+    if (!model) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      const status = model.getSnapshot().status;
+      if (status !== "dirty" && status !== "saving" && status !== "error") return;
+      void model.save();
+      event.preventDefault();
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [model]);
+
   const handleReload = useCallback(() => {
     if (!model) return;
     if (!snapshot?.modified) {

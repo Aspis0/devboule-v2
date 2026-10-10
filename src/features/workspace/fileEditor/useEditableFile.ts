@@ -178,6 +178,11 @@ export function useEditableFile(
   const road = useRef(target);
   road.current = target;
   const cell = useRef<ObservationCell | null>(null);
+  // The live model, beside the state mirror: cleanup owns the lifecycle
+  // directly (a `setModel` updater inside a cleanup never runs on an
+  // unmounting component, which would leak the autosave timer and drop
+  // the buffer).
+  const modelRef = useRef<FileEditorModel | null>(null);
 
   // The open: one model per landed file, disposed with the tab.
   useEffect(() => {
@@ -245,16 +250,25 @@ export function useEditableFile(
           file: { content: opened.content, hasBom: entry.bom, version: opened.version },
         };
       }
+      modelRef.current = next;
       setModel(next);
       setLoading(false);
     })();
     return () => {
       live = false;
       cell.current = null;
-      setModel((current) => {
-        current?.dispose();
-        return null;
-      });
+      // Flush first: a dirty or failed buffer saves now instead of dying
+      // with the 800 ms timer. The write is already on the wire when
+      // `dispose` invalidates the post-write snapshot update, so the
+      // bytes land either way.
+      const retiring = modelRef.current;
+      modelRef.current = null;
+      if (retiring !== null) {
+        const status = retiring.getSnapshot().status;
+        if (status === "dirty" || status === "error") void retiring.save();
+        retiring.dispose();
+      }
+      setModel(null);
     };
     // Keyed on the serialised target and the manual retry nonce only.
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -328,4 +328,39 @@ describe("WorkspaceFileTab editing", () => {
     expect(vi.mocked(workspaceFileEditorOpen).mock.calls.length).toBe(opens);
     expect(dirtyDot()).not.toBeNull();
   });
+
+  it("flushes pending text on unmount instead of dropping it", async () => {
+    await renderTab();
+    await type("unsaved ");
+    expect(workspaceFileEditorWrite).not.toHaveBeenCalled();
+
+    // A tab switch unmounts the pane: the buffer saves now instead of
+    // dying with the debounce timer.
+    await act(async () => {
+      root!.unmount();
+      root = undefined;
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(workspaceFileEditorWrite).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(workspaceFileEditorWrite).mock.calls[0]?.[2]).toContain("unsaved ");
+  });
+
+  it("flushes and asks on window close with unsaved text", async () => {
+    await renderTab();
+    await type("unsaved ");
+
+    const event = new Event("beforeunload", { cancelable: true });
+    await act(async () => {
+      window.dispatchEvent(event);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(workspaceFileEditorWrite).toHaveBeenCalledTimes(1);
+    expect(event.defaultPrevented).toBe(true);
+  });
 });
