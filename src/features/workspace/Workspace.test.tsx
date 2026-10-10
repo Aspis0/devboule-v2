@@ -222,6 +222,36 @@ vi.mock("./AgentChatSurface", () => ({
         />
         <button
           type="button"
+          data-testid="emit-plan-request"
+          onClick={() =>
+            onPermissionRequest?.(sessionId, 51, {
+              type: "permission_request",
+              toolCallId: "tool-plan",
+              title: "Plan",
+              kind: "plan",
+              plan: "## Steps\n\n- Build it",
+              options: [
+                { optionId: "deny", name: "Reject", kind: "reject_once" },
+                { optionId: "implement", name: "Implement", kind: "allow_once" },
+              ],
+            })
+          }
+        />
+        <button
+          type="button"
+          data-testid="emit-plan-resolved-elsewhere"
+          onClick={() =>
+            onPermissionResolved?.(sessionId, {
+              type: "permission_resolved",
+              toolCallId: "tool-plan",
+              answeredBy: "s.other.2",
+              selectedOptionKind: "allow_once",
+              selectedOptionName: "Implement",
+            })
+          }
+        />
+        <button
+          type="button"
           data-testid="emit-permission-resolved"
           onClick={() =>
             onPermissionResolved?.(sessionId, { type: "permission_resolved", toolCallId: "tool-a" })
@@ -2965,6 +2995,34 @@ describe("Workspace sessions", () => {
     if (clear === null) throw new Error("the resolved card has no Clear");
 
     await act(async () => clear.click());
+    expect(container.querySelector(".permission-card")).toBeNull();
+  });
+
+  it("never shows an answered plan as a card, even when someone else answered it", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
+    if (add === null) throw new Error("session add control did not render");
+    await act(async () => add.click());
+    await act(async () => newTabMenuItem(container, "Agent").click());
+    await act(async () => undefined);
+
+    const emitPlan = container.querySelector<HTMLButtonElement>("[data-testid=emit-plan-request]");
+    const answeredElsewhere = container.querySelector<HTMLButtonElement>(
+      "[data-testid=emit-plan-resolved-elsewhere]",
+    );
+    if (emitPlan === null || answeredElsewhere === null) {
+      throw new Error("plan emitters did not render");
+    }
+    await act(async () => emitPlan.click());
+    expect(container.querySelector(".permission-card-plan")).not.toBeNull();
+
+    await act(async () => answeredElsewhere.click());
     expect(container.querySelector(".permission-card")).toBeNull();
   });
 

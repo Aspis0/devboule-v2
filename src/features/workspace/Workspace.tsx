@@ -1942,13 +1942,19 @@ export function Workspace({
   // session's card has no surface to render on. The gate reads the pane, not
   // the strip's selection — a tab in the pane below has left the pane above
   // free, and a waiting card must not disappear with it.
+  // An answered plan is never a card again, whoever answered it: the transcript
+  // row and the composer's icon carry it from the answer on.
+  const cardStandsFor = (item: (typeof permissionQueue)[number]) =>
+    item.request.kind !== "plan" || item.resolution === undefined;
   const selectedPermission =
     panes.upperTool !== null
       ? null
       : (permissionQueue.find(
           (item) => item.sessionId === selectedSessionId && item.resolution === undefined,
         ) ??
-        permissionQueue.find((item) => item.sessionId === selectedSessionId) ??
+        permissionQueue.find(
+          (item) => item.sessionId === selectedSessionId && cardStandsFor(item),
+        ) ??
         null);
   // An unanswered card parks the turn: the chat surface turns Enter's queue
   // action into a steer while one is open (queueing would strand the message).

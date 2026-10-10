@@ -145,7 +145,12 @@ describe("pending plan row suppression", () => {
   // unresolved card of the session, else the resolved head.
   const selectedCard = (): (typeof queue)[number] | null =>
     queue.find((card) => card.sessionId === SESSION && card.resolution === undefined) ??
-    queue.find((card) => card.sessionId === SESSION) ??
+    // Workspace.tsx: an answered plan is never a card again.
+    queue.find(
+      (card) =>
+        card.sessionId === SESSION &&
+        (card.request.kind !== "plan" || card.resolution === undefined),
+    ) ??
     null;
 
   const cardStub = (): ReactNode => {
@@ -242,6 +247,9 @@ describe("pending plan row suppression", () => {
     await renderSurface();
 
     expect(planRowCount(container)).toBe(1);
+    // The answered plan leaves the pending area; its row and the composer's icon remain.
+    expect(container.querySelector("[data-testid='permission-plan-card']")).toBeNull();
+    expect(container.querySelector("[data-testid='plan-reader-trigger']")).not.toBeNull();
     const entries = container.querySelectorAll(".workspace-conversation-content > *");
     const kinds = Array.from(entries).map((entry) => entry.className);
     expect(kinds[0]).toContain("workspace-chat-assistant");
