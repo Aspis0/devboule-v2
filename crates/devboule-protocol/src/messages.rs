@@ -1264,11 +1264,15 @@ pub enum ClientMessage {
     /// Open one file anywhere on this machine for the in-app editor: an
     /// absolute path or a `~` path (for example
     /// `~/.config/pubvia/anthropic.env`), expanded and read as the human's
-    /// own file — links are followed, the real file opens. Local app
-    /// connections only: the peer gate refuses these frames under every
-    /// capability, like [`Self::WorkspaceOpenRoot`], and no agent or MCP
-    /// tool speaks them, so agents gain nothing. The reply is
-    /// [`DaemonMessage::AppFileOpened`].
+    /// own file — links are followed, the real file opens. The peer gate
+    /// refuses these frames under every capability, like
+    /// [`Self::WorkspaceOpenRoot`], and no agent or MCP tool speaks them
+    /// (pinned by `mcp_broker/file_edit_boundary_tests.rs`). That is
+    /// client discipline, not an authorization boundary: any same-user
+    /// process holding the pipe speaks this wire, agents included — the
+    /// practical delta is small because agents already run shells, but
+    /// the frames must never be read as proof of who sent them. The reply
+    /// is [`DaemonMessage::AppFileOpened`].
     AppFileOpen {
         id: u64,
         path: String,

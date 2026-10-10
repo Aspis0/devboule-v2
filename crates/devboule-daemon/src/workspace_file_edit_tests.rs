@@ -688,33 +688,9 @@ fn every_new_frame_is_denied_to_every_peer() {
     ));
 }
 
-#[test]
-fn the_mcp_broker_serves_no_file_writing_tool() {
-    // Agents reach the daemon through the broker's tools, never through
-    // these frames — so the tool list is the boundary that matters. Any
-    // tool whose name or description offers to write, edit or save a file
-    // fails this test on purpose.
-    for (name, description) in crate::provider_catalog::MCP_BROKER_TOOLS {
-        let haystack = format!("{name} {description}").to_lowercase();
-        for stem in [
-            "file_write",
-            "file_edit",
-            "write_file",
-            "edit_file",
-            "save_file",
-            "writefile",
-        ] {
-            assert!(
-                !haystack.contains(stem),
-                "the broker must serve no file-writing tool, found {stem} in {name}"
-            );
-        }
-        assert!(
-            !name.contains("file_open") && !name.contains("file_version"),
-            "the broker must serve no editor frame, found {name}"
-        );
-    }
-}
+// The agent/tools boundary moved to the broker's own tests
+// (`mcp_broker/file_edit_boundary_tests.rs`): a call-graph pin plus the
+// served surface over the real HTTP road, instead of this name scan.
 
 #[test]
 fn the_stat_is_classified_not_booleanised() {

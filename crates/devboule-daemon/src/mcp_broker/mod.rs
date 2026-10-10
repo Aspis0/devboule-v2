@@ -967,6 +967,11 @@ mod browser_tools_served_tests;
 /// a person opened does not outrank a later mode switch.
 #[cfg(test)]
 mod creation_mode_road_tests;
+/// The agent/tools boundary for the in-app file editor: no MCP road
+/// reaches the file-edit service, and tools/list serves exactly the
+/// catalog.
+#[cfg(test)]
+mod file_edit_boundary_tests;
 /// The peer door refuses a name with no rule, and every served name has one.
 #[cfg(test)]
 mod peer_fail_closed_tests;
