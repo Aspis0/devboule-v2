@@ -234,7 +234,7 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// role word its decoder requires.
 ///
 /// Protocol 33 adds the in-app file editor: `WorkspaceFileOpen` (whole text
-/// up to 1 MiB with its BOM flag and version; a missing file opens empty
+/// up to 128 KiB with its BOM flag and version; a missing file opens empty
 /// and the first save creates it), `WorkspaceFileVersion` (the observation
 /// poll, mapping Paseo's `fs.file.subscribe` + `fs.file.update`), and
 /// `WorkspaceFileWrite` (Paseo's `fs.file.write.request` as

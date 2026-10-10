@@ -1,5 +1,5 @@
 // The File tab: an editable file, or the old read-only body when the
-// file cannot be edited. Local workspace text up to 1 MiB opens in the
+// file cannot be edited. Local workspace text up to 128 KiB opens in the
 // in-app editor (Paseo's model, CodeMirror 6, autosave, conflict banner);
 // binary and over-cap files keep the read-only body they always had, and
 // a missing file opens empty — the first save creates it. Files on a
@@ -37,9 +37,11 @@ function isMarkdownPath(path: string): boolean {
 const DOES_NOT_EXIST = "the requested path does not exist";
 
 /** Bytes the editor opens whole: mirrors `MAX_EDITABLE_FILE_BYTES` in
- * `workspace_file_edit.rs`. Over it the tab keeps the windowed read-only
- * body, so a big log stays pageable instead of becoming a refusal. */
-const MAX_EDITABLE_FILE_BYTES = 1024 * 1024;
+ * `workspace_file_edit.rs` (128 KiB — sized so the worst escaping still
+ * fits the 1 MiB frame with margin). Over it the tab keeps the windowed
+ * read-only body, so a big log stays pageable instead of becoming a
+ * refusal that could take the connection down. */
+const MAX_EDITABLE_FILE_BYTES = 128 * 1024;
 
 function lastSeparator(path: string): number {
   return Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));

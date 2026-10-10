@@ -1096,7 +1096,7 @@ export const workspaceFileRead = (
 ) => invokeTyped("workspace_file_read", { workspaceId, path, fromLine, lineCount });
 /**
  * Open one workspace file whole for the in-app editor: the text up to
- * 1 MiB with its BOM flag and version, or the refusal's sentence. A
+ * 128 KiB with its BOM flag and version, or the refusal's sentence. A
  * missing file opens empty with a `missing` version — the first save
  * creates it.
  */

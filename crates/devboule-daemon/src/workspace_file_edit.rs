@@ -5,9 +5,8 @@
 //! `isValidUtf8`, `MAX_EDITABLE_FILE_BYTES`), ported to this daemon line
 //! by line (Apache-2.0, Copyright (c) 2025-present Mohamed Boudra).
 //!
-//! What is the same: the 1 MiB cap on bytes in both directions, the binary
-//! sniff (a NUL byte, or more than three in ten suspicious control bytes,
-//! or bytes that are not UTF-8), the version as size plus stamp, the
+//! What is the same: the binary sniff (a NUL byte, or more than three in
+//! ten suspicious control bytes, or bytes that are not UTF-8), the version as size plus stamp, the
 //! expected-version check (a revision when one is named, the stamp
 //! otherwise), and the atomic write — a temp file in the same folder,
 //! `fsync`, `rename` — with a second stat before the rename so a change
@@ -33,6 +32,10 @@
 //!   refusal words are reused where they say the same fact, while the
 //!   editor-specific facts keep Paseo's exact strings (`Binary files
 //!   cannot be edited`, `File is too large to edit`).
+//! - The cap is 128 KiB, not Paseo's 1 MiB: a megabyte of content does
+//!   not fit the 1 MiB frame once JSON-escaped (controls escape to six
+//!   bytes), and an over-cap reply would take the connection down instead
+//!   of answering. Bigger files stay on the windowed read-only road.
 //! - The temp file marker names this daemon (`.devboule-<uuid>.tmp`);
 //!   Paseo's is `.paseo-<uuid>.tmp`.
 //! - There is no subscribe push on this wire: the editor polls
@@ -54,11 +57,16 @@ use crate::workspace_git_diff::NOT_A_FILE;
 use crate::workspace_git_support::{confined, walk, Walked, OUTSIDE_THE_WORKSPACE};
 use crate::ServerState;
 
-/// Bytes of file this road hands back or takes: Paseo's
-/// `MAX_EDITABLE_FILE_BYTES`. Counted in bytes, not characters — the frame
-/// is one JSON line under `MAX_FRAME_BYTES`, and the worst JSON escape is
-/// 6 bytes per control byte.
-pub(crate) const MAX_EDITABLE_FILE_BYTES: u64 = 1024 * 1024;
+/// Bytes of file this road hands back or takes. 128 KiB, like the
+/// windowed read's own cap (`workspace_file_read.rs`): the frame is one
+/// JSON line of at most [`devboule_protocol::MAX_FRAME_BYTES`] (1 MiB),
+/// and serde_json escapes `"` and `\` as 2 bytes and every control byte
+/// as 2-6 (`\n` is 2, the rest `\u00XX` is 6) — so 128 KiB of the worst
+/// bytes is 768 KiB on the wire, always under the cap with margin to
+/// spare for the envelope. A whole megabyte of content would not fit once
+/// escaped, and an over-cap reply would take the connection down with it
+/// instead of answering, so the cap lives in bytes here, not characters.
+pub(crate) const MAX_EDITABLE_FILE_BYTES: u64 = 128 * 1024;
 
 /// Paseo's `File is too large to edit`, kept verbatim: the sentence the
 /// editor shows when either direction exceeds [`MAX_EDITABLE_FILE_BYTES`].

@@ -263,8 +263,58 @@ fn undecodable_bytes_are_binary_not_lossy_text() {
     assert_eq!(file.error.as_deref(), Some(BINARY));
 }
 
+/// The cap that matters is the frame's, not the file's: the worst this
+/// road allows must still encode — with the envelope around it — well
+/// under [`devboule_protocol::MAX_FRAME_BYTES`]. An over-cap reply would
+/// not answer but take the connection down with it (`Framed::send`
+/// refuses the frame and the loop detaches), so this pins the margin
+/// instead of trusting the arithmetic.
 #[test]
-fn the_mib_cap_holds_in_both_directions() {
+fn the_cap_fits_the_worst_frame_with_margin() {
+    use devboule_protocol::{DaemonMessage, MAX_FRAME_BYTES};
+
+    let dir = Dir::fresh("frame");
+    // A quote escapes as two wire bytes, the worst text this road opens
+    // can do (control bytes that escape to six are binary by the sniff
+    // above and never open). The write direction takes any bytes verbatim,
+    // so it is measured with those below.
+    dir.write("worst.txt", vec![b'"'; MAX_EDITABLE_FILE_BYTES as usize]);
+    let file = open_workspace_file(&dir.root, dir.workspace_id(), "worst.txt");
+    assert_eq!(
+        file.status,
+        WorkspaceFileContentStatus::Ok,
+        "the cap is inclusive: exactly at it, the file still opens"
+    );
+    let encoded = serde_json::to_vec(&DaemonMessage::WorkspaceFileOpened { id: 1, file })
+        .expect("the opened reply must encode");
+    assert!(
+        (encoded.len() as u64) < MAX_FRAME_BYTES as u64 - 128 * 1024,
+        "worst-case open frame {} leaves no margin under {}",
+        encoded.len(),
+        MAX_FRAME_BYTES
+    );
+
+    // The write direction rides the same frame cap from the app side —
+    // and takes bytes verbatim, so the six-byte escapes count here.
+    let request = devboule_protocol::ClientMessage::WorkspaceFileWrite {
+        id: 2,
+        workspace_id: dir.workspace_id().to_string(),
+        path: "worst.txt".to_string(),
+        content: "\u{1}".repeat(MAX_EDITABLE_FILE_BYTES as usize),
+        expected_modified_at: Some(0),
+        expected_revision: None,
+    };
+    let encoded = serde_json::to_vec(&request).expect("the write must encode");
+    assert!(
+        (encoded.len() as u64) < MAX_FRAME_BYTES as u64 - 128 * 1024,
+        "worst-case write frame {} leaves no margin under {}",
+        encoded.len(),
+        MAX_FRAME_BYTES
+    );
+}
+
+#[test]
+fn the_cap_holds_in_both_directions() {
     let dir = Dir::fresh("cap");
     dir.write("big.txt", vec![b'a'; MAX_EDITABLE_FILE_BYTES as usize + 1]);
 

@@ -313,13 +313,13 @@ pub async fn workspace_file_preview_unstage(
 }
 
 /// Open one workspace file whole for the in-app editor: the text up to
-/// 1 MiB with its BOM flag and version, or the refusal's sentence. Same
+/// 128 KiB with its BOM flag and version, or the refusal's sentence. Same
 /// shape as the read above — `workspace_id` names the folder, `path` is
 /// relative to it, the daemon confines and walks it — and a missing file
 /// opens empty with a `missing` version: the first save creates it.
 /// Bounded like the other workspace roads: `RPC_TIMEOUT` (30 s) is what
 /// this caller feels, and the daemon's own work is one walk, one stat and
-/// one read of at most 1 MiB. The wait leaves the window's thread the way
+/// one read of at most 128 KiB. The wait leaves the window's thread the way
 /// the other roads do.
 #[tauri::command]
 pub async fn workspace_file_editor_open(

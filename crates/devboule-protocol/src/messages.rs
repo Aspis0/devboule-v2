@@ -1178,7 +1178,7 @@ pub enum ClientMessage {
         workspace_id: String,
     },
     /// Open one workspace file for the in-app editor: the whole text up to
-    /// 1 MiB with its BOM flag and version, or the refusal's sentence. A
+    /// 128 KiB with its BOM flag and version, or the refusal's sentence. A
     /// read like [`Self::WorkspaceFileRead`]: the daemon resolves the
     /// directory from `workspace_id` and confines `path` inside it before
     /// anything is opened. A missing file opens empty — the reply carries
@@ -3311,7 +3311,7 @@ pub enum WorkspaceFileWriteResult {
 /// One file opened whole for the in-app editor: its text (empty when
 /// missing — the first save creates it), whether its bytes start with a
 /// UTF-8 BOM (the editor restores it byte-for-byte on save), and the
-/// version a write must echo back. Over 1 MiB, binary, or undecodable
+/// version a write must echo back. Over 128 KiB, binary, or undecodable
 /// bytes never open: `status` is `refused` with the sentence, and the
 /// other fields stay `None` — the same pair discipline
 /// [`WorkspaceFileContent`] keeps.
