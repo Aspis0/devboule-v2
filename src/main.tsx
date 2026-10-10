@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { AppRoot } from "./app/AppRoot";
+import { installEditorFlush } from "./features/workspace/fileEditor/editorRegistry";
 import { startThemeSync } from "./lib/theme";
 import "./styles/tokens.css";
 import "./styles/global.css";
@@ -16,6 +17,10 @@ const root = document.getElementById("root");
 if (!root) {
   throw new Error("Devboule root element is missing");
 }
+
+// The close flow's flush request lands here even when no editor is
+// mounted: the listener is process-wide, the registry decides.
+void installEditorFlush().catch(() => undefined);
 
 createRoot(root).render(
   <StrictMode>

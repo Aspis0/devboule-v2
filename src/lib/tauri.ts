@@ -111,6 +111,7 @@ export type CommandArgs = {
   daemon_status: undefined;
   daemon_restart: undefined;
   daemon_diagnostics: undefined;
+  editors_flushed: { nonce: number; unsaved: string[] };
   projects_list: undefined;
   project_add: { path: string };
   workspaces_list: { projectId: Id };
@@ -454,6 +455,7 @@ type CommandResults = {
   daemon_status: DaemonStatus;
   daemon_restart: void;
   daemon_diagnostics: DaemonDiagnostics;
+  editors_flushed: void;
   projects_list: Project[];
   project_add: Project;
   workspaces_list: Workspace[];
@@ -688,6 +690,7 @@ export const COMMAND_ARG_KEYS = {
   daemon_status: [],
   daemon_restart: [],
   daemon_diagnostics: [],
+  editors_flushed: ["nonce", "unsaved"],
   projects_list: [],
   project_add: ["path"],
   workspaces_list: ["projectId"],
@@ -966,6 +969,13 @@ export function invokeTyped<K extends CommandName>(
 
 export const appIdentity = () => invokeTyped("app_identity");
 export const daemonStatus = () => invokeTyped("daemon_status");
+/**
+ * Answer the close flow's flush request: which editors still hold user
+ * text after the bounded flush (conflicted-with-edits and saves that
+ * did not land). The backend names them in the quit question.
+ */
+export const editorsFlushed = (nonce: number, unsaved: string[]) =>
+  invokeTyped("editors_flushed", { nonce, unsaved });
 /**
  * Kills a wedged daemon; the supervisor then spawns a fresh one on its own.
  * Destructive — it closes the Job Object owning every agent and terminal

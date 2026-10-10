@@ -132,6 +132,7 @@ pub fn run() {
             attention_toast::attention_toast_show,
             client::daemon_status,
             client::daemon_restart,
+            close_flow::editors_flushed,
             backend::session::session_create,
             backend::session::session_resume,
             backend::session::session_attach,

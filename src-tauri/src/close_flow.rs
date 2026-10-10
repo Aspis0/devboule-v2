@@ -5,9 +5,10 @@
 //! showing the confirmation (at most one at a time), and performing what
 //! the user chose — hide, or quit with a last look at the daemon.
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
+use crate::backend::error::CommandError;
 use crate::client::DaemonBridge;
 use crate::close_prompt::{
     act_on_quit_answer, decide_close, decide_quit, dialog_answer, quit_confirmation_message,
@@ -19,6 +20,70 @@ use crate::surface_settings;
 /// One confirmation per app: a second close or quit request while a dialog
 /// is open is ignored, never turned into a competing dialog.
 static CONFIRM_GATE: ConfirmGate = ConfirmGate::new();
+
+/// How long the close flow waits for the frontend's editor flush: long
+/// enough for a few local saves and one slow remote round trip, short
+/// enough that a dead webview never holds the quit hostage.
+const FLUSH_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The pending flush answer: the nonce the request carried and the
+/// channel its `editors_flushed` answers on. One slot — the confirm gate
+/// keeps a second close from asking while one is in flight.
+static FLUSH_SLOT: std::sync::Mutex<Option<(u64, std::sync::mpsc::SyncSender<Vec<String>>)>> =
+    std::sync::Mutex::new(None);
+static FLUSH_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Ask every mounted editor to save and wait (bounded) for what is still
+/// unsaved: conflicted-with-edits, which no automatic write may resolve,
+/// and saves that did not land in time (an offline host among them). The
+/// answer shapes the quit question; a quit that would silently drop text
+/// becomes an ask instead. A webview that never answers (gone, wedged)
+/// reports the unknown rather than holding the close past the bound.
+fn flush_editors_blocking(app: &tauri::AppHandle) -> Vec<String> {
+    let nonce = FLUSH_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    {
+        let mut slot = FLUSH_SLOT.lock().unwrap_or_else(|error| error.into_inner());
+        *slot = Some((nonce, tx));
+    }
+    // serde_json::Value carries the nonce; a typed payload would add a
+    // struct for one number.
+    let _ = app.emit(
+        "devboule:flush-editors",
+        serde_json::json!({ "nonce": nonce }),
+    );
+    let unsaved = rx
+        .recv_timeout(FLUSH_WAIT)
+        .unwrap_or_else(|_| vec!["unsaved changes (save status unknown)".to_string()]);
+    {
+        let mut slot = FLUSH_SLOT.lock().unwrap_or_else(|error| error.into_inner());
+        if slot.as_ref().is_some_and(|(pending, _)| *pending == nonce) {
+            *slot = None;
+        }
+    }
+    unsaved
+}
+
+/// The frontend's answer to one flush request: routed by nonce, stale
+/// answers dropped. Plain command (no bridge): the answer must land even
+/// when the daemon is gone, which is exactly when it matters.
+#[tauri::command]
+pub async fn editors_flushed(nonce: u64, unsaved: Vec<String>) -> Result<(), CommandError> {
+    let sender = {
+        let mut slot = FLUSH_SLOT.lock().unwrap_or_else(|error| error.into_inner());
+        match slot.take() {
+            Some((pending, tx)) if pending == nonce => Some(tx),
+            other => {
+                *slot = other;
+                None
+            }
+        }
+    };
+    if let Some(tx) = sender {
+        let _ = tx.send(unsaved);
+    }
+    Ok(())
+}
 
 /// `CloseRequested` entry point. The window never closes here: a close
 /// either turns into a decided act or into the confirmation — never into a
@@ -57,14 +122,24 @@ pub fn confirm_quit(app: tauri::AppHandle) {
 
 fn run_window_close_flow(app: tauri::AppHandle) {
     let choice = stored_close_choice(&app);
+    // Editors flush before anything is decided: a quit that would drop
+    // text becomes an ask even under a stored Quit choice, and the
+    // confirmation names what did not save. The wait is bounded (3 s)
+    // and returns at once when nothing is dirty.
+    let unsaved = flush_editors_blocking(&app);
     match decide_close(choice) {
         ClosePlan::Hide => hide_main_window(&app),
-        ClosePlan::Quit => perform_quit(&app, &DaemonFacts::Unknown),
-        ClosePlan::Ask(flavor) => ask(&app, flavor),
+        ClosePlan::Quit if unsaved.is_empty() => perform_quit(&app, &DaemonFacts::Unknown),
+        ClosePlan::Quit => ask_with_unsaved(&app, AskFlavor::WindowClose, &unsaved),
+        ClosePlan::Ask(flavor) => ask_with_unsaved(&app, flavor, &unsaved),
     }
 }
 
 fn ask(app: &tauri::AppHandle, flavor: AskFlavor) {
+    ask_with_unsaved(app, flavor, &flush_editors_blocking(app));
+}
+
+fn ask_with_unsaved(app: &tauri::AppHandle, flavor: AskFlavor, unsaved: &[String]) {
     if !CONFIRM_GATE.try_begin() {
         // A confirmation is already open: ignoring keeps the answers from
         // fighting; the open dialog is still the one true question.
@@ -73,7 +148,7 @@ fn ask(app: &tauri::AppHandle, flavor: AskFlavor) {
     let shown = daemon_facts(app);
     let builder = app
         .dialog()
-        .message(quit_confirmation_message(&shown))
+        .message(quit_confirmation_message(&shown, unsaved))
         .title("Quit Devboule?")
         .kind(MessageDialogKind::Warning);
     let builder = match flavor {
@@ -97,9 +172,14 @@ fn ask(app: &tauri::AppHandle, flavor: AskFlavor) {
                 // The dialog promised the world as `shown` had it. If the
                 // daemon's facts moved while the dialog was open, the old
                 // promise is not acted on: ask again with what is true now.
+                // Editors flush again for the same reason: an autosave may
+                // have landed while the dialog was open, and only what is
+                // still unsaved may stop the quit.
                 let fresh = daemon_facts(&flow_app);
+                let unsaved = flush_editors_blocking(&flow_app);
                 match act_on_quit_answer(&shown, &fresh) {
-                    QuitAct::Quit => perform_quit(&flow_app, &fresh),
+                    QuitAct::Quit if unsaved.is_empty() => perform_quit(&flow_app, &fresh),
+                    QuitAct::Quit => ask_with_unsaved(&flow_app, flavor, &unsaved),
                     QuitAct::AskAgain => ask(&flow_app, flavor),
                 }
             }

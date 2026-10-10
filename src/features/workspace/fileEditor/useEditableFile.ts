@@ -39,6 +39,7 @@ import type {
 } from "../../../types/ipc";
 import { LOCAL_HOST_ID, parseWorkspaceKey, type WorkspaceKey } from "../hosts/hostIdentity";
 import { FileEditorModel, type FileEditorObservation, type FileObservationSource } from "./model";
+import { registerEditor } from "./editorRegistry";
 
 export type EditableFileTarget =
   | { kind: "workspace"; workspaceId: string; path: string }
@@ -187,6 +188,7 @@ export function useEditableFile(
   // unmounting component, which would leak the autosave timer and drop
   // the buffer).
   const modelRef = useRef<FileEditorModel | null>(null);
+  const releaseEditor = useRef<(() => void) | null>(null);
 
   // The open: one model per landed file, disposed with the tab.
   useEffect(() => {
@@ -262,21 +264,27 @@ export function useEditableFile(
         };
       }
       modelRef.current = next;
+      releaseEditor.current = registerEditor(next, path);
       setModel(next);
       finish();
     })();
     return () => {
       live = false;
       cell.current = null;
-      // Flush first: a dirty or failed buffer saves now instead of dying
-      // with the 800 ms timer. The write is already on the wire when
-      // `dispose` invalidates the post-write snapshot update, so the
-      // bytes land either way.
+      // Flush first: a dirty, failed or conflicted-with-edits buffer
+      // saves now instead of dying with the debounce timer. `save()` is
+      // a no-op on conflict by design (neither overwrite nor reload is
+      // safe automatically) — the close flow reports those instead — so
+      // calling it here is explicit, not operative.
       const retiring = modelRef.current;
       modelRef.current = null;
+      releaseEditor.current?.();
+      releaseEditor.current = null;
       if (retiring !== null) {
         const status = retiring.getSnapshot().status;
-        if (status === "dirty" || status === "error") void retiring.save();
+        if (status === "dirty" || status === "error" || status === "conflict") {
+          void retiring.save();
+        }
         retiring.dispose();
       }
       setModel(null);

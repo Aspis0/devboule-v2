@@ -122,7 +122,7 @@ fn the_blocking_roads_outside_the_bridge_stay_async() {
 fn every_wait_goes_through_the_blocking_helper() {
     let scan = command_scan::scan();
     assert_eq!(
-        scan.helper_calls, 101,
+        scan.helper_calls, 112,
         "one helper call per waiting road, plus the thread test below that calls the helper itself"
     );
 }

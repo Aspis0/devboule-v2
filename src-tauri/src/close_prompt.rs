@@ -129,9 +129,11 @@ pub(crate) fn act_on_quit_answer(shown: &DaemonFacts, fresh: &DaemonFacts) -> Qu
 /// refuses this quit and keeps running for it, and it is named as a running
 /// Devboule, not a window: the other side may itself be hidden in its tray.
 /// Otherwise the running agents and terminals are named separately, and the
-/// daemon and device-access consequences are spelled out.
-pub fn quit_confirmation_message(facts: &DaemonFacts) -> String {
-    match facts {
+/// daemon and device-access consequences are spelled out. Editors that still
+/// hold user text after the bounded flush are named last, if any: quitting
+/// now loses exactly those.
+pub fn quit_confirmation_message(facts: &DaemonFacts, unsaved: &[String]) -> String {
+    let base = match facts {
         DaemonFacts::Read {
             agents,
             terminals,
@@ -166,7 +168,26 @@ pub fn quit_confirmation_message(facts: &DaemonFacts) -> String {
              still connected."
                 .to_string()
         }
+    };
+    if unsaved.is_empty() {
+        return base;
     }
+    // At most five names travel; the count says how many more stay
+    // behind. Paths, not decorations: the user matches them against
+    // their tabs.
+    const MAX_LISTED: usize = 5;
+    let listed = unsaved
+        .iter()
+        .take(MAX_LISTED)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let tail = if unsaved.len() > MAX_LISTED {
+        format!(", and {} more", unsaved.len() - MAX_LISTED)
+    } else {
+        String::new()
+    };
+    format!("{base}\n\nUnsaved edits remain in {listed}{tail}. Quitting now loses them.")
 }
 
 /// The running sessions, each named for what it is: a terminal is never
@@ -261,11 +282,14 @@ mod tests {
     #[test]
     fn the_confirmation_says_what_stops_in_full_sentences() {
         let read = |agents: u32, terminals: u32, other: u32| {
-            quit_confirmation_message(&DaemonFacts::Read {
-                agents,
-                terminals,
-                other_local_windows: other,
-            })
+            quit_confirmation_message(
+                &DaemonFacts::Read {
+                    agents,
+                    terminals,
+                    other_local_windows: other,
+                },
+                &[],
+            )
         };
         // Every variant pinned exactly: the sentences stand alone, with the
         // stop between them, and a terminal is never called an agent.
@@ -289,7 +313,7 @@ mod tests {
     #[test]
     fn the_unreadable_daemon_variant_is_pinned_exactly() {
         assert_eq!(
-            quit_confirmation_message(&DaemonFacts::Unknown),
+            quit_confirmation_message(&DaemonFacts::Unknown, &[]),
             "The daemon's status could not be read, so Devboule cannot say what is running. Quitting asks the daemon to stop; it refuses while another running Devboule is still connected."
         );
     }
@@ -297,11 +321,14 @@ mod tests {
     #[test]
     fn the_confirmation_names_another_running_devboule_not_a_window() {
         let read = |other: u32| {
-            quit_confirmation_message(&DaemonFacts::Read {
-                agents: 0,
-                terminals: 0,
-                other_local_windows: other,
-            })
+            quit_confirmation_message(
+                &DaemonFacts::Read {
+                    agents: 0,
+                    terminals: 0,
+                    other_local_windows: other,
+                },
+                &[],
+            )
         };
         // The other side may be hidden in its tray: it is not a window on
         // screen, it is a running Devboule.
@@ -317,20 +344,26 @@ mod tests {
 
     #[test]
     fn the_confirmation_counts_empty_and_single_kinds_correctly() {
-        let only_terminals = quit_confirmation_message(&DaemonFacts::Read {
-            agents: 0,
-            terminals: 1,
-            other_local_windows: 0,
-        });
+        let only_terminals = quit_confirmation_message(
+            &DaemonFacts::Read {
+                agents: 0,
+                terminals: 1,
+                other_local_windows: 0,
+            },
+            &[],
+        );
         assert!(
             only_terminals.contains("1 terminal will stop"),
             "a terminal is never called an agent: {only_terminals}"
         );
-        let empty = quit_confirmation_message(&DaemonFacts::Read {
-            agents: 0,
-            terminals: 0,
-            other_local_windows: 0,
-        });
+        let empty = quit_confirmation_message(
+            &DaemonFacts::Read {
+                agents: 0,
+                terminals: 0,
+                other_local_windows: 0,
+            },
+            &[],
+        );
         assert!(
             empty.contains("No agents or terminals are running"),
             "an empty daemon says so plainly: {empty}"
@@ -339,7 +372,7 @@ mod tests {
 
     #[test]
     fn an_unreadable_daemon_is_not_reported_as_empty() {
-        let message = quit_confirmation_message(&DaemonFacts::Unknown);
+        let message = quit_confirmation_message(&DaemonFacts::Unknown, &[]);
         assert!(
             message.contains("could not be read"),
             "unknown is unknown: {message}"
@@ -448,5 +481,41 @@ mod tests {
         );
         gate.end();
         assert!(gate.try_begin(), "an answered dialog opens the gate again");
+    }
+
+    #[test]
+    fn unsaved_edits_are_named_and_counted() {
+        let message = quit_confirmation_message(
+            &DaemonFacts::Read {
+                agents: 0,
+                terminals: 0,
+                other_local_windows: 0,
+            },
+            &[],
+        );
+        assert!(
+            !message.contains("Unsaved"),
+            "nothing unsaved, nothing named: {message}"
+        );
+
+        let message = quit_confirmation_message(
+            &DaemonFacts::Read {
+                agents: 0,
+                terminals: 0,
+                other_local_windows: 0,
+            },
+            &["notes.md".to_string(), "a/b.txt".to_string()],
+        );
+        assert!(
+            message.contains("Unsaved edits remain in notes.md, a/b.txt. Quitting now loses them."),
+            "names what quitting loses: {message}"
+        );
+
+        let many: Vec<String> = (0..8).map(|i| format!("f{i}.txt")).collect();
+        let message = quit_confirmation_message(&DaemonFacts::Unknown, &many);
+        assert!(
+            message.contains("and 3 more. Quitting now loses them."),
+            "caps the list and counts the rest: {message}"
+        );
     }
 }
