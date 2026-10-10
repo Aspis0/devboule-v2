@@ -726,9 +726,9 @@ fn replace_file(
         }
         Recheck::Proceed => {}
     }
-    if std::fs::rename(&temporary, target).is_err() {
+    if let Err(rename_error) = std::fs::rename(&temporary, target) {
         let _ = std::fs::remove_file(&temporary);
-        return error("the file could not be written");
+        return error(io_sentence(&rename_error));
     }
     let _ = std::fs::remove_file(&temporary);
     match std::fs::metadata(target) {
@@ -965,10 +965,45 @@ fn target_name(target: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// An I/O sentence that names no path: paths carry spellings the wire
-/// must not echo, so the OS string stays out of every reply.
-fn io_sentence(_error: &std::io::Error) -> &'static str {
-    "the file could not be written"
+/// An I/O sentence that names no path but names the failure class:
+/// paths carry spellings the wire must not echo, so the OS string stays
+/// out of every reply — but sharing violations, full disks and denials
+/// are different repairs and get different sentences. Raw OS codes come
+/// first (they name the failure precisely where `ErrorKind` collapses
+/// them), then the portable kinds, then the opaque fallback.
+fn io_sentence(error: &std::io::Error) -> &'static str {
+    #[cfg(windows)]
+    if let Some(code) = error.raw_os_error() {
+        match code as u32 {
+            // ERROR_ACCESS_DENIED
+            5 => return "permission denied",
+            // ERROR_SHARING_VIOLATION: another process holds the file.
+            32 => return "the file is in use",
+            // ERROR_DISK_FULL
+            112 => return "the disk is full",
+            _ => {}
+        }
+    }
+    #[cfg(unix)]
+    if let Some(code) = error.raw_os_error() {
+        match code {
+            // EACCES
+            13 => return "permission denied",
+            // ENOSPC
+            28 => return "the disk is full",
+            // EROFS
+            30 => return "the filesystem is read-only",
+            _ => {}
+        }
+    }
+    match error.kind() {
+        std::io::ErrorKind::PermissionDenied => "permission denied",
+        std::io::ErrorKind::StorageFull => "the disk is full",
+        std::io::ErrorKind::QuotaExceeded => "the disk is full",
+        std::io::ErrorKind::ResourceBusy => "the file is in use",
+        std::io::ErrorKind::ReadOnlyFilesystem => "the filesystem is read-only",
+        _ => "the file could not be written",
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -932,3 +932,49 @@ fn a_replace_keeps_owner() {
     let after = std::fs::metadata(&target).expect("stat");
     assert_eq!((after.uid(), after.gid()), (before.uid(), before.gid()));
 }
+
+#[test]
+fn write_failures_name_their_class() {
+    use std::io;
+    let sentence = super::io_sentence(&io::Error::from(io::ErrorKind::PermissionDenied));
+    assert_eq!(sentence, "permission denied");
+    let sentence = super::io_sentence(&io::Error::from(io::ErrorKind::StorageFull));
+    assert_eq!(sentence, "the disk is full");
+    let sentence = super::io_sentence(&io::Error::from(io::ErrorKind::ResourceBusy));
+    assert_eq!(sentence, "the file is in use");
+    // The opaque fallback stays for everything unclassified — and still
+    // names no path.
+    let sentence = super::io_sentence(&io::Error::from(io::ErrorKind::BrokenPipe));
+    assert_eq!(sentence, "the file could not be written");
+
+    #[cfg(windows)]
+    {
+        assert_eq!(
+            super::io_sentence(&io::Error::from_raw_os_error(5)),
+            "permission denied"
+        );
+        assert_eq!(
+            super::io_sentence(&io::Error::from_raw_os_error(32)),
+            "the file is in use"
+        );
+        assert_eq!(
+            super::io_sentence(&io::Error::from_raw_os_error(112)),
+            "the disk is full"
+        );
+    }
+    #[cfg(unix)]
+    {
+        assert_eq!(
+            super::io_sentence(&io::Error::from_raw_os_error(13)),
+            "permission denied"
+        );
+        assert_eq!(
+            super::io_sentence(&io::Error::from_raw_os_error(28)),
+            "the disk is full"
+        );
+        assert_eq!(
+            super::io_sentence(&io::Error::from_raw_os_error(30)),
+            "the filesystem is read-only"
+        );
+    }
+}
