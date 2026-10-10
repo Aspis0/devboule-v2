@@ -10,6 +10,9 @@ import {
   scheduleDelegatedDesignMirror,
 } from "./delegatedDesignMirror";
 import type { DesignHistoryOpenResult } from "./designHistoryOpen";
+import { providerVocabularyGet } from "../../lib/tauri";
+import { getPreferredModel, setPreferredModel } from "../../lib/agentPrefs";
+import type { ProviderVocabulary } from "../../types/ipc";
 import type { AttachmentReference, StoredAttachment } from "../../lib/tauri";
 
 interface CapturedRead {
@@ -124,6 +127,7 @@ vi.mock("../../lib/tauri", () => ({
   projectAdd: folderMocks.projectAdd,
   workspaceCreate: folderMocks.workspaceCreate,
   createSessionStateChannel: vi.fn(),
+  providerVocabularyGet: vi.fn(async () => undefined),
   sessionCreate: vi.fn(),
   sessionsList: vi.fn(),
   sessionsUnwatch: vi.fn(),
@@ -1581,6 +1585,48 @@ describe("DesignSurface host capabilities", () => {
     );
     expect(setProviderPreference).toHaveBeenCalledWith(downloadedOnDemand);
     expect(container.querySelector("#design-provider-picker")).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("offers the provider's models and modes before any generation, and keeps the pick", async () => {
+    providerMocks.list.mockResolvedValueOnce({ providers: [provider("grok")], unreadableDirs: 0 });
+    vi.mocked(providerVocabularyGet).mockResolvedValue({
+      provider: "grok",
+      models: {
+        state: "present",
+        origin: "provider",
+        items: [
+          { modelId: "grok-4", name: "Grok 4" },
+          { modelId: "grok-4-mini", name: "Grok 4 Mini" },
+        ],
+      },
+      modes: {
+        state: "present",
+        origin: "provider",
+        items: [
+          { id: "default", name: "Default" },
+          { id: "plan", name: "Plan" },
+        ],
+      },
+      source: "probe",
+    } as unknown as ProviderVocabulary);
+    setPreferredModel("grok", "grok-4");
+    skillSettingsMocks.loadProvider.mockResolvedValue("grok");
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
+    );
+    await act(settle);
+
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="design-model-chip"]');
+    if (chip === null) throw new Error("the model chip is missing before any generation");
+    await act(async () => chip.click());
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[data-testid="design-model-option-grok-4-mini"]')
+        ?.click(),
+    );
+
+    expect(getPreferredModel("grok")).toBe("grok-4-mini");
     await act(async () => root.unmount());
   });
 

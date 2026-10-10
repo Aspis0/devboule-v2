@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { DesignAgentSession } from "./designHost";
 import type { AgentSessionState } from "../../lib/agentSession";
-import type { ProviderInfo } from "../../types/ipc";
+import type { ProviderInfo, ProviderVocabulary } from "../../types/ipc";
+import {
+  getPreferredEffort,
+  getPreferredModel,
+  setPreferredEffort,
+  setPreferredModel,
+} from "../../lib/agentPrefs";
 import { PickerChip, menuPlacement } from "../../components/PickerChip";
 import { useMenuOpen } from "../../lib/menuOpen";
 import { scrollRowIntoView } from "../../lib/scrollRowIntoView";
@@ -24,6 +30,8 @@ interface DesignAgentPickerProps {
   onProviderSelect: (provider: ProviderInfo) => void;
   onModelSelect: (modelId: string) => void;
   onEffortSelect: (effort: string) => void;
+  /** The provider's own catalog while no session exists: what the first choice is made from. */
+  vocabulary?: ProviderVocabulary | null;
 }
 
 export function DesignAgentPicker({
@@ -37,8 +45,11 @@ export function DesignAgentPicker({
   onProviderSelect,
   onModelSelect,
   onEffortSelect,
+  vocabulary = null,
 }: DesignAgentPickerProps) {
   const [providerPickerOpen, setProviderPickerOpen] = useState(false);
+  // A pick made before the session exists is remembered per provider; this bumps the render that reads it back.
+  const [, setChoiceRevision] = useState(0);
   const providerButtonRef = useRef<HTMLButtonElement>(null);
   const providerPickerWrapRef = useRef<HTMLDivElement>(null);
   const providerMenuRef = useRef<HTMLDivElement>(null);
@@ -76,6 +87,12 @@ export function DesignAgentPicker({
       : `Unavailable: ${unavailableProviderId}`;
   const providerLabel = selectedProvider?.id ?? manifest?.providerId ?? providerFallback;
   const efforts = currentModel?.efforts ?? [];
+  // Before a session, the provider's catalog and the pick remembered for it stand in for the manifest.
+  const preSession = manifest === null && selectedProviderId !== null;
+  const preModels =
+    preSession && vocabulary?.models.state === "present" ? vocabulary.models.items : [];
+  const preModelId = selectedProviderId === null ? null : getPreferredModel(selectedProviderId);
+  const preEfforts = preModels.find((model) => model.modelId === preModelId)?.efforts ?? [];
   const pendingSwitch =
     agentState?.pendingSwitch !== null && agentState?.pendingSwitch !== undefined;
   const providerButtonDisabled = busy;
@@ -360,6 +377,21 @@ export function DesignAgentPicker({
           disabled={modelButtonDisabled}
           pendingCopy={pendingSwitch ? "Switching…" : undefined}
         />
+      ) : preModels.length > 1 && selectedProviderId !== null ? (
+        <PickerChip
+          label="Model"
+          options={preModels.map((model) => ({
+            id: model.modelId,
+            name: modelDisplayLabel(model),
+          }))}
+          currentId={preModelId}
+          onSelect={(modelId) => {
+            setPreferredModel(selectedProviderId, modelId);
+            setChoiceRevision((revision) => revision + 1);
+          }}
+          chipTestId="design-model-chip"
+          optionTestId={(id) => `design-model-option-${id}`}
+        />
       ) : (
         // Nothing to pick here, so the value is a disabled button: it keeps the
         // reason it cannot be picked as its accessible name and its tooltip.
@@ -373,6 +405,22 @@ export function DesignAgentPicker({
           {modelButtonLabel}
         </button>
       )}
+      {efforts.length === 0 &&
+      preEfforts.length > 0 &&
+      selectedProviderId !== null &&
+      preModelId !== null ? (
+        <PickerChip
+          label="Thinking effort"
+          options={preEfforts.map((effort) => ({ id: effort.id, name: effort.label }))}
+          currentId={getPreferredEffort(selectedProviderId, preModelId)}
+          onSelect={(effort) => {
+            setPreferredEffort(selectedProviderId, preModelId, effort);
+            setChoiceRevision((revision) => revision + 1);
+          }}
+          chipTestId="design-effort-chip"
+          optionTestId={(id) => `design-effort-option-${id}`}
+        />
+      ) : null}
       {efforts.length > 0 ? (
         <PickerChip
           label="Thinking effort"

@@ -36,6 +36,8 @@ import {
 } from "./designAttachmentDisplay";
 import { journalLossCopy } from "../workspace/journalLoss";
 import { DesignAgentPicker } from "./DesignAgentPicker";
+import { useDesignVocabulary } from "./useDesignVocabulary";
+import { getPreferredMode, setPreferredMode } from "../../lib/agentPrefs";
 import { DesignSkillModeControl, type DesignSkillViewProps } from "./DesignSkillControls";
 import { DesignMessageCard } from "./DesignTranscript";
 import { promptForMessage } from "./designMessageModel";
@@ -194,6 +196,10 @@ export const DesignAssistant = memo(function DesignAssistant({
   const dragDepthRef = useRef(0);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
   const manifest = agentState?.manifest ?? null;
+  // Before a session exists, the provider's own catalog offers the choices the first generation starts with.
+  const vocabulary = useDesignVocabulary(selectedProviderId, agentSession === null);
+  // A pick made before the session exists is remembered for the provider; this bumps the render that reads it back.
+  const [, setChoiceRevision] = useState(0);
   const modes = manifest?.modes;
   const currentModeId = agentState?.pendingModeId ?? modes?.currentModeId ?? null;
   // The permission request itself carries only the tool's name, so the target it
@@ -580,6 +586,7 @@ export const DesignAssistant = memo(function DesignAssistant({
                   onProviderSelect={onProviderSelect}
                   onModelSelect={onModelSelect}
                   onEffortSelect={onEffortSelect}
+                  vocabulary={vocabulary}
                 />
                 {modes !== undefined ? (
                   <PickerChip
@@ -591,6 +598,27 @@ export const DesignAssistant = memo(function DesignAssistant({
                     }))}
                     currentId={currentModeId}
                     onSelect={(modeId) => void agentSession?.setMode(modeId)}
+                    chipTestId="design-mode-chip"
+                    optionTestId={(id) => `design-mode-option-${id}`}
+                    dotFor={modeDotClass}
+                  />
+                ) : null}
+                {modes === undefined &&
+                agentSession === null &&
+                selectedProviderId !== null &&
+                vocabulary?.modes.state === "present" ? (
+                  <PickerChip
+                    label="Session mode"
+                    options={vocabulary.modes.items.map((mode) => ({
+                      id: mode.id,
+                      name: mode.name,
+                      description: mode.description,
+                    }))}
+                    currentId={getPreferredMode(selectedProviderId) ?? null}
+                    onSelect={(modeId) => {
+                      setPreferredMode(selectedProviderId, modeId);
+                      setChoiceRevision((revision) => revision + 1);
+                    }}
                     chipTestId="design-mode-chip"
                     optionTestId={(id) => `design-mode-option-${id}`}
                     dotFor={modeDotClass}
