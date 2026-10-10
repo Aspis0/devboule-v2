@@ -170,3 +170,49 @@ fn every_source_file_that_dials_a_paired_device_is_a_classified_road() {
         "messaging_peer.rs is the send (carded), mcp_peer_agents.rs the roster read"
     );
 }
+
+/// Agent-originated dials carry agent frames, never session frames: the two
+/// classified roads above may send `AgentMessageSend` (the carded send) and
+/// `PeerAgentsList` (the roster read) and nothing else. Session frames —
+/// creates, sends, resizes, closes, modes — travel only over the held peer
+/// link, which only queues what the app door admitted as human-originated.
+/// A tool that dialled a session frame would reach the far daemon's human
+/// scope wearing an agent's intent, so the frame set is pinned here.
+#[test]
+fn agent_dials_carry_no_session_frames() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let allowed = ["AgentMessageSend", "PeerAgentsList", "Hello", "Ping"];
+    for file in ["mcp_broker/tools/messaging_peer.rs", "mcp_peer_agents.rs"] {
+        let text = fs::read_to_string(src.join(file)).expect("a classified dialling source");
+        let mut constructed = BTreeSet::new();
+        for line in text.lines() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            // `ClientMessage::Variant` constructions and matches alike: a
+            // match arm that names a session frame is a road that handles
+            // one, which is what this walk forbids.
+            let mut rest = code;
+            while let Some(at) = rest.find("ClientMessage::") {
+                rest = &rest[at + "ClientMessage::".len()..];
+                let end = rest
+                    .find(|character: char| !character.is_alphanumeric() && character != '_')
+                    .unwrap_or(rest.len());
+                constructed.insert(rest[..end].to_string());
+            }
+        }
+        assert!(
+            !constructed.is_empty(),
+            "{file} must dial something, or the walk proves nothing"
+        );
+        let forbidden: Vec<_> = constructed
+            .into_iter()
+            .filter(|variant| !allowed.contains(&variant.as_str()))
+            .collect();
+        assert!(
+            forbidden.is_empty(),
+            "{file} dials session frames an agent must never send: {forbidden:?}"
+        );
+    }
+}

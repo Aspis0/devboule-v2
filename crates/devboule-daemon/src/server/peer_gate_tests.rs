@@ -287,6 +287,47 @@ fn the_pairing_humans_writes_skip_the_peer_only_refusals() {
     );
 }
 
+/// Agent-originated dials stay fully vetted even for the pairing human's own
+/// sessions: peer `AgentMessageSend` frames are always agent-originated (the
+/// one-shot `call_peer` dials — the human has no remote agent-message road),
+/// so the target's mode is vetted with no human bypass. The walk test
+/// `agent_dials_carry_no_session_frames` pins the other half: agent dials
+/// can never carry a frame the human bypasses would open.
+#[test]
+fn an_agent_dial_to_a_skipping_mode_session_stays_vetted_for_the_human() {
+    let state = ServerState::new("peer-gate-agent-dial".into());
+    let target_owner = OwnerId::new("local-user", "local-process").expect("owner");
+    let runtime = crate::session::insert_test_live_agent_with_kind(
+        &state.sessions,
+        "s.human.target",
+        target_owner,
+        SessionKind::Claude,
+    );
+    runtime.store_session_manifest(devboule_protocol::SessionEvent::SessionManifest {
+        provider_id: Some("claude".to_string()),
+        current_model_id: None,
+        models: Vec::new(),
+        modes: Some(devboule_protocol::SessionModeStateView {
+            current_mode_id: "bypassPermissions".to_string(),
+            available_modes: Vec::new(),
+        }),
+        current_model_provider_id: None,
+    });
+    let human = remote_conn(&[CAP_VIEW, CAP_SEND]);
+    let message = ClientMessage::AgentMessageSend {
+        id: 3,
+        from_session: "s.far.source".to_string(),
+        to_session: "s.human.target".to_string(),
+        text: "hello".to_string(),
+        idempotency_key: None,
+    };
+    assert_eq!(
+        peer_mode_refusal_for_conn(&state, &message, &human.conn_peer),
+        Some(crate::peer_policy::PROMPT_SKIPPING_REFUSED),
+        "an agent dial into a prompt-skipping session is refused even for the human's own"
+    );
+}
+
 /// A create names no session, so the human bypass keys on the pairing — but
 /// only on a machine peer. A client-scoped device keeps R3's vetting even
 /// when the pairing is the local user's own: the mode gate's comment

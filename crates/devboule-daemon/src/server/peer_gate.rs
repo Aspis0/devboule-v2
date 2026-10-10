@@ -357,12 +357,15 @@ pub(super) fn peer_mode_refusal_for_conn(
         // An agent message is a send whose session is its *target*: the target
         // receives the prompt, so the target is the session this gate vets,
         // exactly as `SessionSend`'s own session is, spelled out rather than
-        // folded into the arm above.
+        // folded into the arm above. No human bypass here: peer
+        // `AgentMessageSend` frames are always agent-originated (the
+        // one-shot `call_peer` dials — the human has no remote
+        // agent-message road), so they stay fully vetted even for the
+        // pairing human's own sessions.
         ClientMessage::AgentMessageSend { to_session, .. }
             if state
                 .sessions
-                .agent_message_target_is_mode_visible(to_session, conn_peer)
-                && !human_session(to_session) =>
+                .agent_message_target_is_mode_visible(to_session, conn_peer) =>
         {
             prompt_into_session_refusal(state, to_session)
         }
