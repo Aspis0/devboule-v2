@@ -27,12 +27,42 @@ describe("accepted paths", () => {
     },
     // A `..` that stays under the root is a plain relative hop.
     { candidate: "src/../app/x.ts", root: POSIX_ROOT, relativePath: "app/x.ts" },
+    // Absolute but outside the root, and `~` paths, stay clickable in
+    // their own spelling: the File tab routes them app-only to this
+    // machine's own file, never joined to the root.
+    { candidate: "/home/u/other/a.ts", root: POSIX_ROOT, relativePath: "/home/u/other/a.ts" },
+    { candidate: "/home/u/repo2/a.ts", root: POSIX_ROOT, relativePath: "/home/u/repo2/a.ts" },
+    {
+      candidate: "/home/u/REPO/src/a.ts",
+      root: POSIX_ROOT,
+      relativePath: "/home/u/REPO/src/a.ts",
+    },
+    {
+      candidate: "/home/U/repo/src/a.ts",
+      root: POSIX_ROOT,
+      relativePath: "/home/U/repo/src/a.ts",
+    },
+    { candidate: "C:/REPO2/src/a.ts", root: WINDOWS_ROOT, relativePath: "C:/REPO2/src/a.ts" },
+    { candidate: "D:/repo/a.ts", root: WINDOWS_ROOT, relativePath: "D:/repo/a.ts" },
+    { candidate: "C:/repo/a.ts", root: POSIX_ROOT, relativePath: "C:/repo/a.ts" },
+    { candidate: "~/dir/LICENSE", root: POSIX_ROOT, relativePath: "~/dir/LICENSE" },
+    {
+      candidate: "~/.config/pubvia/anthropic.env",
+      root: POSIX_ROOT,
+      relativePath: "~/.config/pubvia/anthropic.env",
+    },
   ])("resolves $candidate against $root", ({ candidate, root, relativePath }) => {
     expect(parseChatFilePath(candidate, root)).toEqual({ relativePath });
   });
 
   it.each([
     { candidate: "src/a.ts:12", root: POSIX_ROOT, relativePath: "src/a.ts", line: 12 },
+    {
+      candidate: "/home/u/other/a.ts:12",
+      root: POSIX_ROOT,
+      relativePath: "/home/u/other/a.ts",
+      line: 12,
+    },
     {
       candidate: "src/a.ts:12:3",
       root: POSIX_ROOT,
@@ -119,26 +149,16 @@ describe("file-shaped final segments", () => {
 
 describe("rejected candidates", () => {
   it.each([
-    // Absolute but not inside the root: another folder, another drive, a
-    // sibling that merely shares a prefix.
-    { candidate: "/home/u/other/a.ts", root: POSIX_ROOT },
-    { candidate: "/home/u/repo2/a.ts", root: POSIX_ROOT },
+    // The root itself, or a spelling that resolves to it: no filename.
     { candidate: "/home/u/repo", root: POSIX_ROOT },
     { candidate: "/home/u/my.project", root: "/home/u/my.project" },
     { candidate: String.raw`C:\repo.ts`, root: String.raw`C:\repo.ts` },
-    { candidate: "/home/u/REPO/src/a.ts", root: POSIX_ROOT },
-    { candidate: "/home/U/repo/src/a.ts", root: POSIX_ROOT },
-    { candidate: "C:/REPO2/src/a.ts", root: WINDOWS_ROOT },
-    { candidate: "C:/rÉpo/src/a.ts", root: "C:/répo" },
-    { candidate: "D:/repo/a.ts", root: WINDOWS_ROOT },
-    { candidate: "C:/repo/a.ts", root: "/home/u/repo" },
-    // Escapes, URLs, homes.
+    // Escapes, URLs, a home with no filename.
     { candidate: "../a.ts", root: POSIX_ROOT },
     { candidate: "a/../../x", root: POSIX_ROOT },
     { candidate: "https://x/y.ts", root: POSIX_ROOT },
     { candidate: "file:///C:/x/y.ts", root: WINDOWS_ROOT },
     { candidate: "~/x", root: POSIX_ROOT },
-    { candidate: "~/dir/LICENSE", root: POSIX_ROOT },
     // No by-name lookup, no directories, nothing malformed.
     { candidate: "App.tsx", root: POSIX_ROOT },
     { candidate: "dir/", root: POSIX_ROOT },
@@ -181,6 +201,17 @@ describe("scanning a plain segment", () => {
 
   it("rejects a URL whole instead of leaving a path-shaped tail behind", () => {
     expect(scanChatFilePaths("see https://x/y.ts now", POSIX_ROOT)).toEqual([]);
+  });
+
+  it("scans a home-relative path and an outside absolute path as tokens", () => {
+    expect(
+      scanChatFilePaths("see ~/.config/pubvia/anthropic.env here", POSIX_ROOT).map(
+        (token) => token.link,
+      ),
+    ).toEqual([{ relativePath: "~/.config/pubvia/anthropic.env" }]);
+    expect(
+      scanChatFilePaths("see /home/u/other/a.ts here", POSIX_ROOT).map((token) => token.link),
+    ).toEqual([{ relativePath: "/home/u/other/a.ts" }]);
   });
 
   it.each(["src/a\\.ts", "src/a\\.b.ts", "src/a\\_b.ts"])(

@@ -17,6 +17,17 @@ describe("code-span file paths", () => {
     { candidate: ABSOLUTE, relativePath: "src/a.ts" },
     { candidate: `${ABSOLUTE}:12:3`, relativePath: "src/a.ts", line: 12, column: 3 },
     { candidate: VERBATIM_ABSOLUTE, relativePath: "src/a.ts" },
+    // Outside the root, and `~`, stay clickable in their own spelling:
+    // the File tab routes them app-only, never joined to the root.
+    {
+      candidate: String.raw`C:\Users\u\New folder\other\src\a.ts`,
+      relativePath: "C:/Users/u/New folder/other/src/a.ts",
+    },
+    {
+      candidate: String.raw`D:\Users\u\New folder\repo\src\a.ts`,
+      relativePath: "D:/Users/u/New folder/repo/src/a.ts",
+    },
+    { candidate: "~/dir/LICENSE", relativePath: "~/dir/LICENSE" },
   ])("resolves the whole code span $candidate", ({ candidate, ...expected }) => {
     expect(parseChatCodeFilePath(candidate, ROOT)).toEqual(expected);
   });
@@ -49,7 +60,6 @@ describe("code-span file paths", () => {
     "../a.ts",
     "a/../../x.ts",
     "dir/.. /.. /a.ts",
-    "~/dir/LICENSE",
     "https://x/y.ts",
     "file:///C:/repo/a.ts",
     "dir/a.ts/",
@@ -61,15 +71,12 @@ describe("code-span file paths", () => {
   });
 
   it.each([
-    String.raw`C:\Users\u\New folder\repo2\src\a.ts`,
-    String.raw`C:\Users\u\New folder\other\src\a.ts`,
-    String.raw`D:\Users\u\New folder\repo\src\a.ts`,
     String.raw`C:\Users\u\New folder\repo\src\..\a.ts`,
     String.raw`C:\Users\u\New folder\repo\src\\a.ts`,
     String.raw`\\?\C:\Users\u\New folder\repo\..\other\a.ts`,
     String.raw`C:\Users\u\New folder\REPO\src\a.ts`,
     ROOT,
-  ])("rejects outside or normalized absolute code paths: %s", (candidate) => {
+  ])("rejects normalized absolute code paths: %s", (candidate) => {
     expect(parseChatCodeFilePath(candidate, ROOT)).toBeNull();
   });
 

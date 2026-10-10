@@ -1,6 +1,6 @@
 import { memo, useCallback, useState } from "react";
 import type { WorkspaceGitStatus } from "../../types/ipc";
-import { parseWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
+import { parseWorkspaceKey, LOCAL_HOST_ID, type WorkspaceKey } from "./hosts/hostIdentity";
 import { useWorkspaceChanges } from "./useWorkspaceChanges";
 import type { ErrorSentence } from "../../lib/errorSentence";
 import { isImeComposition } from "../../lib/imeComposition";
@@ -238,10 +238,20 @@ export const ChangesSurface = memo(function ChangesSurface({
   canListCommits,
   onOpenFile,
 }: ChangesSurfaceProps) {
-  // What every read and write below is addressed by.
+  // What every read and write below is addressed by. A paired host's
+  // workspace never reads here: stripping the host and asking the local
+  // daemon would read the wrong machine, so the hooks take null and the
+  // render branches to the note instead.
+  const hostId = workspaceKey === null ? null : parseWorkspaceKey(workspaceKey).hostId;
   const workspaceId = workspaceKey === null ? null : parseWorkspaceKey(workspaceKey).workspaceId;
-  const { status, diff, selection, select, refresh } = useWorkspaceChanges(workspaceKey);
-  const { stage, unstage, discard, commit } = useWorkspaceGitActions({ workspaceId, refresh });
+  const remote = hostId !== null && hostId !== LOCAL_HOST_ID;
+  const { status, diff, selection, select, refresh } = useWorkspaceChanges(
+    remote ? null : workspaceKey,
+  );
+  const { stage, unstage, discard, commit } = useWorkspaceGitActions({
+    workspaceId: remote ? null : workspaceId,
+    refresh,
+  });
   const [view, setView] = useState<ChangesPanelView>("uncommitted");
   const reply = status.reply;
   // The chrome (branch row, switch) stands on any answer that names the
@@ -256,7 +266,11 @@ export const ChangesSurface = memo(function ChangesSurface({
     log,
     failure,
     refresh: refreshCommits,
-  } = useWorkspaceCommits(workspaceId, view === "commits" && chrome, canListCommits);
+  } = useWorkspaceCommits(
+    remote ? null : workspaceId,
+    view === "commits" && chrome,
+    canListCommits,
+  );
   // The Commits segment hides itself when the daemon cannot list history:
   // a control that would answer nothing is not drawn as one. The view
   // falls back with it, so a daemon that loses the capability mid-view
@@ -350,6 +364,20 @@ export const ChangesSurface = memo(function ChangesSurface({
     refresh();
     refreshCommits();
   }, [refresh, refreshCommits]);
+
+  if (remote) {
+    return (
+      <div
+        ref={panelRef}
+        tabIndex={-1}
+        role="region"
+        aria-label="Changes"
+        className="workspace-changes"
+      >
+        <div className="workspace-changes-state">This workspace is on another device.</div>
+      </div>
+    );
+  }
 
   return (
     // tabIndex -1 keeps the panel out of the tab order: focus() lands

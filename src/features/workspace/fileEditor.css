@@ -1,0 +1,98 @@
+/* The in-app editor: CodeMirror 6 under this app's tokens, a minimal
+ * status bar, and the conflict banner. No Paseo look: grounds, ink,
+ * lines and type come from tokens.css. */
+
+.file-editor-frame {
+  display: flex;
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  background: var(--panel-card);
+}
+
+.file-editor-host {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.file-editor-host .cm-editor {
+  height: 100%;
+}
+
+.file-editor-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 2px 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.file-editor-meta {
+  white-space: nowrap;
+}
+
+.file-editor-spacer {
+  flex: 1;
+}
+
+.file-editor-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* The unsaved-changes dot: the only thing the bar adds beside words. */
+.file-editor-dirty {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+/* Saving: a small pulsing dot, no label — the bar stays quiet. */
+.file-editor-saving {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-text);
+  animation: file-editor-pulse 1s ease-in-out infinite;
+}
+
+@keyframes file-editor-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.file-editor-error {
+  color: var(--danger, #b3261e);
+}
+
+.file-conflict-alert {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-card);
+}
+
+.file-conflict-title {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.file-conflict-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}

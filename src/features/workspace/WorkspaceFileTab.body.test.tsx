@@ -10,6 +10,15 @@ vi.mock("../../lib/tauri", () => ({
   workspaceFilePreviewStage: vi.fn(),
   workspaceFilePreviewUnstage: vi.fn(),
   editorTargetsList: vi.fn(async () => []),
+  workspaceFileEditorOpen: vi.fn(),
+  workspaceFileEditorVersion: vi.fn(),
+  workspaceFileEditorWrite: vi.fn(),
+  appFileOpen: vi.fn(),
+  appFileVersion: vi.fn(),
+  appFileWrite: vi.fn(),
+  remoteHostFileOpen: vi.fn(),
+  remoteHostFileVersion: vi.fn(),
+  remoteHostFileWrite: vi.fn(),
 }));
 
 import { workspaceFileRead } from "../../lib/tauri";
@@ -29,7 +38,9 @@ function content(overrides: Partial<WorkspaceFileContent> = {}): WorkspaceFileCo
     status: "ok",
     kind: "text",
     content: "hello\n",
-    size: 6,
+    // Over the editor's whole-file cap, so these cases keep exercising
+    // the windowed read-only body they always pinned.
+    size: 3 * 1024 * 1024,
     modifiedAt: 1_758_000_000_000,
     error: null,
     fromLine: 1,

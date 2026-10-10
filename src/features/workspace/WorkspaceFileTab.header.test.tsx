@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { WorkspaceFileContent } from "../../types/ipc";
+import type { WorkspaceEditableFile, WorkspaceFileContent } from "../../types/ipc";
 
 vi.mock("../../lib/tauri", () => ({
   workspaceFileRead: vi.fn(),
@@ -11,9 +11,23 @@ vi.mock("../../lib/tauri", () => ({
   workspaceFilePreviewUnstage: vi.fn(),
   workspaceFileOpen: vi.fn(),
   editorTargetsList: vi.fn(),
+  workspaceFileEditorOpen: vi.fn(),
+  workspaceFileEditorVersion: vi.fn(),
+  workspaceFileEditorWrite: vi.fn(),
+  appFileOpen: vi.fn(),
+  appFileVersion: vi.fn(),
+  appFileWrite: vi.fn(),
+  remoteHostFileOpen: vi.fn(),
+  remoteHostFileVersion: vi.fn(),
+  remoteHostFileWrite: vi.fn(),
 }));
 
-import { editorTargetsList, workspaceFileOpen, workspaceFileRead } from "../../lib/tauri";
+import {
+  editorTargetsList,
+  workspaceFileEditorOpen,
+  workspaceFileOpen,
+  workspaceFileRead,
+} from "../../lib/tauri";
 import { WorkspaceFileTab } from "./WorkspaceFileTab";
 import { resetFileTabModeForTests } from "./fileTabMode";
 
@@ -42,6 +56,25 @@ function content(overrides: Partial<WorkspaceFileContent> = {}): WorkspaceFileCo
   };
 }
 
+function editableFile(overrides: Partial<WorkspaceEditableFile> = {}): WorkspaceEditableFile {
+  return {
+    status: "ok",
+    content: "hello\n",
+    hasBom: false,
+    version: {
+      status: "ready",
+      workspaceId: WORKSPACE,
+      path: "a.txt",
+      size: 6,
+      modifiedAt: 1_758_000_000_000,
+      revision: "6:1758000000000",
+    },
+    size: 6,
+    error: null,
+    ...overrides,
+  };
+}
+
 describe("WorkspaceFileTab header", () => {
   let container: HTMLDivElement;
   let root: Root | undefined;
@@ -51,6 +84,7 @@ describe("WorkspaceFileTab header", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     vi.mocked(workspaceFileRead).mockResolvedValue(content());
+    vi.mocked(workspaceFileEditorOpen).mockResolvedValue(editableFile({ content: "hello\n" }));
     vi.mocked(workspaceFileOpen).mockResolvedValue(undefined);
     vi.mocked(editorTargetsList).mockResolvedValue([
       { id: "cursor", label: "Cursor", kind: "editor" },
@@ -144,17 +178,17 @@ describe("WorkspaceFileTab header", () => {
 
   it("splits a Windows-separator path for the name and the directory", async () => {
     vi.mocked(workspaceFileRead).mockResolvedValue(content({ size: 6 }));
-    await renderTab("C:\\Users\\x\\file.md");
+    await renderTab("docs\\file.md");
 
     expect(container.querySelector(".workspace-file-tab-name")?.textContent).toBe("file.md");
-    expect(meta()).toBe("C:\\Users\\x · 6 B · 1 line");
+    expect(meta()).toBe("docs · 6 B · 1 line");
   });
 
-  it("offers no mode control to a non-Markdown file", async () => {
+  it("edits a non-Markdown file with no mode control", async () => {
     await renderTab("src/main.rs");
 
     expect(segButtons()).toHaveLength(0);
-    expect(container.querySelector(".workspace-file-tab-source")).not.toBeNull();
+    expect(container.querySelector('[data-testid="file-source-editor"]')).not.toBeNull();
   });
 
   it("recognises .markdown and uppercase extensions as Markdown", async () => {
@@ -179,7 +213,7 @@ describe("WorkspaceFileTab header", () => {
       buttons[1].click();
     });
 
-    expect(container.querySelector(".workspace-file-tab-source")).not.toBeNull();
+    expect(container.querySelector('[data-testid="file-source-editor"]')).not.toBeNull();
     expect(container.querySelector(".workspace-file-tab-preview")).toBeNull();
   });
 
@@ -209,6 +243,6 @@ describe("WorkspaceFileTab header", () => {
     await renderTab("docs/b.md", "second");
 
     expect(container.querySelector(".workspace-file-tab-preview")).toBeNull();
-    expect(container.querySelector(".workspace-file-tab-source")).not.toBeNull();
+    expect(container.querySelector('[data-testid="file-source-editor"]')).not.toBeNull();
   });
 });

@@ -50,7 +50,7 @@ const EXTENSIONLESS_FILENAMES = new Set([
 // being part of it: `src/x.ts.` ends a sentence, `src/x.ts)` a parenthesis.
 const TRAILING_PUNCTUATION = ".,;:!?)]}\"'";
 // Keep fragments in the run so a fragment-bearing path is rejected whole.
-const PATH_CHARACTER = /[\p{L}\p{N}._\-/\\:+#]/u;
+const PATH_CHARACTER = /[\p{L}\p{N}._\-/\\:+#~]/u;
 
 type WorkspaceRoot = { drive: string | null; segments: string[] };
 
@@ -87,7 +87,9 @@ function parseCandidate(
   const invalidCharacters = codeSpan ? /[^\S ]|[\p{Cc}#]/u : /[\s\p{Cc}#]/u;
   if (path.length === 0 || invalidCharacters.test(path)) return null;
   if (codeSpan && path !== path.trim()) return null;
-  if (path.includes("~")) return null;
+  // A `~` anywhere but the lead is not a home folder: the daemon expands
+  // a leading `~/` only, so anything else stays plain text.
+  if (path.includes("~") && path !== "~" && !path.startsWith("~/")) return null;
   // A bare name needs a by-name lookup this slice does not have.
   if (!path.includes("/") && !path.includes("\\")) return null;
   const link = resolveAgainstRoot(path, root, line, column);
@@ -103,11 +105,14 @@ function matchesDisplayedPath(
   relativePath: string,
 ): boolean {
   if (path === relativePath) return true;
-  if (root === null) return false;
   const absolutePath = normalizeSeparators(path).replace(
     /^([A-Za-z]):/,
     (_, drive: string) => `${drive.toUpperCase()}:`,
   );
+  // An outside absolute link travels in its own spelling: the displayed
+  // path is the link when it normalises to the same spelling.
+  if (/^(?:[A-Za-z]:)?\//.test(relativePath)) return absolutePath === relativePath;
+  if (root === null) return false;
   const prefix = root.drive === null ? "/" : `${root.drive}:/`;
   return absolutePath === prefix + [...root.segments, relativePath].join("/");
 }
@@ -225,8 +230,26 @@ function resolveAgainstRoot(
   const filename = resolved[resolved.length - 1];
   if (!isFilename(filename)) return null;
   const relativePath = resolved.join("/");
-  if (!candidate.absolute) return { relativePath, line, column };
-  if (root === null || root.drive !== candidate.drive) return null;
+  if (!candidate.absolute) {
+    // A leading `~/` names the human's home, never the workspace: it
+    // travels in its own spelling and the app road expands it.
+    if (candidate.segments[0] === "~") {
+      return { relativePath: `~/${resolved.slice(1).join("/")}`, line, column };
+    }
+    return { relativePath, line, column };
+  }
+  // An absolute path outside the workspace stays clickable in its own
+  // spelling: the File tab routes it app-only to this machine's own
+  // file, never joined to the root. Inside the root it resolves
+  // relatively, exactly as before.
+  const absoluteSpelling =
+    candidate.drive === null
+      ? `/${resolved.join("/")}`
+      : `${candidate.drive}:/${resolved.join("/")}`;
+  // A root this parser cannot represent (a UNC share) keeps refusing:
+  // without a drive to compare, an absolute spelling proves nothing.
+  if (root === null) return null;
+  if (root.drive !== candidate.drive) return { relativePath: absoluteSpelling, line, column };
   const rootSegments = root.segments;
   if (resolved.length <= rootSegments.length) return null;
   for (let index = 0; index < rootSegments.length; index += 1) {
@@ -237,7 +260,7 @@ function resolveAgainstRoot(
         ? candidateSegment !== rootSegment
         : foldAsciiCase(candidateSegment) !== foldAsciiCase(rootSegment)
     )
-      return null;
+      return { relativePath: absoluteSpelling, line, column };
   }
   return { relativePath: resolved.slice(rootSegments.length).join("/"), line, column };
 }

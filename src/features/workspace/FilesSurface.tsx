@@ -1,6 +1,6 @@
 import { memo, useCallback, useId, useState } from "react";
 import type { WorkspaceFileEntry } from "../../types/ipc";
-import { parseWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
+import { LOCAL_HOST_ID, parseWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
 import { FilesPreview } from "./FilesPreview";
 import { FilesTreeView, type FilesRenaming } from "./FilesTreeView";
 import { useWorkspaceFileActions } from "./useWorkspaceFileActions";
@@ -115,9 +115,16 @@ export const FilesSurface = memo(function FilesSurface({
   workspaceKey,
   onOpenFile,
 }: FilesSurfaceProps) {
-  // What the file reads and every row act are addressed by.
+  // What the file reads and every row act are addressed by. A paired
+  // host's workspace never lists here: stripping the host and asking the
+  // local daemon would read the wrong machine. The hooks below take a
+  // null id for one, so they read nothing, and the render branches to the
+  // note instead. File tabs for such workspaces go over the held link.
+  const hostId = workspaceKey === null ? null : parseWorkspaceKey(workspaceKey).hostId;
   const workspaceId = workspaceKey === null ? null : parseWorkspaceKey(workspaceKey).workspaceId;
-  const { cells, expanded, toggle, refresh, refreshPath, rekey } = useWorkspaceFiles(workspaceId);
+  const remote = hostId !== null && hostId !== LOCAL_HOST_ID;
+  const listedId = remote ? null : workspaceId;
+  const { cells, expanded, toggle, refresh, refreshPath, rekey } = useWorkspaceFiles(listedId);
   const {
     preview,
     selection,
@@ -125,9 +132,9 @@ export const FilesSurface = memo(function FilesSurface({
     deselect,
     refresh: refreshPreview,
     readMore,
-  } = useWorkspaceFilePreview(workspaceId);
+  } = useWorkspaceFilePreview(listedId);
   const { renameEntry, duplicateEntry, deleteEntry } = useWorkspaceFileActions({
-    workspaceId,
+    workspaceId: listedId,
     refreshPath,
     rekey,
     selection,
@@ -233,6 +240,20 @@ export const FilesSurface = memo(function FilesSurface({
   // mounted lists never share one aria-describedby target (ErrorText's
   // contract) even before a path is considered.
   const listId = useId();
+
+  if (remote) {
+    return (
+      <div
+        ref={panelRef}
+        tabIndex={-1}
+        role="region"
+        aria-label="Files"
+        className="workspace-files"
+      >
+        <div className="workspace-files-state">This workspace is on another device.</div>
+      </div>
+    );
+  }
 
   return (
     // tabIndex -1 keeps the panel out of the tab order: focus() lands
