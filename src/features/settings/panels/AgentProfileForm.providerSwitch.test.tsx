@@ -39,6 +39,7 @@ import {
   createButton,
   selectValues,
 } from "./agentsPanelTestQueries";
+import { valueOf } from "../../../components/appSelectTesting";
 
 describe("Settings agents panel — new profile form: provider switch and queries", () => {
   useAgentsPanelDom(() => [makeProvider()]);
@@ -81,7 +82,7 @@ describe("Settings agents panel — new profile form: provider switch and querie
       );
     });
     await act(async () => undefined);
-    expect(selectValues(modelControl())).toContain("b-model");
+    expect(await selectValues(modelControl())).toContain("b-model");
 
     // Now the stale reply for the previous provider arrives.
     await act(async () => {
@@ -99,8 +100,8 @@ describe("Settings agents panel — new profile form: provider switch and querie
     await act(async () => undefined);
 
     // The form shows provider b; the late answer for a must not have landed.
-    expect(selectValues(modelControl())).toContain("b-model");
-    expect(selectValues(modelControl())).not.toContain("a-model");
+    expect(await selectValues(modelControl())).toContain("b-model");
+    expect(await selectValues(modelControl())).not.toContain("a-model");
     expect(providerVocabularyGet).toHaveBeenNthCalledWith(1, "a", "", false);
     expect(providerVocabularyGet).toHaveBeenNthCalledWith(2, "b", "", false);
   });
@@ -219,7 +220,9 @@ describe("Settings agents panel — new profile form: provider switch and querie
     });
 
     const editor = await openRowEditor("Explorer");
-    const providerSelect = editor.querySelector<HTMLSelectElement>('select[aria-label="Provider"]');
+    const providerSelect = editor.querySelector<HTMLButtonElement>(
+      'button[aria-haspopup=\"listbox\"][aria-label=\"Provider\"]',
+    );
     if (!providerSelect) throw new Error("provider picker did not render");
     await typeText(providerSelect, "claude");
     await act(async () => undefined);
@@ -228,7 +231,7 @@ describe("Settings agents panel — new profile form: provider switch and querie
     const mode = editor.querySelector<HTMLInputElement>('[aria-label="Mode"]');
     const thinking = editor.querySelector<HTMLInputElement>('[aria-label="Effort"]');
     if (!model || !mode || !thinking) throw new Error("the cleared fields did not render");
-    expect(thinking.value).toBe("");
+    expect(valueOf(thinking)).toBe("");
     await typeText(model, "claude-opus-4-6");
     await typeText(mode, "plan");
     const save = Array.from(editor.querySelectorAll<HTMLButtonElement>("button")).find(
@@ -287,16 +290,18 @@ describe("Settings agents panel — new profile form: provider switch and querie
     });
 
     const editor = await openRowEditor("Explorer");
-    const providerSelect = editor.querySelector<HTMLSelectElement>('select[aria-label="Provider"]');
+    const providerSelect = editor.querySelector<HTMLButtonElement>(
+      'button[aria-haspopup=\"listbox\"][aria-label=\"Provider\"]',
+    );
     if (!providerSelect) throw new Error("provider picker did not render");
     const field = (label: string) => {
       const control = editor.querySelector<HTMLInputElement>(`[aria-label="${label}"]`);
       if (!control) throw new Error(`${label} did not render`);
       return control;
     };
-    expect(field("Model").value).toBe("grok-4");
-    expect(field("Mode").value).toBe("reflect");
-    expect(field("Effort").value).toBe("high");
+    expect(valueOf(field("Model"))).toBe("grok-4");
+    expect(valueOf(field("Mode"))).toBe("reflect");
+    expect(valueOf(field("Effort"))).toBe("high");
 
     // A wrong pick: the new provider's own vocabulary is empty, not the old
     // provider's — but the stored feature key rides along untouched. It is not
@@ -306,17 +311,17 @@ describe("Settings agents panel — new profile form: provider switch and querie
     // provider can name. Carried, not shown, and not pruned — the save below
     // proves the carrying.
     await typeText(providerSelect, "claude");
-    expect(field("Model").value).toBe("");
-    expect(field("Mode").value).toBe("");
-    expect(field("Effort").value).toBe("");
+    expect(valueOf(field("Model"))).toBe("");
+    expect(valueOf(field("Mode"))).toBe("");
+    expect(valueOf(field("Effort"))).toBe("");
 
     // Text typed under the wrong provider is dropped with that provider's
     // own fields; switching back restores what grok held.
     await typeText(field("Model"), "claude-opus-4-6");
     await typeText(providerSelect, "grok");
-    expect(field("Model").value).toBe("grok-4");
-    expect(field("Mode").value).toBe("reflect");
-    expect(field("Effort").value).toBe("high");
+    expect(valueOf(field("Model"))).toBe("grok-4");
+    expect(valueOf(field("Mode"))).toBe("reflect");
+    expect(valueOf(field("Effort"))).toBe("high");
 
     const save = Array.from(editor.querySelectorAll<HTMLButtonElement>("button")).find(
       (candidate) => candidate.textContent === "Save",

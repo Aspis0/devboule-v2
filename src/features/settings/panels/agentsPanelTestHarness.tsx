@@ -3,6 +3,7 @@
 // (`agentsPanelTestMocks.ts`): vi.mock is hoisted per file.
 
 import { act } from "react";
+import { pickSelect } from "../../../components/appSelectTesting";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, vi } from "vitest";
 
@@ -207,16 +208,13 @@ export function describedText(field: Element): string {
 // rendered onChange through their __reactProps key; a select carries no such
 // key under React 19 (its onChange rides the native change event), so it is
 // driven by setting the value and dispatching that event.
+/** Types into a text field, or picks the option of an app select the way a person does. */
 export async function typeText(
-  fieldElement: HTMLTextAreaElement | HTMLInputElement | HTMLSelectElement,
+  fieldElement: HTMLTextAreaElement | HTMLInputElement | HTMLButtonElement,
   value: string,
 ) {
-  if ((fieldElement as HTMLSelectElement).tagName === "SELECT") {
-    await act(async () => {
-      fieldElement.value = value;
-      fieldElement.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    await act(async () => undefined);
+  if (fieldElement instanceof HTMLButtonElement) {
+    await pickSelect(fieldElement, value);
     return;
   }
   const reactKey = Object.keys(fieldElement).find((key) => key.startsWith("__reactProps"));

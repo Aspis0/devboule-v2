@@ -21,9 +21,12 @@ import {
   useAgentsPanelDom,
 } from "./agentsPanelTestHarness";
 import { openRowEditor, panelButton, rowByName } from "./agentsPanelTestQueries";
+import { selectOptions, valueOf } from "../../../components/appSelectTesting";
 
-function providerSelect(): HTMLSelectElement {
-  const select = dom.container.querySelector<HTMLSelectElement>('select[aria-label="Provider"]');
+function providerSelect(): HTMLButtonElement {
+  const select = dom.container.querySelector<HTMLButtonElement>(
+    'button[aria-haspopup=\"listbox\"][aria-label=\"Provider\"]',
+  );
   if (!select) throw new Error("provider picker did not render");
   return select;
 }
@@ -58,8 +61,8 @@ describe("Settings agents panel — a profile whose provider is not installed", 
     await renderAgentsPanel(DOCUMENT);
     await act(async () => undefined);
     await openRowEditor("Gone");
-    const options = Array.from(providerSelect().options).map((option) => option.textContent);
-    expect(providerSelect().value).toBe("does-not-exist");
+    const options = (await selectOptions(providerSelect())).map((option) => option.label);
+    expect(valueOf(providerSelect())).toBe("does-not-exist");
     expect(options).toContain("does-not-exist (not installed)");
     expect(fieldNamed("Profile name").disabled).toBe(true);
     expect(fieldNamed("Profile note").disabled).toBe(true);

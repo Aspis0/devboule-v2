@@ -33,6 +33,7 @@ import {
   selectValues,
   fillDraft,
 } from "./agentsPanelTestQueries";
+import { selectOptions, valueOf } from "../../../components/appSelectTesting";
 
 describe("Settings agents panel — new profile form: vocabulary states", () => {
   useAgentsPanelDom(() => [makeProvider()]);
@@ -80,15 +81,19 @@ describe("Settings agents panel — new profile form: vocabulary states", () => 
     const editor = await openRowEditor("Explorer");
     await act(async () => undefined);
 
-    const model = editor.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
-    const mode = editor.querySelector<HTMLSelectElement>('select[aria-label="Mode"]');
+    const model = editor.querySelector<HTMLButtonElement>(
+      'button[aria-haspopup=\"listbox\"][aria-label=\"Model\"]',
+    );
+    const mode = editor.querySelector<HTMLButtonElement>(
+      'button[aria-haspopup=\"listbox\"][aria-label=\"Mode\"]',
+    );
     if (!model || !mode) throw new Error("the model and mode selects did not render");
-    expect(selectValues(model)).toEqual(["", "claude-opus-4-6", "claude-sonnet-4-5"]);
-    expect(selectValues(mode)).toEqual(["", "plan", "default"]);
-    expect(model.value).toBe("claude-sonnet-4-5");
-    expect(mode.value).toBe("default");
+    expect(await selectValues(model)).toEqual(["", "claude-opus-4-6", "claude-sonnet-4-5"]);
+    expect(await selectValues(mode)).toEqual(["", "plan", "default"]);
+    expect(valueOf(model)).toBe("claude-sonnet-4-5");
+    expect(valueOf(mode)).toBe("default");
     expect(
-      Array.from(model.options).find((option) => option.value === "claude-sonnet-4-5")?.textContent,
+      (await selectOptions(model)).find((option) => option.value === "claude-sonnet-4-5")?.label,
     ).toBe("claude-sonnet-4-5 (the value saved on this profile)");
 
     // A save that changes no vocabulary field carries the stored pair, not
@@ -173,13 +178,13 @@ describe("Settings agents panel — new profile form: vocabulary states", () => 
     await act(async () => undefined);
     await act(async () => undefined);
 
-    expect(modelControl().tagName).toBe("SELECT");
-    expect(modeControl().tagName).toBe("SELECT");
+    expect(modelControl().tagName).toBe("BUTTON");
+    expect(modeControl().tagName).toBe("BUTTON");
     expect(dom.container.textContent).not.toContain("the daemon's own vocabulary");
     expect(dom.container.textContent).not.toContain("not something the provider published");
     // The published items are offered as they arrived.
-    expect(selectValues(modelControl())).toContain("opus");
-    expect(selectValues(modeControl())).toContain("code");
+    expect(await selectValues(modelControl())).toContain("opus");
+    expect(await selectValues(modeControl())).toContain("code");
   });
 
   it("names a malformed reply and keeps its usable models list instead of calling it a failed query", async () => {
@@ -199,8 +204,8 @@ describe("Settings agents panel — new profile form: vocabulary states", () => 
     await act(async () => undefined);
 
     // The usable half is kept: a select over the models that arrived.
-    expect(modelControl().tagName).toBe("SELECT");
-    expect(selectValues(modelControl())).toContain("opus");
+    expect(modelControl().tagName).toBe("BUTTON");
+    expect(await selectValues(modelControl())).toContain("opus");
     // The missing half is named as its own state — malformed, which is not
     // a failed query and not `absent`.
     expect(modeControl().tagName).toBe("INPUT");
@@ -272,8 +277,8 @@ describe("Settings agents panel — new profile form: vocabulary states", () => 
     await act(async () => undefined);
 
     // The items themselves are usable: a select, not free text.
-    expect(modelControl().tagName).toBe("SELECT");
-    expect(selectValues(modelControl())).toContain("opus");
+    expect(modelControl().tagName).toBe("BUTTON");
+    expect(await selectValues(modelControl())).toContain("opus");
     // The missing authorship is named on both axes. No sentence at all is
     // what the eye reads as "the provider published this" — the stronger
     // of the two authorships.

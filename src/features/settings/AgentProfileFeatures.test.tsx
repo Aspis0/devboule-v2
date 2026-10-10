@@ -34,6 +34,12 @@ vi.mock("../../lib/tauri", () => ({
 }));
 
 import { providerVocabularyGet } from "../../lib/tauri";
+import { pickSelect, selectValues } from "../../components/appSelectTesting";
+
+function must<T>(value: T | null): T {
+  if (value === null) throw new Error("the control did not render");
+  return value;
+}
 import { AgentProfileForm } from "./AgentProfileForm";
 import { VOCABULARY_POLL_MS as POLL_MS } from "./useProviderVocabulary";
 import {
@@ -289,35 +295,46 @@ describe("the feature controls, as the form draws them", () => {
     const fast = container.querySelector<HTMLInputElement>(
       '[aria-label="Profile feature fastMode"]',
     );
-    const engine = container.querySelector<HTMLSelectElement>(
+    const engine = container.querySelector<HTMLButtonElement>(
       '[aria-label="Profile feature engine"]',
     );
     expect(tick?.getAttribute("type")).toBe("checkbox");
     expect(fast?.getAttribute("type")).toBe("checkbox");
-    expect(engine?.tagName).toBe("SELECT");
+    expect(engine?.tagName).toBe("BUTTON");
     // The unset position has its own value so an empty provider choice remains
     // selectable and distinct.
-    expect(Array.from(engine?.options ?? []).map((option) => option.value)).toEqual([
+    expect(await selectValues(must(engine))).toEqual([
       "__devboule_profile_feature_unset__",
       "m1",
       "m2",
     ]);
   });
 
+  it("draws every dropdown as the app's own select, never a native one", async () => {
+    vi.mocked(providerVocabularyGet).mockResolvedValue(vocabulary([ENGINE]));
+    await renderForm(draftOf());
+    await act(async () => undefined);
+
+    expect(container.querySelectorAll("select")).toHaveLength(0);
+    expect(
+      container.querySelectorAll('button[aria-haspopup="listbox"][aria-label^="Profile feature"]'),
+    ).toHaveLength(1);
+  });
+
   it("lets an empty provider choice be selected and saved", async () => {
     vi.mocked(providerVocabularyGet).mockResolvedValue(vocabulary([EMPTY_ENGINE]));
     const { onCreate } = await renderForm(draftOf());
-    const engine = container.querySelector<HTMLSelectElement>(
+    const engine = container.querySelector<HTMLButtonElement>(
       '[aria-label="Profile feature engine"]',
     );
-    expect(Array.from(engine?.options ?? []).map((option) => option.value)).toEqual([
+    expect(await selectValues(must(engine))).toEqual([
       "__devboule_profile_feature_unset__",
       "",
       "m1",
       "m2",
     ]);
     if (!engine) throw new Error("the engine select did not render");
-    await typeInto(engine, "");
+    await pickSelect(engine, "");
     const button = Array.from(container.querySelectorAll("button")).find(
       (candidate) => candidate.textContent === "Create profile",
     );
@@ -330,11 +347,11 @@ describe("the feature controls, as the form draws them", () => {
   it("uses the provider default position to remove a saved feature", async () => {
     vi.mocked(providerVocabularyGet).mockResolvedValue(vocabulary([ENGINE]));
     const { onCreate } = await renderForm(draftOf({ features: { engine: "m1" } }));
-    const engine = container.querySelector<HTMLSelectElement>(
+    const engine = container.querySelector<HTMLButtonElement>(
       '[aria-label="Profile feature engine"]',
     );
     if (!engine) throw new Error("the engine select did not render");
-    await typeInto(engine, engine.options[0]?.value ?? "");
+    await pickSelect(engine, (await selectValues(must(engine)))[0] ?? "");
     const button = Array.from(container.querySelectorAll("button")).find(
       (candidate) => candidate.textContent === "Create profile",
     );
@@ -349,14 +366,14 @@ describe("the feature controls, as the form draws them", () => {
     const feature = { ...ENGINE, options: [{ id: sentinel, label: "Literal value" }] };
     vi.mocked(providerVocabularyGet).mockResolvedValue(vocabulary([feature]));
     const { onCreate } = await renderForm(draftOf());
-    const select = container.querySelector<HTMLSelectElement>(
+    const select = container.querySelector<HTMLButtonElement>(
       '[aria-label="Profile feature engine"]',
     );
     if (!select) throw new Error("the engine select did not render");
-    expect(select.options[0]?.value).not.toBe(sentinel);
-    expect(Array.from(select.options).some((option) => option.value === sentinel)).toBe(true);
-    await typeInto(select, sentinel);
-    expect(select.value).toBe(sentinel);
+    expect((await selectValues(must(select)))[0]).not.toBe(sentinel);
+    expect((await selectValues(must(select))).includes(sentinel)).toBe(true);
+    await pickSelect(select, sentinel);
+    expect(select.dataset.value).toBe(sentinel);
     const button = Array.from(container.querySelectorAll("button")).find(
       (candidate) => candidate.textContent === "Create profile",
     );
@@ -515,14 +532,14 @@ describe("the feature controls, as the form draws them", () => {
       container.querySelector('[aria-label="Auto accept for children of this profile"]'),
     ).not.toBeNull();
     expect(container.querySelector('[aria-label="Profile feature engine"]')?.tagName).toBe(
-      "SELECT",
+      "BUTTON",
     );
-    expect(container.querySelector('[aria-label="Model"]')?.tagName).toBe("SELECT");
-    expect(container.querySelector('[aria-label="Mode"]')?.tagName).toBe("SELECT");
+    expect(container.querySelector('[aria-label="Model"]')?.tagName).toBe("BUTTON");
+    expect(container.querySelector('[aria-label="Mode"]')?.tagName).toBe("BUTTON");
 
-    const model = container.querySelector<HTMLSelectElement>('[aria-label="Model"]');
+    const model = container.querySelector<HTMLButtonElement>('[aria-label="Model"]');
     if (!model) throw new Error("the model select did not render");
-    await typeInto(model, "claude-sonnet-5");
+    await pickSelect(model, "claude-sonnet-5");
     await act(async () => undefined);
 
     expect(container.textContent).toContain("vocabulary query failed");
@@ -532,10 +549,10 @@ describe("the feature controls, as the form draws them", () => {
       container.querySelector('[aria-label="Auto accept for children of this profile"]'),
     ).not.toBeNull();
     expect(container.querySelector('[aria-label="Profile feature engine"]')?.tagName).toBe(
-      "SELECT",
+      "BUTTON",
     );
-    expect(container.querySelector('[aria-label="Model"]')?.tagName).toBe("SELECT");
-    expect(container.querySelector('[aria-label="Mode"]')?.tagName).toBe("SELECT");
+    expect(container.querySelector('[aria-label="Model"]')?.tagName).toBe("BUTTON");
+    expect(container.querySelector('[aria-label="Mode"]')?.tagName).toBe("BUTTON");
   });
 
   it("carries a stored key it was never allowed to prune, and draws no row for it", async () => {

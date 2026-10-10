@@ -21,6 +21,7 @@ import {
   typeText,
 } from "./agentsPanelTestHarness";
 import { rowByName, dialogButton } from "./agentsPanelTestQueries";
+import { valueOf } from "../../../components/appSelectTesting";
 
 describe("Settings agents panel — standing instructions", () => {
   useAgentsPanelDom(() => []);
@@ -46,7 +47,7 @@ describe("Settings agents panel — standing instructions", () => {
       dom.container.querySelector('[aria-label="Standing instructions for every agent"]'),
     ).toBeNull();
     const box = await openStandingEditor();
-    expect(box.value).toBe("Rules to reuse.");
+    expect(valueOf(box)).toBe("Rules to reuse.");
     // No explanatory hint in the editor — one short label, the counter only
     // near the cap.
     expect(box.closest(".edit-card")?.querySelectorAll(".device-field-hint").length).toBe(0);
@@ -94,7 +95,7 @@ describe("Settings agents panel — standing instructions", () => {
     const alert = dom.container.querySelector(".edit-card [role='alert']");
     expect(alert?.textContent).toContain("8400 bytes");
     expect(alert?.textContent).toContain("8192");
-    expect(field.value).toBe(flood);
+    expect(valueOf(field)).toBe(flood);
   });
 
   it("keeps the standing draft when an unrelated write confirms", async () => {
@@ -174,6 +175,6 @@ describe("Settings agents panel — standing instructions", () => {
       standingInstructions: "Always report",
     });
     const reopened = await openStandingEditor();
-    expect(reopened.value).toBe("Always report your plan first.");
+    expect(valueOf(reopened)).toBe("Always report your plan first.");
   });
 });

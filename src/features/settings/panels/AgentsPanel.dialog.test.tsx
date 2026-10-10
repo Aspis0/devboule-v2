@@ -27,6 +27,7 @@ import {
   dialogButton,
   newProfileButton,
 } from "./agentsPanelTestQueries";
+import { valueOf } from "../../../components/appSelectTesting";
 
 describe("Settings agents panel — the profile dialog", () => {
   useAgentsPanelDom(() => []);
@@ -55,7 +56,7 @@ describe("Settings agents panel — the profile dialog", () => {
       '.edit-card textarea[aria-label="Profile instructions"]',
     );
     if (!spawnField) throw new Error("dialog spawn prompt field did not render");
-    expect(spawnField.value).toBe(prompt);
+    expect(valueOf(spawnField)).toBe(prompt);
   });
 
   it("returns focus to the row's pencil when the dialog closes", async () => {
@@ -421,7 +422,7 @@ describe("Settings agents panel — the profile dialog", () => {
       '.edit-card input[aria-label="Profile name"]',
     );
     if (!kept) throw new Error("create form did not return after Keep editing");
-    expect(kept.value).toBe("Scout");
+    expect(valueOf(kept)).toBe("Scout");
 
     // Discarding abandons the draft: the next open starts blank.
     await act(async () => dialogButton("Cancel").click());
@@ -435,6 +436,6 @@ describe("Settings agents panel — the profile dialog", () => {
       '.edit-card input[aria-label="Profile name"]',
     );
     if (!fresh) throw new Error("create form did not reopen");
-    expect(fresh.value).toBe("");
+    expect(valueOf(fresh)).toBe("");
   });
 });

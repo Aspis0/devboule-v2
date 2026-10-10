@@ -22,6 +22,7 @@ import {
   typeText,
 } from "./agentsPanelTestHarness";
 import { rowButton, panelButton } from "./agentsPanelTestQueries";
+import { valueOf } from "../../../components/appSelectTesting";
 
 describe("Settings agents panel — the idle-close timer", () => {
   useAgentsPanelDom(() => []);
@@ -136,7 +137,7 @@ describe("Settings agents panel — the idle-close timer", () => {
     // The field shows what will be saved: a whole minute. "Never" is the
     // tick's meaning alone, so a typed 0 must not reach the daemon as
     // `Some(0)` — the opposite of what the human asked for.
-    expect(idleField.value).toBe("1");
+    expect(valueOf(idleField)).toBe("1");
     expect(offTick.checked).toBe(false);
 
     vi.mocked(agentProfilesGet).mockResolvedValueOnce({
@@ -170,7 +171,7 @@ describe("Settings agents panel — the idle-close timer", () => {
     // `String(NaN)` of the form's making — which no number input would
     // show either.
     await typeText(idleField, "1e999");
-    expect(idleField.value).toBe("1e999");
+    expect(valueOf(idleField)).toBe("1e999");
 
     await act(async () => panelButton("Save").click());
     await act(async () => undefined);

@@ -19,6 +19,7 @@
  */
 import type { VocabularyFeature } from "../../types/ipc";
 import { AUTO_ACCEPT_FEATURE } from "./AgentProfileDraft";
+import { AppSelect } from "../../components/AppSelect";
 
 const UNSET_SELECT_VALUE = "__devboule_profile_feature_unset__";
 
@@ -45,23 +46,18 @@ function FeatureControl({
     return (
       <label className="device-field">
         {feature.label}
-        <select
-          aria-label={`Profile feature ${feature.id}`}
+        {/* The default position is distinct from a declared empty-string
+            choice, which remains a provider value. */}
+        <AppSelect
+          label={`Profile feature ${feature.id}`}
           value={typeof value === "string" ? value : unsetValue}
           disabled={busy}
-          onChange={(event) =>
-            onChange(feature.id, event.target.value === unsetValue ? undefined : event.target.value)
-          }
-        >
-          {/* The default position is distinct from a declared empty-string
-              choice, which remains a provider value. */}
-          <option value={unsetValue}>The provider's own default</option>
-          {(feature.options ?? []).map((option) => (
-            <option key={option.id} value={option.id}>
-              {option.label}
-            </option>
-          ))}
-        </select>
+          options={[
+            { value: unsetValue, label: "The provider's own default" },
+            ...(feature.options ?? []).map((option) => ({ value: option.id, label: option.label })),
+          ]}
+          onChange={(next) => onChange(feature.id, next === unsetValue ? undefined : next)}
+        />
       </label>
     );
   }

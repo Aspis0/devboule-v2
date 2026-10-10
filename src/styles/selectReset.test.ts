@@ -248,7 +248,7 @@ describe("every real select lives in a wrapped field", () => {
       }
     }
     expect(unwrapped).toEqual([]);
-    // The Design model and effort popover's two selects are chips now.
-    expect(found).toHaveLength(6);
+    // The profile form's selects are the app's own select now; the History filter is the one native select left.
+    expect(found).toHaveLength(1);
   });
 });

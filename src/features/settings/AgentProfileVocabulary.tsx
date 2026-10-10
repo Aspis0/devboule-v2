@@ -7,6 +7,7 @@
  * state the wire can reach is named here.
  */
 import type { ReactNode } from "react";
+import { AppSelect } from "../../components/AppSelect";
 
 /**
  * The sentence for the one absence the form can name without asking anyone:
@@ -164,15 +165,19 @@ export const ACP_MODE_SUGGESTION_TEXT =
  */
 export function WaitingPicker({ label, text }: { label: string; text: string }) {
   return (
-    <label className="device-field">
-      {label}
+    <div className="device-field">
+      <span>{label}</span>
       <span className="settings-waiting-control">
         <span className="settings-waiting-spinner" role="status" aria-label={text} />
-        <select aria-label={label} disabled value="">
-          <option value="">{text}…</option>
-        </select>
+        <AppSelect
+          label={label}
+          value=""
+          options={[{ value: "", label: `${text}…` }]}
+          onChange={() => undefined}
+          disabled
+        />
       </span>
-    </label>
+    </div>
   );
 }
 
@@ -231,25 +236,22 @@ export function VocabularyField({
     );
   }
   return (
-    <label className="device-field">
-      {label}
-      <select
-        aria-label={label}
+    <div className="device-field">
+      <span>{label}</span>
+      <AppSelect
+        label={label}
         value={value}
         disabled={busy}
-        onChange={(event) => {
-          onChange(event.target.value);
-          onSettle?.(event.target.value);
+        options={[
+          { value: "", label: `Choose a ${label.toLowerCase()}…` },
+          ...items.map((item) => ({ value: item.value, label: item.label })),
+        ]}
+        onChange={(next) => {
+          onChange(next);
+          onSettle?.(next);
         }}
-      >
-        <option value="">Choose a {label.toLowerCase()}…</option>
-        {items.map((item) => (
-          <option key={item.value} value={item.value}>
-            {item.label}
-          </option>
-        ))}
-      </select>
+      />
       {hint === undefined ? null : <span className="device-field-hint">{hint}</span>}
-    </label>
+    </div>
   );
 }

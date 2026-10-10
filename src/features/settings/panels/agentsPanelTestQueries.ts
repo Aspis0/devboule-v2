@@ -5,6 +5,8 @@ import { act } from "react";
 
 import { dom, typeText } from "./agentsPanelTestHarness";
 
+export { pickSelect, selectValues } from "../../../components/appSelectTesting";
+
 export function profileRows(): HTMLElement[] {
   return Array.from(dom.container.querySelectorAll<HTMLElement>(".agent-profile-row"));
 }
@@ -105,17 +107,22 @@ export function noteField(): HTMLTextAreaElement {
   return field<HTMLTextAreaElement>('textarea[aria-label="Profile note"]');
 }
 
-export function providerField(): HTMLSelectElement {
-  return field<HTMLSelectElement>('select[aria-label="Provider"]');
+/** An app select's trigger, found by the field's name it carries. */
+export function selectField(name: string): HTMLButtonElement {
+  return field<HTMLButtonElement>(`button[aria-haspopup="listbox"][aria-label="${name}"]`);
 }
 
-/** The model control is a select when the provider published, input otherwise. */
-export function modelControl(): HTMLInputElement | HTMLSelectElement {
-  return field<HTMLInputElement | HTMLSelectElement>('[aria-label="Model"]');
+export function providerField(): HTMLButtonElement {
+  return selectField("Provider");
 }
 
-export function modeControl(): HTMLInputElement | HTMLSelectElement {
-  return field<HTMLInputElement | HTMLSelectElement>('[aria-label="Mode"]');
+/** The model control is an app select when the provider published, a text input otherwise. */
+export function modelControl(): HTMLInputElement | HTMLButtonElement {
+  return field<HTMLInputElement | HTMLButtonElement>('[aria-label="Model"]');
+}
+
+export function modeControl(): HTMLInputElement | HTMLButtonElement {
+  return field<HTMLInputElement | HTMLButtonElement>('[aria-label="Mode"]');
 }
 
 export function createButton(): HTMLButtonElement {
@@ -127,11 +134,6 @@ export function createButton(): HTMLButtonElement {
 }
 
 /** Select options' values, in wire order. */
-export function selectValues(control: HTMLInputElement | HTMLSelectElement): string[] {
-  if (control.tagName !== "SELECT") throw new Error(`control is a ${control.tagName}`);
-  return Array.from((control as HTMLSelectElement).options).map((option) => option.value);
-}
-
 /** A fresh form draft filled for an older daemon: enough to save. */
 export async function fillDraft() {
   await typeText(nameField(), "Gamma");

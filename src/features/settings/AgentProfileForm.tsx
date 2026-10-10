@@ -6,6 +6,7 @@
  * collapsed Advanced section. The fields' rules live in
  * `AgentProfileDraft.ts`; the panel owns the document.
  */
+import { AppSelect } from "../../components/AppSelect";
 import { useEffect, useId, useRef, useState } from "react";
 import { useProviderVocabulary } from "./useProviderVocabulary";
 import { ErrorText } from "../../components/ErrorText";
@@ -392,28 +393,28 @@ export function AgentProfileForm({
           }}
         />
       </label>
-      <label className="device-field">
-        Provider
-        <select
-          aria-label="Provider"
+      <div className="device-field">
+        <span>Provider</span>
+        <AppSelect
+          label="Provider"
           value={providerId}
           disabled={busy || catalogLoading || providers.length === 0}
-          onChange={(event) => changeProvider(event.target.value)}
-        >
-          {catalogLoading ? <option value="">Looking for installed providers…</option> : null}
-          {!catalogLoading && catalogError !== null ? (
-            <option value="">The catalog could not be read</option>
-          ) : null}
-          {!catalogLoading && catalogError === null && providers.length === 0 ? (
-            <option value="">No provider installed</option>
-          ) : null}
-          {providerChoices.map((id) => (
-            <option key={id} value={id}>
-              {id === providerId && providerMissing ? `${id} (not installed)` : id}
-            </option>
-          ))}
-        </select>
-      </label>
+          options={[
+            ...(catalogLoading ? [{ value: "", label: "Looking for installed providers…" }] : []),
+            ...(!catalogLoading && catalogError !== null
+              ? [{ value: "", label: "The catalog could not be read" }]
+              : []),
+            ...(!catalogLoading && catalogError === null && providers.length === 0
+              ? [{ value: "", label: "No provider installed" }]
+              : []),
+            ...providerChoices.map((id) => ({
+              value: id,
+              label: id === providerId && providerMissing ? `${id} (not installed)` : id,
+            })),
+          ]}
+          onChange={changeProvider}
+        />
+      </div>
       {catalogError !== null ? (
         <p className="device-field-hint" role="alert">
           <ErrorText
@@ -469,26 +470,25 @@ export function AgentProfileForm({
           />
           {modelsWaiting ? <WaitingPicker label="Effort" text={PI_MODELS_READING_TEXT} /> : null}
           {showEffortPicker ? (
-            <label className="device-field">
-              Effort
-              <select
-                aria-label="Effort"
+            <div className="device-field">
+              <span>Effort</span>
+              <AppSelect
+                label="Effort"
                 value={thinkingOptionId}
                 disabled={locked}
-                onChange={(event) => {
-                  setThinkingOptionId(event.target.value);
-                  userChanged({ thinkingOptionId: event.target.value });
+                options={[
+                  { value: "", label: "The provider's own default" },
+                  ...(modelEfforts ?? []).map((level) => ({
+                    value: level.id,
+                    label: `${level.label}${level.default === true ? " (default)" : ""}`,
+                  })),
+                ]}
+                onChange={(next) => {
+                  setThinkingOptionId(next);
+                  userChanged({ thinkingOptionId: next });
                 }}
-              >
-                <option value="">The provider&apos;s own default</option>
-                {(modelEfforts ?? []).map((level) => (
-                  <option key={level.id} value={level.id}>
-                    {level.label}
-                    {level.default === true ? " (default)" : ""}
-                  </option>
-                ))}
-              </select>
-            </label>
+              />
+            </div>
           ) : null}
           {!showEffortPicker && !dropEffort && (!modelsPresent || model !== "") ? (
             <label className="device-field">

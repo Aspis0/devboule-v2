@@ -22,6 +22,7 @@ import {
   typeText,
 } from "./agentsPanelTestHarness";
 import { rowButton, panelButton } from "./agentsPanelTestQueries";
+import { valueOf } from "../../../components/appSelectTesting";
 
 describe("Settings agents panel — spawn prompt, note and name limits", () => {
   useAgentsPanelDom(() => []);
@@ -73,7 +74,7 @@ describe("Settings agents panel — spawn prompt, note and name limits", () => {
     expect(alert?.textContent).toContain("8194");
     expect(alert?.textContent).toContain("8192");
     // The refusal changed nothing: the field still holds every byte.
-    expect(spawnField.value).toBe(flood);
+    expect(valueOf(spawnField)).toBe(flood);
   });
 
   it("saves a cleared spawn prompt as the field's absence, never as an empty string", async () => {
@@ -142,7 +143,7 @@ describe("Settings agents panel — spawn prompt, note and name limits", () => {
     expect(alert?.textContent).toContain("2200 bytes");
     expect(alert?.textContent).toContain("2048");
     // The refusal changed nothing: the field still holds every byte.
-    expect(noteField.value).toBe(flood);
+    expect(valueOf(noteField)).toBe(flood);
   });
 
   it("accepts a name at the daemon's own count: 40 astral-plane characters are 40 characters", async () => {
@@ -196,6 +197,6 @@ describe("Settings agents panel — spawn prompt, note and name limits", () => {
     expect(alert?.textContent).toContain("61 characters");
     expect(alert?.textContent).toContain("60-character cap");
     // The refusal truncates nothing and leaves the editor open.
-    expect(nameField.value).toBe(name);
+    expect(valueOf(nameField)).toBe(name);
   });
 });

@@ -109,7 +109,7 @@ describe("Settings agents panel — new profile form: catalog, caps and stored r
     await renderAgentsPanel({ profiles: [], standingInstructions: "" });
     await openForm();
 
-    expect(selectValues(providerField())).toEqual(["claude"]);
+    expect(await selectValues(providerField())).toEqual(["claude"]);
   });
 
   it("does not claim no agent CLI is installed when the catalog read failed", async () => {
@@ -123,11 +123,9 @@ describe("Settings agents panel — new profile form: catalog, caps and stored r
       "could not be read: A system or file operation failed on this machine.",
     );
     expect(form().textContent).not.toContain("No agent CLI is installed");
-    // The picker does not pretend the (unread) catalog was read either: its
-    // one option names the failed read, not an empty result. (Placeholder
-    // options carry value="", so the option text is what is asserted.)
-    const options = Array.from(providerField().options).map((option) => option.textContent);
-    expect(options).toEqual(["The catalog could not be read"]);
+    // The picker does not pretend the (unread) catalog was read either: with no
+    // provider chosen, it shows the failed read in place of an empty result.
+    expect(providerField().textContent).toContain("The catalog could not be read");
   });
 
   it("mirrors the store's profile cap and does not offer the form at it", async () => {

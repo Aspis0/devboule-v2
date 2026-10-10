@@ -23,6 +23,7 @@ import {
   typeText,
 } from "./agentsPanelTestHarness";
 import { openForm, form, createButton, openRowEditor } from "./agentsPanelTestQueries";
+import { pickSelect, selectOptions, valueOf } from "../../../components/appSelectTesting";
 
 function piVocabulary() {
   return makeVocabulary({
@@ -77,11 +78,19 @@ describe("Settings agents panel — profile editor pickers", () => {
     await openForm();
     await act(async () => undefined);
     const editor = form();
-    expect(editor.querySelector('select[aria-label="Provider"]')).not.toBeNull();
-    const model = editor.querySelector('select[aria-label="Model"]');
+    expect(
+      editor.querySelector('button[aria-haspopup=\"listbox\"][aria-label=\"Provider\"]'),
+    ).not.toBeNull();
+    const model = editor.querySelector<HTMLButtonElement>(
+      'button[aria-haspopup="listbox"][aria-label="Model"]',
+    );
     if (!model) throw new Error("model picker did not render");
-    expect(model.textContent).toContain("opencode-go");
-    expect(editor.querySelector('select[aria-label="Mode"]')).not.toBeNull();
+    expect((await selectOptions(model)).map((option) => option.label).join(" ")).toContain(
+      "opencode-go",
+    );
+    expect(
+      editor.querySelector('button[aria-haspopup=\"listbox\"][aria-label=\"Mode\"]'),
+    ).not.toBeNull();
   });
 
   it("shows only the selected model's effort levels, and no effort picker when the model has none", async () => {
@@ -90,33 +99,34 @@ describe("Settings agents panel — profile editor pickers", () => {
     await openForm();
     await act(async () => undefined);
     const editor = form();
-    const model = editor.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
+    const model = editor.querySelector<HTMLButtonElement>(
+      'button[aria-haspopup=\"listbox\"][aria-label=\"Model\"]',
+    );
     if (!model) throw new Error("model picker did not render");
     // Pick the model that publishes effort levels, by its rendered option.
-    const mimoValue = Array.from(model.options).find((option) =>
-      option.text.includes("MiMo V2.6 Flash"),
+    const mimoValue = (await selectOptions(model)).find((option) =>
+      option.label.includes("MiMo V2.6 Flash"),
     )?.value;
     if (!mimoValue) throw new Error("mimo model option did not render");
-    await act(async () => {
-      model.value = mimoValue;
-      model.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickSelect(model, mimoValue);
     await act(async () => undefined);
-    const effort = editor.querySelector<HTMLSelectElement>('select[aria-label="Effort"]');
+    const effort = editor.querySelector<HTMLButtonElement>(
+      'button[aria-haspopup=\"listbox\"][aria-label=\"Effort\"]',
+    );
     if (!effort) throw new Error("effort picker did not render for a model with levels");
-    expect(effort.textContent).toContain("High");
-    expect(effort.textContent).not.toContain("Medium");
+    const levels = (await selectOptions(effort)).map((option) => option.label);
+    expect(levels.join(" ")).toContain("High");
+    expect(levels.join(" ")).not.toContain("Medium");
     // A model with no levels hides the picker entirely.
-    const nemoValue = Array.from(model.options).find((option) =>
-      option.text.includes("Nemotron 3 Ultra"),
+    const nemoValue = (await selectOptions(model)).find((option) =>
+      option.label.includes("Nemotron 3 Ultra"),
     )?.value;
     if (!nemoValue) throw new Error("nemotron model option did not render");
-    await act(async () => {
-      model.value = nemoValue;
-      model.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickSelect(model, nemoValue);
     await act(async () => undefined);
-    expect(editor.querySelector('select[aria-label="Effort"]')).toBeNull();
+    expect(
+      editor.querySelector('button[aria-haspopup=\"listbox\"][aria-label=\"Effort\"]'),
+    ).toBeNull();
   });
 
   it("creates a profile with safe defaults and the provider + model pair stored together", async () => {
@@ -128,23 +138,21 @@ describe("Settings agents panel — profile editor pickers", () => {
     const name = editor.querySelector<HTMLInputElement>('input[aria-label="Profile name"]');
     if (!name) throw new Error("name field did not render");
     await typeText(name, "Scout");
-    const model = editor.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
+    const model = editor.querySelector<HTMLButtonElement>(
+      'button[aria-haspopup=\"listbox\"][aria-label=\"Model\"]',
+    );
     if (!model) throw new Error("model picker did not render");
-    const mimoValue = Array.from(model.options).find((option) =>
-      option.text.includes("MiMo V2.6 Flash"),
+    const mimoValue = (await selectOptions(model)).find((option) =>
+      option.label.includes("MiMo V2.6 Flash"),
     )?.value;
     if (!mimoValue) throw new Error("mimo model option did not render");
-    await act(async () => {
-      model.value = mimoValue;
-      model.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickSelect(model, mimoValue);
     await act(async () => undefined);
-    const mode = editor.querySelector<HTMLSelectElement>('select[aria-label="Mode"]');
+    const mode = editor.querySelector<HTMLButtonElement>(
+      'button[aria-haspopup=\"listbox\"][aria-label=\"Mode\"]',
+    );
     if (!mode) throw new Error("mode picker did not render");
-    await act(async () => {
-      mode.value = "bypass";
-      mode.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickSelect(mode, "bypass");
     await act(async () => createButton().click());
     await act(async () => undefined);
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
@@ -184,12 +192,16 @@ describe("Settings agents panel — profile editor pickers", () => {
     // Never free text while the daemon is still enumerating: both
     // controls wait as disabled pickers with a spinner.
     expect(editor.querySelector('input[aria-label="Model"]')).toBeNull();
-    const model = editor.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
+    const model = editor.querySelector<HTMLButtonElement>(
+      'button[aria-haspopup=\"listbox\"][aria-label=\"Model\"]',
+    );
     if (!model) throw new Error("waiting model picker did not render");
     expect(model.disabled).toBe(true);
     expect(model.textContent).toContain("Reading pi's model list");
     expect(editor.querySelector('[role="status"]')).not.toBeNull();
-    const effort = editor.querySelector<HTMLSelectElement>('select[aria-label="Effort"]');
+    const effort = editor.querySelector<HTMLButtonElement>(
+      'button[aria-haspopup=\"listbox\"][aria-label=\"Effort\"]',
+    );
     if (!effort) throw new Error("waiting effort picker did not render");
     expect(effort.disabled).toBe(true);
     expect(editor.textContent).not.toContain("did not publish its models");
@@ -274,9 +286,11 @@ describe("Settings agents panel — profile editor pickers", () => {
     const editor = await openRowEditor("Scout");
     await act(async () => undefined);
     // Two rows share the id: the openrouter one is selected, not the first.
-    const model = editor.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
+    const model = editor.querySelector<HTMLButtonElement>(
+      'button[aria-haspopup=\"listbox\"][aria-label=\"Model\"]',
+    );
     if (!model) throw new Error("model picker did not render");
-    expect(model.value).toBe("openrouter/mimo-v2-6-flash");
+    expect(valueOf(model)).toBe("openrouter/mimo-v2-6-flash");
   });
 
   it("shows the saved value when the stored pair vanished but alternates remain", async () => {
@@ -292,13 +306,15 @@ describe("Settings agents panel — profile editor pickers", () => {
     const editor = await openRowEditor("Scout");
     await act(async () => undefined);
     // No row is dressed as the selection: the saved value reads as saved.
-    const model = editor.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
+    const model = editor.querySelector<HTMLButtonElement>(
+      'button[aria-haspopup=\"listbox\"][aria-label=\"Model\"]',
+    );
     if (!model) throw new Error("model picker did not render");
-    expect(model.value).toBe("gone-provider/mimo-v2-6-flash");
-    const saved = Array.from(model.options).find(
+    expect(valueOf(model)).toBe("gone-provider/mimo-v2-6-flash");
+    const saved = (await selectOptions(model)).find(
       (option) => option.value === "gone-provider/mimo-v2-6-flash",
     );
-    expect(saved?.text).toContain("the value saved on this profile");
+    expect(saved?.label).toContain("the value saved on this profile");
   });
 
   it("refuses saving a legacy ambiguous bare id, naming the providers", async () => {
@@ -315,9 +331,11 @@ describe("Settings agents panel — profile editor pickers", () => {
     // The bare id names two rows: the editor shows the saved value, and
     // the save names the providers to pick from instead of sending a bare
     // id the spawn would refuse.
-    const model = editor.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
+    const model = editor.querySelector<HTMLButtonElement>(
+      'button[aria-haspopup=\"listbox\"][aria-label=\"Model\"]',
+    );
     if (!model) throw new Error("model picker did not render");
-    expect(model.value).toBe("mimo-v2-6-flash");
+    expect(valueOf(model)).toBe("mimo-v2-6-flash");
     const save = Array.from(editor.querySelectorAll<HTMLButtonElement>("button")).find(
       (button) => button.textContent === "Save",
     );
