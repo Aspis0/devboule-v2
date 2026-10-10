@@ -852,9 +852,9 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     const target = pendingFocusRef.current;
     const shell = shellRef.current;
     if (target === null || shell === null) return;
-    for (const anchor of shell.querySelectorAll<HTMLElement>("[data-turn-anchor]")) {
-      if (anchor.dataset.turnAnchor === target) {
-        anchor.scrollIntoView({ block: "center" });
+    for (const row of shell.querySelectorAll<HTMLElement>("[data-message-id]")) {
+      if (row.dataset.messageId === target) {
+        row.scrollIntoView({ block: "center" });
         pendingFocusRef.current = null;
         return;
       }

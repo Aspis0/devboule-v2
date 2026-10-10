@@ -93,7 +93,12 @@ export const TranscriptRow = memo(function TranscriptRow({
   }
   if (item.role === "user") {
     return (
-      <div className={className} data-turn-anchor={item.id} style={style}>
+      <div
+        className={className}
+        data-turn-anchor={item.id}
+        data-message-id={item.messageId ?? undefined}
+        style={style}
+      >
         <div className="workspace-chat-bubble">
           {item.images !== undefined && item.images.length > 0 ? (
             <ChatImageThumbnails images={item.images} />
@@ -107,6 +112,7 @@ export const TranscriptRow = memo(function TranscriptRow({
   return (
     <div
       className={className}
+      data-message-id={item.messageId ?? undefined}
       style={style}
       title={isSubagent && measuredDepth === null ? "Subagent depth unavailable" : undefined}
     >
