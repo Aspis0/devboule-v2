@@ -94,23 +94,33 @@ pub(crate) fn default_on(agent: &crate::provider_catalog::InstalledAgent) -> boo
     agent.installed && agent.origin != crate::provider_catalog::ProviderOrigin::NpxWrapper
 }
 
-/// Refuse a start for a provider a person switched off: canonicalise the id
-/// the way the set door does, then read the store at this moment. Unknown
-/// ids and ids with no choice are not refused here.
-pub(crate) fn refuse_if_disabled(
+/// Whether a start may use `provider_id` right now: the person's saved choice
+/// when there is one, else the default. Canonicalises the id the way the set
+/// door does and reads the store at this moment.
+pub(crate) fn is_on_now(switches: &ProviderSwitchStore, provider_id: &str) -> bool {
+    let canonical = crate::provider_catalog::catalog_provider_id(provider_id)
+        .unwrap_or_else(|| provider_id.to_string());
+    switches
+        .choice(&canonical)
+        .unwrap_or_else(|| switches.default_for(&canonical))
+}
+
+/// Refuse a start the person has not turned on. A provider with no choice is
+/// refused unless it is installed here, so a create or resume naming an npx
+/// wrapper on a clean install gets the same one plain sentence the switch gives.
+pub(crate) fn refuse_unless_enabled(
     switches: &ProviderSwitchStore,
     provider_id: &str,
 ) -> Result<(), WireError> {
+    if is_on_now(switches, provider_id) {
+        return Ok(());
+    }
     let canonical = crate::provider_catalog::catalog_provider_id(provider_id)
         .unwrap_or_else(|| provider_id.to_string());
-    if switches.is_off(&canonical) {
-        Err(WireError::new(
-            ErrorCode::InvalidRequest,
-            disabled_sentence(&canonical),
-        ))
-    } else {
-        Ok(())
-    }
+    Err(WireError::new(
+        ErrorCode::InvalidRequest,
+        disabled_sentence(&canonical),
+    ))
 }
 
 /// The switch, in memory, with the file as its durable copy. Each id maps to
@@ -157,7 +167,8 @@ impl ProviderSwitchStore {
         }
     }
 
-    fn choice(&self, provider_id: &str) -> Option<bool> {
+    /// The person's saved choice for a canonical id; None when there is none.
+    pub(crate) fn choice(&self, provider_id: &str) -> Option<bool> {
         self.inner
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -176,6 +187,22 @@ impl ProviderSwitchStore {
     /// by [`default_on`].
     pub(crate) fn is_enabled_for(&self, agent: &crate::provider_catalog::InstalledAgent) -> bool {
         self.is_enabled(&agent.id, default_on(agent))
+    }
+
+    /// The default for a canonical id with no saved choice. A row the providers
+    /// file declares is on (the person declared it). A CLI found on PATH is on
+    /// when installed. Anything else — an npx wrapper, an id nothing holds — is
+    /// off, the same rule `default_on` gives the catalog rows. Reads the file and
+    /// the PATH now, so no shared registry snapshot can change the answer.
+    pub(crate) fn default_for(&self, canonical: &str) -> bool {
+        let runtime_dir = self.path.parent().unwrap_or(Path::new("."));
+        if crate::user_providers::declared_row_ids(runtime_dir)
+            .iter()
+            .any(|id| id == canonical)
+        {
+            return true;
+        }
+        crate::provider_catalog::find_available(canonical).is_some_and(|agent| default_on(&agent))
     }
 
     /// Whether a person switched `provider_id` off. Gates ask this, not
@@ -511,6 +538,26 @@ mod tests {
         let store = ProviderSwitchStore::load(&dir);
         assert!(store.is_enabled_for(&catalog_row(true, ProviderOrigin::UserBinary)));
         assert!(!store.is_enabled_for(&catalog_row(false, ProviderOrigin::UserBinary)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_row_the_providers_file_declares_is_on_without_a_choice() {
+        let dir = temp_dir("declared-row");
+        std::fs::create_dir_all(&dir).expect("create runtime directory");
+        std::fs::write(
+            dir.join(crate::user_providers::PROVIDERS_FILE),
+            br#"{"route-declared-fixture": {"extends": "acp", "command": ["/bin/x"], "enabled": true}}"#,
+        )
+        .expect("declare a row");
+        let store = ProviderSwitchStore::load(&dir);
+        assert!(
+            store.default_for("route-declared-fixture"),
+            "a person declared the row, so its default is on"
+        );
+        assert!(is_on_now(&store, "route-declared-fixture"));
+        refuse_unless_enabled(&store, "route-declared-fixture")
+            .expect("a declared row passes the gate");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

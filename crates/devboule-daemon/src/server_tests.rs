@@ -1965,6 +1965,14 @@ fn an_unknown_provider_vocabulary_request_is_an_invalid_request() {
 #[test]
 fn a_vocabulary_read_answers_on_the_wire_as_the_spec_spells_it() {
     let state = ServerState::new("vocabulary-wire".to_string());
+    state
+        .provider_switches
+        .set("claude", true)
+        .expect("a person turns it on");
+    state
+        .provider_switches
+        .set("devboule-absent-probe", true)
+        .expect("a person turns it on");
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
     let conn = ConnHandle::new(29);
 
@@ -2236,6 +2244,14 @@ impl crate::claude_catalog::CatalogSource for FixedClaudeCatalog {
 #[test]
 fn origin_travels_exactly_with_a_present_state_on_every_reply() {
     let state = ServerState::new("vocabulary-biconditional".to_string());
+    state
+        .provider_switches
+        .set("claude", true)
+        .expect("a person turns it on");
+    state
+        .provider_switches
+        .set("devboule-absent-probe", true)
+        .expect("a person turns it on");
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
     let conn = ConnHandle::new(30);
 
@@ -2316,6 +2332,10 @@ fn assert_vocabulary_wire(reply: &DaemonMessage) {
 #[test]
 fn the_vocabulary_cache_serves_second_reads_and_refresh_re_probes() {
     let state = ServerState::new("vocabulary-cache".to_string());
+    state
+        .provider_switches
+        .set("devboule-absent-probe", true)
+        .expect("a person turns it on");
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
     let conn = ConnHandle::new(31);
     let request = |id: u64, refresh: bool| ClientMessage::ProviderVocabularyGet {

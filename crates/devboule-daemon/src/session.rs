@@ -2238,7 +2238,7 @@ impl SessionRegistry {
                 SessionKind::Acp | SessionKind::Terminal => None,
             });
         if let Some(provider_id) = provider_id {
-            crate::provider_switches::refuse_if_disabled(&state.provider_switches, provider_id)?;
+            crate::provider_switches::refuse_unless_enabled(&state.provider_switches, provider_id)?;
         }
         let (origin, title) = session_create::birth_stamps(meta, conn_peer, &resolved.kind);
         let (record, metadata, record_generation) = session_create::build_birth_record(
@@ -2490,7 +2490,7 @@ impl SessionRegistry {
         // A resume starts a provider process, so the switch answers here
         // too: an ended session of a switched-off provider stays ended
         // until it is switched back on. Live sessions are never re-checked.
-        crate::provider_switches::refuse_if_disabled(&state.provider_switches, &provider)?;
+        crate::provider_switches::refuse_unless_enabled(&state.provider_switches, &provider)?;
         let (command, generation) = match self.resume_stage_command(&record, &provider) {
             Ok(staged) => staged,
             // The folder this session worked in is gone (the pre-flight's own

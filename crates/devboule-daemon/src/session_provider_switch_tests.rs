@@ -107,20 +107,34 @@ fn a_switched_off_provider_refuses_the_create_road_before_the_birth_door() {
 }
 
 #[test]
-fn an_unknown_provider_id_passes_the_switch_open() {
-    let (dir, state) = switch_state("create-unknown");
-    state
-        .provider_switches
-        .set("claude", false)
-        .expect("the store has a real disabled entry");
-    let canonicalized =
-        crate::provider_switches::refuse_if_disabled(&state.provider_switches, "CLAUDE")
-            .expect_err("a case alias of a disabled provider must be refused");
-    assert_eq!(canonicalized.code, ErrorCode::InvalidRequest);
-    assert!(canonicalized.message.contains("claude"));
-    // An unrelated id remains open even when the store contains a disabled row.
-    crate::provider_switches::refuse_if_disabled(&state.provider_switches, "test-agent")
-        .expect("an unknown provider is not switched off");
+fn a_provider_with_no_choice_that_is_not_installed_is_refused_at_the_gate() {
+    // A create or resume naming a provider nobody installed and nobody
+    // switched on must be refused by the daemon, not only hidden in Settings.
+    let (dir, state) = switch_state("create-no-choice");
+    let refused =
+        crate::provider_switches::refuse_unless_enabled(&state.provider_switches, "test-agent")
+            .expect_err("no choice and no install is off, so the create is refused");
+    assert_eq!(refused.code, ErrorCode::InvalidRequest);
+    assert!(
+        refused.message.contains("turned off"),
+        "{}",
+        refused.message
+    );
+    state.sessions.journal.as_ref().expect("journal").shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_saved_on_choice_lets_an_uninstalled_provider_through_the_gate() {
+    let (dir, state) = switch_state("create-saved-on");
+    std::fs::write(
+        dir.join(crate::provider_switches::SWITCHES_FILE),
+        br#"{"enabled":["test-agent"]}"#,
+    )
+    .expect("seed a saved on choice");
+    let reloaded = crate::provider_switches::ProviderSwitchStore::load(&dir);
+    crate::provider_switches::refuse_unless_enabled(&reloaded, "test-agent")
+        .expect("a person turned it on, so it may start");
     state.sessions.journal.as_ref().expect("journal").shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }

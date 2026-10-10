@@ -131,6 +131,25 @@ fn id_in_closed_alphabet(id: &str) -> bool {
 ///
 /// `native_ids` is the ids the native families bind by, from the impls —
 /// this module never spells one.
+/// The ids the providers file declares, read straight from the file the rows
+/// are loaded from. A gate that asks whether a declared row may start reads
+/// this, not the live registry, which another swap can change between the
+/// resolution and the check. Unreadable or oversize reads as none declared.
+pub(crate) fn declared_row_ids(runtime_dir: &Path) -> Vec<String> {
+    let path = runtime_dir.join(PROVIDERS_FILE);
+    let oversize = std::fs::metadata(&path).is_ok_and(|meta| meta.len() > MAX_PROVIDERS_FILE_BYTES);
+    if oversize {
+        return Vec::new();
+    }
+    let Ok(bytes) = std::fs::read(&path) else {
+        return Vec::new();
+    };
+    let bytes = crate::config_read::strip_utf8_bom(&bytes);
+    serde_json::from_slice::<BTreeMap<String, serde_json::Value>>(bytes)
+        .map(|document| document.into_keys().collect())
+        .unwrap_or_default()
+}
+
 pub(crate) fn parse_providers_document(
     bytes: &[u8],
     native_ids: &[String],
