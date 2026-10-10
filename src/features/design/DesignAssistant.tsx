@@ -623,8 +623,7 @@ export const DesignAssistant = memo(function DesignAssistant({
             </div>
           ) : null}
           <div className="design-composer-hint">
-            <b>Enter</b> to send · <b>Shift+Enter</b> for a new line · drop or paste an image to
-            start from it
+            <b>Enter</b> to send · <b>Shift+Enter</b> for a new line
           </div>
         </div>
       ) : null}

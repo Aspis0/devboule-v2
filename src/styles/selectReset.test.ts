@@ -248,6 +248,7 @@ describe("every real select lives in a wrapped field", () => {
       }
     }
     expect(unwrapped).toEqual([]);
-    expect(found).toHaveLength(8);
+    // The Design model and effort popover's two selects are chips now.
+    expect(found).toHaveLength(6);
   });
 });

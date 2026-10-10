@@ -2032,6 +2032,22 @@
   max-width: 100%;
 }
 
+/* A composer value with nothing to pick (one model, or none yet): the chat's chip
+   text at the chip's size, drawn without the hover fill. */
+.design-picker-static {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  height: calc(var(--control-default) + 4px);
+  padding: 0 var(--space-8);
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: var(--type-small);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Block, not flex: text-overflow only applies to block containers, so the flex
    version cut agent ids mid-word with no ellipsis. The dot rides inline instead
    of being a flex sibling (spacing via its own margin). */

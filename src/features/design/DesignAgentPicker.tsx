@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import type { DesignAgentSession } from "./designHost";
 import type { AgentSessionState } from "../../lib/agentSession";
 import type { ProviderInfo } from "../../types/ipc";
-import { menuPlacement } from "../../components/PickerChip";
+import { PickerChip, menuPlacement } from "../../components/PickerChip";
 import { useMenuOpen } from "../../lib/menuOpen";
 import { scrollRowIntoView } from "../../lib/scrollRowIntoView";
 import { isImeComposition } from "../../lib/imeComposition";
@@ -37,7 +37,6 @@ export function DesignAgentPicker({
   onEffortSelect,
 }: DesignAgentPickerProps) {
   const [providerPickerOpen, setProviderPickerOpen] = useState(false);
-  const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const providerButtonRef = useRef<HTMLButtonElement>(null);
   const providerPickerWrapRef = useRef<HTMLDivElement>(null);
   const providerMenuRef = useRef<HTMLDivElement>(null);
@@ -79,9 +78,6 @@ export function DesignAgentPicker({
       : `Unavailable: ${unavailableProviderId}`;
   const providerLabel = selectedProvider?.id ?? manifest?.providerId ?? providerFallback;
   const efforts = currentModel?.efforts ?? [];
-  const selectedEffortLabel = efforts.find(
-    (effort) => effort.id === confirmedEffort(currentModel),
-  )?.label;
   const pendingSwitch =
     agentState?.pendingSwitch !== null && agentState?.pendingSwitch !== undefined;
   const providerButtonDisabled = busy;
@@ -116,9 +112,6 @@ export function DesignAgentPicker({
   useEffect(() => {
     if (providerButtonDisabled) setProviderPickerOpen(false);
   }, [providerButtonDisabled]);
-  useEffect(() => {
-    if (modelButtonDisabled) setModelPickerOpen(false);
-  }, [modelButtonDisabled]);
 
   const handleConsentConfirmed = useCallback(
     (provider: ProviderInfo) => {
@@ -258,7 +251,6 @@ export function DesignAgentPicker({
           onClick={() => {
             if (consentProvider !== null) return;
             setProviderPickerOpen((open) => !open);
-            setModelPickerOpen(false);
           }}
         >
           <span className="design-provider-dot" aria-hidden="true" />
@@ -356,81 +348,45 @@ export function DesignAgentPicker({
           </div>
         ) : null}
       </div>
-      <div className="design-agent-picker-wrap">
+      {manifest !== null && manifest.models.length > 1 ? (
+        <PickerChip
+          label="Model"
+          options={manifest.models.map((model) => ({
+            id: model.modelId,
+            name: modelDisplayLabel(model),
+          }))}
+          currentId={manifest.currentModelId ?? null}
+          onSelect={onModelSelect}
+          chipTestId="design-model-chip"
+          optionTestId={(id) => `design-model-option-${id}`}
+          disabled={modelButtonDisabled}
+          pendingCopy={pendingSwitch ? "Switching…" : undefined}
+        />
+      ) : (
+        // Nothing to pick here, so the value is a disabled button: it keeps the
+        // reason it cannot be picked as its accessible name and its tooltip.
         <button
-          className="design-provider-button"
           type="button"
+          className="design-picker-static"
+          disabled
           aria-label={modelButtonDisabled ? modelButtonUnavailableLabel : `Model: ${modelLabel}`}
           title={modelButtonDisabled ? modelButtonUnavailableLabel : undefined}
-          aria-expanded={modelButtonDisabled ? undefined : modelPickerOpen}
-          aria-controls={modelButtonDisabled ? undefined : "design-model-picker"}
-          disabled={modelButtonDisabled}
-          onClick={() => {
-            setModelPickerOpen((open) => !open);
-            setProviderPickerOpen(false);
-          }}
         >
-          <span className="design-provider-dot" aria-hidden="true" />
           {modelButtonLabel}
-          {modelButtonDisabled ? null : " ▾"}
         </button>
-        {modelButtonDisabled ? null : modelPickerOpen ? (
-          <div
-            id="design-model-picker"
-            className={`design-agent-picker${pendingSwitch ? " design-agent-picker-pending" : ""}`}
-            role="group"
-            aria-label="Choose model"
-            aria-busy={pendingSwitch}
-          >
-            <>
-              <div className="design-agent-picker-label">
-                {manifest.providerId ?? providerLabel}
-              </div>
-              {manifest.models.length > 1 ? (
-                <select
-                  aria-label="Model"
-                  title={
-                    (currentModel !== null ? modelDisplayLabel(currentModel) : undefined) ??
-                    manifest?.currentModelId ??
-                    undefined
-                  }
-                  value={manifest.currentModelId ?? ""}
-                  disabled={pendingSwitch}
-                  onChange={(event) => onModelSelect(event.target.value)}
-                >
-                  {manifest.models.map((model) => (
-                    <option key={model.modelId} value={model.modelId}>
-                      {modelDisplayLabel(model)}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <span className="design-agent-picker-model-name">
-                  {modelDisplayLabel(manifest.models[0])}
-                </span>
-              )}
-              {efforts.length > 0 ? (
-                <label className="design-agent-picker-effort">
-                  <span>Thinking effort</span>
-                  <select
-                    aria-label="Thinking effort"
-                    title={selectedEffortLabel ?? currentModel?.currentEffort}
-                    value={confirmedEffort(currentModel)}
-                    disabled={pendingSwitch}
-                    onChange={(event) => onEffortSelect(event.target.value)}
-                  >
-                    {efforts.map((effort) => (
-                      <option key={effort.id} value={effort.id}>
-                        {effort.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ) : null}
-            </>
-          </div>
-        ) : null}
-      </div>
+      )}
+      {efforts.length > 0 ? (
+        <PickerChip
+          label="Thinking effort"
+          options={efforts.map((effort) => ({ id: effort.id, name: effort.label }))}
+          currentId={confirmedEffort(currentModel)}
+          onSelect={onEffortSelect}
+          chipTestId="design-effort-chip"
+          optionTestId={(id) => `design-effort-option-${id}`}
+          disabled={modelButtonDisabled || pendingSwitch}
+          pendingCopy={pendingSwitch ? "Switching…" : undefined}
+        />
+      ) : null}
     </>
   );
 }

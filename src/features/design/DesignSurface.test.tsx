@@ -1757,7 +1757,7 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
-  it("renders the manifest model without a select when one model has no efforts", async () => {
+  it("renders the manifest model as text, with no chip, when one model has no efforts", async () => {
     const { session } = fakeAgentSession(
       agentState({
         type: "session_manifest",
@@ -1772,17 +1772,14 @@ describe("DesignSurface host capabilities", () => {
         getAgentSession: () => session,
       }),
     );
-    const modelButton = container.querySelector<HTMLButtonElement>('button[aria-label^="Model:"]');
-    if (modelButton === null) throw new Error("Model picker missing");
-    await act(async () => modelButton.click());
 
     expect(container.textContent).toContain("Grok 4");
-    expect(container.querySelector('select[aria-label="Model"]')).toBeNull();
-    expect(container.querySelector('select[aria-label="Thinking effort"]')).toBeNull();
+    expect(container.querySelector('[data-testid="design-model-chip"]')).toBeNull();
+    expect(container.querySelector('[data-testid="design-effort-chip"]')).toBeNull();
     await act(async () => root.unmount());
   });
 
-  it("renders and switches the declared effort control", async () => {
+  it("renders the declared effort as a chip and switches it", async () => {
     const { session } = fakeAgentSession(
       agentState({
         type: "session_manifest",
@@ -1807,24 +1804,20 @@ describe("DesignSurface host capabilities", () => {
         getAgentSession: () => session,
       }),
     );
-    const modelButton = container.querySelector<HTMLButtonElement>('button[aria-label^="Model:"]');
-    if (modelButton === null) throw new Error("Model picker missing");
-    await act(async () => modelButton.click());
-
-    const effort = container.querySelector<HTMLSelectElement>(
-      'select[aria-label="Thinking effort"]',
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="design-effort-chip"]');
+    if (chip === null) throw new Error("Effort chip missing");
+    expect(chip.textContent).toContain("High");
+    await act(async () => chip.click());
+    const low = container.querySelector<HTMLButtonElement>(
+      '[data-testid="design-effort-option-low"]',
     );
-    if (effort === null) throw new Error("Effort picker missing");
-    expect(effort.getAttribute("title")).toBe("High");
-    await act(async () => {
-      effort.value = "low";
-      effort.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    if (low === null) throw new Error("Low option missing");
+    await act(async () => low.click());
     expect(session.setModel).toHaveBeenCalledWith(undefined, "low");
     await act(async () => root.unmount());
   });
 
-  it("falls back to the raw effort id in the select title when the manifest names an unknown effort", async () => {
+  it("shows the effort chip under its label when the manifest names an effort it does not list", async () => {
     const { session } = fakeAgentSession(
       agentState({
         type: "session_manifest",
@@ -1849,15 +1842,10 @@ describe("DesignSurface host capabilities", () => {
         getAgentSession: () => session,
       }),
     );
-    const modelButton = container.querySelector<HTMLButtonElement>('button[aria-label^="Model:"]');
-    if (modelButton === null) throw new Error("Model picker missing");
-    await act(async () => modelButton.click());
-
-    const effort = container.querySelector<HTMLSelectElement>(
-      'select[aria-label="Thinking effort"]',
-    );
-    if (effort === null) throw new Error("Effort picker missing");
-    expect(effort.getAttribute("title")).toBe("ghost-effort");
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="design-effort-chip"]');
+    if (chip === null) throw new Error("Effort chip missing");
+    // No listed effort matches, so the chip names its own label rather than a wrong choice.
+    expect(chip.textContent).toContain("Thinking effort");
     await act(async () => root.unmount());
   });
 
@@ -1936,24 +1924,21 @@ describe("DesignSurface host capabilities", () => {
         getAgentSession: () => session,
       }),
     );
-    const modelButton = container.querySelector<HTMLButtonElement>('button[aria-label^="Model:"]');
-    if (modelButton === null) throw new Error("Model picker missing");
-    await act(async () => modelButton.click());
-
-    const modelSelect = container.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
-    if (modelSelect === null) throw new Error("Model select missing");
-    expect(modelSelect.getAttribute("title")).toBe(firstModel.name);
-    await act(async () => {
-      modelSelect.value = secondModel.modelId;
-      modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="design-model-chip"]');
+    if (chip === null) throw new Error("Model chip missing");
+    expect(chip.textContent).toContain(firstModel.name);
+    await act(async () => chip.click());
+    const second = container.querySelector<HTMLButtonElement>(
+      `[data-testid="design-model-option-${secondModel.modelId}"]`,
+    );
+    if (second === null) throw new Error("Second model option missing");
+    await act(async () => second.click());
 
     expect(session.getState().pendingSwitch).toMatchObject({ modelId: secondModel.modelId });
-    const pendingPicker = container.querySelector<HTMLElement>("#design-model-picker");
-    if (pendingPicker === null) throw new Error("Model picker group missing");
-    expect(pendingPicker.getAttribute("aria-busy")).toBe("true");
-    expect(pendingPicker.classList.contains("design-agent-picker-pending")).toBe(true);
-    expect(modelSelect.disabled).toBe(true);
+    // While the switch is in flight the chip names its target, not the model it leaves.
+    expect(container.querySelector('[data-testid="design-model-chip"]')?.textContent).toContain(
+      "Switching",
+    );
 
     const confirmedManifest: SessionManifest = {
       ...initialManifest,
@@ -1968,23 +1953,13 @@ describe("DesignSurface host capabilities", () => {
       });
     });
 
-    const settledModelButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label^="Model:"]',
+    expect(container.querySelector('[data-testid="design-model-chip"]')?.textContent).toContain(
+      secondModel.name,
     );
-    const settledPicker = container.querySelector<HTMLElement>("#design-model-picker");
-    const settledSelect = container.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
-    if (settledModelButton === null || settledPicker === null || settledSelect === null) {
-      throw new Error("Settled model picker missing");
-    }
-    expect(settledModelButton.textContent).toBe(`${secondModel.name} ▾`);
-    expect(settledModelButton.getAttribute("aria-label")).toBe(`Model: ${secondModel.name}`);
-    expect(settledPicker.getAttribute("aria-busy")).not.toBe("true");
-    expect(settledSelect.disabled).toBe(false);
-    expect(settledSelect.getAttribute("title")).toBe(secondModel.name);
     await act(async () => root.unmount());
   });
 
-  it("falls back to the model id in the select title when the manifest names an unknown model", async () => {
+  it("names the raw model id on the chip when the manifest names an unknown model", async () => {
     const { session } = fakeAgentSession(
       agentState({
         type: "session_manifest",
@@ -2002,12 +1977,9 @@ describe("DesignSurface host capabilities", () => {
         getAgentSession: () => session,
       }),
     );
-    const modelButton = container.querySelector<HTMLButtonElement>('button[aria-label^="Model:"]');
-    if (modelButton === null) throw new Error("Model picker missing");
-    await act(async () => modelButton.click());
-    const modelSelect = container.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
-    if (modelSelect === null) throw new Error("Model select missing");
-    expect(modelSelect.getAttribute("title")).toBe("ghost-model");
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="design-model-chip"]');
+    if (chip === null) throw new Error("Model chip missing");
+    expect(chip.textContent).toContain("ghost-model");
     await act(async () => root.unmount());
   });
 
@@ -5004,7 +4976,8 @@ describe("Design chrome, composer and folder attachment", () => {
     expect(controls.children).toHaveLength(4);
     expect(controls.querySelector(".design-attach-control")).not.toBeNull();
     expect(controls.querySelector('[data-design-skill-mode-trigger="true"]')).not.toBeNull();
-    expect(controls.querySelectorAll(".design-agent-picker-wrap")).toHaveLength(2);
+    // The provider picker, then the model: a static value until a session names its models.
+    expect(controls.querySelectorAll(".design-agent-picker-wrap")).toHaveLength(1);
     // An empty context row would add a blank line above the composer.
     expect(container.querySelector(".design-composer-meta")).toBeNull();
     await act(async () => root.unmount());
