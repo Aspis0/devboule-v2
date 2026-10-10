@@ -675,12 +675,14 @@ fn replace_file(
     let Some(dir) = dir else {
         return error(PARENT_MISSING);
     };
-    let name = target
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "file".to_string());
+    // A kill between stage and rename leaves this road's temp behind, so
+    // every write sweeps its own stale ones first (scoped to this
+    // target's stem, and only past the grace below — a concurrent
+    // writer's fresh temp is never touched).
+    let stem = temp_stem(target);
+    sweep_stale_temps(dir, &stem);
     let temporary = dir.join(format!(
-        ".{name}.devboule-{}.tmp",
+        ".{stem}.devboule-{}.tmp",
         uuid::Uuid::new_v4().as_simple()
     ));
     let write_temp = (|| -> std::io::Result<()> {
@@ -735,7 +737,6 @@ fn replace_file(
         let _ = std::fs::remove_file(&temporary);
         return error(io_sentence(&rename_error));
     }
-    let _ = std::fs::remove_file(&temporary);
     match std::fs::metadata(target) {
         Ok(stats) => {
             let size = stats.len();
@@ -911,6 +912,58 @@ fn preserve_windows_metadata(target: &Path, temp: &Path) {
     unsafe { CloseHandle(source) };
     unsafe { CloseHandle(dest) };
 }
+
+/// The temp name's stem: the target's own file name, sanitized. That name
+/// can carry characters no filesystem takes in a temp entry (`:` from an
+/// ADS spelling among them), so those become `_`; the uuid keeps every
+/// temp unique and the stem keeps the sweep below precise.
+fn temp_stem(target: &Path) -> String {
+    let stem = target
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".to_string());
+    stem.chars()
+        .map(|c| {
+            if matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// Remove this road's litter from `dir`: staged temps this daemon never
+/// renamed because it died between stage and rename. Scoped to one
+/// target's stem, and only past `STALE_TEMP_GRACE`: a concurrent
+/// writer's fresh temp is never touched, and anything younger may still
+/// be in flight.
+fn sweep_stale_temps(dir: &Path, stem: &str) {
+    let prefix = format!(".{stem}.devboule-");
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with(&prefix) || !name.ends_with(".tmp") {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > STALE_TEMP_GRACE);
+        if stale {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// How old a staged temp must be before the sweep calls it litter: long
+/// past any write this process could still hold (a write is one temp,
+/// one sync, one rename — milliseconds, never a minute).
+const STALE_TEMP_GRACE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// An empty editor for a file that is not there: empty content and a
 /// `missing` version — the first save creates it.

@@ -978,3 +978,131 @@ fn write_failures_name_their_class() {
         );
     }
 }
+
+#[test]
+fn temp_names_sanitize_readonly_characters() {
+    assert_eq!(super::temp_stem(std::path::Path::new("a.txt")), "a.txt");
+    assert_eq!(
+        super::temp_stem(std::path::Path::new("file.txt:stream")),
+        "file.txt_stream"
+    );
+    assert_eq!(
+        super::temp_stem(std::path::Path::new("a/b?c*.txt")),
+        "b_c_.txt"
+    );
+}
+
+/// Move a file's mtime 120 seconds into the past, past the sweep's
+/// grace, so the test can plant litter instead of waiting a minute.
+fn backdate_120s(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let raw = std::ffi::CString::new(path.as_os_str().as_bytes()).expect("path");
+        let old = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs() as libc::time_t
+            - 120;
+        let times = [
+            libc::timespec {
+                tv_sec: old,
+                tv_nsec: 0,
+            },
+            libc::timespec {
+                tv_sec: old,
+                tv_nsec: 0,
+            },
+        ];
+        // SAFETY: `raw` is NUL-terminated and alive for the call;
+        // `AT_FDCWD` takes the path as given; the return is asserted.
+        assert_eq!(
+            unsafe { libc::utimensat(libc::AT_FDCWD, raw.as_ptr(), times.as_ptr(), 0) },
+            0,
+            "backdate"
+        );
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, GENERIC_WRITE};
+        use windows_sys::Win32::Storage::FileSystem::{
+            CreateFileW, SetFileTime, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE, OPEN_EXISTING,
+        };
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+        let old_100ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos() as u64
+            / 100
+            + 116_444_736_000_000_000
+            - 120 * 10_000_000;
+        let filetime = FILETIME {
+            dwLowDateTime: (old_100ns & 0xFFFF_FFFF) as u32,
+            dwHighDateTime: (old_100ns >> 32) as u32,
+        };
+        // SAFETY: handles checked against INVALID_HANDLE_VALUE and
+        // closed; the FILETIME is a plain value.
+        unsafe {
+            let handle = CreateFileW(
+                wide.as_ptr(),
+                GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                std::ptr::null_mut(),
+            );
+            assert_ne!(
+                handle,
+                windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE,
+                "open for backdate"
+            );
+            assert_ne!(
+                SetFileTime(handle, std::ptr::null(), std::ptr::null(), &filetime),
+                0,
+                "backdate"
+            );
+            CloseHandle(handle);
+        }
+    }
+}
+
+#[test]
+fn a_write_sweeps_only_its_own_stale_litter() {
+    let dir = Dir::fresh("sweep");
+    dir.write("a.txt", "one\n");
+    // A kill between stage and rename would leave exactly these: one
+    // past the grace (litter), one fresh (possibly in flight), one for
+    // another file (not this write's business).
+    let stale = dir.root.join(".a.txt.devboule-deadbeef.tmp");
+    let fresh = dir.root.join(".a.txt.devboule-fresh.tmp");
+    let other = dir.root.join(".b.txt.devboule-deadbeef.tmp");
+    std::fs::write(&stale, b"litter").expect("plant");
+    std::fs::write(&fresh, b"in flight").expect("plant");
+    std::fs::write(&other, b"other").expect("plant");
+    backdate_120s(&stale);
+    backdate_120s(&other);
+
+    let file = open_workspace_file(&dir.root, dir.workspace_id(), "a.txt");
+    let (_, modified_at, revision) = ready_of(file.version.as_ref().expect("version"));
+    let result = write_workspace_file(
+        &dir.root,
+        dir.workspace_id(),
+        "a.txt",
+        b"two\n",
+        Some(modified_at),
+        revision.as_deref(),
+    );
+    assert!(
+        matches!(result, WorkspaceFileWriteResult::Written { .. }),
+        "{result:?}"
+    );
+
+    assert!(!stale.exists(), "stale litter is swept");
+    assert!(fresh.exists(), "a fresh temp may still be in flight");
+    assert!(other.exists(), "another file's litter is not this write's");
+    std::fs::remove_file(&fresh).expect("cleanup");
+    std::fs::remove_file(&other).expect("cleanup");
+}
