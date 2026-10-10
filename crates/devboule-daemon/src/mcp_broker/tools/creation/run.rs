@@ -285,37 +285,19 @@ fn run_creation(
     if !provider_is_launchable(&profile.provider) {
         return tool_error(id, "provider not installed");
     }
-    // The contradiction the profile alone decides is decided **here**, before
-    // the reservation and before the card: a tick over a mode that asks the
-    // human is refused without spending the human's consent on a creation
-    // the daemon had already decided to refuse, and without the card reading
-    // "auto accept: Yes (mode ask)" for exactly that configuration.
-    //
-    // The refusal is bounded by **authorship**: this gate
-    // concludes only where the daemon owns the rule. Claude and Pi's tick
-    // rule is the daemon's own — start in a mode the broker answers — and
-    // the profile's mode is the delivered mode for both. Codex's knob
-    // (`full-access`) and every ACP agent's modes are the family's own
-    // vocabulary, so the daemon refuses nothing there: the client re-judges
-    // at spawn time, where the delivered mode is the fact. Judging every
-    // provider from the shared table alone would refuse a Codex
-    // `full-access` profile its own client accepts.
-    if matches!(
-        crate::provider_catalog::judge_auto_accept_tick(
-            &profile.provider,
-            &profile.mode,
-            &profile.features
-        ),
-        crate::provider_catalog::AutoAcceptTick::Contradicts
-    ) {
-        return tool_error(
-            id,
-            &format!(
-                "the profile asks the agent to approve its own permission prompts and also to start in mode '{}', which asks the human; the two contradict, so the creation is refused",
-                profile.mode
-            ),
-        );
-    }
+    // A profile combination never fails the creation (owner bug #16). The
+    // tick over a mode that answers its own permission prompts — the
+    // daemon's broker or the provider itself, like Claude's `auto`
+    // classifier — stands; over a mode that asks the human it resolves to
+    // off, so the child asks and the card says so. Resolving toward asking
+    // is the safe direction: escalating the mode would grant a privilege
+    // nobody approved. The client re-checks the resolved delivery at spawn.
+    let ticked = crate::profile_delivery::feature_is_true(
+        &profile.features,
+        crate::provider_catalog::AUTO_ACCEPT_FEATURE,
+    );
+    let auto_accept =
+        crate::profile_delivery::resolve_auto_accept(&profile.provider, &profile.mode, ticked);
     // The child's labels, stamped here where all four facts are known. Stamped
     // into the same map the caller wrote, so a human reads one list; refused if
     // the caller tried to write one of them (`parse_labels`), so the daemon's
@@ -402,15 +384,19 @@ fn run_creation(
         // then the preamble, then the prompt).
         spawn_prompt: profile.spawn_prompt.clone(),
         // What the card named is what the child gets: the profile's own mode,
-        // model, thinking option and auto-accept tick, as the one typed
-        // delivery the spawn path applies. A value that cannot be delivered
-        // refuses the creation; nothing here is substituted.
-        delivery: crate::profile_delivery::ProfileDelivery::for_child(
+        // model, thinking option and the *resolved* auto-accept answer, as
+        // the one typed delivery the spawn path applies. A value that cannot
+        // be delivered refuses the creation; nothing here is substituted —
+        // except the tick over an asking mode, which resolved off above and
+        // is carried resolved here, so the spawn-time check agrees with the
+        // card.
+        delivery: crate::profile_delivery::ProfileDelivery::for_child_resolved(
             &profile.mode,
             &profile.model,
             profile.model_provider.as_deref(),
             profile.thinking_option_id.as_deref(),
             &profile.features,
+            auto_accept,
         ),
         overlay: profile.overlay.clone(),
         labels,

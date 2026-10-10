@@ -177,13 +177,23 @@ pub(in crate::mcp_broker) fn creation_card(
         }
     };
     // The card's auto-accept line reads the mode, and only the mode, through
-    // the same prediction the birth will apply: the tick over an asking mode
-    // is refused before this card is raised, so on every card carrying a
-    // tick, "Yes" names the mode that does the answering.
-    let auto = auto_accept_line(
-        predicted_unattended(&profile.provider, &profile.mode),
-        &profile.mode,
+    // the same prediction the birth will apply — except where the tick was
+    // resolved off on the road (a tick over a mode that asks the human): then
+    // the line names the asking mode, because that is what the child gets.
+    let ticked = crate::profile_delivery::feature_is_true(
+        &profile.features,
+        crate::provider_catalog::AUTO_ACCEPT_FEATURE,
     );
+    let auto_accept_resolved_off = ticked
+        && !crate::profile_delivery::resolve_auto_accept(&profile.provider, &profile.mode, ticked);
+    let auto = if auto_accept_resolved_off {
+        auto_accept_line(devboule_protocol::UnattendedState::No, &profile.mode)
+    } else {
+        auto_accept_line(
+            predicted_unattended(&profile.provider, &profile.mode),
+            &profile.mode,
+        )
+    };
     let thinking = profile.thinking_option_id.as_deref().unwrap_or("none");
     // The spawn prompt the child will receive, on the card in full: approving
     // this card approves injected text, so hiding it behind a profile name

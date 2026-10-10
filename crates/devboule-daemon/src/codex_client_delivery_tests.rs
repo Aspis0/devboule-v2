@@ -118,8 +118,9 @@ fn auto_answer_agrees_with_the_table_on_every_presented_row() {
     }
 }
 
-/// The contradiction is refused at creation: a tick over a mode that
-/// asks the human names two ways to run and delivers neither.
+/// The spawn-time check refuses a delivery that still carries a tick over a
+/// mode that asks the human: two ways to run, neither delivered. Creation
+/// never hands it one — it resolves the tick off first (owner bug #16).
 #[test]
 fn a_codex_auto_accept_tick_over_an_asking_mode_is_refused() {
     validate_delivery(&delivery("full-access", true)).expect("never asks");

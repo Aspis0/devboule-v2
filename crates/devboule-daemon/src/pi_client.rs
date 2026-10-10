@@ -1655,7 +1655,7 @@ pub(crate) fn unattended_answer(delivered_mode: Option<&str>) -> UnattendedState
 pub(crate) fn tick_contradicts(delivery: &ProfileDelivery) -> bool {
     let mode_id = delivery.mode_id.as_deref().unwrap_or(DEFAULT_MODE);
     delivery.auto_accept
-        && !crate::provider_catalog::mode_is_auto_answered(
+        && !crate::provider_catalog::mode_self_answers(
             Some(devboule_protocol::SessionKind::Pi),
             mode_id,
         )

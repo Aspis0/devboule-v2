@@ -162,15 +162,19 @@ pub(in crate::mcp_broker) fn resolve_profile_for_move(
 /// tri-state the child's birth will derive, judged before the child exists
 /// from the profile's mode and the family that mode would be delivered in.
 /// No session exists yet, so nothing here is observed — it is the delivery's
-/// own dictionary answering for the mode the profile names.
+/// own dictionary answering for the mode the profile names. A mode that
+/// answers its own prompts without the broker — Claude's `auto` classifier —
+/// predicts `Yes` like a broker-answered mode does: the tick over it stands,
+/// and the card must name the mode that answers rather than claim it asks.
 pub(in crate::mcp_broker) fn predicted_unattended(
     provider: &str,
     mode_id: &str,
 ) -> devboule_protocol::UnattendedState {
-    crate::peer_policy::unattended_mode(
-        crate::provider_catalog::session_kind_for(provider),
-        Some(mode_id),
-    )
+    let kind = crate::provider_catalog::session_kind_for(provider);
+    if crate::provider_catalog::mode_self_answers(Some(kind.clone()), mode_id) {
+        return devboule_protocol::UnattendedState::Yes;
+    }
+    crate::peer_policy::unattended_mode(kind, Some(mode_id))
 }
 
 /// One `devboule_list_profiles` call (`create-from-profile`).

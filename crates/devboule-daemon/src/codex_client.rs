@@ -198,11 +198,9 @@ pub(super) fn resolve_command(paths: &RuntimePaths) -> Result<PtyCommand, WireEr
 /// so the human may be asked and a profile that ticked `autoAccept` on one
 /// is a contradiction.
 fn mode_answers_own_prompts(mode_id: &str) -> bool {
-    crate::provider_catalog::mode_is_auto_answered(
-        Some(devboule_protocol::SessionKind::Codex),
-        mode_id,
-    ) || crate::codex_view::unattended_answer(Some(mode_id))
-        == devboule_protocol::UnattendedState::Yes
+    crate::provider_catalog::mode_self_answers(Some(devboule_protocol::SessionKind::Codex), mode_id)
+        || crate::codex_view::unattended_answer(Some(mode_id))
+            == devboule_protocol::UnattendedState::Yes
 }
 
 /// The tick half of [`validate_delivery`] as one predicate, shared with the

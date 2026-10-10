@@ -2345,7 +2345,7 @@ fn a_claude_auto_accept_tick_over_an_asking_mode_is_refused() {
     for mode_id in &vocabulary {
         let mut delivery = ProfileDelivery::for_request(Some(mode_id.clone()));
         delivery.auto_accept = true;
-        if crate::provider_catalog::mode_is_auto_answered(
+        if crate::provider_catalog::mode_self_answers(
             Some(devboule_protocol::SessionKind::Claude),
             mode_id,
         ) {
@@ -2367,6 +2367,34 @@ fn a_claude_auto_accept_tick_over_an_asking_mode_is_refused() {
         delivery.auto_accept = false;
         validate_delivery(&catalog, &delivery)
             .unwrap_or_else(|error| panic!("{mode_id} without the tick: {}", error.message));
+    }
+}
+
+/// Owner bug #16, the road a creation takes: whatever the profile's mode and
+/// tick, the delivery a creation hands the spawn is the resolved one, and the
+/// spawn-time check admits it. A profile combination never fails creation.
+#[test]
+fn a_creation_resolved_claude_delivery_is_admitted_for_every_mode() {
+    let catalog = ClaudeCatalogSnapshot::provisional(crate::claude_catalog::fallback_models());
+    for mode_id in crate::claude_view::mode_state("default")
+        .available_modes
+        .iter()
+        .map(|mode| mode.id.clone())
+    {
+        for ticked in [true, false] {
+            let resolved = crate::profile_delivery::resolve_auto_accept("claude", &mode_id, ticked);
+            let delivery = ProfileDelivery::for_child_resolved(
+                &mode_id,
+                "claude-haiku-5-5",
+                None,
+                None,
+                &serde_json::Map::new(),
+                resolved,
+            );
+            validate_delivery(&catalog, &delivery).unwrap_or_else(|error| {
+                panic!("{mode_id} ticked={ticked} must create: {}", error.message)
+            });
+        }
     }
 }
 

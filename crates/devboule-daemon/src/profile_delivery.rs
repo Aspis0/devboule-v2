@@ -138,6 +138,7 @@ impl ProfileDelivery {
     /// own values, verbatim. The model and the mode arrive required (the
     /// store refuses a profile without them); the thinking option arrives
     /// optional, and `None` delivers nothing.
+    #[cfg(test)]
     pub(crate) fn for_child(
         mode_id: &str,
         model_id: &str,
@@ -145,12 +146,38 @@ impl ProfileDelivery {
         thinking_option_id: Option<&str>,
         features: &serde_json::Map<String, Value>,
     ) -> Self {
+        let ticked = feature_is_true(features, crate::provider_catalog::AUTO_ACCEPT_FEATURE);
+        Self::for_child_resolved(
+            mode_id,
+            model_id,
+            model_provider,
+            thinking_option_id,
+            features,
+            ticked,
+        )
+    }
+
+    /// What a child created from a resolved profile delivers when the caller
+    /// already resolved the tick: same values, but `auto_accept` is the
+    /// resolved answer rather than the raw tick. The creation road resolves
+    /// a tick over an asking mode to off before the card (a combination
+    /// never fails the creation), and the card and the delivery must agree
+    /// on that answer — so the resolution happens once, at the road, and
+    /// travels here as a fact.
+    pub(crate) fn for_child_resolved(
+        mode_id: &str,
+        model_id: &str,
+        model_provider: Option<&str>,
+        thinking_option_id: Option<&str>,
+        features: &serde_json::Map<String, Value>,
+        auto_accept: bool,
+    ) -> Self {
         Self {
             mode_id: Some(mode_id.to_string()),
             model_id: Some(model_id.to_string()),
             model_provider: model_provider.map(str::to_string),
             thinking_option_id: thinking_option_id.map(str::to_string),
-            auto_accept: feature_is_true(features, crate::provider_catalog::AUTO_ACCEPT_FEATURE),
+            auto_accept,
             features: delivered_features(features),
         }
     }
@@ -200,6 +227,24 @@ pub(crate) fn delivered_features(
 /// tick, and no derivation may read one as a tick.
 pub(crate) fn feature_is_true(features: &serde_json::Map<String, Value>, key: &str) -> bool {
     matches!(features.get(key), Some(Value::Bool(true)))
+}
+
+/// The effective `auto_accept` for one creation: the tick stands only where
+/// the delivered mode answers its own permission prompts — the daemon's
+/// broker or the provider itself ([`crate::provider_catalog::mode_self_answers`]).
+///
+/// A profile combination never fails the creation (owner bug #16): a tick
+/// over a mode that asks the human resolves to off — the child asks, the
+/// card says so — instead of refusing. Resolving toward asking is the safe
+/// direction: escalating the mode to an auto one would grant a privilege
+/// nobody approved, while dropping the tick only ever asks the human more.
+/// Unticked stays unticked whatever the mode.
+pub(crate) fn resolve_auto_accept(provider: &str, mode_id: &str, ticked: bool) -> bool {
+    ticked
+        && crate::provider_catalog::mode_self_answers(
+            Some(crate::provider_catalog::session_kind_for(provider)),
+            mode_id,
+        )
 }
 
 /// The refusal every family makes before it applies anything: a stored
@@ -343,6 +388,24 @@ mod tests {
             ProfileDelivery::for_child("ask", "stub-model", None, None, &features(json!({})));
         assert_eq!(delivery.thinking_option_id, None);
         assert!(!delivery.auto_accept);
+    }
+
+    /// A profile combination never fails the creation (owner bug #16): the
+    /// tick over a mode that asks the human resolves to auto-accept off
+    /// instead of refusing.
+    #[test]
+    fn a_tick_over_an_asking_mode_resolves_off_instead_of_refusing() {
+        // Claude `auto` keeps its tick: the classifier approves by itself.
+        assert!(super::resolve_auto_accept("claude", "auto", true));
+        // A tick over a mode that asks the human resolves off, never refuses.
+        assert!(!super::resolve_auto_accept("claude", "default", true));
+        assert!(!super::resolve_auto_accept("pi", "ask", true));
+        // Unticked stays unticked whatever the mode.
+        assert!(!super::resolve_auto_accept(
+            "claude",
+            "bypassPermissions",
+            false
+        ));
     }
 
     /// The tick is the boolean `true` and only that: the same reading the

@@ -447,7 +447,7 @@ pub(crate) fn tick_contradicts(delivery: &ProfileDelivery) -> bool {
         .as_deref()
         .unwrap_or(crate::claude_view::DEFAULT_MODE);
     delivery.auto_accept
-        && !crate::provider_catalog::mode_is_auto_answered(
+        && !crate::provider_catalog::mode_self_answers(
             Some(devboule_protocol::SessionKind::Claude),
             mode_id,
         )

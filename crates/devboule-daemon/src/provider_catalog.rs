@@ -1140,6 +1140,39 @@ pub(crate) fn mode_is_auto_answered(
     matches!(mode_gate_for(kind, Some(mode_id)), ModeGate::Auto)
 }
 
+/// Whether a child started in this mode answers its own permission prompts,
+/// whoever does the answering: the daemon's own broker (the [`mode_gate_for`]
+/// table above) or the provider itself.
+///
+/// The distinction matters because the two must not be merged: a mode the
+/// provider answers itself must NOT become [`ModeGate::Auto`], or the
+/// daemon's broker would auto-allow every card and bypass the provider's own
+/// review. Claude's `auto` is that case — a model classifier that approves
+/// permission prompts by itself, without asking the human — so it reads
+/// answered here while staying a card mode in [`mode_gate_for`]. Creation
+/// time (the tick judgement below and every client's spawn check) reads this
+/// predicate; the broker's auto-answer path keeps reading the table.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+pub(crate) fn mode_self_answers(
+    kind: Option<devboule_protocol::SessionKind>,
+    mode_id: &str,
+) -> bool {
+    use devboule_protocol::SessionKind;
+    if mode_is_auto_answered(kind.clone(), mode_id) {
+        return true;
+    }
+    matches!(
+        (kind, mode_id),
+        // Claude's `auto` mode: "Uses a model classifier to review
+        // permission prompts automatically" (`claude_view_mode.rs`). The
+        // classifier approves by itself, so a tick over it contradicts
+        // nothing. Deliberately absent from `mode_gate_for`: the daemon's
+        // broker must let those prompts reach the classifier, not answer
+        // them itself.
+        (Some(SessionKind::Claude), "auto")
+    )
+}
+
 /// The pre-card verdict on an `autoAccept` tick against the profile's own
 /// mode, split by who owns the mode id.
 ///
@@ -1152,14 +1185,17 @@ pub(crate) fn mode_is_auto_answered(
 /// refuses it before the card while Codex's own client accepts it at spawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg(feature = "server")]
+#[cfg(test)]
 pub(crate) enum AutoAcceptTick {
     /// The daemon knows the pair is consistent: the tick is off, or the mode
     /// is one the daemon's own table answers for that family
     /// ([`mode_gate_for`]) — the one piece of mode vocabulary the daemon
     /// owns, and one every family's spawn-time check honours.
     Consistent,
-    /// The daemon owns this family's tick rule and the profile violates it,
-    /// so the creation is refused before the card. Two families only: for
+    /// The daemon owns this family's tick rule and the profile violates it.
+    /// A creation resolves the tick off (`profile_delivery::resolve_auto_accept`) instead of
+    /// refusing; the spawn-time check refuses only a delivery that still
+    /// carries the tick. Two families only: for
     /// Claude and Pi the tick's meaning **is** "start in a mode the daemon's
     /// own broker answers" (the launch flag and the permission extension are
     /// the mechanisms), the profile's mode is the delivered mode — no
@@ -1182,14 +1218,16 @@ pub(crate) enum AutoAcceptTick {
 /// The pre-card judgement of an `autoAccept` tick against the profile's own
 /// mode, split into the authorship [`AutoAcceptTick`] names.
 ///
-/// [`mode_gate_for`] is still the only mode table this reads. A
-/// non-table id no longer licenses "asks the human": that reading is a fact
-/// about vocabulary the
-/// daemon did not author, and wrong for exactly the modes providers spell
-/// for never-asking. The broker refuses only on [`AutoAcceptTick::Contradicts`];
-/// every other family re-judges at spawn time, where the *delivered* mode is
-/// the fact.
+/// [`mode_gate_for`] is still the only broker table this reads, through
+/// [`mode_self_answers`]: a provider that answers its own prompts (Claude's
+/// `auto` classifier) satisfies the tick exactly like a broker-answered mode
+/// does. A non-table id no longer licenses "asks the human": that reading
+/// is a fact about vocabulary the daemon did not author, and wrong for
+/// exactly the modes providers spell for never-asking. Creation resolves a
+/// `Contradicts` tick off rather than refusing it; every other family
+/// re-judges at spawn time, where the *delivered* mode is the fact.
 #[cfg(feature = "server")]
+#[cfg(test)]
 pub(crate) fn judge_auto_accept_tick(
     provider: &str,
     mode_id: &str,
@@ -1199,7 +1237,7 @@ pub(crate) fn judge_auto_accept_tick(
         return AutoAcceptTick::Consistent;
     }
     let kind = session_kind_for(provider);
-    if mode_is_auto_answered(Some(kind.clone()), mode_id) {
+    if mode_self_answers(Some(kind.clone()), mode_id) {
         return AutoAcceptTick::Consistent;
     }
     match kind {

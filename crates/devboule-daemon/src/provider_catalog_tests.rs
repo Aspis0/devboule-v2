@@ -1838,6 +1838,60 @@ fn every_session_kind_has_a_pinned_pre_card_tick_verdict() {
     );
 }
 
+/// Claude's `auto` mode is a model classifier that approves permission
+/// prompts by itself: it does not ask the human, so a profile that ticks
+/// `autoAccept` on it is consistent, not a contradiction (owner bug #16:
+/// a Codex-spawned child with the Coder profile — Claude Haiku, mode
+/// `auto`, auto accept on — was refused). RED: `mode_self_answers` does
+/// not exist yet.
+#[test]
+fn claude_auto_answers_its_own_permission_prompts() {
+    use devboule_protocol::SessionKind;
+    assert!(
+        super::mode_self_answers(Some(SessionKind::Claude), "auto"),
+        "Claude auto is a self-approving classifier, not an asking mode"
+    );
+    // The daemon's broker answers these with no card at all.
+    assert!(super::mode_self_answers(
+        Some(SessionKind::Claude),
+        "bypassPermissions"
+    ));
+    assert!(super::mode_self_answers(
+        Some(SessionKind::Codex),
+        "full-access"
+    ));
+    assert!(super::mode_self_answers(Some(SessionKind::Pi), "bypass"));
+    assert!(super::mode_self_answers(
+        Some(SessionKind::Acp),
+        "auto_accept"
+    ));
+    // Genuinely asking modes answer nothing by themselves.
+    for (kind, mode) in [
+        (SessionKind::Claude, "default"),
+        (SessionKind::Claude, "plan"),
+        (SessionKind::Codex, "auto"),
+        (SessionKind::Codex, "read-only"),
+        (SessionKind::Pi, "ask"),
+    ] {
+        assert!(
+            !super::mode_self_answers(Some(kind.clone()), mode),
+            "{kind:?} {mode}: asks the human"
+        );
+    }
+}
+
+/// The pre-card verdict for the reported profile: Claude `auto` with the
+/// tick is consistent (owner bug #16). RED: the judge still contradicts it.
+#[test]
+fn claude_auto_with_the_tick_is_consistent() {
+    use super::AutoAcceptTick::*;
+    assert_eq!(
+        super::judge_auto_accept_tick("claude", "auto", &ticked()),
+        Consistent,
+        "Claude auto approves by itself; the tick contradicts nothing"
+    );
+}
+
 /// The published schema of `devboule_create_agent` cannot express a provider,
 /// a preset, a model, a mode or a feature: what an agent cannot say is what no
 /// check of ours can get wrong.
