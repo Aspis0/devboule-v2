@@ -8,12 +8,16 @@ import { A2aOutgoingMessageCard } from "../A2aOutgoingMessageCard";
 import { DaemonNoticeCard } from "../DaemonNoticeCard";
 import { ErrorTriangleIcon } from "../ErrorTriangleIcon";
 import { ThoughtRow } from "../ThoughtRow";
-import { MessageCopyButton } from "../timeline/MessageCopyButton";
 import { entryFrame } from "./entryFrame";
 import { ChatImageThumbnails } from "./ChatImageThumbnails";
 import { PermissionRequestRow } from "./PermissionRequestRow";
 import { ToolCallGroupRow } from "./ToolCallGroupRow";
 import { ToolRow } from "./ToolRow";
+import { MessageCopyButton } from "../timeline/MessageCopyButton";
+import { TurnCopyFooter } from "./TurnCopyFooter";
+import type { TurnEnd } from "./turnEnds";
+import { CompactionDivider } from "./CompactionDivider";
+import { compactionState } from "./compactionState";
 
 interface TranscriptRowProps {
   entry: AgentChatItem | ToolCallGroup;
@@ -21,6 +25,8 @@ interface TranscriptRowProps {
   fileLinks: ChatFileLinks | null;
   transcriptEnded: boolean;
   isStreamingThought: boolean;
+  /** Set on the last answer of a completed turn: the footer that copies the turn. */
+  turnEnd?: TurnEnd;
 }
 
 const EMPTY_NAMES: A2aNameSource = { sessionById: new Map(), deviceNames: new Map() };
@@ -31,6 +37,7 @@ export const TranscriptRow = memo(function TranscriptRow({
   fileLinks,
   transcriptEnded,
   isStreamingThought,
+  turnEnd,
 }: TranscriptRowProps) {
   if (isToolCallGroup(item)) {
     return <ToolCallGroupRow group={item} transcriptEnded={transcriptEnded} />;
@@ -52,6 +59,14 @@ export const TranscriptRow = memo(function TranscriptRow({
     );
   }
   if (item.role === "system") {
+    const compaction = compactionState(item.text);
+    if (compaction !== null) {
+      return (
+        <div className={className} style={style}>
+          <CompactionDivider state={compaction} />
+        </div>
+      );
+    }
     return (
       <div className={className} data-severity={item.severity} style={style}>
         <div className="workspace-chat-copy">{item.text}</div>
@@ -100,10 +115,8 @@ export const TranscriptRow = memo(function TranscriptRow({
       {item.images !== undefined && item.images.length > 0 ? (
         <ChatImageThumbnails images={item.images} />
       ) : null}
-      {item.text.length > 0 ? (
-        <div className="workspace-chat-message-footer">
-          <MessageCopyButton text={item.text} />
-        </div>
+      {turnEnd !== undefined ? (
+        <TurnCopyFooter text={turnEnd.text} workedMs={turnEnd.workedMs} />
       ) : null}
     </div>
   );

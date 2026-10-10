@@ -65,7 +65,7 @@ describe("SubagentMenu pill words", () => {
     channelHarness.activeSubscriptionId = null;
   });
 
-  it("reads N failed and N working, hiding a zero part", async () => {
+  it("reads N working on the pill, and leaves a failed child out of the pill", async () => {
     await act(async () => {
       root.render(
         <StrictMode>
@@ -109,12 +109,12 @@ describe("SubagentMenu pill words", () => {
 
     const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
     if (pill === null) throw new Error("subagent pill did not render");
-    expect(pill.textContent).toContain("1 failed");
+    // A failure is not a status light on the pill: it shows in the list it opens.
+    expect(pill.textContent).not.toContain("failed");
     expect(pill.textContent).toContain("2 working");
-    // A zero part is hidden, not rendered as a zero count: two groups, and
-    // neither count reads 0.
-    expect(pill.querySelectorAll(".workspace-subagent-pill-group")).toHaveLength(2);
-    expect(pill.textContent).not.toContain("0 failed");
+    // A zero part is hidden, not rendered as a zero count: one group, and the
+    // count does not read 0.
+    expect(pill.querySelectorAll(".workspace-subagent-pill-group")).toHaveLength(1);
     expect(pill.textContent).not.toContain("0 working");
   });
 
@@ -162,7 +162,7 @@ describe("SubagentMenu pill words", () => {
 
     const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
     if (pill === null) throw new Error("subagent pill did not render");
-    expect(pill.getAttribute("aria-label")).toBe("Subagents: 1 failed, 2 working");
+    expect(pill.getAttribute("aria-label")).toBe("Subagents: 2 working");
   });
 
   it("counts a child waiting on an approval card only as needing approval, never as working", async () => {
@@ -210,16 +210,11 @@ describe("SubagentMenu pill words", () => {
     await act(async () => {
       channelHarness.active?.({
         type: "agent_task_started",
-        taskId: "task-failed-1",
-        title: "Failed task",
+        taskId: "task-running-dot",
+        title: "Running task",
         subagentType: "verifier",
-        toolUseId: "toolu-failed-1",
+        toolUseId: "toolu-running-dot",
         spawnDepth: 1,
-      });
-      channelHarness.active?.({
-        type: "agent_task_notification",
-        taskId: "task-failed-1",
-        status: "failed",
       });
     });
 

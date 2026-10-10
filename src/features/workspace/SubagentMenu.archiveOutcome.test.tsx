@@ -163,7 +163,7 @@ describe("the subagent menu's archive outcome", () => {
     await openMenu();
 
     const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
-    expect(pill?.getAttribute("aria-label")).toBe("Subagents: 1 failed, 1 working");
+    expect(pill?.getAttribute("aria-label")).toBe("Subagents: 1 working");
 
     await pressArchiveAction();
     await answerAsk("Archive");

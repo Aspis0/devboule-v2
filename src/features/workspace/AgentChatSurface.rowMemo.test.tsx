@@ -7,9 +7,15 @@ import { afterEach, expect, it, vi } from "vitest";
 import { channelHarness } from "./sessionChannelHarness";
 
 vi.mock("../../lib/tauri", async () => (await import("./sessionChannelHarness")).tauriMock);
-vi.mock("./timeline/MessageCopyButton", async (importOriginal) => {
-  const original = await importOriginal<typeof import("./timeline/MessageCopyButton")>();
-  return { MessageCopyButton: vi.fn(original.MessageCopyButton) };
+vi.mock("../../components/MarkdownText", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../../components/MarkdownText")>();
+  const { createElement } = await import("react");
+  // A plain wrapper, so each call counts the assistant row that drew its text.
+  return {
+    MarkdownText: vi.fn((props: import("react").ComponentProps<typeof original.MarkdownText>) =>
+      createElement(original.MarkdownText, props),
+    ),
+  };
 });
 vi.mock("./ThoughtRow", async (importOriginal) => {
   const original = await importOriginal<typeof import("./ThoughtRow")>();
@@ -29,7 +35,7 @@ vi.mock("./DaemonNoticeCard", async (importOriginal) => {
 });
 
 import { AgentChatSurface } from "./AgentChatSurface";
-import { MessageCopyButton } from "./timeline/MessageCopyButton";
+import { MarkdownText } from "../../components/MarkdownText";
 import { ThoughtRow } from "./ThoughtRow";
 import { ToolCallGroupRow } from "./transcript/ToolCallGroupRow";
 import { A2aMessageCard } from "./A2aMessageCard";
@@ -125,13 +131,13 @@ it("renders stable historical rows once while the last assistant streams", async
   const assistantCounts = [0, 1, 2, 3].map(
     (index) =>
       vi
-        .mocked(MessageCopyButton)
+        .mocked(MarkdownText)
         .mock.calls.filter(([props]) => props.text === `Historical assistant ${index}`).length,
   );
   const thoughtCount = vi.mocked(ThoughtRow).mock.calls.length;
   const groupCount = vi.mocked(ToolCallGroupRow).mock.calls.length;
   const liveCount = vi
-    .mocked(MessageCopyButton)
+    .mocked(MarkdownText)
     .mock.calls.filter(([props]) => props.text.startsWith("Streaming")).length;
   const relayCount = vi.mocked(A2aMessageCard).mock.calls.length;
   const noticeCount = vi.mocked(DaemonNoticeCard).mock.calls.length;

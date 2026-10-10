@@ -109,11 +109,11 @@ describe("subagent dots: a failed child is red, a child waiting on a person is o
     expect(dot?.classList.contains("workspace-subagent-status-failed")).toBe(false);
   });
 
-  it("paints the pill's failed count with the failed class", async () => {
+  it("keeps a failed child off the pill: its failure shows in the list the pill opens", async () => {
     await renderParent([failedChild]);
     const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
-    const dot = pill?.querySelector(".workspace-subagent-status-dot");
-    expect(dot?.classList.contains("workspace-subagent-status-failed")).toBe(true);
+    expect(pill?.querySelector(".workspace-subagent-status-failed")).toBeNull();
+    expect(pill?.textContent).not.toContain("failed");
   });
 
   it("gives the failed class the failed token, and the attention class the approval token", () => {

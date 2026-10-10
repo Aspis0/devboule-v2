@@ -447,8 +447,9 @@ describe("AgentChatSurface", () => {
 
     expect(container.textContent).toContain("Hello");
     expect(container.querySelector(".turn-footer-line")).toBeNull();
-    expect(container.querySelector(".turn-footer-detail-copy")?.textContent).toContain(
-      "stopped: error",
+    expect(container.querySelector(".turn-footer-stop")?.textContent).toBe("stopped");
+    expect(container.querySelector(".turn-footer-stop")?.getAttribute("title")).toBe(
+      "Stopped: error",
     );
     // The stop reason and the ledger sit behind the disclosure: rendered, closed.
     expect(container.querySelector(".turn-footer-detail")?.hasAttribute("open")).toBe(false);
@@ -915,7 +916,7 @@ describe("AgentChatSurface", () => {
 
     const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
     if (pill === null) throw new Error("subagent pill did not render");
-    expect(pill.textContent).toContain("1 failed");
+    expect(pill.textContent).not.toContain("failed");
     expect(pill.textContent).not.toContain("finished");
 
     await act(async () => pill.click());

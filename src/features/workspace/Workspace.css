@@ -856,6 +856,52 @@
   overflow-wrap: anywhere;
 }
 
+/* A compaction is a divider: two hairlines around its words, a spinner while
+   the context compacts and none once it is done. */
+.workspace-chat-compaction {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  margin: var(--space-12) 0;
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: var(--type-meta);
+  line-height: var(--leading-dense);
+}
+
+.workspace-chat-compaction-rule {
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--line);
+}
+
+.workspace-chat-compaction-label {
+  flex: none;
+  white-space: nowrap;
+}
+
+.workspace-chat-compaction-spinner {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--line);
+  border-top-color: var(--muted);
+  border-radius: var(--radius-full);
+  animation: workspace-chat-compaction-spin 0.9s linear infinite;
+}
+
+@keyframes workspace-chat-compaction-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-chat-compaction-spinner {
+    animation: none;
+  }
+}
+
 .workspace-chat-system {
   color: var(--muted);
   font-family: var(--font-ui);

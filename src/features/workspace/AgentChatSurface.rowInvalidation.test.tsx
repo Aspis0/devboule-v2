@@ -7,9 +7,15 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { channelHarness } from "./sessionChannelHarness";
 
 vi.mock("../../lib/tauri", async () => (await import("./sessionChannelHarness")).tauriMock);
-vi.mock("./timeline/MessageCopyButton", async (importOriginal) => {
-  const original = await importOriginal<typeof import("./timeline/MessageCopyButton")>();
-  return { MessageCopyButton: vi.fn(original.MessageCopyButton) };
+vi.mock("../../components/MarkdownText", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../../components/MarkdownText")>();
+  const { createElement } = await import("react");
+  // A plain wrapper, so each call counts the assistant row that drew its text.
+  return {
+    MarkdownText: vi.fn((props: import("react").ComponentProps<typeof original.MarkdownText>) =>
+      createElement(original.MarkdownText, props),
+    ),
+  };
 });
 vi.mock("./ThoughtRow", async (importOriginal) => {
   const original = await importOriginal<typeof import("./ThoughtRow")>();
@@ -29,7 +35,7 @@ vi.mock("./A2aMessageCard", async (importOriginal) => {
 });
 
 import { AgentChatSurface } from "./AgentChatSurface";
-import { MessageCopyButton } from "./timeline/MessageCopyButton";
+import { MarkdownText } from "../../components/MarkdownText";
 import { ThoughtRow } from "./ThoughtRow";
 import { ToolCallGroupRow } from "./transcript/ToolCallGroupRow";
 import { toolRowDisplay } from "./toolRowDisplay";
@@ -57,7 +63,7 @@ async function renderSurface(extra: Partial<ComponentProps<typeof AgentChatSurfa
 }
 
 function counts() {
-  const copies = vi.mocked(MessageCopyButton).mock.calls;
+  const copies = vi.mocked(MarkdownText).mock.calls;
   const thoughts = vi.mocked(ThoughtRow).mock.calls;
   const tools = vi.mocked(toolRowDisplay).mock.calls;
   return {
@@ -243,8 +249,9 @@ it("updates only tool rows when the transcript ends", async () => {
     observedState: { type: "ended", generation: 1, code: 0, integrity: { kind: "complete" } },
   });
   // A completed read's display does not depend on the transcript ending, so
-  // it is not parsed again.
-  expect(counts()).toEqual({ ...unchanged, read: 0, execute: 1, group: 1 });
+  // it is not parsed again. The turn that was running ends with the transcript,
+  // so its last answer draws the turn's footer: that one row renders again.
+  expect(counts()).toEqual({ ...unchanged, read: 0, execute: 1, group: 1, live: 1 });
   expect(container.querySelector(".workspace-chat-tool-group.is-interrupted")).not.toBeNull();
   expect(container.querySelector(".workspace-chat-tool-group.is-running")).toBeNull();
 });

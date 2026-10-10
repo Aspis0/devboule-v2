@@ -67,6 +67,12 @@ export type AgentChatItem =
        * row without it is the text-only row it always was.
        */
       images?: AttachmentReference[];
+      /**
+       * How long the turn ran (ms), set on its last assistant row when the
+       * agent finishes, and only when this view saw the turn start. A resumed
+       * or replayed turn has no clock, so its footer names no time.
+       */
+      workedMs?: number;
     }
   | {
       id: string;
@@ -145,6 +151,24 @@ export type AgentChatItem =
  * transcript holds none. Only assistant prose counts: a thought, a tool row
  * or a relayed message is not what the agent said to the user.
  */
+/**
+ * The items with the turn's length stamped on its last assistant row: the last
+ * one after the most recent user row. A turn with no assistant row keeps the
+ * list as it was, so its length has nowhere to show.
+ */
+function stampTurnLength(items: AgentChatItem[], workedMs: number): AgentChatItem[] {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item.role === "user") return items;
+    if (item.role === "assistant") {
+      const stamped = [...items];
+      stamped[index] = { ...item, workedMs: Math.max(0, workedMs) };
+      return stamped;
+    }
+  }
+  return items;
+}
+
 export function lastAssistantMessage(items: readonly AgentChatItem[]): string | null {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];
@@ -1130,10 +1154,14 @@ export class AgentSession {
           ],
         });
         return;
-      case "agent_finished":
+      case "agent_finished": {
         this.turnOpen = false;
         this.deps.onTurnFinished?.();
         this.closeActiveBlocks();
+        const startedAt = this.state.turnStartedAtMs;
+        if (typeof startedAt === "number") {
+          this.update({ items: stampTurnLength(this.state.items, Date.now() - startedAt) });
+        }
         this.setStatus("idle", {
           streaming: false,
           // The turn is over whoever started it: no step is still running.
@@ -1146,6 +1174,7 @@ export class AgentSession {
           },
         });
         return;
+      }
       case "context_usage":
         // The provider's own reading of this session's context window. It
         // travels the usage lane, not the transcript lane, and a reading

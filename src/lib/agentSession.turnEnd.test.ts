@@ -98,3 +98,37 @@ describe("a turn this view did not send", () => {
     expect(session.getState().agentTasks?.[1]?.status).toBe("pending");
   });
 });
+
+describe("the length of a turn this view saw start", () => {
+  it("is stamped on the turn's last assistant row when the agent finishes", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_790_000_000_000);
+    const { session, emit } = harness();
+    await session.start();
+    await session.send("go");
+    emit({ type: "agent_message", messageId: "m-1", text: "first part. " });
+    emit({ type: "agent_message", messageId: "m-2", text: "the answer" });
+
+    vi.setSystemTime(1_790_000_217_000);
+    emit({ type: "agent_finished", stopReason: "end_turn" });
+
+    const assistants = session
+      .getState()
+      .items.flatMap((item) => (item.role === "assistant" ? [item] : []));
+    expect(assistants.map((item) => item.workedMs)).toEqual([undefined, 217_000]);
+  });
+
+  it("is not stamped on a turn whose clock this view never had", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_790_000_000_000);
+    const { session, emit } = harness();
+    await session.start();
+    emit({ type: "agent_message", messageId: "m-1", text: "resumed reply" });
+    emit({ type: "agent_finished", stopReason: "end_turn" });
+
+    const assistant = session
+      .getState()
+      .items.flatMap((item) => (item.role === "assistant" ? [item] : []))[0];
+    expect(assistant?.workedMs).toBeUndefined();
+  });
+});

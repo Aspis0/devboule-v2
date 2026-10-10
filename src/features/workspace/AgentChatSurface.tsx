@@ -881,6 +881,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
             fileLinks={fileLinks}
             transcriptEnded={osGone}
             streamingThoughtId={streamingThoughtId}
+            turnRunning={turnRunning}
           />
           {turnRunning ? <WorkingLine startedAtMs={state.turnStartedAtMs ?? null} /> : null}
           {state.lastFinished !== null ? (

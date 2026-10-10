@@ -136,18 +136,27 @@
   pointer-events: auto;
 }
 
-/* An answer's footer holds its copy icon alone, under the text at the start
-   edge, always drawn: the one action an answer offers never waits for a hover. */
-.workspace-chat-message-footer {
+/* A completed turn's footer: its copy icon and how long the turn worked, under
+   the last answer at the start edge, always drawn. One footer per turn, not one
+   copy icon per paragraph. */
+.workspace-chat-turn-footer {
   display: flex;
-  justify-content: flex-start;
-  margin-top: var(--space-2);
+  align-items: center;
+  gap: var(--space-8);
+  margin-top: var(--space-4);
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: var(--type-meta);
 }
 
-.workspace-chat-message-footer .timeline-copy-chip {
+.workspace-chat-turn-footer .timeline-copy-chip {
   position: static;
   opacity: 1;
   pointer-events: auto;
+}
+
+.workspace-chat-turn-worked {
+  white-space: nowrap;
 }
 
 /* Chat image thumbnails: a wrapping row of pressable frames above the user

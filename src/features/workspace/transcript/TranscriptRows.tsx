@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { AgentChatItem } from "../../../lib/agentSession";
 import { isToolCallGroup } from "../../../lib/toolCallGroups";
 import type { ChatFileLinks } from "../../../lib/chatFilePaths";
@@ -6,6 +6,7 @@ import type { A2aNameSource } from "../A2aMessageCard";
 import { TranscriptRow } from "./TranscriptRow";
 import { createOpenedRows, OpenedRowsContext } from "./openedRows";
 import { useTranscriptEntries } from "./useTranscriptEntries";
+import { turnEnds } from "./turnEnds";
 
 type RowContext = "none" | "fileLinks" | "a2aNames" | "transcriptEnded" | "streamingThought";
 
@@ -30,6 +31,8 @@ interface TranscriptRowsProps {
   fileLinks: ChatFileLinks | null;
   transcriptEnded: boolean;
   streamingThoughtId: string | null;
+  /** A turn is running: its own footer waits for the finish. */
+  turnRunning?: boolean;
 }
 
 export function TranscriptRows({
@@ -40,8 +43,10 @@ export function TranscriptRows({
   fileLinks,
   transcriptEnded,
   streamingThoughtId,
+  turnRunning = false,
 }: TranscriptRowsProps) {
   const entries = useTranscriptEntries(items, recoveredAttach, pendingPlanToolCallId);
+  const ends = useMemo(() => turnEnds(entries, turnRunning), [entries, turnRunning]);
   const [openedRows] = useState(createOpenedRows);
   return (
     <OpenedRowsContext.Provider value={openedRows}>
@@ -56,6 +61,7 @@ export function TranscriptRows({
             fileLinks={context === "fileLinks" ? fileLinks : null}
             transcriptEnded={context === "transcriptEnded" && transcriptEnded}
             isStreamingThought={context === "streamingThought" && entry.id === streamingThoughtId}
+            turnEnd={isToolCallGroup(entry) ? undefined : ends.get(entry.id)}
           />
         );
       })}

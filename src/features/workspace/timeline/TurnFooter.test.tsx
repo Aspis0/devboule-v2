@@ -70,11 +70,14 @@ describe("TurnFooter", () => {
     expect(copy).toContain(usdCopy(0.0022));
   });
 
-  it("moves an abnormal stop reason into the disclosure, not onto the row", async () => {
+  it("says an abnormal stop in one word on the row, and names the reason on hover", async () => {
     const container = await renderFooter(finished({ stopReason: "length" }));
+    const word = container.querySelector(".turn-footer-stop");
+    expect(word?.textContent).toBe("stopped");
+    expect(word?.getAttribute("title")).toBe("Stopped: length");
     expect(container.querySelector(".turn-footer-line")).toBeNull();
     const copy = await openDetail(container);
-    expect(copy).toContain("stopped: length");
+    expect(copy).not.toContain("stopped");
   });
 
   it("names the disclosure for everything it can hold, not only tokens", async () => {

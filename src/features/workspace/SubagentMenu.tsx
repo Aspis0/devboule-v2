@@ -10,7 +10,7 @@ import { useMenuOpen } from "../../lib/menuOpen";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import "./SubagentMenu.css";
 import type { AgentSubagentStatus } from "../../lib/agentSession";
-import { countSubagentStatuses, isArchivable, type SubagentRow } from "./subagentRows";
+import { isArchivable, type SubagentRow } from "./subagentRows";
 
 function shortSubagentId(id: string): string {
   return id.length > 16 ? `${id.slice(0, 12)}…` : id;
@@ -160,7 +160,6 @@ export function SubagentMenu({
     }
   };
 
-  const { failed } = countSubagentStatuses(rows);
   const attentionCount = rows.filter((row) => attentionOf(row) !== undefined).length;
   // A child waiting on an approval card is counted once, as the approval it owes.
   const working = rows.filter(
@@ -170,7 +169,6 @@ export function SubagentMenu({
     ...(attentionCount > 0
       ? [`${attentionCount} ${attentionCount === 1 ? "needs" : "need"} your approval`]
       : []),
-    ...(failed > 0 ? [`${failed} failed`] : []),
     ...(working > 0 ? [`${working} working`] : []),
   ].join(", ");
   // A settled fan-out has no colour worth showing, so the pill names what
@@ -199,15 +197,6 @@ export function SubagentMenu({
             <span>
               {attentionCount} {attentionCount === 1 ? "needs" : "need"} your approval
             </span>
-          </span>
-        ) : null}
-        {failed > 0 ? (
-          <span className="workspace-subagent-pill-group">
-            <span
-              className={`workspace-subagent-status-dot ${subagentDotClass("failed")}`}
-              aria-hidden="true"
-            />
-            <span>{failed} failed</span>
           </span>
         ) : null}
         {working > 0 ? (
