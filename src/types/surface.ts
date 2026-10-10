@@ -19,28 +19,13 @@ export interface SurfaceDefinition {
   plugin?: string;
 }
 
-export const SURFACES = [
+export const SURFACES: readonly SurfaceDefinition[] = [
   {
     key: "workspace",
     label: "Workspace",
     eyebrow: "sessions · projects · worktrees",
     description: "The workspace surface will host projects, sessions, terminals, and permissions.",
     tone: "terracotta",
-  },
-  {
-    key: "polis",
-    label: "Polis",
-    eyebrow: "the codebase as a city",
-    description: "The Polis surface will mount the isometric codebase view from the v1 port.",
-    tone: "purple",
-    plugin: "polis",
-  },
-  {
-    key: "pubvia",
-    label: "Pubvia",
-    eyebrow: "research writing",
-    description: "Pubvia is reserved for a later out-of-process plugin milestone.",
-    tone: "ochre",
   },
   {
     key: "design",
@@ -63,4 +48,4 @@ export const SURFACES = [
     description: "Browse plugins, packs, and free skills for Devboule.",
     tone: "ochre",
   },
-] as const satisfies readonly SurfaceDefinition[];
+];

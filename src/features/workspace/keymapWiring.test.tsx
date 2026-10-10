@@ -261,10 +261,10 @@ describe("the crescent runs the keymap's crescent matcher", () => {
 
     wiring.crescentPage = () => "next";
     await press(sliver, OTHER_KEY);
-    expect(visibleLabels()[0]).toBe("Polis");
+    expect(visibleLabels()[0]).toBe("Design");
 
     wiring.crescentPage = () => null;
     await press(sliver, "ArrowRight");
-    expect(visibleLabels()[0]).toBe("Polis");
+    expect(visibleLabels()[0]).toBe("Design");
   });
 });

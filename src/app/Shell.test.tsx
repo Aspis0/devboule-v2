@@ -8,6 +8,21 @@ vi.mock("../features/plugins/install", () => ({
   chooseAndInstall: vi.fn(),
 }));
 
+// Polis left the top bar, so the plugin-point states are exercised through a
+// fixture plugin surface with the same key, label and plugin id.
+vi.mock("../types/surface", async () => {
+  const actual = await vi.importActual<typeof import("../types/surface")>("../types/surface");
+  const polisFixture = {
+    key: "polis",
+    label: "Polis",
+    eyebrow: "test fixture",
+    description: "A plugin-backed surface standing in for Polis.",
+    tone: "purple" as const,
+    plugin: "polis",
+  };
+  return { ...actual, SURFACES: [...actual.SURFACES, polisFixture] };
+});
+
 import { chooseAndInstall } from "../features/plugins/install";
 import { useAppStore } from "../store/appStore";
 import type { PluginEntry, PluginInventory } from "../types/ipc";

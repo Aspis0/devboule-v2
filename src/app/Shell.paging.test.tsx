@@ -98,7 +98,7 @@ describe("Shell crescent paging", () => {
     await act(async () => next.focus());
     await act(async () => next.click());
 
-    expect(visibleLabels(container)[0]).toBe("Polis");
+    expect(visibleLabels(container)[0]).toBe("Design");
     expect(visibleLabels(container)).toContain("Extra One");
     expect(container.querySelector('[aria-label="Show previous surfaces"]')).not.toBeNull();
     expect(document.activeElement?.getAttribute("aria-label")).toBe("Show next surfaces");
@@ -114,14 +114,16 @@ describe("Shell crescent paging", () => {
     await act(async () => {
       sliver.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowRight" }));
     });
-    expect(visibleLabels(container)[0]).toBe("Polis");
+    expect(visibleLabels(container)[0]).toBe("Design");
     expect(visibleLabels(container)).toContain("Extra One");
 
     await act(async () => {
       sliver.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowLeft" }));
     });
     expect(visibleLabels(container)[0]).toBe("Workspace");
-    expect(visibleLabels(container)).not.toContain("Extra One");
+    // Four real surfaces now fill the start of the window, so the first extra
+    // it reaches is Extra One; the one paging reveals is Extra Three.
+    expect(visibleLabels(container)).not.toContain("Extra Three");
     await act(async () => root.unmount());
   });
 
@@ -178,7 +180,7 @@ describe("Shell crescent paging", () => {
     expect(document.activeElement).not.toBe(document.body);
     expect(document.activeElement?.classList.contains("nav-point")).toBe(true);
     expect(document.activeElement?.querySelector(".nav-point-label")?.textContent).toBe(
-      "Extra One",
+      "Extra Three",
     );
     await act(async () => root.unmount());
   });
@@ -217,7 +219,7 @@ describe("Shell crescent paging", () => {
     await act(async () => {
       sliver.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowRight" }));
     });
-    expect(visibleLabels(container)[0]).toBe("Polis");
+    expect(visibleLabels(container)[0]).toBe("Design");
 
     await act(async () => {
       sliver.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
