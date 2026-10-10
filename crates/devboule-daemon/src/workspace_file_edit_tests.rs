@@ -1170,27 +1170,27 @@ fn relativize_maps_inside_absolute_spellings_and_refuses_the_rest() {
     let root = &dir.root;
     let inside = root.join("sub").join("a.txt");
     assert_eq!(
-        relativize(&root, &inside.to_string_lossy()),
+        relativize(root, &inside.to_string_lossy()),
         Some("sub/a.txt".to_string())
     );
     let dotted = root.join(".").join("a.txt");
     assert_eq!(
-        relativize(&root, &dotted.to_string_lossy()),
+        relativize(root, &dotted.to_string_lossy()),
         Some("a.txt".to_string())
     );
     // A sibling that merely shares the prefix is outside.
     let sibling = root
         .with_file_name("devboule-relativize-sibling")
         .join("a.txt");
-    assert_eq!(relativize(&root, &sibling.to_string_lossy()), None);
+    assert_eq!(relativize(root, &sibling.to_string_lossy()), None);
     // Above the root, with or without `..` help, is outside.
     let above = root.parent().expect("temp has a parent").join("other.txt");
-    assert_eq!(relativize(&root, &above.to_string_lossy()), None);
+    assert_eq!(relativize(root, &above.to_string_lossy()), None);
     let dotdot = root.join("sub").join("..").join("other.txt");
-    assert_eq!(relativize(&root, &dotdot.to_string_lossy()), None);
+    assert_eq!(relativize(root, &dotdot.to_string_lossy()), None);
     // The folder itself relativizes empty, which confinement refuses.
     assert_eq!(
-        relativize(&root, &root.to_string_lossy()),
+        relativize(root, &root.to_string_lossy()),
         Some(String::new())
     );
 }
