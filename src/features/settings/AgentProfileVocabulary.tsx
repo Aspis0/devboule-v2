@@ -19,10 +19,6 @@ import type { ReactNode } from "react";
 export const VOCABULARY_UNAVAILABLE_TEXT =
   "This daemon is older than this app: it does not advertise the provider_vocabulary capability, so it cannot say what this provider offers.";
 
-/** `origin: "daemon"` — the honest sentence that travels with such a list. */
-const DAEMON_VOCABULARY_TEXT =
-  "This list is the daemon's own vocabulary for this provider, not something the provider published.";
-
 /**
  * `present` whose `origin` arrived undeclared (absent, null, or a value this
  * app does not know): the reply names no author for the list. The items are
@@ -127,12 +123,11 @@ export function vocabularyAxisView<T>(
     }
     return {
       freeText: false,
+      // A daemon-mapped list needs no sentence: the list is the answer.
       hint:
-        axis.origin === "daemon"
-          ? DAEMON_VOCABULARY_TEXT
-          : axis.origin === "provider"
-            ? undefined
-            : undeclaredOriginVocabularyText(axisWord),
+        axis.origin === "daemon" || axis.origin === "provider"
+          ? undefined
+          : undeclaredOriginVocabularyText(axisWord),
       items: items.map(toItem),
     };
   }

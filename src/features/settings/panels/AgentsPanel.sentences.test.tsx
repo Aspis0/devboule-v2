@@ -511,11 +511,12 @@ describe("Settings agents panel — sentence uniqueness", () => {
     // refusals, the two profile-cap sentences, the two catalog sentences,
     // the discard check's sentence, the legacy-denials line, the
     // save-in-flight sentence, the empty-list line, and the standing
-    // refusal. Advanced carries labels only, so the icon and idle hints
-    // and the tick notes enter nothing. A new sentence that does not come
-    // through a scenario here moves this number; so does a sentence a
-    // scenario stopped rendering.
-    expect(sentences).toHaveLength(36);
+    // refusal, and the Note and Instructions lines. Advanced carries labels
+    // only, so the idle hints and the tick notes enter nothing; the daemon's
+    // authorship sentence is gone, so the origin-daemon scenario adds none. A
+    // new sentence that does not come through a scenario here moves this
+    // number; so does a sentence a scenario stopped rendering.
+    expect(sentences).toHaveLength(37);
     for (let i = 0; i < sentences.length; i++) {
       for (let j = i + 1; j < sentences.length; j++) {
         const a = sentences[i]!;

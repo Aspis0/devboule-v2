@@ -187,40 +187,22 @@ describe("Settings agents panel — editing a profile's fields", () => {
     expect(alert?.textContent).toContain("enabled");
   });
 
-  it("saves an icon and clears it to none", async () => {
-    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+  it("keeps a stored icon through a save, since the form no longer edits it", async () => {
+    const stored = { ...makeProfile(), icon: "eye" };
+    await renderAgentsPanel({ profiles: [stored], standingInstructions: "" });
     vi.mocked(agentProfilesGet).mockResolvedValueOnce({
-      document: {
-        profiles: [{ ...makeProfile(), icon: "eye" }],
-        standingInstructions: "",
-      },
+      document: { profiles: [stored], standingInstructions: "" },
     });
 
     await act(async () => rowButton("Explorer", "Edit").click());
     await act(async () => undefined);
     await openAdvanced();
-    const iconField = dom.container.querySelector<HTMLInputElement>('[aria-label="Profile icon"]');
-    if (!iconField) throw new Error("icon field did not render");
-    await typeText(iconField, "eye");
+    expect(dom.container.querySelector('[aria-label="Profile icon"]')).toBeNull();
     await act(async () => panelButton("Save").click());
     await act(async () => undefined);
 
-    expect(vi.mocked(agentProfilesSet).mock.calls[0]?.[0] as AgentProfilesDocument).toEqual({
-      profiles: [{ ...makeProfile(), icon: "eye", modelProvider: null }],
-      standingInstructions: "",
-    });
-
-    // Clearing the field is none on the wire: null, never an empty string.
-    await act(async () => rowButton("Explorer", "Edit").click());
-    await act(async () => undefined);
-    await openAdvanced();
-    const iconAgain = dom.container.querySelector<HTMLInputElement>('[aria-label="Profile icon"]');
-    if (!iconAgain) throw new Error("icon field did not render on the second open");
-    await typeText(iconAgain, "");
-    await act(async () => panelButton("Save").click());
-    await act(async () => undefined);
-    const sent = vi.mocked(agentProfilesSet).mock.calls[1]?.[0] as AgentProfilesDocument;
-    expect(sent.profiles[0]?.icon).toBeNull();
+    const sent = vi.mocked(agentProfilesSet).mock.calls[0]?.[0] as AgentProfilesDocument;
+    expect(sent.profiles[0]?.icon).toBe("eye");
   });
 
   it("keeps a stored feature it cannot draw, and carries it through a save", async () => {

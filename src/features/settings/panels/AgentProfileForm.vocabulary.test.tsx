@@ -151,9 +151,9 @@ describe("Settings agents panel — new profile form: vocabulary states", () => 
     expect(sent?.profiles[0]?.modeId).toBe("default");
   });
 
-  it("shows the honest sentence for origin daemon exactly once, and not for origin provider", async () => {
+  it("shows no authorship sentence for either origin: the lists are the answer", async () => {
     // Models are the daemon's own mapping; modes are the provider's own
-    // answer. The honest sentence belongs to the first, only.
+    // answer. Neither carries a sentence any more: the list is the answer.
     vi.mocked(providerVocabularyGet).mockResolvedValueOnce(
       makeVocabulary({
         models: {
@@ -175,9 +175,8 @@ describe("Settings agents panel — new profile form: vocabulary states", () => 
 
     expect(modelControl().tagName).toBe("SELECT");
     expect(modeControl().tagName).toBe("SELECT");
-    const mentions =
-      dom.container.textContent?.match(/not something the provider published/g) ?? [];
-    expect(mentions).toHaveLength(1);
+    expect(dom.container.textContent).not.toContain("the daemon's own vocabulary");
+    expect(dom.container.textContent).not.toContain("not something the provider published");
     // The published items are offered as they arrived.
     expect(selectValues(modelControl())).toContain("opus");
     expect(selectValues(modeControl())).toContain("code");

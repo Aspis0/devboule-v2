@@ -50,7 +50,7 @@ describe("Settings agents panel — agents tick, peer restriction and tool denia
       '.agent-inline-editor input[aria-label="Available to agents"]',
     );
     const peersTick = dom.container.querySelector<HTMLInputElement>(
-      '.agent-inline-editor input[aria-label="Children cannot message peers or create further agents"]',
+      '.agent-inline-editor input[aria-label="Children cannot message other PCs or create agents"]',
     );
     if (!agentsTick || !peersTick) throw new Error("the editor's ticks did not render");
     expect(agentsTick.checked).toBe(false);
@@ -76,7 +76,7 @@ describe("Settings agents panel — agents tick, peer restriction and tool denia
     // The peer tick is on: the peer tools are in the overlay, whatever else
     // is there with them.
     const peersTick = dom.container.querySelector<HTMLInputElement>(
-      '.agent-inline-editor input[aria-label="Children cannot message peers or create further agents"]',
+      '.agent-inline-editor input[aria-label="Children cannot message other PCs or create agents"]',
     );
     if (!peersTick) throw new Error("the peer tick did not render");
     expect(peersTick.checked).toBe(true);
@@ -190,7 +190,7 @@ describe("Settings agents panel — agents tick, peer restriction and tool denia
     await act(async () => advanced.click());
     await act(async () => undefined);
     const peersTick = dom.container.querySelector<HTMLInputElement>(
-      '.edit-card input[aria-label="Children cannot message peers or create further agents"]',
+      '.edit-card input[aria-label="Children cannot message other PCs or create agents"]',
     );
     if (!peersTick) throw new Error("peers tick did not render");
     expect(peersTick.checked).toBe(false);

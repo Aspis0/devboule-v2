@@ -257,7 +257,10 @@
   font-size: var(--type-meta);
 }
 
-.device-field input {
+/* A select is drawn like the inputs beside it: the same surface, edge, radius and
+   padding, so a field row reads as one set of controls. */
+.device-field input,
+.device-field select {
   padding: var(--space-4) 8px;
   color: var(--ink);
   background: var(--surface);

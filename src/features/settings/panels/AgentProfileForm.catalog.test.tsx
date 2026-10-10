@@ -60,7 +60,7 @@ describe("Settings agents panel — new profile form: catalog, caps and stored r
     await act(async () => advanced.click());
     await act(async () => undefined);
     const peersTick = dom.container.querySelector<HTMLInputElement>(
-      '.edit-card input[aria-label="Children cannot message peers or create further agents"]',
+      '.edit-card input[aria-label="Children cannot message other PCs or create agents"]',
     );
     if (!peersTick) throw new Error("peer tick did not render");
     expect(peersTick.checked).toBe(true);

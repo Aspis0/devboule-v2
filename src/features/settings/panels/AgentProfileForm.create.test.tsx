@@ -183,12 +183,12 @@ describe("Settings agents panel — new profile form: create and save", () => {
     await openAdvanced();
 
     const tick = field<HTMLInputElement>(
-      'input[aria-label="Children cannot message peers or create further agents"]',
+      'input[aria-label="Children cannot message other PCs or create agents"]',
     );
     expect(tick.checked).toBe(false);
     // The tick is one line naming the denial, and it must not promise a
     // surface it does not deliver, so no "design".
-    expect(form().textContent).toContain("No peer contact and no further agents for children");
+    expect(form().textContent).toContain("Children cannot message other PCs or create agents");
     expect(form().textContent).not.toContain("Design");
 
     await fillDraft();
@@ -204,7 +204,7 @@ describe("Settings agents panel — new profile form: create and save", () => {
     await openAdvanced();
     await fillDraft();
     const retick = field<HTMLInputElement>(
-      'input[aria-label="Children cannot message peers or create further agents"]',
+      'input[aria-label="Children cannot message other PCs or create agents"]',
     );
     await tickCheckbox(retick, true);
     await act(async () => createButton().click());

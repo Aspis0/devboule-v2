@@ -39,13 +39,13 @@ export function AgentProfileOverlayEditor({
       <label className="agent-profile-tick">
         <input
           type="checkbox"
-          aria-label="Children cannot message peers or create further agents"
+          aria-label="Children cannot message other PCs or create agents"
           checked={restricted}
           disabled={busy}
           onChange={(event) => togglePeers(event.target.checked)}
         />
         <span>
-          <span>No peer contact and no further agents for children</span>
+          <span>Children cannot message other PCs or create agents</span>
         </span>
       </label>
       {extras.length > 0 ? (

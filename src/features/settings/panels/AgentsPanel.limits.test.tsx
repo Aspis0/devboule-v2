@@ -99,7 +99,7 @@ describe("Settings agents panel — spawn prompt, note and name limits", () => {
     expect("spawnPrompt" in sent.profiles[0]).toBe(false);
   });
 
-  it("keeps the instructions field to one short label, no explanation", async () => {
+  it("gives the instructions field one short grey line saying when it is sent", async () => {
     await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
 
     await act(async () => rowButton("Explorer", "Edit").click());
@@ -111,8 +111,11 @@ describe("Settings agents panel — spawn prompt, note and name limits", () => {
       .querySelector('textarea[aria-label="Profile instructions"]')
       ?.closest("label");
     if (!label) throw new Error("instructions label did not render");
-    // One short label, no hint paragraph, no counter before the cap.
-    expect(label.querySelectorAll(".device-field-hint").length).toBe(0);
+    // The label, then one grey line saying when the text is sent.
+    const hints = Array.from(label.querySelectorAll(".device-field-hint")).map(
+      (hint) => hint.textContent,
+    );
+    expect(hints).toEqual(["Sent to the agent when it starts."]);
     expect(label.textContent).toContain("Instructions (optional)");
   });
 

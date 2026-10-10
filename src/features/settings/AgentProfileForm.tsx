@@ -136,7 +136,9 @@ export function AgentProfileForm({
   onCancel: () => void;
 }) {
   const [name, setName] = useState(seed.name);
-  const [icon, setIcon] = useState(seed.icon);
+  // The icon is no longer edited here (a text field was not an icon picker);
+  // the stored value still travels with the draft, so a save writes it back.
+  const [icon] = useState(seed.icon);
   const [note, setNote] = useState(seed.note);
   const [spawnPrompt, setSpawnPrompt] = useState(seed.spawnPrompt);
   const [providerId, setProviderId] = useState(seed.provider);
@@ -540,6 +542,7 @@ export function AgentProfileForm({
           }}
         />
         <ByteCounter bytes={noteBytes} cap={MAX_PROFILE_NOTE_BYTES} />
+        <span className="device-field-hint">For you; the agent never reads it.</span>
       </label>
       <label className="device-field">
         Instructions (optional)
@@ -554,6 +557,7 @@ export function AgentProfileForm({
           }}
         />
         <ByteCounter bytes={spawnBytes} cap={MAX_PROFILE_SPAWN_PROMPT_BYTES} />
+        <span className="device-field-hint">Sent to the agent when it starts.</span>
       </label>
       <div className="profile-advanced" data-profile-advanced>
         <button
@@ -566,18 +570,6 @@ export function AgentProfileForm({
         </button>
         {advancedOpen ? (
           <>
-            <label className="device-field">
-              Icon
-              <input
-                aria-label="Profile icon"
-                value={icon}
-                disabled={locked}
-                onChange={(event) => {
-                  setIcon(event.target.value);
-                  userChanged({ icon: event.target.value });
-                }}
-              />
-            </label>
             <AgentProfileFeatureFields
               offered={offered}
               probing={probing}
@@ -601,7 +593,7 @@ export function AgentProfileForm({
                 }}
               />
               <span>
-                <span>Agents may create this</span>
+                <span>Agents can start this profile</span>
               </span>
             </label>
             <label className="device-field">
