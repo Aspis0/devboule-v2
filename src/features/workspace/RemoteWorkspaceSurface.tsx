@@ -384,13 +384,23 @@ export function RemoteWorkspaceSurface({
         // A card the host raised or resolved changes what the pane shows;
         // the roster row follows on the next read.
         if (event.type === "permission_request") {
-          setCards((current) =>
-            current.some(
+          setCards((current) => {
+            const known = current.some(
               (card) => card.sessionId === target && card.request.toolCallId === event.toolCallId,
-            )
-              ? current
-              : [...current, { sessionId: target, subscriptionId, request: event }],
-          );
+            );
+            // A reattach replays the pending cards on a fresh subscription:
+            // re-key to the live one instead of dropping the replay (the
+            // old id would answer "not attached" forever) or keeping the
+            // dead one (same fate).
+            if (known) {
+              return current.map((card) =>
+                card.sessionId === target && card.request.toolCallId === event.toolCallId
+                  ? { sessionId: target, subscriptionId, request: event }
+                  : card,
+              );
+            }
+            return [...current, { sessionId: target, subscriptionId, request: event }];
+          });
           requestLoad();
           return;
         }
@@ -752,6 +762,17 @@ export function RemoteWorkspaceSurface({
                   capabilities={["typed_permissions"]}
                   daemonState={hostOnline ? "connected" : "disconnected"}
                   onRespond={answerCard(card)}
+                  onStale={(sessionId, toolCallId) => {
+                    // The answer can never succeed on this id: drop the card
+                    // so a replayed request re-adds it on the live
+                    // subscription instead of lingering dead.
+                    setCards((current) =>
+                      current.filter(
+                        (kept) =>
+                          kept.sessionId !== sessionId || kept.request.toolCallId !== toolCallId,
+                      ),
+                    );
+                  }}
                 />
               ))}
               <WorkspaceComposer

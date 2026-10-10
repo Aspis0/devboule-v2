@@ -71,6 +71,18 @@ describe("isStalePermissionError", () => {
     ).toBe(false);
   });
 
+  it("treats an answer on a dropped subscription as stale", () => {
+    // A reattach moves the stream to a fresh subscription; answering with
+    // the old one is refused by `is_observer`, and retrying it can never
+    // succeed — so the card ends instead of re-arming.
+    expect(
+      isStalePermissionError({
+        code: "invalid_request",
+        message: "Session is not attached to this subscription.",
+      }),
+    ).toBe(true);
+  });
+
   it("does not treat an unrelated invalid request as stale", () => {
     expect(
       isStalePermissionError({

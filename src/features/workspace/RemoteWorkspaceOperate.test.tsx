@@ -437,6 +437,74 @@ describe("the remote operate surface", () => {
     ).toBeUndefined();
   });
 
+  it("re-keys a pending card to the fresh subscription after a reattach", async () => {
+    await render();
+    const first = await openSession("session-one");
+    const cardEvent = (subscriptionId: number) => ({
+      kind: "event" as const,
+      deviceId: "device-one",
+      sessionId: "session-one",
+      subscriptionId,
+      envelope: {
+        sessionId: "session-one",
+        generation: 1,
+        event: {
+          type: "permission_request" as const,
+          toolCallId: "card-9",
+          title: "Run tests",
+          options: [
+            { optionId: "allow", name: "Allow once", kind: "allow_once" },
+            { optionId: "deny", name: "Deny", kind: "reject_once" },
+          ],
+        },
+      },
+    });
+    await act(async () => {
+      emit(cardEvent(first));
+    });
+    await flush();
+    expect(
+      [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+        (button) => button.textContent === "Allow once",
+      ),
+    ).toBeDefined();
+
+    // A relay gap forces a reattach on a fresh subscription; the host
+    // replays the still-pending card there.
+    await act(async () => {
+      emit({
+        kind: "gap",
+        deviceId: "device-one",
+        sessionId: "session-one",
+        subscriptionId: first,
+      });
+    });
+    await flush();
+    const second = vi.mocked(remoteSessionAttach).mock.calls.at(-1)?.[2] as number;
+    expect(second).not.toBe(first);
+    await act(async () => {
+      emit(cardEvent(second));
+    });
+    await flush();
+
+    const allow = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Allow once",
+    );
+    await act(async () => {
+      allow?.click();
+    });
+    await flush();
+    // The answer rides the live subscription, not the dead one.
+    expect(vi.mocked(remoteHostPermissionRespond)).toHaveBeenCalledWith({
+      deviceId: "device-one",
+      sessionId: "session-one",
+      subscriptionId: second,
+      requestId: "card-9",
+      outcome: "allow_once",
+      idempotencyKey: expect.any(String),
+    });
+  });
+
   it("drives a terminal on the host: output, keys, claim and resize", async () => {
     vi.mocked(remoteHostList).mockResolvedValue({ list: "sessions", rows: [TERMINAL] });
     await render();

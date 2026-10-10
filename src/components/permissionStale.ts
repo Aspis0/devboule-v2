@@ -22,6 +22,11 @@ export const STALE_PERMISSION_LINE = "This request is no longer pending.";
  *   display), mapped to `InvalidRequest` at `session.rs:2547-2549`.
  * - "Session has no live ACP permission broker.":
  *   `crates/devboule-daemon/src/session.rs:2530-2534`.
+ * - "Session is not attached to this subscription.":
+ *   `crates/devboule-daemon/src/session_runtime.rs` (`is_observer`). A card
+ *   answered with a subscription the host already dropped — after a
+ *   reattach moved the stream — can never succeed on that id, so it ends
+ *   instead of re-arming forever.
  * - `session_not_found`: `src-tauri/src/backend/error.rs:31-40` rewrites
  *   `SessionNotFound` to `("session_not_found", "No session with that
  *   id.")`. No option error uses this code, so the code alone discriminates.
@@ -33,6 +38,7 @@ export function isStalePermissionError(cause: unknown): boolean {
   const message = cause.message.toLowerCase();
   return (
     message.includes("permission request is no longer pending") ||
-    (message.includes("has no live") && message.includes("permission broker"))
+    (message.includes("has no live") && message.includes("permission broker")) ||
+    message.includes("not attached to this subscription")
   );
 }
