@@ -799,6 +799,24 @@ fn expand_user_path(value: &str) -> PathBuf {
     PathBuf::from(trimmed)
 }
 
+/// The sentence a dangling link answers with on the human's road. The
+/// link names a file that is not there, and creating in its place would
+/// silently swap the link for a regular file.
+const LINK_TARGET_MISSING: &str = "the link target is missing";
+
+/// The real file behind an app-road `target`: links are followed to
+/// their target and every later step stages beside *that* file, so a
+/// write replaces the target's bytes and never the link — and a link
+/// whose directory lives on another volume keeps the content's home.
+/// A dangling link fails here instead of becoming a create; a loop (or
+/// any other follow failure) is a failed check.
+fn canonical_app_target(target: &Path) -> Result<PathBuf, &'static str> {
+    match std::fs::canonicalize(target) {
+        Ok(real) => Ok(real),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(LINK_TARGET_MISSING),
+        Err(_) => Err(UNSTATABLE),
+    }
+}
 /// The home folder: `HOME`, else `USERPROFILE` — what Paseo's
 /// `os.homedir()` reads on each platform, without the Windows fallbacks
 /// Node carries (those need the registry; an unset home here is a refusal,
@@ -834,15 +852,25 @@ fn open_app_file(requested: &str) -> WorkspaceEditableFile {
             _ => refused(PARENT_MISSING),
         },
         TargetState::Unstatable => refused(UNSTATABLE),
-        TargetState::Present(_) => match std::fs::metadata(&target) {
-            Err(_) => refused(UNSTATABLE),
-            Ok(metadata) => {
-                if !metadata.is_file() {
-                    return refused(NOT_A_FILE);
+        // Followed to the real file: the read, the stat and the version
+        // all describe the target, while the reply keeps the spelling
+        // the human opened.
+        TargetState::Present(_) => {
+            let spelling = target.to_string_lossy().into_owned();
+            let real = match canonical_app_target(&target) {
+                Ok(real) => real,
+                Err(sentence) => return refused(sentence),
+            };
+            match std::fs::metadata(&real) {
+                Err(_) => refused(UNSTATABLE),
+                Ok(metadata) => {
+                    if !metadata.is_file() {
+                        return refused(NOT_A_FILE);
+                    }
+                    open_resolved(&real, "", &spelling, &metadata)
                 }
-                open_resolved(&target, "", &target.to_string_lossy(), &metadata)
             }
-        },
+        }
     }
 }
 
@@ -868,23 +896,35 @@ fn version_app_file(requested: &str) -> WorkspaceFileVersion {
             path: spelling,
             error: UNSTATABLE.to_string(),
         },
-        TargetState::Present(_) => match std::fs::metadata(&target) {
-            Err(_) => WorkspaceFileVersion::Error {
-                workspace_id: String::new(),
-                path: target.to_string_lossy().into_owned(),
-                error: UNSTATABLE.to_string(),
-            },
-            Ok(metadata) => {
-                if !metadata.is_file() {
+        TargetState::Present(_) => {
+            let real = match canonical_app_target(&target) {
+                Ok(real) => real,
+                Err(sentence) => {
                     return WorkspaceFileVersion::Error {
                         workspace_id: String::new(),
-                        path: spelling,
-                        error: NOT_A_FILE.to_string(),
+                        path: target.to_string_lossy().into_owned(),
+                        error: sentence.to_string(),
                     };
                 }
-                ready_version("", &spelling, &metadata)
+            };
+            match std::fs::metadata(&real) {
+                Err(_) => WorkspaceFileVersion::Error {
+                    workspace_id: String::new(),
+                    path: target.to_string_lossy().into_owned(),
+                    error: UNSTATABLE.to_string(),
+                },
+                Ok(metadata) => {
+                    if !metadata.is_file() {
+                        return WorkspaceFileVersion::Error {
+                            workspace_id: String::new(),
+                            path: spelling,
+                            error: NOT_A_FILE.to_string(),
+                        };
+                    }
+                    ready_version("", &spelling, &metadata)
+                }
             }
-        },
+        }
     }
 }
 
@@ -918,74 +958,84 @@ fn write_app_file(
             }
         }
         TargetState::Unstatable => error(UNSTATABLE),
-        TargetState::Present(_) => match std::fs::metadata(&target) {
-            Err(_) => error(UNSTATABLE),
-            Ok(metadata) => {
-                if !metadata.is_file() {
-                    return error(NOT_A_FILE);
-                }
-                if metadata.len() > MAX_EDITABLE_FILE_BYTES {
-                    return error(TOO_LARGE);
-                }
-                let current = match std::fs::read(&target) {
-                    Ok(bytes) => bytes,
-                    Err(_) => return error(DOES_NOT_EXIST),
-                };
-                if is_likely_binary(&current) || !is_valid_utf8(&current) {
-                    return error(BINARY);
-                }
-                let modified = metadata.modified().ok();
-                let modified_ms = stamped(&metadata);
-                let matches = match modified {
-                    Some(time) => matches_expected(
-                        metadata.len(),
-                        time,
-                        modified_ms,
-                        expected_modified_at,
-                        expected_revision,
-                    ),
-                    None => false,
-                };
-                if !matches {
-                    return WorkspaceFileWriteResult::Conflict {
-                        version: ready_version("", &spelling, &metadata),
-                    };
-                }
-                #[cfg(unix)]
-                let mode = {
-                    use std::os::unix::fs::PermissionsExt;
-                    Some(metadata.permissions().mode())
-                };
-                #[cfg(not(unix))]
-                let mode: Option<u32> = None;
-                replace_file(&target, content, mode, || {
-                    match std::fs::metadata(&target) {
-                        Ok(latest) => {
-                            let latest_ms = stamped(&latest);
-                            let still_matches = match latest.modified().ok() {
-                                Some(time) => matches_expected(
-                                    latest.len(),
-                                    time,
-                                    latest_ms,
-                                    expected_modified_at,
-                                    expected_revision,
-                                ),
-                                None => false,
-                            };
-                            if still_matches {
-                                Recheck::Proceed
-                            } else {
-                                Recheck::Conflict
-                            }
-                        }
-                        Err(_) => match classify_target(&target) {
-                            TargetState::Absent => Recheck::Conflict,
-                            _ => Recheck::Refuse(UNSTATABLE),
-                        },
+        // Followed to the real file before anything stages: the temp
+        // sits beside the target and the rename replaces its bytes, so
+        // a link is never swapped for a regular file. `spelling` above
+        // stays the requested one; only the IO moves.
+        TargetState::Present(_) => {
+            let target = match canonical_app_target(&target) {
+                Ok(real) => real,
+                Err(sentence) => return error(sentence),
+            };
+            match std::fs::metadata(&target) {
+                Err(_) => error(UNSTATABLE),
+                Ok(metadata) => {
+                    if !metadata.is_file() {
+                        return error(NOT_A_FILE);
                     }
-                })
+                    if metadata.len() > MAX_EDITABLE_FILE_BYTES {
+                        return error(TOO_LARGE);
+                    }
+                    let current = match std::fs::read(&target) {
+                        Ok(bytes) => bytes,
+                        Err(_) => return error(DOES_NOT_EXIST),
+                    };
+                    if is_likely_binary(&current) || !is_valid_utf8(&current) {
+                        return error(BINARY);
+                    }
+                    let modified = metadata.modified().ok();
+                    let modified_ms = stamped(&metadata);
+                    let matches = match modified {
+                        Some(time) => matches_expected(
+                            metadata.len(),
+                            time,
+                            modified_ms,
+                            expected_modified_at,
+                            expected_revision,
+                        ),
+                        None => false,
+                    };
+                    if !matches {
+                        return WorkspaceFileWriteResult::Conflict {
+                            version: ready_version("", &spelling, &metadata),
+                        };
+                    }
+                    #[cfg(unix)]
+                    let mode = {
+                        use std::os::unix::fs::PermissionsExt;
+                        Some(metadata.permissions().mode())
+                    };
+                    #[cfg(not(unix))]
+                    let mode: Option<u32> = None;
+                    replace_file(&target, content, mode, || {
+                        match std::fs::metadata(&target) {
+                            Ok(latest) => {
+                                let latest_ms = stamped(&latest);
+                                let still_matches = match latest.modified().ok() {
+                                    Some(time) => matches_expected(
+                                        latest.len(),
+                                        time,
+                                        latest_ms,
+                                        expected_modified_at,
+                                        expected_revision,
+                                    ),
+                                    None => false,
+                                };
+                                if still_matches {
+                                    Recheck::Proceed
+                                } else {
+                                    Recheck::Conflict
+                                }
+                            }
+                            Err(_) => match classify_target(&target) {
+                                TargetState::Absent => Recheck::Conflict,
+                                _ => Recheck::Refuse(UNSTATABLE),
+                            },
+                        }
+                    })
+                }
             }
-        },
+        }
     }
 }
 

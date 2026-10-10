@@ -21,7 +21,7 @@ use devboule_protocol::{
 use super::{
     classify_target, expand_user_path, open_app_file, open_workspace_file, version_app_file,
     version_workspace_file, write_app_file, write_workspace_file, TargetState, BINARY,
-    MAX_EDITABLE_FILE_BYTES, PARENT_MISSING, TOO_LARGE, UNSTATABLE,
+    LINK_TARGET_MISSING, MAX_EDITABLE_FILE_BYTES, PARENT_MISSING, TOO_LARGE, UNSTATABLE,
 };
 use crate::workspace_git_diff::NOT_A_FILE;
 
@@ -732,5 +732,81 @@ fn an_unstatable_path_is_a_failed_check_not_a_missing_file() {
             WorkspaceFileWriteResult::Error { error } if error == UNSTATABLE
         ),
         "{result:?}"
+    );
+}
+
+#[test]
+fn an_app_write_lands_in_the_target_and_keeps_the_link() {
+    let dir = Dir::fresh("app-write-link");
+    dir.write("real.txt", "real\n");
+    let target = dir.root.join("real.txt");
+    let link = dir.root.join("link.txt");
+    #[cfg(windows)]
+    let linked = std::os::windows::fs::symlink_file(&target, &link);
+    #[cfg(not(windows))]
+    let linked = std::os::unix::fs::symlink(&target, &link);
+    if linked.is_err() {
+        return;
+    }
+
+    let opened = open_app_file(&link.to_string_lossy());
+    let (_, modified_at, revision) = ready_of(opened.version.as_ref().expect("version"));
+    let result = write_app_file(
+        &link.to_string_lossy(),
+        b"through\n",
+        Some(modified_at),
+        revision.as_deref(),
+    );
+    assert!(
+        matches!(result, WorkspaceFileWriteResult::Written { .. }),
+        "{result:?}"
+    );
+    // The bytes reached the target, and the link is still a link: the
+    // write replaced content, never the entry.
+    assert_eq!(std::fs::read(&target).expect("read back"), b"through\n");
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .expect("link stat")
+            .file_type()
+            .is_symlink(),
+        "the link must survive the write"
+    );
+}
+
+#[test]
+fn a_dangling_link_is_an_error_never_a_create() {
+    let dir = Dir::fresh("app-dangling");
+    let missing = dir.root.join("gone.txt");
+    let link = dir.root.join("link.txt");
+    #[cfg(windows)]
+    let linked = std::os::windows::fs::symlink_file(&missing, &link);
+    #[cfg(not(windows))]
+    let linked = std::os::unix::fs::symlink(&missing, &link);
+    if linked.is_err() {
+        return;
+    }
+    let spelling = link.to_string_lossy().into_owned();
+
+    // Not an empty editor over a "missing" file: the link names
+    // something that is not there.
+    let file = open_app_file(&spelling);
+    assert_eq!(file.status, WorkspaceFileContentStatus::Refused);
+    assert_eq!(file.error.as_deref(), Some(LINK_TARGET_MISSING));
+
+    // Not a missing version either, so no create can arm on it.
+    assert!(matches!(
+        version_app_file(&spelling),
+        WorkspaceFileVersion::Error { .. }
+    ));
+    assert!(matches!(
+        write_app_file(&spelling, b"x", None, None),
+        WorkspaceFileWriteResult::Error { .. }
+    ));
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .expect("link stat")
+            .file_type()
+            .is_symlink(),
+        "a failed write must not touch the link"
     );
 }
