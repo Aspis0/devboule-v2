@@ -236,7 +236,9 @@ describe("the status bar", () => {
       providerId: "codex",
       windows: [{ durationMins: 300, usedPercent: 80, resetsAt: past }],
     });
-    const bar = await render(<StatusBar agent={null} daemon={DAEMON} />);
+    const bar = await render(
+      <StatusBar agent={{ ...AGENT, providerId: "claude" }} daemon={DAEMON} />,
+    );
 
     const meters = Array.from(bar.querySelectorAll(".status-bar-provider")).map(
       (meter) => meter.textContent,
@@ -245,13 +247,13 @@ describe("the status bar", () => {
     expect(bar.textContent).not.toContain("97");
   });
 
-  it("shows each provider's usage as text and a bar, and nothing for a provider with no number", async () => {
+  it("shows only the focused agent's provider, as a percent and a bar, with its windows in the hover", async () => {
     recordPlanUsage({
       type: "plan_usage",
       providerId: "claude",
       windows: [
-        { durationMins: 300, usedPercent: 58, resetsAt: later },
-        { durationMins: 10_080, usedPercent: 41, resetsAt: later },
+        { durationMins: 300, usedPercent: 45, resetsAt: later },
+        { durationMins: 10_080, usedPercent: 66, resetsAt: later },
       ],
     });
     recordPlanUsage({
@@ -259,25 +261,36 @@ describe("the status bar", () => {
       providerId: "codex",
       windows: [{ durationMins: 300 }, { durationMins: 10_080, usedPercent: 37, resetsAt: later }],
     });
-    recordPlanUsage({
-      type: "plan_usage",
-      providerId: "pi",
-      windows: [{ durationMins: 300, usedPercent: 9, resetsAt: later }],
-    });
-    const bar = await render(<StatusBar agent={null} daemon={DAEMON} />);
-
-    const meters = Array.from(bar.querySelectorAll(".status-bar-provider")).map(
-      (meter) => meter.textContent,
+    const bar = await render(
+      <StatusBar agent={{ ...AGENT, providerId: "claude" }} daemon={DAEMON} />,
     );
-    expect(meters).toEqual(["Claude 58% 5h · 41% wk", "Codex 37% wk"]);
-    expect(bar.querySelectorAll(".status-bar-provider .status-meter-bar")).toHaveLength(2);
+
+    const meters = bar.querySelectorAll(".status-bar-provider");
+    expect(Array.from(meters).map((meter) => meter.textContent)).toEqual(["Claude 45%"]);
+    expect(meters[0]?.querySelector(".status-meter-bar")).not.toBeNull();
+    expect(meters[0]?.getAttribute("title")?.split("\n")[0]).toBe(
+      "5-hour limit: 45% used · Weekly: 66% used",
+    );
+    expect(bar.textContent).not.toContain("37");
     expect(bar.textContent).not.toMatch(/\bpi\b/);
   });
 
-  it("shows the focused agent's context, and none when no reading was published", async () => {
-    const bar = await render(<StatusBar agent={AGENT} daemon={DAEMON} />);
-    expect(bar.querySelector(".workspace-context-meter")).toBeNull();
+  it("names a window that is not the 5-hour one, so a weekly figure is never read as the 5-hour", async () => {
+    recordPlanUsage({
+      type: "plan_usage",
+      providerId: "codex",
+      windows: [{ durationMins: 300 }, { durationMins: 10_080, usedPercent: 37, resetsAt: later }],
+    });
+    const bar = await render(
+      <StatusBar agent={{ ...AGENT, providerId: "codex" }} daemon={DAEMON} />,
+    );
 
+    expect(
+      Array.from(bar.querySelectorAll(".status-bar-provider")).map((meter) => meter.textContent),
+    ).toEqual(["Codex 37% wk"]);
+  });
+
+  it("keeps the context out of the bar: the composer beside the agent shows it", async () => {
     await act(async () =>
       publishAgentReading("bar-agent", {
         usage: { type: "context_usage", usedTokens: 24_000, maxTokens: 1_000_000, live: true },
@@ -286,37 +299,29 @@ describe("the status bar", () => {
         task: null,
       }),
     );
-    expect(bar.querySelector(".workspace-context-meter-text")?.textContent).toBe("ctx 24k/1m");
+    const bar = await render(<StatusBar agent={AGENT} daemon={DAEMON} />);
+
+    expect(bar.querySelector(".workspace-context-meter")).toBeNull();
+    expect(bar.textContent).not.toContain("ctx");
   });
 
-  it("runs title, usage, context, then the daemon at the far right", async () => {
+  it("runs title, the focused provider's usage, then the daemon at the far right", async () => {
     recordPlanUsage({
       type: "plan_usage",
       providerId: "claude",
       windows: [{ durationMins: 300, usedPercent: 58, resetsAt: later }],
     });
-    await act(async () =>
-      publishAgentReading("bar-agent", {
-        usage: { type: "context_usage", usedTokens: 24_000, maxTokens: 1_000_000, live: true },
-        manifest: null,
-        lastFinished: null,
-        task: null,
-      }),
+    const bar = await render(
+      <StatusBar agent={{ ...AGENT, providerId: "claude" }} daemon={DAEMON} />,
     );
-    const bar = await render(<StatusBar agent={AGENT} daemon={DAEMON} />);
 
     // The live region draws nothing, so it is not one of the bar's items.
     const order = Array.from(bar.querySelector(".workspace-status-bar")?.children ?? [])
       .filter((child) => child.getAttribute("role") !== "status")
       .map((child) => child.className);
-    // Usage meters come from the shared store, so earlier cases may leave more
-    // than one provider: the order is what this case pins.
-    const providers = order.filter((name) => name === "status-bar-provider").length;
-    expect(providers).toBeGreaterThan(0);
     expect(order).toEqual([
       "status-bar-who",
-      ...Array<string>(providers).fill("status-bar-provider"),
-      "workspace-context-meter",
+      "status-bar-provider",
       "status-bar-spacer",
       "status-bar-daemon",
     ]);

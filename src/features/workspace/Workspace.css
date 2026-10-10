@@ -1588,6 +1588,12 @@
   min-width: 0;
 }
 
+/* The focused agent's context, at the end of the control row, beside the send. */
+.workspace-composer-context {
+  display: inline-flex;
+  margin-inline-start: auto;
+}
+
 /* The single-model label: the trigger's look without the chevron — same
    typography, height and radius so it sits in the row identically, but a
    span: there is nothing to pick, so it must not offer a hover fill.

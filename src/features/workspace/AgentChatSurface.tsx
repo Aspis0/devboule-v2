@@ -60,6 +60,7 @@ import { SubagentMenu, type SubagentArchiveTarget } from "./SubagentMenu";
 import { BackgroundTasksPill } from "./BackgroundTasksPill";
 import { childRow, deriveSubagentRows, isArchivable } from "./subagentRows";
 import { AgentReadingPublisher } from "./statusBar/AgentReadingPublisher";
+import { AgentContextMeter } from "./statusBar/AgentContextMeter";
 import { journalLossCopy } from "./journalLoss";
 import { PickerChip, modeDotClass } from "../../components/PickerChip";
 import type { ChatFileLinks } from "../../lib/chatFilePaths";
@@ -1122,6 +1123,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
                 pendingCopy={pendingEffortCopy ?? undefined}
               />
             ) : null}
+            <AgentContextMeter sessionId={sessionId} />
           </>
         }
       />

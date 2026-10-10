@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import type { DaemonStatus, Session } from "../../../types/ipc";
 import { usePlanRecordedAt, useAllPlanUsage } from "../../../lib/planUsageStore";
 import type { PlanUsage } from "../../../types/ipc";
-import { ContextMeter } from "../ContextMeter";
 import { activeSessionAttention, sessionAttentionLabel } from "../sessionAttention";
 import { rosterStateDisplay } from "../sessionStateDisplay";
 import { daemonDotTone, daemonLabel } from "../sidebar/SidebarFooter";
@@ -22,6 +21,8 @@ export interface FocusedAgent {
   working: boolean;
   /** The chip's own word for a non-live state (Quiet, Recovered, Stopped); null while live. */
   stateWord: string | null;
+  /** The provider whose plan usage the bar shows for this agent. */
+  providerId?: string | null;
 }
 
 function attentionToneOf(session: Session): FocusedAgent["attentionTone"] {
@@ -40,6 +41,7 @@ export function agentStateOf(session: Session): Omit<FocusedAgent, "sessionId" |
     stateWord: live
       ? null
       : rosterStateDisplay(session.state, session.elapsedMs, session.activity).word,
+    providerId: session.provider ?? session.kind,
   };
 }
 
@@ -72,10 +74,14 @@ function ProviderUsage({ plan, nowMs }: { plan: PlanUsage; nowMs: number }) {
   const recordedAt = usePlanRecordedAt(plan.providerId);
   const meter = providerMeter(plan, recordedAt, nowMs);
   if (meter === null) return null;
-  // A reading ten minutes to an hour old stays in the bar, dimmed, with its age in the label.
+  // The line shows one window: the 5-hour one when it is current, else the first
+  // current one, named so it is never read as the 5-hour figure. The rest wait in the hover.
+  const primary = meter.parts.find((part) => part.label === "5h") ?? meter.parts[0];
   const label =
-    `${meter.name} ${meter.parts.map((part) => `${part.percent}% ${part.label}`).join(" · ")}` +
-    (meter.ageSuffix ?? "");
+    primary === undefined
+      ? meter.name
+      : `${meter.name} ${primary.percent}%${primary.label === "5h" ? "" : ` ${primary.label}`}`;
+  // A reading ten minutes to an hour old stays in the bar, dimmed; the hover says how old it is.
   return (
     <span
       className={meter.stale ? "status-bar-provider status-meter--stale" : "status-bar-provider"}
@@ -87,23 +93,11 @@ function ProviderUsage({ plan, nowMs }: { plan: PlanUsage; nowMs: number }) {
   );
 }
 
-function FocusedAgentContext({ sessionId }: { sessionId: string }) {
-  const reading = useAgentReading(sessionId);
-  if (reading === null) return null;
-  return (
-    <ContextMeter
-      usage={reading.usage}
-      manifest={reading.manifest}
-      lastFinished={reading.lastFinished}
-    />
-  );
-}
-
 /**
- * The app's one status line, under every panel: who is working, each
- * provider's plan usage, the focused agent's context, and the daemon. It shows
- * only what the app holds — a provider that has sent no usage, or none with a
- * percent in it, simply has no meter.
+ * The app's one status line, under every panel: who is working, the focused
+ * agent's provider plan usage, and the daemon. The focused agent's context sits
+ * beside its composer instead. It shows only what the app holds — a provider
+ * that has sent no usage, or none with a percent in it, simply has no meter.
  */
 export function StatusBar({ agent, daemon, progress = null }: StatusBarProps) {
   const frames = useAllPlanUsage();
@@ -119,6 +113,12 @@ export function StatusBar({ agent, daemon, progress = null }: StatusBarProps) {
   const stateTone =
     agent === null ? "border" : (agent.attentionTone ?? (agent.working ? "green" : "border"));
   const tooltip = daemonLabel(daemon);
+  // Only the focused agent's provider: the bar answers for the session in front of the person.
+  const focusedProvider = agent?.providerId ?? null;
+  const focusedPlan =
+    focusedProvider === null
+      ? undefined
+      : frames.find((plan) => plan.providerId === focusedProvider);
   return (
     <div className="workspace-status-bar" role="group" aria-label="Status">
       {/* Always mounted, so the words that arrive in it are announced. */}
@@ -145,10 +145,9 @@ export function StatusBar({ agent, daemon, progress = null }: StatusBarProps) {
           </span>
         </span>
       )}
-      {frames.map((plan) => (
-        <ProviderUsage key={plan.providerId} plan={plan} nowMs={nowMs} />
-      ))}
-      {agent === null ? null : <FocusedAgentContext sessionId={agent.sessionId} />}
+      {focusedPlan === undefined ? null : (
+        <ProviderUsage key={focusedPlan.providerId} plan={focusedPlan} nowMs={nowMs} />
+      )}
       <span className="status-bar-spacer" />
       <span className="status-bar-daemon" title={tooltip}>
         <span className={`workspace-status-dot workspace-dot-${daemonDotTone(daemon.state)}`} />

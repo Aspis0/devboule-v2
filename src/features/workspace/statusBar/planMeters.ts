@@ -23,7 +23,9 @@ export interface ProviderMeter {
   parts: WindowPart[];
   /** The bar's fill: the 5-hour window when the frame has one, else the first with a number. */
   barPercent: number;
-  /** The windows spelled out with their resets, and how old the reading is. */
+  /** `5-hour limit: 45% used · Weekly: 66% used`: the hover's first line. */
+  summary: string;
+  /** The summary, then the windows with their resets, then how old the reading is. */
   title: string;
   /** ` · 25 min ago` once the reading is ten minutes old and still under an hour; null otherwise. */
   ageSuffix: string | null;
@@ -35,6 +37,13 @@ function partLabel(durationMins: number): string {
   if (durationMins === 300) return "5h";
   if (durationMins === 10_080) return "wk";
   return `${durationMins}m`;
+}
+
+/** A window's name in the hover's summary: "5-hour limit", "Weekly". */
+function summaryWindowName(durationMins: number): string {
+  if (durationMins === 300) return "5-hour limit";
+  if (durationMins === 10_080) return "Weekly";
+  return `${durationMins} min limit`;
 }
 
 /** How old the reading is, as the status bar treats it. */
@@ -110,6 +119,12 @@ export function providerMeter(
   const lines = measured.map(
     (window) => `${planWindowLabel(window.durationMins)}: ${planWindowMeta(window, nowMs)}`,
   );
+  const summary = measured
+    .map(
+      (window) =>
+        `${summaryWindowName(window.durationMins)}: ${Math.round(window.usedPercent!)}% used`,
+    )
+    .join(" · ");
   const age = observedAtMs === null ? null : updatedAgoLabel(observedAtMs, nowMs);
   // Suffix only while under the hour: the band starts at ten minutes, so the
   // whole minutes never fall below 10.
@@ -121,7 +136,8 @@ export function providerMeter(
     name,
     parts,
     barPercent: planWindowBarPercent(barWindow) ?? 0,
-    title: [...lines, ...(age === null ? [] : [age])].join("\n"),
+    summary,
+    title: [summary, ...lines, ...(age === null ? [] : [age])].join("\n"),
     ageSuffix,
     stale: band === "stale",
   };

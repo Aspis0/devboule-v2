@@ -46,6 +46,19 @@ describe("providerMeter", () => {
     expect(meter?.title).toContain("5-hour: 58% · resets in 2 h");
   });
 
+  it("leads the hover with the one-line summary of the windows", () => {
+    const meter = providerMeter(
+      plan("claude", [
+        { durationMins: 300, usedPercent: 45, resetsAt: NOW / 1000 + 7200 },
+        { durationMins: 10_080, usedPercent: 66, resetsAt: LATER },
+      ]),
+      null,
+      NOW,
+    );
+    expect(meter?.summary).toBe("5-hour limit: 45% used · Weekly: 66% used");
+    expect(meter?.title.split("\n")[0]).toBe(meter?.summary);
+  });
+
   it("leaves a window with no percent out instead of reading it as zero", () => {
     const meter = providerMeter(
       plan("codex", [
