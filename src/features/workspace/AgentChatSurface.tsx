@@ -61,6 +61,7 @@ import { BackgroundTasksPill } from "./BackgroundTasksPill";
 import { childRow, deriveSubagentRows, isArchivable } from "./subagentRows";
 import { AgentReadingPublisher } from "./statusBar/AgentReadingPublisher";
 import { AgentContextMeter } from "./statusBar/AgentContextMeter";
+import { liveEffortOptions } from "./liveEffortOptions";
 import { journalLossCopy } from "./journalLoss";
 import { PickerChip, modeDotClass } from "../../components/PickerChip";
 import type { ChatFileLinks } from "../../lib/chatFilePaths";
@@ -1105,7 +1106,11 @@ export const AgentChatSurface = memo(function AgentChatSurface({
             {manifest !== null && efforts.length > 0 ? (
               <PickerChip
                 label="Thinking effort"
-                options={efforts.map((entry) => ({
+                options={liveEffortOptions(
+                  efforts,
+                  manifest.providerId,
+                  confirmedEffort(stripModel),
+                ).map((entry) => ({
                   id: entry.id,
                   name: entry.label,
                   description: entry.description,

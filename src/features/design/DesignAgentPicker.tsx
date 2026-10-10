@@ -10,6 +10,7 @@ import { useProviderConsent } from "../workspace/useProviderConsent";
 import { requiresConsent } from "../workspace/workspaceSessions";
 import { modelLabel as modelDisplayLabel } from "../workspace/modelLabel";
 import { confirmedEffort, manifestModel } from "./designMessageModel";
+import { liveEffortOptions } from "../workspace/liveEffortOptions";
 
 interface DesignAgentPickerProps {
   providers: readonly ProviderInfo[];
@@ -378,7 +379,11 @@ export function DesignAgentPicker({
       {efforts.length > 0 ? (
         <PickerChip
           label="Thinking effort"
-          options={efforts.map((effort) => ({ id: effort.id, name: effort.label }))}
+          options={liveEffortOptions(
+            efforts,
+            manifest?.providerId,
+            confirmedEffort(currentModel),
+          ).map((effort) => ({ id: effort.id, name: effort.label }))}
           currentId={confirmedEffort(currentModel)}
           onSelect={onEffortSelect}
           chipTestId="design-effort-chip"
