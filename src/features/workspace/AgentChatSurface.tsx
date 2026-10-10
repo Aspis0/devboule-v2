@@ -166,6 +166,8 @@ interface AgentChatSurfaceProps {
    * turns recognition off — no workspace, or a surface that cannot open one.
    */
   fileLinks?: ChatFileLinks | null;
+  /** The workspace's file paths for the composer's "@" menu. Absent: no "@" menu. */
+  loadFileIndex?: () => Promise<readonly string[]>;
   /** The roster's turn status, read by the composer's send predicate. Absent until the workspace passes it. */
   activity?: AgentActivityState;
   observedState?: SessionState | null;
@@ -370,6 +372,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   onOpenTasks,
   onAgentChange,
   fileLinks = null,
+  loadFileIndex,
   activity,
   observedState = null,
   initialGoal = null,
@@ -923,6 +926,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         files={fileAttachments.files}
         onAddFiles={fileAttachments.addFiles}
         onRemoveFile={fileAttachments.removeFile}
+        loadFileIndex={loadFileIndex}
         disabled={composerDisabled}
         disabledReason={recoveredAttach ? null : disabledReason}
         availableCommands={composerCommands}

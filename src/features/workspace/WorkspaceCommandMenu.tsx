@@ -28,6 +28,14 @@ interface WorkspaceCommandMenuProps {
   /** The active row's element id: the composer points aria-activedescendant at it. */
   activeOptionId: string | null;
   onSelect: (command: WorkspaceCommand) => void;
+  /** The sigil each row prints before its name: "/" for commands, "@" for files. */
+  prefix?: string;
+  /** The heading drawn over the rows. */
+  heading?: string;
+  /** The listbox's name for assistive tech. */
+  label?: string;
+  /** The line the menu draws when it has no row to show. */
+  emptyText?: string;
 }
 
 export function WorkspaceCommandMenu({
@@ -38,6 +46,10 @@ export function WorkspaceCommandMenu({
   activeIndex,
   activeOptionId,
   onSelect,
+  prefix = "/",
+  heading = "Agent commands",
+  label = "Available commands",
+  emptyText = NO_COMMANDS_TEXT,
 }: WorkspaceCommandMenuProps) {
   const listRef = useRef<HTMLDivElement>(null);
   const activeRowRef = useRef<HTMLButtonElement>(null);
@@ -61,9 +73,9 @@ export function WorkspaceCommandMenu({
       id={listId}
       ref={listRef}
       role="listbox"
-      aria-label="Available commands"
+      aria-label={label}
     >
-      <div className="workspace-command-menu-heading">Agent commands</div>
+      <div className="workspace-command-menu-heading">{heading}</div>
       {commands.length > 0 ? (
         commands.map((command, index) => {
           const active = index === activeIndex;
@@ -79,7 +91,10 @@ export function WorkspaceCommandMenu({
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => onSelect(command)}
             >
-              <span className="workspace-command-name">/{command.name}</span>
+              <span className="workspace-command-name">
+                {prefix}
+                {command.name}
+              </span>
               <span className="workspace-command-description">
                 {command.description}
                 {command.hint ? ` · ${command.hint}` : ""}
@@ -88,7 +103,7 @@ export function WorkspaceCommandMenu({
           );
         })
       ) : (
-        <div className="workspace-command-empty">{NO_COMMANDS_TEXT}</div>
+        <div className="workspace-command-empty">{emptyText}</div>
       )}
     </div>
   );

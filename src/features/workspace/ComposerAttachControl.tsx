@@ -163,8 +163,8 @@ export function ComposerAttachControl({
       <button
         type="button"
         className="workspace-composer-attach"
-        aria-label="Attach file"
-        title="Attach file"
+        aria-label="Attach files"
+        title="Attach files"
         onClick={() => inputRef.current?.click()}
         disabled={pickerDisabled}
       >
@@ -180,9 +180,7 @@ export function ComposerAttachControl({
           aria-hidden="true"
           focusable="false"
         >
-          <rect x={3} y={3} width={18} height={18} rx={2} />
-          <circle cx={9} cy={9} r={2} />
-          <path d="m21 15-5-5L5 21" />
+          <path d="M12 5v14M5 12h14" />
         </svg>
       </button>
       <input

@@ -161,8 +161,10 @@ import {
   providersList,
   sessionClose,
   sessionStop,
+  workspaceFilesList,
   type AttentionTarget,
 } from "../../lib/tauri";
+import { workspaceFileIndex } from "./workspaceFileIndex";
 import { isCommandError } from "../../lib/commandError";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import "./Workspace.css";
@@ -1306,6 +1308,12 @@ export function Workspace({
       open: (relativePath: string) => openToolTab(paneWorkspaceKey, relativePath, "file"),
     };
   }, [paneWorkspaceId, paneCwd, paneWorkspaceKey, openToolTab]);
+  // The "@" menu's file index: built on the first mention, per workspace.
+  const loadPaneFileIndex = useMemo(() => {
+    if (paneWorkspaceId === null) return undefined;
+    const workspaceId = paneWorkspaceId;
+    return () => workspaceFileIndex(workspaceId, (path) => workspaceFilesList(workspaceId, path));
+  }, [paneWorkspaceId]);
   // The recovery decision is a small external store: it holds the episode, the
   // roster answer, and the attempt-failed note, which only change from pushed
   // updates. Both pushes happen in effects below — no ref is read during render.
@@ -2348,6 +2356,7 @@ export function Workspace({
                           id={WORKSPACE_TERMINAL_PANEL_ID}
                           sessionId={paneSession.id}
                           fileLinks={chatFileLinks}
+                          loadFileIndex={loadPaneFileIndex}
                           observedState={paneSession.state}
                           initialGoal={paneSession.goal}
                           activity={paneSession.activity}

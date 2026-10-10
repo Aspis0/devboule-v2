@@ -21,6 +21,7 @@ import { COMMAND_MENU_KEY, composerChordLabel, composerKeyAction } from "../../l
 import { isImeComposition } from "../../lib/imeComposition";
 import type { AttachmentReference, PromptAttachment } from "../../types/ipc";
 import { rankCommandMatches } from "./commandMatch";
+import { fileMentionQuery, insertFileMention, rankFileMatches } from "./fileMention";
 import {
   acceptedImageTypes,
   ComposerAttachControl,
@@ -63,6 +64,8 @@ interface WorkspaceComposerProps {
   files?: readonly AttachedFile[];
   onAddFiles?: (files: readonly File[]) => void;
   onRemoveFile?: (id: string) => void;
+  /** The workspace file paths the "@" menu offers, read the first time an "@" is typed. */
+  loadFileIndex?: () => Promise<readonly string[]>;
   disabled?: boolean;
   disabledReason: string | null;
   availableCommands?: readonly WorkspaceCommand[];
@@ -143,6 +146,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   imageOnlyAccepted = false,
   files = [],
   onAddFiles,
+  loadFileIndex,
   onRemoveFile,
   disabled = false,
   disabledReason,
@@ -172,6 +176,11 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   const [dropTarget, setDropTarget] = useState(false);
   const [menuDismissed, setMenuDismissed] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
+  // The "@" menu: the workspace's paths, read once per mention, and its own
+  // dismissal and highlight, apart from the "/" command menu's.
+  const [fileIndex, setFileIndex] = useState<readonly string[] | null>(null);
+  const [fileMenuDismissed, setFileMenuDismissed] = useState(false);
+  const [activeFileIndex, setActiveFileIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   // True from a queue press until the daemon has answered it.
@@ -537,6 +546,61 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
     [setInput],
   );
 
+  // The "@" menu. It opens only when no "/" command menu is up, and its index
+  // is read the first time a mention is typed.
+  const mention = fileMentionQuery(input);
+  const mentioning = mention !== null;
+  useEffect(() => {
+    if (!mentioning || fileIndex !== null || loadFileIndex === undefined) return;
+    let cancelled = false;
+    loadFileIndex().then(
+      (files) => {
+        if (!cancelled) setFileIndex(files);
+      },
+      () => {
+        if (!cancelled) setFileIndex([]);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [fileIndex, loadFileIndex, mentioning]);
+  const fileMatches = useMemo(
+    () => (mention === null || fileIndex === null ? [] : rankFileMatches(fileIndex, mention)),
+    [fileIndex, mention],
+  );
+  const fileMenuVisible = !disabled && !commandMenuVisible && mentioning && !fileMenuDismissed;
+  const activeFileRow =
+    fileMatches.length === 0
+      ? -1
+      : activeFileIndex >= 0 && activeFileIndex < fileMatches.length
+        ? activeFileIndex
+        : 0;
+  const fileMenuId = `${menuId}-files`;
+  const activeFileOptionId =
+    fileMenuVisible && activeFileRow >= 0 ? `${fileMenuId}-option-${activeFileRow}` : null;
+  const fileOptions = useMemo(
+    () => fileMatches.map((path) => ({ name: path, description: "" })),
+    [fileMatches],
+  );
+
+  // A new mention starts on its first file, with the menu open again.
+  const lastMentionRef = useRef(mention);
+  useEffect(() => {
+    if (lastMentionRef.current === mention) return;
+    lastMentionRef.current = mention;
+    setFileMenuDismissed(false);
+    setActiveFileIndex(0);
+  }, [mention]);
+
+  const selectFile = useCallback(
+    (file: WorkspaceCommand) => {
+      setInput(insertFileMention(input, file.name));
+      textareaRef.current?.focus();
+    },
+    [input, setInput],
+  );
+
   const handleComposerKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
       if (isImeComposition(event.nativeEvent)) return;
@@ -568,6 +632,31 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
           }
         }
       }
+      if (event.key === "Escape" && fileMenuVisible) {
+        event.preventDefault();
+        setFileMenuDismissed(true);
+        return;
+      }
+      if (
+        fileMenuVisible &&
+        fileMatches.length > 0 &&
+        !event.shiftKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey
+      ) {
+        if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+          const key = event.key;
+          event.preventDefault();
+          setActiveFileIndex((current) => nextCommandIndex(current, fileMatches.length, key));
+          return;
+        }
+        if (event.key === "Enter" || event.key === "Tab") {
+          event.preventDefault();
+          selectFile(fileOptions[activeFileRow]);
+          return;
+        }
+      }
       const action = composerKeyAction(event.nativeEvent);
       if (action !== "submit" && action !== "alternate") return;
       event.preventDefault();
@@ -576,12 +665,17 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
     },
     [
       activeRow,
+      activeFileRow,
       commandMatches,
       commandMenuVisible,
+      fileMatches,
+      fileMenuVisible,
+      fileOptions,
       matchCount,
       runAlternateAction,
       runDefaultAction,
       selectCommand,
+      selectFile,
     ],
   );
 
@@ -603,6 +697,19 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
         activeIndex={activeRow}
         activeOptionId={activeOptionId}
         onSelect={selectCommand}
+      />
+      <WorkspaceCommandMenu
+        open={fileMenuVisible}
+        onClose={() => setFileMenuDismissed(true)}
+        listId={fileMenuId}
+        commands={fileOptions}
+        activeIndex={activeFileRow}
+        activeOptionId={activeFileOptionId}
+        onSelect={selectFile}
+        prefix="@"
+        heading="Workspace files"
+        label="Workspace files"
+        emptyText={fileIndex === null ? "Loading files…" : "No files found"}
       />
       <div
         className={`workspace-composer${dropTarget ? " is-drop-target" : ""}`}
@@ -649,10 +756,10 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
           rows={1}
           aria-label="Message the agent"
           role="combobox"
-          aria-expanded={commandMenuVisible}
-          aria-controls={commandMenuVisible ? menuId : undefined}
+          aria-expanded={commandMenuVisible || fileMenuVisible}
+          aria-controls={commandMenuVisible ? menuId : fileMenuVisible ? fileMenuId : undefined}
           aria-autocomplete="list"
-          aria-activedescendant={activeOptionId ?? undefined}
+          aria-activedescendant={activeOptionId ?? activeFileOptionId ?? undefined}
           disabled={disabled}
         />
         <div className="workspace-composer-bar">

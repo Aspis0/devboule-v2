@@ -245,7 +245,7 @@ describe("WorkspaceComposer image sends", () => {
     });
     expect(imageInput().disabled).toBe(true);
     expect(
-      container.querySelector<HTMLButtonElement>('button[aria-label="Attach file"]')!.disabled,
+      container.querySelector<HTMLButtonElement>('button[aria-label="Attach files"]')!.disabled,
     ).toBe(true);
     expect(container.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!.disabled).toBe(
       true,
