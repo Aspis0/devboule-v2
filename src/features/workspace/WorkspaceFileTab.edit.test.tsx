@@ -119,14 +119,14 @@ describe("WorkspaceFileTab editing", () => {
     vi.clearAllMocks();
   });
 
-  async function renderTab(path = "a.txt") {
+  async function renderTab(path = "a.txt", refreshNonce = 0) {
     if (root === undefined) root = createRoot(container);
     await act(async () => {
       root!.render(
         <WorkspaceFileTab
           workspaceKey={keyFor(WORKSPACE)}
           path={path}
-          refreshNonce={0}
+          refreshNonce={refreshNonce}
           cache={new Map()}
         />,
       );
@@ -311,5 +311,21 @@ describe("WorkspaceFileTab editing", () => {
     expect(workspaceFileEditorOpen).not.toHaveBeenCalled();
     expect(container.querySelector('[data-testid="file-source-editor"]')).toBeNull();
     expect(container.textContent).toContain("Update the daemon to edit files.");
+  });
+
+  it("keeps the buffer across a re-click instead of re-opening", async () => {
+    await renderTab();
+    await type("unsaved ");
+    expect(dirtyDot()).not.toBeNull();
+    const opens = vi.mocked(workspaceFileEditorOpen).mock.calls.length;
+
+    // Re-clicking the active tab polls; it must not rebuild the model.
+    await renderTab("a.txt", 1);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(vi.mocked(workspaceFileEditorOpen).mock.calls.length).toBe(opens);
+    expect(dirtyDot()).not.toBeNull();
   });
 });

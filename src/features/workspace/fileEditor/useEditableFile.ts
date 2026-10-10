@@ -169,8 +169,11 @@ export function useEditableFile(
   const [loading, setLoading] = useState(true);
   const [failure, setFailure] = useState<string | null>(null);
   const [reopening, setReopening] = useState(false);
-  // Bumped to re-run the open effect (re-click, retry) without changing
-  // the target the effect is keyed on.
+  // Bumped to re-run the open effect (retry) without changing the
+  // target the effect is keyed on. The tab's own refresh nonce is NOT a
+  // dep: re-clicking the active tab refreshes (polls) instead of
+  // re-opening, so the buffer, the conflict banner and the undo history
+  // survive the click.
   const [openNonce, setOpenNonce] = useState(0);
   const road = useRef(target);
   road.current = target;
@@ -253,10 +256,19 @@ export function useEditableFile(
         return null;
       });
     };
-    // Keyed on the serialised target, the manual nonce and the tab's own
-    // refresh: a re-click re-opens through the same road.
+    // Keyed on the serialised target and the manual retry nonce only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, openNonce, refreshNonce]);
+  }, [key, openNonce]);
+
+  // The tab's re-click: poll now through the source instead of
+  // rebuilding the model. Skips the mount nonce the open effect above
+  // already served, so activating the tab never re-reads by itself.
+  const lastRefreshRef = useRef(refreshNonce);
+  useEffect(() => {
+    if (lastRefreshRef.current === refreshNonce) return;
+    lastRefreshRef.current = refreshNonce;
+    cell.current?.poll();
+  }, [refreshNonce]);
 
   // The version poll: a cheap stat, no bytes. Bytes are re-read only
   // when the stamp moved past what the model holds; a failed re-read
