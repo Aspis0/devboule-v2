@@ -138,11 +138,29 @@ describe("useEditableFile", () => {
     expect(model().getSnapshot()).toMatchObject({ status: "clean", content: "one\n" });
   });
 
-  it("opens an outside path on the app road", async () => {
+  it("opens a home path on the app road directly", async () => {
+    await render(localKey, "~/.config/note.md");
+
+    expect(appFileOpen).toHaveBeenCalledWith("~/.config/note.md");
+    expect(workspaceFileEditorOpen).not.toHaveBeenCalled();
+    expect(model().getSnapshot().content).toBe("hi\n");
+  });
+
+  it("retries an outside absolute path on the app road", async () => {
+    // The workspace road is tried first (it maps inside spellings
+    // itself); its outside refusal arms the one-hop app retry.
+    vi.mocked(workspaceFileEditorOpen).mockResolvedValueOnce({
+      status: "refused",
+      kind: null,
+      content: null,
+      size: null,
+      version: null,
+      error: "the requested path is outside the workspace folder",
+    } as never);
     await render(localKey, "/home/u/note.md");
 
+    expect(workspaceFileEditorOpen).toHaveBeenCalledWith(WORKSPACE, "/home/u/note.md");
     expect(appFileOpen).toHaveBeenCalledWith("/home/u/note.md");
-    expect(workspaceFileEditorOpen).not.toHaveBeenCalled();
     expect(model().getSnapshot().content).toBe("hi\n");
   });
 

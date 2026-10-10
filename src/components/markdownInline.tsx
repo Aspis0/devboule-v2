@@ -65,7 +65,7 @@ export function inline(text: string, fileLinks?: ChatFileLinks | null): ReactNod
           key={start + token.start}
           className="plan-markdown-file-link"
           title={token.link.relativePath}
-          onClick={() => links?.open(token.link.relativePath)}
+          onClick={() => links?.open(token.link.absolutePath ?? token.link.relativePath)}
         >
           {plain(start + token.start, start + token.end)}
         </button>,
@@ -188,7 +188,7 @@ export function inline(text: string, fileLinks?: ChatFileLinks | null): ReactNod
               type="button"
               className="plan-markdown-file-link"
               title={link.relativePath}
-              onClick={() => links?.open(link.relativePath)}
+              onClick={() => links?.open(link.absolutePath ?? link.relativePath)}
             >
               {content}
             </button>

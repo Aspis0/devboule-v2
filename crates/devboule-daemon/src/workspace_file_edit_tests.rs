@@ -1145,3 +1145,122 @@ fn a_versionless_write_without_create_creates_nothing() {
     );
     assert!(!dir.root.join("sub/new.txt").exists());
 }
+
+#[test]
+fn relativize_keeps_relative_spellings_untouched() {
+    use crate::workspace_git_support::relativize;
+    let root = std::path::Path::new("/repo");
+    assert_eq!(relativize(root, "sub/a.txt"), Some("sub/a.txt".to_string()));
+    assert_eq!(
+        relativize(root, "./sub/a.txt"),
+        Some("./sub/a.txt".to_string())
+    );
+}
+
+#[test]
+fn relativize_maps_inside_absolute_spellings_and_refuses_the_rest() {
+    use crate::workspace_git_support::relativize;
+    // Platform-absolute paths throughout: a bare `/x` is drive-relative
+    // on Windows, so the test builds absolutes by joining (absolute on
+    // every platform) instead of spelling them.
+    let root = std::env::temp_dir().join("devboule-relativize-root");
+    let inside = root.join("sub").join("a.txt");
+    assert_eq!(
+        relativize(&root, &inside.to_string_lossy()),
+        Some("sub/a.txt".to_string())
+    );
+    let dotted = root.join(".").join("a.txt");
+    assert_eq!(
+        relativize(&root, &dotted.to_string_lossy()),
+        Some("a.txt".to_string())
+    );
+    // A sibling that merely shares the prefix is outside.
+    let sibling = root
+        .with_file_name("devboule-relativize-sibling")
+        .join("a.txt");
+    assert_eq!(relativize(&root, &sibling.to_string_lossy()), None);
+    // Above the root, with or without `..` help, is outside.
+    let above = root.parent().expect("temp has a parent").join("other.txt");
+    assert_eq!(relativize(&root, &above.to_string_lossy()), None);
+    let dotdot = root.join("sub").join("..").join("other.txt");
+    assert_eq!(relativize(&root, &dotdot.to_string_lossy()), None);
+    // The folder itself relativizes empty, which confinement refuses.
+    assert_eq!(
+        relativize(&root, &root.to_string_lossy()),
+        Some(String::new())
+    );
+}
+
+#[test]
+fn an_absolute_inside_spelling_opens_reads_and_writes() {
+    let dir = Dir::fresh("absolute-inside");
+    dir.write("sub/a.txt", "one\n");
+    let absolute = dir
+        .root
+        .join("sub")
+        .join("a.txt")
+        .to_string_lossy()
+        .into_owned();
+
+    // The cwd-subdirectory case: the link resolved against
+    // `<root>/sub`, opened as the file it names — never as the
+    // root-relative lookalike, which a save could then create.
+    let file = open_workspace_file(&dir.root, dir.workspace_id(), &absolute);
+    assert_eq!(file.status, WorkspaceFileContentStatus::Ok);
+    assert_eq!(file.content.as_deref(), Some("one\n"));
+    let (_, modified_at, revision) = ready_of(file.version.as_ref().expect("version"));
+
+    let version = version_workspace_file(&dir.root, dir.workspace_id(), &absolute);
+    assert!(matches!(version, WorkspaceFileVersion::Ready { .. }));
+
+    let result = write_workspace_file(
+        &dir.root,
+        dir.workspace_id(),
+        &absolute,
+        b"two\n",
+        Some(modified_at),
+        revision.as_deref(),
+        false,
+    );
+    assert!(
+        matches!(result, WorkspaceFileWriteResult::Written { .. }),
+        "{result:?}"
+    );
+    assert_eq!(
+        std::fs::read(dir.root.join("sub/a.txt")).expect("read back"),
+        b"two\n",
+        "the write lands in the named file, and nothing is created beside it"
+    );
+    assert!(
+        !dir.root.join("a.txt").exists(),
+        "no root-relative lookalike may appear"
+    );
+}
+
+#[test]
+fn an_absolute_outside_spelling_is_refused_on_every_road() {
+    let dir = Dir::fresh("absolute-outside");
+    dir.write("sub/a.txt", "one\n");
+    // A sibling of the root: inside no spelling of it.
+    let outside = dir.root.join("..").join("elsewhere.txt");
+    let spelling = outside.to_string_lossy().into_owned();
+
+    let file = open_workspace_file(&dir.root, dir.workspace_id(), &spelling);
+    assert_eq!(file.status, WorkspaceFileContentStatus::Refused);
+    assert!(matches!(
+        version_workspace_file(&dir.root, dir.workspace_id(), &spelling),
+        WorkspaceFileVersion::Error { .. }
+    ));
+    assert!(matches!(
+        write_workspace_file(
+            &dir.root,
+            dir.workspace_id(),
+            &spelling,
+            b"x",
+            None,
+            None,
+            true
+        ),
+        WorkspaceFileWriteResult::Error { .. }
+    ));
+}

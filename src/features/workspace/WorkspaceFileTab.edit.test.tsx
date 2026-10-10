@@ -374,7 +374,7 @@ describe("WorkspaceFileTab editing", () => {
       version: {
         status: "ready",
         workspaceId: "",
-        path: "/home/u/note.md",
+        path: "/home/u/note.txt",
         size: 3,
         modifiedAt: 100,
         revision: "3:100",
@@ -388,17 +388,47 @@ describe("WorkspaceFileTab editing", () => {
       size: 4,
       revision: "4:101",
     });
-    await renderTab("/home/u/note.md");
+    // The windowed read refuses the outside spelling; the editor then
+    // tries the workspace road, which refuses it too — and only then
+    // the app road opens the real file. One hop each, never a loop.
+    vi.mocked(workspaceFileRead).mockResolvedValueOnce({
+      status: "refused",
+      kind: null,
+      content: null,
+      size: null,
+      modifiedAt: null,
+      error: "the requested path is outside the workspace folder",
+    } as never);
+    vi.mocked(workspaceFileEditorOpen).mockResolvedValueOnce({
+      status: "refused",
+      kind: null,
+      content: null,
+      size: null,
+      version: null,
+      error: "the requested path is outside the workspace folder",
+    } as never);
+    await renderTab("/home/u/note.txt");
 
-    // The windowed workspace road never sees an outside path.
-    expect(workspaceFileRead).not.toHaveBeenCalled();
-    expect(appFileOpen).toHaveBeenCalledWith("/home/u/note.md");
+    expect(appFileOpen).toHaveBeenCalledWith("/home/u/note.txt");
+    expect(workspaceFileEditorOpen).toHaveBeenCalledWith(WORKSPACE, "/home/u/note.txt");
     expect(container.querySelector('[data-testid="file-source-editor"]')).not.toBeNull();
 
     await type("hey ");
     await saveNow();
 
     expect(appFileWrite).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(appFileWrite).mock.calls[0]?.[0]).toBe("/home/u/note.md");
+    expect(vi.mocked(appFileWrite).mock.calls[0]?.[0]).toBe("/home/u/note.txt");
+  });
+
+  it("opens a subdirectory link by its absolute spelling", async () => {
+    // The finding's case end to end: the transcript resolved `lib/a.ts`
+    // against the session cwd `<root>/sub` and opened the absolute
+    // spelling; the daemon maps it inside the workspace (pinned
+    // daemon-side), so the tab sends the spelling it was given.
+    await renderTab("/repo/ws/sub/a.txt");
+
+    expect(workspaceFileEditorOpen).toHaveBeenCalledWith(WORKSPACE, "/repo/ws/sub/a.txt");
+    expect(appFileOpen).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="file-source-editor"]')).not.toBeNull();
   });
 });

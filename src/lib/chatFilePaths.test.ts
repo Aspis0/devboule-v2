@@ -52,7 +52,8 @@ describe("accepted paths", () => {
       relativePath: "~/.config/pubvia/anthropic.env",
     },
   ])("resolves $candidate against $root", ({ candidate, root, relativePath }) => {
-    expect(parseChatFilePath(candidate, root)).toEqual({ relativePath });
+    // Subset: the absolute opener form is pinned in its own block below.
+    expect(parseChatFilePath(candidate, root)).toMatchObject({ relativePath });
   });
 
   it.each([
@@ -74,7 +75,7 @@ describe("accepted paths", () => {
   ])(
     "strips the line suffix of $candidate and keeps it in the data",
     ({ candidate, root, relativePath, line, column }) => {
-      expect(parseChatFilePath(candidate, root)).toEqual({ relativePath, line, column });
+      expect(parseChatFilePath(candidate, root)).toMatchObject({ relativePath, line, column });
     },
   );
 
@@ -85,7 +86,7 @@ describe("accepted paths", () => {
     // The sentence dot rides behind a line suffix: the location survives it.
     { candidate: "src/a.ts:12.", expected: { relativePath: "src/a.ts", line: 12 } },
   ])("strips trailing sentence punctuation from $candidate", ({ candidate, expected }) => {
-    expect(parseChatFilePath(candidate, POSIX_ROOT)).toEqual(expected);
+    expect(parseChatFilePath(candidate, POSIX_ROOT)).toMatchObject(expected);
   });
 });
 
@@ -96,8 +97,8 @@ describe("workspace roots with trailing separators", () => {
     { candidate: "C:\\repo\\src\\a.ts", root: "C:\\repo\\", relativePath: "src/a.ts" },
     { candidate: "C:\\src\\a.ts", root: "C:\\", relativePath: "src/a.ts" },
   ])("resolves $candidate against $root", ({ candidate, root, relativePath }) => {
-    expect(parseChatFilePath(candidate, root)).toEqual({ relativePath });
-    expect(scanChatFilePaths(candidate, root).map((token) => token.link)).toEqual([
+    expect(parseChatFilePath(candidate, root)).toMatchObject({ relativePath });
+    expect(scanChatFilePaths(candidate, root).map((token) => token.link)).toMatchObject([
       { relativePath },
     ]);
   });
@@ -140,10 +141,15 @@ describe("file-shaped final segments", () => {
     { candidate: "dir/123", links: false },
   ])("classifies $candidate as links=$links", ({ candidate, links }) => {
     const expected = links ? { relativePath: candidate } : null;
-    expect(parseChatFilePath(candidate, POSIX_ROOT)).toEqual(expected);
-    expect(scanChatFilePaths(candidate, POSIX_ROOT).map((token) => token.link)).toEqual(
-      links ? [expected] : [],
-    );
+    const parsed = parseChatFilePath(candidate, POSIX_ROOT);
+    const scanned = scanChatFilePaths(candidate, POSIX_ROOT).map((token) => token.link);
+    if (expected === null) {
+      expect(parsed).toBeNull();
+      expect(scanned).toEqual([]);
+    } else {
+      expect(parsed).toMatchObject(expected);
+      expect(scanned).toMatchObject([expected]);
+    }
   });
 });
 
@@ -193,7 +199,7 @@ describe("scanning a plain segment", () => {
       "src/a.ts",
       "src/b.ts:12:3",
     ]);
-    expect(tokens.map((token) => token.link)).toEqual([
+    expect(tokens.map((token) => token.link)).toMatchObject([
       { relativePath: "src/a.ts" },
       { relativePath: "src/b.ts", line: 12, column: 3 },
     ]);
@@ -208,10 +214,10 @@ describe("scanning a plain segment", () => {
       scanChatFilePaths("see ~/.config/pubvia/anthropic.env here", POSIX_ROOT).map(
         (token) => token.link,
       ),
-    ).toEqual([{ relativePath: "~/.config/pubvia/anthropic.env" }]);
+    ).toMatchObject([{ relativePath: "~/.config/pubvia/anthropic.env" }]);
     expect(
       scanChatFilePaths("see /home/u/other/a.ts here", POSIX_ROOT).map((token) => token.link),
-    ).toEqual([{ relativePath: "/home/u/other/a.ts" }]);
+    ).toMatchObject([{ relativePath: "/home/u/other/a.ts" }]);
   });
 
   it.each(["src/a\\.ts", "src/a\\.b.ts", "src/a\\_b.ts"])(
@@ -224,5 +230,46 @@ describe("scanning a plain segment", () => {
   it("leaves an oversized run plain without scanning it", () => {
     const text = `a/${"b".repeat(1998)}`;
     expect(scanChatFilePaths(text, POSIX_ROOT)).toEqual([]);
+  });
+});
+
+describe("absolute opener form", () => {
+  it("resolves a subdirectory session's link against its cwd", () => {
+    // The finding's case: the agent runs in `<root>/sub` and names
+    // `lib/a.ts`. Opening the cwd-relative spelling against the
+    // workspace root would land on `<root>/lib/a.ts` — the wrong file,
+    // which a save could then create. The absolute form names
+    // `<root>/sub/lib/a.ts`.
+    const link = parseChatFilePath("lib/a.ts", "/home/u/repo/sub");
+    expect(link).toEqual({
+      relativePath: "lib/a.ts",
+      absolutePath: "/home/u/repo/sub/lib/a.ts",
+      line: undefined,
+      column: undefined,
+    });
+  });
+
+  it("keeps absolute spellings absolute", () => {
+    // Deeper than the root: an outside absolute stays clickable in its
+    // own spelling (same-depth outside spellings are not links at all —
+    // the existing inside rule, unchanged).
+    expect(parseChatFilePath("/home/u/other/sub/a.ts", "/home/u/repo/sub")).toMatchObject({
+      relativePath: "/home/u/other/sub/a.ts",
+      absolutePath: "/home/u/other/sub/a.ts",
+    });
+  });
+
+  it("leaves home spellings unresolvable", () => {
+    expect(parseChatFilePath("~/.config/x.env", POSIX_ROOT)).toMatchObject({
+      relativePath: "~/.config/x.env",
+      absolutePath: null,
+    });
+  });
+
+  it("resolves drive spellings on Windows roots", () => {
+    expect(parseChatFilePath("src/a.ts", "C:\\repo\\sub")).toMatchObject({
+      relativePath: "src/a.ts",
+      absolutePath: "C:/repo/sub/src/a.ts",
+    });
   });
 });

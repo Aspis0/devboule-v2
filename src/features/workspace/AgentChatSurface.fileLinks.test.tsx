@@ -71,13 +71,13 @@ describe("file links in the agent transcript", () => {
       buttons[0].click();
     });
     expect(open).toHaveBeenCalledTimes(1);
-    expect(open).toHaveBeenCalledWith("src/app/main.tsx");
+    expect(open).toHaveBeenCalledWith("/home/u/repo/src/app/main.tsx");
     expect(buttons[1].getAttribute("title")).toBe("src/lib/util.ts");
     expect(buttons[2].textContent).toBe("src/lib/util.ts:12");
     expect(buttons[2].title).toBe("src/lib/util.ts");
     await act(async () => buttons[2].click());
     expect(open).toHaveBeenCalledTimes(2);
-    expect(open).toHaveBeenLastCalledWith("src/lib/util.ts");
+    expect(open).toHaveBeenLastCalledWith("/home/u/repo/src/lib/util.ts");
   });
 });
 

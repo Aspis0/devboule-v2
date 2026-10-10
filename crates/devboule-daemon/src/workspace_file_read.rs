@@ -34,7 +34,7 @@ use devboule_protocol::{
 
 use crate::workspace_files::{names_git_metadata, DOES_NOT_EXIST, NOT_PART_OF_THE_TREE};
 use crate::workspace_git_diff::NOT_A_FILE;
-use crate::workspace_git_support::{confined, walk, Walked, OUTSIDE_THE_WORKSPACE};
+use crate::workspace_git_support::{confined, relativize, walk, Walked, OUTSIDE_THE_WORKSPACE};
 use crate::ServerState;
 
 /// Bytes of one window this reply hands back. The frame is one JSON line of
@@ -120,7 +120,12 @@ fn content_of(
         return refused(NOT_A_FILE);
     }
     // Confinement first and without a process: nothing below opens a path
-    // this check has not put inside `root`.
+    // this check has not put inside `root`. Absolute spellings inside the
+    // workspace become relative first (see `relativize`).
+    let Some(relativized) = relativize(root, requested) else {
+        return refused(OUTSIDE_THE_WORKSPACE);
+    };
+    let requested: &str = &relativized;
     let Some(target) = confined(root, requested) else {
         return refused(OUTSIDE_THE_WORKSPACE);
     };

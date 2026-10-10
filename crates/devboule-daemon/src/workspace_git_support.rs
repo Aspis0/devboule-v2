@@ -271,7 +271,73 @@ pub(crate) fn write_failure(operation: &str, output: &GitOutput) -> String {
     exit_error(operation, output)
 }
 
+/// Spell `requested` (relative or absolute) as workspace-relative: an
+/// absolute spelling inside the root becomes relative, so a transcript
+/// link resolved against a session subdirectory still opens the file it
+/// names instead of a root-relative lookalike (which a save could then
+/// create at the wrong path). Anything else passes through untouched
+/// for the existing checks to judge. Component-wise, so a `/repo2`
+/// sibling never matches `/repo`, `..` above the root never survives,
+/// and Windows compares case-insensitively like its filesystem does.
+/// Links are NOT followed here: the remainder still walks through
+/// [`walk`], which refuses them.
+pub(crate) fn relativize(root: &Path, requested: &str) -> Option<String> {
+    let candidate = Path::new(requested);
+    if !candidate.is_absolute() {
+        return Some(requested.to_string());
+    }
+    let mut root_components = root.components().peekable();
+    let mut candidate_components = candidate.components().peekable();
+    // Consume the shared prefix component by component. A root of `/`
+    // contributes only its RootDir, which every absolute candidate has.
+    loop {
+        match (root_components.peek(), candidate_components.peek()) {
+            (Some(first), Some(second)) if same_component(first, second) => {
+                root_components.next();
+                candidate_components.next();
+            }
+            _ => break,
+        }
+    }
+    // The whole root must have been consumed: anything left of it means
+    // the candidate lives elsewhere (a sibling, another drive, `/` vs a
+    // sub-root mismatch).
+    if root_components.next().is_some() {
+        return None;
+    }
+    let mut relative = PathBuf::new();
+    for component in candidate_components {
+        match component {
+            // `..` and anything non-normal (past `.`, which `confined`
+            // also allows) inside an absolute spelling is refused rather
+            // than resolved: resolving it here would follow nothing (no
+            // links are read), but the walk below would then see a
+            // different spelling than the caller named. Conservative like
+            // `confined`.
+            Component::Normal(part) => relative.push(part),
+            Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    // Forward slashes everywhere: the wire's spellings are `/`-joined on
+    // every platform, and Windows accepts `/` as a separator.
+    relative
+        .to_str()
+        .map(|spelling| spelling.replace('\\', "/"))
+}
+
+/// One path component against another, case-insensitively on Windows
+/// where `C:\Repo` and `c:\repo` are the same folder.
+fn same_component(first: &Component, second: &Component) -> bool {
+    if cfg!(windows) {
+        return first.as_os_str().eq_ignore_ascii_case(second.as_os_str());
+    }
+    first == second
+}
+
 /// The requested path, confined: non-empty, relative (no root, no prefix,
+/// matched by component rather than by `is_absolute()`, which on Windows
+/// calls a bare `/x` relative), no `..`, and inside `root` once joined.
 /// matched by component rather than by `is_absolute()`, which on Windows
 /// calls a bare `/x` relative), no `..`, and inside `root` once joined.
 /// The last check restates what the component rules guarantee rather than

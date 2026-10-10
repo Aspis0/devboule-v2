@@ -20,7 +20,7 @@ import { fileTabMode, setFileTabMode, type FileTabMode } from "./fileTabMode";
 import { OpenInEditorAction } from "./OpenInEditorAction";
 import { useWorkspaceFilePreview, type PreviewCell } from "./useWorkspaceFilePreview";
 import { EditableFilePane } from "./EditableFilePane";
-import { isOutsidePath, EDITOR_MIN_DIALECT } from "./fileEditor/useEditableFile";
+import { isOutsidePath, isAbsolutePath, OUTSIDE_WORKSPACE, EDITOR_MIN_DIALECT } from "./fileEditor/useEditableFile";
 import { toolContentKey } from "./toolContentCache";
 import { LOCAL_HOST_ID, parseWorkspaceKey, type WorkspaceKey } from "./hosts/hostIdentity";
 import { useWorkspaceDaemon } from "./workspaceDaemon";
@@ -86,12 +86,18 @@ function headerMeta(reply: WorkspaceFileContent | null, path: string): string {
 }
 
 /** Whether the windowed read says the editor owns this file: text the
- * editor opens whole, or a missing file the first save creates. Binary,
- * over-cap and other refusals stay on the read-only body they always had. */
-function isEditorFile(reply: WorkspaceFileContent | null): boolean {
+ * editor opens whole, a missing file the first save creates, or an
+ * absolute path the workspace road refused as outside (the editor
+ * retries it on the app road). Binary, over-cap and other refusals stay
+ * on the read-only body they always had. */
+function isEditorFile(reply: WorkspaceFileContent | null, path: string): boolean {
   if (reply === null) return false;
   if (reply.status === "binary" || reply.status === "too_large") return false;
-  if (reply.status === "refused") return reply.error === DOES_NOT_EXIST;
+  if (reply.status === "refused")
+    return (
+      reply.error === DOES_NOT_EXIST ||
+      (reply.error === OUTSIDE_WORKSPACE && isAbsolutePath(path))
+    );
   return (
     reply.status === "ok" &&
     reply.kind === "text" &&
@@ -151,11 +157,13 @@ export function WorkspaceFileTab({
   const known = version !== null;
   const stale = version !== null && version < EDITOR_MIN_DIALECT;
   const canEdit = known && !stale;
-  // A paired host's file and the human's own outside file never take the
+  // A paired host's file and the human's own `~` file never take the
   // windowed road: the windowed read confines to the local workspace, so
   // it cannot serve either. Both edit straight in the tab, under the
   // same header as local files — minus the external-editor pencil, which
-  // can only open folders this machine holds.
+  // can only open folders this machine holds. (`~` always means this
+  // machine's home, even under a remote key: the far home is not
+  // addressable, and guessing it would open the wrong file.)
   if (hostId !== LOCAL_HOST_ID || isOutsidePath(path)) {
     if (!known) {
       return daemon.state === "connected" ? (
@@ -286,7 +294,7 @@ function LocalWorkspaceFileTab({
   const reply = preview.reply;
   const text = reply !== null && reply.status === "ok" && reply.kind === "text" ? reply : null;
 
-  if (canEdit && isEditorFile(reply) && (!markdown || mode === "source")) {
+  if (canEdit && isEditorFile(reply, path) && (!markdown || mode === "source")) {
     return (
       <div className="workspace-file-tab">
         <EditorTabHeader

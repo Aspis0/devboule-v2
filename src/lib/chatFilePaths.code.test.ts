@@ -29,7 +29,8 @@ describe("code-span file paths", () => {
     },
     { candidate: "~/dir/LICENSE", relativePath: "~/dir/LICENSE" },
   ])("resolves the whole code span $candidate", ({ candidate, ...expected }) => {
-    expect(parseChatCodeFilePath(candidate, ROOT)).toEqual(expected);
+    // Subset: the absolute opener form is pinned in chatFilePaths.test.ts.
+    expect(parseChatCodeFilePath(candidate, ROOT)).toMatchObject(expected);
   });
 
   it.each([
@@ -105,8 +106,8 @@ describe("drive-letter verbatim syntax", () => {
     { candidate: String.raw`c:\repo\Src\A.ts`, root: "C:/repo", relativePath: "Src/A.ts" },
   ])("canonicalizes candidate $candidate and root $root", ({ candidate, root, relativePath }) => {
     const expected = { relativePath: relativePath ?? "src/a.ts" };
-    expect(parseChatFilePath(candidate, root)).toEqual(expected);
-    expect(parseChatCodeFilePath(candidate, root)).toEqual(expected);
+    expect(parseChatFilePath(candidate, root)).toMatchObject(expected);
+    expect(parseChatCodeFilePath(candidate, root)).toMatchObject(expected);
   });
 
   it.each([
@@ -136,7 +137,7 @@ describe("spaces in prose", () => {
 
   it("rejects a spaced POSIX absolute path without hiding a later separate file", () => {
     const text = "edit /home/u/New folder/repo/src/a.ts then src/b.ts";
-    expect(scanChatFilePaths(text, "/home/u/New folder/repo").map((token) => token.link)).toEqual([
+    expect(scanChatFilePaths(text, "/home/u/New folder/repo").map((token) => token.link)).toMatchObject([
       { relativePath: "src/b.ts" },
     ]);
   });

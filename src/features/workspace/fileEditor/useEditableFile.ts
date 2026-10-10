@@ -46,17 +46,31 @@ export type EditableFileTarget =
   | { kind: "remote"; deviceId: string; workspaceId: string; path: string }
   | { kind: "outside"; path: string };
 
-/** An absolute path on either platform, or `~`: the human's own file,
- * never a workspace-relative spelling. */
+/** A `~` path: servable only by the app road, decidable without the
+ * daemon (the workspace roads confine it as an escape). Absolute paths
+ * are NOT this — they try the workspace road first, falling back to the
+ * app road on its outside refusal. */
 export function isOutsidePath(path: string): boolean {
+  return path.trim().startsWith("~");
+}
+
+/** An absolute filesystem path, `~` excluded: routable to a workspace
+ * road (the daemon maps inside spellings itself) with the app road as
+ * fallback for outside-workspace spellings. */
+export function isAbsolutePath(path: string): boolean {
   const trimmed = path.trim();
   return (
     trimmed.startsWith("/") ||
-    trimmed.startsWith("~") ||
     /^[A-Za-z]:[\\/]/.test(trimmed) ||
     trimmed.startsWith("\\\\")
   );
 }
+
+/** Mirrors `OUTSIDE_THE_WORKSPACE` in `workspace_git_support.rs`: the
+ * sentence that arms the app-road fallback for an absolute path the
+ * workspace road refused. Pinned beside the fallback, not imported —
+ * the daemon owns the words. */
+export const OUTSIDE_WORKSPACE = "the requested path is outside the workspace folder";
 
 /** Which road a File tab reads and writes: outside paths go app-only,
  * remote hosts go over the held link, the rest is the local workspace. */
@@ -181,7 +195,15 @@ export function useEditableFile(
   // concurrent polls. Target changes re-open silently and never touch it.
   const reopenArmed = useRef(false);
   const road = useRef(target);
-  road.current = target;
+  // Assigned on target change only — never blindly per render. The open
+  // effect may switch roads mid-flight (an absolute path the workspace
+  // road refuses retries on the app road), and a re-render must not wipe
+  // that switch back.
+  const roadKey = useRef(key);
+  if (roadKey.current !== key) {
+    road.current = target;
+    roadKey.current = key;
+  }
   const cell = useRef<ObservationCell | null>(null);
   // The live model, beside the state mirror: cleanup owns the lifecycle
   // directly (a `setModel` updater inside a cleanup never runs on an
@@ -208,6 +230,19 @@ export function useEditableFile(
       let opened: WorkspaceEditableFile;
       try {
         opened = await openTarget(road.current);
+        // An absolute path the workspace road refuses as outside lives
+        // on this machine but outside the workspace: retry it on the
+        // app road instead of showing the refusal. One hop only — the
+        // app road never refuses outside.
+        if (
+          road.current.kind === "workspace" &&
+          isAbsolutePath(path) &&
+          opened.status !== "ok" &&
+          opened.error === OUTSIDE_WORKSPACE
+        ) {
+          road.current = { kind: "outside", path: path.trim() };
+          opened = await openTarget(road.current);
+        }
       } catch (cause: unknown) {
         if (!live) return;
         setFailure(cause instanceof Error ? cause.message : String(cause));

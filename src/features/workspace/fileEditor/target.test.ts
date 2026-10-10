@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { LOCAL_HOST_ID, workspaceKey, type HostId, type WorkspaceKey } from "../hosts/hostIdentity";
-import { isOutsidePath, resolveEditableTarget } from "./useEditableFile";
+import { isAbsolutePath, isOutsidePath, resolveEditableTarget } from "./useEditableFile";
 
 const local = (workspaceId: string): WorkspaceKey => workspaceKey(LOCAL_HOST_ID, workspaceId)!;
 const remote = (workspaceId: string): WorkspaceKey =>
@@ -24,23 +24,45 @@ describe("editable file routing", () => {
     });
   });
 
+  it.each(["~/.config/pubvia/anthropic.env", "~/note.md"])(
+    "routes the home path %s app-only",
+    (path) => {
+      expect(isOutsidePath(path)).toBe(true);
+      expect(isAbsolutePath(path)).toBe(false);
+      expect(resolveEditableTarget(local("w.1"), path)).toEqual({
+        kind: "outside",
+        path: path.trim(),
+      });
+      // `~` always means this machine's home, even under a remote key:
+      // the far home is not addressable, and guessing it would open the
+      // wrong file.
+      expect(resolveEditableTarget(remote("w.9"), path).kind).toBe("outside");
+    },
+  );
+
   it.each([
     "/home/u/note.md",
     "C:/Users/u/note.md",
     "C:\\Users\\u\\note.md",
     "\\\\server\\share\\note.md",
-    "~/.config/pubvia/anthropic.env",
-    "~/note.md",
     "  /home/u/note.md  ",
-  ])("routes the human path %s app-only", (path) => {
-    expect(isOutsidePath(path)).toBe(true);
+  ])("routes the absolute path %s to a workspace road", (path) => {
+    expect(isOutsidePath(path)).toBe(false);
+    expect(isAbsolutePath(path)).toBe(true);
+    // Local: the workspace road, which maps inside spellings itself and
+    // refuses outside ones (the hook retries those on the app road).
     expect(resolveEditableTarget(local("w.1"), path)).toEqual({
-      kind: "outside",
-      path: path.trim(),
+      kind: "workspace",
+      workspaceId: "w.1",
+      path,
     });
-    // A remote key never hijacks a human path: the file is on this
-    // machine, whichever workspace tab opened it.
-    expect(resolveEditableTarget(remote("w.9"), path).kind).toBe("outside");
+    // Remote: the held link, confined by the far daemon.
+    expect(resolveEditableTarget(remote("w.9"), path)).toEqual({
+      kind: "remote",
+      deviceId: "device-9",
+      workspaceId: "w.9",
+      path,
+    });
   });
 
   it.each(["src/a.ts", "./a.ts", "../a.ts", "a.ts", "C:notdrive/x.ts"])(

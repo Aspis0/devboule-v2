@@ -90,7 +90,8 @@ function RemoteTranscriptLine({
         key={index}
         type="button"
         className="workspace-remote-file-link"
-        onClick={() => onOpenFile(token.link.relativePath)}
+        title={token.link.relativePath}
+        onClick={() => onOpenFile(token.link.absolutePath ?? token.link.relativePath)}
       >
         {line.slice(token.start, token.end)}
       </button>,

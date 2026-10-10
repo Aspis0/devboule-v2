@@ -56,7 +56,7 @@ use crate::workspace_file_read::stamped;
 use crate::workspace_files::{names_git_metadata, DOES_NOT_EXIST, NOT_PART_OF_THE_TREE};
 use crate::workspace_git_diff::NOT_A_FILE;
 use crate::workspace_git_support::{
-    confined, crosses_a_link, walk, Walked, LINK_FINAL, OUTSIDE_THE_WORKSPACE,
+    confined, crosses_a_link, relativize, walk, Walked, LINK_FINAL, OUTSIDE_THE_WORKSPACE,
 };
 use crate::ServerState;
 
@@ -299,6 +299,12 @@ pub(crate) fn reply_app_write(
 /// the filesystem — every component stat'ed without following, a link
 /// refused with the shared sentence.
 fn open_workspace_file(root: &Path, workspace_id: &str, requested: &str) -> WorkspaceEditableFile {
+    // Absolute spellings inside the workspace become relative first (see
+    // `relativize`); anything else takes the existing refusals.
+    let Some(relativized) = relativize(root, requested) else {
+        return refused(OUTSIDE_THE_WORKSPACE);
+    };
+    let requested: &str = &relativized;
     let Some(target) = confined(root, requested) else {
         return refused(OUTSIDE_THE_WORKSPACE);
     };
@@ -340,6 +346,14 @@ fn version_workspace_file(
     workspace_id: &str,
     requested: &str,
 ) -> WorkspaceFileVersion {
+    let Some(relativized) = relativize(root, requested) else {
+        return WorkspaceFileVersion::Error {
+            workspace_id: workspace_id.to_string(),
+            path: requested.to_string(),
+            error: OUTSIDE_THE_WORKSPACE.to_string(),
+        };
+    };
+    let requested: &str = &relativized;
     let Some(target) = confined(root, requested) else {
         return WorkspaceFileVersion::Error {
             workspace_id: workspace_id.to_string(),
@@ -420,6 +434,10 @@ fn write_workspace_file(
     if content.len() as u64 > MAX_EDITABLE_FILE_BYTES {
         return error(TOO_LARGE);
     }
+    let Some(relativized) = relativize(root, requested) else {
+        return error(OUTSIDE_THE_WORKSPACE);
+    };
+    let requested: &str = &relativized;
     let Some(target) = confined(root, requested) else {
         return error(OUTSIDE_THE_WORKSPACE);
     };

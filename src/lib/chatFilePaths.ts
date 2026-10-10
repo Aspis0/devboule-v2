@@ -4,6 +4,13 @@ export interface ChatFileLink {
   /** Workspace-relative path with `/` separators — the form the daemon's
    * file APIs and the tab identities use. */
   relativePath: string;
+  /** The same file resolved against the session cwd to an absolute
+   * spelling — the opener's form, so a link in a subdirectory session
+   * opens the file it names instead of a root-relative lookalike. Null
+   * for `~` paths (no home to resolve against here; the app road
+   * expands those) and when no root is known and the spelling is
+   * relative. */
+  absolutePath: string | null;
   /** 1-based line and column from a `:line` / `:line:col` suffix. Carried
    * for a later slice; the current tab opener does not scroll. */
   line?: number;
@@ -230,6 +237,20 @@ function normalizeRoot(root: string): WorkspaceRoot | null {
 }
 
 // Compare root components, not prefixes: a sibling like repo2 is outside repo.
+function absoluteSpellingOf(
+  candidate: { drive: string | null },
+  resolved: string[],
+): string {
+  return candidate.drive === null
+    ? `/${resolved.join("/")}`
+    : `${candidate.drive}:/${resolved.join("/")}`;
+}
+
+function joinAbsolute(root: WorkspaceRoot, resolved: string[]): string {
+  const prefix = root.drive === null ? "/" : `${root.drive}:/`;
+  return prefix + [...root.segments, ...resolved].join("/");
+}
+
 function resolveAgainstRoot(
   path: string,
   root: WorkspaceRoot | null,
@@ -244,22 +265,32 @@ function resolveAgainstRoot(
   const filename = resolved[resolved.length - 1];
   if (!isFilename(filename)) return null;
   const relativePath = resolved.join("/");
+  // The opener's form: the file resolved against the session cwd to an
+  // absolute spelling, so a subdirectory session's link cannot open (or
+  // create, on save) a root-relative lookalike. Null when there is
+  // nothing to resolve against (`~` travels on its own spelling; a
+  // relative path with no known root stays relative-only).
+  const absolutePath =
+    candidate.segments[0] === "~"
+      ? null
+      : candidate.absolute
+        ? absoluteSpellingOf(candidate, resolved)
+        : root === null
+          ? null
+          : joinAbsolute(root, resolved);
   if (!candidate.absolute) {
     // A leading `~/` names the human's home, never the workspace: it
     // travels in its own spelling and the app road expands it.
     if (candidate.segments[0] === "~") {
-      return { relativePath: `~/${resolved.slice(1).join("/")}`, line, column };
+      return { relativePath: `~/${resolved.slice(1).join("/")}`, absolutePath, line, column };
     }
-    return { relativePath, line, column };
+    return { relativePath, absolutePath, line, column };
   }
   // An absolute path outside the workspace stays clickable in its own
   // spelling: the File tab routes it app-only to this machine's own
   // file, never joined to the root. Inside the root it resolves
   // relatively, exactly as before.
-  const absoluteSpelling =
-    candidate.drive === null
-      ? `/${resolved.join("/")}`
-      : `${candidate.drive}:/${resolved.join("/")}`;
+  const absoluteSpelling = absoluteSpellingOf(candidate, resolved);
   // A root this parser cannot represent (a UNC share) keeps refusing:
   // without a drive to compare, an absolute spelling proves nothing.
   // With no root at all, relative paths stay plain but an absolute
@@ -269,11 +300,12 @@ function resolveAgainstRoot(
     if (uncRoot) return null;
     if (!candidate.absolute) {
       if (candidate.segments[0] !== "~") return null;
-      return { relativePath: `~/${resolved.slice(1).join("/")}`, line, column };
+      return { relativePath: `~/${resolved.slice(1).join("/")}`, absolutePath, line, column };
     }
-    return { relativePath: absoluteSpelling, line, column };
+    return { relativePath: absoluteSpelling, absolutePath, line, column };
   }
-  if (root.drive !== candidate.drive) return { relativePath: absoluteSpelling, line, column };
+  if (root.drive !== candidate.drive)
+    return { relativePath: absoluteSpelling, absolutePath, line, column };
   const rootSegments = root.segments;
   if (resolved.length <= rootSegments.length) return null;
   for (let index = 0; index < rootSegments.length; index += 1) {
@@ -284,9 +316,16 @@ function resolveAgainstRoot(
         ? candidateSegment !== rootSegment
         : foldAsciiCase(candidateSegment) !== foldAsciiCase(rootSegment)
     )
-      return { relativePath: absoluteSpelling, line, column };
+      return { relativePath: absoluteSpelling, absolutePath, line, column };
   }
-  return { relativePath: resolved.slice(rootSegments.length).join("/"), line, column };
+  return {
+    relativePath: resolved.slice(rootSegments.length).join("/"),
+    // An absolute spelling resolves to itself; a relative one resolves
+    // against the root it was parsed under.
+    absolutePath: candidate.absolute ? absoluteSpelling : joinAbsolute(root, resolved),
+    line,
+    column,
+  };
 }
 
 function foldAsciiCase(value: string): string {

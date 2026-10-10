@@ -98,28 +98,51 @@ describe("clicking a file link", () => {
   });
 
   it.each([
-    { candidate: "src/x.ts:12", workspaceRoot: ROOT, relativePath: "src/x.ts" },
-    { candidate: "src/x.ts:12:3", workspaceRoot: ROOT, relativePath: "src/x.ts" },
-    { candidate: "src/New folder/a.ts", workspaceRoot: ROOT, relativePath: "src/New folder/a.ts" },
-    { candidate: "/home/u/repo/src/a.ts", workspaceRoot: ROOT, relativePath: "src/a.ts" },
+    {
+      candidate: "src/x.ts:12",
+      workspaceRoot: ROOT,
+      relativePath: "src/x.ts",
+      absolutePath: "/home/u/repo/src/x.ts",
+    },
+    {
+      candidate: "src/x.ts:12:3",
+      workspaceRoot: ROOT,
+      relativePath: "src/x.ts",
+      absolutePath: "/home/u/repo/src/x.ts",
+    },
+    {
+      candidate: "src/New folder/a.ts",
+      workspaceRoot: ROOT,
+      relativePath: "src/New folder/a.ts",
+      absolutePath: "/home/u/repo/src/New folder/a.ts",
+    },
+    {
+      candidate: "/home/u/repo/src/a.ts",
+      workspaceRoot: ROOT,
+      relativePath: "src/a.ts",
+      absolutePath: "/home/u/repo/src/a.ts",
+    },
     {
       candidate: String.raw`C:\Users\u\New folder\repo\src\a.ts`,
       workspaceRoot: String.raw`\\?\C:\Users\u\New folder\repo`,
       relativePath: "src/a.ts",
+      absolutePath: "C:/Users/u/New folder/repo/src/a.ts",
     },
     {
       candidate: String.raw`\\?\C:\Users\u\New folder\repo\src\a.ts`,
       workspaceRoot: String.raw`C:\Users\u\New folder\repo`,
       relativePath: "src/a.ts",
+      absolutePath: "C:/Users/u/New folder/repo/src/a.ts",
     },
     {
       candidate: String.raw`\\?\C:\Users\u\New folder\repo\src\a.ts:12:3`,
       workspaceRoot: String.raw`\\?\C:\Users\u\New folder\repo`,
       relativePath: "src/a.ts",
+      absolutePath: "C:/Users/u/New folder/repo/src/a.ts",
     },
   ])(
-    "preserves the code label and opens its relative target: $candidate",
-    async ({ candidate, workspaceRoot, relativePath }) => {
+    "preserves the code label and opens its absolute target: $candidate",
+    async ({ candidate, workspaceRoot, relativePath, absolutePath }) => {
       const open = vi.fn();
       container = document.createElement("div");
       document.body.appendChild(container);
@@ -140,7 +163,7 @@ describe("clicking a file link", () => {
         expect(button.title).toBe(relativePath);
         await act(async () => button.click());
         expect(open).toHaveBeenCalledTimes(1);
-        expect(open).toHaveBeenCalledWith(relativePath);
+        expect(open).toHaveBeenCalledWith(absolutePath);
       } finally {
         await act(async () => root.unmount());
       }
@@ -162,16 +185,24 @@ describe("clicking a file link", () => {
       button.click();
     });
     expect(open).toHaveBeenCalledTimes(1);
-    expect(open).toHaveBeenCalledWith("src/a.ts");
+    expect(open).toHaveBeenCalledWith("/home/u/repo/src/a.ts");
     await act(async () => root.unmount());
   });
 
   it.each([
-    { candidate: "/home/u/repo/src/a.ts", workspaceRoot: ROOT },
-    { candidate: "C:\\repo\\src\\a.ts", workspaceRoot: "C:\\repo" },
+    {
+      candidate: "/home/u/repo/src/a.ts",
+      workspaceRoot: ROOT,
+      absolutePath: "/home/u/repo/src/a.ts",
+    },
+    {
+      candidate: "C:\\repo\\src\\a.ts",
+      workspaceRoot: "C:\\repo",
+      absolutePath: "C:/repo/src/a.ts",
+    },
   ])(
-    "opens only the resolved relative path for prose $candidate",
-    async ({ candidate, workspaceRoot }) => {
+    "opens the resolved absolute path for prose $candidate",
+    async ({ candidate, workspaceRoot, absolutePath }) => {
       const open = vi.fn();
       container = document.createElement("div");
       document.body.appendChild(container);
@@ -188,7 +219,7 @@ describe("clicking a file link", () => {
         expect(button.title).toBe("src/a.ts");
         await act(async () => button.click());
         expect(open).toHaveBeenCalledTimes(1);
-        expect(open).toHaveBeenCalledWith("src/a.ts");
+        expect(open).toHaveBeenCalledWith(absolutePath);
       } finally {
         await act(async () => root.unmount());
       }
