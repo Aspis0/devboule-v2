@@ -19,9 +19,9 @@ use devboule_protocol::{
 };
 
 use super::{
-    expand_user_path, open_app_file, open_workspace_file, version_app_file, version_workspace_file,
-    write_app_file, write_workspace_file, BINARY, MAX_EDITABLE_FILE_BYTES, PARENT_MISSING,
-    TOO_LARGE,
+    classify_target, expand_user_path, open_app_file, open_workspace_file, version_app_file,
+    version_workspace_file, write_app_file, write_workspace_file, TargetState, BINARY,
+    MAX_EDITABLE_FILE_BYTES, PARENT_MISSING, TOO_LARGE, UNSTATABLE,
 };
 use crate::workspace_git_diff::NOT_A_FILE;
 
@@ -683,4 +683,54 @@ fn the_mcp_broker_serves_no_file_writing_tool() {
             "the broker must serve no editor frame, found {name}"
         );
     }
+}
+
+#[test]
+fn the_stat_is_classified_not_booleanised() {
+    let dir = Dir::fresh("classify");
+    dir.write("there.txt", "x");
+    assert!(matches!(
+        classify_target(&dir.root.join("there.txt")),
+        TargetState::Present(_)
+    ));
+    assert!(matches!(
+        classify_target(&dir.root.join("absent.txt")),
+        TargetState::Absent
+    ));
+    // No file can live behind an interior NUL: the stat fails with
+    // anything but NotFound, which is exactly the unstatable class.
+    assert!(matches!(
+        classify_target(&dir.root.join("no\x00pe.txt")),
+        TargetState::Unstatable
+    ));
+}
+
+#[test]
+fn an_unstatable_path_is_a_failed_check_not_a_missing_file() {
+    let dir = Dir::fresh("unstatable");
+    let weird = "no\x00pe.txt";
+
+    // The open refuses instead of offering an empty editor over a file
+    // the daemon cannot see.
+    let file = open_workspace_file(&dir.root, dir.workspace_id(), weird);
+    assert_eq!(file.status, WorkspaceFileContentStatus::Refused);
+    assert_eq!(file.error.as_deref(), Some(UNSTATABLE));
+
+    // The poll reports the failed check, never a missing version that
+    // would arm a create.
+    assert!(matches!(
+        version_workspace_file(&dir.root, dir.workspace_id(), weird),
+        WorkspaceFileVersion::Error { .. }
+    ));
+
+    // And a create aimed at it errors instead of replacing whatever is
+    // behind the failed stat.
+    let result = write_workspace_file(&dir.root, dir.workspace_id(), weird, b"x", None, None);
+    assert!(
+        matches!(
+            &result,
+            WorkspaceFileWriteResult::Error { error } if error == UNSTATABLE
+        ),
+        "{result:?}"
+    );
 }

@@ -54,7 +54,9 @@ use devboule_protocol::{
 use crate::workspace_file_read::stamped;
 use crate::workspace_files::{names_git_metadata, DOES_NOT_EXIST, NOT_PART_OF_THE_TREE};
 use crate::workspace_git_diff::NOT_A_FILE;
-use crate::workspace_git_support::{confined, walk, Walked, OUTSIDE_THE_WORKSPACE};
+use crate::workspace_git_support::{
+    confined, crosses_a_link, walk, Walked, LINK_FINAL, OUTSIDE_THE_WORKSPACE,
+};
 use crate::ServerState;
 
 /// Bytes of file this road hands back or takes. 128 KiB, like the
@@ -77,10 +79,34 @@ const BINARY: &str = "Binary files cannot be edited";
 /// The sentence a create answers with when the parent folder is not there.
 /// Ours, in this daemon's own words: parents are never made silently.
 const PARENT_MISSING: &str = "the parent folder does not exist";
+/// The sentence a stat that fails for any reason but absence answers
+/// with. Absence opens empty and creates; anything else (an ACL that
+/// denies even the stat, an I/O error, an offline share) is a failed
+/// check, never a missing file — offering those as empty editors would
+/// let a create replace a file the daemon simply could not see.
+const UNSTATABLE: &str = "the file could not be checked";
+
 /// The sentence an app-file road answers with when the path is not
 /// absolute (after `~` expansion). Ours: the human names a file on this
 /// machine, never a workspace-relative spelling.
 const NOT_ABSOLUTE: &str = "a file path must be absolute, or start with ~";
+
+/// What a stat of the target says. `walk` answers `Missing` for *any*
+/// `symlink_metadata` failure, so every missing arm re-asks here:
+/// absence and inaccessibility take different roads from here on.
+enum TargetState {
+    Present(std::fs::Metadata),
+    Absent,
+    Unstatable,
+}
+
+fn classify_target(target: &Path) -> TargetState {
+    match std::fs::symlink_metadata(target) {
+        Ok(metadata) => TargetState::Present(metadata),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => TargetState::Absent,
+        Err(_) => TargetState::Unstatable,
+    }
+}
 
 /// Paseo's `fileRevision`: `dev:ino:size:mtimeNs` — except `std` exposes no
 /// stable file id on every platform this daemon ships, so the revision is
@@ -250,9 +276,21 @@ fn open_workspace_file(root: &Path, workspace_id: &str, requested: &str) -> Work
         Walked::Link(sentence) => refused(sentence),
         // A missing file opens empty — the first save creates it — but a
         // missing *parent* is an error: parents are never made silently.
-        Walked::Missing => match parent_is_dir(&target) {
-            Some(true) => missing(workspace_id, requested),
-            _ => refused(PARENT_MISSING),
+        // And `Missing` is every stat failure, not just absence, so the
+        // target is re-asked: a link the walk could not classify stays a
+        // link, a file that raced into place opens, and only true absence
+        // opens empty. Anything the stat cannot say is a failed check.
+        Walked::Missing => match classify_target(&target) {
+            TargetState::Present(metadata) if crosses_a_link(&metadata) => refused(LINK_FINAL),
+            TargetState::Present(metadata) if metadata.is_file() => {
+                open_resolved(&target, workspace_id, requested, &metadata)
+            }
+            TargetState::Present(_) => refused(NOT_A_FILE),
+            TargetState::Absent => match parent_is_dir(&target) {
+                Some(true) => missing(workspace_id, requested),
+                _ => refused(PARENT_MISSING),
+            },
+            TargetState::Unstatable => refused(UNSTATABLE),
         },
         Walked::Inside(metadata) => {
             if !metadata.is_file() {
@@ -269,13 +307,13 @@ fn version_workspace_file(
     workspace_id: &str,
     requested: &str,
 ) -> WorkspaceFileVersion {
-    if confined(root, requested).is_none() {
+    let Some(target) = confined(root, requested) else {
         return WorkspaceFileVersion::Error {
             workspace_id: workspace_id.to_string(),
             path: requested.to_string(),
             error: OUTSIDE_THE_WORKSPACE.to_string(),
         };
-    }
+    };
     if names_git_metadata(requested) {
         return WorkspaceFileVersion::Error {
             workspace_id: workspace_id.to_string(),
@@ -289,9 +327,35 @@ fn version_workspace_file(
             path: requested.to_string(),
             error: sentence.to_string(),
         },
-        Walked::Missing => WorkspaceFileVersion::Missing {
-            workspace_id: workspace_id.to_string(),
-            path: requested.to_string(),
+        Walked::Missing => match classify_target(&target) {
+            // A link the walk could not classify is still a link, and a
+            // file that raced into place polls ready — only true absence
+            // polls missing, and an unstatable file reports the failed
+            // check, never a missing version that would arm a create.
+            TargetState::Present(metadata) if crosses_a_link(&metadata) => {
+                WorkspaceFileVersion::Error {
+                    workspace_id: workspace_id.to_string(),
+                    path: requested.to_string(),
+                    error: LINK_FINAL.to_string(),
+                }
+            }
+            TargetState::Present(metadata) if metadata.is_file() => {
+                ready_version(workspace_id, requested, &metadata)
+            }
+            TargetState::Present(_) => WorkspaceFileVersion::Error {
+                workspace_id: workspace_id.to_string(),
+                path: requested.to_string(),
+                error: NOT_A_FILE.to_string(),
+            },
+            TargetState::Absent => WorkspaceFileVersion::Missing {
+                workspace_id: workspace_id.to_string(),
+                path: requested.to_string(),
+            },
+            TargetState::Unstatable => WorkspaceFileVersion::Error {
+                workspace_id: workspace_id.to_string(),
+                path: requested.to_string(),
+                error: UNSTATABLE.to_string(),
+            },
         },
         Walked::Inside(metadata) => {
             if !metadata.is_file() {
@@ -330,91 +394,134 @@ fn write_workspace_file(
     }
     match walk(root, requested) {
         Walked::Link(sentence) => error(sentence),
-        Walked::Missing => {
-            // A write that names an expected version cannot create: the
-            // file it meant to replace is gone, so the answer is the
-            // missing version — the editor's conflict road.
-            if expected_modified_at.is_some() || expected_revision.is_some() {
-                return WorkspaceFileWriteResult::Conflict {
-                    version: WorkspaceFileVersion::Missing {
-                        workspace_id: workspace_id.to_string(),
-                        path: requested.to_string(),
-                    },
-                };
-            }
-            match parent_is_dir(&target) {
-                Some(true) => create_file(&target, content),
-                _ => error(PARENT_MISSING),
-            }
-        }
-        Walked::Inside(metadata) => {
-            if !metadata.is_file() {
-                return error(NOT_A_FILE);
-            }
-            if metadata.len() > MAX_EDITABLE_FILE_BYTES {
-                return error(TOO_LARGE);
-            }
-            // Paseo refuses to replace bytes it would not open: binary on
-            // disk stays binary, never overwritten with text by this road.
-            let current = match std::fs::read(&target) {
-                Ok(bytes) => bytes,
-                Err(_) => return error(DOES_NOT_EXIST),
-            };
-            if is_likely_binary(&current) || !is_valid_utf8(&current) {
-                return error(BINARY);
-            }
-            let modified = metadata.modified().ok();
-            let modified_ms = stamped(&metadata);
-            let matches = match modified {
-                Some(time) => matches_expected(
-                    metadata.len(),
-                    time,
-                    modified_ms,
-                    expected_modified_at,
-                    expected_revision,
-                ),
-                None => false,
-            };
-            if !matches {
-                return WorkspaceFileWriteResult::Conflict {
-                    version: ready_version(workspace_id, requested, &metadata),
-                };
-            }
-            #[cfg(unix)]
-            let mode = {
-                use std::os::unix::fs::PermissionsExt;
-                Some(metadata.permissions().mode())
-            };
-            #[cfg(not(unix))]
-            let mode: Option<u32> = None;
-            replace_file(&target, content, mode, || {
-                // The TOCTOU window Paseo closes the same way: a change
-                // between the check and the rename is a conflict, never an
-                // overwrite.
-                match std::fs::metadata(&target) {
-                    Ok(latest) => {
-                        let latest_ms = stamped(&latest);
-                        let still_matches = match latest.modified().ok() {
-                            Some(time) => matches_expected(
-                                latest.len(),
-                                time,
-                                latest_ms,
-                                expected_modified_at,
-                                expected_revision,
-                            ),
-                            None => false,
-                        };
-                        if still_matches {
-                            Recheck::Proceed
-                        } else {
-                            Recheck::Conflict
-                        }
-                    }
-                    Err(_) => Recheck::Conflict,
+        // Like the open: re-ask the target instead of trusting `Missing`.
+        // A file that raced into place takes the present road (an expected
+        // write checks against it, a create conflicts with it); only true
+        // absence creates, and an unstatable file errors.
+        Walked::Missing => match classify_target(&target) {
+            TargetState::Present(metadata) => write_present(
+                &target,
+                workspace_id,
+                requested,
+                content,
+                expected_modified_at,
+                expected_revision,
+                &metadata,
+            ),
+            TargetState::Absent => {
+                // A write that names an expected version cannot create: the
+                // file it meant to replace is gone, so the answer is the
+                // missing version — the editor's conflict road.
+                if expected_modified_at.is_some() || expected_revision.is_some() {
+                    return WorkspaceFileWriteResult::Conflict {
+                        version: WorkspaceFileVersion::Missing {
+                            workspace_id: workspace_id.to_string(),
+                            path: requested.to_string(),
+                        },
+                    };
                 }
-            })
-        }
+                match parent_is_dir(&target) {
+                    Some(true) => create_file(&target, content),
+                    _ => error(PARENT_MISSING),
+                }
+            }
+            TargetState::Unstatable => error(UNSTATABLE),
+        },
+        Walked::Inside(metadata) => write_present(
+            &target,
+            workspace_id,
+            requested,
+            content,
+            expected_modified_at,
+            expected_revision,
+            &metadata,
+        ),
     }
+}
+
+/// Write a file whose metadata is in hand: the binary and cap guards,
+/// the expected-version check, and the atomic replace.
+#[allow(clippy::too_many_arguments)]
+fn write_present(
+    target: &Path,
+    workspace_id: &str,
+    requested: &str,
+    content: &[u8],
+    expected_modified_at: Option<i64>,
+    expected_revision: Option<&str>,
+    metadata: &std::fs::Metadata,
+) -> WorkspaceFileWriteResult {
+    if !metadata.is_file() {
+        return error(NOT_A_FILE);
+    }
+    if metadata.len() > MAX_EDITABLE_FILE_BYTES {
+        return error(TOO_LARGE);
+    }
+    // Paseo refuses to replace bytes it would not open: binary on
+    // disk stays binary, never overwritten with text by this road.
+    let current = match std::fs::read(target) {
+        Ok(bytes) => bytes,
+        Err(_) => return error(DOES_NOT_EXIST),
+    };
+    if is_likely_binary(&current) || !is_valid_utf8(&current) {
+        return error(BINARY);
+    }
+    let modified = metadata.modified().ok();
+    let modified_ms = stamped(metadata);
+    let matches = match modified {
+        Some(time) => matches_expected(
+            metadata.len(),
+            time,
+            modified_ms,
+            expected_modified_at,
+            expected_revision,
+        ),
+        None => false,
+    };
+    if !matches {
+        return WorkspaceFileWriteResult::Conflict {
+            version: ready_version(workspace_id, requested, metadata),
+        };
+    }
+    #[cfg(unix)]
+    let mode = {
+        use std::os::unix::fs::PermissionsExt;
+        Some(metadata.permissions().mode())
+    };
+    #[cfg(not(unix))]
+    let mode: Option<u32> = None;
+    replace_file(target, content, mode, || {
+        // The TOCTOU window Paseo closes the same way: a change
+        // between the check and the rename is a conflict, never an
+        // overwrite.
+        match std::fs::metadata(target) {
+            Ok(latest) => {
+                let latest_ms = stamped(&latest);
+                let still_matches = match latest.modified().ok() {
+                    Some(time) => matches_expected(
+                        latest.len(),
+                        time,
+                        latest_ms,
+                        expected_modified_at,
+                        expected_revision,
+                    ),
+                    None => false,
+                };
+                if still_matches {
+                    Recheck::Proceed
+                } else {
+                    Recheck::Conflict
+                }
+            }
+            // Gone under us races the delete road: conflict with
+            // the missing version. Unstatable is a failed check,
+            // not an absence.
+            Err(_) => match classify_target(target) {
+                TargetState::Absent => Recheck::Conflict,
+                _ => Recheck::Refuse(UNSTATABLE),
+            },
+        }
+    })
 }
 
 /// The file's bytes, whole, with their BOM flag and version — or the
@@ -500,21 +607,24 @@ fn parent_is_dir(target: &Path) -> Option<bool> {
 fn create_file(target: &Path, content: &[u8]) -> WorkspaceFileWriteResult {
     replace_file(target, content, None, || {
         // The create's own TOCTOU: still missing proceeds, appeared
-        // conflicts — the rename below must never claim a name that
-        // arrived after the walk.
-        if target.exists() {
-            Recheck::Conflict
-        } else {
-            Recheck::Proceed
+        // conflicts, unstatable refuses — `exists` is false on every
+        // error and would let a create replace a file the daemon
+        // cannot see, so the stat is classified, not booleanised.
+        match classify_target(target) {
+            TargetState::Absent => Recheck::Proceed,
+            TargetState::Present(_) => Recheck::Conflict,
+            TargetState::Unstatable => Recheck::Refuse(UNSTATABLE),
         }
     })
 }
 
-/// What the pre-rename recheck decides: proceed with the rename, or turn
-/// the write into a conflict with the freshly stat'ed version.
+/// What the pre-rename recheck decides: proceed with the rename, turn
+/// the write into a conflict with the freshly stat'ed version, or refuse
+/// with a sentence when the target cannot even be stat'ed.
 enum Recheck {
     Proceed,
     Conflict,
+    Refuse(&'static str),
 }
 
 /// Atomically replace (or create) `target` with `content`: Paseo's temp
@@ -571,9 +681,16 @@ fn replace_file(
         return error(io_sentence(&io_error));
     }
     let proceed = recheck();
-    if matches!(proceed, Recheck::Conflict) {
-        let _ = std::fs::remove_file(&temporary);
-        return conflict_from_target(target);
+    match proceed {
+        Recheck::Conflict => {
+            let _ = std::fs::remove_file(&temporary);
+            return conflict_from_target(target);
+        }
+        Recheck::Refuse(sentence) => {
+            let _ = std::fs::remove_file(&temporary);
+            return error(sentence);
+        }
+        Recheck::Proceed => {}
     }
     if std::fs::rename(&temporary, target).is_err() {
         let _ = std::fs::remove_file(&temporary);
@@ -709,17 +826,23 @@ fn open_app_file(requested: &str) -> WorkspaceEditableFile {
         Ok(target) => target,
         Err(sentence) => return refused(sentence),
     };
-    match std::fs::metadata(&target) {
-        Err(_) => match parent_is_dir(&target) {
+    // Classified, not booleanised: absence opens empty, anything else
+    // the stat cannot say is a failed check.
+    match classify_target(&target) {
+        TargetState::Absent => match parent_is_dir(&target) {
             Some(true) => missing("", &target.to_string_lossy()),
             _ => refused(PARENT_MISSING),
         },
-        Ok(metadata) => {
-            if !metadata.is_file() {
-                return refused(NOT_A_FILE);
+        TargetState::Unstatable => refused(UNSTATABLE),
+        TargetState::Present(_) => match std::fs::metadata(&target) {
+            Err(_) => refused(UNSTATABLE),
+            Ok(metadata) => {
+                if !metadata.is_file() {
+                    return refused(NOT_A_FILE);
+                }
+                open_resolved(&target, "", &target.to_string_lossy(), &metadata)
             }
-            open_resolved(&target, "", &target.to_string_lossy(), &metadata)
-        }
+        },
     }
 }
 
@@ -735,21 +858,33 @@ fn version_app_file(requested: &str) -> WorkspaceFileVersion {
         }
     };
     let spelling = target.to_string_lossy().into_owned();
-    match std::fs::metadata(&target) {
-        Err(_) => WorkspaceFileVersion::Missing {
+    match classify_target(&target) {
+        TargetState::Absent => WorkspaceFileVersion::Missing {
             workspace_id: String::new(),
             path: spelling,
         },
-        Ok(metadata) => {
-            if !metadata.is_file() {
-                return WorkspaceFileVersion::Error {
-                    workspace_id: String::new(),
-                    path: spelling,
-                    error: NOT_A_FILE.to_string(),
-                };
+        TargetState::Unstatable => WorkspaceFileVersion::Error {
+            workspace_id: String::new(),
+            path: spelling,
+            error: UNSTATABLE.to_string(),
+        },
+        TargetState::Present(_) => match std::fs::metadata(&target) {
+            Err(_) => WorkspaceFileVersion::Error {
+                workspace_id: String::new(),
+                path: target.to_string_lossy().into_owned(),
+                error: UNSTATABLE.to_string(),
+            },
+            Ok(metadata) => {
+                if !metadata.is_file() {
+                    return WorkspaceFileVersion::Error {
+                        workspace_id: String::new(),
+                        path: spelling,
+                        error: NOT_A_FILE.to_string(),
+                    };
+                }
+                ready_version("", &spelling, &metadata)
             }
-            ready_version("", &spelling, &metadata)
-        }
+        },
     }
 }
 
@@ -767,8 +902,8 @@ fn write_app_file(
         Err(sentence) => return error(sentence),
     };
     let spelling = target.to_string_lossy().into_owned();
-    match std::fs::metadata(&target) {
-        Err(_) => {
+    match classify_target(&target) {
+        TargetState::Absent => {
             if expected_modified_at.is_some() || expected_revision.is_some() {
                 return WorkspaceFileWriteResult::Conflict {
                     version: WorkspaceFileVersion::Missing {
@@ -782,68 +917,75 @@ fn write_app_file(
                 _ => error(PARENT_MISSING),
             }
         }
-        Ok(metadata) => {
-            if !metadata.is_file() {
-                return error(NOT_A_FILE);
-            }
-            if metadata.len() > MAX_EDITABLE_FILE_BYTES {
-                return error(TOO_LARGE);
-            }
-            let current = match std::fs::read(&target) {
-                Ok(bytes) => bytes,
-                Err(_) => return error(DOES_NOT_EXIST),
-            };
-            if is_likely_binary(&current) || !is_valid_utf8(&current) {
-                return error(BINARY);
-            }
-            let modified = metadata.modified().ok();
-            let modified_ms = stamped(&metadata);
-            let matches = match modified {
-                Some(time) => matches_expected(
-                    metadata.len(),
-                    time,
-                    modified_ms,
-                    expected_modified_at,
-                    expected_revision,
-                ),
-                None => false,
-            };
-            if !matches {
-                return WorkspaceFileWriteResult::Conflict {
-                    version: ready_version("", &spelling, &metadata),
-                };
-            }
-            #[cfg(unix)]
-            let mode = {
-                use std::os::unix::fs::PermissionsExt;
-                Some(metadata.permissions().mode())
-            };
-            #[cfg(not(unix))]
-            let mode: Option<u32> = None;
-            replace_file(&target, content, mode, || {
-                match std::fs::metadata(&target) {
-                    Ok(latest) => {
-                        let latest_ms = stamped(&latest);
-                        let still_matches = match latest.modified().ok() {
-                            Some(time) => matches_expected(
-                                latest.len(),
-                                time,
-                                latest_ms,
-                                expected_modified_at,
-                                expected_revision,
-                            ),
-                            None => false,
-                        };
-                        if still_matches {
-                            Recheck::Proceed
-                        } else {
-                            Recheck::Conflict
-                        }
-                    }
-                    Err(_) => Recheck::Conflict,
+        TargetState::Unstatable => error(UNSTATABLE),
+        TargetState::Present(_) => match std::fs::metadata(&target) {
+            Err(_) => error(UNSTATABLE),
+            Ok(metadata) => {
+                if !metadata.is_file() {
+                    return error(NOT_A_FILE);
                 }
-            })
-        }
+                if metadata.len() > MAX_EDITABLE_FILE_BYTES {
+                    return error(TOO_LARGE);
+                }
+                let current = match std::fs::read(&target) {
+                    Ok(bytes) => bytes,
+                    Err(_) => return error(DOES_NOT_EXIST),
+                };
+                if is_likely_binary(&current) || !is_valid_utf8(&current) {
+                    return error(BINARY);
+                }
+                let modified = metadata.modified().ok();
+                let modified_ms = stamped(&metadata);
+                let matches = match modified {
+                    Some(time) => matches_expected(
+                        metadata.len(),
+                        time,
+                        modified_ms,
+                        expected_modified_at,
+                        expected_revision,
+                    ),
+                    None => false,
+                };
+                if !matches {
+                    return WorkspaceFileWriteResult::Conflict {
+                        version: ready_version("", &spelling, &metadata),
+                    };
+                }
+                #[cfg(unix)]
+                let mode = {
+                    use std::os::unix::fs::PermissionsExt;
+                    Some(metadata.permissions().mode())
+                };
+                #[cfg(not(unix))]
+                let mode: Option<u32> = None;
+                replace_file(&target, content, mode, || {
+                    match std::fs::metadata(&target) {
+                        Ok(latest) => {
+                            let latest_ms = stamped(&latest);
+                            let still_matches = match latest.modified().ok() {
+                                Some(time) => matches_expected(
+                                    latest.len(),
+                                    time,
+                                    latest_ms,
+                                    expected_modified_at,
+                                    expected_revision,
+                                ),
+                                None => false,
+                            };
+                            if still_matches {
+                                Recheck::Proceed
+                            } else {
+                                Recheck::Conflict
+                            }
+                        }
+                        Err(_) => match classify_target(&target) {
+                            TargetState::Absent => Recheck::Conflict,
+                            _ => Recheck::Refuse(UNSTATABLE),
+                        },
+                    }
+                })
+            }
+        },
     }
 }
 
