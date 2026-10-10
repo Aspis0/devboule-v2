@@ -42,6 +42,7 @@ vi.mock("../features/workspace/presence", () => ({
   startPresenceReporting: (...args: unknown[]) => mocks.startPresenceReporting(...args),
   reportSelection: vi.fn(),
   lookedAtSessionId: () => null,
+  onPresenceSettled: () => () => undefined,
 }));
 
 import { App } from "./App";

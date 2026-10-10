@@ -105,6 +105,22 @@ export function lookedAtSessionId(): string | null {
 }
 
 /**
+ * Listeners told after every applied window-state read: the selection and
+ * the window's focus both feed that read, so a listener hears each change
+ * the presence reporter sees, poll included. The toast gate uses it to judge
+ * a raise it held back the moment the user looks away, not at the next roster
+ * publication.
+ */
+const presenceSettledListeners = new Set<() => void>();
+
+export function onPresenceSettled(listener: () => void): () => void {
+  presenceSettledListeners.add(listener);
+  return () => {
+    presenceSettledListeners.delete(listener);
+  };
+}
+
+/**
  * Starts presence reporting and sends one initial report so the daemon is
  * not guessing before the first selection or event.
  *
@@ -163,6 +179,7 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
       focusedSessionId: appVisible ? reportedSelection : null,
       appVisible,
     };
+    for (const listener of presenceSettledListeners) listener();
     if (
       lastSent !== null &&
       lastSent.focusedSessionId === presence.focusedSessionId &&

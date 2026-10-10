@@ -11,6 +11,7 @@ import {
   forgetAttentionFor,
   heldContentForSession,
   previewFrom,
+  reconsiderHeldAttention,
   sendWithPermission,
   setAttentionHeldContentProvider,
   stripMarkdown,
@@ -912,5 +913,104 @@ describe("the toast gate holds raises for the session in view", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(send).toHaveBeenCalledTimes(1);
     release();
+  });
+});
+
+describe("a raise the gate held back is judged again when the user looks away", () => {
+  const seenWindow: WindowState = { visible: true, focused: true, minimized: false };
+  const awayWindow: WindowState = { visible: false, focused: false, minimized: false };
+  const fakeWin = {
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+  };
+  const fakeDoc = {
+    visibilityState: "visible",
+    hasFocus: () => true,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    forgetAttentionFor(new Set());
+    reportSelection(null);
+  });
+
+  afterEach(() => {
+    reportSelection(null);
+    vi.useRealTimers();
+  });
+
+  it("stays held while the session is in view, and announces once the user looks away", async () => {
+    let current: WindowState = seenWindow;
+    const windowState = async (): Promise<WindowState> => current;
+    const send = vi.fn(async (_toast: AttentionToast) => undefined);
+    reportSelection("s1");
+    fireAttentionToast(target("s1"), "agent one", attention("finished", 1000), {
+      send,
+      windowState,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).not.toHaveBeenCalled();
+
+    // Still in view: judged again, still held.
+    reconsiderHeldAttention();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).not.toHaveBeenCalled();
+
+    // Looked away: announced with no roster publication at all.
+    current = awayWindow;
+    reconsiderHeldAttention();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]?.[0].title).toBe("agent one — finished");
+
+    // Announced once: a later judgment of the same raise is silent.
+    reconsiderHeldAttention();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("is announced within one presence poll of the user looking away", async () => {
+    let current: WindowState = seenWindow;
+    const send = vi.fn(async (_toast: AttentionToast) => undefined);
+    const reporter = startPresenceReporting({
+      window: fakeWin,
+      document: fakeDoc,
+      windowState: async () => current,
+      invoke: vi.fn(async () => undefined),
+      pollIntervalMs: 5_000,
+    });
+    reportSelection("s1");
+    fireAttentionToast(target("s1"), "agent one", attention("finished", 1000), {
+      send,
+      windowState: async () => current,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).not.toHaveBeenCalled();
+
+    current = awayWindow;
+    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+    reporter.dispose();
+  });
+
+  it("drops a held raise once a newer one for the session has been announced", async () => {
+    const send = vi.fn(async (_toast: AttentionToast) => undefined);
+    let current: WindowState = seenWindow;
+    const deps = { send, windowState: async () => current };
+    reportSelection("s1");
+    fireAttentionToast(target("s1"), "agent one", attention("finished", 1000), deps);
+    await vi.advanceTimersByTimeAsync(0);
+    current = awayWindow;
+    fireAttentionToast(target("s1"), "agent one", attention("finished", 2000), deps);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+
+    // The held 1000 raise is older than the announced 2000 one: nothing more.
+    reconsiderHeldAttention();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
   });
 });

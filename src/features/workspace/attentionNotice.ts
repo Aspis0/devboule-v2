@@ -1,7 +1,7 @@
 import type { Attention, AttentionReason } from "../../types/ipc";
 import { invokeTyped, type AttentionTarget, type AttentionToast } from "../../lib/tauri";
 import { getShowMessagePreviews, getShowNotifications } from "../../lib/notificationPrefs";
-import { lookedAtSessionId } from "./presence";
+import { lookedAtSessionId, onPresenceSettled } from "./presence";
 
 /**
  * How a session's attention presents to the local user: the words for a
@@ -282,12 +282,43 @@ export function markAttentionSeen(
 
 /** Forget raises of sessions that left the roster, so the maps cannot grow forever. */
 export function forgetAttentionFor(sessionIds: ReadonlySet<string>): void {
-  for (const map of [lastFired, judging]) {
+  for (const map of [lastFired, judging, heldRaises]) {
     for (const id of [...map.keys()]) {
       if (!sessionIds.has(id)) map.delete(id);
     }
   }
 }
+
+/** What the toast needs to judge a raise again: the call `fireAttentionToast` got. */
+interface HeldRaise {
+  title: string;
+  target: AttentionTarget;
+  attention: Attention;
+  deps?: Partial<ToastDeps>;
+}
+
+/**
+ * Raises the gate held back because the user was looking at their session.
+ * They stay due, and they are judged again the moment the presence reporter
+ * settles — the user looked away, or the window lost focus — rather than at the
+ * next roster publication: a quiet session publishes nothing for minutes, and
+ * the owner waited ten minutes for a plan-ready toast that way.
+ */
+const heldRaises = new Map<string, HeldRaise>();
+
+/**
+ * Judges every held raise again. Each one is removed first: `fireAttentionToast`
+ * puts it back only if the gate still holds it, so a raise the user has looked
+ * away from leaves the map and is announced, and one still in view stays due.
+ */
+export function reconsiderHeldAttention(): void {
+  for (const [sessionId, raise] of [...heldRaises]) {
+    heldRaises.delete(sessionId);
+    fireAttentionToast(raise.target, raise.title, raise.attention, raise.deps);
+  }
+}
+
+onPresenceSettled(reconsiderHeldAttention);
 
 /** The permission surface `sendWithPermission` needs, narrowed to what is
  *  used. `showToast` is `void` where the platform is synchronous and async in
@@ -424,7 +455,8 @@ export function fireAttentionToast(
     if (judging.get(sessionId) === attention) judging.delete(sessionId);
     if (!mayAnnounce) {
       // Held back, and unrecorded: the daemon still owes this raise to someone,
-      // and the next publication of it is judged from scratch.
+      // and it is judged again when the presence reporter settles.
+      heldRaises.set(sessionId, { title, target, attention, deps });
       return;
     }
     // The dedupe records here — after
