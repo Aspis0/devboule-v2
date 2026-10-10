@@ -4,6 +4,7 @@ import { hideUntrustedFrame } from "../../../lib/untrustedFrame";
 import { ExternalLink } from "../../../components/ExternalLink";
 import { MarkdownText } from "../../../components/MarkdownText";
 import { toolPathText, toolRowDisplay } from "../toolRowDisplay";
+import { devbouleToolLine } from "../devbouleToolLine";
 import { CommandChip, ExitMarker } from "../CommandRow";
 import {
   INTERRUPTED_TOOL_CLASS,
@@ -35,6 +36,8 @@ export const ToolRow = memo(function ToolRow({
   const cancelled = status === "cancelled" || status === "canceled";
   const phase = running ? "running" : cancelled ? "cancelled" : "done";
   const model = useMemo(() => toolRowDisplay(item, phase), [item, phase]);
+  // Devboule's own agent calls read as one sentence; their raw result waits behind the click.
+  const devboule = useMemo(() => devbouleToolLine(item, phase), [item, phase]);
   const linkUrl = model.linkUrl;
   const failed = item.kind !== "plan" && status === "failed";
   const isPlan = item.kind === "plan";
@@ -88,25 +91,35 @@ export const ToolRow = memo(function ToolRow({
   const line: ReactNode = (
     <>
       <ToolIcon kind={item.kind} title={item.title} />
-      <span className={`workspace-chat-tool-text${hasSummary ? " has-summary" : ""}`}>
-        <span className="workspace-chat-tool-label" title={model.displayName}>
-          {model.displayName}
+      {devboule !== undefined ? (
+        <span className="workspace-chat-tool-text">
+          <span className="workspace-chat-tool-label is-sentence" title={devboule}>
+            {devboule}
+          </span>
         </span>
-        {hasSummary ? (
-          <span className="workspace-chat-tool-sep" aria-hidden="true">
-            ·
+      ) : (
+        <span className={`workspace-chat-tool-text${hasSummary ? " has-summary" : ""}`}>
+          <span className="workspace-chat-tool-label" title={model.displayName}>
+            {model.displayName}
           </span>
-        ) : null}
-        {commandRow && model.summary !== undefined ? <CommandChip command={model.summary} /> : null}
-        {!commandRow && model.summary !== undefined ? (
-          <span className="workspace-chat-tool-summary-text">
-            {isPathRow ? toolPathText(model.summary) : model.summary}
-          </span>
-        ) : null}
-        {planDecision !== undefined ? (
-          <span className="workspace-chat-tool-summary-text">{planDecision}</span>
-        ) : null}
-      </span>
+          {hasSummary ? (
+            <span className="workspace-chat-tool-sep" aria-hidden="true">
+              ·
+            </span>
+          ) : null}
+          {commandRow && model.summary !== undefined ? (
+            <CommandChip command={model.summary} />
+          ) : null}
+          {!commandRow && model.summary !== undefined ? (
+            <span className="workspace-chat-tool-summary-text">
+              {isPathRow ? toolPathText(model.summary) : model.summary}
+            </span>
+          ) : null}
+          {planDecision !== undefined ? (
+            <span className="workspace-chat-tool-summary-text">{planDecision}</span>
+          ) : null}
+        </span>
+      )}
       {item.exitCode !== undefined && item.exitCode !== 0 ? (
         <ExitMarker exitCode={item.exitCode} />
       ) : null}

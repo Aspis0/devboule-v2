@@ -68,17 +68,32 @@ async function unmountCard(): Promise<void> {
 
 afterEach(unmountCard);
 
-async function render(item: DaemonNoticeItem): Promise<HTMLElement> {
+/** Mounts the card and, unless told otherwise, opens its line as the person would. */
+async function render(item: DaemonNoticeItem, { open = true } = {}): Promise<HTMLElement> {
   await unmountCard();
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
   await act(async () => root?.render(<DaemonNoticeCard item={item} />));
+  const details = host.querySelector<HTMLDetailsElement>("details");
+  if (open && details !== null) {
+    await act(async () => {
+      details.open = true;
+      details.dispatchEvent(new Event("toggle"));
+    });
+  }
   return host;
 }
 
+/** The sentence the daemon's facts make, once the line is open. */
+function sentenceText(): string | null | undefined {
+  return host.querySelector(
+    ".workspace-chat-activity-body .workspace-chat-activity-quote:not(.is-child):not(.is-unattributed)",
+  )?.textContent;
+}
+
 function expander(): HTMLButtonElement | null {
-  return host.querySelector<HTMLButtonElement>(".workspace-chat-tool-more");
+  return host.querySelector<HTMLButtonElement>(".workspace-chat-activity-toggle");
 }
 
 async function press(button: HTMLButtonElement | null): Promise<void> {
@@ -86,44 +101,62 @@ async function press(button: HTMLButtonElement | null): Promise<void> {
 }
 
 function copyText(): string | null | undefined {
-  return host.querySelector(".workspace-chat-copy")?.textContent;
+  return host.querySelector(".workspace-chat-activity-line")?.textContent;
 }
 
 describe("the finish report's header", () => {
   it("names the child and its state as a message from the subagent", async () => {
     await render(itemFrom(finish({ summary: ["ok"] })));
-    expect(copyText()).toBe("Message from subagent · worker one · completed");
-    expect(host.querySelector(".workspace-chat-copy")?.getAttribute("title")).toBe(
+    expect(copyText()).toBe("Message from worker one · completed");
+    expect(host.querySelector(".workspace-chat-activity-line")?.getAttribute("title")).toBe(
       "worker one · s.child.7 · state: completed",
     );
   });
 
   it("leaves the state out when the frame carries none", async () => {
     await render(itemFrom(finish({ state: null, summary: ["ok"] })));
-    expect(copyText()).toBe("Message from subagent · worker one");
+    expect(copyText()).toBe("Message from worker one");
+  });
+
+  it("draws the event as one closed line, its sentence and the child's words behind the click", async () => {
+    await render(itemFrom(finish({ summary: ["ok"] })), { open: false });
+    const details = host.querySelector<HTMLDetailsElement>("details");
+    expect(details?.open).toBe(false);
+    expect(host.querySelector(".workspace-chat-activity-body")).toBeNull();
+    expect(host.textContent).not.toContain("Relayed");
+    expect(host.textContent).not.toContain("unverified");
+    expect(host.textContent).not.toContain("the child's own words");
+    await act(async () => {
+      if (details !== null) {
+        details.open = true;
+        details.dispatchEvent(new Event("toggle"));
+      }
+    });
+    expect(sentenceText()).toBe("Message from subagent · worker one · completed");
+    expect(host.querySelector(".workspace-chat-activity-quote.is-child")?.textContent).toBe("ok");
   });
 });
 
 describe("the finish report's summary", () => {
   it("shows the first four lines collapsed, with a Show more expander", async () => {
     await render(itemFrom(finish({ summary: sixLines })));
-    const quoted = host.querySelector(".workspace-chat-child-said");
+    const quoted = host.querySelector(".workspace-chat-activity-quote.is-child");
     expect(quoted?.classList.contains("is-collapsed")).toBe(true);
-    expect(quoted?.querySelector("blockquote")?.textContent).toBe("line 1\nline 2\nline 3\nline 4");
-    expect(expander()?.textContent).toBe("Show more");
+    expect(quoted?.textContent).toBe("line 1\nline 2\nline 3\nline 4");
+    expect(expander()?.getAttribute("aria-label")).toBe("Show more");
     expect(expander()?.getAttribute("aria-expanded")).toBe("false");
   });
 
   it("opens to the full summary on Show more and folds again on Show less", async () => {
     await render(itemFrom(finish({ summary: sixLines })));
     await press(expander());
-    const quoted = host.querySelector(".workspace-chat-child-said");
+    const quoted = host.querySelector(".workspace-chat-activity-quote.is-child");
     expect(quoted?.classList.contains("is-collapsed")).toBe(false);
-    expect(quoted?.querySelector("blockquote")?.textContent).toBe(sixLines.join("\n"));
-    expect(expander()?.textContent).toBe("Show less");
+    expect(quoted?.textContent).toBe(sixLines.join("\n"));
+    expect(expander()?.getAttribute("aria-label")).toBe("Show less");
     expect(expander()?.getAttribute("aria-expanded")).toBe("true");
     await press(expander());
-    expect(host.querySelector(".workspace-chat-child-said blockquote")?.textContent).toBe(
+    expect(host.querySelector(".workspace-chat-activity-quote.is-child")?.textContent).toBe(
       "line 1\nline 2\nline 3\nline 4",
     );
   });
@@ -132,18 +165,24 @@ describe("the finish report's summary", () => {
     await render(itemFrom(finish({ summary: ["build is green", "all checks passed"] })));
     expect(expander()).toBeNull();
     expect(
-      host.querySelector(".workspace-chat-child-said")?.classList.contains("is-collapsed"),
+      host
+        .querySelector(".workspace-chat-activity-quote.is-child")
+        ?.classList.contains("is-collapsed"),
     ).toBe(false);
   });
 
   it("collapses a single long line too, though it has no second line to hide", async () => {
     const oneLine = "x".repeat(450);
     await render(itemFrom(finish({ summary: [oneLine] })));
-    expect(expander()?.textContent).toBe("Show more");
+    expect(expander()?.getAttribute("aria-label")).toBe("Show more");
     expect(
-      host.querySelector(".workspace-chat-child-said")?.classList.contains("is-collapsed"),
+      host
+        .querySelector(".workspace-chat-activity-quote.is-child")
+        ?.classList.contains("is-collapsed"),
     ).toBe(true);
-    expect(host.querySelector(".workspace-chat-child-said blockquote")?.textContent).toBe(oneLine);
+    expect(host.querySelector(".workspace-chat-activity-quote.is-child")?.textContent).toBe(
+      oneLine,
+    );
   });
 
   it("keeps the note and no expander when the frame carries no summary", async () => {
@@ -151,7 +190,7 @@ describe("the finish report's summary", () => {
     expect(host.querySelector(".workspace-chat-child-said-note")?.textContent).toContain(
       "no finish summary",
     );
-    expect(host.querySelector(".workspace-chat-child-said")).toBeNull();
+    expect(host.querySelector(".workspace-chat-activity-quote.is-child")).toBeNull();
     expect(expander()).toBeNull();
   });
 });
@@ -161,17 +200,17 @@ describe("the finish report's tail", () => {
     await render(
       itemFrom(finish({ summary: ["build is green"], tail: ["note: one flake retried"] })),
     );
-    expect(host.querySelector(".workspace-chat-unattributed")).toBeNull();
-    expect(expander()?.textContent).toBe("Show more");
+    expect(host.querySelector(".workspace-chat-activity-quote.is-unattributed")).toBeNull();
+    expect(expander()?.getAttribute("aria-label")).toBe("Show more");
     await press(expander());
-    expect(host.querySelector(".workspace-chat-unattributed blockquote")?.textContent).toBe(
+    expect(host.querySelector(".workspace-chat-activity-quote.is-unattributed")?.textContent).toBe(
       "note: one flake retried",
     );
   });
 
   it("keeps the cut-off note outside the expander, visible while collapsed", async () => {
     await render(itemFrom(finish({ summary: sixLines, closed: false })));
-    expect(expander()?.textContent).toBe("Show more");
+    expect(expander()?.getAttribute("aria-label")).toBe("Show more");
     const note = host.querySelector(".workspace-chat-child-said-note");
     expect(note?.textContent).toContain("cut off in transit");
   });
@@ -187,7 +226,7 @@ describe("a summary with no words", () => {
     expect(host.querySelector(".workspace-chat-child-said-note")?.textContent).toContain(
       "no finish summary",
     );
-    expect(host.querySelector(".workspace-chat-child-said")).toBeNull();
+    expect(host.querySelector(".workspace-chat-activity-quote.is-child")).toBeNull();
     expect(expander()).toBeNull();
   });
 });
@@ -200,15 +239,15 @@ describe("the expander's thresholds", () => {
 
   it("shows the expander from the fifth line", async () => {
     await render(itemFrom(finish({ summary: ["line 1", "line 2", "line 3", "line 4", "line 5"] })));
-    expect(expander()?.textContent).toBe("Show more");
+    expect(expander()?.getAttribute("aria-label")).toBe("Show more");
   });
 
   it("counts CRLF breaks as line breaks, and collapses them to LF", async () => {
     await render(itemFrom(finish({ summary: ["line 1\r\nline 2\r\nline 3\r\nline 4"] })));
     expect(expander()).toBeNull();
     await render(itemFrom(finish({ summary: ["line 1\r\nline 2\r\nline 3\r\nline 4\r\nline 5"] })));
-    expect(expander()?.textContent).toBe("Show more");
-    expect(host.querySelector(".workspace-chat-child-said blockquote")?.textContent).toBe(
+    expect(expander()?.getAttribute("aria-label")).toBe("Show more");
+    expect(host.querySelector(".workspace-chat-activity-quote.is-child")?.textContent).toBe(
       "line 1\nline 2\nline 3\nline 4",
     );
   });
@@ -217,7 +256,7 @@ describe("the expander's thresholds", () => {
     await render(itemFrom(finish({ summary: ["a".repeat(400)] })));
     expect(expander()).toBeNull();
     await render(itemFrom(finish({ summary: ["a".repeat(401)] })));
-    expect(expander()?.textContent).toBe("Show more");
+    expect(expander()?.getAttribute("aria-label")).toBe("Show more");
   });
 
   it("counts a combining mark with its letter, not as a unit of its own", async () => {
@@ -225,7 +264,7 @@ describe("the expander's thresholds", () => {
     await render(itemFrom(finish({ summary: ["é".repeat(400)] })));
     expect(expander()).toBeNull();
     await render(itemFrom(finish({ summary: ["é".repeat(401)] })));
-    expect(expander()?.textContent).toBe("Show more");
+    expect(expander()?.getAttribute("aria-label")).toBe("Show more");
   });
 });
 
@@ -235,14 +274,14 @@ describe("the expander's relationship to its region", () => {
     const id = expander()?.getAttribute("aria-controls") ?? "";
     expect(id).not.toBe("");
     const region = () => document.getElementById(id);
-    expect(region()?.querySelector(".workspace-chat-child-said blockquote")?.textContent).toBe(
+    expect(region()?.querySelector(".workspace-chat-activity-quote.is-child")?.textContent).toBe(
       "line 1\nline 2\nline 3\nline 4",
     );
-    expect(region()?.querySelector(".workspace-chat-unattributed")).toBeNull();
+    expect(region()?.querySelector(".workspace-chat-activity-quote.is-unattributed")).toBeNull();
     await press(expander());
-    expect(region()?.querySelector(".workspace-chat-unattributed blockquote")?.textContent).toBe(
-      "note: one flake retried",
-    );
+    expect(
+      region()?.querySelector(".workspace-chat-activity-quote.is-unattributed")?.textContent,
+    ).toBe("note: one flake retried");
   });
 });
 
@@ -265,7 +304,7 @@ describe("the other notice kinds", () => {
         ].join("\n"),
       ),
     );
-    expect(copyText()).toBe(
+    expect(sentenceText()).toBe(
       "Its child worker one has produced no output for 20 minutes. It may be thinking, building, or stuck; nothing was stopped.",
     );
     expect(expander()).toBeNull();
@@ -289,7 +328,7 @@ describe("the other notice kinds", () => {
         ].join("\n"),
       ),
     );
-    expect(copyText()).toBe("Its child worker one was closed: idle after 30 minutes.");
+    expect(sentenceText()).toBe("Its child worker one was closed: idle after 30 minutes.");
     expect(expander()).toBeNull();
   });
 
@@ -310,7 +349,7 @@ describe("the other notice kinds", () => {
         ].join("\n"),
       ),
     );
-    expect(copyText()).toBe(
+    expect(sentenceText()).toBe(
       "Its child worker one is waiting for a person to answer a permission card.",
     );
     expect(expander()).toBeNull();
@@ -332,7 +371,7 @@ describe("the other notice kinds", () => {
         ].join("\n"),
       ),
     );
-    expect(copyText()).toBe(
+    expect(sentenceText()).toBe(
       "The daemon sent a notice this version of the app does not know how to format. It declared kind: agent_hibernating. It concerns child session s.child.9.",
     );
     expect(expander()).toBeNull();

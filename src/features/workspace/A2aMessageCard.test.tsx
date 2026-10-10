@@ -1,5 +1,7 @@
 // The card's sender label is the boundary between authenticated provenance
 // and the local roster: far labels stay raw, while local ids may resolve.
+// A sender the daemon verified reads as a plain line; only an unverified one is
+// marked as such, and its words wait behind the line's click.
 // @vitest-environment happy-dom
 
 import { act } from "react";
@@ -42,6 +44,12 @@ async function renderCard(item: A2aMessageItem, nameSource: A2aNameSource) {
   });
 }
 
+function summaryOf(): HTMLElement {
+  const summary = container.querySelector<HTMLElement>(".workspace-chat-activity-line");
+  if (summary === null) throw new Error("the card drew no line");
+  return summary;
+}
+
 beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -64,10 +72,9 @@ describe("A2aMessageCard sender labels", () => {
       ),
     );
 
-    const copy = container.querySelector<HTMLElement>(".workspace-chat-copy");
-    expect(copy?.textContent).toBe("Message from s.msg.source — device Marco's phone.");
-    expect(copy?.textContent).not.toContain("Local look-alike");
-    expect(copy?.getAttribute("title")).toBe(`${fromAgent} · ${DEVICE_ID}`);
+    expect(summaryOf().textContent).toBe("Message from s.msg.source");
+    expect(summaryOf().textContent).not.toContain("Local look-alike");
+    expect(summaryOf().getAttribute("title")).toBe(`${fromAgent} · ${DEVICE_ID}`);
   });
 
   it("shows a peer label whole when its device disagrees with the origin", async () => {
@@ -77,12 +84,11 @@ describe("A2aMessageCard sender labels", () => {
       names(new Map([[fromAgent, { id: fromAgent, title: "Forged local name", kind: "claude" }]])),
     );
 
-    const copy = container.querySelector<HTMLElement>(".workspace-chat-copy");
-    expect(copy?.textContent).toBe(`Message from ${fromAgent} — device Marco's phone.`);
-    expect(copy?.textContent).not.toContain("Forged local name");
+    expect(summaryOf().textContent).toBe(`Message from ${fromAgent}`);
+    expect(summaryOf().textContent).not.toContain("Forged local name");
   });
 
-  it("still resolves a local sender against the roster", async () => {
+  it("still resolves a local sender against the roster, and says nothing about its origin", async () => {
     await renderCard(
       message("s.local.1", { kind: "local" }),
       names(
@@ -95,8 +101,36 @@ describe("A2aMessageCard sender labels", () => {
       ),
     );
 
-    expect(container.querySelector(".workspace-chat-copy")?.textContent).toBe(
-      "Message from Local worker — this machine.",
+    expect(summaryOf().textContent).toBe("Message from Local worker");
+    expect(container.textContent).not.toContain("unverified");
+    expect(container.textContent).not.toContain("this machine");
+  });
+
+  it("never calls a verified peer's message unverified", async () => {
+    await renderCard(
+      message(`peer:${DEVICE_ID}/s.msg.source`, { kind: "peer", device: DEVICE_ID }),
+      names(new Map()),
     );
+    expect(container.textContent).not.toContain("unverified");
+  });
+
+  it("marks a sender the daemon could not verify, in the line itself", async () => {
+    await renderCard(message("s.unknown.1", { kind: "unknown" }), names(new Map()));
+    expect(summaryOf().textContent).toBe("Message from s.unknown.1 · unverified sender");
+  });
+
+  it("opens the sender's words on the line's click, without a caption", async () => {
+    await renderCard(message("s.local.1", { kind: "local" }), names(new Map()));
+    expect(container.querySelector("blockquote")).toBeNull();
+    const details = container.querySelector("details");
+    if (details === null) throw new Error("the line had nothing to open");
+    await act(async () => {
+      details.open = true;
+      details.dispatchEvent(new Event("toggle"));
+    });
+    expect(container.querySelector(".workspace-chat-activity-body")?.textContent).toBe(
+      "hello from the other device",
+    );
+    expect(container.querySelector("figcaption")).toBeNull();
   });
 });

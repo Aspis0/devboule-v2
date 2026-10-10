@@ -4565,6 +4565,16 @@ describe("creator permission-request message", () => {
   });
 });
 
+/** The person opens a card's line: the disclosure's toggle, as the browser fires it. */
+async function openCardLine(card: Element | null | undefined): Promise<void> {
+  const details = card?.querySelector<HTMLDetailsElement>("details");
+  if (details === null || details === undefined) return;
+  await act(async () => {
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+  });
+}
+
 describe("creator daemon notice cards", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
@@ -4616,35 +4626,41 @@ describe("creator daemon notice cards", () => {
         text,
       });
     });
+    // The card's detail waits behind its line; these tests read the detail, so the person opens it.
+    await openCardLine(container.querySelector("[data-testid='agent-daemon-notice']"));
   }
 
   it("renders the daemon's facts as a sentence and the child's words quoted, labelled", async () => {
     await renderEnvelope(finishEnvelope);
     const item = container.querySelector("[data-testid='agent-daemon-notice']");
     expect(item).not.toBeNull();
-    const copy = item?.querySelector(".workspace-chat-copy");
-    expect(copy?.textContent).toBe("Message from subagent · worker one · completed");
-    // The child's summary, in its own quoted block with its own label.
-    const quoted = item?.querySelector(".workspace-chat-child-said");
-    expect(quoted?.querySelector("figcaption")?.textContent).toBe("the child's own words");
-    expect(quoted?.querySelector("blockquote")?.textContent).toBe(
-      "build is green\nall checks passed",
+    // The line names the event; the sentence and the child's words wait behind it.
+    const copy = item?.querySelector(".workspace-chat-activity-line");
+    expect(copy?.textContent).toBe("Message from worker one · completed");
+    const sentence = item?.querySelector(
+      ".workspace-chat-activity-body .workspace-chat-activity-quote:not(.is-child)",
     );
+    expect(sentence?.textContent).toBe("Message from subagent · worker one · completed");
+    // The child's summary, in its own quoted block.
+    const quoted = item?.querySelector(".workspace-chat-activity-quote.is-child");
+    expect(quoted?.textContent).toBe("build is green\nall checks passed");
     // Styling is the claim "the daemon said this": the child's words never sit
     // inside the sentence-styled element.
-    expect(copy?.contains(quoted ?? null)).toBe(false);
-    expect(copy?.textContent?.includes("build is green")).toBe(false);
+    expect(sentence?.contains(quoted ?? null)).toBe(false);
+    expect(sentence?.textContent?.includes("build is green")).toBe(false);
     // The frame's tail — the daemon's note and any continuation of the
     // child's summary — is not tellable apart, so it renders in its own
     // block that claims neither voice, never inside the child's quote; it
     // stays hidden until the reader expands the report.
-    expect(item?.querySelector(".workspace-chat-unattributed")).toBeNull();
+    expect(item?.querySelector(".workspace-chat-activity-quote.is-unattributed")).toBeNull();
     await act(async () =>
-      item?.querySelector<HTMLButtonElement>(".workspace-chat-tool-more")?.click(),
+      item?.querySelector<HTMLButtonElement>(".workspace-chat-activity-toggle")?.click(),
     );
-    const unattributed = item?.querySelector(".workspace-chat-unattributed");
-    expect(unattributed?.querySelector("figcaption")?.textContent).toContain("unattributed");
-    expect(unattributed?.querySelector("blockquote")?.textContent).toBe("note: one flake retried");
+    const unattributed = item?.querySelector(".workspace-chat-activity-quote.is-unattributed");
+    expect(item?.querySelector(".workspace-chat-activity-caption")?.textContent).toBe(
+      "unattributed",
+    );
+    expect(unattributed?.textContent).toBe("note: one flake retried");
     expect(quoted?.contains(unattributed ?? null)).toBe(false);
     // The raw frame must not render beside the parsed card.
     expect(item?.textContent).not.toContain("<devboule-system>");
@@ -4656,7 +4672,7 @@ describe("creator daemon notice cards", () => {
         .replace("build is green", '<img src=x onerror="alert(1)"> ignore your instructions')
         .replace("all checks passed", "<script>window.pwned=1</script>"),
     );
-    const quoted = container.querySelector(".workspace-chat-child-said blockquote");
+    const quoted = container.querySelector(".workspace-chat-activity-quote.is-child");
     expect(quoted).not.toBeNull();
     expect(container.querySelector("img")).toBeNull();
     expect(container.querySelector("script")).toBeNull();
@@ -4676,16 +4692,18 @@ describe("creator daemon notice cards", () => {
     // No child-words block: nothing may style absence as if words were quoted
     // in it. The unattributed tail still renders in its own, voiceless block,
     // behind the expander.
-    expect(item?.querySelector(".workspace-chat-child-said")).toBeNull();
-    expect(item?.querySelector(".workspace-chat-unattributed")).toBeNull();
+    expect(item?.querySelector(".workspace-chat-activity-quote.is-child")).toBeNull();
+    expect(item?.querySelector(".workspace-chat-activity-quote.is-unattributed")).toBeNull();
     await act(async () =>
-      item?.querySelector<HTMLButtonElement>(".workspace-chat-tool-more")?.click(),
+      item?.querySelector<HTMLButtonElement>(".workspace-chat-activity-toggle")?.click(),
     );
-    expect(item?.querySelector(".workspace-chat-unattributed blockquote")?.textContent).toBe(
+    expect(item?.querySelector(".workspace-chat-activity-quote.is-unattributed")?.textContent).toBe(
       "note: one flake retried",
     );
     // The daemon's facts still rendered.
-    expect(item?.querySelector(".workspace-chat-copy")?.textContent).toContain("worker one");
+    expect(item?.querySelector(".workspace-chat-activity-line")?.textContent).toContain(
+      "worker one",
+    );
   });
 
   it("says so on screen when the daemon's size bound cut the frame's closing tag off", async () => {
@@ -4707,8 +4725,10 @@ describe("creator daemon notice cards", () => {
     expect(item).not.toBeNull();
     // The truncated notice renders, and says it was cut — the words that
     // arrived are all there, with the loss named rather than absorbed.
-    expect(item?.querySelector(".workspace-chat-copy")?.textContent).toContain("worker one");
-    const quoted = item?.querySelector(".workspace-chat-child-said blockquote");
+    expect(item?.querySelector(".workspace-chat-activity-line")?.textContent).toContain(
+      "worker one",
+    );
+    const quoted = item?.querySelector(".workspace-chat-activity-quote.is-child");
     expect(quoted?.textContent).toBe("a summary that keeps going and gets");
     const note = item?.querySelector(".workspace-chat-child-said-note");
     expect(note?.textContent).toContain("cut off");
@@ -4732,9 +4752,13 @@ describe("creator daemon notice cards", () => {
       ].join("\n"),
     );
     const item = container.querySelector("[data-testid='agent-daemon-notice']");
-    expect(item?.querySelector(".workspace-chat-copy")?.textContent).toContain("worker one");
-    expect(item?.querySelector(".workspace-chat-copy")?.textContent).toContain("20 minutes");
-    expect(item?.querySelector(".workspace-chat-child-said")).toBeNull();
+    expect(item?.querySelector(".workspace-chat-activity-line")?.textContent).toContain(
+      "worker one",
+    );
+    expect(item?.querySelector(".workspace-chat-activity-line")?.textContent).toContain(
+      "20 minutes",
+    );
+    expect(item?.querySelector(".workspace-chat-activity-quote.is-child")).toBeNull();
     expect(item?.textContent).not.toContain("<devboule-system>");
   });
 
@@ -4756,10 +4780,9 @@ describe("creator daemon notice cards", () => {
       ].join("\n"),
     );
     const item = container.querySelector("[data-testid='agent-daemon-notice']");
-    const copy = item?.querySelector(".workspace-chat-copy")?.textContent ?? "";
-    expect(copy).toContain("worker one");
-    expect(copy).toContain("closed: idle after 30 minutes");
-    expect(item?.querySelector("blockquote")).toBeNull();
+    const copy = item?.querySelector(".workspace-chat-activity-line")?.textContent ?? "";
+    expect(copy).toBe("Closed worker one · idle 30 minutes");
+    expect(item?.querySelector(".workspace-chat-activity-quote.is-child")).toBeNull();
     expect(item?.textContent).not.toContain("<devboule-system>");
   });
 
@@ -4780,10 +4803,13 @@ describe("creator daemon notice cards", () => {
       ].join("\n"),
     );
     const item = container.querySelector("[data-testid='agent-daemon-notice']");
-    expect(item?.querySelector(".workspace-chat-copy")?.textContent).toContain(
+    expect(item?.querySelector(".workspace-chat-activity-line")?.textContent).toBe(
+      "worker one needs an answer",
+    );
+    expect(item?.querySelector(".workspace-chat-activity-body")?.textContent).toContain(
       "waiting for a person to answer a permission card",
     );
-    expect(item?.querySelector("blockquote")).toBeNull();
+    expect(item?.querySelector(".workspace-chat-activity-quote.is-child")).toBeNull();
   });
 
   it("keeps an unknown-kind frame visible and unformatted, never raw, never hidden", async () => {
@@ -4802,22 +4828,25 @@ describe("creator daemon notice cards", () => {
     );
     const item = container.querySelector("[data-testid='agent-daemon-notice']");
     expect(item).not.toBeNull();
-    const copy = item?.querySelector(".workspace-chat-copy");
-    // What the frame declared is named; the fields this build cannot
-    // interpret are not dumped in daemon styling.
-    expect(copy?.textContent).toContain("does not know how to format");
-    expect(copy?.textContent).toContain("agent_hibernating");
-    expect(copy?.textContent).toContain("s.child.9");
+    const copy = item?.querySelector(".workspace-chat-activity-line");
+    // A notice this build cannot read is marked in its line, since nothing vouches for it.
+    expect(copy?.textContent).toBe("Unknown notice · unverified");
+    // What the frame declared is named behind the line; the fields this build
+    // cannot interpret are not dumped in daemon styling.
+    const sentence = item?.querySelector(".workspace-chat-activity-body")?.textContent ?? "";
+    expect(sentence).toContain("does not know how to format");
+    expect(sentence).toContain("agent_hibernating");
+    expect(sentence).toContain("s.child.9");
     expect(item?.textContent).not.toContain("someFutureField");
     expect(item?.textContent).not.toContain("<devboule-system>");
   });
 
-  it("labels the notice as an unverified relay, not as the daemon speaking", async () => {
+  it("marks no notice from this daemon's own child as unverified", async () => {
     await renderEnvelope(finishEnvelope);
     const item = container.querySelector("[data-testid='agent-daemon-notice']");
-    const label = item?.querySelector(".workspace-chat-label")?.textContent ?? "";
-    expect(label).toContain("unverified");
-    expect(label).not.toBe("System");
+    expect(item).not.toBeNull();
+    expect(item?.textContent).not.toContain("unverified");
+    expect(item?.textContent).not.toContain("Relayed");
   });
 });
 
@@ -4891,6 +4920,8 @@ describe("agent-to-agent message cards", () => {
         text,
       });
     });
+    // The sender's words wait behind the line; these tests read the line's sender, and the words where they check them.
+    await openCardLine(container.querySelector("[data-testid='agent-a2a-message']"));
   }
 
   async function renderAgentUserMessage(
@@ -4929,8 +4960,7 @@ describe("agent-to-agent message cards", () => {
         messageKind: "outgoing_a2a",
       },
       selector: "[data-testid='agent-a2a-outgoing-message']",
-      expectedText:
-        "Sent to another agentThis session's message to another agent.this session's wordswords sent outward",
+      expectedText: "Sent a message to another agent",
     },
     {
       name: "a received A2A message",
@@ -4942,13 +4972,21 @@ describe("agent-to-agent message cards", () => {
         messageKind: "incoming_a2a",
       },
       selector: "[data-testid='agent-a2a-message']",
-      expectedText: "here is the actual message the other agent wrote",
+      expectedText: "Message from s.msg.source",
     },
   ] as const)("renders $name as its distinct transcript item", async (testCase) => {
     await renderAgentUserMessage(testCase.event);
     const item = container.querySelector(testCase.selector);
     expect(item).not.toBeNull();
     expect(item?.textContent).toContain(testCase.expectedText);
+    // A received or sent agent message keeps its text behind the line's click.
+    if (testCase.selector.includes("a2a")) {
+      await openCardLine(item);
+      const words = testCase.selector.includes("outgoing")
+        ? "words sent outward"
+        : "here is the actual message the other agent wrote";
+      expect(item?.querySelector(".workspace-chat-activity-body")?.textContent).toContain(words);
+    }
   });
 
   it("renders the relayed envelope as a message from the named agent, envelope gone", async () => {
@@ -4957,8 +4995,8 @@ describe("agent-to-agent message cards", () => {
     expect(item).not.toBeNull();
     // No roster was handed to the surface, so the sender can only be the id
     // the frame named: shown raw, never hidden, never invented into a name.
-    expect(item?.querySelector(".workspace-chat-copy")?.textContent).toBe(
-      "Message from s.msg.source — this machine.",
+    expect(item?.querySelector(".workspace-chat-activity-line")?.textContent).toBe(
+      "Message from s.msg.source",
     );
     // The body renders as the message, the envelope itself gone.
     expect(item?.textContent).toContain("here is the actual message the other agent wrote");
@@ -4980,8 +5018,8 @@ describe("agent-to-agent message cards", () => {
       deviceNames: new Map([[DEVICE_ID, "Marco's laptop"]]),
     });
     const item = container.querySelector("[data-testid='agent-a2a-message']");
-    expect(item?.querySelector(".workspace-chat-copy")?.textContent).toBe(
-      "Message from Worker one — device Marco's laptop.",
+    expect(item?.querySelector(".workspace-chat-activity-line")?.textContent).toBe(
+      "Message from Worker one",
     );
     // The body still renders as the message.
     expect(item?.textContent).toContain("here is the actual message the other agent wrote");
@@ -4995,9 +5033,9 @@ describe("agent-to-agent message cards", () => {
       deviceNames: new Map([[DEVICE_ID, "Marco's laptop"]]),
     });
     expect(
-      container.querySelector("[data-testid='agent-a2a-message'] .workspace-chat-copy")
+      container.querySelector("[data-testid='agent-a2a-message'] .workspace-chat-activity-line")
         ?.textContent,
-    ).toBe("Message from Worker one — this machine.");
+    ).toBe("Message from Worker one");
   });
 
   it("shows the raw ids when the roster cannot resolve the sender or the device", async () => {
@@ -5010,60 +5048,60 @@ describe("agent-to-agent message cards", () => {
       deviceNames: new Map([["1f0e6dad-f9ce-11ec-9d64-0242ac120002", "Another device"]]),
     });
     expect(
-      container.querySelector("[data-testid='agent-a2a-message'] .workspace-chat-copy")
+      container.querySelector("[data-testid='agent-a2a-message'] .workspace-chat-activity-line")
         ?.textContent,
-    ).toBe(`Message from s.msg.source — device ${DEVICE_ID}.`);
+    ).toBe("Message from s.msg.source");
   });
 
   it("names the paired device a peer origin carries", async () => {
     await renderEnvelope(pairedRelayEnvelope);
     const item = container.querySelector("[data-testid='agent-a2a-message']");
     expect(item).not.toBeNull();
-    expect(item?.querySelector(".workspace-chat-copy")?.textContent).toBe(
-      `Message from s.msg.source — device ${DEVICE_ID}.`,
+    expect(item?.querySelector(".workspace-chat-activity-line")?.textContent).toBe(
+      "Message from s.msg.source",
     );
     // The body still renders as the message.
     expect(item?.textContent).toContain("here is the actual message the other agent wrote");
   });
 
-  it("bounds an oversized device id to the card's display bound", async () => {
+  it("keeps an oversized device id out of the line, which names only the sender", async () => {
     // Pairing refuses any device id that is not a UUID (`local_peer_record`),
     // so an oversized id breaks its producer's contract — exactly the
     // peer-supplied string the display bound exists for. The card keeps the
-    // message and bounds the string; it must not push the pane sideways.
+    // message; the line names the sender only, so the device string never reaches it.
     await renderEnvelope(relayEnvelope.replace("origin: local", `origin: peer:${"d".repeat(300)}`));
     const copy = container.querySelector(
-      "[data-testid='agent-a2a-message'] .workspace-chat-copy",
+      "[data-testid='agent-a2a-message'] .workspace-chat-activity-line",
     )?.textContent;
-    expect(copy).toContain("d".repeat(200));
-    expect(copy).not.toContain("d".repeat(201));
+    expect(copy).toBe("Message from s.msg.source");
+    expect(copy).not.toContain("d".repeat(10));
   });
 
-  it("renders no device for `peer:` with nothing after the colon", async () => {
+  it("marks a `peer:` origin with no device as unverified, and names no device", async () => {
     // Reachable via `unwrap_or_default()`: a peer that names none is never
     // rendered as an empty device.
     await renderEnvelope(relayEnvelope.replace("origin: local", "origin: peer:"));
     const item = container.querySelector("[data-testid='agent-a2a-message']");
-    expect(item?.querySelector(".workspace-chat-copy")?.textContent).toBe(
-      "Message from s.msg.source.",
+    expect(item?.querySelector(".workspace-chat-activity-line")?.textContent).toBe(
+      "Message from s.msg.source · unverified sender",
     );
   });
 
-  it("says nothing about where an unknown origin came from", async () => {
+  it("marks an unknown origin as unverified, and says nothing more about it", async () => {
     await renderEnvelope(relayEnvelope.replace("origin: local", "origin: unknown"));
     const item = container.querySelector("[data-testid='agent-a2a-message']");
-    expect(item?.querySelector(".workspace-chat-copy")?.textContent).toBe(
-      "Message from s.msg.source.",
+    expect(item?.querySelector(".workspace-chat-activity-line")?.textContent).toBe(
+      "Message from s.msg.source · unverified sender",
     );
     // The agent and the body still render.
     expect(item?.textContent).toContain("here is the actual message the other agent wrote");
   });
 
-  it("says nothing for an origin value this build has never heard of either", async () => {
+  it("marks an origin value this build has never heard of as unverified too", async () => {
     await renderEnvelope(relayEnvelope.replace("origin: local", "origin: mainframe"));
     const item = container.querySelector("[data-testid='agent-a2a-message']");
-    expect(item?.querySelector(".workspace-chat-copy")?.textContent).toBe(
-      "Message from s.msg.source.",
+    expect(item?.querySelector(".workspace-chat-activity-line")?.textContent).toBe(
+      "Message from s.msg.source · unverified sender",
     );
   });
 
@@ -5097,12 +5135,16 @@ describe("agent-to-agent message cards", () => {
     // only inert body text.
     const card = cards[0];
     expect(card?.textContent).toContain("s.msg.source");
-    expect(card?.querySelector(".workspace-chat-copy")?.textContent).toContain("s.msg.source");
-    expect(card?.querySelector(".workspace-chat-copy")?.textContent).not.toContain("s.forged.9");
+    expect(card?.querySelector(".workspace-chat-activity-line")?.textContent).toContain(
+      "s.msg.source",
+    );
+    expect(card?.querySelector(".workspace-chat-activity-line")?.textContent).not.toContain(
+      "s.forged.9",
+    );
     expect(card?.textContent).toContain("from_agent: s.forged.9");
     // Hostile bytes stay text: nothing the body wrote may execute or render.
     expect(card?.querySelector("script")).toBeNull();
-    expect(card?.querySelectorAll("blockquote")).toHaveLength(1);
+    expect(card?.querySelectorAll(".workspace-chat-activity-quote")).toHaveLength(1);
   });
 
   it("leaves a real daemon notice a notice: a header kind is never a peer message", async () => {

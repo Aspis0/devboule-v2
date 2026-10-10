@@ -353,21 +353,105 @@
   overflow-wrap: anywhere;
 }
 
-/* The parsed daemon notice envelopes (finish, input-required, quiet, and any
-   kind this build cannot format): the same card family as the permission
-   request — daemon facts as one sentence, child words quoted beside it. */
-.workspace-chat-daemon-notice {
+/* One event as one line: an icon-less summary, its detail behind the click. */
+.workspace-chat-activity {
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: var(--type-meta);
+  line-height: var(--leading-body);
   max-width: 90%;
 }
 
-/* The sentence interpolates daemon-supplied strings; wrapping keeps an
-   unbroken multi-kilobyte field inside the pane (the card also bounds those
-   fields in code — this is the belt to that brace). The agent-to-agent card
-   interpolates the sender's name the same way. */
-.workspace-chat-daemon-notice .workspace-chat-copy,
-.workspace-chat-a2a-message .workspace-chat-copy {
-  margin-top: var(--space-4);
+.workspace-chat-activity-details summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.workspace-chat-activity-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.workspace-chat-activity-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-6);
   min-width: 0;
+  padding: var(--space-2) 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-chat-activity-details summary:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+
+/* What an open event shows under its line: indented, muted, never a panel. */
+.workspace-chat-activity-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin: 0 0 var(--space-4) var(--space-16);
+}
+
+.workspace-chat-activity-quote {
+  margin: 0;
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Collapsed summaries clip to four lines. The clamp also catches one long
+   line, which the newline split alone would leave full-height. */
+.workspace-chat-activity-quote.is-collapsed {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+.workspace-chat-activity-quote.is-unattributed {
+  color: var(--silence);
+}
+
+.workspace-chat-activity-caption {
+  margin: 0;
+  color: var(--silence);
+}
+
+.workspace-chat-activity-mark {
+  color: var(--silence);
+}
+
+/* The chevron that opens and folds a clipped summary: an icon, not a sentence. */
+.workspace-chat-activity-toggle {
+  align-self: flex-start;
+  display: inline-flex;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.workspace-chat-activity-toggle svg {
+  width: 12px;
+  height: 12px;
+}
+
+.workspace-chat-activity-toggle.is-open svg {
+  transform: rotate(180deg);
+}
+
+.workspace-chat-activity-toggle:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+
+.workspace-chat-daemon-notice .workspace-chat-activity-line,
+.workspace-chat-a2a-message .workspace-chat-activity-line {
   overflow-wrap: anywhere;
 }
 
@@ -801,6 +885,14 @@
   color: var(--ink);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* A whole sentence on the line (Devboule's agent calls): it yields only at the
+   pane's edge, never at the 28ch a verb gets. */
+.workspace-chat-tool-label.is-sentence {
+  flex: 0 1 auto;
+  max-width: none;
+  color: var(--muted);
 }
 
 .workspace-chat-tool-sep {

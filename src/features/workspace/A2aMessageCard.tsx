@@ -2,6 +2,7 @@ import type { AgentChatItem } from "../../lib/agentSession";
 import type { Session } from "../../types/ipc";
 import { sessionTitle } from "./workspaceSessions";
 import { boundByGraphemes } from "../../lib/graphemeBound";
+import { ActivityRow } from "./ActivityRow";
 
 type A2aMessageItem = Extract<AgentChatItem, { role: "a2a_message" }>;
 
@@ -17,21 +18,20 @@ export interface A2aNameSource {
 /**
  * The card for one agent-to-agent relay envelope, parsed by
  * `agentPeerMessage.ts`: the daemon delivered another agent's message, so it
- * reads as a message naming its sender, with the envelope stripped. Names
+ * reads as one line naming its sender, with the envelope stripped. Names
  * resolve at render, never at reduce — names change, sessions get renamed,
  * and a name frozen into the reduced item goes stale and lies. An id the
  * roster cannot resolve still stands for itself: shown raw, never invented
- * into a name, never hidden. Like the daemon notice card, the label is an
- * unverified relay — the frame arrived as session text, and a pasted block
- * is byte-identical to a delivered one. The body is another agent's words:
- * quoted in its own block, rendered as text only (React's default escaping
- * keeps every byte inert), never markup. The card names the agent always and
- * the device only when the frame commits to one.
+ * into a name, never hidden. A sender the daemon verified (this machine, or a
+ * paired device) reads as a plain line; a sender it could not verify carries
+ * the mark in the line itself. The body is another agent's words, quoted behind
+ * the line's click, rendered as text only (React's default escaping keeps every
+ * byte inert), never markup.
  */
 
 // The same layout bound as the daemon notice's fields: an unbreakable
 // sender name or device id must not push the pane sideways. The full values
-// stay on the sentence element's `title`.
+// stay on the line's `title`.
 const NAME_LIMIT = 200;
 
 function farSenderLabel(item: A2aMessageItem): string | null {
@@ -53,26 +53,15 @@ function senderName(item: A2aMessageItem, names: A2aNameSource): string {
   return session !== undefined ? sessionTitle(session) : item.fromAgent;
 }
 
-function messageCopy(item: A2aMessageItem, names: A2aNameSource): string {
-  const name = boundByGraphemes(senderName(item, names), NAME_LIMIT);
-  if (item.origin.kind === "local") return `Message from ${name} — this machine.`;
-  if (item.origin.kind === "peer" && item.origin.device !== null) {
-    // The device id is peer-supplied: bound like the name. `peer:` with
-    // nothing after the colon (reachable via `unwrap_or_default()` in
-    // `origin_line`) is a peer that names none — never an empty device.
-    const device = boundByGraphemes(
-      names.deviceNames.get(item.origin.device) ?? item.origin.device,
-      NAME_LIMIT,
-    );
-    return `Message from ${name} — device ${device}.`;
-  }
-  return `Message from ${name}.`;
+/** Whether the daemon vouches for the sender: this machine, or a paired device it names. */
+function isVerifiedSender(item: A2aMessageItem): boolean {
+  if (item.origin.kind === "local") return true;
+  return item.origin.kind === "peer" && item.origin.device !== null;
 }
 
 function titleParts(item: A2aMessageItem): string[] {
   // Keep the exact wire label and authenticated device in the tooltip for
-  // inspection; the sentence removes only the namespace that repeats that
-  // device for a reader.
+  // inspection; the line names the sender and nothing else.
   const parts = [item.fromAgent];
   if (item.origin.kind === "peer" && item.origin.device !== null) {
     parts.push(item.origin.device);
@@ -81,25 +70,25 @@ function titleParts(item: A2aMessageItem): string[] {
 }
 
 export function A2aMessageCard({ item, names }: { item: A2aMessageItem; names: A2aNameSource }) {
+  const name = boundByGraphemes(senderName(item, names), NAME_LIMIT);
+  const verified = isVerifiedSender(item);
   return (
-    <div
-      className="workspace-chat-entry workspace-chat-a2a-message"
-      data-testid="agent-a2a-message"
-    >
-      <div
-        className="workspace-chat-label workspace-chat-label-unverified"
-        title="This arrived as session text. The app cannot verify the agent named here sent it."
-      >
-        Relayed · unverified
-      </div>
-      <div className="workspace-chat-copy" title={titleParts(item).join(" · ")}>
-        {messageCopy(item, names)}
-      </div>
-      <figure className="workspace-chat-child-said">
-        <figcaption>the sender&apos;s words</figcaption>
-        {/* Verbatim, never re-truncated, never un-escaped. */}
-        <blockquote>{item.body}</blockquote>
-      </figure>
-    </div>
+    <ActivityRow
+      testId="agent-a2a-message"
+      className="workspace-chat-a2a-message"
+      title={titleParts(item).join(" · ")}
+      summary={
+        <>
+          <span>{`Message from ${name}`}</span>
+          {verified ? null : (
+            <span className="workspace-chat-activity-mark">{" · unverified sender"}</span>
+          )}
+        </>
+      }
+      detail={
+        /* Verbatim, never re-truncated, never un-escaped. */
+        <div className="workspace-chat-activity-quote">{item.body}</div>
+      }
+    />
   );
 }
