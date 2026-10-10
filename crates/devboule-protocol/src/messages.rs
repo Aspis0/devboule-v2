@@ -1421,6 +1421,21 @@ pub enum ClientMessage {
         workspace_id: String,
         title: String,
     },
+    /// Archive a workspace: its row leaves the list and its folder stays on
+    /// disk, whatever its isolation. Refused while a session runs in it. The
+    /// client sends this only under `workspace.archive`.
+    WorkspaceArchive {
+        id: u64,
+        workspace_id: String,
+    },
+    /// Remove a project from the list. Its folder and its workspace rows stay
+    /// where they are; a later `ProjectAdd` of the same path lists it again.
+    /// Refused while a session runs in one of its workspaces. The client sends
+    /// this only under `project.remove`.
+    ProjectRemove {
+        id: u64,
+        project_id: String,
+    },
     ProvidersList {
         id: u64,
     },
@@ -1858,6 +1873,8 @@ impl ClientMessage {
             | Self::WorkspaceCreate { id, .. }
             | Self::WorkspaceDelete { id, .. }
             | Self::WorkspaceSetTitle { id, .. }
+            | Self::WorkspaceArchive { id, .. }
+            | Self::ProjectRemove { id, .. }
             | Self::ProvidersList { id }
             | Self::ProvidersAuthCheck { id, .. }
             | Self::ProvidersRefresh { id }
@@ -2020,6 +2037,8 @@ impl ClientMessage {
             | Self::WorkspaceCreate { .. }
             | Self::WorkspaceDelete { .. }
             | Self::WorkspaceSetTitle { .. }
+            | Self::WorkspaceArchive { .. }
+            | Self::ProjectRemove { .. }
             | Self::Invoke { .. }
             | Self::DevicesList { .. }
             | Self::PeerAgentsList { .. }
@@ -2140,6 +2159,8 @@ impl ClientMessage {
             Self::WorkspaceCreate { .. } => "WorkspaceCreate",
             Self::WorkspaceDelete { .. } => "WorkspaceDelete",
             Self::WorkspaceSetTitle { .. } => "WorkspaceSetTitle",
+            Self::WorkspaceArchive { .. } => "WorkspaceArchive",
+            Self::ProjectRemove { .. } => "ProjectRemove",
             Self::ProvidersList { .. } => "ProvidersList",
             Self::ProvidersAuthCheck { .. } => "ProvidersAuthCheck",
             Self::ProvidersRefresh { .. } => "ProvidersRefresh",
@@ -2256,6 +2277,8 @@ impl ClientMessage {
             | Self::WorkspaceCreate { .. }
             | Self::WorkspaceDelete { .. }
             | Self::WorkspaceSetTitle { .. }
+            | Self::WorkspaceArchive { .. }
+            | Self::ProjectRemove { .. }
             | Self::WorkspaceFileRename { .. }
             | Self::WorkspaceFileDuplicate { .. }
             // The one act that destroys data — audited like the two writes

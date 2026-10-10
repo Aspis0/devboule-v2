@@ -387,6 +387,25 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
             // would die on a column this daemon cannot read honestly.
             validate_v18_columns(&tx)?;
         }
+        if version < 19 {
+            // The archive and the removal leave their rows in place: a
+            // project or workspace carries the moment it left the list, and
+            // every list read filters on it. NULL is "listed", the state every
+            // row already holds, so the migration backfills nothing. A table
+            // the journal lacks is left alone: the shape check after the
+            // commit names it, rather than this ALTER failing on it first.
+            if table_exists(&tx, "projects")?
+                && !table_has_column(&tx, "projects", "archived_at_ms")?
+            {
+                tx.execute("ALTER TABLE projects ADD COLUMN archived_at_ms INTEGER", [])?;
+            }
+            if table_exists(&tx, "workspaces")? && !workspace_has_column(&tx, "archived_at_ms")? {
+                tx.execute(
+                    "ALTER TABLE workspaces ADD COLUMN archived_at_ms INTEGER",
+                    [],
+                )?;
+            }
+        }
         tx.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
         tx.commit()?;
     }
@@ -787,6 +806,15 @@ fn backfill_permission_origins(tx: &Connection) -> Result<(usize, usize, usize),
 
 fn workspace_has_column(conn: &Connection, column: &str) -> Result<bool, JournalError> {
     table_has_column(conn, "workspaces", column)
+}
+
+fn table_exists(conn: &Connection, table: &str) -> Result<bool, JournalError> {
+    let found: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [table],
+        |row| row.get(0),
+    )?;
+    Ok(found == 1)
 }
 
 fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, JournalError> {

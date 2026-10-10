@@ -2,6 +2,7 @@
 //! a runtime property (the app said `Not Responding`), so what is pinned here
 //! is the form the framework reads and the helper the waits go through.
 
+mod archive_remove;
 mod async_roads;
 mod command_scan;
 mod editor_launch;

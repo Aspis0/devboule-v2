@@ -74,7 +74,7 @@ describe("the workspace row's one line", () => {
           branch={facts.branch}
           onSelect={vi.fn()}
           onRename={vi.fn(async () => null)}
-          onDelete={vi.fn(async () => null)}
+          onArchive={vi.fn(async () => null)}
         />,
       );
     });

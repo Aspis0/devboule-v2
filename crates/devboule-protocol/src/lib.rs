@@ -266,7 +266,12 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// Also in 37: `SessionsSearch` replies carry `stopped_early`, so a scan cut
 /// short is told apart from an answer that merely hit a cap, and the
 /// `plan_outcome` message kind for a plan decision's line.
-pub const PROTOCOL_VERSION: u32 = 37;
+///
+/// Protocol 38 adds the sidebar's workspace operations: `WorkspaceArchive` (the
+/// row leaves the list, its folder stays) and `ProjectRemove` (the project
+/// leaves the list, its folder stays), gated on `workspace.archive` and
+/// `project.remove`. Same new-variant rule.
+pub const PROTOCOL_VERSION: u32 = 38;
 /// Oldest dialect whose daemon speaks the in-app editor frames
 /// (`WorkspaceFileOpen` / `Version` / `Write` and their app-file spellings).
 /// A relay checks the far hello against this before writing one: an older
@@ -354,6 +359,16 @@ pub mod caps {
     /// [`Self::WORKSPACE_RENAME`] — a daemon that predates the variant
     /// would drop the connection on a request it never knew.
     pub const WORKSPACE_OPEN: &str = "workspace.open";
+
+    /// The workspace archive (`WorkspaceArchive`): the client sends the frame
+    /// only once the daemon agreed this name, for the same reason as
+    /// [`Self::WORKSPACE_RENAME`].
+    pub const WORKSPACE_ARCHIVE: &str = "workspace.archive";
+
+    /// The project removal (`ProjectRemove`): the client sends the frame only
+    /// once the daemon agreed this name, for the same reason as
+    /// [`Self::WORKSPACE_RENAME`].
+    pub const PROJECT_REMOVE: &str = "project.remove";
 
     /// The shared follow-up queue (`SessionQueueAdd`/`Edit`/`Remove`/`Move`/
     /// `SendNow` and the `queue_snapshot` event).
@@ -967,6 +982,10 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     // `WorkspaceOpenRoot`, so the name must be offered, and the client
     // reads it before the frame leaves for a daemon that predates it.
     capabilities.push(Capability::new(caps::WORKSPACE_OPEN));
+    // The archive and the project removal: the daemon serves both frames, so
+    // the names must be offered, and the client reads them before sending.
+    capabilities.push(Capability::new(caps::WORKSPACE_ARCHIVE));
+    capabilities.push(Capability::new(caps::PROJECT_REMOVE));
     // Same pairing again, for the shared queue: the daemon serves the five
     // `SessionQueue*` requests and publishes `queue_snapshot`, so the name
     // must be offered or the handshake negotiates it away and a client could
@@ -1077,6 +1096,10 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // keeps it, and read before `WorkspaceOpenRoot` leaves for an
     // older daemon.
     capabilities.push(Capability::new(caps::WORKSPACE_OPEN));
+    // The archive and the project removal, paired the same way: offered so
+    // the intersection keeps them, and read before either frame leaves.
+    capabilities.push(Capability::new(caps::WORKSPACE_ARCHIVE));
+    capabilities.push(Capability::new(caps::PROJECT_REMOVE));
     // The shared queue, paired the same way: offered so the intersection
     // keeps it, and read before a `SessionQueue*` frame leaves for an older
     // daemon.

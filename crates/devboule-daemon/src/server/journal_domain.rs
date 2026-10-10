@@ -486,6 +486,26 @@ pub(super) fn dispatch_journal(
                 Err(error) => DaemonMessage::Error(error.with_id(id)),
             }
         }
+        ClientMessage::WorkspaceArchive { id, workspace_id } => {
+            let was_host = state.has_hosted_workspace();
+            match state.sessions.workspace_archive(&workspace_id) {
+                Ok(()) => {
+                    state.note_workspace_inventory(was_host);
+                    DaemonMessage::Ok { id }
+                }
+                Err(error) => DaemonMessage::Error(error.with_id(id)),
+            }
+        }
+        ClientMessage::ProjectRemove { id, project_id } => {
+            let was_host = state.has_hosted_workspace();
+            match state.sessions.project_remove(&project_id) {
+                Ok(()) => {
+                    state.note_workspace_inventory(was_host);
+                    DaemonMessage::Ok { id }
+                }
+                Err(error) => DaemonMessage::Error(error.with_id(id)),
+            }
+        }
         other => DaemonMessage::Error(WireError::new(
             ErrorCode::InvalidRequest,
             format!("unexpected journal frame {other:?}"),

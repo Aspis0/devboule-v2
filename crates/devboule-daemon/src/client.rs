@@ -1827,6 +1827,34 @@ impl DaemonClient {
         }
     }
 
+    /// Take a workspace off the list; its folder stays on disk.
+    pub fn workspace_archive(&self, workspace_id: &str) -> Result<(), DaemonError> {
+        self.require_agreed(devboule_protocol::caps::WORKSPACE_ARCHIVE)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::WorkspaceArchive {
+            id,
+            workspace_id: workspace_id.to_string(),
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Take a project off the list; its folder and rows stay where they are.
+    pub fn project_remove(&self, project_id: &str) -> Result<(), DaemonError> {
+        self.require_agreed(devboule_protocol::caps::PROJECT_REMOVE)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::ProjectRemove {
+            id,
+            project_id: project_id.to_string(),
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     /// This device's identity plus every paired and pending peer, straight from
     /// the daemon's frame. The panel needs the frame's field names unchanged, so
     /// this method hands the reply on instead of re-shaping it.

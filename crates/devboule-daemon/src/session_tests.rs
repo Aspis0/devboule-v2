@@ -2921,6 +2921,8 @@ fn session_paths_of(request: &ClientMessage) -> Option<&'static [&'static str]> 
         ClientMessage::WorkspaceCreate { .. } => None,
         ClientMessage::WorkspaceDelete { .. } => None,
         ClientMessage::WorkspaceSetTitle { .. } => None,
+        ClientMessage::WorkspaceArchive { .. } => None,
+        ClientMessage::ProjectRemove { .. } => None,
         ClientMessage::ProvidersList { .. } => None,
         ClientMessage::ProvidersAuthCheck { .. } => None,
         ClientMessage::ProvidersRefresh { .. } => None,

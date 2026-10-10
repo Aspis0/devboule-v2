@@ -485,6 +485,9 @@ pub(crate) use session_child_commands::CancelOutcome;
 #[path = "session_agent_report_unix_tests.rs"]
 mod session_agent_report_unix_tests;
 #[cfg(test)]
+#[path = "session_archive_tests.rs"]
+mod session_archive_tests;
+#[cfg(test)]
 #[path = "session_child_commands_tests.rs"]
 mod session_child_commands_tests;
 #[cfg(test)]

@@ -1530,6 +1530,42 @@ fn project_workspace_wire_fields_are_camel_case() {
 }
 
 #[test]
+fn archive_and_removal_frames_are_named_on_the_wire_and_state_changing() {
+    let archive = ClientMessage::WorkspaceArchive {
+        id: 9,
+        workspace_id: "w.one".to_string(),
+    };
+    let value = serde_json::to_value(&archive).expect("archive json");
+    assert_eq!(value["type"], "workspace_archive");
+    assert_eq!(value["workspaceId"], "w.one");
+    assert_eq!(archive.request_id(), Some(9));
+    assert_eq!(archive.name(), "WorkspaceArchive");
+    assert!(archive.is_state_changing());
+
+    let remove = ClientMessage::ProjectRemove {
+        id: 10,
+        project_id: "p.one".to_string(),
+    };
+    let value = serde_json::to_value(&remove).expect("project remove json");
+    assert_eq!(value["type"], "project_remove");
+    assert_eq!(value["projectId"], "p.one");
+    assert_eq!(remove.request_id(), Some(10));
+    assert_eq!(remove.name(), "ProjectRemove");
+    assert!(remove.is_state_changing());
+
+    let decoded: ClientMessage = serde_json::from_value(serde_json::json!({
+        "type": "project_remove",
+        "id": 11,
+        "projectId": "p.two",
+    }))
+    .expect("a project removal decodes");
+    assert!(matches!(
+        decoded,
+        ClientMessage::ProjectRemove { id: 11, .. }
+    ));
+}
+
+#[test]
 fn create_send_permission_carry_idempotency_key() {
     let create = ClientMessage::SessionCreate {
         id: 1,
@@ -3622,7 +3658,7 @@ fn reply_status(message: &DaemonMessage) -> WorkspaceGitStatus {
 /// dialect that added it is the one this crate speaks.
 #[test]
 fn workspace_git_status_without_git_missing_decodes_for_older_daemons() {
-    assert_eq!(crate::PROTOCOL_VERSION, 37);
+    assert_eq!(crate::PROTOCOL_VERSION, 38);
     let older = r#"{"type":"workspace_git","id":7,"status":{"isGit":false,"dirty":false,"branch":null,"totals":{"additions":0,"deletions":0},"rows":[],"error":null}}"#;
     // The same payload, with the key the v30 dialect added, still decodes.
     let current = r#"{"type":"workspace_git","id":7,"status":{"isGit":false,"dirty":false,"branch":null,"totals":{"additions":0,"deletions":0},"rows":[],"error":null,"gitMissing":true}}"#;

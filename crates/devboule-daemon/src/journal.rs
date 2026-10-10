@@ -61,7 +61,7 @@ pub(crate) use journal_transcript_time::{time_a_finish, time_a_kindless_report};
 
 /// Stored in `PRAGMA user_version`. Bump whenever the journal schema gains
 /// tables or columns that need migration.
-pub const JOURNAL_SCHEMA_VERSION: i32 = 18;
+pub const JOURNAL_SCHEMA_VERSION: i32 = 19;
 
 /// How often the append path enforces the audit age floor and per-device cap.
 /// The session retention sweep is byte-driven, not time-driven, so the hourly
@@ -884,6 +884,16 @@ enum JournalCmd {
         title: String,
         reply: mpsc::Sender<Result<WorkspaceRecord, JournalError>>,
     },
+    /// Leaves the row in place and stamps it: lists stop showing it, its
+    /// folder and its sessions' history stay where they are.
+    WorkspaceArchive {
+        id: String,
+        reply: mpsc::Sender<Result<(), JournalError>>,
+    },
+    ProjectRemove {
+        id: String,
+        reply: mpsc::Sender<Result<(), JournalError>>,
+    },
     Replay {
         session_id: String,
         reply: mpsc::Sender<Result<Replay, JournalError>>,
@@ -1536,6 +1546,22 @@ impl Journal {
 
     pub fn workspace_delete(&self, id: &str) -> Result<(), JournalError> {
         self.rpc(|reply| JournalCmd::WorkspaceDelete {
+            id: id.to_string(),
+            reply,
+        })
+    }
+
+    /// Take a workspace off the list; its folder stays on disk.
+    pub fn workspace_archive(&self, id: &str) -> Result<(), JournalError> {
+        self.rpc(|reply| JournalCmd::WorkspaceArchive {
+            id: id.to_string(),
+            reply,
+        })
+    }
+
+    /// Take a project off the list; its folder and rows stay in the journal.
+    pub fn project_remove(&self, id: &str) -> Result<(), JournalError> {
+        self.rpc(|reply| JournalCmd::ProjectRemove {
             id: id.to_string(),
             reply,
         })
@@ -2441,6 +2467,20 @@ fn journal_loop(
                 }
                 let _ = reply.send(result);
             }
+            JournalCmd::WorkspaceArchive { id, reply } => {
+                let result = stamp_archived(&conn, "workspaces", &id);
+                if let Err(error) = &result {
+                    on_write_error(error);
+                }
+                let _ = reply.send(result);
+            }
+            JournalCmd::ProjectRemove { id, reply } => {
+                let result = stamp_archived(&conn, "projects", &id);
+                if let Err(error) = &result {
+                    on_write_error(error);
+                }
+                let _ = reply.send(result);
+            }
             JournalCmd::Replay { session_id, reply } => {
                 let _ = reply.send(replay_session(&conn, &session_id));
             }
@@ -2620,10 +2660,11 @@ fn journal_disk_footprint(path: &Path) -> std::io::Result<u64> {
     Ok(main_bytes.saturating_add(wal_bytes))
 }
 
+/// The projects the list shows: a removed one keeps its row, not its place.
 fn list_projects(conn: &Connection) -> Result<Vec<ProjectRecord>, JournalError> {
     let mut stmt = conn.prepare(
         "SELECT id, name, path, git_state, created_at_ms, updated_at_ms
-         FROM projects ORDER BY id",
+         FROM projects WHERE archived_at_ms IS NULL ORDER BY id",
     )?;
     let rows = stmt.query_map([], project_from_row)?;
     rows.collect::<Result<Vec<_>, _>>()
@@ -2656,10 +2697,11 @@ fn add_project(conn: &Connection, record: &ProjectRecord) -> Result<ProjectRecor
         // metadata. Listing stays read-only: probing git for every project
         // on every list would spawn one process per row and make a cheap UI
         // read pay that cost. A future dedicated refresh command can reuse
-        // this UPDATE without changing the storage contract.
+        // this UPDATE without changing the storage contract. Adding a path
+        // again also lists a project that was removed from the list.
         tx.execute(
             "UPDATE projects
-                SET name = ?2, git_state = ?3, updated_at_ms = ?4
+                SET name = ?2, git_state = ?3, updated_at_ms = ?4, archived_at_ms = NULL
               WHERE path = ?1",
             params![
                 record.path,
@@ -2705,7 +2747,14 @@ fn list_workspaces(
             "Project '{project_id}' does not exist."
         )));
     }
-    query_workspaces(conn, project_id)
+    let mut stmt = conn.prepare(
+        "SELECT id, project_id, title, isolation, path, created_at_ms, updated_at_ms, branch
+         FROM workspaces WHERE project_id = ?1 AND archived_at_ms IS NULL
+         ORDER BY created_at_ms, id",
+    )?;
+    let rows = stmt.query_map([project_id], workspace_from_row)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(JournalError::from)
 }
 
 /// A project's rows in creation order: the order the app numbers equal titles
@@ -2768,6 +2817,27 @@ fn add_workspace(
         ],
     )?;
     Ok(record)
+}
+
+/// Stamps a row as off the list. The first stamp is kept, so archiving twice
+/// changes nothing; a row the journal does not hold is an error, as a delete's
+/// is, so the caller never reports an archive that did not happen.
+fn stamp_archived(conn: &Connection, table: &str, id: &str) -> Result<(), JournalError> {
+    let stamped = conn.execute(
+        &format!("UPDATE {table} SET archived_at_ms = COALESCE(archived_at_ms, ?2) WHERE id = ?1"),
+        params![id, now_ms() as i64],
+    )?;
+    if stamped == 0 {
+        return Err(JournalError::InvalidRequest(format!(
+            "{} '{id}' does not exist.",
+            if table == "projects" {
+                "Project"
+            } else {
+                "Workspace"
+            }
+        )));
+    }
+    Ok(())
 }
 
 fn delete_workspace(conn: &Connection, id: &str) -> Result<(), JournalError> {

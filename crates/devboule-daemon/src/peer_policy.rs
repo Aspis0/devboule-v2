@@ -403,6 +403,8 @@ pub fn peer_allows(caps: &[String], request: &ClientMessage) -> PeerDecision {
         ClientMessage::WorkspaceCreate { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::WorkspaceDelete { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::WorkspaceSetTitle { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::WorkspaceArchive { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::ProjectRemove { .. } => with_capability(caps, CAP_ADMIN),
         // `Invoke` is the wire's generic tenant door — "run this command" — and
         // the daemon's own arm answers it with `Unimplemented`
         // (`dispatch.rs`), because this daemon is not a plugin backend. What the
@@ -1580,6 +1582,14 @@ pub(crate) mod tests {
                 id: 1,
                 workspace_id: "ws.1".to_string(),
                 title: "night build".to_string(),
+            },
+            ClientMessage::WorkspaceArchive {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+            },
+            ClientMessage::ProjectRemove {
+                id: 1,
+                project_id: "p.1".to_string(),
             },
             ClientMessage::Invoke {
                 id: 1,
@@ -3005,6 +3015,8 @@ pub(crate) mod tests {
             ClientMessage::WorkspaceCreate { .. } => administrative(),
             ClientMessage::WorkspaceDelete { .. } => administrative(),
             ClientMessage::WorkspaceSetTitle { .. } => administrative(),
+            ClientMessage::WorkspaceArchive { .. } => administrative(),
+            ClientMessage::ProjectRemove { .. } => administrative(),
             ClientMessage::ProvidersList { .. } => administrative(),
             ClientMessage::ProvidersAuthCheck { .. } => administrative(),
             ClientMessage::ProvidersRefresh { .. } => administrative(),
@@ -3057,7 +3069,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 113;
+    pub(crate) const VARIANT_COUNT: usize = 115;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -3137,6 +3149,8 @@ pub(crate) mod tests {
             ClientMessage::WorkspaceCreate { .. } => "WorkspaceCreate",
             ClientMessage::WorkspaceDelete { .. } => "WorkspaceDelete",
             ClientMessage::WorkspaceSetTitle { .. } => "WorkspaceSetTitle",
+            ClientMessage::WorkspaceArchive { .. } => "WorkspaceArchive",
+            ClientMessage::ProjectRemove { .. } => "ProjectRemove",
             ClientMessage::ProvidersList { .. } => "ProvidersList",
             ClientMessage::ProvidersAuthCheck { .. } => "ProvidersAuthCheck",
             ClientMessage::ProvidersRefresh { .. } => "ProvidersRefresh",
@@ -3565,6 +3579,14 @@ pub(crate) mod tests {
                 id: 1,
                 workspace_id: "ws.1".to_string(),
                 title: "night build".to_string(),
+            },
+            ClientMessage::WorkspaceArchive {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+            },
+            ClientMessage::ProjectRemove {
+                id: 1,
+                project_id: "p.1".to_string(),
             },
             ClientMessage::ProvidersList { id: 1 },
             ClientMessage::ProvidersAuthCheck {

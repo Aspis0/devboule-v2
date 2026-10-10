@@ -31,7 +31,7 @@ import {
   providersList,
   sessionsList,
   workspaceCreate,
-  workspaceDelete,
+  workspaceArchive,
   workspacesList,
 } from "../../lib/tauri";
 import { sharedSessionController } from "./workspaceSessions";
@@ -137,14 +137,14 @@ function selectedWorkspaceRow(): string {
   return row.textContent ?? "";
 }
 
-async function deleteWorkspaceRow(index: number): Promise<void> {
+async function archiveWorkspaceRow(index: number): Promise<void> {
   const row = [...document.querySelectorAll<HTMLButtonElement>(".workspace-row")][index];
   if (row === undefined) throw new Error(`workspace row ${index} did not render`);
   await act(async () => {
     row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
   });
-  await clickMenuEntry("Delete workspace");
-  await clickDialogButton("Delete");
+  await clickMenuEntry("Archive workspace");
+  await clickDialogButton("Archive");
   await act(async () => undefined);
   await act(async () => undefined);
 }
@@ -311,8 +311,8 @@ describe("how long the tab memory keeps it", () => {
     await showWorkspace("alpha");
 
     vi.mocked(workspacesList).mockResolvedValue([alpha]);
-    await deleteWorkspaceRow(1);
-    expect(workspaceDelete).toHaveBeenCalledWith("workspace-2");
+    await archiveWorkspaceRow(1);
+    expect(workspaceArchive).toHaveBeenCalledWith("workspace-2");
 
     // A new workspace later takes the same id. A key that outlived the one
     // it belonged to would restore b-two here; a pruned one falls back to

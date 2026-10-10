@@ -506,6 +506,8 @@ pub(super) fn peer_mode_refusal_for_conn(
         ClientMessage::WorkspaceDelete { .. } => None,
         // A title and an id, never a session: nothing to vet here either.
         ClientMessage::WorkspaceSetTitle { .. } => None,
+        ClientMessage::WorkspaceArchive { .. } => None,
+        ClientMessage::ProjectRemove { .. } => None,
         ClientMessage::ProvidersList { .. } => None,
         ClientMessage::ProvidersAuthCheck { .. } => None,
         ClientMessage::ProvidersRefresh { .. } => None,
@@ -790,6 +792,8 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::WorkspaceCreate { .. }
         | ClientMessage::WorkspaceDelete { .. }
         | ClientMessage::WorkspaceSetTitle { .. }
+        | ClientMessage::WorkspaceArchive { .. }
+        | ClientMessage::ProjectRemove { .. }
         | ClientMessage::ProvidersList { .. }
         | ClientMessage::ProvidersAuthCheck { .. }
         | ClientMessage::ProvidersRefresh { .. }

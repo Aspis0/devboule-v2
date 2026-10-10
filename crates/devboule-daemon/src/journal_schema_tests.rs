@@ -1705,10 +1705,7 @@ fn v16_migration_adds_a_nullable_goal_column() {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("version");
     assert_eq!(version, JOURNAL_SCHEMA_VERSION);
-    assert_eq!(
-        version, 18,
-        "the v17 and v18 peers migrations run after v16"
-    );
+    assert_eq!(version, 19, "the v17, v18 and v19 migrations run after v16");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

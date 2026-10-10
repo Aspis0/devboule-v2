@@ -71,7 +71,7 @@ describe("the workspace row's host line", () => {
           branch={facts.branch}
           onSelect={vi.fn()}
           onRename={vi.fn(async () => null)}
-          onDelete={vi.fn(async () => null)}
+          onArchive={vi.fn(async () => null)}
           remote={facts.remote}
           hostOffline={facts.hostOffline}
         />,
@@ -154,7 +154,7 @@ describe("the row of a remote host", () => {
           branch={undefined}
           onSelect={vi.fn()}
           onRename={vi.fn(async () => null)}
-          onDelete={vi.fn(async () => null)}
+          onArchive={vi.fn(async () => null)}
           remote={facts.remote}
           hostOffline={facts.hostOffline}
         />,

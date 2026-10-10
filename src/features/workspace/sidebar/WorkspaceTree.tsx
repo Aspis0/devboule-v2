@@ -7,6 +7,7 @@ import { hostProjectKey, keyOfWorkspace } from "../workspaceProjects";
 import { LOCAL_HOST_ID, type HostId, type WorkspaceKey } from "../hosts/hostIdentity";
 import { avatarStyle } from "./avatars";
 import { hostLabel } from "./hostNames";
+import { ProjectMenu } from "./ProjectMenu";
 import { WorkspaceRow } from "./WorkspaceRow";
 import type { WorkspaceStat } from "./useWorkspaceStats";
 
@@ -23,8 +24,10 @@ export interface WorkspaceTreeProps {
   onNewWorkspace: (trigger: HTMLButtonElement, projectId: string) => void;
   /** Persists a row's new title; answers with the refusal, if one came. */
   onRenameWorkspace: (workspaceId: string, title: string) => Promise<ErrorSentence | null>;
-  /** Deletes a row's workspace; answers with the refusal, if one came. */
-  onDeleteWorkspace: (workspaceId: string) => Promise<ErrorSentence | null>;
+  /** Takes a row's workspace off the list (its folder stays); answers with the refusal, if one came. */
+  onArchiveWorkspace: (workspaceId: string) => Promise<ErrorSentence | null>;
+  /** Takes a project off the list; its folder stays. Answers with the refusal, if one came. */
+  onRemoveProject: (projectId: string) => Promise<ErrorSentence | null>;
   /** The project whose anchor hosts the provider choice UI. */
   providerMenuAnchorProjectId: string | null;
   /** The provider choice UI itself (popover or consent card). */
@@ -67,7 +70,8 @@ export function WorkspaceTree({
   onSelectWorkspace,
   onNewWorkspace,
   onRenameWorkspace,
-  onDeleteWorkspace,
+  onArchiveWorkspace,
+  onRemoveProject,
   providerMenuAnchorProjectId,
   providerMenu,
   stats,
@@ -149,6 +153,12 @@ export function WorkspaceTree({
                   <span className="sr-only">workspaces could not be loaded</span>
                 )}
               </span>
+              {project.hostId === LOCAL_HOST_ID ? (
+                <ProjectMenu
+                  projectName={project.name}
+                  onRemove={() => onRemoveProject(project.id)}
+                />
+              ) : null}
             </div>
             {project.workspaceError !== undefined ? (
               <div className="workspace-project-error" role="alert">
@@ -183,7 +193,7 @@ export function WorkspaceTree({
                     branch={key === null ? undefined : branches.get(key)}
                     onSelect={onSelectWorkspace}
                     onRename={onRenameWorkspace}
-                    onDelete={onDeleteWorkspace}
+                    onArchive={onArchiveWorkspace}
                     remote={!local}
                     hostOffline={!local && !(hostOnline?.get(project.hostId) ?? false)}
                   />

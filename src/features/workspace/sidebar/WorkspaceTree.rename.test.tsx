@@ -50,7 +50,7 @@ describe("the sidebar's workspace rows", () => {
   const onRename = vi.fn(
     async (_workspaceId: string, _title: string): Promise<ErrorSentence | null> => null,
   );
-  const onDeleteWorkspace = vi.fn(
+  const onArchiveWorkspace = vi.fn(
     async (_workspaceId: string): Promise<ErrorSentence | null> => null,
   );
 
@@ -86,7 +86,8 @@ describe("the sidebar's workspace rows", () => {
           stats={new Map()}
           branches={new Map()}
           onRenameWorkspace={onRename}
-          onDeleteWorkspace={onDeleteWorkspace}
+          onArchiveWorkspace={onArchiveWorkspace}
+          onRemoveProject={vi.fn(async () => null)}
           hostNames={new Map([[LOCAL_HOST_ID, "This PC"]])}
         />,
       );

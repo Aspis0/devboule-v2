@@ -123,6 +123,8 @@ export type CommandArgs = {
   };
   workspace_set_title: { workspaceId: Id; title: string };
   workspace_delete: { workspaceId: Id };
+  workspace_archive: { workspaceId: Id };
+  project_remove: { projectId: Id };
   workspace_git_status: { workspaceId: Id };
   workspace_git_diff: { workspaceId: Id; path: string };
   workspace_git_log: { workspaceId: Id };
@@ -464,6 +466,8 @@ type CommandResults = {
   workspace_create: Workspace;
   workspace_set_title: Workspace;
   workspace_delete: void;
+  workspace_archive: void;
+  project_remove: void;
   workspace_git_status: WorkspaceGitStatus;
   workspace_git_diff: WorkspaceGitFileDiff;
   /** The commit history of one workspace: the branch's own commits and
@@ -700,6 +704,8 @@ export const COMMAND_ARG_KEYS = {
   workspace_create: ["projectId", "isolation", "branch"],
   workspace_set_title: ["workspaceId", "title"],
   workspace_delete: ["workspaceId"],
+  workspace_archive: ["workspaceId"],
+  project_remove: ["projectId"],
   workspace_git_status: ["workspaceId"],
   workspace_git_diff: ["workspaceId", "path"],
   workspace_git_log: ["workspaceId"],
@@ -1266,6 +1272,18 @@ export const workspaceSetTitle = (workspaceId: Id, title: string) =>
  */
 export const workspaceDelete = (workspaceId: Id) =>
   invokeTyped("workspace_delete", { workspaceId });
+/**
+ * Takes a workspace off the list, whatever its isolation. Its folder and its
+ * sessions' history stay on disk. A refusal (a session still running in it)
+ * comes back as the usual CommandError.
+ */
+export const workspaceArchive = (workspaceId: Id) =>
+  invokeTyped("workspace_archive", { workspaceId });
+/**
+ * Takes a project off the list. Its folder and its workspace rows stay where
+ * they are; adding the same folder again lists it again.
+ */
+export const projectRemove = (projectId: Id) => invokeTyped("project_remove", { projectId });
 export const sessionCreate = (
   workspaceId: Id | null,
   kind: SessionKind = "terminal",

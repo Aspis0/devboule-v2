@@ -64,7 +64,8 @@ async function render(over: Partial<WorkspaceTreeProps> = {}): Promise<void> {
         onSelectWorkspace={vi.fn()}
         onNewWorkspace={vi.fn()}
         onRenameWorkspace={vi.fn(async () => null)}
-        onDeleteWorkspace={vi.fn(async () => null)}
+        onArchiveWorkspace={vi.fn(async () => null)}
+        onRemoveProject={vi.fn(async () => null)}
         providerMenuAnchorProjectId={null}
         providerMenu={null}
         stats={new Map()}

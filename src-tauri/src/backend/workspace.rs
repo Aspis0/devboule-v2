@@ -77,6 +77,29 @@ pub async fn workspace_delete(
     off_main_thread(move || client.workspace_delete(&workspace_id, false)).await
 }
 
+/// Take one workspace off the list. Its folder and its history stay on disk;
+/// a refusal (a session still running) comes back as the sentence the
+/// frontend maps.
+#[tauri::command]
+pub async fn workspace_archive(
+    bridge: State<'_, DaemonBridge>,
+    workspace_id: String,
+) -> Result<(), CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.workspace_archive(&workspace_id)).await
+}
+
+/// Take one project off the list. Its folder and its workspace rows stay
+/// where they are; the same path added again lists it again.
+#[tauri::command]
+pub async fn project_remove(
+    bridge: State<'_, DaemonBridge>,
+    project_id: String,
+) -> Result<(), CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.project_remove(&project_id)).await
+}
+
 /// The uncommitted working-tree state of one workspace. `workspace_id` is the
 /// whole argument: the daemon resolves the directory from it, because the
 /// `path` the frontend holds is declared display-only.

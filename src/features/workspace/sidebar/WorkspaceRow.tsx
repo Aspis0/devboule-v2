@@ -100,8 +100,9 @@ export interface WorkspaceRowProps {
   onSelect: (workspaceKey: WorkspaceKey) => void;
   /** Persists a new title and answers with the refusal, if one came back. */
   onRename: (workspaceId: string, title: string) => Promise<ErrorSentence | null>;
-  /** Deletes the workspace and answers with the refusal, if one came back. */
-  onDelete: (workspaceId: string) => Promise<ErrorSentence | null>;
+  /** Takes the workspace off the list (its folder stays) and answers with the
+   * refusal, if one came back. */
+  onArchive: (workspaceId: string) => Promise<ErrorSentence | null>;
   /** A workspace on another machine: read-only here until host-targeted
    * mutations land, and its second line may carry the offline label. */
   remote?: boolean;
@@ -127,7 +128,7 @@ export const WorkspaceRow = memo(function WorkspaceRow({
   branch,
   onSelect,
   onRename,
-  onDelete,
+  onArchive,
   remote = false,
   hostOffline = false,
 }: WorkspaceRowProps) {
@@ -137,23 +138,24 @@ export const WorkspaceRow = memo(function WorkspaceRow({
   const [refusal, setRefusal] = useState<ErrorSentence | null>(null);
   const [saving, setSaving] = useState(false);
   const [confirming, setConfirming] = useState(false);
-  const [deleteRefusal, setDeleteRefusal] = useState<ErrorSentence | null>(null);
+  const [archiveRefusal, setArchiveRefusal] = useState<ErrorSentence | null>(null);
   // `title` is the pointer's channel alone: the sentence rides the button as a
   // description a screen reader announces. An id of its own, since two hosts
   // may hold the same workspace id.
   const detailId = useId();
   const rowRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const kebabRef = useRef<HTMLButtonElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   /** Whether the row takes focus when the editor closes; a blur withdraws it. */
   const returnFocusRef = useRef(false);
-  /** Set when the delete ask opens: the ask's own restore aims at the menu
+  /** Set when the archive ask opens: the ask's own restore aims at the menu
    * entry its open unmounted, so the row takes focus back when it ends. */
-  const deleteAskPendingRef = useRef(false);
+  const archiveAskPendingRef = useRef(false);
   /** Set synchronously by the confirm: state would not be committed before a
    * second confirm in the same tick reached the handler. */
-  const deletePendingRef = useRef(false);
-  /** Set by a successful delete: the re-read commits after the answer, so
+  const archivePendingRef = useRef(false);
+  /** Set by a successful archive: the re-read commits after the answer, so
    * focus can only be placed once this row has actually unmounted. */
   const focusAfterRemovalRef = useRef<(() => void) | null>(null);
 
@@ -187,6 +189,8 @@ export const WorkspaceRow = memo(function WorkspaceRow({
     const onPointerDown = (event: PointerEvent) => {
       if (!(event.target instanceof Node)) return;
       if (menuRef.current?.contains(event.target)) return;
+      // The kebab toggles its own menu: a press on it must not close it first.
+      if (kebabRef.current?.contains(event.target)) return;
       setMenuOpen(false);
     };
     window.addEventListener("pointerdown", onPointerDown);
@@ -210,8 +214,8 @@ export const WorkspaceRow = memo(function WorkspaceRow({
   }, [editing]);
 
   useEffect(() => {
-    if (confirming || !deleteAskPendingRef.current) return;
-    deleteAskPendingRef.current = false;
+    if (confirming || !archiveAskPendingRef.current) return;
+    archiveAskPendingRef.current = false;
     rowRef.current?.focus({ preventScroll: true });
   }, [confirming]);
 
@@ -247,26 +251,26 @@ export const WorkspaceRow = memo(function WorkspaceRow({
     setEditing(true);
   };
 
-  const startDelete = () => {
-    if (deletePendingRef.current) return;
+  const startArchive = () => {
+    if (archivePendingRef.current) return;
     focusAfterRemovalRef.current = null;
-    setDeleteRefusal(null);
+    setArchiveRefusal(null);
     closeMenu(false);
-    deleteAskPendingRef.current = true;
+    archiveAskPendingRef.current = true;
     setConfirming(true);
   };
 
-  const confirmDelete = async () => {
-    if (deletePendingRef.current) return;
-    deletePendingRef.current = true;
+  const confirmArchive = async () => {
+    if (archivePendingRef.current) return;
+    archivePendingRef.current = true;
     const row = rowRef.current;
     const target = row === null ? null : focusTargetAfterRemoval(row);
     const panel = row?.closest(".workspace-panel-open") ?? null;
     setConfirming(false);
-    const error = await onDelete(workspace.id);
-    deletePendingRef.current = false;
+    const error = await onArchive(workspace.id);
+    archivePendingRef.current = false;
     if (error !== null) {
-      setDeleteRefusal(error);
+      setArchiveRefusal(error);
       return;
     }
     const focus = () => focusSurvivor(target, panel);
@@ -463,6 +467,19 @@ export const WorkspaceRow = memo(function WorkspaceRow({
           )}
         </>
       )}
+      {editing || remote ? null : (
+        <button
+          type="button"
+          ref={kebabRef}
+          className="sidebar-kebab workspace-row-kebab"
+          aria-label={`Actions for ${workspace.displayTitle}`}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          onClick={() => setMenuOpen(!menuOpen)}
+        >
+          <span aria-hidden="true">⋯</span>
+        </button>
+      )}
       {menuOpen ? (
         <div
           className="workspace-row-menu"
@@ -474,28 +491,26 @@ export const WorkspaceRow = memo(function WorkspaceRow({
           <button type="button" role="menuitem" onClick={startRename}>
             Rename
           </button>
-          {/* A local row is the project folder and the daemon refuses its
-              delete outright (session_workspaces.rs) — never an affordance. */}
-          {workspace.isolation === "worktree" ? (
-            <button type="button" role="menuitem" onClick={startDelete}>
-              Delete workspace
-            </button>
-          ) : null}
+          {/* Archive takes the row off the list for every isolation; the
+              folder stays, so a local row is no exception. */}
+          <button type="button" role="menuitem" onClick={startArchive}>
+            Archive workspace
+          </button>
         </div>
       ) : null}
-      {deleteRefusal !== null ? (
+      {archiveRefusal !== null ? (
         // The mapped sentence only: no raw daemon text reaches this surface.
         <span className="workspace-row-delete-refusal" role="alert">
-          {deleteRefusal.sentence}
+          {archiveRefusal.sentence}
         </span>
       ) : null}
       <ConfirmDialog
         open={confirming}
-        title={`Delete “${workspace.displayTitle}”?`}
-        message="Deletes the worktree folder and this workspace's entry. Your project folder is kept. This cannot be undone."
-        confirmLabel="Delete"
-        tone="danger"
-        onConfirm={() => void confirmDelete()}
+        title={`Archive “${workspace.displayTitle}”?`}
+        message="Takes this workspace off the list. Its folder and its history stay on disk."
+        confirmLabel="Archive"
+        tone="accent"
+        onConfirm={() => void confirmArchive()}
         onCancel={() => setConfirming(false)}
       />
     </div>

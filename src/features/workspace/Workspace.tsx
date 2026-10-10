@@ -309,7 +309,8 @@ export function Workspace({
     newProjectTriggerRef,
     retryProjects,
     renameWorkspace,
-    deleteWorkspace,
+    archiveWorkspace,
+    removeProject,
     reuseOrCreateWorkspace,
   } = useWorkspaceProjects(restoredWorkspaceKey);
   // The one seam Settings → Providers may use: the last-selected workspace,
@@ -481,16 +482,33 @@ export function Workspace({
     selectedKey,
     endedKey,
   });
-  const handleDeleteWorkspace = useCallback(
+  const handleArchiveWorkspace = useCallback(
     async (workspaceId: string): Promise<ErrorSentence | null> => {
-      const refusal = await deleteWorkspace(workspaceId);
-      // The daemon's row is gone; History can keep naming the id for its
-      // sessions, so the cache is dropped here and never waits for History.
+      const refusal = await archiveWorkspace(workspaceId);
+      // The daemon's row is off the list; History can keep naming the id for
+      // its sessions, so the cache is dropped here and never waits for History.
       const key = localWorkspaceKey(workspaceId);
       if (refusal === null && key !== null) evictWorkspaceStats(key);
       return refusal;
     },
-    [deleteWorkspace, evictWorkspaceStats],
+    [archiveWorkspace, evictWorkspaceStats],
+  );
+  const handleRemoveProject = useCallback(
+    async (projectId: string): Promise<ErrorSentence | null> => {
+      const refusal = await removeProject(projectId);
+      // Every row the project listed is off the list with it.
+      if (refusal === null) {
+        for (const project of projects) {
+          if (project.id !== projectId) continue;
+          for (const workspace of project.workspaces) {
+            const key = keyOfWorkspace(workspace);
+            if (key !== null) evictWorkspaceStats(key);
+          }
+        }
+      }
+      return refusal;
+    },
+    [evictWorkspaceStats, projects, removeProject],
   );
   useEffect(() => {
     setSessionFacts(sessions);
@@ -2108,7 +2126,8 @@ export function Workspace({
       onSelectWorkspace: selectWorkspace,
       onNewWorkspace: handleNewWorkspace,
       onRenameWorkspace: renameWorkspace,
-      onDeleteWorkspace: handleDeleteWorkspace,
+      onArchiveWorkspace: handleArchiveWorkspace,
+      onRemoveProject: handleRemoveProject,
       providerMenuAnchorProjectId:
         providerAnchor?.kind === "project" ? providerAnchor.projectId : null,
       providerMenu: providerAnchor?.kind === "project" ? providerMenu : null,
@@ -2128,7 +2147,8 @@ export function Workspace({
       selectWorkspace,
       handleNewWorkspace,
       renameWorkspace,
-      handleDeleteWorkspace,
+      handleArchiveWorkspace,
+      handleRemoveProject,
       providerAnchor,
       providerMenu,
       workspaceStats,

@@ -662,10 +662,7 @@ impl super::SessionRegistry {
         let _reservation = self.reserve_workspace_for_delete(workspace_id)?;
         let live = self.live_sessions_in_workspace(workspace_id)?;
         if !live.is_empty() {
-            return Err(WireError::new(
-                ErrorCode::InvalidRequest,
-                "sessions or terminals are still running in this workspace; close them first",
-            ));
+            return Err(sessions_still_running());
         }
         let checkout = PathBuf::from(&workspace.path);
         let project = journal
@@ -880,6 +877,48 @@ impl super::SessionRegistry {
             .map_err(WireError::from)?;
         self.invalidate_workspace_path(workspace_id);
         Ok(())
+    }
+
+    /// Takes a workspace off the list (`WorkspaceArchive`). Its folder stays
+    /// on disk, whatever its isolation, and so does its sessions' history.
+    /// Refused while a session runs in it; the reservation keeps a create from
+    /// starting into it between the check and the stamp.
+    pub fn workspace_archive(&self, workspace_id: &str) -> Result<(), WireError> {
+        let journal = self.journal.as_ref().ok_or_else(journal_unavailable)?;
+        journal
+            .workspace_get(workspace_id)
+            .map_err(WireError::from)?
+            .ok_or_else(|| workspace_unavailable(workspace_id, "it does not exist"))?;
+        let _reservation = self.reserve_workspace_for_delete(workspace_id)?;
+        if !self.live_sessions_in_workspace(workspace_id)?.is_empty() {
+            return Err(sessions_still_running());
+        }
+        journal
+            .workspace_archive(workspace_id)
+            .map_err(WireError::from)
+    }
+
+    /// Takes a project off the list (`ProjectRemove`). Its folder and its
+    /// workspace rows stay where they are; adding the same path again lists it.
+    /// Refused while a session runs in one of its listed workspaces. Archived
+    /// workspaces hold no live session: archiving refuses one, and a create
+    /// cannot start into an archiving row.
+    pub fn project_remove(&self, project_id: &str) -> Result<(), WireError> {
+        let journal = self.journal.as_ref().ok_or_else(journal_unavailable)?;
+        // The read names the project as unknown when it is not there.
+        let workspaces = journal
+            .workspaces_list(project_id)
+            .map_err(WireError::from)?;
+        let mut reservations = Vec::with_capacity(workspaces.len());
+        for workspace in &workspaces {
+            reservations.push(self.reserve_workspace_for_delete(&workspace.id)?);
+        }
+        for workspace in &workspaces {
+            if !self.live_sessions_in_workspace(&workspace.id)?.is_empty() {
+                return Err(sessions_still_running());
+            }
+        }
+        journal.project_remove(project_id).map_err(WireError::from)
     }
 
     fn detach_worktree_row(
@@ -1151,6 +1190,15 @@ fn worktree_branch_seed() -> u64 {
         .map(|duration| duration.as_nanos() as u64)
         .unwrap_or(0)
         ^ u64::from(std::process::id())
+}
+
+/// The refusal a removal or an archive gives while an agent or terminal still
+/// runs in the workspace: the owner closes it first, nothing is cut under it.
+fn sessions_still_running() -> WireError {
+    WireError::new(
+        ErrorCode::InvalidRequest,
+        "sessions or terminals are still running in this workspace; close them first",
+    )
 }
 
 fn workspace_unavailable(workspace_id: &str, reason: &str) -> WireError {

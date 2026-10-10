@@ -496,7 +496,9 @@ pub(super) fn dispatch_immediate(
         | ClientMessage::WorkspaceFilePreviewUnstage { .. }
         | ClientMessage::WorkspaceCreate { .. }
         | ClientMessage::WorkspaceDelete { .. }
-        | ClientMessage::WorkspaceSetTitle { .. } => {
+        | ClientMessage::WorkspaceSetTitle { .. }
+        | ClientMessage::WorkspaceArchive { .. }
+        | ClientMessage::ProjectRemove { .. } => {
             if !journal_ok {
                 return capability_not_supported(request.request_id(), caps::JOURNAL);
             }

@@ -3,7 +3,8 @@ import type { ChangeEvent } from "react";
 import {
   projectsList,
   workspaceCreate,
-  workspaceDelete,
+  projectRemove,
+  workspaceArchive,
   workspaceSetTitle,
   workspacesList,
 } from "../../lib/tauri";
@@ -394,11 +395,26 @@ export function useWorkspaceProjects(restoredWorkspaceKey: WorkspaceKey | null) 
    * After a success the list is re-read, never patched: the row leaves when
    * the daemon's reply no longer carries it, and a refusal comes back as the
    * sentence the row renders — with the list untouched, so the row stays.
+   * The folder is never touched: an archived row is only off the list.
    */
-  const deleteWorkspace = useCallback(
+  const archiveWorkspace = useCallback(
     async (workspaceId: string): Promise<ErrorSentence | null> => {
       try {
-        await workspaceDelete(workspaceId);
+        await workspaceArchive(workspaceId);
+      } catch (cause: unknown) {
+        return errorSentence(cause);
+      }
+      await loadProjects();
+      return null;
+    },
+    [loadProjects],
+  );
+
+  /** Same contract as `archiveWorkspace`, for a project: off the list, folders kept. */
+  const removeProject = useCallback(
+    async (projectId: string): Promise<ErrorSentence | null> => {
+      try {
+        await projectRemove(projectId);
       } catch (cause: unknown) {
         return errorSentence(cause);
       }
@@ -481,7 +497,8 @@ export function useWorkspaceProjects(restoredWorkspaceKey: WorkspaceKey | null) 
     addWorkspace,
     reuseOrCreateWorkspace,
     renameWorkspace,
-    deleteWorkspace,
+    archiveWorkspace,
+    removeProject,
     projectDialogOpen,
     openProjectDialog,
     closeProjectDialog,
