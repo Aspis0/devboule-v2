@@ -1,4 +1,5 @@
 import { AgentSession, type AgentChatItem, type AgentSessionState } from "../../lib/agentSession";
+import { applyRememberedPicks } from "./designPicks";
 import {
   createSessionChannel,
   oracleAsk,
@@ -1279,6 +1280,12 @@ export function createAgentHost(): DesignHost {
     if (!isCurrent()) {
       await closeSession(handle);
       throw abortError();
+    }
+    // The picks a person made before this session existed reach it before its
+    // first prompt. A pick the provider refuses must not fail the open: it stays
+    // remembered, and the session opens on the provider's own choice.
+    if (target.provider !== undefined) {
+      await applyRememberedPicks(controller, target.provider.id).catch(() => undefined);
     }
     return handle;
   };

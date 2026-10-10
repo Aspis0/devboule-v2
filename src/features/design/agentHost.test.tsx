@@ -51,6 +51,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../../lib/tauri", () => ({
   daemonStatus: mocks.daemonStatus,
+  providerVocabularyGet: vi.fn(async () => undefined),
   createSessionChannel: vi.fn((onEvent: (event: SessionAttachMessage) => void) => {
     const channel = {};
     channelHarness.handlers.set(channel, onEvent);
