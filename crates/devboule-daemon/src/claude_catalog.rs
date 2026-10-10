@@ -419,15 +419,24 @@ fn parse_model_record(record: &[u8]) -> Option<SessionModel> {
     let supports_xhigh = capabilities
         .iter()
         .any(|capability| capability == "xhigh_effort");
+    let supports_max = capabilities
+        .iter()
+        .any(|capability| capability == "max_effort");
     let default_effort = js_field(record, "default_effort").filter(|effort| {
         supports_effort
-            && PERSISTED_EFFORTS
-                .iter()
-                .any(|(persisted, _)| persisted == effort)
-            && (effort != "xhigh" || supports_xhigh)
+            && ((effort == "max" && supports_max)
+                || (PERSISTED_EFFORTS
+                    .iter()
+                    .any(|(persisted, _)| persisted == effort)
+                    && (effort != "xhigh" || supports_xhigh)))
     });
-    let efforts =
-        supports_effort.then(|| efforts(supports_xhigh, default_effort.as_deref().unwrap_or("")));
+    let efforts = supports_effort.then(|| {
+        let mut listed = efforts(supports_xhigh, default_effort.as_deref().unwrap_or(""));
+        if supports_max {
+            listed.push(max_effort(default_effort.as_deref() == Some("max")));
+        }
+        listed
+    });
     let knowledge_cutoff = js_field(record, "knowledge_cutoff");
     let description = knowledge_cutoff
         .map(|cutoff| format!("{family} family; knowledge cutoff {cutoff}"))
@@ -456,6 +465,18 @@ fn efforts(include_xhigh: bool, default_effort: &str) -> Vec<SessionModelEffort>
             default: Some(*id == default_effort),
         })
         .collect()
+}
+
+/// The top level for a model whose record declares `max_effort`. It is listed
+/// because the CLI declares it, and launched with `--effort` (see
+/// `LAUNCH_ONLY_EFFORTS` in `claude_client`): it is not a persisted level.
+fn max_effort(is_default: bool) -> SessionModelEffort {
+    SessionModelEffort {
+        id: "max".to_string(),
+        label: "Max".to_string(),
+        description: None,
+        default: Some(is_default),
+    }
 }
 
 fn js_field(record: &str, field: &str) -> Option<String> {
@@ -723,6 +744,7 @@ mod tests {
         assert_eq!(models[0].name, "Claude Opus 5");
         assert_eq!(models[0].context_tokens, Some(1_000_000));
         assert_eq!(models[0].current_effort.as_deref(), Some("xhigh"));
+        // The record declares `max_effort`, so the CLI's own top level is listed too.
         assert_eq!(
             models[0]
                 .efforts
@@ -731,12 +753,43 @@ mod tests {
                 .iter()
                 .map(|effort| effort.id.as_str())
                 .collect::<Vec<_>>(),
-            ["low", "medium", "high", "xhigh"]
+            ["low", "medium", "high", "xhigh", "max"]
         );
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn haiku_five_five_lists_max_because_its_record_declares_it() {
+        // The record the installed CLI ships for Haiku 5.5 (capabilities as read
+        // from the binary): effort, max_effort and xhigh_effort, no default_effort.
+        let path = fake_binary(
+            r#"{id:"claude-haiku-5-5",family:"haiku",display_name:"Haiku 5.5",knowledge_cutoff:"June 2026",provider_ids:{first_party:"claude-haiku-5-5"},context:{window:1e6},capabilities:["effort","max_effort","xhigh_effort","adaptive_thinking"]}"#,
+        );
+        let models = scrape_file(&path).expect("scrape");
+        assert_eq!(models[0].model_id, "claude-haiku-5-5");
+        let efforts = models[0].efforts.as_ref().expect("efforts");
+        assert_eq!(
+            efforts
+                .iter()
+                .map(|effort| effort.id.as_str())
+                .collect::<Vec<_>>(),
+            ["low", "medium", "high", "xhigh", "max"]
+        );
+        assert_eq!(efforts.last().expect("max").label, "Max");
+        assert!(efforts.iter().all(|effort| effort.default != Some(true)));
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn a_record_without_max_effort_never_lists_max() {
+        let path = fake_binary(
+            r#"{id:"claude-sonnet-5",family:"sonnet",display_name:"Claude Sonnet 5",capabilities:["effort","xhigh_effort"],default_effort:"high"}"#,
+        );
+        let models = scrape_file(&path).expect("scrape");
         assert!(!models[0]
             .efforts
             .as_ref()
-            .unwrap()
+            .expect("efforts")
             .iter()
             .any(|effort| effort.id == "max"));
         let _ = fs::remove_dir_all(path.parent().expect("parent"));

@@ -290,6 +290,38 @@ fn launch_with_model(argv: Vec<String>, model_id: Option<&str>) -> Vec<String> {
     args
 }
 
+/// The efforts the CLI takes only as a launch flag. Its persisted `effortLevel`
+/// names four levels and answers any other value with success, so `max` sent as
+/// a control request would be dropped without a word. It travels as `--effort`
+/// when a session starts, and a change to it mid-session is refused.
+const LAUNCH_ONLY_EFFORTS: &[&str] = &["max"];
+
+fn is_launch_only_effort(effort: &str) -> bool {
+    LAUNCH_ONLY_EFFORTS.contains(&effort)
+}
+
+/// The `--effort` flag for a launch-only thinking option, in place of any stored one.
+fn launch_with_effort(argv: Vec<String>, effort: Option<&str>) -> Vec<String> {
+    let mut args = strip_flag(argv, "--effort");
+    if let Some(effort) = effort.filter(|effort| is_launch_only_effort(effort)) {
+        args.extend(["--effort".to_string(), effort.to_string()]);
+    }
+    args
+}
+
+/// A mid-session change to a launch-only effort, refused before anything is sent.
+fn refuse_launch_only_effort(effort: Option<&str>) -> Result<(), WireError> {
+    match effort {
+        Some(effort) if is_launch_only_effort(effort) => Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            format!(
+                "Claude takes '{effort}' effort only when a session starts; start a new session to use it."
+            ),
+        )),
+        _ => Ok(()),
+    }
+}
+
 fn strip_flag(argv: Vec<String>, flag: &str) -> Vec<String> {
     let with_equals = format!("{flag}=");
     let mut args = Vec::with_capacity(argv.len());
@@ -636,9 +668,12 @@ pub(super) fn spawn_process(
     // CLI's own default would run a different model at a different price than
     // the one the card named. A create that resolved no profile keeps the
     // catalog's preference, exactly as before this delivery existed.
-    let args = launch_with_model(
-        launch_in_bypass_mode(args),
-        launch_model_id(&delivery, &state.claude_models().models).as_deref(),
+    let args = launch_with_effort(
+        launch_with_model(
+            launch_in_bypass_mode(args),
+            launch_model_id(&delivery, &state.claude_models().models).as_deref(),
+        ),
+        delivery.thinking_option_id.as_deref(),
     );
     spawn_claude_child(&command, args, requested_mode, &delivery, None)
 }
@@ -818,7 +853,12 @@ fn spawn_claude_child(
     // session instead of silently running at its own level. A write failure
     // here is a refused creation, like a failed mode write above.
     let delivery_settings: ClaudeDeliverySettings = Arc::new(Mutex::new(HashMap::new()));
-    if let Some(thinking) = delivery.thinking_option_id.as_deref() {
+    // A launch-only effort already rides the argv, so it is not sent again here.
+    if let Some(thinking) = delivery
+        .thinking_option_id
+        .as_deref()
+        .filter(|effort| !is_launch_only_effort(effort))
+    {
         if let Err(error) = send_initial_effort(&stdin, &next_id, &delivery_settings, thinking) {
             if let Ok(mut process) = process.lock() {
                 terminate_process(&mut process);
@@ -2309,6 +2349,7 @@ impl ModelSwitcher for ClaudeSwitcher {
     }
 
     fn set_model(&self, model_id: Option<&str>, effort: Option<&str>) -> Result<(), WireError> {
+        refuse_launch_only_effort(effort)?;
         if let Some(model_id) = model_id {
             let request_id = format!("set-model-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
             send_control_request_frame(

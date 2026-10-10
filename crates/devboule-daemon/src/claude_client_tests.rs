@@ -3409,3 +3409,52 @@ fn a_refused_or_failed_replacement_write_does_not_arm_the_suppression() {
     assert_eq!(abort_gate.delivered_prompts(), 0);
     assert!(!abort_gate.settle_result(true));
 }
+
+/// `max` is the one thinking option the CLI takes only at launch: it rides
+/// `--effort`, replacing any stored one, and a stored persisted level never does.
+#[test]
+fn a_max_thinking_option_travels_as_the_launch_effort_flag() {
+    let argv = |args: &[&str]| args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+    let launched = launch_with_effort(argv(&["claude", "--effort", "low"]), Some("max"));
+    assert_eq!(launched, argv(&["claude", "--effort", "max"]));
+
+    let persisted = launch_with_effort(argv(&["claude", "--effort", "low"]), Some("high"));
+    assert_eq!(
+        persisted,
+        argv(&["claude"]),
+        "a persisted level is never a flag"
+    );
+    assert_eq!(
+        launch_with_effort(argv(&["claude"]), None),
+        argv(&["claude"])
+    );
+}
+
+/// Mid-session, `max` has no channel the CLI keeps, so the change is refused
+/// before a control request is written; the four persisted levels still pass.
+#[test]
+fn a_mid_session_change_to_max_is_refused_and_the_persisted_levels_pass() {
+    let error = refuse_launch_only_effort(Some("max")).expect_err("max cannot change mid-session");
+    assert_eq!(error.code, ErrorCode::InvalidRequest);
+    assert!(
+        error.message.contains("start a new session"),
+        "{}",
+        error.message
+    );
+    assert!(refuse_launch_only_effort(Some("xhigh")).is_ok());
+    assert!(refuse_launch_only_effort(None).is_ok());
+}
+
+/// A model that lists `max` accepts it as a creation's thinking option; one
+/// that does not list it refuses it by name, like any other unlisted option.
+#[test]
+fn max_is_accepted_only_where_the_model_lists_it() {
+    let models = vec![
+        model("claude-haiku-5-5", Some(vec!["low", "high", "max"])),
+        model("claude-sonnet-5", Some(vec!["low", "high"])),
+    ];
+    validate_thinking_choice(&models, "claude-haiku-5-5", "max").expect("listed max is accepted");
+    let error = validate_thinking_choice(&models, "claude-sonnet-5", "max")
+        .expect_err("an unlisted max is refused");
+    assert!(error.message.contains("is not among"), "{}", error.message);
+}
