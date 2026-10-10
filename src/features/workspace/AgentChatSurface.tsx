@@ -65,6 +65,7 @@ import { PickerChip, modeDotClass } from "../../components/PickerChip";
 import type { ChatFileLinks } from "../../lib/chatFilePaths";
 import { TurnRail } from "./timeline/TurnRail";
 import { TurnFooter } from "./timeline/TurnFooter";
+import { MarkdownText } from "../../components/MarkdownText";
 import { WorkingLine } from "./transcript/WorkingLine";
 import { useInterruptOnEscape } from "./interruptOnEscape";
 import "./timeline/timeline.css";
@@ -107,6 +108,11 @@ export function composerDisabledReason(
 
 /** The universal `/goal` entry: `/goal x` travels to the daemon as plain
  * text, which intercepts it, so the app only makes it discoverable. */
+/** The plan chip's state: a dot that is lit while plan mode is on. */
+function planDotClass(id: string): string {
+  return id === "on" ? "workspace-plan-dot is-on" : "workspace-plan-dot is-off";
+}
+
 const UNIVERSAL_GOAL_COMMAND: WorkspaceCommand = {
   name: "goal",
   description: "Set, show, or clear this session's goal",
@@ -430,6 +436,21 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     focus: boolean;
     nonce: number;
   } | null>(null);
+  // The latest plan the transcript holds, with its text: once its card is
+  // answered, the composer's icon reopens it for reading.
+  const latestPlan = useMemo(() => {
+    for (let index = state.items.length - 1; index >= 0; index -= 1) {
+      const item = state.items[index];
+      if (item.role === "tool" && item.kind === "plan" && item.output.trim() !== "") return item;
+    }
+    return null;
+  }, [state.items]);
+  const [planReaderOpen, setPlanReaderOpen] = useState(false);
+  const planWaiting = pendingPlanToolCallId !== null;
+  // The plan is on while its card waits, even before the provider reports the
+  // mode: a plan is only ever proposed in plan mode.
+  const planOn = state.features?.planMode === true || planWaiting;
+  const showPlanReader = latestPlan !== null && !planWaiting;
   const restoreNonceRef = useRef(0);
   const handDraftBack = useCallback(
     (text: string, focus: boolean, images: readonly PromptAttachment[] = []) => {
@@ -887,6 +908,11 @@ export const AgentChatSurface = memo(function AgentChatSurface({
           {composerQueue.dropNote}
         </div>
       ) : null}
+      {showPlanReader && planReaderOpen && latestPlan !== null ? (
+        <section className="workspace-plan-reader" aria-label="Plan">
+          <MarkdownText text={latestPlan.output} />
+        </section>
+      ) : null}
       <WorkspaceComposer
         streaming={state.streaming && !osGone}
         turnActive={turnActive}
@@ -952,6 +978,31 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         onStop={() => void sessionRef.current?.interrupt()}
         controls={
           <>
+            {showPlanReader ? (
+              <button
+                type="button"
+                className={`workspace-plan-reader-trigger${planReaderOpen ? " is-open" : ""}`}
+                data-testid="plan-reader-trigger"
+                aria-label="Show the plan"
+                aria-expanded={planReaderOpen}
+                title="Show the plan"
+                onClick={() => setPlanReaderOpen((open) => !open)}
+              >
+                <svg
+                  aria-hidden="true"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                >
+                  <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" />
+                  <path d="M14 3v6h6" />
+                  <path d="M8 13h8M8 17h5" />
+                </svg>
+              </button>
+            ) : null}
             {manifest !== null && manifest.models.length > 1 ? (
               <PickerChip
                 label="Model"
@@ -1003,15 +1054,16 @@ export const AgentChatSurface = memo(function AgentChatSurface({
               <PickerChip
                 label="Plan mode"
                 options={[
-                  { id: "on", name: "Plan: On" },
-                  { id: "off", name: "Plan: Off" },
+                  { id: "on", name: "Plan" },
+                  { id: "off", name: "Plan" },
                 ]}
-                currentId={state.features?.planMode ? "on" : "off"}
+                currentId={planOn ? "on" : "off"}
                 onSelect={(id) => void sessionRef.current?.setFeature("planMode", id === "on")}
                 chipTestId="plan-mode-chip"
                 optionTestId={(id) => `plan-mode-option-${id}`}
+                dotFor={planDotClass}
                 disabled={composerDisabled}
-                tooltip="Toggle plan mode"
+                tooltip={`Plan mode, ${planOn ? "on" : "off"}`}
               />
             ) : null}
             {manifest !== null && efforts.length > 0 ? (

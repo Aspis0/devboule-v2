@@ -126,3 +126,19 @@
   /* 6 px padding top and bottom plus this 16 px line box is exactly 28. */
   line-height: 16px;
 }
+
+/* The plan chip's state: lit while plan mode is on, so the word can stay "Plan". */
+.workspace-plan-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+}
+
+.workspace-plan-dot.is-on {
+  background: var(--purple);
+}
+
+.workspace-plan-dot.is-off {
+  background: var(--silence);
+}

@@ -1227,14 +1227,15 @@ describe("AgentChatSurface", () => {
     });
     const chip = container.querySelector<HTMLButtonElement>('[data-testid="plan-mode-chip"]');
     if (chip === null) throw new Error("plan mode chip did not render");
-    expect(chip.textContent).toContain("Off");
+    expect(chip.textContent).toContain("Plan");
+    expect(chip.querySelector(".workspace-plan-dot")?.classList.contains("is-off")).toBe(true);
     await act(async () => chip.click());
     const on = container.querySelector<HTMLButtonElement>('[data-testid="plan-mode-option-on"]');
     if (on === null) throw new Error("plan mode option did not render");
     await act(async () => on.click());
 
     expect(sessionSetFeature).toHaveBeenCalledWith("agent-1", "planMode", true);
-    expect(chip.textContent).toContain("Off");
+    expect(chip.querySelector(".workspace-plan-dot")?.classList.contains("is-off")).toBe(true);
     await act(async () => {
       channelHarness.emit?.({
         type: "session_feature_state",
@@ -1242,7 +1243,7 @@ describe("AgentChatSurface", () => {
         enabled: true,
       });
     });
-    expect(chip.textContent).toContain("On");
+    expect(chip.querySelector(".workspace-plan-dot")?.classList.contains("is-on")).toBe(true);
   });
 
   it("names what the plan mode chip switches", async () => {
@@ -1260,9 +1261,11 @@ describe("AgentChatSurface", () => {
     const chip = container.querySelector<HTMLButtonElement>('[data-testid="plan-mode-chip"]');
     if (chip === null) throw new Error("plan mode chip did not render");
 
-    expect(chip.getAttribute("aria-label")).toBe("Toggle plan mode (Plan: Off)");
-    expect(chip.title).toBe("Toggle plan mode");
-    expect(chip.textContent).toContain("Plan: Off");
+    // The word is the chip's name; the state is its dot and its title, never "Plan: Off".
+    expect(chip.getAttribute("aria-label")).toBe("Plan mode, off (Plan)");
+    expect(chip.title).toBe("Plan mode, off");
+    expect(chip.textContent).toContain("Plan");
+    expect(chip.textContent).not.toContain("Plan:");
   });
 
   it("selects a mode optimistically and calls sessionSetMode before the manifest lands", async () => {

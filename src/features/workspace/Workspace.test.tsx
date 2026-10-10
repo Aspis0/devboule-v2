@@ -2938,6 +2938,36 @@ describe("Workspace sessions", () => {
     expect(answered?.querySelector(".permission-card-primary-action")).toBeNull();
   });
 
+  it("removes a resolved card when the person clicks its Clear", async () => {
+    // Clear is the only way out of a card the backend resolved: the click must
+    // take the card off the screen, not leave it standing.
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
+    if (add === null) throw new Error("session add control did not render");
+    await act(async () => add.click());
+    await act(async () => newTabMenuItem(container, "Agent").click());
+    await act(async () => undefined);
+
+    const emit = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-a]");
+    const resolved = container.querySelector<HTMLButtonElement>(
+      "[data-testid=emit-permission-resolved]",
+    );
+    if (emit === null || resolved === null) throw new Error("permission emitters did not render");
+    await act(async () => emit.click());
+    await act(async () => resolved.click());
+    const clear = container.querySelector<HTMLButtonElement>(".permission-card-dismiss-action");
+    if (clear === null) throw new Error("the resolved card has no Clear");
+
+    await act(async () => clear.click());
+    expect(container.querySelector(".permission-card")).toBeNull();
+  });
+
   it("keeps the other session's card when two sessions share a toolCallId", async () => {
     vi.mocked(sessionsList).mockResolvedValue([
       acpSession("session-a", "agent a"),

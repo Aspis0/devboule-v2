@@ -116,6 +116,13 @@
   overflow-wrap: anywhere;
 }
 
+/* The plan is the card's body, read in flow: it takes the height it needs and
+   never a box of its own with an inner scrollbar. */
+.permission-card-description.permission-card-plan {
+  max-height: none;
+  overflow: visible;
+}
+
 .permission-card-plan pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;

@@ -78,4 +78,89 @@ describe("plan permission card", () => {
     );
     await act(async () => root.unmount());
   });
+
+  it("says Approved or Rejected once the plan is answered, never who answered or how", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <PermissionCard
+          sessionId="session-1"
+          subscriptionId={1}
+          request={planRequest}
+          capabilities={["typed_permissions"]}
+          resolution={{ outcome: "allowed", answeredBy: null, selectedOptionName: null }}
+        />,
+      );
+    });
+    expect(container.querySelector(".permission-card-label")?.textContent).toBe("Approved");
+    expect(container.textContent).not.toContain("Answered");
+    expect(container.textContent).not.toContain("daemon did not say");
+    await act(async () => root.unmount());
+  });
+
+  it("says Rejected for a plan the daemon answered with a denial", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <PermissionCard
+          sessionId="session-1"
+          subscriptionId={1}
+          request={planRequest}
+          capabilities={["typed_permissions"]}
+          resolution={{ outcome: "denied", answeredBy: null, selectedOptionName: null }}
+        />,
+      );
+    });
+    expect(container.querySelector(".permission-card-label")?.textContent).toBe("Rejected");
+    await act(async () => root.unmount());
+  });
+
+  it("claims no word for a plan answered with an outcome the daemon did not name", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <PermissionCard
+          sessionId="session-1"
+          subscriptionId={1}
+          request={planRequest}
+          capabilities={["typed_permissions"]}
+          resolution={{ outcome: null, answeredBy: null, selectedOptionName: null }}
+        />,
+      );
+    });
+    expect(container.querySelector(".permission-card-label")?.textContent).toBe("");
+    expect(container.querySelector(".permission-card-dismiss-action")?.textContent).toBe("Clear");
+    await act(async () => root.unmount());
+  });
+
+  it("names no chosen option under a plan", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    respond.mockResolvedValue(undefined);
+    await act(async () => {
+      root.render(
+        <PermissionCard
+          sessionId="session-1"
+          subscriptionId={1}
+          request={planRequest}
+          capabilities={["typed_permissions"]}
+        />,
+      );
+    });
+    const implement = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Implement",
+    );
+    await act(async () => implement?.click());
+    expect(container.querySelector(".permission-card-label")?.textContent).toBe("Approved");
+    expect(container.querySelector(".permission-card-choice")).toBeNull();
+    expect(container.textContent).not.toContain("Chosen");
+    await act(async () => root.unmount());
+  });
 });

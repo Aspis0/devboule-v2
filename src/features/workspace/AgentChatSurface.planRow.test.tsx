@@ -302,3 +302,57 @@ describe("pending plan row suppression", () => {
 });
 
 afterEach(() => resetRegistry());
+
+describe("the plan after its card is answered", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot> | null = null;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.append(container);
+  });
+
+  afterEach(async () => {
+    if (root !== null) await act(async () => root?.unmount());
+    root = null;
+    container.remove();
+    resetRegistry();
+  });
+
+  const trigger = () =>
+    container.querySelector<HTMLButtonElement>("[data-testid='plan-reader-trigger']");
+
+  it("offers an icon by the composer that reopens the plan for reading", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(<AgentChatSurface daemonState="connected" sessionId={SESSION} />);
+    });
+    await act(async () => undefined);
+    await act(async () => emitPlanRow("plan-done", "## Steps\n\n- Build it"));
+
+    expect(container.querySelector(".workspace-plan-reader")).toBeNull();
+    expect(trigger()).not.toBeNull();
+    await act(async () => trigger()?.click());
+    expect(container.querySelector(".workspace-plan-reader")?.textContent).toContain("Build it");
+    // The icon is still the way back: it folds the reader again.
+    await act(async () => trigger()?.click());
+    expect(container.querySelector(".workspace-plan-reader")).toBeNull();
+  });
+
+  it("offers no icon while the plan card still waits for an answer", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId={SESSION}
+          pendingPlanToolCallId="plan-waiting"
+        />,
+      );
+    });
+    await act(async () => undefined);
+    await act(async () => emitPlanRow("plan-waiting", "## Steps\n\n- Build it"));
+
+    expect(trigger()).toBeNull();
+  });
+});

@@ -645,6 +645,52 @@
 
 /* Pending cards sit side by side while the lane is wide enough, each capped at
    its own 640 px, and stack on a narrow lane. */
+/* The icon by the composer that reopens an answered plan for reading: a small
+   control, and the plan itself opens as a reader above the composer, in flow. */
+.workspace-plan-reader-trigger {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-6);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.workspace-plan-reader-trigger svg {
+  width: 14px;
+  height: 14px;
+}
+
+.workspace-plan-reader-trigger:hover,
+.workspace-plan-reader-trigger.is-open {
+  color: var(--ink);
+}
+
+.workspace-plan-reader-trigger:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.workspace-plan-reader {
+  max-height: 50vh;
+  margin: 0 var(--space-12) var(--space-8);
+  padding: var(--space-8) var(--space-12);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-8);
+  background: var(--panel-card);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: var(--type-meta);
+  line-height: var(--leading-body);
+}
+
 .workspace-pending-cards {
   display: flex;
   flex-wrap: wrap;

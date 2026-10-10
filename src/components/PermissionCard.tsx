@@ -41,6 +41,27 @@ export const PERMISSION_LABELS: Record<PermissionState, string> = {
  * event a human reviewing the roster needs to see happened, so it must not
  * render as an unattributed one.
  */
+/**
+ * A plan card's words while it waits and once it is answered. A plan is
+ * approved or rejected, never "allowed" or "denied", and the words name no
+ * answerer: the transcript row carries the decision.
+ */
+export const PLAN_LABELS: Record<PermissionState, string> = {
+  waiting: "Waiting on you",
+  submitting: "Sending decision…",
+  allowed: "Approved",
+  allowed_always: "Approved",
+  allowed_session: "Approved",
+  denied: "Rejected",
+};
+
+/** A resolved plan's words, or "" when the daemon named no outcome: no claim, no word. */
+export function planResolvedLabel(outcome: "allowed" | "denied" | null): string {
+  if (outcome === "allowed") return "Approved";
+  if (outcome === "denied") return "Rejected";
+  return "";
+}
+
 export const PERMISSION_CREATOR_LABELS: Record<"allowed" | "denied", string> = {
   allowed: "Allowed by its creator · running",
   denied: "Denied by its creator — the turn continues without it",
@@ -507,11 +528,19 @@ export function PermissionCard({
     resolution?.answeredBy === null || resolution?.answeredBy === undefined
       ? null
       : shortenAnswererId(resolution.answeredBy);
-  const cardLabel = resolvedByCreator
-    ? resolvedCardLabel(attribution, resolution.outcome, answererHead)
-    : stale
+  // A plan is approved or rejected: the words say that and nothing about who
+  // answered, so an outcome the daemon did not name claims no word at all.
+  const cardLabel = isPlan
+    ? stale
       ? STALE_PERMISSION_LINE
-      : PERMISSION_LABELS[permission];
+      : resolvedByCreator
+        ? planResolvedLabel(resolution.outcome)
+        : PLAN_LABELS[permission]
+    : resolvedByCreator
+      ? resolvedCardLabel(attribution, resolution.outcome, answererHead)
+      : stale
+        ? STALE_PERMISSION_LINE
+        : PERMISSION_LABELS[permission];
   // A stale card wears the neutral dot: it is over, but nothing was denied.
   const cardTone = resolvedByCreator
     ? (resolution.outcome ?? "unclaimed")
@@ -839,7 +868,9 @@ export function PermissionCard({
           ))}
         </div>
       ) : null}
-      {chosenName ? <div className="permission-card-choice">Chosen: {chosenName}</div> : null}
+      {chosenName && !isPlan ? (
+        <div className="permission-card-choice">Chosen: {chosenName}</div>
+      ) : null}
       <div className="permission-card-actions">
         {/* The question card's working directory: a meta line in the actions
             row, in the UI font — it is not code. The head is gone from this
