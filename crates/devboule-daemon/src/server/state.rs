@@ -421,6 +421,8 @@ impl ServerState {
         let provider_switches = Arc::new(crate::provider_switches::ProviderSwitchStore::load(
             &paths.dir,
         ));
+        #[cfg(test)]
+        provider_switches.switch_on_for_test_fixtures();
         // The user's provider rows must be live BEFORE the profile store
         // validates, because a profile may name one. Without this the load
         // asks a catalogue that has no user rows yet, the profile naming one

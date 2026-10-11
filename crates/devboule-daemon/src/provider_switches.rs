@@ -326,6 +326,32 @@ fn quarantine(path: &Path) -> Option<PathBuf> {
     std::fs::rename(path, &kept).ok().map(|()| kept)
 }
 
+/// The providers every test fixture switches on: the ids the daemon's own
+/// tests start, and the one whose binary cannot exist, so its spawn fails
+/// where a test expects it to. A test must not depend on which CLIs the machine
+/// has installed, so each fixture states the person's choice instead.
+#[cfg(test)]
+pub(crate) const TEST_FIXTURE_PROVIDERS: &[&str] = &[
+    "claude",
+    "codex",
+    "pi",
+    "devboule-acp-stub",
+    "devboule-absent-probe",
+];
+
+#[cfg(test)]
+impl ProviderSwitchStore {
+    /// Mark the fixture providers on, in memory only, unless a choice is
+    /// already held: a test that switched one off (or loaded a file that did)
+    /// keeps that choice.
+    pub(crate) fn switch_on_for_test_fixtures(&self) {
+        let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        for id in TEST_FIXTURE_PROVIDERS {
+            inner.entry((*id).to_string()).or_insert(true);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
