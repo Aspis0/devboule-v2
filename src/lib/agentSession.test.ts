@@ -484,14 +484,14 @@ describe("ACP agent session", () => {
     expect(untimed.atMs).toBeUndefined();
   });
 
-  it("shows an agent-written composer line as a system line, never as the person's bubble", async () => {
+  it("shows a plan outcome as a system line, never as the person's bubble", async () => {
     const harness = makeHarness();
     await harness.session.start();
     harness.emit({
       type: "agent_user_message",
       author: "agent",
       messageId: "devboule-agent-1",
-      messageKind: "composer",
+      messageKind: "plan_outcome",
       text: "Plan rejected",
     });
     const items = harness.session.getState().items;

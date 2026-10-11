@@ -5,7 +5,7 @@
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
-use devboule_protocol::{SessionEvent, UserMessageAuthor};
+use devboule_protocol::{SessionEvent, UserMessageAuthor, UserMessageKind};
 
 use super::super::permission_broker::HostDecision;
 use super::plan_card_test_support::{capturing_runtime, published, working_stdin};
@@ -48,6 +48,7 @@ fn agent_turns(events: &[SessionEvent]) -> Vec<String> {
             SessionEvent::AgentUserMessage {
                 text,
                 author: UserMessageAuthor::Agent,
+                message_kind: UserMessageKind::PlanOutcome,
                 ..
             } => Some(text.clone()),
             _ => None,

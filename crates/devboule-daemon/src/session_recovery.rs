@@ -115,7 +115,8 @@ fn conversation_turns(
                     ("user", message_id.clone(), text.as_str(), images.as_slice())
                 }
                 devboule_protocol::UserMessageKind::SystemNotice
-                | devboule_protocol::UserMessageKind::Creation => continue,
+                | devboule_protocol::UserMessageKind::Creation
+                | devboule_protocol::UserMessageKind::PlanOutcome => continue,
             },
             SessionEvent::AgentMessage {
                 message_id, text, ..

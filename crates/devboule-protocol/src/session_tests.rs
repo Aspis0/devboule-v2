@@ -639,6 +639,7 @@ fn is_user_turn_selects_composer_sends_for_live_time_and_replay_fill() {
     assert!(!UserMessageKind::IncomingA2a.is_user_turn());
     assert!(!UserMessageKind::SystemNotice.is_user_turn());
     assert!(!UserMessageKind::Creation.is_user_turn());
+    assert!(!UserMessageKind::PlanOutcome.is_user_turn());
 }
 
 #[test]

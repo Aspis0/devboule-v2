@@ -1966,6 +1966,10 @@ pub enum UserMessageKind {
     IncomingA2a,
     SystemNotice,
     Creation,
+    /// The outcome of a plan decision ("Plan rejected" / "Plan approved"), the
+    /// one line the person sees for an instruction the agent was given. Shown as
+    /// a muted system line, never as the person's own words.
+    PlanOutcome,
 }
 
 impl UserMessageKind {

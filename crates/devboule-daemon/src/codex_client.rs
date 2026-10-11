@@ -1130,7 +1130,7 @@ impl CodexStaticPrompt {
             .publish_agent_user_message(
                 line.to_string(),
                 devboule_protocol::UserMessageAuthor::Agent,
-                devboule_protocol::UserMessageKind::Composer,
+                devboule_protocol::UserMessageKind::PlanOutcome,
             )
             .is_none()
         {

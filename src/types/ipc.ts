@@ -507,7 +507,8 @@ export type UserMessageKind =
   | "outgoing_a2a"
   | "incoming_a2a"
   | "system_notice"
-  | "creation";
+  | "creation"
+  | "plan_outcome";
 
 export type PermissionOutcome = "allow_once" | "deny";
 

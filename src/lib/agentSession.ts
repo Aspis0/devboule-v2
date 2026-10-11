@@ -919,13 +919,12 @@ export class AgentSession {
   ): void {
     switch (event.messageKind) {
       case "composer":
-        // Written by the daemon for the agent (a plan decision's outcome):
-        // the person did not type it, so it is a system line, never a bubble.
-        if (event.author === "agent") {
-          this.appendSystemMessage(event.text);
-          return;
-        }
         this.appendComposerMessage(event);
+        return;
+      case "plan_outcome":
+        // The daemon's own line for a plan decision: the outcome the person
+        // sees, muted, never a bubble. The instruction itself went to the agent.
+        this.appendSystemMessage(event.text);
         return;
       case "outgoing_a2a":
         this.appendOutgoingA2aMessage(event.text, event.peerTitle);
