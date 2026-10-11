@@ -80,6 +80,38 @@ describe("a file outside the workspace", () => {
   });
 });
 
+describe("a folder", () => {
+  it.each([
+    [
+      "a folder without a trailing separator",
+      "[screenshots](C:/Users/gualt/Desktop/test/mockups/screenshots)",
+    ],
+    ["a folder with a trailing slash", "[mockups](mockups/)"],
+  ])("shows %s as plain text, with no button and no error", async (_, text) => {
+    const open = vi.fn();
+    await show(text, links(open));
+
+    expect(host.querySelector("button")).toBeNull();
+    expect(host.querySelector("span[title='Outside this workspace']")).toBeNull();
+    expect(open).not.toHaveBeenCalled();
+    expect(host.textContent).not.toContain("](");
+  });
+
+  it("leaves a folder written with a trailing backslash as the text the agent wrote", async () => {
+    // The backslash escapes the closing parenthesis, so the parser reads no link at all.
+    await show("[mockups](mockups\\)", links());
+
+    expect(host.querySelector("button")).toBeNull();
+    expect(host.textContent).toBe("[mockups](mockups)");
+  });
+
+  it("still links a file whose name has no extension but is a known file name", async () => {
+    await show("[license](LICENSE)", links());
+
+    expect(host.querySelector("button.plan-markdown-file-link")?.textContent).toBe("license");
+  });
+});
+
 describe("a destination that is not a path", () => {
   it("shows the label as plain text, never the raw markdown", async () => {
     await show("[run](javascript:alert(1))", links());

@@ -2,13 +2,14 @@ import type { ReactNode } from "react";
 import { ExternalLink } from "./ExternalLink";
 import { parseChatCodeFilePath, scanChatFilePaths, type ChatFileLinks } from "../lib/chatFilePaths";
 import { opensExternally } from "../lib/externalUrl";
-import { localPathFromHref } from "../lib/markdownLocalPath";
+import { isFolderTarget, localPathFromHref } from "../lib/markdownLocalPath";
 import { workspaceRelativePath } from "../lib/workspaceRelativePath";
 
 /**
  * A `[label](path)` naming a file: a button that opens it when the file is inside
  * the workspace, and the label alone otherwise. An agent's text cannot make the app
- * open a file outside the root.
+ * open a file outside the root. A folder is the label too: the Files tab cannot
+ * open one yet.
  */
 function localPathLink(
   key: number,
@@ -16,6 +17,7 @@ function localPathLink(
   path: string,
   links: ChatFileLinks | null,
 ): ReactNode {
+  if (isFolderTarget(path)) return label;
   if (links === null) return <span key={key}>{label}</span>;
   const relative = workspaceRelativePath(path, links.root);
   if (relative === null) {

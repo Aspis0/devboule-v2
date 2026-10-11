@@ -11,6 +11,21 @@ const LINE_FRAGMENT = /#L\d+(?:C\d+)?(?:-L\d+(?:C\d+)?)?$/i;
 // A control character cannot be a path, and it would hide a scheme from the check below.
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/;
 
+// Well-known file names with no extension; any other name with no extension is taken for a folder.
+const EXTENSIONLESS_FILES = new Set(["Dockerfile", "LICENSE", "Makefile", "NOTICE", "VERSION"]);
+const SEPARATOR_END = /[\\/]$/;
+const EXTENSION = /\.[^./\\]+$/;
+
+/**
+ * Whether a local path names a folder. The frontend cannot ask the disk, so a path
+ * that ends in a separator, or whose last name has no extension, is taken for one.
+ */
+export function isFolderTarget(path: string): boolean {
+  if (SEPARATOR_END.test(path)) return true;
+  const name = path.split(/[\\/]/).pop() ?? "";
+  return !EXTENSION.test(name) && !EXTENSIONLESS_FILES.has(name);
+}
+
 export function localPathFromHref(href: string): string | null {
   if (CONTROL_CHARACTER.test(href)) return null;
   let target = href.trim();

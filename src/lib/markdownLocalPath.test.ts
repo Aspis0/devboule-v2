@@ -1,5 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { localPathFromHref } from "./markdownLocalPath";
+import { isFolderTarget, localPathFromHref } from "./markdownLocalPath";
+
+describe("isFolderTarget", () => {
+  it.each(["mockups/", "mockups\\", "mockups/screenshots", "C:/x/screenshots"])(
+    "takes %s for a folder",
+    (path) => {
+      expect(isFolderTarget(path)).toBe(true);
+    },
+  );
+
+  it.each(["src/app.ts", "LICENSE", "docker/Dockerfile", ".env", "C:/x/a.html"])(
+    "takes %s for a file",
+    (path) => {
+      expect(isFolderTarget(path)).toBe(false);
+    },
+  );
+});
 
 describe("localPathFromHref", () => {
   it("keeps drive, home, POSIX and relative spellings as the path they name", () => {
