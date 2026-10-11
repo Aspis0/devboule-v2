@@ -232,10 +232,20 @@ fn run_creation(
             );
         }
     }
-    let profile = match resolve_creation(&state.agent_profiles, &request.choice) {
-        Ok(profile) => profile,
-        Err(message) => return tool_error(id, &message),
-    };
+    // The creator's family and mode, read before the profile resolves: a child
+    // that names no mode takes this posture (`posture`).
+    let creator_posture = state
+        .sessions
+        .live_runtime(&creator_id, &registration.owner)
+        .and_then(|runtime| Some((runtime.agent_kind()?, runtime.current_mode_id()?)));
+    let creator_posture_ref = creator_posture
+        .as_ref()
+        .map(|(kind, mode)| (kind, mode.as_str()));
+    let profile =
+        match resolve_creation(&state.agent_profiles, &request.choice, creator_posture_ref) {
+            Ok(profile) => profile,
+            Err(message) => return tool_error(id, &message),
+        };
     let creator = match state
         .sessions
         .agent_creator(&creator_id, &registration.owner)

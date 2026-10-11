@@ -1,7 +1,9 @@
 //! Resolving the profile a creation names, and the profile list it serves.
 
+use devboule_protocol::SessionKind;
 use serde_json::{json, Value};
 
+use super::posture::inherited_mode;
 use super::request::CreationChoice;
 
 /// The name a profile's labels and the creation record are keyed on: the
@@ -186,10 +188,13 @@ pub(in crate::mcp_broker) fn predicted_unattended(
 /// features, no spawn prompt and no model provider; the provider and model are
 /// the caller's, and the spawn path validates them against what the provider
 /// offers exactly as it does a profile's. A preset supplies the mode and the tool
-/// overlay of its cell for that provider; without one the caller's mode stands.
+/// overlay of its cell for that provider; without one the caller's mode stands,
+/// and without that the child takes its creator's posture (`creator`, the
+/// creator's family and current mode).
 pub(in crate::mcp_broker) fn resolve_creation(
     store: &crate::agent_profiles::AgentProfilesStore,
     choice: &CreationChoice,
+    creator: Option<(&SessionKind, &str)>,
 ) -> Result<ResolvedProfile, String> {
     let (provider, model, mode, effort, preset) = match choice {
         CreationChoice::Profile(name) => return resolve_profile(store, name),
@@ -211,11 +216,17 @@ pub(in crate::mcp_broker) fn resolve_creation(
             let (_, cell) = crate::provider_catalog::resolve_agent_preset(preset_id, &catalog_id)?;
             (cell.mode.to_string(), cell.overlay)
         }
-        None => (
-            mode.clone()
-                .ok_or_else(|| "mode is required when no preset or profile is named".to_string())?,
-            crate::provider_catalog::ToolOverlay::NONE,
-        ),
+        None => {
+            let mode = match mode {
+                Some(mode) => mode.clone(),
+                None => inherited_mode(creator, &crate::provider_catalog::session_kind_for(&catalog_id))
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        format!("mode is required: the creating agent's mode does not carry over to {catalog_id}")
+                    })?,
+            };
+            (mode, crate::provider_catalog::ToolOverlay::NONE)
+        }
     };
     Ok(ResolvedProfile {
         id: String::new(),
@@ -287,4 +298,60 @@ pub(in crate::mcp_broker) fn list_profiles(
             "isError": false,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_creation;
+    use crate::agent_profiles::AgentProfilesStore;
+    use crate::mcp_broker::tools::creation::request::CreationChoice;
+    use devboule_protocol::SessionKind;
+
+    fn direct(provider: &str, mode: Option<&str>) -> CreationChoice {
+        CreationChoice::Direct {
+            provider: provider.to_string(),
+            model: Some("model-a".to_string()),
+            mode: mode.map(str::to_string),
+            effort: None,
+            preset: None,
+        }
+    }
+
+    fn store() -> AgentProfilesStore {
+        AgentProfilesStore::load(&crate::test_dirs::test_temp_dir(
+            "devboule-creation-profile",
+        ))
+    }
+
+    /// A child named no mode takes its creator's posture, spelled for its own provider.
+    #[test]
+    fn a_child_without_a_mode_takes_the_creators_posture() {
+        let resolved = resolve_creation(
+            &store(),
+            &direct("claude", None),
+            Some((&SessionKind::Codex, "auto-review")),
+        )
+        .expect("the posture carries over");
+        assert_eq!(resolved.mode, "acceptEdits");
+    }
+
+    /// A mode the caller names is its own choice, whatever the creator runs in.
+    #[test]
+    fn a_named_mode_wins_over_the_creators_posture() {
+        let resolved = resolve_creation(
+            &store(),
+            &direct("claude", Some("default")),
+            Some((&SessionKind::Codex, "full-access")),
+        )
+        .expect("the named mode");
+        assert_eq!(resolved.mode, "default");
+    }
+
+    /// Nothing to inherit from: the caller is told to name a mode.
+    #[test]
+    fn a_child_with_no_mode_and_no_creator_mode_is_refused() {
+        let refused = resolve_creation(&store(), &direct("claude", None), None)
+            .expect_err("no posture to take");
+        assert!(refused.contains("mode is required"), "{refused}");
+    }
 }

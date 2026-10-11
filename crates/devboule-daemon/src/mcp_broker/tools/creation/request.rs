@@ -183,6 +183,8 @@ fn choice_of(object: &serde_json::Map<String, Value>) -> Result<CreationChoice, 
     let Some(name) = profile else {
         let provider =
             provider.ok_or_else(|| "provider is required when no profile is named".to_string())?;
+        // A missing mode is not refused here: the child inherits its creator's
+        // posture, which only the resolution can read (`resolve_creation`).
         if let Some(id) = &preset {
             if mode.is_some() {
                 return Err(
@@ -195,8 +197,6 @@ fn choice_of(object: &serde_json::Map<String, Value>) -> Result<CreationChoice, 
                     "unknown preset {id}; the presets are design and worker"
                 ));
             }
-        } else if mode.is_none() {
-            return Err("mode is required when no preset or profile is named".to_string());
         }
         if preset.is_none() && model.is_none() {
             return Err("model is required when no profile is named".to_string());

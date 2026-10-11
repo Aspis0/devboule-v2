@@ -4259,10 +4259,6 @@ fn the_creation_schema_refuses_unknown_parameters_and_has_no_mode() {
             "model is required when no profile is named",
         ),
         (
-            json!({"title": "b", "initialPrompt": "x", "provider": "claude", "model": "m"}),
-            "mode is required when no preset or profile is named",
-        ),
-        (
             json!({"title": "b", "initialPrompt": "x", "provider": "claude", "model": "m", "preset": "gardener"}),
             "unknown preset",
         ),
@@ -4293,6 +4289,18 @@ fn the_creation_schema_refuses_unknown_parameters_and_has_no_mode() {
     let parsed = AgentCreateRequest::parse(&explicit_null).expect("null is absent");
     assert!(parsed.workspace_id.is_none());
     assert!(parsed.cwd.is_none());
+}
+
+/// A direct create that names no mode is not refused at the parse: the child
+/// inherits its creator's posture, which only the resolution can read.
+#[test]
+fn a_direct_create_without_a_mode_parses_for_inheritance() {
+    let arguments = json!({"title": "b", "initialPrompt": "x", "provider": "claude", "model": "m"});
+    let request = AgentCreateRequest::parse(&arguments).expect("no mode is not refused");
+    assert!(matches!(
+        request.choice,
+        CreationChoice::Direct { mode: None, .. }
+    ));
 }
 
 /// The fingerprint is what a retry must match, so it covers
@@ -6742,7 +6750,8 @@ fn a_create_names_its_provider_and_model_without_a_profile() {
     }))
     .expect("a direct creation parses");
     let store = profile_store(document(vec![], ""));
-    let resolved = resolve_creation(&store, &request.choice).expect("a direct creation resolves");
+    let resolved =
+        resolve_creation(&store, &request.choice, None).expect("a direct creation resolves");
     assert_eq!(resolved.provider, "claude");
     assert_eq!(resolved.model, "claude-haiku-5-5");
     assert_eq!(resolved.mode, "default");
@@ -6765,7 +6774,8 @@ fn a_workspace_agent_can_create_a_design_child() {
     }))
     .expect("a design creation parses");
     let store = profile_store(document(vec![], ""));
-    let resolved = resolve_creation(&store, &request.choice).expect("design resolves for codex");
+    let resolved =
+        resolve_creation(&store, &request.choice, None).expect("design resolves for codex");
     assert_eq!(resolved.overlay, ToolOverlay::DESIGN);
     assert_eq!(resolved.mode, "auto", "the design cell's own mode");
     assert!(
@@ -6896,7 +6906,7 @@ fn a_design_child_needs_only_a_provider_and_the_preset() {
     }))
     .expect("a provider and the preset are enough");
     let store = profile_store(document(vec![], ""));
-    let resolved = resolve_creation(&store, &request.choice).expect("design resolves");
+    let resolved = resolve_creation(&store, &request.choice, None).expect("design resolves");
     assert_eq!(resolved.overlay, ToolOverlay::DESIGN);
     assert_eq!(resolved.mode, "auto", "the design cell's own mode");
     assert!(
