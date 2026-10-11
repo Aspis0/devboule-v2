@@ -69,6 +69,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 import { projectAdd, projectsList, workspacesList } from "../../../lib/tauri";
 import type { AgentProfilesDocument, Project } from "../../../types/ipc";
 import { ProjectsPanel } from "./ProjectsPanel";
+import { noteProjectRemoved } from "../../../lib/projectRemovals";
 import { open } from "@tauri-apps/plugin-dialog";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -311,6 +312,32 @@ describe("Settings projects", () => {
     expect(
       container.querySelector("[data-settings-project] .settings-card-meta")?.textContent,
     ).toBe("feature-x");
+  });
+
+  it("does not restore a project removed while its list read was in flight", async () => {
+    const removed: Project = {
+      id: "project-removed",
+      name: "design-sandbox",
+      path: "D:\\design-sandbox",
+    };
+    let answerStaleRead: ((listed: Project[]) => void) | undefined;
+    vi.mocked(projectsList)
+      .mockImplementationOnce(
+        () =>
+          new Promise<Project[]>((resolve) => {
+            answerStaleRead = resolve;
+          }),
+      )
+      .mockResolvedValue([project]);
+    await renderProjects();
+
+    await act(async () => noteProjectRemoved());
+    await act(async () => undefined);
+    await act(async () => answerStaleRead?.([removed, project]));
+    await act(async () => undefined);
+
+    expect(container.textContent).not.toContain("design-sandbox");
+    expect(container.textContent).toContain("real-project");
   });
 
   it("puts the Add action in the section head as a labelled glyph", async () => {

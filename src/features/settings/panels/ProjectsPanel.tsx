@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { projectsList, workspacesList } from "../../../lib/tauri";
+import { projectRemovals, subscribeProjectRemovals } from "../../../lib/projectRemovals";
 import { errorSentence, type ErrorSentence } from "../../../lib/errorSentence";
 import { workspaceDisplayTitles } from "../../../lib/workspaceTitles";
 import { ErrorText } from "../../../components/ErrorText";
@@ -16,8 +17,14 @@ export function ProjectsPanel() {
   const [error, setError] = useState<ErrorSentence | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const addProjectRef = useRef<HTMLButtonElement>(null);
+  const latestRequestRef = useRef(0);
 
   const loadProjects = useCallback(async () => {
+    const request = ++latestRequestRef.current;
+    const removalsAtStart = projectRemovals();
+    // Only the newest read that saw no removal may apply its answer.
+    const isCurrent = () =>
+      request === latestRequestRef.current && removalsAtStart === projectRemovals();
     setLoading(true);
     setError(null);
     try {
@@ -33,21 +40,24 @@ export function ProjectsPanel() {
           }
         }),
       );
+      if (!isCurrent()) return;
       setProjects(listed);
       setWorkspacesByProject(nextWorkspaces);
       setWorkspaceErrors(nextErrors);
     } catch (cause: unknown) {
+      if (!isCurrent()) return;
       setProjects([]);
       setWorkspacesByProject({});
       setWorkspaceErrors({});
       setError(errorSentence(cause));
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     void loadProjects();
+    return subscribeProjectRemovals(() => void loadProjects());
   }, [loadProjects]);
 
   const closeDialog = useCallback(() => {

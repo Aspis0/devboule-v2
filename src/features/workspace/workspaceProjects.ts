@@ -10,6 +10,7 @@ import {
   workspacesList,
 } from "../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
+import { noteProjectRemoved } from "../../lib/projectRemovals";
 import { workspaceDisplayTitles } from "../../lib/workspaceTitles";
 import type { Project, Session, Workspace } from "../../types/ipc";
 import { isAgentKind } from "../../types/ipc";
@@ -472,6 +473,7 @@ export function useWorkspaceProjects(restoredWorkspaceKey: WorkspaceKey | null) 
       setProjectRecords((currentProjects) =>
         currentProjects.filter((project) => project.id !== projectId),
       );
+      noteProjectRemoved();
       await loadProjects();
       return null;
     },
