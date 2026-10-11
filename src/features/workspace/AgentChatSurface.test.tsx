@@ -230,7 +230,7 @@ describe("AgentChatSurface", () => {
     vi.stubGlobal("ResizeObserver", ResizeObserverStub as unknown as typeof ResizeObserver);
   });
 
-  it("renders plan tool rows with Markdown and an explicit outcome", async () => {
+  it("draws no plan row for any outcome, and offers the icon that reads it", async () => {
     root = createRoot(container);
     await act(async () => {
       root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
@@ -281,30 +281,9 @@ describe("AgentChatSurface", () => {
         kind: "plan",
       });
     });
-    const rows = [...container.querySelectorAll(".workspace-chat-tool")];
-    expect(rows).toHaveLength(4);
-    expect(rows[0].querySelector(".workspace-chat-tool-label")?.textContent).toBe("Plan");
-    const planDetails = rows[0].querySelector("details");
-    if (planDetails === null) throw new Error("the plan had nothing to open");
-    await act(async () => {
-      planDetails.open = true;
-      planDetails.dispatchEvent(new Event("toggle"));
-    });
-    expect(
-      rows[0].querySelector(".workspace-chat-tool-body .plan-markdown-heading-2")?.textContent,
-    ).toBe("Steps");
-    expect(rows[0].textContent).toContain("Approved");
-    expect(rows[0].querySelector(".workspace-chat-tool-body")?.textContent).not.toContain(
-      "Plan approved.",
-    );
-    expect(rows[1].classList.contains("is-failed")).toBe(false);
-    expect(rows[2].classList.contains("is-cancelled")).toBe(true);
-    // A closed line mounts no body, so the rejection's words are not drawn at all.
-    expect(rows[1].querySelector(".workspace-chat-tool-body")).toBeNull();
-    expect(rows[1].textContent).not.toContain("Plan rejected.");
-    expect(rows[1].textContent).toContain("Rejected");
-    expect(rows[2].textContent).toContain("Withdrawn");
-    expect(rows[3].querySelector(".workspace-chat-tool-summary-text")).toBeNull();
+    // A plan never draws a row, whatever its outcome: the composer's icon reads it.
+    expect(container.querySelectorAll(".workspace-chat-tool")).toHaveLength(0);
+    expect(container.querySelector("[data-testid='plan-reader-trigger']")).not.toBeNull();
   });
 
   afterEach(async () => {

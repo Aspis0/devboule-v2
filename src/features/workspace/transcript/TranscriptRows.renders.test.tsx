@@ -43,7 +43,6 @@ function Transcript({ items }: { items: AgentChatItem[] }) {
       <TranscriptRows
         items={items}
         recoveredAttach={false}
-        pendingPlanToolCallId={null}
         a2aNames={names}
         fileLinks={null}
         transcriptEnded={false}

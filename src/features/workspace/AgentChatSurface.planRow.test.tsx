@@ -223,7 +223,7 @@ describe("pending plan row suppression", () => {
     expect(planRowCount(container)).toBe(0);
   });
 
-  it("when the permission resolves, the row reappears at its original index", async () => {
+  it("an answered plan draws no row: the composer's icon reopens it", async () => {
     root = createRoot(container);
     await renderSurface();
     await act(async () => undefined);
@@ -246,18 +246,17 @@ describe("pending plan row suppression", () => {
     });
     await renderSurface();
 
-    expect(planRowCount(container)).toBe(1);
-    // The answered plan leaves the pending area; its row and the composer's icon remain.
+    // The card leaves and no row returns; the answered plan is the composer's icon.
+    expect(planRowCount(container)).toBe(0);
     expect(container.querySelector("[data-testid='permission-plan-card']")).toBeNull();
     expect(container.querySelector("[data-testid='plan-reader-trigger']")).not.toBeNull();
     const entries = container.querySelectorAll(".workspace-conversation-content > *");
     const kinds = Array.from(entries).map((entry) => entry.className);
     expect(kinds[0]).toContain("workspace-chat-assistant");
-    expect(kinds[1]).toContain("is-plan");
-    expect(kinds[2]).toContain("workspace-chat-tool");
+    expect(kinds[1]).toContain("workspace-chat-tool");
   });
 
-  it("a plan row stays when the pending permission names a different id", async () => {
+  it("a plan draws no row while another card names a different id", async () => {
     root = createRoot(container);
     await renderSurface();
     await act(async () => undefined);
@@ -269,7 +268,7 @@ describe("pending plan row suppression", () => {
     await renderSurface();
 
     expect(container.querySelector("[data-testid='permission-plan-card']")).not.toBeNull();
-    expect(planRowCount(container)).toBe(1);
+    expect(planRowCount(container)).toBe(0);
   });
 
   it("a plan permission never hides the non-plan row its id names", async () => {
@@ -287,7 +286,7 @@ describe("pending plan row suppression", () => {
     expect(container.querySelectorAll(".workspace-chat-tool:not(.is-plan)").length).toBe(1);
   });
 
-  it("a plan whose card waits behind another card keeps its row", async () => {
+  it("a plan waiting behind another card draws no row either", async () => {
     root = createRoot(container);
     await renderSurface();
     await act(async () => undefined);
@@ -305,10 +304,9 @@ describe("pending plan row suppression", () => {
     expect(container.querySelector("[data-testid='permission-card']")).not.toBeNull();
     expect(container.querySelector("[data-testid='permission-plan-card']")).toBeNull();
     expect(container.querySelectorAll(".workspace-chat-tool:not(.is-plan)").length).toBe(1);
-    expect(planRowCount(container)).toBe(1);
+    expect(planRowCount(container)).toBe(0);
   });
 });
-
 afterEach(() => resetRegistry());
 
 describe("the plan after its card is answered", () => {

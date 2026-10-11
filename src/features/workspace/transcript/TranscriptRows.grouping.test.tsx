@@ -48,7 +48,6 @@ describe("TranscriptRows grouping", () => {
         <TranscriptRows
           items={[tool("tool-1", "a.ts"), tool("tool-2", "b.ts"), tool("tool-3", "c.ts")]}
           recoveredAttach={false}
-          pendingPlanToolCallId={null}
           a2aNames={names}
           fileLinks={null}
           transcriptEnded={false}

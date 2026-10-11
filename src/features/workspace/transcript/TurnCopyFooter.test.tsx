@@ -36,7 +36,6 @@ async function renderRows(items: AgentChatItem[], turnRunning = false): Promise<
       <TranscriptRows
         items={items}
         recoveredAttach={false}
-        pendingPlanToolCallId={null}
         a2aNames={NO_NAMES}
         fileLinks={null}
         transcriptEnded={false}

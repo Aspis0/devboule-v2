@@ -876,7 +876,6 @@ export const AgentChatSurface = memo(function AgentChatSurface({
           <TranscriptRows
             items={state.items}
             recoveredAttach={recoveredAttach}
-            pendingPlanToolCallId={pendingPlanToolCallId}
             a2aNames={a2aNames}
             fileLinks={fileLinks}
             transcriptEnded={osGone}

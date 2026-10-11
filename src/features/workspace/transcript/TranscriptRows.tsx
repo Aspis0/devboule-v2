@@ -26,7 +26,6 @@ const ROLE_CONTEXT = {
 interface TranscriptRowsProps {
   items: AgentChatItem[];
   recoveredAttach: boolean;
-  pendingPlanToolCallId: string | null;
   a2aNames: A2aNameSource;
   fileLinks: ChatFileLinks | null;
   transcriptEnded: boolean;
@@ -38,14 +37,13 @@ interface TranscriptRowsProps {
 export function TranscriptRows({
   items,
   recoveredAttach,
-  pendingPlanToolCallId,
   a2aNames,
   fileLinks,
   transcriptEnded,
   streamingThoughtId,
   turnRunning = false,
 }: TranscriptRowsProps) {
-  const entries = useTranscriptEntries(items, recoveredAttach, pendingPlanToolCallId);
+  const entries = useTranscriptEntries(items, recoveredAttach);
   // The previous footers are handed back in, so an unchanged turn keeps its object.
   const endsRef = useRef<Map<string, TurnEnd>>(new Map());
   const ends = useMemo(() => {

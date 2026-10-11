@@ -34,49 +34,34 @@ export function collapseCompactNotices(items: AgentChatItem[]): AgentChatItem[] 
   return items.filter((_, index) => !dropped.has(index));
 }
 
+/**
+ * Plans never draw a row: an answered plan lives in the composer's icon, and a
+ * plan still waiting is the card on screen. Plans never join a group either.
+ */
 function deriveEntries(
   items: AgentChatItem[],
   recoveredAttach: boolean,
-  pendingPlanToolCallId: string | null,
   previous: readonly (AgentChatItem | ToolCallGroup)[],
 ) {
   const visibleItems = recoveredAttach
     ? items.filter((item) => item.role !== "error" || item.text !== RECOVERED_SESSION_UNAVAILABLE)
     : items;
-  const grouped = groupToolCalls(collapseCompactNotices(visibleItems), previous);
-  if (pendingPlanToolCallId === null) return grouped;
-  // Plans never join groups; hide only the row whose approval card is on screen.
-  return grouped.filter((entry) => {
-    if (isToolCallGroup(entry)) return true;
-    return !(
-      entry.role === "tool" &&
-      entry.kind === "plan" &&
-      entry.toolCallId === pendingPlanToolCallId
-    );
-  });
+  return groupToolCalls(collapseCompactNotices(visibleItems), previous).filter(
+    (entry) => isToolCallGroup(entry) || !(entry.role === "tool" && entry.kind === "plan"),
+  );
 }
 
-export function useTranscriptEntries(
-  items: AgentChatItem[],
-  recoveredAttach: boolean,
-  pendingPlanToolCallId: string | null,
-) {
+export function useTranscriptEntries(items: AgentChatItem[], recoveredAttach: boolean) {
   const [snapshot, setSnapshot] = useState(() => ({
     items,
     recoveredAttach,
-    pendingPlanToolCallId,
-    entries: deriveEntries(items, recoveredAttach, pendingPlanToolCallId, []),
+    entries: deriveEntries(items, recoveredAttach, []),
   }));
-  if (
-    snapshot.items !== items ||
-    snapshot.recoveredAttach !== recoveredAttach ||
-    snapshot.pendingPlanToolCallId !== pendingPlanToolCallId
-  ) {
+  if (snapshot.items !== items || snapshot.recoveredAttach !== recoveredAttach) {
     const next = {
       items,
       recoveredAttach,
-      pendingPlanToolCallId,
-      entries: deriveEntries(items, recoveredAttach, pendingPlanToolCallId, snapshot.entries),
+      entries: deriveEntries(items, recoveredAttach, snapshot.entries),
     };
     // React retries this list before its children render; abandoned renders leave state intact.
     setSnapshot(next);
