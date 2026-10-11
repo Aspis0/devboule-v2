@@ -2549,18 +2549,23 @@ export function Workspace({
     setActiveSidePanel("tasks");
     setRightCollapsed(false);
   }, [setRightCollapsed]);
-  // The rail archives with the list's act, so both refuse a child the roster has
-  // moved on from. A closed child's tab goes with it; its transcript stays in History.
+  // The rail archives with the list's act. The roster is read from the controller
+  // at each close, not from this render's array, so a prompt that outlives a new run
+  // is refused. A closed child's tab goes with it; its transcript stays in History.
   const archiveAgent = useCallback(
     async (target: ArchiveTarget): Promise<string | null> => {
-      const sentences = await archiveTargets([target], sessions, sessionClose);
+      const sentences = await archiveTargets(
+        [target],
+        () => sharedSessionController().getState().sessions,
+        sessionClose,
+      );
       const sentence = sentences.get(target.id);
       if (sentence !== undefined) return sentence;
       dropSessionPermissions(target.id);
       await refreshSessions();
       return null;
     },
-    [sessions, refreshSessions, dropSessionPermissions],
+    [refreshSessions, dropSessionPermissions],
   );
   const openHistoryForSelected = useCallback(() => {
     setHistoryWorkspace(selectedKey);

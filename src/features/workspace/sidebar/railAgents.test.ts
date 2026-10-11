@@ -138,6 +138,23 @@ describe("the children that have ended", () => {
     ]);
   });
 
+  it("keeps a listed child of an ended root a child, named after its root, and archivable", () => {
+    const rows = rail([
+      agent({ id: "root", title: "cia", state: endedWith(0) }),
+      agent({ id: "child", title: "Kalsa", createdBy: "root", activity: "idle" }),
+    ]).rows;
+    expect(rows).toEqual([
+      expect.objectContaining({
+        id: "child",
+        child: true,
+        parentId: "root",
+        parentTitle: "cia",
+        state: "finished",
+        archivable: true,
+      }),
+    ]);
+  });
+
   it("never lists an ended root: only a child is archived from the rail", () => {
     expect(idsOf([agent({ id: "root", state: endedWith(0) })])).toEqual([]);
   });

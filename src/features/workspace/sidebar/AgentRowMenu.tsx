@@ -15,11 +15,20 @@ export interface AgentRowMenuProps {
   anchor: RefObject<HTMLElement | null>;
   /** Archives the agent; answers with the refusal sentence, or null. */
   onArchive: (target: ArchiveTarget) => Promise<string | null>;
+  /** Runs once the archive went through; the row may be gone by then. */
+  onArchived: () => void;
   onDismiss: () => void;
 }
 
 /** The menu a finished agent's row opens: Archive, asked first, and a refusal said in place. */
-export function AgentRowMenu({ target, title, anchor, onArchive, onDismiss }: AgentRowMenuProps) {
+export function AgentRowMenu({
+  target,
+  title,
+  anchor,
+  onArchive,
+  onArchived,
+  onDismiss,
+}: AgentRowMenuProps) {
   const askConfirm = useConfirmAsk();
   const containerRef = useRef<HTMLDivElement>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
@@ -35,7 +44,7 @@ export function AgentRowMenu({ target, title, anchor, onArchive, onDismiss }: Ag
     });
     if (!confirmed) return;
     const sentence = await onArchive(target);
-    if (sentence === null) onDismiss();
+    if (sentence === null) onArchived();
     else setRefusal(sentence);
   };
 

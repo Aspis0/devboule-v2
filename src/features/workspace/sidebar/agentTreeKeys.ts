@@ -52,10 +52,17 @@ export function focusAgentTreeAfter(workspaceRowWrap: HTMLElement | null): boole
   return true;
 }
 
+/** The workspace row an agent block hangs under, or null when none is drawn. */
+export function workspaceRowAbove(agentRows: HTMLElement): HTMLElement | null {
+  return (
+    agentRows.previousElementSibling?.querySelector<HTMLElement>("button.workspace-row") ?? null
+  );
+}
+
 /** Moves focus from the agent tree back to the workspace row it hangs under. */
 export function focusWorkspaceRowAbove(agentRows: HTMLElement): boolean {
-  const row = agentRows.previousElementSibling?.querySelector<HTMLElement>("button.workspace-row");
-  if (row === null || row === undefined) return false;
+  const row = workspaceRowAbove(agentRows);
+  if (row === null) return false;
   row.focus();
   return true;
 }

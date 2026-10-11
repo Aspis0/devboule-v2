@@ -28,7 +28,7 @@ describe("archiving the children the person was shown", () => {
     const close = vi.fn(async () => undefined);
     const sentences = await archiveTargets(
       [{ id: "a", generation: 1 }],
-      [child("a", finished(1))],
+      () => [child("a", finished(1))],
       close,
     );
     expect(close).toHaveBeenCalledWith("a");
@@ -39,7 +39,7 @@ describe("archiving the children the person was shown", () => {
     const close = vi.fn(async () => undefined);
     const sentences = await archiveTargets(
       [{ id: "a", generation: 1 }],
-      [child("a", finished(2))],
+      () => [child("a", finished(2))],
       close,
     );
     expect(close).not.toHaveBeenCalled();
@@ -49,14 +49,14 @@ describe("archiving the children the person was shown", () => {
   it("leaves a child alone when it is no longer finished", async () => {
     const close = vi.fn(async () => undefined);
     const running = child("a", { type: "live", generation: 1 }, "working");
-    const sentences = await archiveTargets([{ id: "a", generation: 1 }], [running], close);
+    const sentences = await archiveTargets([{ id: "a", generation: 1 }], () => [running], close);
     expect(close).not.toHaveBeenCalled();
     expect(sentences.get("a")).toBe(SHOWN_CHANGED);
   });
 
   it("counts a child the roster no longer lists as closed, without a call", async () => {
     const close = vi.fn(async () => undefined);
-    const sentences = await archiveTargets([{ id: "gone", generation: 1 }], [], close);
+    const sentences = await archiveTargets([{ id: "gone", generation: 1 }], () => [], close);
     expect(close).not.toHaveBeenCalled();
     expect(sentences.size).toBe(0);
   });
@@ -65,7 +65,7 @@ describe("archiving the children the person was shown", () => {
     const cause = { code: "journal", message: "raw journal words" };
     const sentences = await archiveTargets(
       [{ id: "a", generation: 1 }],
-      [child("a", finished(1))],
+      () => [child("a", finished(1))],
       vi.fn(async () => {
         throw cause;
       }),
@@ -74,9 +74,26 @@ describe("archiving the children the person was shown", () => {
     expect(sentences.get("a")).not.toContain("raw journal words");
   });
 
+  it("reads the roster again for each target, so a close that moves the roster is seen", async () => {
+    let roster = [child("a", finished(1)), child("b", finished(1))];
+    const close = vi.fn(async (id: string) => {
+      if (id === "a") roster = [child("a", finished(1)), child("b", finished(2))];
+    });
+    const sentences = await archiveTargets(
+      [
+        { id: "a", generation: 1 },
+        { id: "b", generation: 1 },
+      ],
+      () => roster,
+      close,
+    );
+    expect(close.mock.calls).toEqual([["a"]]);
+    expect(sentences.get("b")).toBe(SHOWN_CHANGED);
+  });
+
   it("does nothing while the roster has not been read", async () => {
     const close = vi.fn(async () => undefined);
-    const sentences = await archiveTargets([{ id: "a", generation: 1 }], undefined, close);
+    const sentences = await archiveTargets([{ id: "a", generation: 1 }], () => undefined, close);
     expect(close).not.toHaveBeenCalled();
     expect(sentences.size).toBe(0);
   });

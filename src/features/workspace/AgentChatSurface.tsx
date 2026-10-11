@@ -677,12 +677,10 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   // not in the sentences is closed, or was already.
   const archiveFinishedSubagents = useCallback(
     async (targets: readonly ArchiveTarget[]): Promise<ReadonlyMap<string, string>> => {
-      const roster = rosterRef.current;
-      const sentences = await archiveTargets(targets, roster, sessionClose);
+      const readable = rosterRef.current !== undefined;
+      const sentences = await archiveTargets(targets, () => rosterRef.current, sessionClose);
       const closed = new Set(
-        roster === undefined
-          ? []
-          : targets.map((target) => target.id).filter((id) => !sentences.has(id)),
+        readable ? targets.map((target) => target.id).filter((id) => !sentences.has(id)) : [],
       );
       try {
         await onRefreshSubagents?.();

@@ -4,7 +4,8 @@ import { act, type ReactNode, type RefObject } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConfirmProvider } from "../../../components/ConfirmHost";
-import type { ArchiveTarget } from "../subagentArchive";
+import type { Session } from "../../../types/ipc";
+import { archiveTargets, type ArchiveTarget } from "../subagentArchive";
 import { AgentRowMenu } from "./AgentRowMenu";
 
 vi.mock("../popoverPlace", async (importOriginal) => {
@@ -46,23 +47,25 @@ afterEach(async () => {
 
 async function render(
   onArchive: (target: ArchiveTarget) => Promise<string | null>,
-  onDismiss = vi.fn(),
+  target: ArchiveTarget = { id: "child-1", generation: 2 },
 ) {
+  const callbacks = { onArchived: vi.fn(), onDismiss: vi.fn() };
   const anchor = document.createElement("button");
   await act(async () =>
     root.render(
       <ConfirmProvider>
         <AgentRowMenu
-          target={{ id: "child-1", generation: 2 }}
+          target={target}
           title="Website redesign"
           anchor={{ current: anchor }}
           onArchive={onArchive}
-          onDismiss={onDismiss}
+          onArchived={callbacks.onArchived}
+          onDismiss={callbacks.onDismiss}
         />
       </ConfirmProvider>,
     ),
   );
-  return onDismiss;
+  return callbacks;
 }
 
 const menuItem = () => container.querySelector<HTMLButtonElement>('[role="menuitem"]');
@@ -80,18 +83,22 @@ describe("the agent row's menu", () => {
     expect(onArchive).toHaveBeenCalledWith({ id: "child-1", generation: 2 });
   });
 
-  it("closes once the archive went through", async () => {
-    const onDismiss = await render(async () => null);
+  it("reports the archive as done, and not as dismissed", async () => {
+    const { onArchived, onDismiss } = await render(async () => null);
     await act(async () => menuItem()?.click());
     await act(async () => confirmButton()?.click());
-    expect(onDismiss).toHaveBeenCalledTimes(1);
+    expect(onArchived).toHaveBeenCalledTimes(1);
+    expect(onDismiss).not.toHaveBeenCalled();
   });
 
   it("keeps the menu open and says why when the daemon refuses", async () => {
-    const onDismiss = await render(async () => "It is still running, so nothing was archived.");
+    const { onArchived, onDismiss } = await render(
+      async () => "It is still running, so nothing was archived.",
+    );
     await act(async () => menuItem()?.click());
     await act(async () => confirmButton()?.click());
 
+    expect(onArchived).not.toHaveBeenCalled();
     expect(onDismiss).not.toHaveBeenCalled();
     expect(container.querySelector('[role="alert"]')?.textContent).toBe(
       "It is still running, so nothing was archived.",
@@ -106,5 +113,34 @@ describe("the agent row's menu", () => {
       document.querySelector<HTMLButtonElement>(".confirm-dialog-cancel")?.click(),
     );
     expect(onArchive).not.toHaveBeenCalled();
+  });
+
+  it("closes nothing when the roster moved on while the confirmation was open", async () => {
+    const endedChild = (generation: number): Session => ({
+      id: "child-1",
+      workspaceId: "workspace-1",
+      kind: "acp",
+      title: "Website redesign",
+      createdBy: "parent",
+      state: { type: "ended", generation, code: 0, integrity: { kind: "complete" } },
+      elapsedMs: null,
+    });
+    let roster: Session[] = [endedChild(1)];
+    const close = vi.fn(async () => undefined);
+    const { onArchived } = await render(
+      (target) =>
+        archiveTargets([target], () => roster, close).then((s) => s.get(target.id) ?? null),
+      { id: "child-1", generation: 1 },
+    );
+    await act(async () => menuItem()?.click());
+    // A new run of the same child starts while the person reads the prompt.
+    roster = [endedChild(2)];
+    await act(async () => confirmButton()?.click());
+
+    expect(close).not.toHaveBeenCalled();
+    expect(onArchived).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      "It changed since you asked, so it was left open.",
+    );
   });
 });

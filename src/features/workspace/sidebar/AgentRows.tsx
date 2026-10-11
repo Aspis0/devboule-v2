@@ -2,7 +2,7 @@ import { useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { StripKindMark } from "../strip/StripKindMark";
 import type { ArchiveTarget } from "../subagentArchive";
 import { AgentRowMenu } from "./AgentRowMenu";
-import { focusWorkspaceRowAbove, treeKeyTarget } from "./agentTreeKeys";
+import { focusWorkspaceRowAbove, treeKeyTarget, workspaceRowAbove } from "./agentTreeKeys";
 import type { RailAgent, RailAgentState, RailAgents } from "./railAgents";
 import "./agentRows.css";
 
@@ -109,6 +109,8 @@ interface OpenMenu {
   target: ArchiveTarget;
   title: string;
   anchor: HTMLElement;
+  /** Where focus goes once the row is archived; fixed now, since the row is gone by then. */
+  focusAfter: HTMLElement | null;
 }
 
 /**
@@ -142,11 +144,24 @@ export function AgentRows({
     itemRefs.current.get(row.id)?.focus();
   };
 
+  const focusAfterArchive = (index: number): HTMLElement | null => {
+    const next = rows[index + 1] ?? rows[index - 1];
+    if (next !== undefined) return itemRefs.current.get(next.id) ?? null;
+    return rootRef.current === null ? null : workspaceRowAbove(rootRef.current);
+  };
+
   // The menu takes the generation the row shows now: the archive checks it when
   // the person confirms, so a newer generation in between is refused.
-  const openMenu = (row: RailAgent, anchor: HTMLElement) => {
-    if (!row.archivable || onArchiveAgent === undefined || row.generation === null) return;
-    setMenu({ target: { id: row.id, generation: row.generation }, title: row.title, anchor });
+  const openMenu = (index: number, anchor: HTMLElement) => {
+    const row = rows[index];
+    if (row === undefined || !row.archivable || onArchiveAgent === undefined) return;
+    if (row.generation === null) return;
+    setMenu({
+      target: { id: row.id, generation: row.generation },
+      title: row.title,
+      anchor,
+      focusAfter: focusAfterArchive(index),
+    });
   };
 
   return (
@@ -168,7 +183,7 @@ export function AgentRows({
               }
               if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
                 event.preventDefault();
-                openMenu(agent, event.currentTarget);
+                openMenu(index, event.currentTarget);
                 return;
               }
               const target = treeKeyTarget(event.key, index, rows);
@@ -189,7 +204,7 @@ export function AgentRows({
               agent.archivable && onArchiveAgent !== undefined
                 ? (event) => {
                     event.preventDefault();
-                    openMenu(agent, event.currentTarget);
+                    openMenu(index, event.currentTarget);
                   }
                 : null
             }
@@ -211,6 +226,10 @@ export function AgentRows({
           title={menu.title}
           anchor={{ current: menu.anchor }}
           onArchive={onArchiveAgent}
+          onArchived={() => {
+            menu.focusAfter?.focus();
+            setMenu(null);
+          }}
           onDismiss={() => {
             itemRefs.current.get(menu.target.id)?.focus();
             setMenu(null);
