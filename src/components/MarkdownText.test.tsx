@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { MarkdownText } from "./MarkdownText";
 
 describe("MarkdownText", () => {
-  it("keeps unsafe links literal and gives plan headings an accessible role", () => {
+  it("shows an unsafe link as its label and gives plan headings an accessible role", () => {
     const markup = renderToStaticMarkup(
       <MarkdownText text={"# Plan\n\n[open](javascript:alert(1))"} />,
     );
@@ -11,7 +11,8 @@ describe("MarkdownText", () => {
     expect(markup).toContain('class="plan-markdown-heading plan-markdown-heading-1"');
     expect(markup).toContain('role="heading"');
     expect(markup).toContain('aria-level="1"');
-    expect(markup).toContain("[open](javascript:alert(1))");
+    expect(markup).toContain("open");
+    expect(markup).not.toContain("javascript:alert");
     expect(markup).not.toContain("<h1");
     expect(markup).not.toContain('href="javascript:');
   });

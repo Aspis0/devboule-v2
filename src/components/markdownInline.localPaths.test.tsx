@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-// A markdown link to a local file opens it inside the workspace, and never shows its raw `[x](…)`.
+// A markdown link to a local file opens it only when the file is inside the workspace.
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -31,13 +31,14 @@ async function show(text: string, links: ChatFileLinks | null): Promise<void> {
   await act(async () => root?.render(<p>{inline(text, links)}</p>));
 }
 
-describe("markdown links to local files", () => {
-  it("draws a file inside the workspace as a button that opens its relative path", async () => {
+function links(open = vi.fn()): ChatFileLinks {
+  return { root: ROOT, open };
+}
+
+describe("a file inside the workspace", () => {
+  it("draws a button that opens its root-relative path", async () => {
     const open = vi.fn();
-    await show("[index.html](C:/Users/gualt/Desktop/test/kalsa-site/index.html)", {
-      root: ROOT,
-      open,
-    });
+    await show("[index.html](C:/Users/gualt/Desktop/test/kalsa-site/index.html)", links(open));
 
     const link = host.querySelector<HTMLButtonElement>("button.plan-markdown-file-link");
     expect(link?.textContent).toBe("index.html");
@@ -45,28 +46,45 @@ describe("markdown links to local files", () => {
     await act(async () => link?.click());
     expect(open).toHaveBeenCalledWith("kalsa-site/index.html");
   });
+});
 
-  it("keeps a file outside the workspace as its label, never as a link to open", async () => {
-    await show("[hosts](C:/Windows/System32/drivers/etc/hosts)", {
-      root: ROOT,
-      open: vi.fn(),
-    });
+describe("a file outside the workspace", () => {
+  it.each([
+    [
+      "an absolute path elsewhere on the drive",
+      "[secrets](C:/Windows/System32/drivers/etc/secrets.txt)",
+    ],
+    [
+      "a sibling folder that shares the root's name",
+      "[notes](C:/Users/gualt/Desktop/test2/notes.md)",
+    ],
+    ["a path that climbs out of the root", "[notes](C:/Users/gualt/Desktop/test/../notes.md)"],
+    ["a home path", "[secret](~/AppData/secret.txt)"],
+    ["a file URL naming another machine", "[secret](file://server/share/secrets.txt)"],
+  ])("shows the label only, with no link: %s", async (_, text) => {
+    const open = vi.fn();
+    await show(text, links(open));
 
     expect(host.querySelector("button")).toBeNull();
-    expect(host.textContent).toBe("hosts");
+    expect(host.querySelector("a")).toBeNull();
+    expect(host.textContent).not.toContain("](");
     expect(host.querySelector("span[title='Outside this workspace']")).not.toBeNull();
+    expect(open).not.toHaveBeenCalled();
   });
 
-  it("keeps a local file as its label when no workspace is known", async () => {
+  it("shows the label when no workspace is known", async () => {
     await show("[notes](~/notes/todo.md)", null);
 
     expect(host.querySelector("button")).toBeNull();
     expect(host.textContent).toBe("notes");
   });
+});
 
-  it("leaves a destination that is neither a web address nor a path as the text the agent wrote", async () => {
-    await show("[run](javascript:alert(1))", { root: ROOT, open: vi.fn() });
+describe("a destination that is not a path", () => {
+  it("shows the label as plain text, never the raw markdown", async () => {
+    await show("[run](javascript:alert(1))", links());
 
-    expect(host.textContent).toBe("[run](javascript:alert(1))");
+    expect(host.querySelector("a")).toBeNull();
+    expect(host.textContent).toBe("run");
   });
 });

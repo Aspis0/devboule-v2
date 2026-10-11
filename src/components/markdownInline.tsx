@@ -1,18 +1,14 @@
 import type { ReactNode } from "react";
 import { ExternalLink } from "./ExternalLink";
-import {
-  parseChatCodeFilePath,
-  parseChatFilePath,
-  scanChatFilePaths,
-  type ChatFileLinks,
-} from "../lib/chatFilePaths";
+import { parseChatCodeFilePath, scanChatFilePaths, type ChatFileLinks } from "../lib/chatFilePaths";
 import { opensExternally } from "../lib/externalUrl";
 import { localPathFromHref } from "../lib/markdownLocalPath";
+import { workspaceRelativePath } from "../lib/workspaceRelativePath";
 
 /**
- * A `[label](path)` that names a file: a link that opens it in the workspace, or
- * the label as plain text when the file is outside the workspace (or cannot be
- * resolved at all). The raw `[label](…)` is never shown.
+ * A `[label](path)` naming a file: a button that opens it when the file is inside
+ * the workspace, and the label alone otherwise. An agent's text cannot make the app
+ * open a file outside the root.
  */
 function localPathLink(
   key: number,
@@ -21,8 +17,8 @@ function localPathLink(
   links: ChatFileLinks | null,
 ): ReactNode {
   if (links === null) return <span key={key}>{label}</span>;
-  const link = parseChatFilePath(path, links.root);
-  if (link === null) {
+  const relative = workspaceRelativePath(path, links.root);
+  if (relative === null) {
     return (
       <span key={key} title="Outside this workspace">
         {label}
@@ -34,8 +30,8 @@ function localPathLink(
       key={key}
       type="button"
       className="plan-markdown-file-link"
-      title={link.absolutePath ?? link.relativePath}
-      onClick={() => links.open(link.relativePath)}
+      title={`${links.root}/${relative}`}
+      onClick={() => links.open(relative)}
     >
       {label}
     </button>
@@ -260,8 +256,11 @@ export function inline(text: string, fileLinks?: ChatFileLinks | null): ReactNod
         );
       } else if (localPath !== null) {
         nodes.push(localPathLink(key, label, localPath, links));
-      } else {
+      } else if (/^https?:/i.test(href)) {
         nodes.push(text.slice(index, end));
+      } else {
+        // Not a path or a web address: the label the person reads, never the raw markdown.
+        nodes.push(label);
       }
     }
     renderedUntil = end;

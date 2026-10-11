@@ -26,6 +26,10 @@ describe("localPathFromHref", () => {
     expect(localPathFromHref("src/app.ts#L12C3-L20")).toBe("src/app.ts");
   });
 
+  it("keeps a file URL that names another machine as its UNC spelling, never a local path", () => {
+    expect(localPathFromHref("file://server/share/secrets.txt")).toBe("//server/share/secrets.txt");
+  });
+
   it("returns null for a web or mail destination, which the external link handles", () => {
     expect(localPathFromHref("https://example.com/x")).toBeNull();
     expect(localPathFromHref("mailto:person@example.com")).toBeNull();

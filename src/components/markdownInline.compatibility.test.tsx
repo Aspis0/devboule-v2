@@ -69,8 +69,9 @@ const headOutput = [
     expected: "<div><span>a</span></div>",
   },
   {
+    // A destination that is not a path or a web address shows its label only.
     text: "[a](javascript:alert(1))",
-    expected: "<div>[a](javascript:alert(1))</div>",
+    expected: "<div>a</div>",
   },
   {
     text: "![alt\ntext](https://e.com/image.png)",

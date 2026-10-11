@@ -143,11 +143,12 @@ describe("markdownParser images", () => {
 });
 
 describe("markdownParser safety", () => {
-  it("keeps a javascript: link as literal text", () => {
+  it("shows a javascript: link as its label, never an anchor", () => {
     const out = markup("[click](javascript:alert(1))");
 
     expect(out).not.toContain("<a ");
-    expect(out).toContain("[click](javascript:alert(1))");
+    expect(out).not.toContain("javascript:");
+    expect(out).toContain("click");
   });
 
   it("shows a relative link as its label when no workspace is known", () => {
@@ -168,41 +169,33 @@ describe("markdownParser safety", () => {
 });
 
 describe("markdownParser link targets", () => {
-  // The scheme battery: a target the allowlist refuses must survive the
-  // balanced-paren scan whole and render as the literal text it came as.
+  // A destination that is not a web address or a path shows only its label: never
+  // the raw markdown, never an anchor.
   it.each([
     "javascript:alert(1)",
     "JAVASCRIPT:alert(1)",
     "JaVaScRiPt:alert(1)",
-    " javascript:alert(1)",
     "\u0001javascript:alert(1)",
-    "data:text/html,<script>alert(1)</script>",
     "vbscript:MsgBox(1)",
-  ])("keeps [%j] literal, never an anchor", (target) => {
+    "javascript&#58;alert(1)",
+    "file:///etc/passwd",
+    "//host/spoof",
+    "file://server/share/secrets.txt",
+  ])("shows [%j] as its label, never an anchor or the raw markdown", (target) => {
     const out = markup(`[click](${target})`);
 
     expect(out).not.toContain("<a ");
-    expect(out).toContain("[click](");
+    expect(out).not.toContain("[click](");
+    expect(out).toContain("click");
   });
 
-  // A local path outside any workspace shows only its label: never the raw
-  // destination, never an anchor that would open the file.
-  it.each(["file:///etc/passwd", "//host/spoof"])(
-    "shows [%j] as its label, never an anchor",
+  // A destination the parser does not read as a link stays text, and never an anchor.
+  it.each([" javascript:alert(1)", "data:text/html,<script>alert(1)</script>"])(
+    "keeps [%j] as text, never an anchor",
     (target) => {
-      const out = markup(`[click](${target})`);
-
-      expect(out).not.toContain("<a ");
-      expect(out).not.toContain("[click](");
-      expect(out).toContain("click");
+      expect(markup(`[click](${target})`)).not.toContain("<a ");
     },
   );
-
-  it("keeps an entity-colon scheme literal too", () => {
-    const out = markup("[click](javascript&#58;alert(1))");
-
-    expect(out).not.toContain("<a ");
-  });
 
   it("keeps a parenthesised https target whole", () => {
     const out = markup("[t](https://en.wikipedia.org/wiki/A_(B))");
