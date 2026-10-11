@@ -6,6 +6,7 @@ import {
   browserReloadChord,
   COMMAND_MENU_KEY,
   commandModifier,
+  commandKeyPrefix,
   commandModifierLabel,
   composerChordLabel,
   composerKeyAction,
@@ -204,11 +205,18 @@ describe("the command modifier display", () => {
     expect(commandModifier()).toBe("Ctrl");
   });
 
+  it("writes the command key as ⌘ on macOS and Ctrl+ elsewhere, before the key", () => {
+    vi.stubGlobal("navigator", { platform: "MacIntel" });
+    expect(commandKeyPrefix()).toBe("⌘");
+    vi.stubGlobal("navigator", { platform: "Win32" });
+    expect(commandKeyPrefix()).toBe("Ctrl+");
+  });
+
   it("prints the composer chords from the same actions the matcher reads", () => {
     const actions: readonly ComposerKeyAction[] = ["submit", "alternate", "newline"];
     expect(actions.map(composerChordLabel)).toEqual([
       "Enter",
-      `${commandModifier()}+Enter`,
+      `${commandKeyPrefix()}Enter`,
       "Shift+Enter",
     ]);
   });
@@ -251,7 +259,7 @@ describe("shortcutSections", () => {
 
   it("shows the host's own command modifier in the alternate row", () => {
     vi.stubGlobal("navigator", { platform: "MacIntel" });
-    expect(rows("queue")).toContain("Cmd+Enter");
+    expect(rows("queue")).toContain("⌘Enter");
     vi.stubGlobal("navigator", { platform: "Win32" });
     expect(rows("queue")).toContain("Ctrl+Enter");
   });

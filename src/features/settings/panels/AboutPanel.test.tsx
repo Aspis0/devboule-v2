@@ -160,7 +160,7 @@ describe("AboutPanel", () => {
     const license = sectionOf("License");
     expect(valueIn(license, "Devboule's own code")).toBe("Apache-2.0");
     expect(license.textContent).toContain(
-      "Third-party components keep their own licenses, listed in THIRD_PARTY.md.",
+      "Third-party components keep their own licenses (THIRD_PARTY.md).",
     );
     expect(license.textContent).not.toContain("in the source");
   });

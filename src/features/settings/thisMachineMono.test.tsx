@@ -121,7 +121,7 @@ describe("no mono on the This-machine pages (rendered markup against every sheet
     expect(forbidden.size).toBeGreaterThan(0);
     const pages: Array<[name: string, render: () => ReactNode]> = [
       ["Appearance", () => <AppearanceSection />],
-      ["Layout", () => <CloseBehaviorSetting />],
+      ["Window", () => <CloseBehaviorSetting />],
       ["Editing", () => <SendBehaviorSetting />],
       ["Notifications", () => <NotificationsSection />],
     ];

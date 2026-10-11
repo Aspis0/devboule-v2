@@ -116,7 +116,7 @@ export function composerChordLabel(action: ComposerKeyAction): string {
     case "submit":
       return "Enter";
     case "alternate":
-      return `${commandModifier()}+Enter`;
+      return `${commandKeyPrefix()}Enter`;
     case "newline":
       return "Shift+Enter";
   }
@@ -217,9 +217,14 @@ export function commandModifier(): "Cmd" | "Ctrl" {
   return commandModifierLabel(typeof navigator === "undefined" ? "" : navigator.platform);
 }
 
+/** The command key written before another key in copy: "⌘" on macOS, "Ctrl+" elsewhere. */
+export function commandKeyPrefix(): "⌘" | "Ctrl+" {
+  return commandModifier() === "Cmd" ? "⌘" : "Ctrl+";
+}
+
 /** The search chord as the app prints it, on this host's modifier. */
 export function searchChordLabel(): string {
-  return `${commandModifier()}+${SEARCH_KEY.toUpperCase()}`;
+  return `${commandKeyPrefix()}${SEARCH_KEY.toUpperCase()}`;
 }
 
 /** One line of the Shortcuts page. */
@@ -228,7 +233,7 @@ interface ShortcutRow {
   keys: string;
   /** What the keys do. */
   title: string;
-  /** The condition the keys alone do not carry. */
+  /** The condition the keys alone do not carry; the page shows it under the title. */
   detail?: string;
 }
 
@@ -327,12 +332,12 @@ function panelRows(): readonly ShortcutRow[] {
 function browserRows(): readonly ShortcutRow[] {
   return [
     {
-      keys: `${commandModifier()}+L`,
+      keys: `${commandKeyPrefix()}L`,
       title: "Focus the address bar",
       detail: "While a browser tab is in front.",
     },
     {
-      keys: `${commandModifier()}+R`,
+      keys: `${commandKeyPrefix()}R`,
       title: "Reload the page, or stop it while it loads",
       detail: "While a browser tab is in front.",
     },

@@ -93,7 +93,7 @@ export interface ProviderRowProps {
   onOpenLogin?: (trigger: HTMLButtonElement | null) => void;
   /**
    * Why no Log in item is offered: a no-workspace or no-command sentence,
-   * shown under Advanced. Null when the item shows or when silence is correct.
+   * shown under the row's details. Null when the item shows or when silence is correct.
    */
   loginHint: string | null;
   onConfirmConsent: () => void;
@@ -105,10 +105,10 @@ export interface ProviderRowProps {
 /**
  * One installed provider row: glyph, name, a status line (state, version,
  * npx, a running npm), the provider and Devboule-tools switches, the row menu
- * (Update, Log in, Refresh, copy path), and the Advanced toggle. Consent and
+ * (Update, Log in, Refresh, copy path), and the details toggle. Consent and
  * failure lines sit under the row while they need an answer. Path, protocol,
- * the model count, and the login hint live under Advanced. The vocabulary
- * probe mounts only once Advanced is open on an enabled row.
+ * the model count, and the login hint live in the details. The vocabulary
+ * probe mounts only once the details are open on an enabled row.
  */
 export function ProviderRow({
   provider,
@@ -235,7 +235,7 @@ export function ProviderRow({
           className={`prov-chev${expanded ? " prov-chev-open" : ""}`}
           aria-expanded={expanded}
           {...(expanded ? { "aria-controls": detailsId } : {})}
-          aria-label={`Advanced for ${provider.id}`}
+          aria-label={`Details for ${provider.id}`}
           onClick={() => setExpanded((open) => !open)}
         >
           <span aria-hidden="true">›</span>

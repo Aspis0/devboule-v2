@@ -1,11 +1,11 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { projectsList, workspacesList } from "../../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../../lib/errorSentence";
 import { workspaceDisplayTitles } from "../../../lib/workspaceTitles";
 import { ErrorText } from "../../../components/ErrorText";
 import { NewProjectDialog } from "../../../components/NewProjectDialog";
 import type { Project, Workspace } from "../../../types/ipc";
-import { SettingsAdvanced, SettingsRow, SettingsSection } from "../rows";
+import { SettingsRow, SettingsSection } from "../rows";
 import "../projects.css";
 
 export function ProjectsPanel() {
@@ -100,6 +100,17 @@ export function ProjectsPanel() {
               // so a path line renders only where a row's checkout differs.
               const titles = workspaceDisplayTitles(workspaces ?? []);
               const count = workspaces?.length ?? 0;
+              // Render what the daemon sent: no project-path fallback, no joined
+              // path. Same contract as Session.cwd. A path shows only where a
+              // checkout differs from the project's own.
+              const listing = (workspaces ?? [])
+                .map((workspace) => {
+                  const name = titles.get(workspace.id) ?? workspace.title;
+                  return workspace.path && workspace.path !== project.path
+                    ? `${name} · ${workspace.path}`
+                    : name;
+                })
+                .join("\n");
               return (
                 <div data-settings-project key={project.id}>
                   <SettingsRow
@@ -107,7 +118,7 @@ export function ProjectsPanel() {
                     description={project.path}
                     control={
                       workspaceError !== undefined ? null : (
-                        <span>
+                        <span title={listing}>
                           {count} workspace{count === 1 ? "" : "s"}
                         </span>
                       )
@@ -124,22 +135,7 @@ export function ProjectsPanel() {
                         Retry
                       </button>
                     </div>
-                  ) : (
-                    <SettingsAdvanced>
-                      {(workspaces ?? []).map((workspace) => (
-                        // Render what the daemon sent: no project-path
-                        // fallback, no joined path. Same contract as Session.cwd.
-                        <Fragment key={workspace.id}>
-                          <span className="settings-card-meta">
-                            {titles.get(workspace.id) ?? workspace.title}
-                          </span>
-                          {workspace.path && workspace.path !== project.path ? (
-                            <span className="settings-card-meta">{workspace.path}</span>
-                          ) : null}
-                        </Fragment>
-                      ))}
-                    </SettingsAdvanced>
-                  )}
+                  ) : null}
                 </div>
               );
             })
@@ -150,12 +146,6 @@ export function ProjectsPanel() {
           </p>
         ) : null}
       </SettingsSection>
-      <SettingsAdvanced>
-        <p>
-          A project is a git repository or any directory this daemon can reach. Workspaces live
-          inside it.
-        </p>
-      </SettingsAdvanced>
 
       <NewProjectDialog open={dialogOpen} onClose={closeDialog} onCreate={handleProjectAdded} />
     </div>

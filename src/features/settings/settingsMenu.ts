@@ -45,7 +45,7 @@ export const SETTINGS_MENU: readonly SettingsMenuGroup[] = [
       { id: "appearance", label: "Appearance", intro: "" },
       {
         id: "layout",
-        label: "Layout",
+        label: "Window",
         intro: "",
       },
       {
@@ -66,12 +66,14 @@ export const SETTINGS_MENU: readonly SettingsMenuGroup[] = [
       {
         id: "diagnostics",
         label: "Diagnostics",
-        intro: "",
+        intro:
+          "Numbers and versions about the app. Redacted by the daemon: no secrets, no conversation text. Safe to paste into an issue.",
       },
       {
         id: "saved-logins",
         label: "Saved logins",
-        intro: "",
+        intro:
+          "Logins this PC may fill in for an agent. The password stays in the credential store; an agent never reads it.",
       },
     ],
   },
@@ -81,8 +83,7 @@ export const SETTINGS_MENU: readonly SettingsMenuGroup[] = [
       {
         id: "providers",
         label: "Providers",
-        intro:
-          "The agent CLIs this daemon can start, and the tools each one offers. An executable is not a login: the status shows the login check when there is one, else the last start, or that it has not measured one.",
+        intro: "The agent CLIs this daemon can start and the tools each offers.",
       },
       {
         id: "profiles",
@@ -92,7 +93,7 @@ export const SETTINGS_MENU: readonly SettingsMenuGroup[] = [
       {
         id: "usage",
         label: "Usage",
-        intro: "",
+        intro: "Shown when a provider reports it; nothing is fetched.",
       },
     ],
   },
@@ -102,7 +103,8 @@ export const SETTINGS_MENU: readonly SettingsMenuGroup[] = [
       {
         id: "projects",
         label: "Projects",
-        intro: "",
+        intro:
+          "A project is a git repository or any folder this daemon can reach. Workspaces live inside it.",
       },
       {
         id: "oracle",

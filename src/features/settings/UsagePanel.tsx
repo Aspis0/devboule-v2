@@ -14,7 +14,7 @@ import {
   planWindowLabel,
   planWindowMeta,
 } from "../workspace/contextUsageView";
-import { SettingsAdvanced, SettingsRow, SettingsSection } from "./rows";
+import { SettingsRow, SettingsSection } from "./rows";
 
 const LOADING_COPY = "Listing the configured providers…";
 
@@ -150,9 +150,6 @@ export function UsagePanel() {
           <ProviderPlanGroup key={provider.id} provider={provider} nowMs={nowMs} />
         ))
       )}
-      <SettingsAdvanced>
-        <p>Usage is never fetched: a provider that has not sent a reading shows none.</p>
-      </SettingsAdvanced>
     </div>
   );
 }

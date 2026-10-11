@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useId, useSyncExternalStore } from "react";
 import {
   getShowMessagePreviews,
   getShowNotifications,
@@ -7,7 +7,7 @@ import {
   subscribeShowMessagePreviews,
   subscribeShowNotifications,
 } from "../../lib/notificationPrefs";
-import { SettingsAdvanced, SettingsRow } from "./rows";
+import { SettingsRow } from "./rows";
 import "./settingsSwitch.css";
 
 /**
@@ -20,17 +20,22 @@ import "./settingsSwitch.css";
 export function NotificationsSection() {
   const show = useSyncExternalStore(subscribeShowNotifications, getShowNotifications);
   const previews = useSyncExternalStore(subscribeShowMessagePreviews, getShowMessagePreviews);
+  const showDescriptionId = useId();
+  const previewsDescriptionId = useId();
 
   return (
     <>
       <SettingsRow
         title="Show notifications"
+        description="Off means silence; the tab strip still shows the request."
+        descriptionId={showDescriptionId}
         control={
           <button
             type="button"
             role="switch"
             aria-label="Show notifications"
             aria-checked={show}
+            aria-describedby={showDescriptionId}
             className={`settings-switch${show ? " settings-switch-on" : ""}`}
             onClick={() => setShowNotifications(!show)}
           >
@@ -40,12 +45,15 @@ export function NotificationsSection() {
       />
       <SettingsRow
         title="Show message previews"
+        description="Off: the toast names the session and the reason only."
+        descriptionId={previewsDescriptionId}
         control={
           <button
             type="button"
             role="switch"
             aria-label="Show message previews"
             aria-checked={previews}
+            aria-describedby={previewsDescriptionId}
             disabled={!show}
             className={`settings-switch${previews ? " settings-switch-on" : ""}`}
             onClick={() => setShowMessagePreviews(!previews)}
@@ -54,16 +62,6 @@ export function NotificationsSection() {
           </button>
         }
       />
-      <SettingsAdvanced>
-        <p>
-          Off means silence: the raise still shows in the tab strip. Turning this back on shows new
-          notifications only.
-        </p>
-        <p>
-          The toast quotes the last assistant message, or the pending request. The preview reaches
-          the lock screen — off names the session and the reason only.
-        </p>
-      </SettingsAdvanced>
     </>
   );
 }

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { useTrackedRequest } from "../../../lib/trackedRequest";
 import { daemonDiagnostics } from "../../../lib/tauri";
-import { SettingsAdvanced, SettingsRow, SettingsSection } from "../rows";
+import { SettingsRow, SettingsSection } from "../rows";
 import { useSettingsDaemon } from "../settingsDaemon";
 
 function FactRow({ label, value }: { label: string; value: string }) {
@@ -57,10 +57,11 @@ export function AboutPanel() {
         ) : null}
       </SettingsSection>
       <SettingsSection label="License">
-        <FactRow label="Devboule's own code" value="Apache-2.0" />
-        <SettingsAdvanced>
-          <p>Third-party components keep their own licenses, listed in THIRD_PARTY.md.</p>
-        </SettingsAdvanced>
+        <SettingsRow
+          title="Devboule's own code"
+          description="Third-party components keep their own licenses (THIRD_PARTY.md)."
+          control={<span>Apache-2.0</span>}
+        />
       </SettingsSection>
     </div>
   );

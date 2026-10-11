@@ -10,7 +10,7 @@ import { useTrackedRequest } from "../../lib/trackedRequest";
 import type { SavedLogin } from "../../types/ipc";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import { ErrorText } from "../../components/ErrorText";
-import { SettingsAdvanced, SettingsRow, SettingsSection } from "./rows";
+import { SettingsRow } from "./rows";
 import "./savedLogins.css";
 
 /**
@@ -176,23 +176,23 @@ export function SavedLoginsPanel() {
 
       {listError === null && logins === null ? <div role="status">Loading…</div> : null}
 
-      <SettingsSection
-        label="Saved logins"
-        action={
-          editing === null ? (
+      <div className="settings-section">
+        <div className="saved-logins-add">
+          {logins !== null && logins.length === 0 && editing === null ? (
+            <p className="settings-status">No saved logins yet.</p>
+          ) : null}
+          {editing === null ? (
             <button
               type="button"
-              className="settings-add"
-              aria-label="Add a login"
-              title="Add a login"
+              className="settings-device-action"
               disabled={busy}
               onClick={() => begin("new")}
             >
-              +
+              + Add login
             </button>
-          ) : null
-        }
-      >
+          ) : null}
+        </div>
+
         {editing === null ? null : (
           <LoginForm
             key={formKey(editing)}
@@ -203,10 +203,6 @@ export function SavedLoginsPanel() {
             onCancel={() => setEditing(null)}
           />
         )}
-
-        {logins !== null && logins.length === 0 && editing === null ? (
-          <p className="settings-status">No saved logins yet.</p>
-        ) : null}
 
         {logins?.map((login) => (
           <LoginRow
@@ -220,13 +216,7 @@ export function SavedLoginsPanel() {
             onConfirm={() => void remove(login)}
           />
         ))}
-      </SettingsSection>
-      <SettingsAdvanced>
-        <p>
-          Logins this machine may fill in for an agent. The password stays in this machine&apos;s
-          credential store; an agent never reads it.
-        </p>
-      </SettingsAdvanced>
+      </div>
     </div>
   );
 }
@@ -346,6 +336,7 @@ function LoginForm({
           required
         />
       </label>
+      <p className="saved-login-hint">One exact site per line, like https://example.com.</p>
       <label className="saved-login-field">
         <span>Username</span>
         <input name="username" type="text" defaultValue={draft.username} autoComplete="off" />
@@ -361,13 +352,6 @@ function LoginForm({
           placeholder={editing ? "Keep saved" : undefined}
         />
       </label>
-      <SettingsAdvanced>
-        <p>
-          One exact site per line, written as https://example.com. A password is only ever used on
-          the site it was saved for.
-        </p>
-        {editing ? <p>Leave empty to keep the saved password.</p> : null}
-      </SettingsAdvanced>
       <div className="saved-login-actions">
         <button type="submit" className="settings-device-action" disabled={busy}>
           {busy ? "Saving…" : "Save"}

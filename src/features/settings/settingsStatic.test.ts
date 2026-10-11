@@ -191,21 +191,26 @@ describe("Settings static contracts", () => {
     }
   });
 
-  it("gives the profiles, appearance, layout, editing, notifications, about, usage, projects, shortcuts, saved logins and diagnostics pages a title and no paragraph", () => {
+  it("gives a page one visible line under its title only where it needs one", () => {
     const pages = SETTINGS_MENU.flatMap((group) => group.pages);
     const introOf = (id: string) => pages.find((page) => page.id === id)?.intro ?? "missing";
-    expect(introOf("profiles")).toBe("");
-    expect(introOf("appearance")).toBe("");
-    expect(introOf("layout")).toBe("");
-    expect(introOf("editing")).toBe("");
-    expect(introOf("notifications")).toBe("");
-    expect(introOf("about")).toBe("");
-    expect(introOf("usage")).toBe("");
-    expect(introOf("projects")).toBe("");
-    expect(introOf("shortcuts")).toBe("");
-    expect(introOf("saved-logins")).toBe("");
-    expect(introOf("diagnostics")).toBe("");
-    const providers = pages.find((page) => page.id === "providers")?.intro ?? "";
-    expect(providers).toContain("An executable is not a login");
+    for (const id of [
+      "profiles",
+      "appearance",
+      "layout",
+      "editing",
+      "notifications",
+      "about",
+      "shortcuts",
+    ]) {
+      expect(introOf(id)).toBe("");
+    }
+    expect(introOf("usage")).toBe("Shown when a provider reports it; nothing is fetched.");
+    expect(introOf("providers")).toBe(
+      "The agent CLIs this daemon can start and the tools each offers.",
+    );
+    expect(introOf("saved-logins")).toContain("the credential store");
+    expect(introOf("diagnostics")).toContain("no secrets");
+    for (const page of pages) expect(page.intro).not.toContain("\n");
   });
 });

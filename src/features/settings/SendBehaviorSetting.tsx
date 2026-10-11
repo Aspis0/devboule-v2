@@ -1,60 +1,60 @@
-import { useSyncExternalStore } from "react";
+import { useId, useSyncExternalStore } from "react";
 import { ChoiceGroup } from "../../components/ChoiceGroup";
+import { commandKeyPrefix } from "../../lib/keymap";
 import {
   getSendBehavior,
   setSendBehavior,
   subscribeSendBehavior,
   type SendBehavior,
 } from "../../lib/sendBehavior";
-import { SettingsAdvanced, SettingsRow } from "./rows";
+import { SettingsRow } from "./rows";
 
-/** The three choices, Paseo's own (packages/app/src/hooks/use-settings/storage.ts:219)
- * and its default, steer. Their full effect sits under Advanced: the alternate
- * key queues under steer and interrupt, and interrupts under queue. The value
- * lives in the sendBehavior store, so a change here re-renders every mounted
- * surface that reads it. */
-const OPTIONS: readonly { value: SendBehavior; label: string; description: string }[] = [
+interface SendOption {
+  value: SendBehavior;
+  label: string;
+  /** The one line the row states for this option; `command` is "Ctrl+" or "⌘". */
+  line: (command: string) => string;
+}
+
+/** The three choices and their default follow Paseo (storage.ts:219). */
+const OPTIONS: readonly SendOption[] = [
   {
     value: "steer-and-send",
     label: "Steer",
-    description:
-      "When the agent is running, Enter steers the message into the running turn. Command/Ctrl+Enter queues.",
+    line: (command) => `Enter adds your message to the running turn · ${command}Enter queues`,
   },
   {
     value: "interrupt-and-send",
     label: "Interrupt",
-    description:
-      "When the agent is running, Enter interrupts the turn and sends. Command/Ctrl+Enter queues.",
+    line: (command) => `Enter stops the turn and sends · ${command}Enter queues`,
   },
   {
     value: "queue",
     label: "Queue",
-    description:
-      "When the agent is running, Enter queues. Command/Ctrl+Enter interrupts the running turn and sends.",
+    line: (command) => `Enter waits for the turn to end · ${command}Enter stops and sends`,
   },
 ];
 
+/** The value lives in the sendBehavior store, so a change re-renders every mounted surface that reads it. */
 export function SendBehaviorSetting() {
   const behavior = useSyncExternalStore(subscribeSendBehavior, getSendBehavior);
+  const descriptionId = useId();
+  const selected = OPTIONS.find((option) => option.value === behavior);
 
   return (
-    <>
-      <SettingsRow
-        title="Enter while the agent runs"
-        control={
-          <ChoiceGroup
-            options={OPTIONS}
-            value={behavior}
-            onChange={setSendBehavior}
-            ariaLabel="Enter while the agent runs"
-          />
-        }
-      />
-      <SettingsAdvanced>
-        {OPTIONS.map((option) => (
-          <p key={option.value}>{option.description}</p>
-        ))}
-      </SettingsAdvanced>
-    </>
+    <SettingsRow
+      title="Enter while the agent runs"
+      description={selected?.line(commandKeyPrefix())}
+      descriptionId={descriptionId}
+      control={
+        <ChoiceGroup
+          options={OPTIONS}
+          value={behavior}
+          onChange={setSendBehavior}
+          ariaLabel="Enter while the agent runs"
+          describedBy={descriptionId}
+        />
+      }
+    />
   );
 }

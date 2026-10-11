@@ -70,8 +70,10 @@ describe("CloseBehaviorSetting", () => {
     expect(group?.textContent).toContain("Ask every time");
     expect(group?.textContent).toContain("Keep running in the tray");
     expect(group?.textContent).toContain("Quit Devboule");
-    // One row, one line: the title and the control, no explanatory sentence.
-    expect(container.querySelector("[data-settings-row-description]")).toBeNull();
+    // One row: the title, its one visible line, and the control.
+    expect(container.querySelector("[data-settings-row-description]")?.textContent).toBe(
+      "Closing to the tray keeps your agents running.",
+    );
   });
 
   it("saves the chosen choice through the surface settings", async () => {

@@ -141,7 +141,7 @@ describe("Settings removed placeholder rows", () => {
     );
     expect(rows).toEqual([
       "Appearance",
-      "Layout",
+      "Window",
       "Editing",
       "Shortcuts",
       "Notifications",
@@ -167,7 +167,7 @@ describe("Settings removed placeholder rows", () => {
 
     expect(container.textContent).not.toContain("Crescent reveal zone");
     // "Default send" and "When I close the window" were parked here once; they live on
-    // Editing and Layout now, and their presence is asserted there. These are the rows that
+    // Editing and Window now, and their presence is asserted there. These are the rows that
     // must stay gone.
     expect(container.textContent).not.toContain("Daemon shuts down with the app");
     expect(container.textContent).not.toContain("Telemetry");
@@ -198,7 +198,7 @@ describe("Settings menu shell", () => {
   const MENU_ORDER: { group: string | null; label: string }[] = [
     { group: null, label: "Back to workspace" },
     { group: "This machine", label: "Appearance" },
-    { group: "This machine", label: "Layout" },
+    { group: "This machine", label: "Window" },
     { group: "This machine", label: "Editing" },
     { group: "This machine", label: "Shortcuts" },
     { group: "This machine", label: "Notifications" },
@@ -319,7 +319,7 @@ describe("Settings menu shell", () => {
     const appearance = openPage("Appearance");
     await act(async () => appearance.focus());
     await act(async () => keyDown(document.activeElement as Element, "ArrowDown"));
-    expect(document.activeElement?.textContent).toBe("Layout");
+    expect(document.activeElement?.textContent).toBe("Window");
     await act(async () => keyDown(document.activeElement as Element, "ArrowUp"));
     expect(document.activeElement?.textContent).toBe("Appearance");
     await act(async () => keyDown(document.activeElement as Element, "End"));
@@ -346,7 +346,7 @@ describe("Settings menu shell", () => {
     await act(async () => keyDown(document.activeElement as Element, "ArrowDown"));
     expect(document.activeElement?.textContent).toBe("Editing");
     // The new page is announced without moving focus.
-    expect(container.querySelector(".settings-live")?.textContent).toContain("Layout");
+    expect(container.querySelector(".settings-live")?.textContent).toContain("Window");
     // Space behaves the same.
     await act(async () => keyDown(document.activeElement as Element, " "));
     await act(async () => undefined);
@@ -474,9 +474,9 @@ describe("Settings menu shell", () => {
     expect(content.textContent).toContain(intro);
   });
 
-  it("holds the close behaviour on Layout and the send behaviour on Editing", async () => {
+  it("holds the close behaviour on Window and the send behaviour on Editing", async () => {
     await renderShell();
-    await act(async () => openPage("Layout").click());
+    await act(async () => openPage("Window").click());
     await act(async () => undefined);
     let content = container.querySelector("[data-settings-content]");
     expect(content?.textContent).toContain("When I close the window");
@@ -528,7 +528,7 @@ describe("Settings menu shell", () => {
     ["projects", "Projects", "#settings-panel-projects"],
     ["paired", "Paired devices", "#settings-panel-devices"],
     ["diagnostics", "Diagnostics", "#settings-panel-diagnostics"],
-    ["layout", "Layout", "[data-settings-row]"],
+    ["layout", "Window", "[data-settings-row]"],
     ["editing", "Editing", "[data-settings-row]"],
     ["shortcuts", "Shortcuts", "#settings-panel-shortcuts"],
     ["notifications", "Notifications", "[data-settings-row]"],

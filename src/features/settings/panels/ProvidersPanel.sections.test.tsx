@@ -227,11 +227,11 @@ describe("providers sections and search", () => {
     expect(installed.textContent).not.toContain("via npx");
     expect(npx.textContent).toContain("agoragentic-acp");
     expect(npx.textContent).toContain("via npx");
-    // The explanation sits under the section's Advanced, not on the page.
-    expect(npx.querySelector("[data-settings-advanced]")?.textContent).toMatch(
+    // The explanation is one visible line under the section label.
+    expect(npx.querySelector(":scope > p.settings-status")?.textContent).toMatch(
       /nothing is installed/i,
     );
-    expect(npx.querySelector(":scope > p")).toBeNull();
+    expect(npx.querySelector("[data-settings-advanced]")).toBeNull();
     // Install flow untouched: the not-installed row stays available.
     expect(container.textContent).toContain("Available to install");
     // Order: Installed, then Available with its search, then the long npx
@@ -247,10 +247,11 @@ describe("providers sections and search", () => {
     await renderPanel();
 
     expect(container.textContent).toContain("No agent CLI found on PATH");
-    // The install hint is explanation: it waits under Advanced.
-    expect(
-      container.querySelector(".provider-empty [data-settings-advanced]")?.textContent,
-    ).toContain("Install an agent CLI");
+    // The install hint is a visible line under the status, never a disclosure.
+    expect(container.querySelector(".provider-empty")?.textContent).toContain(
+      "Install an agent CLI",
+    );
+    expect(container.querySelector(".provider-empty [data-settings-advanced]")).toBeNull();
   });
 
   it("notes unreadable PATH directories under a non-empty catalog", async () => {

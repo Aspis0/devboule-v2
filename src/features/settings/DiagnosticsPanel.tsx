@@ -228,12 +228,6 @@ interface DiagnosticsErrorBoundaryProps {
   children: ReactNode;
 }
 
-const SAFETY_NOTE =
-  "This report is numbers and versions about the app itself. It is already " +
-  "redacted by the daemon: no secrets, no conversation content, no session " +
-  "titles, and paths with the home directory redacted. Copying it is safe — " +
-  "paste it straight into an issue.";
-
 interface DiagnosticsErrorBoundaryState {
   error: unknown;
 }
@@ -383,7 +377,7 @@ function DiagnosticsPanelContent() {
       />
       {copyState === "failed" ? (
         <p className="settings-status diagnostics-copy-failed">
-          Copying failed — open Advanced and copy the text manually.
+          Copying failed — open Raw report and copy the text manually.
         </p>
       ) : null}
       <RecordSection title="Daemon" record={source.daemon} />
@@ -398,8 +392,7 @@ function DiagnosticsPanelContent() {
         </SettingsSection>
       ) : null}
       <RecordSection title="Environment" record={source.environment} />
-      <SettingsAdvanced>
-        <p>{SAFETY_NOTE}</p>
+      <SettingsAdvanced summary="Raw report">
         <pre className="diagnostics-text">{formatDiagnostics(report)}</pre>
       </SettingsAdvanced>
     </div>

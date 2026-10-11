@@ -3,34 +3,43 @@
 
 .settings-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  padding: 10px 0;
+  column-gap: 24px;
+  row-gap: 8px;
+  min-height: 48px;
+  padding: 12px 0;
 }
 
 .settings-row-text {
+  flex: 1 1 220px;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  min-width: 0;
-  flex: 1 1 auto;
 }
 
 .settings-row-title {
-  font-weight: 600;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
 }
 
+/* Wraps rather than cut: the one line a row states must stay whole. */
 .settings-row-description {
-  opacity: 0.72;
+  max-width: 56ch;
+  color: var(--muted);
   font-size: 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  line-height: var(--leading-body);
 }
 
+/* Under a text column that is too narrow the control drops below it as a
+   whole; max-width keeps a long value inside the row to cut with ellipsis. */
 .settings-row-control {
-  flex: 0 1 auto;
+  flex: none;
   min-width: 0;
+  max-width: 100%;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -52,8 +61,8 @@
 .settings-advanced summary {
   cursor: pointer;
   padding: 6px 0;
+  color: var(--muted);
   font-size: 12px;
-  opacity: 0.72;
 }
 
 .settings-advanced-body {

@@ -6,7 +6,7 @@ import { formatCount } from "../../lib/format";
 import { isImeComposition } from "../../lib/imeComposition";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import { ErrorText } from "../../components/ErrorText";
-import { SettingsAdvanced, SettingsRow, SettingsSection } from "./rows";
+import { SettingsRow, SettingsSection } from "./rows";
 import "./diagnostics.css";
 
 const RETENTION_FIELDS = [
@@ -167,6 +167,7 @@ export function JournalRetentionPanel() {
       )}
       {retention && (
         <div className="retention-limits">
+          <p className="settings-status">Journal history and how long it is kept.</p>
           <SettingsSection label="Retention limits">
             {RETENTION_FIELDS.map((field) => (
               <SettingsRow
@@ -202,15 +203,10 @@ export function JournalRetentionPanel() {
                 }
               />
             ))}
-          </SettingsSection>
-          <SettingsAdvanced>
-            <p>See how much journal history is saved and choose its retention limits.</p>
-            <p>
-              Enter 0 for no limit. An empty or invalid field is rejected; it never silently
-              disables a limit.
+            <p className="settings-status">
+              0 means no limit. Lowering a limit takes effect now and can delete history.
             </p>
-            <p>Lowering a limit takes effect immediately and can delete history.</p>
-          </SettingsAdvanced>
+          </SettingsSection>
         </div>
       )}
     </div>

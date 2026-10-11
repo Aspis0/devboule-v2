@@ -55,7 +55,7 @@ describe("SendBehaviorSetting", () => {
       "Enter while the agent runs",
     );
     expect(container.querySelector("h2, h3")).toBeNull();
-    expect(container.querySelector("[data-settings-row-description]")).toBeNull();
+    expect(container.querySelector("[data-settings-row-description]")).not.toBeNull();
   });
 
   it("offers Steer, Interrupt and Queue, Steer checked by default", async () => {
@@ -64,20 +64,23 @@ describe("SendBehaviorSetting", () => {
     expect(isChosen("steer-and-send")).toBe(true);
     expect(isChosen("interrupt-and-send")).toBe(false);
     expect(isChosen("queue")).toBe(false);
-    // The alternate key is the act the composer's button names, and the copy
-    // has to say so. The copy sits under the collapsed Advanced disclosure.
-    expect(container.querySelector("[data-settings-advanced]")).not.toBeNull();
-    expect(container.textContent).toContain(
-      "When the agent is running, Enter steers the message into the running turn. Command/Ctrl+Enter queues.",
-    );
-    expect(container.textContent).toContain(
-      "When the agent is running, Enter interrupts the turn and sends. Command/Ctrl+Enter queues.",
-    );
-    expect(container.textContent).toContain(
-      "When the agent is running, Enter queues. Command/Ctrl+Enter interrupts the running turn and sends.",
-    );
     expect(optionFor("steer-and-send").textContent).toContain("Steer");
     expect(optionFor("interrupt-and-send").textContent).toContain("Interrupt");
+  });
+
+  it("states the selected option's line only, with the command key of this platform", async () => {
+    await renderSetting();
+    const line = container.querySelector("[data-settings-row-description]")?.textContent ?? "";
+    expect(line).toMatch(/^Enter adds your message to the running turn · (Ctrl\+|⌘)Enter queues$/);
+    expect(container.querySelector("[data-settings-advanced]")).toBeNull();
+    expect(container.querySelector('[role="radiogroup"]')?.getAttribute("aria-describedby")).toBe(
+      container.querySelector("[data-settings-row-description]")?.id,
+    );
+
+    await act(async () => optionFor("queue").click());
+    expect(container.querySelector("[data-settings-row-description]")?.textContent).toMatch(
+      /^Enter waits for the turn to end · (Ctrl\+|⌘)Enter stops and sends$/,
+    );
   });
 
   it("persists Steer through the store so the next surface reads it back", async () => {

@@ -79,9 +79,14 @@ describe("NotificationsSection", () => {
     expect(switchFor("Show message previews").getAttribute("aria-checked")).toBe("false");
   });
 
-  it("says the previews reach the lock screen, and that switching back on shows new notifications only", () => {
+  it("says what each switch does, in one visible line under its title", () => {
     renderSection();
-    expect(container.textContent).toContain("lock screen");
-    expect(container.textContent).toContain("Turning this back on shows new notifications only");
+    expect(container.textContent).toContain(
+      "Off means silence; the tab strip still shows the request.",
+    );
+    expect(container.textContent).toContain(
+      "Off: the toast names the session and the reason only.",
+    );
+    expect(container.querySelector("[data-settings-advanced]")).toBeNull();
   });
 });

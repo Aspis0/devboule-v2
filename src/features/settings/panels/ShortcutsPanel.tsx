@@ -1,13 +1,13 @@
 import { useSyncExternalStore } from "react";
 import { getSendBehavior, subscribeSendBehavior } from "../../../lib/sendBehavior";
 import { shortcutSections } from "../../../lib/keymap";
-import { SettingsAdvanced, SettingsRow, SettingsSection } from "../rows";
+import { SettingsRow, SettingsSection } from "../rows";
 
 /**
  * Settings → Shortcuts: the app-level keys, grouped by where they work, read
  * from the keymap module so the page lists nothing the handlers do not match.
- * The two Enter rows follow the Editing page's Default send. Each row's
- * detail and each group's note sit under one collapsed Advanced disclosure.
+ * The two Enter rows follow the Editing page's Default send. A row's condition
+ * is its one visible line; a group's note sits under its label.
  */
 export function ShortcutsPanel() {
   const behavior = useSyncExternalStore(subscribeSendBehavior, getSendBehavior);
@@ -16,25 +16,17 @@ export function ShortcutsPanel() {
     <div id="settings-panel-shortcuts">
       {sections.map((section) => (
         <SettingsSection key={section.label} label={section.label}>
+          {section.note !== undefined ? <p className="settings-status">{section.note}</p> : null}
           {section.rows.map((row) => (
-            <SettingsRow key={row.keys} title={row.title} control={<span>{row.keys}</span>} />
+            <SettingsRow
+              key={row.keys}
+              title={row.title}
+              description={row.detail}
+              control={<span>{row.keys}</span>}
+            />
           ))}
         </SettingsSection>
       ))}
-      <SettingsAdvanced>
-        {sections.map((section) => (
-          <div key={section.label}>
-            {section.note !== undefined ? <p>{section.note}</p> : null}
-            {section.rows.map((row) =>
-              row.detail !== undefined ? (
-                <p key={row.keys}>
-                  {row.title}: {row.detail}
-                </p>
-              ) : null,
-            )}
-          </div>
-        ))}
-      </SettingsAdvanced>
     </div>
   );
 }

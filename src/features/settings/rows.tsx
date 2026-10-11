@@ -17,12 +17,15 @@ import "./rows.css";
 export function SettingsRow({
   title,
   description,
+  descriptionId,
   control,
 }: {
   /** The setting's name, always. */
   title: ReactNode;
-  /** At most one short line. Details live behind the control, not here. */
+  /** One short line, always visible. */
   description?: ReactNode;
+  /** The description's id, for the control's aria-describedby. */
+  descriptionId?: string;
   /** The toggle, picker, or Edit button — the only place the value changes. */
   control: ReactNode;
 }) {
@@ -31,7 +34,11 @@ export function SettingsRow({
       <div className="settings-row-text">
         <span className="settings-row-title">{title}</span>
         {description === undefined ? null : (
-          <span className="settings-row-description" data-settings-row-description>
+          <span
+            className="settings-row-description"
+            id={descriptionId}
+            data-settings-row-description
+          >
             {description}
           </span>
         )}
@@ -75,11 +82,18 @@ export function SettingsValue({ text }: { text: string }) {
   );
 }
 
-/** The one collapsed place for detail a row does not need on screen. */
-export function SettingsAdvanced({ children }: { children: ReactNode }) {
+/** Collapsed raw data a row does not need on screen. Never a description: that stays visible. */
+export function SettingsAdvanced({
+  summary,
+  children,
+}: {
+  /** A noun for what is inside, e.g. "Raw report". */
+  summary: string;
+  children: ReactNode;
+}) {
   return (
     <details className="settings-advanced" data-settings-advanced>
-      <summary>Advanced</summary>
+      <summary>{summary}</summary>
       <div className="settings-advanced-body">{children}</div>
     </details>
   );

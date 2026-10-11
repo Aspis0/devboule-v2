@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { ChoiceGroup, type ChoiceOption } from "../../components/ChoiceGroup";
 import { errorSentence } from "../../lib/errorSentence";
 import { surfaceSettingsGet, surfaceSettingsSet } from "../../lib/tauri";
@@ -23,6 +23,7 @@ const CHOICES: readonly ChoiceOption<CloseBehaviorChoice>[] = [
  * (`closeBehaviorChoice.ts`).
  */
 export function CloseBehaviorSetting() {
+  const descriptionId = useId();
   const [choice, setChoice] = useState<CloseBehaviorChoice>("ask");
   const [error, setError] = useState<string | null>(null);
   // The stored document, kept so a failed save restores what is really on
@@ -75,12 +76,15 @@ export function CloseBehaviorSetting() {
     <>
       <SettingsRow
         title="When I close the window"
+        description="Closing to the tray keeps your agents running."
+        descriptionId={descriptionId}
         control={
           <ChoiceGroup
             options={CHOICES}
             value={choice}
             onChange={handleChange}
             ariaLabel="When I close the window"
+            describedBy={descriptionId}
           />
         }
       />

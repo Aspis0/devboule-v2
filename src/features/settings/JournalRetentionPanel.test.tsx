@@ -123,7 +123,7 @@ describe("Settings retention panel", () => {
     expect(container.textContent).toContain("2 sessions over the session limit");
     expect(container.textContent).toContain("4 sessions past the age limit");
     expect(container.textContent).toContain(
-      "Lowering a limit takes effect immediately and can delete history.",
+      "0 means no limit. Lowering a limit takes effect now and can delete history.",
     );
   });
 

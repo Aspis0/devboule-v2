@@ -110,16 +110,12 @@ describe("diagnostics panel", () => {
 
     expect(daemonDiagnostics).toHaveBeenCalledTimes(1);
     const text = container.textContent ?? "";
-    // The page title lives in the shell now; the panel keeps the redaction
-    // reassurance beside its Copy button, word for word.
-    // The safety sentence must be exact: the report DOES carry paths (the
-    // runtime dir and pipe name, with the home directory redacted), so "no
-    // file paths" would be a lie the user can catch by reading the paste.
-    expect(text).toContain("no secrets");
-    expect(text).toContain("no conversation content");
-    expect(text).toContain("no session titles");
-    expect(text).toContain("home directory");
-    expect(text).not.toContain("no file paths");
+    // The redaction reassurance is the page intro (settingsMenu.ts); the panel
+    // keeps the report behind one disclosure named for what it is.
+    expect(container.querySelector("[data-settings-advanced] summary")?.textContent).toBe(
+      "Raw report",
+    );
+    expect(text).not.toContain("Advanced");
     // Labelled wire fields, not raw keys.
     expect(text).toContain("uptime ms");
     expect(text).toContain("20651");

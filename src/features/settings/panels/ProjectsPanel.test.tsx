@@ -72,6 +72,22 @@ import { ProjectsPanel } from "./ProjectsPanel";
 import { open } from "@tauri-apps/plugin-dialog";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+/** The count span's title: each workspace on its own line. */
+function workspaceListing(): string {
+  const count = [
+    ...document.querySelectorAll<HTMLElement>("[data-settings-project] span[title]"),
+  ].find((span) => /workspaces?$/.test(span.textContent ?? ""));
+  return count?.getAttribute("title") ?? "";
+}
+
+/** The project path lines, one per project row. */
+function projectDescriptions(): string[] {
+  return [...document.querySelectorAll("[data-settings-project] .settings-row-description")].map(
+    (description) => description.textContent ?? "",
+  );
+}
+
 describe("Settings projects", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -116,10 +132,10 @@ describe("Settings projects", () => {
     expect(container.textContent).toContain("real-project");
     expect(container.textContent).toContain("D:\\real-project");
     expect(container.textContent).toContain("1 workspace");
-    // The checkout path is rendered exactly as the daemon sent it. It differs
+    // The checkout path is listed exactly as the daemon sent it. It differs
     // from the project path here, so a frontend that substituted the project
     // path would fail this assertion.
-    expect(container.textContent).toContain("D:\\real-project.worktrees\\feature-x-9f2e1a");
+    expect(workspaceListing()).toContain("D:\\real-project.worktrees\\feature-x-9f2e1a");
   });
 
   it("does not repeat a workspace path that equals its project's", async () => {
@@ -143,14 +159,12 @@ describe("Settings projects", () => {
     ]);
     await renderProjects();
 
-    expect(container.textContent).toContain("D:\\real-project.worktrees\\feature-y-1a2b3c");
-    // The project's own line: exactly one, never repeated per workspace.
-    const projectPaths = [
-      ...container.querySelectorAll(
-        "[data-settings-project] .settings-row-description, [data-settings-project] .settings-card-meta",
-      ),
-    ].filter((meta) => meta.textContent === "D:\\real-project");
-    expect(projectPaths).toHaveLength(1);
+    // The project's own line is the one description; the listing names the
+    // worktree's path and gives the local workspace no path of its own.
+    expect(projectDescriptions()).toEqual(["D:\\real-project"]);
+    const [local, worktree] = workspaceListing().split("\n");
+    expect(local).not.toContain("\\");
+    expect(worktree).toContain("D:\\real-project.worktrees\\feature-y-1a2b3c");
   });
 
   it("names two workspaces on the project path as two rows, and prints the path once", async () => {
@@ -174,14 +188,10 @@ describe("Settings projects", () => {
     ]);
     await renderProjects();
 
-    const lines = [
-      ...container.querySelectorAll(
-        "[data-settings-project] .settings-row-description, [data-settings-project] .settings-card-meta",
-      ),
-    ].map((meta) => meta.textContent);
-    // The project's own line, then each row named by its title: the shared
-    // folder path prints once, never once per record.
-    expect(lines).toEqual(["D:\\real-project", "real-project", "real-project 2"]);
+    // The shared folder path prints once, as the project's line; each record
+    // is named by its title in the listing, never by the path again.
+    expect(projectDescriptions()).toEqual(["D:\\real-project"]);
+    expect(workspaceListing().split("\n")).toEqual(["real-project", "real-project 2"]);
     expect(container.querySelector(".settings-row-title")?.textContent).toBe("real-project");
     expect(container.textContent).toContain("2 workspaces");
   });

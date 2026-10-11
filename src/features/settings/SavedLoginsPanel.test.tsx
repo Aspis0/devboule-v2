@@ -153,7 +153,7 @@ describe("Saved logins panel", () => {
     await render();
 
     expect(container.textContent).toContain("No saved logins yet.");
-    expect(container.querySelector('[aria-label="Add a login"]')).not.toBeNull();
+    expect(container.textContent).toContain("+ Add login");
   });
 
   it("shows the vault's own refusal, not the daemon's sentence for its code", async () => {
@@ -171,7 +171,7 @@ describe("Saved logins panel", () => {
   it("saves what the person typed and takes the password out of the page", async () => {
     await render();
 
-    await press("Add a login");
+    await press("+ Add login");
     await fill("label", "Bank");
     await fill("origins", "https://bank.example.test\nhttps://bank.example.test:8443");
     await fill("username", "person");
@@ -195,7 +195,8 @@ describe("Saved logins panel", () => {
     const password = (await field("password")) as HTMLInputElement;
     expect(password.type).toBe("password");
     expect(password.value).toBe("");
-    expect(container.textContent).toContain("Leave empty to keep the saved password.");
+    expect(container.textContent).not.toContain("Leave empty");
+    expect(container.querySelector('[placeholder="Keep saved"]')).not.toBeNull();
     await fill("label", "Work mail (personal)");
     await submit();
 
@@ -243,7 +244,7 @@ describe("Saved logins panel", () => {
     });
     await render();
 
-    await press("Add a login");
+    await press("+ Add login");
     await fill("label", "Bank");
     await fill("origins", "https://bank.example.test");
     await fill("password", SECRET);
@@ -298,7 +299,7 @@ describe("Saved logins panel", () => {
   it("moves focus to the first field, and to the confirm it armed", async () => {
     await render();
 
-    await press("Add a login");
+    await press("+ Add login");
     expect(document.activeElement).toBe(await field("label"));
 
     await press("Cancel");
@@ -311,7 +312,7 @@ describe("Saved logins panel", () => {
     vi.mocked(savedLoginCreate).mockImplementation(() => answer());
     await render();
 
-    await press("Add a login");
+    await press("+ Add login");
     await fill("label", "Bank");
     await fill("origins", "https://bank.example.test");
     await fill("password", SECRET);

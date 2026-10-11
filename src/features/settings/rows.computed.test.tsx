@@ -57,6 +57,17 @@ describe("shared row pattern (live stylesheets)", () => {
     document.body.appendChild(region);
     expect(getComputedStyle(region).paddingBottom).toBe("0px");
   });
+  it("draws a row's one line in the muted tone and lets it wrap, never cut", () => {
+    proof.inject([".settings-row-description"]);
+    const description = document.createElement("span");
+    description.className = "settings-row-description";
+    description.textContent = "Off means silence; the tab strip still shows the request.";
+    document.body.appendChild(description);
+    const style = getComputedStyle(description);
+    expect(style.whiteSpace).not.toBe("nowrap");
+    expect(style.textOverflow).not.toBe("ellipsis");
+    expect(style.color).toBe(proof.token("--muted"));
+  });
   it("lets a long value shrink and cut in one line instead of widening the row", () => {
     proof.inject([
       ".settings-row",
