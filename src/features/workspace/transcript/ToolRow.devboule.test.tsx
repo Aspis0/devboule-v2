@@ -84,3 +84,13 @@ describe("ToolRow for Devboule's agent tools", () => {
     expect(shown.querySelector(".workspace-chat-tool-label")?.textContent).toBe("Run");
   });
 });
+
+describe("the agent line's shape", () => {
+  it("draws a Devboule agent call with the same agent icon slot as the agent cards", async () => {
+    const shown = await renderRow(
+      tool({ title: "devboule_send_message", output: '{"displayName":"Finish Kalsa website"}' }),
+    );
+    expect(shown.querySelector(".workspace-chat-tool-icon")).toBeNull();
+    expect(shown.querySelector(".workspace-chat-agent-icon")).not.toBeNull();
+  });
+});

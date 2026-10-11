@@ -5,6 +5,7 @@ import { ExternalLink } from "../../../components/ExternalLink";
 import { MarkdownText } from "../../../components/MarkdownText";
 import { toolPathText, toolRowDisplay } from "../toolRowDisplay";
 import { devbouleToolLine } from "../devbouleToolLine";
+import { AgentIcon } from "../ActivityRow";
 import { CommandChip, ExitMarker } from "../CommandRow";
 import {
   INTERRUPTED_TOOL_CLASS,
@@ -90,7 +91,7 @@ export const ToolRow = memo(function ToolRow({
   const toolClassName = `${className}${isPlan ? " is-plan" : ""}${running ? " is-running" : ""}${failed ? " is-failed" : ""}${cancelled ? " is-cancelled" : ""}${interrupted ? ` ${INTERRUPTED_TOOL_CLASS}` : ""}`;
   const line: ReactNode = (
     <>
-      <ToolIcon kind={item.kind} title={item.title} />
+      {devboule !== undefined ? <AgentIcon /> : <ToolIcon kind={item.kind} title={item.title} />}
       {devboule !== undefined ? (
         <span className="workspace-chat-tool-text">
           <span className="workspace-chat-tool-label is-sentence" title={devboule}>

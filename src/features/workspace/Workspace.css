@@ -371,7 +371,20 @@
   display: none;
 }
 
+/* The icon an agent line leads with, in the same 12 px slot as a tool row's icon. */
+.workspace-chat-agent-icon {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  align-self: center;
+  color: var(--muted);
+}
+
 .workspace-chat-activity-line {
+  /* The same type and grey as a tool line: set here, past the entry’s own body size. */
+  font-size: var(--type-meta);
+  line-height: var(--leading-body);
+  color: var(--muted);
   display: flex;
   align-items: baseline;
   gap: var(--space-6);
