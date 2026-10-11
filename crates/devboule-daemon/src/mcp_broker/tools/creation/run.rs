@@ -308,6 +308,11 @@ fn run_creation(
     );
     let auto_accept =
         crate::profile_delivery::resolve_auto_accept(&profile.provider, &profile.mode, ticked);
+    // The provider's own check of the delivery, before any card: a child the spawn
+    // would refuse is refused now, so no approval card shows for it (owner #34).
+    if let Err(message) = pre_card_check(state, &profile, auto_accept) {
+        return tool_error(id, &message);
+    }
     // The child's labels, stamped here where all four facts are known. Stamped
     // into the same map the caller wrote, so a human reads one list; refused if
     // the caller tried to write one of them (`parse_labels`), so the daemon's
@@ -370,6 +375,14 @@ fn run_creation(
             .ask_creation_card(&creator_id, &registration.owner, card);
         if !authorized {
             return tool_error(id, "permission refused");
+        }
+        // The person may have turned the provider off while the card waited: the
+        // switch is read again now, before the child is started (owner item 1).
+        if let Err(error) = crate::provider_switches::refuse_unless_enabled(
+            &state.provider_switches,
+            &profile.provider,
+        ) {
+            return tool_error(id, &error.message);
         }
         state.sessions.accept_agent_creation(&creator_id);
     }
@@ -487,5 +500,169 @@ pub(in crate::mcp_broker) fn create_agent_tool(
             request,
         ))),
         Err(message) => Ok(Some(rpc_error(id, -32602, &message))),
+    }
+}
+
+/// The delivery the spawn will apply, judged before any card is raised (owner
+/// #34): the provider's own check of its mode and features, and for Codex and
+/// pi the model and thinking option against the provider's own list. A refusal
+/// here is the same sentence the spawn would give, and no card shows for it.
+/// ACP judges its delivery only after the handshake, so nothing is judged here
+/// for an ACP provider.
+fn pre_card_check(
+    state: &Arc<ServerState>,
+    profile: &super::profile::ResolvedProfile,
+    auto_accept: bool,
+) -> Result<(), String> {
+    let kind = crate::provider_catalog::session_kind_for(&profile.provider);
+    let delivery = crate::profile_delivery::ProfileDelivery::for_child_resolved(
+        &profile.mode,
+        &profile.model,
+        profile.model_provider.as_deref(),
+        profile.thinking_option_id.as_deref(),
+        &profile.features,
+        auto_accept,
+    );
+    crate::session::catalog_registry()
+        .provider_for_kind(&kind)
+        .validate_delivery(state, &delivery)
+        .map_err(|error| error.message)?;
+    let names_model_or_effort =
+        delivery.model_id.is_some() || delivery.thinking_option_id.is_some();
+    if matches!(
+        kind,
+        devboule_protocol::SessionKind::Codex | devboule_protocol::SessionKind::Pi
+    ) && names_model_or_effort
+    {
+        let models = provider_models(state, &profile.provider, delivery.model_id.as_deref())?;
+        check_delivered_choice(
+            &models,
+            &profile.provider,
+            delivery.model_id.as_deref(),
+            delivery.thinking_option_id.as_deref(),
+        )?;
+    }
+    Ok(())
+}
+
+/// The provider's own list of models, asked for the way the form asks it. A
+/// provider that publishes no list refuses a named model, as the spawn does.
+fn provider_models(
+    state: &Arc<ServerState>,
+    provider: &str,
+    model: Option<&str>,
+) -> Result<Vec<devboule_protocol::SessionModel>, String> {
+    match crate::provider_vocabulary::provider_vocabulary_reply(state, 0, provider, model, false) {
+        devboule_protocol::DaemonMessage::ProviderVocabulary { models, .. } => {
+            match models.state {
+                devboule_protocol::VocabularyState::Present => Ok(models.items),
+                _ => Err(format!(
+                    "{provider} publishes no models the daemon can deliver; the creation is refused rather than started on a different model"
+                )),
+            }
+        }
+        devboule_protocol::DaemonMessage::Error(error) => Err(error.message),
+        _ => Err(format!("{provider} did not answer its model list")),
+    }
+}
+
+/// A named model and thinking option must be ones the provider lists: the model
+/// by its id, the thinking option among that model's own efforts.
+fn check_delivered_choice(
+    models: &[devboule_protocol::SessionModel],
+    provider: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> Result<(), String> {
+    let chosen = match model {
+        Some(model_id) => Some(
+            models
+                .iter()
+                .find(|listed| listed.model_id == model_id)
+                .ok_or_else(|| {
+                    format!(
+                        "'{model_id}' is not a model {provider} offers; the creation is refused"
+                    )
+                })?,
+        ),
+        None => None,
+    };
+    if let (Some(effort), Some(listed)) = (effort, chosen) {
+        let offered = listed
+            .efforts
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .any(|option| option.id == effort);
+        if !offered {
+            return Err(format!(
+                "'{effort}' is not a thinking option {provider} offers for model '{}'; the creation is refused",
+                listed.model_id
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod pre_card_tests {
+    use super::check_delivered_choice;
+    use devboule_protocol::{SessionModel, SessionModelEffort};
+
+    fn model(id: &str, efforts: Option<&[&str]>) -> SessionModel {
+        SessionModel {
+            accepts_images: false,
+            model_id: id.to_string(),
+            name: id.to_string(),
+            provider_id: None,
+            description: None,
+            context_tokens: None,
+            current_effort: None,
+            efforts: efforts.map(|ids| {
+                ids.iter()
+                    .map(|id| SessionModelEffort {
+                        id: id.to_string(),
+                        label: id.to_string(),
+                        description: None,
+                        default: None,
+                    })
+                    .collect()
+            }),
+        }
+    }
+
+    /// A model the provider does not list is refused before any card, with the
+    /// provider's name in the sentence; a listed one passes.
+    #[test]
+    fn an_unlisted_model_is_refused_before_the_card() {
+        let models = [model("gpt-a", Some(&["low", "high"]))];
+        let refused = check_delivered_choice(&models, "codex", Some("gpt-zzz"), None)
+            .expect_err("an unlisted model is refused");
+        assert!(
+            refused.contains("'gpt-zzz' is not a model codex offers"),
+            "{refused}"
+        );
+        assert!(check_delivered_choice(&models, "codex", Some("gpt-a"), None).is_ok());
+    }
+
+    /// A thinking option is judged against the named model's own efforts; a
+    /// model that lists none refuses any named option.
+    #[test]
+    fn an_effort_the_model_does_not_offer_is_refused_before_the_card() {
+        let models = [model("gpt-a", Some(&["low", "high"])), model("gpt-b", None)];
+        let refused = check_delivered_choice(&models, "codex", Some("gpt-a"), Some("max"))
+            .expect_err("an unlisted effort is refused");
+        assert!(
+            refused.contains("'max' is not a thinking option codex offers for model 'gpt-a'"),
+            "{refused}"
+        );
+        assert!(check_delivered_choice(&models, "codex", Some("gpt-a"), Some("high")).is_ok());
+        assert!(check_delivered_choice(&models, "codex", Some("gpt-b"), Some("high")).is_err());
+    }
+
+    /// Nothing named is nothing to judge.
+    #[test]
+    fn a_creation_naming_no_model_or_effort_passes_the_check() {
+        assert!(check_delivered_choice(&[], "pi", None, None).is_ok());
     }
 }

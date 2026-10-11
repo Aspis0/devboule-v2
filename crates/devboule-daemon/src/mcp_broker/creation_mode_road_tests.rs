@@ -415,3 +415,79 @@ fn a_create_naming_a_switched_off_provider_is_refused_before_any_card() {
         "the refusal is the switch's own sentence"
     );
 }
+
+/// The person turns a provider OFF while the creation card waits: the answer
+/// comes after the switch, and no child is started (owner item 1). The switch
+/// is read again after the card resolves, before the child is created.
+#[test]
+fn a_provider_switched_off_while_the_card_waits_starts_no_child() {
+    fn direct_request() -> AgentCreateRequest {
+        AgentCreateRequest::parse(&json!({
+            "provider": "devboule-acp-stub",
+            "model": "stub-model",
+            "mode": "ask",
+            "title": "Probe child",
+            "initialPrompt": "Do the probe thing.",
+        }))
+        .expect("direct request parses")
+    }
+    let state = ServerState::new("create-switch-card-wait".to_string());
+    creator(&state, "d1a-creator");
+    // The card is owed, so the call answers at once and the card waits in the
+    // background for the person.
+    let answered = create_agent(
+        &state,
+        &state.mcp,
+        &McpCaller::Local,
+        &registration("d1a-creator"),
+        &json!(51),
+        direct_request(),
+    );
+    assert_eq!(
+        answered.pointer("/result/structuredContent/state"),
+        Some(&json!("awaiting_approval")),
+        "{answered}"
+    );
+    let start = Instant::now();
+    let card = loop {
+        let pending = state
+            .sessions
+            .live_runtime("d1a-creator", &owner())
+            .expect("live creator")
+            .permission_broker()
+            .expect("test broker")
+            .test_pending_ids();
+        if let Some(card) = pending.into_iter().next() {
+            break card;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "the card was never raised"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    state
+        .provider_switches
+        .set("devboule-acp-stub", false)
+        .expect("the person turns the provider off");
+    answer(&state, "d1a-creator", &card);
+    // The answer lands on the background worker; wait for it to settle and check
+    // that no child was started.
+    std::thread::sleep(Duration::from_millis(500));
+    let started = |_: ()| {
+        state
+            .sessions
+            .live_agent_entries(&owner())
+            .expect("the roster")
+            .into_iter()
+            .any(|entry| entry.session.created_by.as_deref() == Some("d1a-creator"))
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        assert!(
+            !started(()),
+            "no child may start for a switched-off provider"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
