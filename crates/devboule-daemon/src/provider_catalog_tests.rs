@@ -1719,184 +1719,45 @@ fn the_write_refusal_names_the_mode_and_the_way_out() {
     }
 }
 
-fn ticked() -> serde_json::Map<String, serde_json::Value> {
-    serde_json::json!({ "autoAccept": true })
-        .as_object()
-        .expect("object")
-        .to_owned()
-}
-
-/// The pre-card tick judgement: a verdict that
-/// refuses exists only where the daemon owns the rule — Claude and Pi —
-/// and the daemon's own table always concludes *satisfied*, never
-/// refused. `full-access` now rides that table (Codex never asks there),
-/// so a tick over it is Consistent for every family; every other non-table
-/// id stays `NotOursToJudge`.
+/// The tick a creation resolves is the self-answer predicate's answer, for
+/// every family and mode the daemon names: a tick stands over a mode that
+/// answers its own prompts and resolves off over one that asks. Claude `auto`
+/// is the case that used to be refused (owner bug #16).
 #[test]
-fn the_pre_card_tick_judgement_refuses_only_where_the_daemon_owns_the_rule() {
-    let features = ticked();
-    use super::AutoAcceptTick::*;
-    // No tick: consistent for every family and every mode spelling.
-    for provider in [
-        "claude",
-        "pi",
-        "codex",
-        "devboule-acp-stub",
-        "someone-elses-agent",
-    ] {
-        for mode in ["default", "ask", "full-access", "bypass"] {
-            assert_eq!(
-                super::judge_auto_accept_tick(provider, mode, &serde_json::Map::new()),
-                Consistent,
-                "{provider} {mode}: no tick, no contradiction"
-            );
-        }
-    }
-    // A tick over a table id: satisfied, whatever the family — each id
-    // answered for the family that owns it.
-    for (provider, mode) in [
-        ("claude", "bypassPermissions"),
-        ("codex", "full-access"),
-        ("pi", "bypass"),
-        ("devboule-acp-stub", "auto_accept"),
-    ] {
-        assert_eq!(
-            super::judge_auto_accept_tick(provider, mode, &features),
-            Consistent,
-            "{provider} {mode}: the table answers this mode"
-        );
-    }
-    // The daemon-owned tick rules: Claude and Pi refuse any other mode id.
-    for provider in ["claude", "pi"] {
-        for mode in ["default", "ask", "acceptEdits", "plan"] {
-            assert_eq!(
-                super::judge_auto_accept_tick(provider, mode, &features),
-                Contradicts,
-                "{provider} {mode}: the tick demands a mode the broker answers"
-            );
-        }
-    }
-    // The families that own their knob: no pre-card conclusion at all —
-    // for every id the daemon's own table does not carry. (`full-access`
-    // is not a pre-card conclusion; it rides the table above.)
-    for provider in [
-        "codex",
-        "devboule-acp-stub",
-        "a-provider-from-a-config-file",
-    ] {
-        for mode in ["default", "ask", "auto-review", "acceptEdits"] {
-            assert_eq!(
-                super::judge_auto_accept_tick(provider, mode, &features),
-                NotOursToJudge,
-                "{provider} {mode}: not the daemon's fact to state"
-            );
-        }
-    }
-}
-
-/// The repair pass's closed-dimension rule, applied to the pre-card
-/// judgement: every `SessionKind` arm of `judge_auto_accept_tick` has a
-/// pinned verdict, reached through each kind's own provider spelling,
-/// so a family's verdict is a recorded decision rather than whatever a
-/// wildcard happened to return. The match in
-/// `judge_auto_accept_tick` spells every arm with no wildcard, so
-/// adding a sixth family is a compile error before this test can even
-/// run — and this test then forces whoever adds it to write down what
-/// the new family's verdict is.
-#[test]
-fn every_session_kind_has_a_pinned_pre_card_tick_verdict() {
-    use super::AutoAcceptTick::*;
+fn a_creation_resolves_the_tick_by_the_self_answer_predicate() {
     use devboule_protocol::SessionKind;
-
-    // The provider spellings each kind resolves from
-    // (`session_kind_for`): the three authored families by name, every
-    // other name — including a user-defined provider from a config
-    // file — to the ACP family. `Terminal` is unreachable through
-    // `session_kind_for` today, so its verdict is pinned through the
-    // accessor itself, one arm at a time, below.
-    let verdict_for_provider =
-        |provider: &str| super::judge_auto_accept_tick(provider, "ask", &ticked());
-    assert_eq!(verdict_for_provider("claude"), Contradicts);
-    assert_eq!(verdict_for_provider("pi"), Contradicts);
-    assert_eq!(verdict_for_provider("codex"), NotOursToJudge);
-    assert_eq!(verdict_for_provider("devboule-acp-stub"), NotOursToJudge);
-    assert_eq!(
-        verdict_for_provider("someone-elses-agent-from-a-config-file"),
-        NotOursToJudge
-    );
-
-    // The closed table, walked one arm at a time through the accessor
-    // the match serves: adding a variant to `SessionKind` makes the
-    // match in `judge_auto_accept_tick` fail to compile, and the new
-    // arm must be given its verdict before this table can be extended.
-    let kind_of_provider = |provider: &str| super::session_kind_for(provider);
-    assert_eq!(kind_of_provider("claude"), SessionKind::Claude);
-    assert_eq!(kind_of_provider("pi"), SessionKind::Pi);
-    assert_eq!(kind_of_provider("codex"), SessionKind::Codex);
-    assert_eq!(kind_of_provider("devboule-acp-stub"), SessionKind::Acp);
-    assert_eq!(
-        kind_of_provider("someone-elses-agent-from-a-config-file"),
-        SessionKind::Acp
-    );
-}
-
-/// Claude's `auto` mode is a model classifier that approves permission
-/// prompts by itself: it does not ask the human, so a profile that ticks
-/// `autoAccept` on it is consistent, not a contradiction (owner bug #16:
-/// a Codex-spawned child with the Coder profile — Claude Haiku, mode
-/// `auto`, auto accept on — was refused). RED: `mode_self_answers` does
-/// not exist yet.
-#[test]
-fn claude_auto_answers_its_own_permission_prompts() {
-    use devboule_protocol::SessionKind;
-    assert!(
-        super::mode_self_answers(Some(SessionKind::Claude), "auto"),
-        "Claude auto is a self-approving classifier, not an asking mode"
-    );
-    // The daemon's broker answers these with no card at all.
-    assert!(super::mode_self_answers(
-        Some(SessionKind::Claude),
-        "bypassPermissions"
-    ));
-    assert!(super::mode_self_answers(
-        Some(SessionKind::Codex),
-        "full-access"
-    ));
-    assert!(super::mode_self_answers(Some(SessionKind::Pi), "bypass"));
-    assert!(super::mode_self_answers(
-        Some(SessionKind::Acp),
-        "auto_accept"
-    ));
-    // Genuinely asking modes answer nothing by themselves.
-    for (kind, mode) in [
-        (SessionKind::Claude, "default"),
-        (SessionKind::Claude, "plan"),
-        (SessionKind::Codex, "auto"),
-        (SessionKind::Codex, "read-only"),
-        (SessionKind::Pi, "ask"),
+    for (provider, kind) in [
+        ("claude", SessionKind::Claude),
+        ("pi", SessionKind::Pi),
+        ("codex", SessionKind::Codex),
     ] {
-        assert!(
-            !super::mode_self_answers(Some(kind.clone()), mode),
-            "{kind:?} {mode}: asks the human"
-        );
+        for mode in [
+            "default",
+            "ask",
+            "plan",
+            "auto",
+            "bypassPermissions",
+            "acceptEdits",
+            "bypass",
+            "full-access",
+            "auto-review",
+        ] {
+            assert_eq!(
+                crate::profile_delivery::resolve_auto_accept(provider, mode, true),
+                super::mode_self_answers(Some(kind.clone()), mode),
+                "{provider} {mode}: the tick follows whether the mode answers itself"
+            );
+            assert!(
+                !crate::profile_delivery::resolve_auto_accept(provider, mode, false),
+                "{provider} {mode}: an unticked profile stays unticked"
+            );
+        }
     }
+    assert!(crate::profile_delivery::resolve_auto_accept(
+        "claude", "auto", true
+    ));
 }
 
-/// The pre-card verdict for the reported profile: Claude `auto` with the
-/// tick is consistent (owner bug #16). RED: the judge still contradicts it.
-#[test]
-fn claude_auto_with_the_tick_is_consistent() {
-    use super::AutoAcceptTick::*;
-    assert_eq!(
-        super::judge_auto_accept_tick("claude", "auto", &ticked()),
-        Consistent,
-        "Claude auto approves by itself; the tick contradicts nothing"
-    );
-}
-
-/// The published schema of `devboule_create_agent` names what a creation runs
-/// on: a provider, a model, a mode, an effort and a preset, with a profile as
-/// the optional shortcut (owner bug #34). Nothing a creation can say is outside
 /// the schema, and nothing outside it is accepted.
 #[test]
 fn the_create_agent_schema_names_the_direct_settings_and_the_profile() {

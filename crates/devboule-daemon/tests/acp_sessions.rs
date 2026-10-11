@@ -5458,25 +5458,13 @@ fn an_agent_that_dies_mid_delivery_is_named_as_an_exited_provider() {
     }
 }
 
-/// The contradiction, bounded by **authority**: the pre-card gate refuses
-/// only where the daemon owns the tick rule, and an ACP agent's modes are
-/// the agent's own vocabulary, so a ticked profile naming a non-daemon mode
-/// is **not** refused before the card. The client judges at spawn time,
-/// where the delivered mode is the fact: the stub declares `ask,default`
-/// and starts in `ask`, and the daemon's post-handshake guard refuses the
-/// tick over that delivered mode. The handshake delivers the profile's mode
-/// first, so the fact the guard judges is the mode the child would actually
-/// start in.
-///
-/// The pre-card refusal of an ACP-family creation over a non-daemon mode id
-/// is deliberately not asserted here: that same refusal convicted Codex
-/// `full-access` profiles the Codex client itself accepts. If the too-wide
-/// gate returns, this test goes red from the other direction: the card is
-/// never raised (the `allow_creation_card` below times out) and no delivery
-/// ever runs. The ACP guard's own sentence is asserted here, at its real
-/// site.
+/// An ACP child that ticks auto accept over a delivered mode that asks the
+/// human is no longer refused: creation resolves the tick off before the card
+/// (owner bug #16), so the child starts asking, and the delivery guard has
+/// nothing to refuse. The card is still raised first, because the delivered
+/// mode is the agent's own vocabulary and the handshake is what judges it.
 #[test]
-fn an_auto_accept_tick_over_the_delivered_asking_mode_is_refused_by_the_delivery() {
+fn an_auto_accept_tick_over_the_delivered_asking_mode_resolves_off_and_the_child_starts() {
     let _lock = lock_tests();
     let mut profiles = worker_profile_document();
     profiles["profiles"][0]["features"] = serde_json::json!({"autoAccept": true});
@@ -5498,43 +5486,17 @@ fn an_auto_accept_tick_over_the_delivered_asking_mode_is_refused_by_the_delivery
     // agent's own handshake.
     test.allow_creation_card(&creator.id, &events);
 
-    // The refusal carries the delivery guard's sentence, naming the mode the
-    // handshake actually DELIVERED: the handshake switches the session to the
-    // profile's mode first, and the guard judges that fact — here the
-    // delivered mode and the profile's spelling coincide, because the switch
-    // succeeded. The stub's starting mode is never named: what is judged is
-    // what the child would start in.
+    // The tick resolved off, so the creation goes through: the child exists and
+    // no delivery refuses it for the tick.
     let calls = test.creation_outcome();
     assert!(
-        calls[0].contains("which asks the human"),
-        "the refusal names the contradiction: {calls:?}"
+        calls[0].contains("You were created by another agent"),
+        "the child starts: {calls:?}"
     );
     assert!(
-        calls[0].contains("mode 'default'"),
-        "the refusal names the delivered mode: {calls:?}"
+        !calls[0].contains("the two contradict"),
+        "no contradiction is raised for a tick the creation resolved: {calls:?}"
     );
-
-    // Nothing survives to answer a prompt the card did not describe.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let live_child = test
-            .client
-            .sessions_list()
-            .expect("session list")
-            .into_iter()
-            .any(|session| {
-                session.created_by.as_deref() == Some(creator.id.as_str())
-                    && matches!(session.state, devboule_protocol::SessionState::Live { .. })
-            });
-        assert!(
-            !live_child,
-            "no live child was left behind by the refused creation"
-        );
-        if Instant::now() >= deadline {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
 }
 
 /// The P3-5 half a black-box test can pin: a ticked profile whose mode the

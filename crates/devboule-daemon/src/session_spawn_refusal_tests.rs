@@ -171,15 +171,13 @@ fn ticked_features() -> serde_json::Map<String, serde_json::Value> {
         .to_owned()
 }
 
-/// The pre-card gate and the clients' own spawn-time tick rules, asserted
-/// against each other over the daemon's mode vocabulary plus the
-/// provider-authored ids. The invariant is exact — a pair the pre-card gate
-/// refuses must be a pair the client that will speak for the child also
-/// refuses — and for Claude and pi, whose tick rule is the daemon's own,
-/// the two verdicts must agree outright.
+/// What a creation hands the spawn is the resolved tick, and the client's own
+/// spawn-time rule admits it for every family and mode (owner bug #16): a tick
+/// over a mode that asks is resolved off before the card, never refused at
+/// spawn. Claude and pi still refuse a raw delivery that keeps the tick over an
+/// asking mode, because that rule is theirs.
 #[test]
-fn the_pre_card_tick_refusal_never_exceeds_what_the_clients_refuse_at_spawn() {
-    use crate::provider_catalog::{judge_auto_accept_tick, AutoAcceptTick};
+fn the_creation_resolved_tick_is_admitted_at_spawn_by_every_family() {
     let features = ticked_features();
     let modes = [
         "bypass",
@@ -203,46 +201,41 @@ fn the_pre_card_tick_refusal_never_exceeds_what_the_clients_refuse_at_spawn() {
         ("codex", super::codex_client::tick_contradicts),
     ] {
         for mode in modes {
-            let delivery = crate::profile_delivery::ProfileDelivery::for_child(
+            let resolved = crate::profile_delivery::resolve_auto_accept(provider, mode, true);
+            let delivery = crate::profile_delivery::ProfileDelivery::for_child_resolved(
                 mode,
                 "some-model",
                 None,
                 None,
                 &features,
+                resolved,
             );
-            let pre_card_refuses =
-                judge_auto_accept_tick(provider, mode, &features) == AutoAcceptTick::Contradicts;
-            let spawn_refuses = spawn_refuses(&delivery);
             assert!(
-                !pre_card_refuses || spawn_refuses,
-                "{provider} {mode}: the pre-card gate refuses a pair the client accepts at spawn"
+                !spawn_refuses(&delivery),
+                "{provider} {mode}: the resolved delivery is admitted at spawn"
             );
-            // The gate is exact where the rule is the daemon's own: a
-            // silent gate over a refused pair would move the
-            // contradiction behind the consent card.
-            if provider != "codex" {
-                assert_eq!(
-                    pre_card_refuses, spawn_refuses,
-                    "{provider} {mode}: the gate and the client disagree"
-                );
-            }
         }
     }
-    // The conviction itself, spelled: `full-access` + tick is accepted
-    // by Codex's own rule, and pre-card it now rides the daemon's own
-    // table — `Consistent`, never refused.
-    let delivery = crate::profile_delivery::ProfileDelivery::for_child(
-        "full-access",
-        "some-model",
-        None,
-        None,
-        &features,
-    );
-    assert!(!super::codex_client::tick_contradicts(&delivery));
-    assert_eq!(
-        judge_auto_accept_tick("codex", "full-access", &features),
-        AutoAcceptTick::Consistent
-    );
+    for (provider, spawn_refuses) in [
+        (
+            "claude",
+            super::claude_client::tick_contradicts
+                as fn(&crate::profile_delivery::ProfileDelivery) -> bool,
+        ),
+        ("pi", super::pi_client::tick_contradicts),
+    ] {
+        let raw = crate::profile_delivery::ProfileDelivery::for_child(
+            "default",
+            "some-model",
+            None,
+            None,
+            &features,
+        );
+        assert!(
+            spawn_refuses(&raw),
+            "{provider} default: a raw tick over an asking mode is refused at spawn"
+        );
+    }
 }
 
 /// The convention the classifier rests on, asserted against the
