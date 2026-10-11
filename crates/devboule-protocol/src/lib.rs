@@ -266,6 +266,10 @@ pub const PROTOCOL_VERSION: u32 = 36;
 /// reader cannot deserialize the new variants and would drop the
 /// connection on a frame it never knew.
 pub const FILE_EDIT_MIN_VERSION: u32 = 33;
+/// The first dialect that pairs without a `role` field: every earlier daemon
+/// needs one in `PairingStart` and `PairingComplete`. Later dialects only add
+/// optional fields, so this floor does not move with `PROTOCOL_VERSION`.
+pub const ROLELESS_PAIRING_MIN_VERSION: u32 = 32;
 /// Oldest dialect this crate still accepts. Protocols 17, 18 and 20 added only
 /// optional fields, so a v16 peer still interoperates — it just shows no
 /// command chip, turn time, cache, cost or chat-image thumbnails until

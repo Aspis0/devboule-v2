@@ -1734,3 +1734,16 @@ fn a_remote_create_wait_is_the_create_roads_and_the_ping_keeps_the_default() {
     drop(client);
     server.join().expect("server joins");
 }
+
+/// A pairing needs a daemon that takes a roleless request: the floor is the
+/// roleless dialect, so hosts on 32 through the current dialect still pair, and
+/// only an older daemon is refused.
+#[test]
+fn pairing_floor_is_the_roleless_dialect_not_the_current_one() {
+    use super::pairing_dialect_ok;
+    assert!(!pairing_dialect_ok(31));
+    assert!(pairing_dialect_ok(32));
+    assert!(pairing_dialect_ok(34));
+    assert!(pairing_dialect_ok(35));
+    assert!(pairing_dialect_ok(devboule_protocol::PROTOCOL_VERSION));
+}

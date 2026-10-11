@@ -1845,7 +1845,7 @@ impl DaemonClient {
     /// devboule so the matching daemon binary starts.
     fn require_pairing_dialect(&self) -> Result<(), DaemonError> {
         let daemon = self.inner.hello.protocol_version;
-        if daemon >= devboule_protocol::PROTOCOL_VERSION {
+        if pairing_dialect_ok(daemon) {
             return Ok(());
         }
         Err(DaemonError::Handshake(WireError::new(
@@ -3776,3 +3776,10 @@ mod browser;
 #[cfg(all(test, feature = "server", windows))]
 #[path = "client_browser_tests.rs"]
 mod browser_tests;
+
+/// Whether a daemon of this dialect can take a roleless pairing: the roleless
+/// request floor, not the client's own version, so a host one or two dialects
+/// behind keeps pairing.
+pub(crate) fn pairing_dialect_ok(daemon: u32) -> bool {
+    daemon >= devboule_protocol::ROLELESS_PAIRING_MIN_VERSION
+}
