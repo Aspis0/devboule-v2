@@ -8,11 +8,19 @@ use std::path::{Path, PathBuf};
 /// real PowerShell is installed and the inherited PATH should stand.
 pub(crate) fn path_with_real_shell() -> Option<OsString> {
     let path = std::env::var_os("PATH")?;
-    path_with_shells_first(&path, &real_shell_dirs())
+    let alias_dir = user_alias_dir();
+    path_with_shells_first(&path, &real_shell_dirs(), alias_dir.as_deref())
+}
+
+/// The folder holding the user's App Execution Aliases. The `pwsh.exe` alias
+/// in it cannot start under the sandbox's restricted token.
+fn user_alias_dir() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA")
+        .map(|local| PathBuf::from(local).join("Microsoft").join("WindowsApps"))
 }
 
 /// The folders holding a PowerShell executable, PowerShell 7 before Windows
-/// PowerShell. Only these are offered as the shell, never a Store alias.
+/// PowerShell.
 fn real_shell_dirs() -> Vec<PathBuf> {
     let program_files = std::env::var_os("ProgramFiles")
         .map(PathBuf::from)
@@ -37,27 +45,26 @@ fn real_shell_dirs() -> Vec<PathBuf> {
         .collect()
 }
 
-/// The shell folders first, then the PATH without its Store alias folder and
-/// without a repeat of a shell folder. The shell is found by name on the PATH,
-/// and a restricted token cannot start the alias (`CreateProcessAsUserW` fails
-/// with access denied), so the alias must not be the first match.
-fn path_with_shells_first(path: &OsStr, shell_dirs: &[PathBuf]) -> Option<OsString> {
+/// The shell folders first, then the PATH without the user's alias folder and
+/// without a repeat of a shell folder. Only that folder leaves: other folders
+/// named `WindowsApps` are tooling the child may need.
+fn path_with_shells_first(
+    path: &OsStr,
+    shell_dirs: &[PathBuf],
+    alias_dir: Option<&Path>,
+) -> Option<OsString> {
+    let is_alias = |dir: &Path| alias_dir.is_some_and(|alias| same_dir(alias, dir));
     let shells: Vec<PathBuf> = shell_dirs
         .iter()
-        .filter(|dir| !is_store_alias_dir(dir))
+        .filter(|dir| !is_alias(dir))
         .cloned()
         .collect();
     if shells.is_empty() {
         return None;
     }
     let rest = std::env::split_paths(path)
-        .filter(|dir| !is_store_alias_dir(dir) && !shells.iter().any(|shell| same_dir(shell, dir)));
+        .filter(|dir| !is_alias(dir) && !shells.iter().any(|shell| same_dir(shell, dir)));
     std::env::join_paths(shells.iter().cloned().chain(rest)).ok()
-}
-
-fn is_store_alias_dir(dir: &Path) -> bool {
-    dir.file_name()
-        .is_some_and(|name| name.eq_ignore_ascii_case("WindowsApps"))
 }
 
 fn same_dir(a: &Path, b: &Path) -> bool {
@@ -72,11 +79,11 @@ fn same_dir(a: &Path, b: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use super::path_with_shells_first;
 
-    const STORE: &str = r"C:\Users\gualt\AppData\Local\Microsoft\WindowsApps";
+    const ALIAS: &str = r"C:\Users\gualt\AppData\Local\Microsoft\WindowsApps";
     const SYSTEM32: &str = r"C:\Windows\System32";
     const WINDOWS_POWERSHELL: &str = r"C:\Windows\System32\WindowsPowerShell\v1.0";
     const POWERSHELL_SEVEN: &str = r"C:\Program Files\PowerShell\7";
@@ -92,15 +99,53 @@ mod tests {
     }
 
     #[test]
-    fn a_real_shell_goes_ahead_and_the_store_aliases_leave_the_path() {
-        let path = path_of(&[STORE, SYSTEM32, r"C:\Tools"]);
+    fn the_user_alias_folder_leaves_the_path_and_the_shell_goes_ahead() {
+        let path = path_of(&[ALIAS, SYSTEM32, r"C:\Tools"]);
         let shells = [PathBuf::from(WINDOWS_POWERSHELL)];
 
-        let result = path_with_shells_first(&path, &shells).expect("a shell is offered");
+        let result =
+            path_with_shells_first(&path, &shells, Some(Path::new(ALIAS))).expect("a shell");
 
         assert_eq!(
             entries(&result),
             [WINDOWS_POWERSHELL, SYSTEM32, r"C:\Tools"]
+        );
+    }
+
+    #[test]
+    fn when_only_an_alias_pwsh_exists_the_path_falls_back_to_windows_powershell() {
+        // Only the MSIX-backed alias is installed: no pwsh remains on the PATH,
+        // and the shell that does resolve is the inbox one.
+        let path = path_of(&[ALIAS, SYSTEM32]);
+        let shells = [PathBuf::from(WINDOWS_POWERSHELL)];
+
+        let result =
+            path_with_shells_first(&path, &shells, Some(Path::new(ALIAS))).expect("a shell");
+
+        assert_eq!(entries(&result), [WINDOWS_POWERSHELL, SYSTEM32]);
+    }
+
+    #[test]
+    fn other_windows_apps_folders_and_look_alikes_stay_on_the_path() {
+        let path = path_of(&[
+            r"D:\Company\WindowsApps",
+            r"C:\Users\gualt\AppData\Local\Microsoft\WindowsApps2",
+            r"C:\Users\gualt\AppData\Local\Microsoft\WindowsApps\",
+            SYSTEM32,
+        ]);
+        let shells = [PathBuf::from(WINDOWS_POWERSHELL)];
+
+        let result =
+            path_with_shells_first(&path, &shells, Some(Path::new(ALIAS))).expect("a shell");
+
+        assert_eq!(
+            entries(&result),
+            [
+                WINDOWS_POWERSHELL,
+                r"D:\Company\WindowsApps",
+                r"C:\Users\gualt\AppData\Local\Microsoft\WindowsApps2",
+                SYSTEM32,
+            ]
         );
     }
 
@@ -113,7 +158,7 @@ mod tests {
         ]);
         let shells = [PathBuf::from(WINDOWS_POWERSHELL)];
 
-        let result = path_with_shells_first(&path, &shells).expect("a shell is offered");
+        let result = path_with_shells_first(&path, &shells, None).expect("a shell");
 
         assert_eq!(
             entries(&result),
@@ -123,13 +168,14 @@ mod tests {
 
     #[test]
     fn powershell_seven_is_offered_before_windows_powershell() {
-        let path = path_of(&[STORE, SYSTEM32]);
+        let path = path_of(&[ALIAS, SYSTEM32]);
         let shells = [
             PathBuf::from(POWERSHELL_SEVEN),
             PathBuf::from(WINDOWS_POWERSHELL),
         ];
 
-        let result = path_with_shells_first(&path, &shells).expect("a shell is offered");
+        let result =
+            path_with_shells_first(&path, &shells, Some(Path::new(ALIAS))).expect("a shell");
 
         assert_eq!(
             entries(&result),
@@ -139,13 +185,19 @@ mod tests {
 
     #[test]
     fn without_a_real_shell_the_path_is_left_alone() {
-        assert_eq!(path_with_shells_first(&path_of(&[STORE]), &[]), None);
+        assert_eq!(
+            path_with_shells_first(&path_of(&[ALIAS]), &[], Some(Path::new(ALIAS))),
+            None
+        );
     }
 
     #[test]
-    fn a_store_alias_is_never_offered_as_the_shell() {
-        let shells = [PathBuf::from(STORE)];
+    fn a_shell_inside_the_user_alias_folder_is_never_offered() {
+        let shells = [PathBuf::from(ALIAS)];
 
-        assert_eq!(path_with_shells_first(&path_of(&[STORE]), &shells), None);
+        assert_eq!(
+            path_with_shells_first(&path_of(&[ALIAS]), &shells, Some(Path::new(ALIAS))),
+            None
+        );
     }
 }
