@@ -65,7 +65,10 @@ function ChatImageThumbnail({
   );
 }
 
-/** The row of one user message's image references, in echo order. */
+// A strip shows this many; the rest stay one step away in the viewer.
+const STRIP_LIMIT = 4;
+
+/** The row of one message's image references, in echo order. */
 export function ChatImageThumbnails({
   images,
   noun = "Attached image",
@@ -83,10 +86,11 @@ export function ChatImageThumbnails({
 
   if (images.length === 0) return null;
   const labels = images.map((_, position) => `${noun} ${position + 1} of ${images.length}`);
+  const hidden = images.length - STRIP_LIMIT;
 
   return (
     <div className="workspace-chat-images">
-      {images.map((reference, position) => (
+      {images.slice(0, STRIP_LIMIT).map((reference, position) => (
         <ChatImageThumbnail
           key={`${reference.digest}-${position}`}
           reference={reference}
@@ -97,6 +101,7 @@ export function ChatImageThumbnails({
           }
         />
       ))}
+      {hidden > 0 ? <span className="workspace-chat-images-more">+{hidden}</span> : null}
       {open !== null ? (
         <ImageLightbox
           images={images.map((reference, position) => ({ reference, alt: labels[position]! }))}

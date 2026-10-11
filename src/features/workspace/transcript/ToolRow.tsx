@@ -86,18 +86,17 @@ export const ToolRow = memo(function ToolRow({
       ),
     [item.locations, model.summary],
   );
-  const hasImages = item.images !== undefined && item.images.length > 0;
-  // A screenshot's picture stands under its line; any other picture waits behind it.
-  const picture = screenshot && hasImages;
-  const bodyImages = hasImages && !picture && !noOutputRow;
+  // A picture stands under its line, open or closed. A browser call that is not a
+  // screenshot stays bare, as it always has.
+  const picture =
+    item.images !== undefined && item.images.length > 0 && (screenshot || !noOutputRow);
   // Decided from the raw output, so a closed line does not split it to know it has some.
   const bodyOutput = !isPlan && !quiet && shownOutput.trim().length > 0;
   const hasBody =
     linkUrl !== undefined ||
     locations.length > 0 ||
     bodyOutput ||
-    (isPlan && item.output.length > 0) ||
-    bodyImages;
+    (isPlan && item.output.length > 0);
   const toolClassName = `${className}${isPlan ? " is-plan" : ""}${running ? " is-running" : ""}${failed ? " is-failed" : ""}${cancelled ? " is-cancelled" : ""}${interrupted ? ` ${INTERRUPTED_TOOL_CLASS}` : ""}`;
   const line: ReactNode = (
     <>
@@ -208,9 +207,6 @@ export const ToolRow = memo(function ToolRow({
                   <MarkdownText text={item.output} />
                 </div>
               ) : null}
-              {bodyImages && item.images !== undefined ? (
-                <ChatImageThumbnails images={item.images} />
-              ) : null}
             </div>
           ) : null}
         </details>
@@ -219,7 +215,7 @@ export const ToolRow = memo(function ToolRow({
       )}
       {picture && item.images !== undefined ? (
         <div className="workspace-chat-tool-picture">
-          <ChatImageThumbnails images={item.images} noun="Screenshot" />
+          <ChatImageThumbnails images={item.images} noun={screenshot ? "Screenshot" : "Image"} />
         </div>
       ) : null}
     </div>

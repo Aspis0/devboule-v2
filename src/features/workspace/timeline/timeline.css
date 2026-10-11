@@ -170,32 +170,40 @@
   white-space: nowrap;
 }
 
-/* Chat image thumbnails: a wrapping row of pressable frames above the user
-   bubble's text, each sized by its own aspect ratio inside one cap, with room
-   below when text follows. */
+/* Chat image thumbnails: one strip of pressable frames, the same wherever a
+   picture appears (a user's attachment, a tool's result, an answer). Each is
+   the strip's height and its own width, capped at 320 px. */
 .workspace-chat-images {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-6);
+  align-items: flex-start;
+  gap: var(--space-8);
   margin-bottom: var(--space-8);
 }
 
 .workspace-chat-image-thumb {
   padding: 0;
   overflow: hidden;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--line);
   border-radius: var(--radius-8);
   background: var(--surface-muted);
   cursor: pointer;
 }
 
-/* The caps live on the image, which sizes to its own aspect ratio: the button
-   shrink-wraps it and draws its frame around whatever falls out. */
+/* The height is the strip's; the width follows the picture's own ratio. */
 .workspace-chat-image-thumb img {
   display: block;
-  max-width: 240px;
-  max-height: 180px;
-  object-fit: cover;
+  width: auto;
+  max-width: 320px;
+  height: var(--chat-thumb-h);
+  object-fit: contain;
+}
+
+/* A strip past its limit names the rest in one muted figure. */
+.workspace-chat-images-more {
+  align-self: center;
+  color: var(--muted);
+  font-size: var(--type-small);
 }
 
 .workspace-chat-image-thumb:focus-visible {
@@ -203,11 +211,12 @@
   outline-offset: 1px;
 }
 
+/* A picture still loading holds the strip's height, so the row does not jump when it lands. */
 .workspace-chat-image-loading {
-  width: 48px;
-  height: 48px;
+  width: var(--chat-thumb-h);
+  height: var(--chat-thumb-h);
   border-radius: var(--radius-8);
-  background: var(--surface-muted);
+  background: var(--panel-side);
 }
 
 /* An expired reference: the same 48 px height, quiet, never a hole. The

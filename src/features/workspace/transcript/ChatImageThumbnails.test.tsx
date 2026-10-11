@@ -75,6 +75,21 @@ describe("ChatImageThumbnails", () => {
     expect(buttons[1]!.getAttribute("aria-label")).toBe("Attached image 2 of 2");
   });
 
+  it("shows four thumbnails at most and names the rest in a +N figure", async () => {
+    const six = [REF_A, REF_B, REF_A, REF_B, REF_A, REF_B];
+    await renderThumbnails(six);
+
+    expect(thumbnailButtons()).toHaveLength(4);
+    expect(thumbnailButtons()[3]!.getAttribute("aria-label")).toBe("Attached image 4 of 6");
+    expect(container.querySelector(".workspace-chat-images-more")?.textContent).toBe("+2");
+  });
+
+  it("draws no +N figure for a strip within the limit", async () => {
+    await renderThumbnails([REF_A, REF_B]);
+
+    expect(container.querySelector(".workspace-chat-images-more")).toBeNull();
+  });
+
   it("reads the stored bytes through the reference, never the original file", async () => {
     await renderThumbnails([REF_A, REF_B]);
     expect(readMocks.sessionAttachmentRead).toHaveBeenCalledTimes(2);

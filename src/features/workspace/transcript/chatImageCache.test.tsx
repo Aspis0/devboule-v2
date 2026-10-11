@@ -144,7 +144,11 @@ describe("chat image cache", () => {
     vi.spyOn(URL, "createObjectURL").mockImplementation(() => `blob:test-${next++}`);
     const revoke = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
     const refs = Array.from({ length: IDLE_URL_LIMIT + 1 }, (_, index) => ref(100 + index));
-    await render([refs]);
+    // A strip shows four at a time, so the same references go in as strips of four.
+    const strips = Array.from({ length: Math.ceil(refs.length / 4) }, (_, strip) =>
+      refs.slice(strip * 4, strip * 4 + 4),
+    );
+    await render(strips);
     const sources = imageSources();
     expect(sources).toHaveLength(IDLE_URL_LIMIT + 1);
     expect(revoke).not.toHaveBeenCalled();
