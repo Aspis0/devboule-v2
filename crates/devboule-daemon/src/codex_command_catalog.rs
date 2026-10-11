@@ -230,7 +230,6 @@ fn skill_entries(codex_home: &Path, cwd: Option<&Path>) -> Vec<CommandEntry> {
 /// Production resolves it once per session start and hands the path to
 /// [`command_table`], so a test can point the whole surface at a temp directory
 /// without touching the process environment.
-#[cfg(not(test))]
 pub(crate) fn resolve_home() -> PathBuf {
     if let Some(home) = std::env::var_os("CODEX_HOME") {
         let home = PathBuf::from(home);
@@ -249,7 +248,6 @@ pub(crate) fn resolve_home() -> PathBuf {
 /// elsewhere. There is no `dirs` crate in this workspace and no third guess:
 /// a machine with neither answers a relative `.codex`, which reads nothing —
 /// the skip, not a guess about where the home might be.
-#[cfg(not(test))]
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))

@@ -1061,10 +1061,7 @@ impl Provider for CodexProvider {
     }
 
     fn vocabulary(&self, _state: &Arc<ServerState>) -> (VocabularyModels, VocabularyModes) {
-        // No source could answer yet: `absent` is a wire value, never an
-        // empty `present` and never `none` — the app renders it as a
-        // free-text field with the sentence that says why.
-        crate::provider_vocabulary::absent_axes()
+        crate::codex_vocabulary::codex_axes()
     }
 
     fn features(

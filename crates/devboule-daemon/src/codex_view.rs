@@ -873,6 +873,19 @@ const CODEX_MODES: &[CodexMode] = &[
     },
 ];
 
+/// The permission modes the table offers, as the composer lists them before an
+/// agent runs: the same rows [`validate_mode`] admits ids from.
+pub(crate) fn available_mode_views() -> Vec<SessionModeView> {
+    CODEX_MODES
+        .iter()
+        .map(|mode| SessionModeView {
+            id: mode.id.to_string(),
+            name: mode.name.to_string(),
+            description: Some(mode.description.to_string()),
+        })
+        .collect()
+}
+
 pub(crate) fn validate_mode(mode_id: &str) -> Result<(), WireError> {
     if CODEX_MODES.iter().any(|mode| mode.id == mode_id) {
         Ok(())
