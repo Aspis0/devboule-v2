@@ -156,6 +156,7 @@ pub(super) fn failed_generation_events(id: &str, item: &Value) -> Vec<SessionEve
             status: "failed".to_string(),
             kind: Some("image_generation".to_string()),
             locations: None,
+            edits: None,
             subagent_type: None,
             parent_tool_use_id: None,
             spawn_depth: None,

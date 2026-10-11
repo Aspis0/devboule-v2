@@ -444,6 +444,7 @@ mod tests {
                     line: None,
                 }]
             }),
+            edits: None,
             subagent_type: None,
             parent_tool_use_id: None,
             spawn_depth: None,

@@ -1448,6 +1448,24 @@ export interface SessionSnapshot {
   title?: string;
 }
 
+/** What one `AgentToolEdit` did to its file. */
+export type AgentEditKind = "edit" | "write" | "delete";
+
+/** The text one edit carried, in the form its provider sent it. */
+export type AgentEditText =
+  | { form: "replace"; old: string; new: string }
+  | { form: "diff"; text: string };
+
+/** One file change a tool call carried, with the text the provider sent. */
+export interface AgentToolEdit {
+  path: string;
+  kind: AgentEditKind;
+  /** Absent when the provider reported the change but sent no text for it. */
+  text?: AgentEditText;
+  /** The stored text is not the whole text the provider sent. */
+  truncated?: boolean;
+}
+
 /**
  * Attachment events plus the connection-scoped roster snapshot.
  * Alignment with `SessionEvent` in `crates/devboule-protocol` is enforced by
@@ -1480,6 +1498,8 @@ export type SessionEvent =
       spawnDepth?: number;
       /** The exact command line, as the agent sent it. Absent when unknown. */
       command?: string;
+      /** The file changes this call carried, as the provider sent them. */
+      edits?: AgentToolEdit[];
       /** The command's exit code. Absent while running or when unknown. */
       exitCode?: number;
       /** The agent asked for this call to run in the background. Absent means foreground or unknown. */

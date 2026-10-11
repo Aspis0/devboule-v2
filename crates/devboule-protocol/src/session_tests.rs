@@ -507,6 +507,7 @@ fn tool_call_command_and_exit_code_round_trip_and_are_skipped_when_absent() {
         status: "in_progress".to_string(),
         kind: Some("execute".to_string()),
         locations: None,
+        edits: None,
         subagent_type: None,
         parent_tool_use_id: None,
         spawn_depth: None,
@@ -1295,6 +1296,7 @@ fn tool_call_kind_and_locations_are_camel_case_and_optional() {
             path: "src/lib.rs".to_string(),
             line: Some(12),
         }]),
+        edits: None,
         subagent_type: None,
         parent_tool_use_id: None,
         spawn_depth: None,
@@ -1317,6 +1319,7 @@ fn tool_call_kind_and_locations_are_camel_case_and_optional() {
         status: "pending".to_string(),
         kind: None,
         locations: None,
+        edits: None,
         subagent_type: None,
         parent_tool_use_id: None,
         spawn_depth: None,
@@ -2135,4 +2138,67 @@ fn the_names_and_finish_times_are_optional_on_the_wire() {
         .expect("encodes")
         .get("peerTitle")
         .is_none());
+}
+
+#[test]
+fn tool_call_edits_round_trip_and_a_row_without_them_still_loads() {
+    let with = SessionEvent::AgentToolCall {
+        tool_call_id: "toolu_edit".to_string(),
+        title: "src/lib.rs".to_string(),
+        status: "pending".to_string(),
+        kind: Some("edit".to_string()),
+        locations: None,
+        edits: Some(vec![
+            AgentToolEdit {
+                path: "src/lib.rs".to_string(),
+                kind: AgentEditKind::Edit,
+                text: Some(AgentEditText::Replace {
+                    old: "one\n".to_string(),
+                    new: "two\n".to_string(),
+                }),
+                truncated: false,
+            },
+            AgentToolEdit {
+                path: "src/new.rs".to_string(),
+                kind: AgentEditKind::Write,
+                text: Some(AgentEditText::Diff {
+                    text: "@@ -1 +1 @@\n-old\n+new\n".to_string(),
+                }),
+                truncated: true,
+            },
+        ]),
+        subagent_type: None,
+        parent_tool_use_id: None,
+        spawn_depth: None,
+        command: None,
+        exit_code: None,
+        background: None,
+    };
+    let encoded = serde_json::to_value(&with).expect("json");
+    assert_eq!(encoded["edits"][0]["path"], "src/lib.rs");
+    assert_eq!(encoded["edits"][0]["kind"], "edit");
+    assert_eq!(encoded["edits"][0]["text"]["form"], "replace");
+    assert_eq!(encoded["edits"][0]["text"]["old"], "one\n");
+    assert_eq!(encoded["edits"][0]["text"]["new"], "two\n");
+    assert_eq!(encoded["edits"][1]["text"]["form"], "diff");
+    assert_eq!(
+        encoded["edits"][1]["text"]["text"],
+        "@@ -1 +1 @@\n-old\n+new\n"
+    );
+    assert_eq!(encoded["edits"][1]["truncated"], true);
+    let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
+    assert_eq!(decoded, with);
+
+    // A row written before the field existed decodes with no payload — the
+    // absence is a valid answer, never an error.
+    let old = serde_json::json!({
+        "type": "agent_tool_call",
+        "toolCallId": "toolu_old",
+        "title": "src/lib.rs",
+        "status": "completed",
+    });
+    match serde_json::from_value::<SessionEvent>(old).expect("old row") {
+        SessionEvent::AgentToolCall { edits, .. } => assert!(edits.is_none()),
+        other => panic!("expected an agent tool call, got {other:?}"),
+    }
 }

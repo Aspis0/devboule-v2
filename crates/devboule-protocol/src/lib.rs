@@ -150,18 +150,19 @@ pub use remote_host::{
 };
 pub use resume::{SessionResumeInfo, SessionResumeOutcome, SessionResumeReason, SessionResumeTail};
 pub use session::{
-    cursor_replay_ok, ActiveTurnBehavior, AgentActivityState, AgentBackgroundTask, AgentTaskItem,
-    AgentTaskState, AgentTaskStatus, Attention, AttentionReason, AvailableCommandView,
-    CreateAgentCaps, CreateAgentCard, Cursor, CursorShape, DelegationRunState, DelegationState,
-    DroppedQueuedMessage, DroppedReason, FinishArtifact, FinishArtifactPart,
-    FinishArtifactPartMetadata, NoticeSeverity, PermissionEnvVar, PermissionOption,
-    PermissionOutcome, PermissionQuestion, PermissionQuestionOption, PermissionRequestKind,
-    Persistence, PersistenceKind, PlanCredits, PlanWindow, QueuedMessage, ResumeResult,
-    ScreenCursor, SearchAuthor, Session, SessionEvent, SessionKind, SessionModeStateView,
-    SessionModeView, SessionModel, SessionModelEffort, SessionOrigin, SessionOriginKind,
-    SessionSearchHit, SessionState, SessionStateSnapshot, SessionTask, SessionTaskKind,
-    SessionTaskState, SubagentTaskStatus, SubscriptionId, ToolLocation, TranscriptIntegrity,
-    TurnUsage, UnattendedState, UserMessageAuthor, UserMessageKind, NOTHING_OWED_CURSOR,
+    cursor_replay_ok, ActiveTurnBehavior, AgentActivityState, AgentBackgroundTask, AgentEditKind,
+    AgentEditText, AgentTaskItem, AgentTaskState, AgentTaskStatus, AgentToolEdit, Attention,
+    AttentionReason, AvailableCommandView, CreateAgentCaps, CreateAgentCard, Cursor, CursorShape,
+    DelegationRunState, DelegationState, DroppedQueuedMessage, DroppedReason, FinishArtifact,
+    FinishArtifactPart, FinishArtifactPartMetadata, NoticeSeverity, PermissionEnvVar,
+    PermissionOption, PermissionOutcome, PermissionQuestion, PermissionQuestionOption,
+    PermissionRequestKind, Persistence, PersistenceKind, PlanCredits, PlanWindow, QueuedMessage,
+    ResumeResult, ScreenCursor, SearchAuthor, Session, SessionEvent, SessionKind,
+    SessionModeStateView, SessionModeView, SessionModel, SessionModelEffort, SessionOrigin,
+    SessionOriginKind, SessionSearchHit, SessionState, SessionStateSnapshot, SessionTask,
+    SessionTaskKind, SessionTaskState, SubagentTaskStatus, SubscriptionId, ToolLocation,
+    TranscriptIntegrity, TurnUsage, UnattendedState, UserMessageAuthor, UserMessageKind,
+    NOTHING_OWED_CURSOR,
 };
 pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_character};
 

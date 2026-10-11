@@ -6,6 +6,7 @@ use std::path::Path;
 use devboule_protocol::{SessionEvent, ToolLocation};
 use serde_json::Value;
 
+use crate::agent_edit::claude_tool_edits;
 use crate::browser_tool_title::browser_tool_title;
 use crate::text_cap::capped;
 use crate::tool_paths::relativize_tool_path;
@@ -104,6 +105,7 @@ pub(super) fn tool_call_from_block(
             tool_kind_from_name(name).to_string()
         }),
         locations: tool_locations(name, input, cwd),
+        edits: claude_tool_edits(name, input, cwd),
         subagent_type: (name == "Agent")
             .then(|| input.get("subagent_type"))
             .flatten()

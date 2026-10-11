@@ -83,6 +83,7 @@ pub(super) fn web_search_events(id: &str, item: &Value, completed: bool) -> Vec<
             status: "in_progress".to_string(),
             kind: Some(shown.kind.to_string()),
             locations: None,
+            edits: None,
             subagent_type: None,
             parent_tool_use_id: None,
             spawn_depth: None,

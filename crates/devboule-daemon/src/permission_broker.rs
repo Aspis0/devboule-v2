@@ -1308,6 +1308,7 @@ impl PermissionBroker {
                     status: "completed".to_string(),
                     kind: kind.clone(),
                     locations: None,
+                    edits: None,
                     subagent_type: None,
                     parent_tool_use_id: None,
                     spawn_depth: None,

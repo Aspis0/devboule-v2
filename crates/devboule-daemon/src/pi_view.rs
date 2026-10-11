@@ -261,6 +261,7 @@ fn message_update_events(value: &Value) -> Vec<SessionEvent> {
                     status: "pending".to_string(),
                     kind: Some(tool_kind_from_name(tool_name).to_string()),
                     locations: None,
+                    edits: None,
                     subagent_type: None,
                     parent_tool_use_id: None,
                     spawn_depth: None,

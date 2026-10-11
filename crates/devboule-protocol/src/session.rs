@@ -898,6 +898,13 @@ pub enum SessionEvent {
         kind: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         locations: Option<Vec<ToolLocation>>,
+        /// The file changes this call carried, as the provider sent them.
+        /// `None` for a call that changes no file and for every row written
+        /// before the field existed. The text is capped per call
+        /// ([`AgentToolEdit::truncated`]); a capped edit keeps its path and
+        /// kind.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        edits: Option<Vec<AgentToolEdit>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         subagent_type: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1690,6 +1697,50 @@ pub struct ToolLocation {
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line: Option<u32>,
+}
+
+/// What one [`AgentToolEdit`] did to its file.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentEditKind {
+    /// The provider named the text it replaced between.
+    Edit,
+    /// A whole-file write. The text before the write is not in the frame, so
+    /// a write over an existing file shows its added side only.
+    Write,
+    Delete,
+}
+
+/// The text one edit carried, in the form its provider sent it.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "form", rename_all = "snake_case")]
+pub enum AgentEditText {
+    /// The two texts the provider edited between.
+    Replace { old: String, new: String },
+    /// The provider's own unified diff (Codex's `fileChange.diff`), kept as
+    /// sent: the frame carries no surrounding file, so old and new cannot be
+    /// reconstructed from it.
+    Diff { text: String },
+}
+
+/// One file change a tool call carried, with the text the provider sent.
+///
+/// The text is what the daemon kept, not necessarily all of it: see
+/// [`AgentToolEdit::truncated`].
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentToolEdit {
+    /// Relative to the session's workspace when it is inside it, with forward
+    /// slashes; otherwise the provider's own spelling.
+    pub path: String,
+    pub kind: AgentEditKind,
+    /// `None` when the provider reported the change but sent no text for it
+    /// (a Codex change without its `diff`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<AgentEditText>,
+    /// The stored text is not the whole text the provider sent.
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 /// The only terminal statuses Claude exposes for a subagent task

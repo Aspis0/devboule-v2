@@ -421,6 +421,10 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
             // The pre-stamp guard, same ordering as v12 to v19.
             validate_stopped_column(&tx)?;
         }
+        // v21 adds no table or column: the edit payload lives inside each
+        // frame's `events.payload`, and a row written before it decodes with
+        // no edits. The stamp is the point: an older build refuses a v21
+        // file (`FutureSchema`) rather than replay one and drop edit text.
         tx.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
         tx.commit()?;
     }

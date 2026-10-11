@@ -100,6 +100,28 @@ pub(crate) fn session_event_samples() -> Vec<SessionEvent> {
                 path: "src/lib.rs".to_string(),
                 line: Some(1),
             }]),
+            // Both forms carried rather than one: the committed snapshot is
+            // what pins the wire names, and a sample that carried only the
+            // replace form would leave `diff` and `truncated` unexercised.
+            edits: Some(vec![
+                crate::AgentToolEdit {
+                    path: "src/lib.rs".to_string(),
+                    kind: crate::AgentEditKind::Edit,
+                    text: Some(crate::AgentEditText::Replace {
+                        old: "one".to_string(),
+                        new: "two".to_string(),
+                    }),
+                    truncated: false,
+                },
+                crate::AgentToolEdit {
+                    path: "src/main.rs".to_string(),
+                    kind: crate::AgentEditKind::Edit,
+                    text: Some(crate::AgentEditText::Diff {
+                        text: "@@ -1 +1 @@\n-old\n+new\n".to_string(),
+                    }),
+                    truncated: true,
+                },
+            ]),
             subagent_type: None,
             parent_tool_use_id: Some("toolu_parent".to_string()),
             spawn_depth: Some(1),

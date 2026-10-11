@@ -10,6 +10,8 @@ mod acp_view;
 #[cfg(feature = "server")]
 mod agent_activity;
 #[cfg(feature = "server")]
+mod agent_edit;
+#[cfg(feature = "server")]
 mod agent_env;
 #[cfg(feature = "server")]
 mod agent_image;

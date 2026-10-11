@@ -97,6 +97,27 @@
   },
   {
     "command": "cargo test",
+    "edits": [
+      {
+        "kind": "edit",
+        "path": "src/lib.rs",
+        "text": {
+          "form": "replace",
+          "new": "two",
+          "old": "one"
+        },
+        "truncated": false
+      },
+      {
+        "kind": "edit",
+        "path": "src/main.rs",
+        "text": {
+          "form": "diff",
+          "text": "@@ -1 +1 @@\n-old\n+new\n"
+        },
+        "truncated": true
+      }
+    ],
     "exitCode": 0,
     "kind": "plan",
     "locations": [

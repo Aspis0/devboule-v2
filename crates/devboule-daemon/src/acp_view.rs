@@ -202,6 +202,12 @@ fn view_from_session_update(
         }
         Some("tool_call") => {
             let (command, exit_code) = command_row_from_update(update, Frame::First);
+            let kind = update
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            let edits =
+                crate::agent_edit::acp_diff_edits(update.get("content"), kind.as_deref(), cwd);
             Some(SessionEvent::AgentToolCall {
                 tool_call_id: update
                     .get("toolCallId")
@@ -218,11 +224,9 @@ fn view_from_session_update(
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("in_progress")
                     .to_string(),
-                kind: update
-                    .get("kind")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string),
+                kind,
                 locations: locations_from_value(update.get("locations"), cwd, false),
+                edits,
                 subagent_type: None,
                 parent_tool_use_id: None,
                 spawn_depth: None,
@@ -2860,6 +2864,47 @@ mod tests {
             panic!("models update must become SessionManifest, got {view:?}");
         };
         assert_eq!(current_model_id.as_deref(), Some("grok-4.6"));
+    }
+
+    #[test]
+    fn tool_call_carries_the_diff_content_it_was_sent() {
+        let cwd = std::path::Path::new(crate::test_support::FIXTURE_ROOT);
+        let line = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": SESSION,
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "call-edit",
+                    "title": "Edit lib.rs",
+                    "status": "pending",
+                    "kind": "edit",
+                    "content": [{
+                        "type": "diff",
+                        "path": crate::test_support::fixture_path("src/lib.rs").to_string_lossy(),
+                        "oldText": "one\n",
+                        "newText": "two\n"
+                    }]
+                }
+            }
+        });
+        match view_from_envelope_in(&line, SESSION, Some(cwd)).as_slice() {
+            [SessionEvent::AgentToolCall {
+                edits: Some(edits), ..
+            }, ..] => {
+                assert_eq!(edits.len(), 1);
+                assert_eq!(edits[0].path, "src/lib.rs");
+                assert_eq!(
+                    edits[0].text,
+                    Some(devboule_protocol::AgentEditText::Replace {
+                        old: "one\n".to_string(),
+                        new: "two\n".to_string(),
+                    })
+                );
+            }
+            other => panic!("expected a diff-carrying tool call, got {other:?}"),
+        }
     }
 
     #[test]

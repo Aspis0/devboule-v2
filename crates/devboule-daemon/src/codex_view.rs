@@ -1543,6 +1543,7 @@ fn item_event(
                         .unwrap_or_else(|| "in_progress".to_string()),
                     kind: Some("plan".to_string()),
                     locations: None,
+                    edits: None,
                     subagent_type: None,
                     parent_tool_use_id: None,
                     spawn_depth: None,
@@ -1604,6 +1605,7 @@ fn item_event(
                         .unwrap_or_else(|| "in_progress".to_string()),
                     kind,
                     locations: None,
+                    edits: None,
                     subagent_type: None,
                     parent_tool_use_id: None,
                     spawn_depth: None,
@@ -1642,6 +1644,7 @@ fn item_event(
                         .unwrap_or_else(|| "in_progress".to_string()),
                     kind: Some("edit".to_string()),
                     locations,
+                    edits: crate::agent_edit::codex_file_change_edits(item.get("changes"), cwd),
                     subagent_type: None,
                     parent_tool_use_id: None,
                     spawn_depth: None,
@@ -2315,6 +2318,30 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn file_change_carries_each_changes_own_diff() {
+        let start = parse(
+            r#"{"jsonrpc":"2.0","method":"item/started","params":{"item":{"type":"fileChange","id":"f2","status":"inProgress","changes":[{"diff":"@@ -1 +1 @@\n-old\n+new\n","kind":"update","path":"src/lib.rs"},{"diff":"+hello\n","kind":"add","path":"src/new.rs"}]},"startedAtMs":1,"threadId":"th","turnId":"tu"}}"#,
+        );
+        match events_from_envelope(&start).as_slice() {
+            [SessionEvent::AgentToolCall {
+                edits: Some(edits), ..
+            }] => {
+                assert_eq!(edits.len(), 2);
+                assert_eq!(edits[0].path, "src/lib.rs");
+                assert_eq!(
+                    edits[0].text,
+                    Some(devboule_protocol::AgentEditText::Diff {
+                        text: "@@ -1 +1 @@\n-old\n+new\n".to_string(),
+                    })
+                );
+                assert_eq!(edits[1].path, "src/new.rs");
+                assert_eq!(edits[1].kind, devboule_protocol::AgentEditKind::Write);
+            }
+            other => panic!("expected a diff-carrying fileChange, got {other:?}"),
+        }
     }
 
     #[test]

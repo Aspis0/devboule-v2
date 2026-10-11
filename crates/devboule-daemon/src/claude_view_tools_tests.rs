@@ -572,3 +572,64 @@ fn only_a_backgrounded_bash_call_marks_itself_background() {
         }
     }
 }
+
+#[test]
+fn edit_shaped_tool_calls_carry_the_text_the_provider_sent() {
+    let mut mapper = view();
+    let events = mapper.ingest(&json!({
+        "type": "assistant",
+        "message": {
+            "model": "claude-opus-5",
+            "id": "msg_edit",
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": "toolu_edit",
+                "name": "Edit",
+                "input": {
+                    "file_path": "src/lib.rs",
+                    "old_string": "one\n",
+                    "new_string": "two\n"
+                }
+            }]
+        }
+    }));
+    match events.as_slice() {
+        [SessionEvent::AgentToolCall {
+            edits: Some(edits), ..
+        }] => {
+            assert_eq!(edits.len(), 1);
+            assert_eq!(edits[0].path, "src/lib.rs");
+            assert_eq!(
+                edits[0].text,
+                Some(devboule_protocol::AgentEditText::Replace {
+                    old: "one\n".to_string(),
+                    new: "two\n".to_string(),
+                })
+            );
+        }
+        other => panic!("expected an edit-carrying tool call, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_read_carries_no_edits() {
+    let mut mapper = view();
+    let events = mapper.ingest(&json!({
+        "type": "assistant",
+        "message": {
+            "id": "msg_read",
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": "toolu_read",
+                "name": "Read",
+                "input": {"file_path": "src/lib.rs"}
+            }]
+        }
+    }));
+    match events.as_slice() {
+        [SessionEvent::AgentToolCall { edits, .. }] => assert!(edits.is_none()),
+        other => panic!("expected a tool call, got {other:?}"),
+    }
+}

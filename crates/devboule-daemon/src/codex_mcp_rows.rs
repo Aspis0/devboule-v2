@@ -128,6 +128,7 @@ pub(super) fn mcp_tool_events(id: &str, item: &Value, completed: bool) -> Vec<Se
             status: status.unwrap_or_else(|| "in_progress".to_string()),
             kind: Some(kind),
             locations: None,
+            edits: None,
             subagent_type: None,
             parent_tool_use_id: None,
             spawn_depth: None,

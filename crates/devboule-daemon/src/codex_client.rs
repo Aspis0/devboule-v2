@@ -2399,6 +2399,7 @@ impl CodexReader {
             status: "in_progress".to_string(),
             kind: Some("plan".to_string()),
             locations: None,
+            edits: None,
             subagent_type: None,
             parent_tool_use_id: None,
             spawn_depth: None,

@@ -56,6 +56,7 @@ fn background_call(id: &str) -> SessionEvent {
         status: "pending".to_string(),
         kind: Some("execute".to_string()),
         locations: None,
+        edits: None,
         subagent_type: None,
         parent_tool_use_id: None,
         spawn_depth: None,
