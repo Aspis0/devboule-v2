@@ -54,6 +54,11 @@ describe("the status bar's look", () => {
     for (const fill of document.querySelectorAll(".status-meter-fill")) fill.remove();
   });
 
+  it("sets the status dot 8px away from the agent's words", () => {
+    const css = assembleCssProof(sheets, "light");
+    expect(css.rulesFor(".status-bar-who")).toContain("gap: 8px");
+  });
+
   it("clips the title at 28 characters, so it never takes the bar's width", () => {
     const css = assembleCssProof(sheets, "light");
     const rules = css.rulesFor(".status-bar-title");

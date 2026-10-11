@@ -159,6 +159,18 @@ describe("ChoiceGroup", () => {
     expect(container.querySelector(".choice-group-vertical")).not.toBeNull();
   });
 
+  it("tells assistive tech a vertical list is vertical, and leaves a row at its default", () => {
+    render({ orientation: "vertical" });
+    expect(container.querySelector('[role="radiogroup"]')?.getAttribute("aria-orientation")).toBe(
+      "vertical",
+    );
+
+    render();
+    expect(container.querySelector('[role="radiogroup"]')?.hasAttribute("aria-orientation")).toBe(
+      false,
+    );
+  });
+
   it("wires the name and the description the caller names", () => {
     render({ ariaLabel: undefined, labelledBy: "row-title", describedBy: "row-hint" });
 

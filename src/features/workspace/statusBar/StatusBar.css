@@ -16,11 +16,21 @@
 }
 
 .status-bar-who {
+  display: flex;
   flex: 0 1 auto;
+  align-items: center;
+  gap: var(--space-8);
   min-width: 0;
   overflow: hidden;
   color: var(--ink-soft);
   text-overflow: ellipsis;
+}
+
+.status-bar-state {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-bar-who .workspace-status-dot {

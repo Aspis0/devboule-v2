@@ -83,6 +83,7 @@ export function ChoiceGroup<T extends string>({
     <div
       className={className}
       role="radiogroup"
+      aria-orientation={orientation === "vertical" ? "vertical" : undefined}
       aria-label={ariaLabel}
       aria-labelledby={labelledBy}
       aria-describedby={describedBy}
