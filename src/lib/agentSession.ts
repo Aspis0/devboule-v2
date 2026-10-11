@@ -108,8 +108,8 @@ export type AgentChatItem =
       severity: "info" | "warning";
       /** A background task's row, as facts: set on the rows a task transition writes. */
       task?: TaskRowFacts;
-      /** A sub-agent run folded to this line: the words it said, read behind the click. */
-      subagent?: { texts: string[] };
+      /** A sub-agent run folded to this line: the words it said and the calls it failed, read behind the click. */
+      subagent?: { texts: string[]; failures: string[] };
     }
   | {
       /** One `agent_permission_request` envelope, parsed (see `agentPermissionRequest.ts`). */

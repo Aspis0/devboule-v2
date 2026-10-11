@@ -82,3 +82,49 @@ describe("a sub-agent run", () => {
     expect(details?.textContent).toContain("It refreshes on expiry.");
   });
 });
+
+describe("a failed call inside a sub-agent run", () => {
+  it("marks the run failed and names the failed call under the run's line", async () => {
+    await show([
+      spawn("toolu_task", "Explore auth"),
+      childText("c1", "Reading the store.", "toolu_task"),
+      {
+        id: "c2",
+        role: "tool",
+        title: "src/store.ts",
+        output: "ENOENT",
+        toolCallId: "c2",
+        status: "failed",
+        kind: "read",
+        parentToolUseId: "toolu_task",
+      },
+    ]);
+
+    const runLine = host.querySelector(".workspace-chat-quiet-line");
+    expect(runLine?.querySelector("svg")).not.toBeNull();
+    const details = runLine?.closest("details");
+    await act(async () => runLine?.querySelector("summary")?.click());
+    expect(details?.textContent).toContain("Couldn't read src/store.ts");
+  });
+});
+
+describe("a sub-agent run named by a Devboule call", () => {
+  it("takes the name from the result, never the raw tool name", async () => {
+    await show([
+      {
+        id: "spawn-1",
+        role: "tool",
+        title: "mcp__devboule__devboule_create_agent",
+        output: '{"displayName":"Explore auth","sessionId":"s.auth.1"}',
+        toolCallId: "toolu_create",
+        status: "completed",
+        kind: "other",
+      },
+      childText("c1", "Found the token store.", "toolu_create"),
+    ]);
+
+    const runLine = host.querySelector(".workspace-chat-quiet-line");
+    expect(runLine?.textContent).toContain("Subagent · Explore auth");
+    expect(host.textContent).not.toContain("mcp__devboule__");
+  });
+});

@@ -94,6 +94,11 @@ export function devbouleActivity(output: string): string | undefined {
   return resultActivity(parseResult(output));
 }
 
+/** The agent a call's result names, by its display name, title or child name. */
+export function devbouleResultName(output: string): string | undefined {
+  return resultName(parseResult(output));
+}
+
 /** The child session a call's result names: what a click on the line opens. */
 export function devbouleChildSession(output: string): string | undefined {
   const value = parseResult(output)?.sessionId;

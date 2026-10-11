@@ -74,18 +74,25 @@ export const TranscriptRow = memo(function TranscriptRow({
       );
     }
     if (item.subagent !== undefined) {
-      const { texts } = item.subagent;
+      const { texts, failures } = item.subagent;
+      const hasDetail = texts.length > 0 || failures.length > 0;
       return (
         <div className={className} style={style}>
           <QuietLine
+            failed={failures.length > 0}
             detail={
-              texts.length === 0 ? undefined : (
+              hasDetail ? (
                 <div className="workspace-chat-subagent-text">
                   {texts.map((text, index) => (
                     <MarkdownText key={index} text={text} fileLinks={fileLinks} />
                   ))}
+                  {failures.map((failure, index) => (
+                    <QuietLine key={index} failed>
+                      {failure}
+                    </QuietLine>
+                  ))}
                 </div>
-              )
+              ) : undefined
             }
           >
             {item.text}
