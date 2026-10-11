@@ -65,6 +65,7 @@ impl ClaudeView {
             Vec::new()
         } else {
             vec![SessionEvent::AgentFinished {
+                at_ms: None,
                 stop_reason,
                 model_id: model_id.clone(),
                 usage,

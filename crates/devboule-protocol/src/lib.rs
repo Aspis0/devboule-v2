@@ -251,7 +251,15 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// directory of a host's workspace) and `RemoteHostGitStatus` (its
 /// working-tree status), both local-only and read-only. Same new-variant
 /// rule, so the dialect moves again.
-pub const PROTOCOL_VERSION: u32 = 34;
+///
+/// Protocol 35 names the agent an agent message is about: `AgentUserMessage`
+/// carries `peer_title`, the recipient's or sender's title. An optional field,
+/// so an older reader ignores it and an older daemon simply omits it.
+///
+/// Protocol 36 adds `AgentFinished.at_ms`, the finish time, so a turn’s length
+/// can be read from its start and its finish on replay as well as live. Also
+/// optional.
+pub const PROTOCOL_VERSION: u32 = 36;
 /// Oldest dialect whose daemon speaks the in-app editor frames
 /// (`WorkspaceFileOpen` / `Version` / `Write` and their app-file spellings).
 /// A relay checks the far hello against this before writing one: an older

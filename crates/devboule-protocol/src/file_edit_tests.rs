@@ -127,8 +127,8 @@ fn the_editor_frames_carry_their_ids_and_names() {
 }
 
 #[test]
-fn the_file_edit_dialect_is_33() {
-    assert_eq!(PROTOCOL_VERSION, 34);
+fn protocol_version_is_36() {
+    assert_eq!(PROTOCOL_VERSION, 36);
 }
 
 #[test]

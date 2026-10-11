@@ -19,6 +19,7 @@ fn attention_priority_preserves_permission_and_allows_escalation() {
     let runtime = Arc::new(SessionRuntime::new());
     runtime.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,
@@ -47,6 +48,7 @@ fn attention_priority_preserves_permission_and_allows_escalation() {
     );
     runtime.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,
@@ -82,6 +84,7 @@ fn attention_clear_cannot_complete_during_the_suppression_decision() {
     let raise_thread = std::thread::spawn(move || {
         raising.publish_agent_event(
             SessionEvent::AgentFinished {
+                at_ms: None,
                 stop_reason: "end_turn".to_string(),
                 model_id: None,
                 usage: None,
@@ -127,6 +130,7 @@ fn visible_focus_suppresses_attention_and_presence_clears_it() {
         .expect("presence");
     runtime.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,
@@ -140,6 +144,7 @@ fn visible_focus_suppresses_attention_and_presence_clears_it() {
     registry.clear_presence(1);
     runtime.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,
@@ -168,6 +173,7 @@ fn invisible_presence_raises_and_a_second_connection_elsewhere_does_not_suppress
         .expect("invisible presence");
     runtime.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,
@@ -187,6 +193,7 @@ fn invisible_presence_raises_and_a_second_connection_elsewhere_does_not_suppress
         .expect("second connection elsewhere");
     runtime.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,
@@ -217,6 +224,7 @@ fn sending_a_prompt_acknowledges_attention() {
         .expect("attach");
     runtime.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,

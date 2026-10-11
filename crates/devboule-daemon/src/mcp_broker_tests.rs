@@ -990,7 +990,7 @@ fn the_end_tools_stop_and_close_a_callers_own_children_only() {
         r#"{"session":"end-child"}"#,
     ));
     assert_eq!(stopped["result"]["isError"], json!(false));
-    assert_eq!(stopped["result"]["content"][0]["text"], json!("stopped"));
+    assert_eq!(state_of(&stopped), json!("stopped"));
     let live_ids = || {
         state
             .sessions
@@ -1030,7 +1030,7 @@ fn the_end_tools_stop_and_close_a_callers_own_children_only() {
         r#"{"session":"end-child"}"#,
     ));
     assert_eq!(closed["result"]["isError"], json!(false));
-    assert_eq!(closed["result"]["content"][0]["text"], json!("closed"));
+    assert_eq!(state_of(&closed), json!("closed"));
     let remaining = live_ids();
     assert!(!remaining.iter().any(|id| id == "end-child"));
     assert!(remaining.iter().any(|id| id == "end-caller"));
@@ -6366,7 +6366,7 @@ fn agent_status_falls_back_to_a_closed_childs_stored_row() {
         crate::provider_catalog::MCP_CLOSE_AGENT_TOOL,
         &format!(r#"{{"session":"{child}"}}"#),
     );
-    assert_eq!(closed["result"]["content"][0]["text"], json!("closed"));
+    assert_eq!(state_of(&closed), json!("closed"));
 
     let reply = harness.call(
         crate::provider_catalog::MCP_GET_AGENT_STATUS_TOOL,
@@ -6627,4 +6627,16 @@ fn resolve_carries_the_serving_provider_beside_the_bare_id() {
     assert_eq!(old.model_provider, None);
     let old_facts = resolve_profile_for_move(&store, "Legacy").expect("ticked");
     assert_eq!(old_facts.model_provider, None);
+}
+
+/// The state a stop or close result names: the result text is one JSON document
+/// (the state, the session, the name and the age), so the state is read from it.
+fn state_of(response: &serde_json::Value) -> serde_json::Value {
+    let text = response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|document| document.get("state").cloned())
+        .unwrap_or(serde_json::Value::Null)
 }

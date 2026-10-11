@@ -546,6 +546,7 @@ impl super::SessionRegistry {
         let owner = creation.creator.owner.clone();
         let internal_conn = ConnHandle::with_peer(0, None);
         let sent = self.send_with_subscription_timeout(&SendRequest {
+            peer_title: None,
             session_id: &child.id,
             subscription_id: 0,
             text: &prompt,
@@ -1364,6 +1365,7 @@ impl super::SessionRegistry {
     ) -> Result<Option<String>, crate::session::SendError> {
         let internal_conn = ConnHandle::with_peer(0, None);
         self.send_with_subscription_timeout(&SendRequest {
+            peer_title: None,
             session_id: creator,
             subscription_id: 0,
             text,

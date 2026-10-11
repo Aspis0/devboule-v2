@@ -72,6 +72,10 @@ describe("TranscriptRows opened lines", () => {
     });
 
     await show([first, tool("tool-2", "second output")]);
+    // The person opens the group: a closed group mounts none of its calls.
+    await act(async () =>
+      host.querySelector<HTMLElement>("details.workspace-chat-tool-group > summary")?.click(),
+    );
 
     const inner = host.querySelector<HTMLDetailsElement>(
       ".workspace-chat-tool-group-body .workspace-chat-tool-details",

@@ -155,6 +155,34 @@ export type AgentChatItem =
  * transcript holds none. Only assistant prose counts: a thought, a tool row
  * or a relayed message is not what the agent said to the user.
  */
+/** The publish time of the newest user row: the turn's start, as the daemon timed it. */
+function lastUserAtMs(items: readonly AgentChatItem[]): number | undefined {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item.role === "user") return item.atMs;
+  }
+  return undefined;
+}
+
+/**
+ * How long the turn worked. Both ends as the daemon timed them when it can: the
+ * finish's `atMs` less the turn's start, the newest user row's `atMs`. Without
+ * those, this view's own clock, when it sent the turn. Absent when neither is
+ * known: a replayed turn whose rows carry no time.
+ */
+function turnWorkedMs(
+  finishedAt: number | undefined,
+  items: readonly AgentChatItem[],
+  startedAt: number | null | undefined,
+): number | undefined {
+  const turnStart = lastUserAtMs(items);
+  if (finishedAt !== undefined && turnStart !== undefined && finishedAt >= turnStart) {
+    return finishedAt - turnStart;
+  }
+  if (typeof startedAt === "number") return Math.max(0, Date.now() - startedAt);
+  return undefined;
+}
+
 /**
  * The items with the turn's length stamped on its last assistant row: the last
  * one after the most recent user row. A turn with no assistant row keeps the
@@ -1166,9 +1194,9 @@ export class AgentSession {
         this.turnOpen = false;
         this.deps.onTurnFinished?.();
         this.closeActiveBlocks();
-        const startedAt = this.state.turnStartedAtMs;
-        if (typeof startedAt === "number") {
-          this.update({ items: stampTurnLength(this.state.items, Date.now() - startedAt) });
+        const workedMs = turnWorkedMs(event.atMs, this.state.items, this.state.turnStartedAtMs);
+        if (workedMs !== undefined) {
+          this.update({ items: stampTurnLength(this.state.items, workedMs) });
         }
         this.setStatus("idle", {
           streaming: false,

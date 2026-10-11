@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { AgentChatItem } from "../../../lib/agentSession";
 import { isToolCallGroup } from "../../../lib/toolCallGroups";
 import type { ChatFileLinks } from "../../../lib/chatFilePaths";
@@ -6,7 +6,7 @@ import type { A2aNameSource } from "../A2aMessageCard";
 import { TranscriptRow } from "./TranscriptRow";
 import { createOpenedRows, OpenedRowsContext } from "./openedRows";
 import { useTranscriptEntries } from "./useTranscriptEntries";
-import { turnEnds } from "./turnEnds";
+import { turnEnds, type TurnEnd } from "./turnEnds";
 
 type RowContext = "none" | "fileLinks" | "a2aNames" | "transcriptEnded" | "streamingThought";
 
@@ -46,7 +46,13 @@ export function TranscriptRows({
   turnRunning = false,
 }: TranscriptRowsProps) {
   const entries = useTranscriptEntries(items, recoveredAttach, pendingPlanToolCallId);
-  const ends = useMemo(() => turnEnds(entries, turnRunning), [entries, turnRunning]);
+  // The previous footers are handed back in, so an unchanged turn keeps its object.
+  const endsRef = useRef<Map<string, TurnEnd>>(new Map());
+  const ends = useMemo(() => {
+    const next = turnEnds(entries, turnRunning, endsRef.current);
+    endsRef.current = next;
+    return next;
+  }, [entries, turnRunning]);
   const compactionLive = turnRunning && !transcriptEnded;
   const [openedRows] = useState(createOpenedRows);
   return (
@@ -63,7 +69,7 @@ export function TranscriptRows({
             transcriptEnded={context === "transcriptEnded" && transcriptEnded}
             isStreamingThought={context === "streamingThought" && entry.id === streamingThoughtId}
             turnEnd={isToolCallGroup(entry) ? undefined : ends.get(entry.id)}
-            compactionLive={compactionLive}
+            compactionLive={role === "system" ? compactionLive : undefined}
           />
         );
       })}

@@ -225,6 +225,7 @@ fn turn_activity_uses_a_generation_token_and_clears_on_finish() {
     assert!(runtime.is_turn_active(turn));
     runtime.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,
@@ -653,6 +654,7 @@ fn agent_finished_does_not_overwrite_error_attention() {
     );
     runtime.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "error".to_string(),
             model_id: None,
             usage: None,
@@ -724,6 +726,7 @@ fn a_turn_begun_between_a_settled_finish_and_its_publish_survives() {
     runtime.begin_turn();
     runtime.publish_agent_event_settled_with_seq(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,
@@ -744,6 +747,7 @@ fn an_unsetled_publish_still_ends_the_turn() {
     runtime.begin_turn();
     runtime.publish_agent_event_with_seq(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,

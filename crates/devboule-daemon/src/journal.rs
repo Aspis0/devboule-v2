@@ -57,7 +57,7 @@ use journal_retention::{
     set_journal_retention, RetentionState,
 };
 use journal_schema::{open_connection, sweep_audit};
-pub(crate) use journal_transcript_time::time_a_kindless_report;
+pub(crate) use journal_transcript_time::{time_a_finish, time_a_kindless_report};
 
 /// Stored in `PRAGMA user_version`. Bump whenever the journal schema gains
 /// tables or columns that need migration.

@@ -59,8 +59,12 @@ describe("TranscriptRows grouping", () => {
 
     const group = host.querySelector<HTMLDetailsElement>("details.workspace-chat-tool-group");
     if (group === null) throw new Error("three consecutive calls did not form a group");
-    // The group is one closed line; its three calls sit in the body.
+    // The group is one closed line; its three calls sit in the body once it opens.
     expect(group.open).toBe(false);
+    expect(
+      group.querySelectorAll(".workspace-chat-tool-group-body .workspace-chat-tool-label"),
+    ).toHaveLength(0);
+    await act(async () => group.querySelector<HTMLElement>("summary")?.click());
     const lines = group.querySelectorAll(
       ".workspace-chat-tool-group-body .workspace-chat-tool-label",
     );

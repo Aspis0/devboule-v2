@@ -229,6 +229,7 @@ pub(super) fn eventually(label: &str, mut ready: impl FnMut() -> bool) {
 pub(super) fn end_turn(runtime: &Arc<SessionRuntime>) {
     runtime.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,
@@ -363,6 +364,7 @@ impl SessionKiller for QueueKiller {
             .spawn(move || {
                 runtime.publish_agent_event(
                     SessionEvent::AgentFinished {
+                        at_ms: None,
                         stop_reason: "interrupt".to_string(),
                         model_id: None,
                         usage: None,

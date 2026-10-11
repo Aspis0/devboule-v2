@@ -1490,6 +1490,12 @@ export type SessionEvent =
       type: "agent_finished";
       stopReason: string;
       modelId?: string;
+      /**
+       * When the turn finished (Unix ms), the journal row's time. With the
+       * turn's start (its user row's `atMs`) it gives the turn's length, live
+       * or replayed. Absent on rows written before the field existed.
+       */
+      atMs?: number;
       usage?: {
         inputTokens?: number;
         outputTokens?: number;

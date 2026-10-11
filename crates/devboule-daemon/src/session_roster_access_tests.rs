@@ -240,6 +240,7 @@ fn live_transition_does_not_requery_the_journal_roster() {
 
     runtime.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,
@@ -386,6 +387,7 @@ fn live_transition_does_not_rebuild_a_large_roster() {
 
     runtimes[0].publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,

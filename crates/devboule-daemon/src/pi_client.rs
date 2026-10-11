@@ -3976,6 +3976,7 @@ impl PiReader {
         self.arbiter.note_prompt_handled();
         if self.arbiter.owns_finish() {
             runtime.publish_journaled_finish(SessionEvent::AgentFinished {
+                at_ms: None,
                 stop_reason: "completed".to_string(),
                 model_id: None,
                 usage: None,
@@ -4460,6 +4461,7 @@ impl ReaderDispatch for PiReader {
                 "Pi's output ended while a turn was running; the run was ended.".to_string(),
             );
             let _ = runtime.publish_journaled_finish(SessionEvent::AgentFinished {
+                at_ms: None,
                 stop_reason: "error".to_string(),
                 model_id: None,
                 usage: None,

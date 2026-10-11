@@ -851,6 +851,14 @@ pub enum SessionEvent {
         /// existed, which read as carrying no images.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<AttachmentReference>,
+        /// The title of the agent this message is about: the recipient on an
+        /// outgoing echo, the sender on an incoming delivery. Set by this
+        /// daemon from its own roster (displayName, then title), so the app
+        /// names the agent without ever printing a session id. Absent for a
+        /// far agent this daemon holds no title for, and for rows written
+        /// before the field existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        peer_title: Option<String>,
     },
     /// A prompt accepted by a running turn. This is journaled for audit but
     /// intentionally not pushed to live observers; the normal user-message
@@ -961,6 +969,12 @@ pub enum SessionEvent {
         model_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         usage: Option<TurnUsage>,
+        /// When this turn finished, in Unix ms: the journal row’s time, so a
+        /// live finish and the replay of its row agree. With the turn’s start
+        /// (its user row’s `at_ms`), this is how long it worked, on a replayed
+        /// turn as on a live one. Absent on rows written before the field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at_ms: Option<u64>,
     },
     /// How full the context window is, in the provider's own words — the
     /// meter's number, never a guess. A provider that sent no number gets no

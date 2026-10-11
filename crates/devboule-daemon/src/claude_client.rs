@@ -141,6 +141,7 @@ fn claude_turn_watch(
             let _ = runtime.settle_turn_finish(|| false);
             let _ = runtime.publish_agent_error(watchdog_message("Claude", silence));
             let _ = runtime.publish_daemon_event(SessionEvent::AgentFinished {
+                at_ms: None,
                 stop_reason: "error".to_string(),
                 model_id: None,
                 usage: None,

@@ -95,6 +95,7 @@ fn the_spawn_prompt_travels_the_send_road_in_front_of_the_preamble() {
     let conn = attach_live_agent_for_test(&runtime, "spawn-order-child", 37);
     registry
         .send_with_subscription_timeout(&SendRequest {
+            peer_title: None,
             session_id: "spawn-order-child",
             subscription_id: 0,
             text: "the task",
@@ -139,6 +140,7 @@ fn the_spawn_prompt_travels_the_send_road_in_front_of_the_preamble() {
     let conn_without = attach_live_agent_for_test(&runtime_without, "no-spawn-child", 38);
     registry
         .send_with_subscription_timeout(&SendRequest {
+            peer_title: None,
             session_id: "no-spawn-child",
             subscription_id: 0,
             text: "the task",

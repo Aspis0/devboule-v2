@@ -1544,6 +1544,20 @@ impl SessionRuntime {
         self.publish_agent_user_message_with_images(text, author, message_kind, Vec::new())
     }
 
+    /// The same echo naming the other agent it is about (the recipient on an
+    /// outgoing echo, the sender on an incoming delivery): see the protocol
+    /// field `peer_title`.
+    pub(crate) fn publish_agent_user_message_named(
+        &self,
+        text: String,
+        author: UserMessageAuthor,
+        message_kind: UserMessageKind,
+        images: Vec<AttachmentReference>,
+        peer_title: Option<String>,
+    ) -> Option<String> {
+        self.publish_agent_user_message_titled(text, author, message_kind, images, peer_title)
+    }
+
     /// The same echo carrying the send's deposited image references, so the
     /// journal row and the replay resolve the stored bytes. References only:
     /// the prompt's path lines already name the files for the provider, and
@@ -1554,6 +1568,17 @@ impl SessionRuntime {
         author: UserMessageAuthor,
         message_kind: UserMessageKind,
         images: Vec<AttachmentReference>,
+    ) -> Option<String> {
+        self.publish_agent_user_message_titled(text, author, message_kind, images, None)
+    }
+
+    fn publish_agent_user_message_titled(
+        &self,
+        text: String,
+        author: UserMessageAuthor,
+        message_kind: UserMessageKind,
+        images: Vec<AttachmentReference>,
+        peer_title: Option<String>,
     ) -> Option<String> {
         // The id is built by the publisher, so the event, the transcript and the
         // journal row that links to it (`Steered`) name one message: the caller
@@ -1571,6 +1596,7 @@ impl SessionRuntime {
                 message_kind,
                 at_ms: message_kind.is_user_turn().then_some(at_ms),
                 images,
+                peer_title,
             }
         })
         .and_then(|event| match event {
@@ -2211,6 +2237,10 @@ impl SessionRuntime {
         // keeps its own path and does not. This is where the finish hook's
         // raw material is remembered without a second matching pass over the
         // stream (`S5` decisions 7 and 10).
+        // A finish is timed at its publish: the journal row carries the same
+        // instant, so the live event and its replay agree.
+        let mut event = event;
+        crate::journal::time_a_finish(&mut event, crate::journal::now_ms());
         self.record_agent_outcome(&event);
         // One place, every publisher: a provider client writes `local` as a
         // placeholder and never has to know which device asked for the session,

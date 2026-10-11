@@ -469,6 +469,7 @@ fn a_journal_that_refuses_writes_still_hydrates() {
 
 fn composer_turn(text: &str, at_ms: Option<u64>) -> SessionEvent {
     SessionEvent::AgentUserMessage {
+        peer_title: None,
         message_id: None,
         text: text.to_string(),
         author: devboule_protocol::UserMessageAuthor::Human,

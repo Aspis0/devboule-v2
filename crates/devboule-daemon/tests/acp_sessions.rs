@@ -4356,6 +4356,7 @@ fn grok_prompt_completes_with_fragments_and_end_turn() {
             stop_reason,
             model_id,
             usage,
+            at_ms: _,
         } => Some((stop_reason.as_str(), model_id.clone(), usage.clone())),
         _ => None,
     });

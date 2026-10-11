@@ -170,6 +170,7 @@ impl SessionRegistry {
         let session_id = claim.runtime.session_id.as_str();
         let references = claim.item.attachment_references.clone();
         let result = self.send_with_subscription_timeout(&SendRequest {
+            peer_title: None,
             session_id,
             subscription_id,
             text: &claim.item.text,

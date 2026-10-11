@@ -2015,6 +2015,7 @@ fn replay_returns_whole_history_across_generations() {
     let id = "s.cross.gen.replay";
     journal.create_session(sample_session(id)).expect("birth");
     let user_before = SessionEvent::AgentUserMessage {
+        peer_title: None,
         message_id: Some("m1".into()),
         text: "gen-1 user".into(),
         author: UserMessageAuthor::Human,
@@ -2079,6 +2080,7 @@ fn a_previous_generations_exit_row_does_not_speak_for_the_session() {
     let id = "s.cross.gen.exit";
     journal.create_session(sample_session(id)).expect("birth");
     let frame = SessionEvent::AgentUserMessage {
+        peer_title: None,
         message_id: Some("m1".into()),
         text: "gen-1 user".into(),
         author: UserMessageAuthor::Human,
@@ -2145,6 +2147,7 @@ fn agent_page_spans_generations_in_journal_order() {
     let id = "s.cross.gen.page";
     journal.create_session(sample_session(id)).expect("birth");
     let user_before = SessionEvent::AgentUserMessage {
+        peer_title: None,
         message_id: Some("m1".into()),
         text: "gen-1 user".into(),
         author: UserMessageAuthor::Human,
@@ -2206,6 +2209,7 @@ fn the_nothing_owed_sentinel_cannot_widen_a_page_range() {
     let id = "s.cross.gen.sentinel";
     journal.create_session(sample_session(id)).expect("birth");
     let user_before = SessionEvent::AgentUserMessage {
+        peer_title: None,
         message_id: Some("m1".into()),
         text: "gen-1 user".into(),
         author: UserMessageAuthor::Human,

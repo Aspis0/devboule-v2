@@ -661,14 +661,20 @@ pub(crate) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                             &plan_turns,
                             &value,
                         ) {
+                            let mut view = view;
+                            crate::journal::time_a_finish(&mut view, ts_ms);
                             covered_reports.push((seq, view, Some(ts_ms)));
                         }
                     } else if record.kind == SessionKind::Pi {
                         for view in crate::pi_view::drive_replay(&mut pi_withheld_finish, &value) {
+                            let mut view = view;
+                            crate::journal::time_a_finish(&mut view, ts_ms);
                             covered_reports.push((seq, view, Some(ts_ms)));
                         }
                     } else {
                         for view in crate::claude_view::drive_replay(&mut claude_view, &mut value) {
+                            let mut view = view;
+                            crate::journal::time_a_finish(&mut view, ts_ms);
                             covered_reports.push((seq, view, Some(ts_ms)));
                         }
                     }
@@ -1113,6 +1119,7 @@ mod tests {
                 .to_string(),
         };
         let finish = SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "error".to_string(),
             model_id: None,
             usage: None,
@@ -1177,6 +1184,7 @@ mod tests {
         // cache counters and the cost intact — a reconnecting client reads
         // this row, not the provider frame.
         let finish = SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: Some("grok-4.6".to_string()),
             usage: Some(TurnUsage {

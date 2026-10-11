@@ -969,6 +969,10 @@ pub struct SendRequest<'a> {
     /// Required so every caller states both facts independently.
     pub author: UserMessageAuthor,
     pub message_kind: UserMessageKind,
+    /// The title of the other agent this message is about (see the protocol
+    /// field): the sender on an incoming delivery, `None` when this daemon
+    /// holds none. Read by the delivery that publishes the message.
+    pub peer_title: Option<&'a str>,
     /// Whose words these are, stated at the ingress: a steer from a person
     /// may dismiss permission cards a person is looking at (the one-shot
     /// drain and the Claude unread-steer latch); an agent-to-agent message

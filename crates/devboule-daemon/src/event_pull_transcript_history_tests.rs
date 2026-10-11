@@ -31,6 +31,7 @@ fn history_does_not_move_the_transcript_cursor_or_starve_the_reattach() {
                 session_start_source: None,
             },
             SessionEvent::AgentUserMessage {
+                peer_title: None,
                 message_id: Some("m1".into()),
                 text: "gen-2 user".into(),
                 author: devboule_protocol::UserMessageAuthor::Human,
@@ -218,6 +219,7 @@ fn reattach_to_history_serves_the_whole_conversation() {
                 data: "gen-1 output".to_string(),
             },
             SessionEvent::AgentUserMessage {
+                peer_title: None,
                 message_id: Some("m1".into()),
                 text: "gen-1 report".into(),
                 author: devboule_protocol::UserMessageAuthor::Human,

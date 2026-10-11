@@ -312,6 +312,7 @@ fn the_finish_state_follows_the_providers_own_stop_reason() {
     // A turn that ended of its own accord is the only `completed`.
     runtime.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,
@@ -325,6 +326,7 @@ fn the_finish_state_follows_the_providers_own_stop_reason() {
     // `refusal` is the provider saying it did not do the work.
     runtime.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "refusal".to_string(),
             model_id: None,
             usage: None,
@@ -336,6 +338,7 @@ fn the_finish_state_follows_the_providers_own_stop_reason() {
     assert!(note.expect("a note").contains("refusal"));
     runtime.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "cancelled".to_string(),
             model_id: None,
             usage: None,
@@ -364,6 +367,7 @@ fn a_pi_child_that_stopped_normally_reaches_its_creator_finished() {
     let stopped = |reason: &str| {
         runtime.publish_agent_event(
             SessionEvent::AgentFinished {
+                at_ms: None,
                 stop_reason: reason.to_string(),
                 model_id: None,
                 usage: None,
@@ -397,6 +401,7 @@ fn a_new_turn_clears_the_previous_turns_stop_reason() {
     live.state = SessionState::Live { generation: 1 };
     runtime.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "stop".to_string(),
             model_id: None,
             usage: None,
@@ -438,6 +443,7 @@ fn a_child_that_exited_uncleanly_after_its_turn_names_the_code() {
     let runtime = SessionRuntime::new();
     runtime.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "stop".to_string(),
             model_id: None,
             usage: None,
@@ -467,6 +473,7 @@ fn a_stopped_child_that_dies_reporting_an_error_is_cancelled() {
     runtime.request_stop();
     runtime.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "error".to_string(),
             model_id: None,
             usage: None,
@@ -514,6 +521,7 @@ fn a_finish_recorded_before_the_stop_keeps_its_verdict() {
     let completed = SessionRuntime::new();
     completed.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "stop".to_string(),
             model_id: None,
             usage: None,
@@ -528,6 +536,7 @@ fn a_finish_recorded_before_the_stop_keeps_its_verdict() {
     let failed = SessionRuntime::new();
     failed.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "error".to_string(),
             model_id: None,
             usage: None,
@@ -546,6 +555,7 @@ fn a_child_that_errors_without_a_stop_request_stays_failed() {
     let runtime = SessionRuntime::new();
     runtime.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "error".to_string(),
             model_id: None,
             usage: None,
@@ -568,6 +578,7 @@ fn a_stop_sent_between_turns_is_read_against_the_next_turn() {
     let runtime = SessionRuntime::new();
     runtime.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,
@@ -586,6 +597,7 @@ fn a_stop_sent_between_turns_is_read_against_the_next_turn() {
     );
     runtime.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "error".to_string(),
             model_id: None,
             usage: None,

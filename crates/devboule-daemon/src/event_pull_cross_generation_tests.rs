@@ -19,6 +19,7 @@ fn transcript_replay_keeps_rows_from_different_generations() {
         event_ts_ms: vec![None; 4],
         events: vec![
             SessionEvent::AgentUserMessage {
+                peer_title: None,
                 message_id: Some("m1".into()),
                 text: "gen-1 user".into(),
                 author: devboule_protocol::UserMessageAuthor::Human,

@@ -560,6 +560,7 @@ impl super::SessionRegistry {
             return Err(interrupt_refused_for_peer());
         }
         self.send_with_subscription_timeout(&SendRequest {
+            peer_title: None,
             session_id,
             subscription_id,
             text,
@@ -710,22 +711,23 @@ impl super::SessionRegistry {
         // section `finish_turn` takes, and its answer is what decides steer versus
         // prompt. A turn that ends after that answer cannot make the decision
         // wrong, because the answer arrived with the boundary registration.
-        let (from_runtime, target_runtime, target_owner, admission) = {
+        let (from_runtime, target_runtime, target_owner, admission, from_title, target_title) = {
             let map = self
                 .inner
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
-            let (from_runtime, source_origin) = if far_sender {
+            let (from_runtime, source_origin, from_title) = if far_sender {
                 // A wire sender has no transcript on this daemon. Its raw text
                 // is echoed by the sender's own daemon, so the far namespace
                 // deliberately skips local source resolution and echo.
-                (None, None)
+                (None, None, None)
             } else {
                 let source = peer_entry(&map, from_session, owner, &conn.conn_peer)?;
                 let source = source.as_peer_visible().ok_or_else(process_gone)?;
                 (
                     Some(Arc::clone(&source.runtime)),
                     Some(source.metadata.origin.clone()),
+                    roster_title(&source.metadata),
                 )
             };
             let target = if far_sender {
@@ -734,6 +736,7 @@ impl super::SessionRegistry {
                 peer_entry(&map, to_session, owner, &conn.conn_peer)?
             };
             let target = target.as_peer_visible().ok_or_else(process_gone)?;
+            let target_title = roster_title(&target.metadata);
             // Refused here, inside the same section: a message that would cross
             // two peer hops never reaches the brake table, so the refusal cannot
             // leave a slot behind it.
@@ -760,6 +763,8 @@ impl super::SessionRegistry {
                 Arc::clone(&target.runtime),
                 target.owner.clone(),
                 admission,
+                from_title,
+                target_title,
             )
         };
         // The slot is taken, so its release is owed here whatever happens
@@ -840,6 +845,7 @@ impl super::SessionRegistry {
             admitted_turn_id: admission.expected_turn_id,
         };
         let result = self.send_with_subscription_timeout(&SendRequest {
+            peer_title: from_title.as_deref(),
             session_id: to_session,
             subscription_id: 0,
             text: &envelope,
@@ -892,10 +898,12 @@ impl super::SessionRegistry {
                 // bearer connection is a reconstructed remote peer, so MCP
                 // sends keep the sender-side transcript echo.
                 if from_runtime
-                    .publish_agent_user_message(
+                    .publish_agent_user_message_named(
                         text.to_string(),
                         UserMessageAuthor::Agent,
                         UserMessageKind::OutgoingA2a,
+                        Vec::new(),
+                        target_title.clone(),
                     )
                     .is_none()
                 {
@@ -928,6 +936,7 @@ impl super::SessionRegistry {
         timeout: Duration,
     ) -> Result<(), WireError> {
         self.send_with_subscription_timeout(&SendRequest {
+            peer_title: None,
             session_id,
             subscription_id: conn.id,
             text,
@@ -977,6 +986,7 @@ impl super::SessionRegistry {
             steer_origin,
             require_no_turn_running,
             require_queue_unfenced,
+            peer_title,
         } = *request;
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
@@ -1643,11 +1653,12 @@ impl super::SessionRegistry {
                 } else {
                     (prompt.clone(), Vec::new())
                 };
-                match runtime.publish_agent_user_message_with_images(
+                match runtime.publish_agent_user_message_named(
                     journaled,
                     author,
                     message_kind,
                     images,
+                    peer_title.map(str::to_string),
                 ) {
                     Some(message_id) => delivered_message_id = Some(message_id),
                     // The bytes are already with the provider, so this is the
@@ -2419,4 +2430,17 @@ pub(super) fn forget_message_brake_target(
             runtime.off_turn_end(hook);
         }
     }
+}
+
+/// The name the roster shows for a session: its display name, else its title,
+/// the same rule the app's roster applies. Absent when neither is set.
+pub(crate) fn roster_title(metadata: &devboule_protocol::Session) -> Option<String> {
+    let display = metadata
+        .display_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty());
+    display
+        .or_else(|| Some(metadata.title.trim()).filter(|title| !title.is_empty()))
+        .map(str::to_string)
 }

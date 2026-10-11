@@ -23,6 +23,7 @@ use devboule_protocol::{UserMessageAuthor, UserMessageKind};
 
 fn user(text: &str) -> SessionEvent {
     SessionEvent::AgentUserMessage {
+        peer_title: None,
         message_id: None,
         text: text.to_string(),
         author: UserMessageAuthor::Human,
@@ -136,6 +137,7 @@ fn a_provider_that_refuses_the_handle_recovers_the_conversation_into_a_new_sessi
         .state
         .sessions
         .send_with_subscription_timeout(&SendRequest {
+            peer_title: None,
             session_id: &session.id,
             subscription_id: 1,
             text: "continue from here",

@@ -132,3 +132,37 @@ describe("the length of a turn this view saw start", () => {
     expect(assistant?.workedMs).toBeUndefined();
   });
 });
+
+describe("the length of a turn the daemon timed", () => {
+  it("is read from the turn's user row and its finish, with no send from this view", async () => {
+    const { session, emit } = harness();
+    await session.start();
+    emit({
+      type: "agent_user_message",
+      author: "human",
+      messageId: "u-1",
+      messageKind: "composer",
+      text: "go",
+      atMs: 1_790_000_000_000,
+    });
+    emit({ type: "agent_message", messageId: "m-1", text: "done" });
+    emit({ type: "agent_finished", stopReason: "end_turn", atMs: 1_790_000_217_000 });
+
+    const assistant = session
+      .getState()
+      .items.flatMap((item) => (item.role === "assistant" ? [item] : []))[0];
+    expect(assistant?.workedMs).toBe(217_000);
+  });
+
+  it("names no length for a finish whose turn start carries no time", async () => {
+    const { session, emit } = harness();
+    await session.start();
+    emit({ type: "agent_message", messageId: "m-1", text: "old reply" });
+    emit({ type: "agent_finished", stopReason: "end_turn", atMs: 1_790_000_217_000 });
+
+    const assistant = session
+      .getState()
+      .items.flatMap((item) => (item.role === "assistant" ? [item] : []))[0];
+    expect(assistant?.workedMs).toBeUndefined();
+  });
+});

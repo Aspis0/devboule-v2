@@ -10,6 +10,7 @@ use devboule_protocol::{UserMessageAuthor, UserMessageKind};
 
 fn user(text: &str) -> SessionEvent {
     SessionEvent::AgentUserMessage {
+        peer_title: None,
         message_id: None,
         text: text.to_string(),
         author: UserMessageAuthor::Human,

@@ -646,6 +646,7 @@ fn the_transcript_store_holds_the_whole_history_whatever_the_cursor_says() {
         1,
         2,
         &SessionEvent::AgentUserMessage {
+            peer_title: None,
             message_id: Some("m1".into()),
             text: "gen-1 user".into(),
             author: devboule_protocol::UserMessageAuthor::Human,

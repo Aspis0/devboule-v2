@@ -70,6 +70,36 @@ describe("turnEnds", () => {
     expect([...ends.keys()]).toEqual(["a1"]);
   });
 
+  it("hands an unchanged turn back as the same object, so its footer's memo holds", () => {
+    const entries = groupToolCalls([
+      user("u1", "first"),
+      assistant("a1", "first answer.", 4_000),
+      user("u2", "second"),
+      assistant("a2", "still writing"),
+    ]);
+    const before = turnEnds(entries, true);
+    // A later chunk extends the running turn; the finished one is untouched.
+    const streamed = groupToolCalls([
+      user("u1", "first"),
+      assistant("a1", "first answer.", 4_000),
+      user("u2", "second"),
+      assistant("a2", "still writing more"),
+    ]);
+    const after = turnEnds(streamed, true, before);
+    expect(after.get("a1")).toBe(before.get("a1"));
+  });
+
+  it("hands a changed turn a new object", () => {
+    const first = turnEnds(groupToolCalls([user("u1", "q"), assistant("a1", "one", 1_000)]), false);
+    const second = turnEnds(
+      groupToolCalls([user("u1", "q"), assistant("a1", "one", 2_000)]),
+      false,
+      first,
+    );
+    expect(second.get("a1")).not.toBe(first.get("a1"));
+    expect(second.get("a1")?.workedMs).toBe(2_000);
+  });
+
   it("gives a turn with no assistant words no end at all", () => {
     const entries = groupToolCalls([user("u1", "anything?"), assistant("a1", "")]);
     expect(turnEnds(entries, false).size).toBe(0);

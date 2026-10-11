@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { AgentChatItem } from "../../../lib/agentSession";
 import { groupToolCalls, isToolCallGroup, type ToolCallGroup } from "../../../lib/toolCallGroups";
 import { ToolCallGroupRow } from "./ToolCallGroupRow";
+import { createOpenedRows, OpenedRowsContext } from "./openedRows";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -67,7 +68,14 @@ async function renderGroup(group: ToolCallGroup): Promise<HTMLElement> {
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
-  await act(async () => root?.render(<ToolCallGroupRow group={group} transcriptEnded={false} />));
+  // The transcript's store keeps each call's open state across a closed group.
+  await act(async () =>
+    root?.render(
+      <OpenedRowsContext.Provider value={createOpenedRows()}>
+        <ToolCallGroupRow group={group} transcriptEnded={false} />
+      </OpenedRowsContext.Provider>,
+    ),
+  );
   return host;
 }
 
@@ -84,6 +92,30 @@ function groupOf(container: HTMLElement): HTMLDetailsElement {
   if (group === null) throw new Error("the group did not render");
   return group;
 }
+
+describe("a long group", () => {
+  it("mounts none of its calls while it is closed, and all of them once opened", async () => {
+    const long = groupToolCalls(
+      Array.from({ length: 200 }, (_, index) =>
+        tool(`call-${index}`, {
+          kind: "read",
+          title: `file-${index}.ts`,
+          locations: [{ path: `file-${index}.ts` }],
+        }),
+      ),
+    );
+    const group = long[0];
+    if (group === undefined || !isToolCallGroup(group)) throw new Error("no group");
+    const container = await renderGroup(group);
+    expect(
+      container.querySelectorAll(".workspace-chat-tool-group-body .workspace-chat-tool"),
+    ).toHaveLength(0);
+    await act(async () => container.querySelector<HTMLElement>("summary")?.click());
+    expect(
+      container.querySelectorAll(".workspace-chat-tool-group-body .workspace-chat-tool"),
+    ).toHaveLength(200);
+  });
+});
 
 describe("a group that holds a failure", () => {
   it("renders one closed summary with a muted failure count and no call count or cross", async () => {

@@ -39,6 +39,7 @@ impl Drop for ScratchDir {
 
 fn user(text: &str) -> SessionEvent {
     SessionEvent::AgentUserMessage {
+        peer_title: None,
         message_id: None,
         text: text.to_string(),
         author: UserMessageAuthor::Human,
@@ -99,6 +100,7 @@ fn the_context_carries_what_the_two_sides_said_and_merges_one_message() {
             data: "raw frame".to_string(),
         },
         SessionEvent::AgentUserMessage {
+            peer_title: None,
             message_id: None,
             text: "Agent 'kid' created".to_string(),
             author: UserMessageAuthor::Creation,
@@ -164,6 +166,7 @@ fn a_session_where_nothing_was_said_yields_no_context() {
             spawn_depth: None,
         },
         SessionEvent::AgentUserMessage {
+            peer_title: None,
             message_id: None,
             text: "Recovered session.".to_string(),
             author: UserMessageAuthor::Agent,
@@ -288,6 +291,7 @@ fn send_human_line(fixture: &ResumeFixture, session_id: &str, text: &str) {
         .state
         .sessions
         .send_with_subscription_timeout(&SendRequest {
+            peer_title: None,
             session_id,
             subscription_id: 1,
             text,
@@ -556,6 +560,7 @@ fn user_with_images(
     images: Vec<devboule_protocol::AttachmentReference>,
 ) -> SessionEvent {
     SessionEvent::AgentUserMessage {
+        peer_title: None,
         message_id: None,
         text: text.to_string(),
         author: UserMessageAuthor::Human,

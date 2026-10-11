@@ -221,6 +221,7 @@ fn restart_then_attach_shows_the_goal_in_the_roster() {
 
 fn recovered_user(text: &str) -> SessionEvent {
     SessionEvent::AgentUserMessage {
+        peer_title: None,
         message_id: None,
         text: text.to_string(),
         author: UserMessageAuthor::Human,

@@ -281,6 +281,7 @@ fn the_first_picked_command_expands_from_the_raw_message() {
     let conn = attach_live_agent_for_test(&runtime, session_id, 74);
     registry
         .send_with_subscription_timeout(&SendRequest {
+            peer_title: None,
             session_id,
             subscription_id: 74,
             text: "/prompts:commit stage",

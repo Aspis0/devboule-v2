@@ -410,6 +410,7 @@ fn turn_end(value: &Value) -> Vec<SessionEvent> {
         .map(|model| model_key(provider, model));
     let usage_value = message.get("usage");
     let mut events = vec![SessionEvent::AgentFinished {
+        at_ms: None,
         stop_reason: message
             .get("stopReason")
             .and_then(Value::as_str)
@@ -864,7 +865,8 @@ mod tests {
                 SessionEvent::AgentFinished {
                     stop_reason,
                     model_id,
-                    usage
+                    usage,
+                    at_ms: _,
                 },
                 SessionEvent::ContextUsage {
                     model_id: context_model,

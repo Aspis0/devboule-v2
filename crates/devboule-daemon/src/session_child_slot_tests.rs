@@ -261,6 +261,7 @@ fn the_creators_slot_survives_its_childs_birth_and_death() {
         .state
         .sessions
         .send_with_subscription_timeout(&SendRequest {
+            peer_title: None,
             session_id: &child.id,
             subscription_id: 0,
             text: "finish",

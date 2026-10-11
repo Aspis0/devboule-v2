@@ -112,6 +112,7 @@ fn a_stop_tail_cursor_owes_nothing_not_even_history() {
                 data: "gen-1 ledger".to_string(),
             },
             SessionEvent::AgentUserMessage {
+                peer_title: None,
                 message_id: Some("m1".into()),
                 text: "gen-1 report".into(),
                 author: devboule_protocol::UserMessageAuthor::Human,

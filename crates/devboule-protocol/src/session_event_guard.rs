@@ -76,6 +76,7 @@ pub(crate) fn session_event_samples() -> Vec<SessionEvent> {
                 stored_bytes: 12,
                 name: String::new(),
             }],
+            peer_title: None,
         },
         Steered => SessionEvent::Steered {
             message_id: None,
@@ -127,6 +128,7 @@ pub(crate) fn session_event_samples() -> Vec<SessionEvent> {
             images: Vec::new(),
         },
         AgentFinished => SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: String::new(),
             model_id: None,
             // Carried rather than `None`: the committed snapshot is what

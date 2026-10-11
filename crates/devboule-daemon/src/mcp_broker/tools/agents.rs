@@ -278,6 +278,21 @@ pub(in crate::mcp_broker) fn stop_or_close(
             outcome_label,
         );
     };
+    // The name and the age a stop reports are read before the stop: a stopped
+    // child leaves the live roster.
+    let stopped = state
+        .sessions
+        .live_agent_entries(&registration.owner)
+        .ok()
+        .and_then(|entries| {
+            entries
+                .into_iter()
+                .find(|entry| entry.session.id == session_arg || entry.session.title == session_arg)
+        });
+    let child_name = stopped
+        .as_ref()
+        .and_then(|entry| crate::session::roster_title(&entry.session));
+    let child_elapsed = stopped.as_ref().and_then(|entry| entry.session.elapsed_ms);
     let action = if stopping {
         state
             .sessions
@@ -292,12 +307,18 @@ pub(in crate::mcp_broker) fn stop_or_close(
         Ok(()) => {
             audit("ok");
             let word = if stopping { "stopped" } else { "closed" };
+            let document = json!({
+                "state": word,
+                "sessionId": session_arg,
+                "displayName": child_name,
+                "elapsedMs": child_elapsed,
+            });
             Ok(Some(json!({
                 "jsonrpc": "2.0",
                 "id": id,
                 "result": {
-                    "content": [{"type": "text", "text": word}],
-                    "structuredContent": {"state": word, "sessionId": session_arg},
+                    "content": [{"type": "text", "text": document.to_string()}],
+                    "structuredContent": document,
                     "isError": false,
                 },
             })))

@@ -106,6 +106,10 @@ describe("transcript row renders", () => {
     const first = tool("tool-1", "one");
     const second = tool("tool-2", "two");
     await show([first, second]);
+    // The person opens the group: a closed group mounts none of its calls.
+    await act(async () =>
+      host.querySelector<HTMLElement>("details.workspace-chat-tool-group > summary")?.click(),
+    );
     const before = rendersOf("tool-2");
     expect(before).toBeGreaterThan(0);
 

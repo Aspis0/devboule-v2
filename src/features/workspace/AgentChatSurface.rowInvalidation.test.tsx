@@ -128,6 +128,7 @@ beforeEach(async () => {
       type: "agent_user_message",
       author: "agent",
       messageId: "relay",
+      messageKind: "incoming_a2a",
       text: [
         "<devboule-system>",
         "origin: local",
@@ -199,6 +200,11 @@ async function openFailedLine(rowSelector: string): Promise<void> {
 }
 
 it("updates only the affected group and member when a tool status changes", async () => {
+  // The person opens the group first: a closed group mounts none of its calls.
+  await act(async () =>
+    container.querySelector<HTMLElement>("details.workspace-chat-tool-group > summary")?.click(),
+  );
+  vi.clearAllMocks();
   await act(async () =>
     channelHarness.active?.({
       type: "agent_tool_update",
@@ -251,7 +257,9 @@ it("updates only tool rows when the transcript ends", async () => {
   // A completed read's display does not depend on the transcript ending, so
   // it is not parsed again. The turn that was running ends with the transcript,
   // so its last answer draws the turn's footer: that one row renders again.
-  expect(counts()).toEqual({ ...unchanged, read: 0, execute: 1, group: 1, live: 1 });
+  // A closed group mounts none of its calls, so the tool's own row is not drawn:
+  // the group line and the last answer's footer are what change.
+  expect(counts()).toEqual({ ...unchanged, read: 0, execute: 0, group: 1, live: 1 });
   expect(container.querySelector(".workspace-chat-tool-group.is-interrupted")).not.toBeNull();
   expect(container.querySelector(".workspace-chat-tool-group.is-running")).toBeNull();
 });

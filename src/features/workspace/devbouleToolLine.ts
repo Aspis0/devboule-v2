@@ -33,7 +33,8 @@ const QUALIFIER = /^(?:mcp__devboule__)?(?:devboule_)?/;
 const UNNAMED_AGENT = "an agent";
 
 const NAME_KEYS = ["displayName", "title", "name", "childName"] as const;
-const DURATION_KEYS = ["durationMs", "elapsedMs", "tookMs"] as const;
+// The stop result's age, as the daemon's tool result names it (`elapsedMs`).
+const DURATION_KEYS = ["elapsedMs"] as const;
 const ACTIVITY_STATES = new Set(["idle", "working", "blocked", "unknown"]);
 
 type Result = Record<string, unknown>;

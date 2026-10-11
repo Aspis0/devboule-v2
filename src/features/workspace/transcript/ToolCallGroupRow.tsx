@@ -73,16 +73,20 @@ export function ToolCallGroupRow({
           <span className="workspace-chat-tool-running" role="img" aria-label="Running" />
         ) : null}
       </summary>
-      <div className="workspace-chat-tool-group-body">
-        {group.items.map((item) => (
-          <ToolRow
-            key={item.id}
-            item={item}
-            transcriptEnded={transcriptEnded}
-            expansion={expansions.get(item.id)}
-          />
-        ))}
-      </div>
+      {/* A closed group mounts none of its calls: a long run costs its summary
+          until the person opens it. Each call's open state lives in the transcript's store, so it survives. */}
+      {open ? (
+        <div className="workspace-chat-tool-group-body">
+          {group.items.map((item) => (
+            <ToolRow
+              key={item.id}
+              item={item}
+              transcriptEnded={transcriptEnded}
+              expansion={expansions.get(item.id)}
+            />
+          ))}
+        </div>
+      ) : null}
     </details>
   );
 }

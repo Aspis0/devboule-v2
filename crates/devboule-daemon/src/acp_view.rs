@@ -161,6 +161,7 @@ fn view_from_session_update(
             Some(SessionEvent::AgentUserMessage {
                 message_id,
                 text: text.to_string(),
+                peer_title: None,
                 // A provider chunk carries no transcript role. Historical
                 // `user_message_chunk` envelopes still decode here for
                 // backward compatibility; the live ACP client drops this
@@ -413,6 +414,7 @@ fn view_from_prompt_response(
             })
         });
     Some(SessionEvent::AgentFinished {
+        at_ms: None,
         stop_reason,
         model_id,
         usage,
@@ -1811,6 +1813,7 @@ mod tests {
         assert_eq!(
             view,
             SessionEvent::AgentUserMessage {
+                peer_title: None,
                 message_id: None,
                 text: "Reply with exactly one word: PONG".to_string(),
                 author: UserMessageAuthor::Human,

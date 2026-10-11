@@ -444,6 +444,7 @@ fn agent_user_message_kind_defaults_for_legacy_rows_and_serializes_current_rows(
         message_kind: UserMessageKind::OutgoingA2a,
         at_ms: None,
         images: Vec::new(),
+        peer_title: None,
     };
     let encoded = serde_json::to_value(&current).expect("current event");
     assert_eq!(encoded["messageKind"], "outgoing_a2a");
@@ -458,6 +459,7 @@ fn user_message_at_ms_round_trips_and_is_skipped_when_absent() {
         message_kind: UserMessageKind::Composer,
         at_ms: Some(1_789_053_471_559),
         images: Vec::new(),
+        peer_title: None,
     };
     let encoded = serde_json::to_value(&timed).expect("json");
     assert_eq!(encoded["atMs"], 1_789_053_471_559_u64);
@@ -471,6 +473,7 @@ fn user_message_at_ms_round_trips_and_is_skipped_when_absent() {
         message_kind: UserMessageKind::Composer,
         at_ms: None,
         images: Vec::new(),
+        peer_title: None,
     };
     let encoded = serde_json::to_value(&untimed).expect("json");
     assert!(encoded.get("atMs").is_none(), "absent time stays absent");
@@ -2000,6 +2003,7 @@ fn user_message_images_round_trip_and_are_skipped_when_empty() {
         message_kind: UserMessageKind::Composer,
         at_ms: Some(1_789_053_471_559),
         images: vec![reference.clone()],
+        peer_title: None,
     };
     let encoded = serde_json::to_value(&with_images).expect("json");
     assert_eq!(encoded["images"][0]["digest"], "a".repeat(64));
@@ -2014,6 +2018,7 @@ fn user_message_images_round_trip_and_are_skipped_when_empty() {
         message_kind: UserMessageKind::Composer,
         at_ms: None,
         images: Vec::new(),
+        peer_title: None,
     };
     let encoded = serde_json::to_value(&without_images).expect("json");
     assert!(
@@ -2064,4 +2069,66 @@ fn a_model_without_accepts_images_decodes_as_taking_no_images() {
     };
     let wire = serde_json::to_value(&newer).expect("encode");
     assert_eq!(wire["acceptsImages"], true);
+}
+
+/// Protocol 35 and 36 add optional fields: a row an older daemon wrote has none
+/// of them and must still decode, and the new fields are written only when set.
+#[test]
+fn the_names_and_finish_times_are_optional_on_the_wire() {
+    let finish: SessionEvent = serde_json::from_value(
+        serde_json::json!({"type":"agent_finished","stopReason":"end_turn"}),
+    )
+    .expect("an older finish decodes");
+    assert!(matches!(
+        finish,
+        SessionEvent::AgentFinished { at_ms: None, .. }
+    ));
+    let timed = SessionEvent::AgentFinished {
+        stop_reason: "end_turn".to_string(),
+        model_id: None,
+        usage: None,
+        at_ms: Some(1_789_000_217_000),
+    };
+    let encoded = serde_json::to_value(&timed).expect("encodes");
+    assert_eq!(encoded["atMs"], 1_789_000_217_000_u64);
+
+    let older: SessionEvent = serde_json::from_value(serde_json::json!({
+        "type": "agent_user_message",
+        "author": "agent",
+        "messageId": "m-old",
+        "text": "older echo",
+        "messageKind": "outgoing_a2a"
+    }))
+    .expect("an older echo decodes");
+    assert!(matches!(
+        older,
+        SessionEvent::AgentUserMessage {
+            peer_title: None,
+            ..
+        }
+    ));
+    let named = SessionEvent::AgentUserMessage {
+        message_id: Some("m-new".to_string()),
+        text: "named echo".to_string(),
+        author: UserMessageAuthor::Agent,
+        message_kind: UserMessageKind::OutgoingA2a,
+        at_ms: None,
+        images: Vec::new(),
+        peer_title: Some("Finish Kalsa website".to_string()),
+    };
+    let encoded = serde_json::to_value(&named).expect("encodes");
+    assert_eq!(encoded["peerTitle"], "Finish Kalsa website");
+    let unnamed = SessionEvent::AgentUserMessage {
+        message_id: None,
+        text: "unnamed".to_string(),
+        author: UserMessageAuthor::Agent,
+        message_kind: UserMessageKind::OutgoingA2a,
+        at_ms: None,
+        images: Vec::new(),
+        peer_title: None,
+    };
+    assert!(serde_json::to_value(&unnamed)
+        .expect("encodes")
+        .get("peerTitle")
+        .is_none());
 }

@@ -122,6 +122,7 @@ impl SessionKiller for DelayedAckKiller {
             };
             let _ = runtime.publish_agent_event(
                 SessionEvent::AgentFinished {
+                    at_ms: None,
                     stop_reason: "interrupt".to_string(),
                     model_id: None,
                     usage: None,

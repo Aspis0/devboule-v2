@@ -36,7 +36,13 @@ describe("devbouleToolLine", () => {
   });
 
   it("reads a stop as the agent and how long it ran, when the result says so", () => {
-    const output = JSON.stringify({ displayName: "Finish Kalsa website", durationMs: 217_000 });
+    // The shape the daemon's stop result carries.
+    const output = JSON.stringify({
+      state: "stopped",
+      sessionId: "s.kalsa.finish",
+      displayName: "Finish Kalsa website",
+      elapsedMs: 217_000,
+    });
     expect(devbouleToolLine(call("devboule_stop_agent", output))).toBe(
       "Stopped Finish Kalsa website (3m 37s)",
     );

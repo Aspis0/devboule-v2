@@ -96,6 +96,7 @@ it("renders stable historical rows once while the last assistant streams", async
       type: "agent_user_message",
       author: "agent",
       messageId: "relay",
+      messageKind: "incoming_a2a",
       text: [
         "<devboule-system>",
         "origin: local",
@@ -110,6 +111,7 @@ it("renders stable historical rows once while the last assistant streams", async
       type: "agent_user_message",
       author: "agent",
       messageId: "notice",
+      messageKind: "system_notice",
       text: [
         "<devboule-system>",
         "origin: local",

@@ -3987,6 +3987,7 @@ describe("AgentChatSurface", () => {
       });
     });
 
+    await openEveryGroup(container);
     const rows = container.querySelectorAll(".workspace-chat-tool:not(.workspace-chat-tool-group)");
     expect(rows).toHaveLength(2);
     for (const row of rows) {
@@ -4039,6 +4040,7 @@ describe("AgentChatSurface", () => {
     expect(group.querySelector(".workspace-chat-tool-group-summary-text")?.textContent).toBe(
       "Edited 1 file, ran 1 command, and read 1 file",
     );
+    await openEveryGroup(container);
     expect(group.querySelectorAll(".workspace-chat-tool")).toHaveLength(3);
   });
 
@@ -4121,6 +4123,7 @@ describe("AgentChatSurface", () => {
     expect(group.classList.contains("workspace-chat-entry")).toBe(true);
     expect(group.classList.contains("workspace-chat-subagent")).toBe(true);
     expect((group as HTMLElement).style.marginInlineStart).toBe("16px");
+    await openEveryGroup(container);
     expect(group.querySelectorAll(".workspace-chat-tool")).toHaveLength(2);
     const plain = container.querySelectorAll(
       ".workspace-conversation-content > .workspace-chat-tool:not(.workspace-chat-tool-group)",
@@ -4174,6 +4177,7 @@ describe("AgentChatSurface", () => {
     expect(running?.querySelector(".workspace-chat-tool-group-failed")?.textContent).toBe(
       "1 failed",
     );
+    await openEveryGroup(container);
     expect(running?.querySelector(".workspace-chat-tool-failed")?.textContent).toBe("failed");
   });
 
@@ -4577,6 +4581,16 @@ describe("creator permission-request message", () => {
     expect(excerptRenderFor("absent")?.block).toBe(false);
   });
 });
+
+/** The person opens each closed tool group: a closed group mounts none of its calls. */
+async function openEveryGroup(scope: ParentNode): Promise<void> {
+  for (const summary of scope.querySelectorAll<HTMLElement>(
+    "details.workspace-chat-tool-group > summary",
+  )) {
+    if ((summary.parentElement as HTMLDetailsElement | null)?.open === true) continue;
+    await act(async () => summary.click());
+  }
+}
 
 /** The person opens a card's line: the disclosure's toggle, as the browser fires it. */
 async function openCardLine(card: Element | null | undefined): Promise<void> {

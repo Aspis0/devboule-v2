@@ -29,6 +29,7 @@ const T_LEGACY: u64 = 1_759_000_180_000;
 
 fn composer(text: &str, kind: UserMessageKind, at_ms: Option<u64>) -> SessionEvent {
     SessionEvent::AgentUserMessage {
+        peer_title: None,
         message_id: None,
         text: text.to_string(),
         author: UserMessageAuthor::Human,

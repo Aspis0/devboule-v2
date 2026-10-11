@@ -92,6 +92,7 @@ impl SessionKiller for InterruptAckingKiller {
         // daemon as the finish that ends the turn.
         let _ = runtime.publish_agent_event(
             SessionEvent::AgentFinished {
+                at_ms: None,
                 stop_reason: "interrupt".to_string(),
                 model_id: None,
                 usage: None,
@@ -3564,6 +3565,7 @@ fn a_finish_cannot_end_the_turn_between_a_steer_s_check_and_its_write() {
         attempting_outside.store(true, Ordering::Release);
         finisher_runtime.publish_agent_event(
             SessionEvent::AgentFinished {
+                at_ms: None,
                 stop_reason: "end_turn".to_string(),
                 model_id: None,
                 usage: None,
@@ -3754,6 +3756,7 @@ fn a_finish_that_lands_after_the_write_and_before_the_reply_still_records_the_st
         attempting_outside.store(true, Ordering::Release);
         finisher_runtime.publish_agent_event(
             SessionEvent::AgentFinished {
+                at_ms: None,
                 stop_reason: "end_turn".to_string(),
                 model_id: None,
                 usage: None,
@@ -3845,6 +3848,7 @@ fn a_turn_that_ended_before_admission_is_sent_as_a_plain_message() {
     runtime.begin_turn();
     runtime.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,
@@ -4801,6 +4805,7 @@ fn a_target_s_finished_turn_releases_the_sender_s_slots() {
     // The joined turn ends: that is the boundary both slots are keyed on.
     target.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,
@@ -4896,6 +4901,7 @@ fn an_admitted_message_still_counts_until_its_delivery_returns() {
     // The turn ends while the delivery is still in flight.
     target.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,
@@ -4976,6 +4982,7 @@ fn the_recipient_window_survives_its_slots_ending() {
     for target in &targets {
         target.publish_agent_event(
             SessionEvent::AgentFinished {
+                at_ms: None,
                 stop_reason: "end_turn".to_string(),
                 model_id: None,
                 usage: None,
@@ -5264,6 +5271,7 @@ fn a_finish_before_the_registration_sends_a_prompt_whose_turn_ends_the_slot() {
     // The finish lands before the registration the admission will make.
     target.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,
@@ -5300,6 +5308,7 @@ fn a_finish_before_the_registration_sends_a_prompt_whose_turn_ends_the_slot() {
     // armed for, and it goes there.
     target.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,
@@ -5341,6 +5350,7 @@ fn a_turn_that_ended_before_the_registration_is_not_joined() {
     // The finish lands between the caller's look and the registration.
     target.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,
@@ -5412,6 +5422,7 @@ fn a_turn_that_ends_before_the_delivery_keeps_the_slot_until_the_prompt_ends() {
     registry.set_agent_message_after_admission_hook(Arc::new(move || {
         finishing.publish_agent_event(
             SessionEvent::AgentFinished {
+                at_ms: None,
                 stop_reason: "end_turn".to_string(),
                 model_id: None,
                 usage: None,
@@ -5447,6 +5458,7 @@ fn a_turn_that_ends_before_the_delivery_keeps_the_slot_until_the_prompt_ends() {
     // The turn that prompt started ends: now, and only now, the slot is over.
     target.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,
@@ -5615,6 +5627,7 @@ fn a_slot_that_enters_a_newer_turn_keeps_exactly_one_boundary() {
     registry.set_agent_message_after_admission_hook(Arc::new(move || {
         starting.publish_agent_event(
             SessionEvent::AgentFinished {
+                at_ms: None,
                 stop_reason: "end_turn".to_string(),
                 model_id: None,
                 usage: None,
@@ -5652,6 +5665,7 @@ fn a_slot_that_enters_a_newer_turn_keeps_exactly_one_boundary() {
     // Turn 2 ends: the turn the text entered is what releases the slot.
     target.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,
@@ -6005,6 +6019,7 @@ fn a_receipt_hit_after_the_turn_finished_answers_turn_idle() {
     // touches the turn flag.
     runtime.publish_agent_event(
         devboule_protocol::SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "stop".to_string(),
             model_id: None,
             usage: None,

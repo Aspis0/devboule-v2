@@ -89,6 +89,7 @@ fn a_turn_opening_and_a_turn_closing_each_push_the_status_once() {
     log.lock().expect("push log").clear();
     runtime.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,
@@ -139,6 +140,7 @@ fn a_status_that_has_not_changed_is_never_a_reason_to_push() {
     log.lock().expect("push log").clear();
     runtime.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,
@@ -158,6 +160,7 @@ fn a_status_that_has_not_changed_is_never_a_reason_to_push() {
     log.lock().expect("push log").clear();
     runtime.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,
@@ -188,6 +191,7 @@ fn an_accepted_prompt_publishes_activity_and_attention_separately() {
     let conn = attach_live_agent_for_test(&runtime, id, 91);
     runtime.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,
@@ -233,6 +237,7 @@ fn the_status_pushes_while_another_connection_has_the_session_focused() {
 
     runtime.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,

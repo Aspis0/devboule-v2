@@ -1703,6 +1703,7 @@ fn turn_completed(params: &Value, usage: Option<TurnUsage>) -> Vec<SessionEvent>
     };
     match turn.get("status").and_then(Value::as_str) {
         Some("completed") => vec![SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "completed".to_string(),
             model_id: turn
                 .get("model")
@@ -1711,6 +1712,7 @@ fn turn_completed(params: &Value, usage: Option<TurnUsage>) -> Vec<SessionEvent>
             usage,
         }],
         Some("interrupted") => vec![SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "interrupted".to_string(),
             model_id: turn
                 .get("model")
@@ -1732,6 +1734,7 @@ fn turn_completed(params: &Value, usage: Option<TurnUsage>) -> Vec<SessionEvent>
                 severity: NoticeSeverity::Warning,
             },
             SessionEvent::AgentFinished {
+                at_ms: None,
                 stop_reason: "failed".to_string(),
                 model_id: turn
                     .get("model")
@@ -2265,6 +2268,7 @@ mod tests {
                     severity: devboule_protocol::NoticeSeverity::Warning,
                 },
                 SessionEvent::AgentFinished {
+                    at_ms: None,
                     stop_reason: "failed".to_string(),
                     model_id: None,
                     usage: None,
@@ -2324,6 +2328,7 @@ mod tests {
                 r#"{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"th","turn":{"id":"tu","status":"interrupted","items":[]}}}"#,
             )),
             vec![SessionEvent::AgentFinished {
+                at_ms: None,
                 stop_reason: "interrupted".to_string(),
                 model_id: None,
                 usage: None,

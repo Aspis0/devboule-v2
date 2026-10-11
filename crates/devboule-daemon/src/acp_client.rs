@@ -3247,6 +3247,7 @@ impl AcpReader {
 fn publish_turn_finished(runtime: &SessionRuntime, stop_reason: &str) {
     let _ = runtime.publish_agent_event(
         SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: stop_reason.to_string(),
             model_id: None,
             usage: None,

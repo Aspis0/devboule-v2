@@ -236,6 +236,7 @@ impl TurnArbiter {
         }
         if self.owns_finish() {
             let _ = runtime.publish_journaled_finish(SessionEvent::AgentFinished {
+                at_ms: None,
                 stop_reason: "error".to_string(),
                 model_id: None,
                 usage: None,
@@ -334,6 +335,7 @@ impl TurnArbiter {
             return;
         }
         let _ = runtime.publish_journaled_finish(SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "stop".to_string(),
             model_id: None,
             usage,
@@ -383,6 +385,7 @@ impl TurnArbiter {
             && self.owns_finish()
         {
             let _ = runtime.publish_journaled_finish(SessionEvent::AgentFinished {
+                at_ms: None,
                 stop_reason: "error".to_string(),
                 model_id: None,
                 usage: self.take_tool_iterations().flatten(),

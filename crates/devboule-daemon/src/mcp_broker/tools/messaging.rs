@@ -81,15 +81,23 @@ pub(in crate::mcp_broker) fn send(
         &registration.owner,
         &internal_conn,
     ) {
-        Ok(()) => Ok(Some(json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": {
-                "content": [{"type": "text", "text": "accepted"}],
-                "structuredContent": {"state": "accepted"},
-                "isError": false,
-            },
-        }))),
+        Ok(()) => {
+            // The result names the recipient the way the roster does, so the
+            // app can say who the message went to without a session id.
+            let document = json!({
+                "state": "accepted",
+                "displayName": crate::session::roster_title(&target.session),
+            });
+            Ok(Some(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "content": [{"type": "text", "text": document.to_string()}],
+                    "structuredContent": document,
+                    "isError": false,
+                },
+            })))
+        }
         Err(error) => {
             // The lookup found the child and the delivery did not: a close
             // took it in between. The ordered sentence says what happened

@@ -236,6 +236,7 @@ fn the_creation_send_titles_from_the_task_not_the_composition() {
     // task, never from the composed prompt around it.
     registry
         .send_with_subscription_timeout(&SendRequest {
+            peer_title: None,
             session_id: id,
             subscription_id: conn.id,
             text: "do the task",
@@ -380,6 +381,7 @@ fn an_a2a_envelope_never_becomes_the_title() {
     // `IncomingA2a` — rather than anyone's words.
     registry
         .send_with_subscription_timeout(&SendRequest {
+            peer_title: None,
             session_id: id,
             subscription_id: conn.id,
             text: "<devboule-system>\norigin: local\nrole: daemon\nfrom_agent: s.a.9\nkind: agent_message\ntimestamp: 1\nbody: delegate this\n</devboule-system>",
@@ -428,6 +430,7 @@ fn a_daemon_notice_never_becomes_the_title() {
 
     registry
         .send_with_subscription_timeout(&SendRequest {
+            peer_title: None,
             session_id: id,
             subscription_id: conn.id,
             text: "<devboule-system>\norigin: local\nrole: daemon\nfrom_agent: s.a.9\nkind: agent_quiet\ntimestamp: 1\nsummary: still working\n</devboule-system>",
@@ -476,6 +479,7 @@ fn a_composed_first_prompt_titles_from_the_persons_words() {
     // A notice arrives before the person types: it must not spend the slot.
     registry
         .send_with_subscription_timeout(&SendRequest {
+            peer_title: None,
             session_id: id,
             subscription_id: conn.id,
             text:
@@ -509,6 +513,7 @@ fn a_composed_first_prompt_titles_from_the_persons_words() {
     // glue, pinned by `standing_instructions_come_before_the_preset_preamble`).
     registry
         .send_with_subscription_timeout(&SendRequest {
+            peer_title: None,
             session_id: id,
             subscription_id: conn.id,
             text: "Fix the login redirect\nsome more detail",

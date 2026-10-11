@@ -185,6 +185,7 @@ mod tests {
     #[test]
     fn kinds_stay_on_the_transcript_vocabulary() {
         let finished = SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "end_turn".to_string(),
             model_id: None,
             usage: None,

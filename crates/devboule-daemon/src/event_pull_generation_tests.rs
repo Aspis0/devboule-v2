@@ -48,6 +48,7 @@ fn live_agent_replay_delivers_the_generations_before_the_attach() {
         ))
         .unwrap();
     let user_before = SessionEvent::AgentUserMessage {
+        peer_title: None,
         message_id: Some("m1".into()),
         text: "gen-1 user".into(),
         author: devboule_protocol::UserMessageAuthor::Human,
@@ -157,6 +158,7 @@ fn replay_stamps_the_user_turn_time_from_the_journal_row() {
         ))
         .unwrap();
     let untimed = SessionEvent::AgentUserMessage {
+        peer_title: None,
         message_id: Some("m1".into()),
         text: "written before the turn time existed".into(),
         author: devboule_protocol::UserMessageAuthor::Human,
@@ -414,6 +416,7 @@ fn live_agent_replay_stamps_history_envelopes_with_their_own_generation() {
         session_start_source: None,
     };
     let user_after = SessionEvent::AgentUserMessage {
+        peer_title: None,
         message_id: Some("m1".into()),
         text: "after resume".into(),
         author: devboule_protocol::UserMessageAuthor::Human,
