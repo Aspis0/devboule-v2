@@ -82,6 +82,41 @@ pub(super) fn dispatch(
         }
         return None;
     }
+    // The transcript search runs on its own threads: the scan and the wait for
+    // it are both off this request's thread, so one slow journal cannot hold
+    // the connection, and the newest search cancels the one before it.
+    if let ClientMessage::SessionsSearch { id, query } = &request {
+        let id = *id;
+        let run = match state.sessions.start_transcript_search(owner, query) {
+            Ok(run) => run,
+            Err(error) => return Some(DaemonMessage::Error(error.with_id(id))),
+        };
+        let Some(run) = run else {
+            return Some(DaemonMessage::SessionsSearch {
+                id,
+                hits: Vec::new(),
+                truncated: false,
+            });
+        };
+        let outbound = Arc::clone(&conn.outbound);
+        let failure_outbound = Arc::clone(&outbound);
+        let spawn = std::thread::Builder::new()
+            .name("daemon-transcript-search".to_string())
+            .spawn(move || {
+                let search = run.wait();
+                outbound.enqueue_reply(DaemonMessage::SessionsSearch {
+                    id,
+                    hits: search.hits,
+                    truncated: search.truncated,
+                });
+            });
+        if spawn.is_err() {
+            failure_outbound.enqueue_reply(DaemonMessage::Error(
+                WireError::new(ErrorCode::Io, "could not start the transcript search").with_id(id),
+            ));
+        }
+        return None;
+    }
     if let ClientMessage::ProvidersRefresh { id } = request {
         let worker_state = Arc::clone(state);
         let outbound = Arc::clone(&conn.outbound);

@@ -1,97 +1,246 @@
 //! The transcript search behind the sidebar's Ctrl+K: the words the person and
 //! the agent wrote, found in each session's own journal.
 //!
-//! It is a bounded scan, not an index. Sessions are read newest first, and a
-//! session cap, a hit cap and a time budget each stop it; `truncated` says
-//! when one of them did, so the app never presents a partial scan as complete.
+//! It is a bounded scan, not an index, and it never runs on the request that
+//! asked for it. A scanner thread reads the owner's sessions newest first and
+//! fills a shared collector; the caller waits at most [`SEARCH_TIME_BUDGET`]
+//! and answers with what the collector holds. Past the budget the scanner is
+//! told to stop, and `truncated` says so: a partial scan is never presented as
+//! a complete one. A new search cancels the one before it.
 
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use devboule_protocol::{SearchAuthor, SessionEvent, SessionSearchHit, UserMessageAuthor};
 
-use crate::journal::{Journal, JournalError};
+use crate::journal::Journal;
 
 /// Most sessions one search reads, newest first.
 pub(crate) const SEARCH_SESSION_CAP: usize = 200;
 
-/// Most hits one search returns.
+/// Most hits one search returns, newest first.
 pub(crate) const SEARCH_HIT_CAP: usize = 50;
 
-/// The wall-clock budget of one search. The scan runs on the connection that
-/// asked, so it stops here rather than hold that connection for longer.
-pub(crate) const SEARCH_TIME_BUDGET: std::time::Duration = std::time::Duration::from_millis(1_500);
+/// Most matches one scan collects before it stops and sorts; reaching it is a
+/// cap like any other and sets `truncated`.
+pub(crate) const SEARCH_CANDIDATE_CAP: usize = 500;
+
+/// The wall-clock budget of one search, measured from when it starts. The
+/// answer waits for this long at most, whatever the scanner is still doing.
+pub(crate) const SEARCH_TIME_BUDGET: Duration = Duration::from_millis(1_500);
 
 /// Characters of context kept on each side of a match in its snippet.
 const SNIPPET_CONTEXT: usize = 60;
 
-/// One search's answer: the hits, newest session first, and whether a cap or
-/// the time budget stopped the scan before it read everything.
+/// One search's answer: the hits, newest first, and whether a cap, the time
+/// budget, a cancellation or an unreadable journal cut the scan short.
 pub(crate) struct TranscriptSearch {
     pub(crate) hits: Vec<SessionSearchHit>,
     pub(crate) truncated: bool,
 }
 
-impl Journal {
-    /// Searches the transcripts `owner` owns. A blank query reads nothing and
-    /// truncates nothing: there is no search to have stopped.
-    pub(crate) fn search_transcripts(
-        &self,
+/// A match with the time its event was written, for the newest-first order.
+struct Candidate {
+    at_ms: u64,
+    hit: SessionSearchHit,
+}
+
+#[derive(Default)]
+struct Collector {
+    candidates: Vec<Candidate>,
+    truncated: bool,
+    finished: bool,
+}
+
+/// One search in flight. The scanner owns the journal reads; the caller only
+/// waits and reads the collector.
+pub(crate) struct SearchRun {
+    cancel: Arc<AtomicBool>,
+    collector: Arc<Mutex<Collector>>,
+    done: mpsc::Receiver<()>,
+    deadline: Instant,
+}
+
+impl SearchRun {
+    /// Starts scanning `query` in `owner`'s transcripts. A blank query has
+    /// nothing to scan, so there is no run to wait on.
+    pub(crate) fn start(
+        journal: Arc<Journal>,
         owner: &str,
         query: &str,
-        deadline: Instant,
-    ) -> Result<TranscriptSearch, JournalError> {
-        let needle = query.trim();
+        cancel: Arc<AtomicBool>,
+    ) -> Option<SearchRun> {
+        let needle = query.trim().to_string();
         if needle.is_empty() {
-            return Ok(TranscriptSearch {
-                hits: Vec::new(),
-                truncated: false,
-            });
+            return None;
         }
-        let mut sessions: Vec<_> = self
-            .list()?
+        let deadline = Instant::now() + SEARCH_TIME_BUDGET;
+        let collector = Arc::new(Mutex::new(Collector::default()));
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        let scanner_collector = Arc::clone(&collector);
+        let scanner_cancel = Arc::clone(&cancel);
+        let owner = owner.to_string();
+        let spawned = std::thread::Builder::new()
+            .name("daemon-transcript-scan".to_string())
+            .spawn(move || {
+                // The sender drops when the scan ends, however it ends, so the
+                // waiter never waits on a scanner that is gone.
+                let _done = done_tx;
+                scan(
+                    &journal,
+                    &owner,
+                    &needle,
+                    &scanner_cancel,
+                    &scanner_collector,
+                );
+            });
+        if spawned.is_err() {
+            // No scanner means no hits, and the answer must say the search did
+            // not run to completion.
+            if let Ok(mut state) = collector.lock() {
+                state.truncated = true;
+                state.finished = true;
+            }
+        }
+        Some(SearchRun {
+            cancel,
+            collector,
+            done: done_rx,
+            deadline,
+        })
+    }
+
+    /// Waits for the scan up to the budget, then answers with what it found.
+    pub(crate) fn wait(self) -> TranscriptSearch {
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        match self.done.recv_timeout(remaining) {
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => {}
+            Err(RecvTimeoutError::Timeout) => {
+                // Stop the scanner at its next check. Whatever it found so far
+                // is the answer, and it is partial.
+                self.cancel.store(true, Ordering::Release);
+            }
+        }
+        let Ok(mut state) = self.collector.lock() else {
+            return TranscriptSearch {
+                hits: Vec::new(),
+                truncated: true,
+            };
+        };
+        let mut truncated = state.truncated || !state.finished;
+        let mut candidates = std::mem::take(&mut state.candidates);
+        candidates.sort_by(|left, right| {
+            right
+                .at_ms
+                .cmp(&left.at_ms)
+                .then_with(|| right.hit.session_id.cmp(&left.hit.session_id))
+                .then_with(|| right.hit.generation.cmp(&left.hit.generation))
+                .then_with(|| right.hit.seq.cmp(&left.hit.seq))
+        });
+        if candidates.len() > SEARCH_HIT_CAP {
+            truncated = true;
+        }
+        let hits = candidates
             .into_iter()
-            .filter(|record| record.owner == owner)
+            .take(SEARCH_HIT_CAP)
+            .map(|candidate| candidate.hit)
             .collect();
-        sessions.sort_by_key(|record| std::cmp::Reverse(record.updated_at_ms));
-        let mut truncated = sessions.len() > SEARCH_SESSION_CAP;
-        let mut hits = Vec::new();
-        for record in sessions.iter().take(SEARCH_SESSION_CAP) {
-            if Instant::now() >= deadline {
+        TranscriptSearch { hits, truncated }
+    }
+}
+
+/// The scanner: sessions newest first, each session's events newest first,
+/// checking the cancel flag before every session and every event. Each
+/// session's matches reach the collector as one batch, so a waiter that gives
+/// up mid-scan still reads everything found before that session.
+fn scan(
+    journal: &Journal,
+    owner: &str,
+    needle: &str,
+    cancel: &AtomicBool,
+    collector: &Mutex<Collector>,
+) {
+    let finish = |truncated: bool| {
+        if let Ok(mut state) = collector.lock() {
+            state.truncated |= truncated;
+            state.finished = true;
+        }
+    };
+    let Ok(records) = journal.list() else {
+        finish(true);
+        return;
+    };
+    let mut sessions: Vec<_> = records
+        .into_iter()
+        .filter(|record| record.owner == owner)
+        .collect();
+    sessions.sort_by_key(|record| std::cmp::Reverse(record.updated_at_ms));
+    let mut truncated = sessions.len() > SEARCH_SESSION_CAP;
+    for record in sessions.iter().take(SEARCH_SESSION_CAP) {
+        if cancel.load(Ordering::Acquire) {
+            truncated = true;
+            break;
+        }
+        let Ok(replay) = journal.replay(&record.id) else {
+            // An unreadable session is a gap in the answer, never a silent
+            // "no match".
+            truncated = true;
+            continue;
+        };
+        let mut found = Vec::new();
+        for (index, (event, (generation, seq))) in replay
+            .events
+            .iter()
+            .zip(replay.event_seqs.iter())
+            .enumerate()
+            .rev()
+        {
+            if cancel.load(Ordering::Acquire) {
                 truncated = true;
                 break;
             }
-            let Ok(replay) = self.replay(&record.id) else {
+            let Some((author, message_id, text)) = searchable(event) else {
                 continue;
             };
-            // Newest entries first: a session's latest words are the likeliest
-            // thing the person is looking for.
-            for (event, (generation, seq)) in
-                replay.events.iter().zip(replay.event_seqs.iter()).rev()
-            {
-                let Some((author, message_id, text)) = searchable(event) else {
-                    continue;
-                };
-                let Some(snippet) = snippet_around(text, needle) else {
-                    continue;
-                };
-                hits.push(SessionSearchHit {
+            let Some(snippet) = snippet_around(text, needle) else {
+                continue;
+            };
+            let at_ms = replay
+                .event_ts_ms
+                .get(index)
+                .copied()
+                .flatten()
+                .unwrap_or(0);
+            found.push(Candidate {
+                at_ms,
+                hit: SessionSearchHit {
                     session_id: record.id.clone(),
                     generation: *generation,
                     seq: *seq,
                     message_id,
                     author,
                     snippet,
-                });
-                if hits.len() >= SEARCH_HIT_CAP {
-                    return Ok(TranscriptSearch {
-                        hits,
-                        truncated: true,
-                    });
-                }
-            }
+                },
+            });
         }
-        Ok(TranscriptSearch { hits, truncated })
+        if found.is_empty() {
+            continue;
+        }
+        let Ok(mut state) = collector.lock() else {
+            finish(true);
+            return;
+        };
+        if state.candidates.len() + found.len() > SEARCH_CANDIDATE_CAP {
+            let room = SEARCH_CANDIDATE_CAP.saturating_sub(state.candidates.len());
+            state.candidates.extend(found.into_iter().take(room));
+            truncated = true;
+            break;
+        }
+        state.candidates.extend(found);
     }
+    finish(truncated);
 }
 
 /// The words of an event a search reads: what the person typed, and what the
@@ -177,6 +326,8 @@ fn collapse_whitespace(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::journal::{agent_report_record, new_session_record};
+    use devboule_protocol::SessionKind;
 
     #[test]
     fn a_match_is_found_whatever_its_case() {
@@ -244,10 +395,7 @@ mod tests {
     }
 
     /// A journal with two owners' sessions, one of them holding the word.
-    fn searchable_journal() -> (std::path::PathBuf, Journal) {
-        use crate::journal::{agent_report_record, new_session_record};
-        use devboule_protocol::SessionKind;
-
+    fn searchable_journal() -> (std::path::PathBuf, Arc<Journal>) {
         let dir = crate::test_dirs::test_temp_dir("devboule-transcript-search");
         let journal = Journal::open(&dir.join("journal.sqlite")).expect("journal");
         for (id, owner) in [("s.mine", "owner"), ("s.theirs", "someone")] {
@@ -287,18 +435,29 @@ mod tests {
             let record = agent_report_record(session, 1, seq, event).expect("a record");
             assert!(journal.try_append(record), "the event is journalled");
         }
-        (dir, journal)
+        (dir, Arc::new(journal))
+    }
+
+    fn search(journal: &Arc<Journal>, owner: &str, query: &str) -> TranscriptSearch {
+        SearchRun::start(
+            Arc::clone(journal),
+            owner,
+            query,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .map(SearchRun::wait)
+        .unwrap_or(TranscriptSearch {
+            hits: Vec::new(),
+            truncated: false,
+        })
     }
 
     #[test]
-    fn search_reads_the_owners_transcripts_newest_entry_first_with_its_journal_position() {
+    fn search_reads_the_owners_transcripts_newest_first_with_its_journal_position() {
         let (dir, journal) = searchable_journal();
-        let deadline = Instant::now() + SEARCH_TIME_BUDGET;
-        let search = journal
-            .search_transcripts("owner", "kalsa", deadline)
-            .expect("the search runs");
-        assert!(!search.truncated, "nothing stopped the scan");
-        let found: Vec<(&str, u64, u64, SearchAuthor, Option<&str>)> = search
+        let found = search(&journal, "owner", "kalsa");
+        assert!(!found.truncated, "nothing stopped the scan");
+        let rows: Vec<(&str, u64, u64, SearchAuthor, Option<&str>)> = found
             .hits
             .iter()
             .map(|hit| {
@@ -312,39 +471,104 @@ mod tests {
             })
             .collect();
         assert_eq!(
-            found,
+            rows,
             vec![
                 ("s.mine", 1, 2, SearchAuthor::Agent, Some("m2")),
                 ("s.mine", 1, 1, SearchAuthor::Person, Some("m1")),
             ],
             "the other owner's session is never read"
         );
-        assert!(search.hits[0].snippet.contains("Kalsa build"));
+        assert!(found.hits[0].snippet.contains("Kalsa build"));
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
-    fn a_spent_time_budget_stops_the_scan_and_says_so() {
-        let (dir, journal) = searchable_journal();
-        let search = journal
-            .search_transcripts("owner", "kalsa", Instant::now())
-            .expect("the search runs");
-        assert!(search.hits.is_empty());
-        assert!(
-            search.truncated,
-            "a scan cut short is never presented as complete"
+    fn hits_are_ordered_by_when_they_were_written_not_by_their_session() {
+        use crate::journal::agent_report_record_at;
+        let dir = crate::test_dirs::test_temp_dir("devboule-transcript-order");
+        let journal = Journal::open(&dir.join("journal.sqlite")).expect("journal");
+        // s.old was touched last, but its match was written first.
+        for (id, updated_at_ms, written_at, text) in [
+            ("s.old", 2_000_u64, 100_u64, "kalsa from long ago"),
+            ("s.new", 1_000_u64, 500_u64, "kalsa from just now"),
+        ] {
+            let mut row = new_session_record(id, "owner", None, SessionKind::Claude, "a session");
+            row.updated_at_ms = updated_at_ms;
+            journal.upsert_blocking(row).expect("session row");
+            journal.start_generation(id, 1).expect("generation");
+            let event: SessionEvent = serde_json::from_value(serde_json::json!({
+                "type": "agent_user_message",
+                "text": text,
+            }))
+            .expect("a human message");
+            let record = agent_report_record_at(id, 1, 1, &event, written_at).expect("a record");
+            assert!(journal.try_append(record), "the event is journalled");
+        }
+        let found = search(&Arc::new(journal), "owner", "kalsa");
+        let order: Vec<&str> = found
+            .hits
+            .iter()
+            .map(|hit| hit.session_id.as_str())
+            .collect();
+        assert_eq!(
+            order,
+            vec!["s.new", "s.old"],
+            "the newest match comes first"
         );
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
-    fn a_blank_query_reads_nothing_and_truncates_nothing() {
+    fn a_cancelled_scan_stops_and_says_so() {
         let (dir, journal) = searchable_journal();
-        let search = journal
-            .search_transcripts("owner", "   ", Instant::now() + SEARCH_TIME_BUDGET)
-            .expect("the search runs");
-        assert!(search.hits.is_empty());
-        assert!(!search.truncated);
+        let cancel = Arc::new(AtomicBool::new(true));
+        let run = SearchRun::start(Arc::clone(&journal), "owner", "kalsa", cancel)
+            .expect("a run for a real query");
+        let found = run.wait();
+        assert!(found.hits.is_empty(), "nothing is read after the cancel");
+        assert!(
+            found.truncated,
+            "a cancelled scan is never presented as complete"
+        );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_blank_query_starts_no_scan_and_truncates_nothing() {
+        let (dir, journal) = searchable_journal();
+        assert!(SearchRun::start(
+            Arc::clone(&journal),
+            "owner",
+            "   ",
+            Arc::new(AtomicBool::new(false)),
+        )
+        .is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_budget_bounds_the_answer_even_when_the_scan_never_finishes() {
+        // A run whose scanner never reports done: the caller must answer at the
+        // budget, flag the answer as partial, and tell the scanner to stop.
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let run = SearchRun {
+            cancel: Arc::clone(&cancel),
+            collector: Arc::new(Mutex::new(Collector::default())),
+            done: done_rx,
+            deadline: Instant::now() + Duration::from_millis(50),
+        };
+        let started = Instant::now();
+        let found = run.wait();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the wait is bounded"
+        );
+        assert!(found.truncated);
+        assert!(
+            cancel.load(Ordering::Acquire),
+            "the scanner is told to stop"
+        );
+        drop(done_tx);
     }
 }

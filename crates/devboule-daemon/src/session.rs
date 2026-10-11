@@ -849,6 +849,9 @@ pub struct SessionRegistry {
     /// disk does not carry.
     uploads: crate::attachment_upload::AttachmentUploads,
     transition_sink: Arc<Mutex<Option<TransitionSink>>>,
+    /// The cancel flag of the newest transcript search. A search that starts
+    /// while another runs cancels the older one, so stale queries stop.
+    search_cancel: Arc<Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>>,
     presence: Arc<Mutex<HashMap<u64, ConnectionPresence>>>,
     /// Journal rows are the slow, mostly-static half of a roster. Keep them
     /// out of live-session transition broadcasts; lifecycle operations below
@@ -1014,6 +1017,7 @@ impl SessionRegistry {
             paths,
             journal,
             transition_sink: Arc::new(Mutex::new(None)),
+            search_cancel: Arc::new(Mutex::new(None)),
             presence: Arc::new(Mutex::new(HashMap::new())),
             journal_roster: Arc::new(Mutex::new(None)),
             workspace_paths: Arc::new(Mutex::new(WorkspacePathCache::default())),
@@ -1914,19 +1918,27 @@ impl SessionRegistry {
             .map_err(Into::into)
     }
 
-    /// The transcript search the sidebar sends: the owner's own transcripts,
-    /// read within the search's time budget.
-    pub(crate) fn search_transcripts(
+    /// Starts the transcript search the sidebar sent for `owner`'s transcripts,
+    /// cancelling the search before it. `None` for a blank query: nothing to
+    /// wait on. The caller waits on the run off the request thread.
+    pub(crate) fn start_transcript_search(
         &self,
         owner: &OwnerId,
         query: &str,
-    ) -> Result<crate::journal_search::TranscriptSearch, WireError> {
-        let deadline = std::time::Instant::now() + crate::journal_search::SEARCH_TIME_BUDGET;
-        self.journal
-            .as_ref()
-            .ok_or_else(journal_unavailable)?
-            .search_transcripts(&owner.user, query, deadline)
-            .map_err(Into::into)
+    ) -> Result<Option<crate::journal_search::SearchRun>, WireError> {
+        let journal = Arc::clone(self.journal.as_ref().ok_or_else(journal_unavailable)?);
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        if let Ok(mut latest) = self.search_cancel.lock() {
+            if let Some(previous) = latest.replace(Arc::clone(&cancel)) {
+                previous.store(true, std::sync::atomic::Ordering::Release);
+            }
+        }
+        Ok(crate::journal_search::SearchRun::start(
+            journal,
+            &owner.user,
+            query,
+            cancel,
+        ))
     }
 
     pub fn journal_retention_get(&self) -> Result<JournalRetention, WireError> {
