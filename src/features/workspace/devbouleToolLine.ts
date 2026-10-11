@@ -20,27 +20,25 @@ const FAMILY_BY_NAME = new Map<string, Family>([
   ["stop_agent", "stop"],
 ]);
 
-const VERBS: Record<Family, Record<ToolPhase, string>> = {
-  activity: {
-    done: "Checked",
-    running: "Checking",
-    cancelled: "Checked",
-    failed: "Couldn't check",
-  },
+// A call that did not finish reads as what it did not do; a cancelled call is never a success.
+const VERBS: Record<Family, { done: string; running: string; failed: string }> = {
+  activity: { done: "Checked", running: "Checking", failed: "Couldn't check" },
   send: {
     done: "Sent a message to",
     running: "Sending a message to",
-    cancelled: "Sent a message to",
     failed: "Couldn't send a message to",
   },
-  create: { done: "Started", running: "Starting", cancelled: "Started", failed: "Couldn't start" },
-  cancel: {
-    done: "Canceled",
-    running: "Canceling",
-    cancelled: "Canceled",
-    failed: "Couldn't cancel",
-  },
-  stop: { done: "Stopped", running: "Stopping", cancelled: "Stopped", failed: "Couldn't stop" },
+  create: { done: "Started", running: "Starting", failed: "Couldn't start" },
+  cancel: { done: "Canceled", running: "Canceling", failed: "Couldn't cancel" },
+  stop: { done: "Stopped", running: "Stopping", failed: "Couldn't stop" },
+};
+
+const CANCELLED_SUBJECT: Record<Family, string> = {
+  activity: "check of",
+  send: "message to",
+  create: "start of",
+  cancel: "cancel of",
+  stop: "stop of",
 };
 
 const QUALIFIER = /^(?:mcp__devboule__)?(?:devboule_)?/;
@@ -96,6 +94,12 @@ export function devbouleActivity(output: string): string | undefined {
   return resultActivity(parseResult(output));
 }
 
+/** The child session a call's result names: what a click on the line opens. */
+export function devbouleChildSession(output: string): string | undefined {
+  const value = parseResult(output)?.sessionId;
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
 /** The tool's name, and the words after it in the title. */
 function splitTitle(title: string): { name: string; rest: string } {
   const bare = title.trim().replace(QUALIFIER, "");
@@ -119,13 +123,15 @@ export function devbouleToolLine(
   if (family === undefined) return undefined;
   const result = parseResult(item.output);
   const named = resultName(result) ?? (rest === "" ? undefined : rest);
+  if (phase === "cancelled")
+    return `Cancelled · ${CANCELLED_SUBJECT[family]} ${named ?? UNNAMED_AGENT}`;
   if (family === "create") {
     if (phase === "failed") return "Couldn't start the agent";
     const head = `${phase === "running" ? "Starting" : "Started"} agent`;
     return named === undefined ? head : `${head} · ${named}`;
   }
   const agent = named ?? UNNAMED_AGENT;
-  const verb = VERBS[family][phase];
+  const verb = VERBS[family][phase === "running" || phase === "failed" ? phase : "done"];
   if (family === "activity") {
     const activity = resultActivity(result);
     if (activity === "blocked") return `${agent} is blocked`;

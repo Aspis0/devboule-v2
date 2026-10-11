@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { RECOVERED_SESSION_UNAVAILABLE, type AgentChatItem } from "../../../lib/agentSession";
 import { groupToolCalls, isToolCallGroup, type ToolCallGroup } from "../../../lib/toolCallGroups";
-import { dropDuplicateFinishNotices, isAgentTraffic } from "./agentTraffic";
+import { dropAgentAnsweredCards, dropDuplicateFinishNotices, isAgentTraffic } from "./agentTraffic";
 import { dropRecoveredFailures } from "./recoveredFailures";
 
 /** One quiet line per event group: the daemon announces a compaction twice
@@ -47,7 +47,7 @@ function deriveEntries(
 ) {
   const visibleItems = dropDuplicateFinishNotices(
     dropRecoveredFailures(
-      items.filter(
+      dropAgentAnsweredCards(items).filter(
         (item) =>
           !isAgentTraffic(item) &&
           (!recoveredAttach ||

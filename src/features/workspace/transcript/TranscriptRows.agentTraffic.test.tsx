@@ -112,7 +112,7 @@ describe("agent-to-agent traffic is not drawn", () => {
     expect(host.textContent).not.toContain("mcp__devboule__");
   });
 
-  it("drops a child's permission relay row", async () => {
+  it("keeps a child's permission request that still waits for an answer", async () => {
     await show([
       {
         id: "permission-1",
@@ -123,6 +123,27 @@ describe("agent-to-agent traffic is not drawn", () => {
         excerpt: "(?i)kalsa",
         excerptState: "closed",
       },
+    ]);
+
+    expect(host.querySelector("[data-testid='agent-permission-request']")).not.toBeNull();
+  });
+
+  it("drops a child's permission request that an agent answered, with the answer", async () => {
+    await show([
+      {
+        id: "permission-1",
+        role: "permission_request",
+        cardId: "toolu_01Covr",
+        toolTitle: "Grep",
+        childName: "Kalsa design concepts",
+        excerpt: "",
+        excerptState: "absent",
+      },
+      devbouleTool(
+        "tool-1",
+        "mcp__devboule__devboule_answer_permissions",
+        '{"state":"answered","cardId":"toolu_01Covr"}',
+      ),
     ]);
 
     expect(host.querySelector("[data-testid='agent-permission-request']")).toBeNull();

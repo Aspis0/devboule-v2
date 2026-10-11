@@ -4388,7 +4388,7 @@ describe("creator permission-request message", () => {
     "",
   ].join("\n");
 
-  it("draws no row for a child's permission request: the orchestrator's relay stays in the journal", async () => {
+  it("draws a child's permission request that nothing has answered yet", async () => {
     root = createRoot(container);
     await act(async () => {
       root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
@@ -4404,9 +4404,9 @@ describe("creator permission-request message", () => {
       });
     });
 
-    expect(container.querySelector("[data-testid='agent-permission-request']")).toBeNull();
-    expect(container.textContent).not.toContain("Relayed");
-    expect(container.textContent).not.toContain("card-77");
+    // Nothing answered this card, so the person still sees it.
+    expect(container.querySelector("[data-testid='agent-permission-request']")).not.toBeNull();
+    expect(container.textContent).toContain("card-77");
   });
 
   it("walks the excerptState table: an out-of-union state takes the visible unknown arm (re-audit F7)", () => {

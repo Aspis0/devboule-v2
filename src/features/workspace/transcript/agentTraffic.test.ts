@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentChatItem } from "../../../lib/agentSession";
-import { dropDuplicateFinishNotices, isAgentTraffic } from "./agentTraffic";
+import { dropAgentAnsweredCards, dropDuplicateFinishNotices, isAgentTraffic } from "./agentTraffic";
 
 function tool(title: string, output = ""): AgentChatItem {
   return {
@@ -67,6 +67,21 @@ describe("isAgentTraffic", () => {
     expect(isAgentTraffic(blocked)).toBe(false);
   });
 
+  it("keeps a poll or an answer that failed, since the person must see the failure", () => {
+    const failed = (title: string, output: string): AgentChatItem => ({
+      id: `failed-${title}`,
+      role: "tool",
+      title,
+      output,
+      toolCallId: title,
+      status: "failed",
+    });
+    expect(isAgentTraffic(failed("mcp__devboule__devboule_agent_activity", ""))).toBe(false);
+    expect(
+      isAgentTraffic(failed("mcp__devboule__devboule_answer_permissions", "Mcp error -32602")),
+    ).toBe(false);
+  });
+
   it("hides the orchestrator's answer and listing calls for children's cards", () => {
     expect(isAgentTraffic(tool("mcp__devboule__devboule_answer_permissions"))).toBe(true);
     expect(isAgentTraffic(tool("mcp__devboule__devboule_list_pending_permissions"))).toBe(true);
@@ -87,7 +102,7 @@ describe("isAgentTraffic", () => {
     expect(isAgentTraffic(system("Codex declined an out-of-scope request."))).toBe(false);
   });
 
-  it("hides a permission relay and an idle-close notice, and keeps other notices", () => {
+  it("keeps a child's permission request, which the person may have to act on", () => {
     expect(
       isAgentTraffic({
         id: "p",
@@ -98,7 +113,10 @@ describe("isAgentTraffic", () => {
         excerpt: "",
         excerptState: "absent",
       }),
-    ).toBe(true);
+    ).toBe(false);
+  });
+
+  it("hides an idle-close notice and keeps other notices", () => {
     const idleClosed = {
       id: "i",
       role: "daemon_notice",
@@ -133,5 +151,54 @@ describe("dropDuplicateFinishNotices", () => {
       finishNotice("worker"),
     ];
     expect(dropDuplicateFinishNotices(items)).toEqual(items);
+  });
+});
+
+describe("dropAgentAnsweredCards", () => {
+  function card(id: string): AgentChatItem {
+    return {
+      id: `card-${id}`,
+      role: "permission_request",
+      cardId: id,
+      toolTitle: "Grep",
+      childName: "worker",
+      excerpt: "",
+      excerptState: "absent",
+    };
+  }
+
+  function answer(output: string, status = "completed"): AgentChatItem {
+    return {
+      id: `answer-${output}`,
+      role: "tool",
+      title: "mcp__devboule__devboule_answer_permissions",
+      output,
+      toolCallId: "answer",
+      status,
+    };
+  }
+
+  it("drops a card an agent answered, and keeps the card the answer did not name", () => {
+    const items = [
+      card("toolu_a"),
+      card("toolu_b"),
+      answer('{"state":"answered","cardId":"toolu_a"}'),
+    ];
+    expect(dropAgentAnsweredCards(items).map((item) => item.id)).toEqual([
+      "card-toolu_b",
+      'answer-{"state":"answered","cardId":"toolu_a"}',
+    ]);
+  });
+
+  it("keeps a card whose answer failed, or whose answer reports no state", () => {
+    const items = [
+      card("toolu_a"),
+      answer('{"state":"answered","cardId":"toolu_a"}', "failed"),
+      card("toolu_c"),
+      answer('{"cardId":"toolu_c"}'),
+    ];
+    expect(
+      dropAgentAnsweredCards(items).filter((item) => item.role === "permission_request"),
+    ).toHaveLength(2);
   });
 });

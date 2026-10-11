@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { ToolChatItem } from "../../lib/toolCallGroups";
-import { devbouleToolLine } from "./devbouleToolLine";
+import { devbouleChildSession, devbouleToolLine } from "./devbouleToolLine";
 
 function call(title: string, output = "", status = "completed"): ToolChatItem {
   return {
@@ -97,5 +97,33 @@ describe("devbouleToolLine", () => {
     expect(devbouleToolLine(call("cargo test", ""))).toBeUndefined();
     expect(devbouleToolLine(call("devboule_list_profiles", "{}"))).toBeUndefined();
     expect(devbouleToolLine(call("mcp__devboule__browser_click", ""))).toBeUndefined();
+  });
+});
+
+describe("a call that did not finish", () => {
+  it("reads a cancelled start, send or stop as cancelled, never as done", () => {
+    expect(
+      devbouleToolLine(call("devboule_create_agent", '{"displayName":"Kid"}'), "cancelled"),
+    ).toBe("Cancelled · start of Kid");
+    expect(
+      devbouleToolLine(call("devboule_send_message", '{"displayName":"Kid"}'), "cancelled"),
+    ).toBe("Cancelled · message to Kid");
+    expect(
+      devbouleToolLine(call("devboule_stop_agent", '{"displayName":"Kid"}'), "cancelled"),
+    ).toBe("Cancelled · stop of Kid");
+  });
+
+  it("names a cancelled start with no agent by what it was for", () => {
+    expect(devbouleToolLine(call("devboule_create_agent", ""), "cancelled")).toBe(
+      "Cancelled · start of an agent",
+    );
+  });
+});
+
+describe("the child a call's result names", () => {
+  it("reads the session id a result carries, and nothing else", () => {
+    expect(devbouleChildSession('{"displayName":"Kid","sessionId":"s.kid.1"}')).toBe("s.kid.1");
+    expect(devbouleChildSession('{"displayName":"Kid"}')).toBeUndefined();
+    expect(devbouleChildSession("Mcp error -32602")).toBeUndefined();
   });
 });
