@@ -2430,6 +2430,18 @@ mod tests {
     }
 
     #[test]
+    fn a_codex_command_killed_by_a_signal_stays_failed() {
+        // The process did not exit on its own: it was killed (137 is SIGKILL's
+        // 128 + 9). Codex's failed status is then a real failure, not a verdict
+        // the exit code gave.
+        let (status, exit) = finished_command(
+            r#"{"type":"commandExecution","id":"exec-5","status":"failed","command":"npm test","aggregatedOutput":"","exitCode":137}"#,
+        );
+        assert_eq!(status, "failed");
+        assert_eq!(exit, Some(137));
+    }
+
+    #[test]
     fn a_codex_command_that_never_exited_stays_failed() {
         // No exit code: the command could not start, or the tool errored before
         // the process reported anything. That is a real failure.

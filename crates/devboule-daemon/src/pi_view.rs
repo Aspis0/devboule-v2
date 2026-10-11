@@ -340,8 +340,12 @@ fn tool_execution_end(value: &Value) -> Vec<SessionEvent> {
     let exit_code = result_exit_code(value.get("result"));
     let mut events = vec![SessionEvent::AgentToolUpdate {
         tool_call_id: tool_call_id.to_string(),
-        // `isError` with a non-zero code is a process that ran and exited: a finished command.
-        status: Some(settled_command_status(tool_status(failed), exit_code)),
+        // Only an explicit `exitCode` settles the status: the `code` fallbacks fill
+        // the row's number, not a verdict on whether the command ran and exited.
+        status: Some(settled_command_status(
+            tool_status(failed),
+            explicit_exit_code(value.get("result")),
+        )),
         text: value.get("result").and_then(tool_result_text),
         title: None,
         kind: value
@@ -374,6 +378,14 @@ fn tool_result_text(value: &Value) -> Option<String> {
     }
     let text = blocks_text(content);
     (!text.is_empty()).then(|| capped(&text))
+}
+
+/// The `exitCode` field alone: the one number pi states as a shell's exit.
+fn explicit_exit_code(result: Option<&Value>) -> Option<i32> {
+    result?
+        .get("exitCode")
+        .and_then(Value::as_i64)
+        .and_then(|code| i32::try_from(code).ok())
 }
 
 /// `exitCode` then `code` translated from Paseo's `resolveToolCallOutput` (pi/tool-call-mapper.ts).
@@ -831,6 +843,38 @@ mod tests {
             "an error flag is not a code: {:?}",
             events_from_line(&failed)
         );
+    }
+
+    #[test]
+    fn a_numeric_code_alone_is_not_a_verdict_on_a_pi_failure() {
+        // The `code` fallback fills the row's exit code, but only an explicit
+        // `exitCode` from a shell that exited settles the status: a bare `code`
+        // (an errno-style number, say) is no proof the command ran and exited.
+        let bare_code = parse(
+            r#"{"type":"tool_execution_end","toolCallId":"call_bare_code","toolName":"bash","result":{"content":[{"type":"text","text":"ENOENT"}],"code":2},"isError":true}"#,
+        );
+        match events_from_line(&bare_code).as_slice() {
+            [SessionEvent::AgentToolUpdate {
+                status, exit_code, ..
+            }] => {
+                assert_eq!(status.as_deref(), Some("failed"));
+                assert_eq!(*exit_code, Some(2), "the row still shows the code");
+            }
+            other => panic!("expected one tool row, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_pi_shell_timeout_exit_stays_failed() {
+        let timeout = parse(
+            r#"{"type":"tool_execution_end","toolCallId":"call_bash_timeout","toolName":"bash","result":{"content":[{"type":"text","text":"timed out"}],"exitCode":124},"isError":true}"#,
+        );
+        match events_from_line(&timeout).as_slice() {
+            [SessionEvent::AgentToolUpdate { status, .. }] => {
+                assert_eq!(status.as_deref(), Some("failed"));
+            }
+            other => panic!("expected one tool row, got {other:?}"),
+        }
     }
 
     #[test]

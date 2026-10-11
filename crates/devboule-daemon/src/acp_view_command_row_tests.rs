@@ -238,6 +238,21 @@ fn a_shell_that_only_exited_non_zero_is_completed_with_its_code() {
 }
 
 #[test]
+fn an_acp_shell_killed_or_timed_out_stays_failed() {
+    for code in [124, 137, -1] {
+        let line = parse(&tool_call_update(&format!(
+            r#","kind":"execute","status":"failed","rawOutput":{{"exitCode":{code}}}"#
+        )));
+        match view_from_envelope(&line, SESSION).as_slice() {
+            [SessionEvent::AgentToolUpdate { status, .. }] => {
+                assert_eq!(status.as_deref(), Some("failed"), "exit {code}");
+            }
+            other => panic!("expected one tool update, got {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn an_acp_failure_without_a_non_zero_exit_stays_failed() {
     for extra in [
         r#","kind":"execute","status":"failed","rawOutput":{"exitCode":0}"#,
