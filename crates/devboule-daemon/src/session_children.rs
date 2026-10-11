@@ -1179,11 +1179,7 @@ impl super::SessionRegistry {
         runtimes
             .iter()
             .filter(|runtime| {
-                runtime.settle_stalled_turn(
-                    now,
-                    crate::agent_activity::CODEX_IDLE_GRACE,
-                    crate::agent_activity::CHILD_QUIET_AFTER,
-                )
+                runtime.settle_stalled_turn(now, crate::agent_activity::CODEX_IDLE_GRACE)
             })
             .count()
     }

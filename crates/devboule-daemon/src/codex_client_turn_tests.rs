@@ -662,18 +662,13 @@ fn a_measured_turn_whose_completion_never_comes_is_settled_once_the_root_is_idle
 
     let now = std::time::Instant::now();
     let grace = crate::agent_activity::CODEX_IDLE_GRACE;
-    let silence = crate::agent_activity::CHILD_QUIET_AFTER;
     assert!(
-        !runtime.settle_stalled_turn(now, grace, silence),
+        !runtime.settle_stalled_turn(now, grace),
         "inside the idle grace the turn is still open"
     );
     assert!(runtime.is_running_turn());
     assert!(
-        runtime.settle_stalled_turn(
-            now + grace + std::time::Duration::from_secs(1),
-            grace,
-            silence
-        ),
+        runtime.settle_stalled_turn(now + grace + std::time::Duration::from_secs(1), grace),
         "after the idle grace the turn is ended"
     );
     assert!(!runtime.is_running_turn());
@@ -685,7 +680,7 @@ fn a_measured_turn_whose_completion_never_comes_is_settled_once_the_root_is_idle
         SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "stalled"
     ));
     assert!(
-        !runtime.settle_stalled_turn(now + silence * 2, grace, silence),
+        !runtime.settle_stalled_turn(now + grace * 2, grace),
         "nothing running, nothing to settle"
     );
 }
@@ -699,20 +694,15 @@ fn a_measured_turn_that_completes_is_never_settled_as_stalled() {
     }
     assert!(!runtime.is_running_turn(), "the completion ends the run");
     let far_later = std::time::Instant::now() + crate::agent_activity::CHILD_QUIET_AFTER * 3;
-    assert!(!runtime.settle_stalled_turn(
-        far_later,
-        crate::agent_activity::CODEX_IDLE_GRACE,
-        crate::agent_activity::CHILD_QUIET_AFTER,
-    ));
+    assert!(!runtime.settle_stalled_turn(far_later, crate::agent_activity::CODEX_IDLE_GRACE));
     let events = published(&conn);
     assert_eq!(finished(&events).len(), 1, "one completion, one finish");
 }
 
 #[test]
-fn a_silent_codex_turn_is_settled_after_the_quiet_bound_even_without_an_idle_report() {
-    // No idle report at all: the session has published nothing for the whole
-    // quiet bound while its turn is open, so the turn is over as far as the
-    // daemon can tell, and it says so.
+fn a_silent_codex_turn_is_never_settled_however_long_it_stays_quiet() {
+    // No idle report from Codex: a long build or a long think looks the same
+    // from outside, so the daemon ends nothing for silence alone.
     let (mut reader, _state, runtime, _conn) = started_reader();
     let frames: Vec<_> = measured_first_turn(false)
         .into_iter()
@@ -722,13 +712,10 @@ fn a_silent_codex_turn_is_settled_after_the_quiet_bound_even_without_an_idle_rep
         reader.dispatch_value(frame, &runtime);
     }
     assert!(runtime.is_running_turn());
-    let now = std::time::Instant::now();
-    let silence = crate::agent_activity::CHILD_QUIET_AFTER;
-    assert!(!runtime.settle_stalled_turn(now, crate::agent_activity::CODEX_IDLE_GRACE, silence));
-    assert!(runtime.settle_stalled_turn(
-        now + silence + std::time::Duration::from_secs(1),
-        crate::agent_activity::CODEX_IDLE_GRACE,
-        silence,
-    ));
-    assert!(!runtime.is_running_turn());
+    let far_later = std::time::Instant::now() + std::time::Duration::from_secs(10 * 60 * 60);
+    assert!(
+        !runtime.settle_stalled_turn(far_later, crate::agent_activity::CODEX_IDLE_GRACE),
+        "a silent turn is not ended"
+    );
+    assert!(runtime.is_running_turn(), "the run stays working");
 }

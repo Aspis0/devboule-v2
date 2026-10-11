@@ -2677,27 +2677,19 @@ impl SessionRuntime {
         }
     }
 
-    /// End a running turn whose completion Codex never sent, once the evidence
-    /// says it is over: the root thread has reported idle for at least
-    /// `idle_grace`, or the session has published nothing for `silence_bound`.
-    /// The person is told why, and the run ends as a stalled turn. Answers
-    /// whether a turn was ended here.
-    pub(crate) fn settle_stalled_turn(
-        &self,
-        now: Instant,
-        idle_grace: Duration,
-        silence_bound: Duration,
-    ) -> bool {
+    /// End a running turn whose completion Codex never sent, once Codex itself
+    /// says the root thread is idle and has stayed idle for `idle_grace`. Only
+    /// that signal settles a turn: a long silent build or a long think is never
+    /// ended for being quiet. The person is told why, and the run ends as a
+    /// stalled turn. Answers whether a turn was ended here.
+    pub(crate) fn settle_stalled_turn(&self, now: Instant, idle_grace: Duration) -> bool {
         if !self.is_running_turn() {
             return false;
         }
         let idle_since = self.codex_idle_since.lock().ok().and_then(|slot| *slot);
         let idle_stalled =
             idle_since.is_some_and(|since| now.saturating_duration_since(since) >= idle_grace);
-        let silent = self
-            .activity_idle_at(now)
-            .is_some_and(|idle| idle >= silence_bound);
-        if !idle_stalled && !silent {
+        if !idle_stalled {
             return false;
         }
         self.clear_codex_thread_idle();
