@@ -90,12 +90,12 @@ describe("AgentChatSurface background tasks", () => {
     expect(sessionTasks).toHaveBeenCalledWith("agent-1");
   });
 
-  it("writes a transcript row when a task starts", async () => {
+  it("keeps a starting task out of the transcript; its state lives in the Tasks panel", async () => {
     await renderSurface();
 
     pushSnapshot(1, [agentTask()]);
 
-    expect(container.textContent).toContain("Running agent Explore auth");
+    expect(container.textContent).not.toContain("Running agent Explore auth");
   });
 
   it("counts the running tasks in the pill and opens the Tasks tab when it is pressed", async () => {

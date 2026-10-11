@@ -83,6 +83,11 @@ function splitTitle(title: string): { name: string; rest: string } {
   return { name: bare.slice(0, space), rest: bare.slice(space).trim() };
 }
 
+/** The bare name of a call, with its MCP qualifier and any words after it dropped. */
+export function devbouleToolName(title: string): string {
+  return splitTitle(title).name;
+}
+
 /** The line for a Devboule agent tool, or undefined for any other call. */
 export function devbouleToolLine(
   item: ToolChatItem,
