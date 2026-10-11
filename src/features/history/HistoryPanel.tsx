@@ -26,6 +26,9 @@ import {
   type HistoryRow,
 } from "./HistoryRow";
 import "./history.css";
+import { ArchivedWorkspaces } from "./ArchivedWorkspaces";
+
+const NO_RESTORE = () => undefined;
 
 export interface HistoryHost {
   id: string;
@@ -47,6 +50,8 @@ export interface HistoryPanelProps {
   /** Receives the listed rows' workspace keys while mounted, then an empty list. */
   onWorkspaceKeysChange?: (keys: readonly WorkspaceKey[]) => void;
   selectedSessionId?: string | null;
+  /** Runs after an archived workspace or project came back, so the sidebar re-reads. */
+  onRestored?: () => void;
 }
 
 const EMPTY_SESSIONS: Session[] = [];
@@ -87,6 +92,7 @@ export function HistoryPanel({
   branches = EMPTY_BRANCHES,
   onWorkspaceKeysChange,
   selectedSessionId = null,
+  onRestored = NO_RESTORE,
 }: HistoryPanelProps) {
   const loadUsage = useCallback((): Promise<JournalUsage> => journalUsage(), []);
   const loadSessions = useCallback((): Promise<Session[]> => sessionsList(), []);
@@ -437,6 +443,7 @@ export function HistoryPanel({
           History
         </h2>
       </div>
+      <ArchivedWorkspaces onRestored={onRestored} />
       <div className="history-page-bar">
         <label className="history-page-search">
           <span className="sr-only">Search history</span>

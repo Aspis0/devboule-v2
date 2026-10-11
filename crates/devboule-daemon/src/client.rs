@@ -1841,6 +1841,46 @@ impl DaemonClient {
         }
     }
 
+    /// The removed projects and the archived workspace rows, for the restore list.
+    pub fn archived_list(
+        &self,
+    ) -> Result<
+        (
+            Vec<devboule_protocol::Project>,
+            Vec<devboule_protocol::Workspace>,
+        ),
+        DaemonError,
+    > {
+        self.require_agreed(devboule_protocol::caps::WORKSPACE_ARCHIVE)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::ArchivedList { id })? {
+            DaemonMessage::Archived {
+                projects,
+                workspaces,
+                ..
+            } => Ok((projects, workspaces)),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Put an archived workspace back on the list; the reply is the row as stored.
+    pub fn workspace_restore(
+        &self,
+        workspace_id: &str,
+    ) -> Result<devboule_protocol::Workspace, DaemonError> {
+        self.require_agreed(devboule_protocol::caps::WORKSPACE_ARCHIVE)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::WorkspaceRestore {
+            id,
+            workspace_id: workspace_id.to_string(),
+        })? {
+            DaemonMessage::Workspace { workspace, .. } => Ok(workspace),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     /// Take a project off the list; its folder and rows stay where they are.
     pub fn project_remove(&self, project_id: &str) -> Result<(), DaemonError> {
         self.require_agreed(devboule_protocol::caps::PROJECT_REMOVE)?;
@@ -3755,6 +3795,7 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::Projects { id, .. }
         | DaemonMessage::Project { id, .. }
         | DaemonMessage::Workspaces { id, .. }
+        | DaemonMessage::Archived { id, .. }
         | DaemonMessage::Workspace { id, .. }
         | DaemonMessage::WorkspaceGit { id, .. }
         | DaemonMessage::WorkspaceGitFile { id, .. }

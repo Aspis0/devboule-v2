@@ -47,6 +47,12 @@ export interface SessionResumeReset {
  */
 export type SessionAttachMessage = SessionEvent | SessionResumeReset;
 
+/** The reply to `archived_list`: what the list took off, for a person to put back. */
+export interface ArchivedList {
+  projects: Project[];
+  workspaces: Workspace[];
+}
+
 export interface Project {
   id: Id;
   name: string;

@@ -1436,6 +1436,20 @@ pub enum ClientMessage {
         id: u64,
         project_id: String,
     },
+    /// The projects removed from the list and the workspace rows archived off
+    /// it, so a person can restore one. The reply is [`DaemonMessage::Archived`].
+    /// The client sends this only under `workspace.archive`.
+    ArchivedList {
+        id: u64,
+    },
+    /// Put an archived workspace back on the list. Refused while its project is
+    /// removed: restore the project first by adding its folder again. The reply
+    /// is [`DaemonMessage::Workspace`]. The client sends this only under
+    /// `workspace.archive`.
+    WorkspaceRestore {
+        id: u64,
+        workspace_id: String,
+    },
     ProvidersList {
         id: u64,
     },
@@ -1875,6 +1889,8 @@ impl ClientMessage {
             | Self::WorkspaceSetTitle { id, .. }
             | Self::WorkspaceArchive { id, .. }
             | Self::ProjectRemove { id, .. }
+            | Self::ArchivedList { id }
+            | Self::WorkspaceRestore { id, .. }
             | Self::ProvidersList { id }
             | Self::ProvidersAuthCheck { id, .. }
             | Self::ProvidersRefresh { id }
@@ -2039,6 +2055,8 @@ impl ClientMessage {
             | Self::WorkspaceSetTitle { .. }
             | Self::WorkspaceArchive { .. }
             | Self::ProjectRemove { .. }
+            | Self::ArchivedList { .. }
+            | Self::WorkspaceRestore { .. }
             | Self::Invoke { .. }
             | Self::DevicesList { .. }
             | Self::PeerAgentsList { .. }
@@ -2161,6 +2179,8 @@ impl ClientMessage {
             Self::WorkspaceSetTitle { .. } => "WorkspaceSetTitle",
             Self::WorkspaceArchive { .. } => "WorkspaceArchive",
             Self::ProjectRemove { .. } => "ProjectRemove",
+            Self::ArchivedList { .. } => "ArchivedList",
+            Self::WorkspaceRestore { .. } => "WorkspaceRestore",
             Self::ProvidersList { .. } => "ProvidersList",
             Self::ProvidersAuthCheck { .. } => "ProvidersAuthCheck",
             Self::ProvidersRefresh { .. } => "ProvidersRefresh",
@@ -2279,6 +2299,8 @@ impl ClientMessage {
             | Self::WorkspaceSetTitle { .. }
             | Self::WorkspaceArchive { .. }
             | Self::ProjectRemove { .. }
+            | Self::ArchivedList { .. }
+            | Self::WorkspaceRestore { .. }
             | Self::WorkspaceFileRename { .. }
             | Self::WorkspaceFileDuplicate { .. }
             // The one act that destroys data — audited like the two writes
@@ -2434,6 +2456,13 @@ pub enum DaemonMessage {
     },
     Workspaces {
         id: u64,
+        workspaces: Vec<Workspace>,
+    },
+    /// The reply to [`ClientMessage::ArchivedList`]: the removed projects, and
+    /// the archived workspace rows of every project.
+    Archived {
+        id: u64,
+        projects: Vec<Project>,
         workspaces: Vec<Workspace>,
     },
     /// The reply to [`ClientMessage::WorkspaceGitStatus`].

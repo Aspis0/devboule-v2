@@ -894,6 +894,13 @@ enum JournalCmd {
         id: String,
         reply: mpsc::Sender<Result<(), JournalError>>,
     },
+    ArchivedList {
+        reply: mpsc::Sender<Result<ArchivedRows, JournalError>>,
+    },
+    WorkspaceRestore {
+        id: String,
+        reply: mpsc::Sender<Result<WorkspaceRecord, JournalError>>,
+    },
     Replay {
         session_id: String,
         reply: mpsc::Sender<Result<Replay, JournalError>>,
@@ -1554,6 +1561,19 @@ impl Journal {
     /// Take a workspace off the list; its folder stays on disk.
     pub fn workspace_archive(&self, id: &str) -> Result<(), JournalError> {
         self.rpc(|reply| JournalCmd::WorkspaceArchive {
+            id: id.to_string(),
+            reply,
+        })
+    }
+
+    /// The removed projects and the archived workspace rows, for the restore list.
+    pub fn archived_list(&self) -> Result<ArchivedRows, JournalError> {
+        self.rpc(|reply| JournalCmd::ArchivedList { reply })
+    }
+
+    /// Put an archived workspace back on the list.
+    pub fn workspace_restore(&self, id: &str) -> Result<WorkspaceRecord, JournalError> {
+        self.rpc(|reply| JournalCmd::WorkspaceRestore {
             id: id.to_string(),
             reply,
         })
@@ -2481,6 +2501,16 @@ fn journal_loop(
                 }
                 let _ = reply.send(result);
             }
+            JournalCmd::ArchivedList { reply } => {
+                let _ = reply.send(archived_list(&conn));
+            }
+            JournalCmd::WorkspaceRestore { id, reply } => {
+                let result = restore_workspace(&conn, &id);
+                if let Err(error) = &result {
+                    on_write_error(error);
+                }
+                let _ = reply.send(result);
+            }
             JournalCmd::Replay { session_id, reply } => {
                 let _ = reply.send(replay_session(&conn, &session_id));
             }
@@ -2839,6 +2869,49 @@ fn add_workspace(
         ],
     )?;
     Ok(record)
+}
+
+/// The removed projects and the archived workspace rows, as the restore list reads them.
+pub type ArchivedRows = (Vec<ProjectRecord>, Vec<WorkspaceRecord>);
+
+/// The removed projects, and the archived rows of every project, in a stable order.
+fn archived_list(
+    conn: &Connection,
+) -> Result<(Vec<ProjectRecord>, Vec<WorkspaceRecord>), JournalError> {
+    let mut projects_stmt = conn.prepare(
+        "SELECT id, name, path, git_state, created_at_ms, updated_at_ms
+         FROM projects WHERE archived_at_ms IS NOT NULL ORDER BY id",
+    )?;
+    let projects = projects_stmt
+        .query_map([], project_from_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut workspaces_stmt = conn.prepare(
+        "SELECT id, project_id, title, isolation, path, created_at_ms, updated_at_ms, branch
+         FROM workspaces WHERE archived_at_ms IS NOT NULL ORDER BY created_at_ms, id",
+    )?;
+    let workspaces = workspaces_stmt
+        .query_map([], workspace_from_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((projects, workspaces))
+}
+
+/// Clears a workspace's stamp. Its project must be listed: a row back on a
+/// removed project would sit where no list reaches it.
+fn restore_workspace(conn: &Connection, id: &str) -> Result<WorkspaceRecord, JournalError> {
+    let record = get_workspace(conn, id)?
+        .ok_or_else(|| JournalError::InvalidRequest(format!("Workspace '{id}' does not exist.")))?;
+    if project_archived(conn, &record.project_id)? {
+        return Err(JournalError::InvalidRequest(
+            "Its project was removed from the list: add the project's folder again first."
+                .to_string(),
+        ));
+    }
+    conn.execute(
+        "UPDATE workspaces SET archived_at_ms = NULL WHERE id = ?1",
+        [id],
+    )?;
+    get_workspace(conn, id)?
+        .ok_or_else(|| JournalError::InvalidRequest(format!("Workspace '{id}' does not exist.")))
 }
 
 /// Stamps a row as off the list. The first stamp is kept, so archiving twice

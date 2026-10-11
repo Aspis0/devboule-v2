@@ -25,6 +25,7 @@ import type {
   PermissionOutcome,
   PluginBackendStatus,
   PluginInventory,
+  ArchivedList,
   Project,
   ProviderCatalog,
   ProviderUpdateOutcome,
@@ -114,6 +115,7 @@ export type CommandArgs = {
   daemon_diagnostics: undefined;
   editors_flushed: { nonce: number; unsaved: string[] };
   projects_list: undefined;
+  archived_list: undefined;
   project_add: { path: string };
   workspaces_list: { projectId: Id };
   workspace_create: {
@@ -124,6 +126,7 @@ export type CommandArgs = {
   workspace_set_title: { workspaceId: Id; title: string };
   workspace_delete: { workspaceId: Id };
   workspace_archive: { workspaceId: Id };
+  workspace_restore: { workspaceId: Id };
   project_remove: { projectId: Id };
   workspace_git_status: { workspaceId: Id };
   workspace_git_diff: { workspaceId: Id; path: string };
@@ -461,12 +464,14 @@ type CommandResults = {
   daemon_diagnostics: DaemonDiagnostics;
   editors_flushed: void;
   projects_list: Project[];
+  archived_list: ArchivedList;
   project_add: Project;
   workspaces_list: Workspace[];
   workspace_create: Workspace;
   workspace_set_title: Workspace;
   workspace_delete: void;
   workspace_archive: void;
+  workspace_restore: Workspace;
   project_remove: void;
   workspace_git_status: WorkspaceGitStatus;
   workspace_git_diff: WorkspaceGitFileDiff;
@@ -699,12 +704,14 @@ export const COMMAND_ARG_KEYS = {
   daemon_diagnostics: [],
   editors_flushed: ["nonce", "unsaved"],
   projects_list: [],
+  archived_list: [],
   project_add: ["path"],
   workspaces_list: ["projectId"],
   workspace_create: ["projectId", "isolation", "branch"],
   workspace_set_title: ["workspaceId", "title"],
   workspace_delete: ["workspaceId"],
   workspace_archive: ["workspaceId"],
+  workspace_restore: ["workspaceId"],
   project_remove: ["projectId"],
   workspace_git_status: ["workspaceId"],
   workspace_git_diff: ["workspaceId", "path"],
@@ -1283,6 +1290,11 @@ export const workspaceArchive = (workspaceId: Id) =>
  * Takes a project off the list. Its folder and its workspace rows stay where
  * they are; adding the same folder again lists it again.
  */
+/** What the list took off: the removed projects and the archived workspace rows. */
+export const archivedList = () => invokeTyped("archived_list");
+/** Puts an archived workspace back on the list; a removed project is refused. */
+export const workspaceRestore = (workspaceId: Id) =>
+  invokeTyped("workspace_restore", { workspaceId });
 export const projectRemove = (projectId: Id) => invokeTyped("project_remove", { projectId });
 export const sessionCreate = (
   workspaceId: Id | null,

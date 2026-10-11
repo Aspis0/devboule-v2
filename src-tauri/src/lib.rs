@@ -180,6 +180,8 @@ pub fn run() {
             backend::workspace::workspace_delete,
             backend::workspace::workspace_archive,
             backend::workspace::project_remove,
+            backend::workspace::archived_list,
+            backend::workspace::workspace_restore,
             backend::workspace::workspace_git_status,
             backend::workspace::workspace_git_diff,
             backend::workspace::workspace_git_log,

@@ -405,6 +405,8 @@ pub fn peer_allows(caps: &[String], request: &ClientMessage) -> PeerDecision {
         ClientMessage::WorkspaceSetTitle { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::WorkspaceArchive { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::ProjectRemove { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::ArchivedList { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::WorkspaceRestore { .. } => with_capability(caps, CAP_ADMIN),
         // `Invoke` is the wire's generic tenant door — "run this command" — and
         // the daemon's own arm answers it with `Unimplemented`
         // (`dispatch.rs`), because this daemon is not a plugin backend. What the
@@ -3017,6 +3019,8 @@ pub(crate) mod tests {
             ClientMessage::WorkspaceSetTitle { .. } => administrative(),
             ClientMessage::WorkspaceArchive { .. } => administrative(),
             ClientMessage::ProjectRemove { .. } => administrative(),
+            ClientMessage::ArchivedList { .. } => administrative(),
+            ClientMessage::WorkspaceRestore { .. } => administrative(),
             ClientMessage::ProvidersList { .. } => administrative(),
             ClientMessage::ProvidersAuthCheck { .. } => administrative(),
             ClientMessage::ProvidersRefresh { .. } => administrative(),
@@ -3151,6 +3155,8 @@ pub(crate) mod tests {
             ClientMessage::WorkspaceSetTitle { .. } => "WorkspaceSetTitle",
             ClientMessage::WorkspaceArchive { .. } => "WorkspaceArchive",
             ClientMessage::ProjectRemove { .. } => "ProjectRemove",
+            ClientMessage::ArchivedList { .. } => "ArchivedList",
+            ClientMessage::WorkspaceRestore { .. } => "WorkspaceRestore",
             ClientMessage::ProvidersList { .. } => "ProvidersList",
             ClientMessage::ProvidersAuthCheck { .. } => "ProvidersAuthCheck",
             ClientMessage::ProvidersRefresh { .. } => "ProvidersRefresh",

@@ -228,3 +228,60 @@ fn a_session_cannot_start_in_a_row_of_a_removed_project() {
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn an_archived_workspace_is_listed_as_archived_and_restored_to_the_list() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let (_, project, local) = project_with_local_row(&dir, &journal);
+    registry.workspace_archive(&local.id).expect("archive");
+
+    let (projects, archived) = registry.archived_list().expect("archived list");
+    assert!(projects.is_empty(), "the project itself is still listed");
+    assert_eq!(
+        archived.iter().map(|w| w.id.as_str()).collect::<Vec<_>>(),
+        [local.id.as_str()]
+    );
+
+    let restored = registry.workspace_restore(&local.id).expect("restore");
+    assert_eq!(restored.id, local.id);
+    assert!(listed_workspace_ids(&journal, &project.id).contains(&local.id));
+    assert!(registry
+        .archived_list()
+        .expect("archived list")
+        .1
+        .is_empty());
+
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_workspace_of_a_removed_project_comes_back_only_with_its_project() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let (project_path, project, local) = project_with_local_row(&dir, &journal);
+    registry.project_remove(&project.id).expect("remove");
+
+    let (projects, _) = registry.archived_list().expect("archived list");
+    assert_eq!(
+        projects.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+        [project.id.as_str()]
+    );
+    assert!(
+        registry.workspace_restore(&local.id).is_err(),
+        "a row cannot come back under a removed project"
+    );
+
+    journal
+        .project_add(
+            crate::workspace::project_record(project_path.to_str().expect("utf-8 path"))
+                .expect("project record"),
+        )
+        .expect("add the folder again");
+    registry
+        .workspace_restore(&local.id)
+        .expect("restore once the project is listed");
+    assert!(listed_workspace_ids(&journal, &project.id).contains(&local.id));
+
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}

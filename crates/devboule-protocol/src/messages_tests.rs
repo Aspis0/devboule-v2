@@ -4710,3 +4710,35 @@ fn session_model_carries_its_serving_provider() {
     let unserved = serde_json::from_value::<SessionModel>(plain).expect("plain model");
     assert_eq!(unserved.provider_id, None);
 }
+
+#[test]
+fn the_restore_frames_are_named_on_the_wire_and_state_the_right_thing() {
+    let list = ClientMessage::ArchivedList { id: 12 };
+    let value = serde_json::to_value(&list).expect("archived list json");
+    assert_eq!(value["type"], "archived_list");
+    assert_eq!(list.request_id(), Some(12));
+    assert_eq!(list.name(), "ArchivedList");
+    assert!(
+        list.is_state_changing(),
+        "classified with the archive family"
+    );
+
+    let restore = ClientMessage::WorkspaceRestore {
+        id: 13,
+        workspace_id: "w.one".to_string(),
+    };
+    let value = serde_json::to_value(&restore).expect("restore json");
+    assert_eq!(value["type"], "workspace_restore");
+    assert_eq!(value["workspaceId"], "w.one");
+    assert_eq!(restore.request_id(), Some(13));
+    assert_eq!(restore.name(), "WorkspaceRestore");
+
+    let reply = DaemonMessage::Archived {
+        id: 12,
+        projects: Vec::new(),
+        workspaces: Vec::new(),
+    };
+    let value = serde_json::to_value(&reply).expect("archived reply json");
+    assert_eq!(value["type"], "archived");
+    assert!(value.get("projects").is_some() && value.get("workspaces").is_some());
+}

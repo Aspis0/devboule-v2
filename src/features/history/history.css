@@ -402,3 +402,52 @@
   color: var(--silence);
   cursor: not-allowed;
 }
+
+/* The archived section: a quiet toggle, then one row per thing put off the list. */
+.history-archived {
+  padding: var(--space-8) var(--space-12);
+  border-bottom: 1px solid var(--line-soft, var(--line));
+}
+
+.history-archived-toggle {
+  padding: 0;
+  border: 0;
+  color: var(--muted);
+  background: transparent;
+  font-size: var(--type-meta);
+  cursor: pointer;
+}
+
+.history-archived-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin: var(--space-6) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.history-archived-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  font-size: var(--type-interface);
+}
+
+.history-archived-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-archived-kind {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: var(--type-meta);
+}
+
+.history-archived-error {
+  color: var(--danger);
+  font-size: var(--type-meta);
+}

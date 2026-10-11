@@ -245,6 +245,7 @@ impl PluginSession {
                         | DaemonMessage::Projects { id, .. }
                         | DaemonMessage::Project { id, .. }
                         | DaemonMessage::Workspaces { id, .. }
+                        | DaemonMessage::Archived { id, .. }
                         | DaemonMessage::Workspace { id, .. }
                         | DaemonMessage::JournalUsage { id, .. }
                         | DaemonMessage::JournalRetention { id, .. }

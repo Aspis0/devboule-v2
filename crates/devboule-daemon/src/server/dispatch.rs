@@ -498,7 +498,9 @@ pub(super) fn dispatch_immediate(
         | ClientMessage::WorkspaceDelete { .. }
         | ClientMessage::WorkspaceSetTitle { .. }
         | ClientMessage::WorkspaceArchive { .. }
-        | ClientMessage::ProjectRemove { .. } => {
+        | ClientMessage::ProjectRemove { .. }
+        | ClientMessage::ArchivedList { .. }
+        | ClientMessage::WorkspaceRestore { .. } => {
             if !journal_ok {
                 return capability_not_supported(request.request_id(), caps::JOURNAL);
             }

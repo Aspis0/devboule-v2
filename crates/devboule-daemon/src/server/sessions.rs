@@ -723,6 +723,8 @@ pub(super) fn dispatch_session(
         | ClientMessage::WorkspaceSetTitle { .. }
         | ClientMessage::WorkspaceArchive { .. }
         | ClientMessage::ProjectRemove { .. }
+        | ClientMessage::ArchivedList { .. }
+        | ClientMessage::WorkspaceRestore { .. }
         | ClientMessage::ProvidersList { .. }
         | ClientMessage::ProvidersAuthCheck { .. }
         | ClientMessage::ProvidersRefresh { .. }

@@ -89,6 +89,41 @@ pub async fn workspace_archive(
     off_main_thread(move || client.workspace_archive(&workspace_id)).await
 }
 
+/// The reply of `archived_list`: the removed projects and the archived rows.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchivedListReply {
+    pub projects: Vec<Project>,
+    pub workspaces: Vec<Workspace>,
+}
+
+/// What the person put off the list, so it can be put back.
+#[tauri::command]
+pub async fn archived_list(
+    bridge: State<'_, DaemonBridge>,
+) -> Result<ArchivedListReply, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || {
+        client
+            .archived_list()
+            .map(|(projects, workspaces)| ArchivedListReply {
+                projects,
+                workspaces,
+            })
+    })
+    .await
+}
+
+/// Put one archived workspace back on the list; a removed project is refused.
+#[tauri::command]
+pub async fn workspace_restore(
+    bridge: State<'_, DaemonBridge>,
+    workspace_id: String,
+) -> Result<Workspace, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.workspace_restore(&workspace_id)).await
+}
+
 /// Take one project off the list. Its folder and its workspace rows stay
 /// where they are; the same path added again lists it again.
 #[tauri::command]

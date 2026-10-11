@@ -978,6 +978,42 @@ impl super::SessionRegistry {
             .map_err(WireError::from)
     }
 
+    /// The removed projects and the archived workspace rows (`ArchivedList`).
+    pub fn archived_list(
+        &self,
+    ) -> Result<
+        (
+            Vec<devboule_protocol::Project>,
+            Vec<devboule_protocol::Workspace>,
+        ),
+        WireError,
+    > {
+        let journal = self.journal.as_ref().ok_or_else(journal_unavailable)?;
+        let (projects, workspaces) = journal.archived_list().map_err(WireError::from)?;
+        Ok((
+            projects
+                .iter()
+                .map(|project| project.to_project())
+                .collect(),
+            workspaces
+                .iter()
+                .map(|workspace| workspace.to_workspace())
+                .collect(),
+        ))
+    }
+
+    /// Puts an archived workspace back on the list (`WorkspaceRestore`).
+    pub fn workspace_restore(
+        &self,
+        workspace_id: &str,
+    ) -> Result<devboule_protocol::Workspace, WireError> {
+        let journal = self.journal.as_ref().ok_or_else(journal_unavailable)?;
+        let record = journal
+            .workspace_restore(workspace_id)
+            .map_err(WireError::from)?;
+        Ok(record.to_workspace())
+    }
+
     /// Takes a project off the list (`ProjectRemove`). Its folder and its
     /// workspace rows stay where they are; adding the same path again lists it.
     /// Refused while a session runs in one of its listed workspaces. Archived

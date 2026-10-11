@@ -2900,6 +2900,7 @@ export function Workspace({
           {historyOpen ? (
             <HistoryPanel
               search={historySearch}
+              onRestored={handleRetryProjects}
               onSearchChange={handleHistorySearchChange}
               projects={projects}
               branches={workspaceBranches}

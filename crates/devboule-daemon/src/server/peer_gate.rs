@@ -508,6 +508,8 @@ pub(super) fn peer_mode_refusal_for_conn(
         ClientMessage::WorkspaceSetTitle { .. } => None,
         ClientMessage::WorkspaceArchive { .. } => None,
         ClientMessage::ProjectRemove { .. } => None,
+        ClientMessage::ArchivedList { .. } => None,
+        ClientMessage::WorkspaceRestore { .. } => None,
         ClientMessage::ProvidersList { .. } => None,
         ClientMessage::ProvidersAuthCheck { .. } => None,
         ClientMessage::ProvidersRefresh { .. } => None,
@@ -794,6 +796,8 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::WorkspaceSetTitle { .. }
         | ClientMessage::WorkspaceArchive { .. }
         | ClientMessage::ProjectRemove { .. }
+        | ClientMessage::ArchivedList { .. }
+        | ClientMessage::WorkspaceRestore { .. }
         | ClientMessage::ProvidersList { .. }
         | ClientMessage::ProvidersAuthCheck { .. }
         | ClientMessage::ProvidersRefresh { .. }
