@@ -363,7 +363,7 @@ export function DesignAgentPicker({
           </div>
         ) : null}
       </div>
-      {manifest !== null && manifest.models.length > 1 ? (
+      {manifest !== null && manifest.models.length > 0 ? (
         <PickerChip
           label="Model"
           options={manifest.models.map((model) => ({
@@ -377,7 +377,7 @@ export function DesignAgentPicker({
           disabled={modelButtonDisabled}
           pendingCopy={pendingSwitch ? "Switching…" : undefined}
         />
-      ) : preModels.length > 1 && selectedProviderId !== null ? (
+      ) : preModels.length > 0 && selectedProviderId !== null ? (
         <PickerChip
           label="Model"
           options={preModels.map((model) => ({
@@ -411,7 +411,10 @@ export function DesignAgentPicker({
       preModelId !== null ? (
         <PickerChip
           label="Thinking effort"
-          options={preEfforts.map((effort) => ({ id: effort.id, name: effort.label }))}
+          options={liveEffortOptions(preEfforts, selectedProviderId, undefined).map((effort) => ({
+            id: effort.id,
+            name: effort.label,
+          }))}
           currentId={getPreferredEffort(selectedProviderId, preModelId)}
           onSelect={(effort) => {
             setPreferredEffort(selectedProviderId, preModelId, effort);

@@ -1630,6 +1630,58 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
+  it("shows a one-model provider's model as a chip, and never offers max before a session", async () => {
+    providerMocks.list.mockResolvedValueOnce({
+      providers: [provider("claude")],
+      unreadableDirs: 0,
+    });
+    skillSettingsMocks.loadProvider.mockResolvedValue("claude");
+    vi.mocked(providerVocabularyGet).mockResolvedValue({
+      provider: "claude",
+      models: {
+        state: "present",
+        origin: "provider",
+        items: [
+          {
+            modelId: "claude-solo",
+            name: "Claude Solo",
+            efforts: [
+              { id: "low", label: "Low" },
+              { id: "max", label: "Max" },
+            ],
+          },
+        ],
+      },
+      modes: { state: "absent", items: [] },
+      source: "probe",
+    } as unknown as ProviderVocabulary);
+    setPreferredModel("claude", "claude-solo");
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
+    );
+    await act(settle);
+
+    const modelChip = container.querySelector<HTMLButtonElement>(
+      '[data-testid="design-model-chip"]',
+    );
+    expect(modelChip?.textContent).toContain("Claude Solo");
+    expect(container.textContent).not.toContain("Start a generation");
+    await act(async () => modelChip?.click());
+    expect(
+      container.querySelector('[data-testid="design-model-option-claude-solo"]'),
+    ).not.toBeNull();
+    await act(async () => modelChip?.click());
+
+    const effortChip = container.querySelector<HTMLButtonElement>(
+      '[data-testid="design-effort-chip"]',
+    );
+    if (effortChip === null) throw new Error("the effort chip is missing for the remembered model");
+    await act(async () => effortChip.click());
+    expect(container.querySelector('[data-testid="design-effort-option-low"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="design-effort-option-max"]')).toBeNull();
+    await act(async () => root.unmount());
+  });
+
   it("cancels consent without selecting and restores focus to the triggering option", async () => {
     const downloadedOnDemand = provider("downloaded-agent", "npx-wrapper");
     providerMocks.list.mockResolvedValueOnce({
@@ -1803,7 +1855,7 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
-  it("renders the manifest model as text, with no chip, when one model has no efforts", async () => {
+  it("renders the one manifest model as a chip, with no effort chip when it has no efforts", async () => {
     const { session } = fakeAgentSession(
       agentState({
         type: "session_manifest",
@@ -1819,8 +1871,11 @@ describe("DesignSurface host capabilities", () => {
       }),
     );
 
-    expect(container.textContent).toContain("Grok 4");
-    expect(container.querySelector('[data-testid="design-model-chip"]')).toBeNull();
+    // One model is still the model the session runs: it shows as the chip's name, with no hint.
+    expect(container.querySelector('[data-testid="design-model-chip"]')?.textContent).toContain(
+      "Grok 4",
+    );
+    expect(container.textContent).not.toContain("Start a generation");
     expect(container.querySelector('[data-testid="design-effort-chip"]')).toBeNull();
     await act(async () => root.unmount());
   });

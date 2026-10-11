@@ -3,8 +3,9 @@
 // names the models, before its first prompt, so the first generation runs with
 // them. A provider with nothing remembered costs no wait at all.
 
-import { getPreferredMode, getPreferredModel } from "../../lib/agentPrefs";
+import { getPreferredEffort, getPreferredMode, getPreferredModel } from "../../lib/agentPrefs";
 import type { AgentSessionState } from "../../lib/agentSession";
+import { liveEffortOptions } from "../workspace/liveEffortOptions";
 import { rememberedSwitch } from "../workspace/rememberedPicks";
 
 /** The part of a Design agent session the picks need. */
@@ -43,7 +44,34 @@ function waitForManifest(session: PickableSession, timeoutMs: number) {
   });
 }
 
-/** Sends what the person remembered for `providerId` to a session that has just started. */
+/** Waits until the session's manifest names `modelId` as current (the switch is confirmed). */
+function waitForCurrentModel(session: PickableSession, modelId: string, timeoutMs: number) {
+  return new Promise<void>((resolve) => {
+    const confirmed = () => session.getState().manifest?.currentModelId === modelId;
+    if (confirmed()) {
+      resolve();
+      return;
+    }
+    const unsubscribe = session.subscribe(() => {
+      if (!confirmed()) return;
+      finish();
+    });
+    const timer = setTimeout(finish, timeoutMs);
+    function finish() {
+      clearTimeout(timer);
+      unsubscribe();
+      resolve();
+    }
+  });
+}
+
+/**
+ * Sends what the person remembered for `providerId` to a session that has just
+ * started: the mode, then the model, and the effort for that model once the
+ * model switch is confirmed (the daemon answers a model switch first, and an
+ * effort sent with it would be asked for the old model). A `max` effort is not
+ * sent to Claude, which takes it only at launch.
+ */
 export async function applyRememberedPicks(
   session: PickableSession,
   providerId: string,
@@ -54,8 +82,17 @@ export async function applyRememberedPicks(
   if (manifest === null) return;
   const asked = rememberedSwitch(manifest);
   if (asked.mode !== undefined) await session.setMode(asked.mode);
-  const modelId = asked.model ?? manifest.currentModelId;
-  if (modelId !== undefined && (asked.model !== undefined || asked.effort !== undefined)) {
-    await session.setModel(modelId, asked.effort);
+  const switchedTo = asked.model;
+  if (switchedTo !== undefined) {
+    await session.setModel(switchedTo);
+    await waitForCurrentModel(session, switchedTo, timeoutMs);
   }
+  const target = switchedTo ?? manifest.currentModelId;
+  if (target === undefined) return;
+  const remembered = getPreferredEffort(providerId, target);
+  const offered = manifest.models.find((model) => model.modelId === target)?.efforts ?? [];
+  const effort = liveEffortOptions(offered, providerId, undefined).find(
+    (option) => option.id === remembered,
+  );
+  if (effort !== undefined) await session.setModel(undefined, effort.id);
 }
