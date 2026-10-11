@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { AgentSubagent, AgentSubagentStatus } from "../../lib/agentSession";
 import type { AgentActivityState, Session, SessionState } from "../../types/ipc";
-import { childRow, countSubagentStatuses, deriveSubagentRows, isArchivable } from "./subagentRows";
+import {
+  childRow,
+  childTaskStates,
+  countSubagentStatuses,
+  deriveSubagentRows,
+  isArchivable,
+} from "./subagentRows";
 
 const complete = { kind: "complete" } as const;
 const unverifiable = {
@@ -63,10 +69,22 @@ describe("a managed child's pill status", () => {
       "stopped",
     ],
     [
-      "ended with no code",
+      "ended with no code, a crash",
       { type: "ended", generation: 1, code: null, integrity: complete },
       undefined,
-      "stopped",
+      "failed",
+    ],
+    [
+      "ended by a signal (a code past 128)",
+      { type: "ended", generation: 1, code: 130, integrity: complete },
+      undefined,
+      "failed",
+    ],
+    [
+      "ended with a negative code",
+      { type: "ended", generation: 1, code: -1, integrity: complete },
+      undefined,
+      "failed",
     ],
     [
       "ended with code 0 and a stale working activity",
@@ -149,6 +167,25 @@ describe("the rows one parent's pill lists", () => {
     expect(rows.map((row) => row.id)).toEqual(["child-a"]);
   });
 
+  it("takes a child's status from the daemon's task list when the list names it", () => {
+    // A child a person or its parent stopped is killed, so the roster alone reads
+    // its exit as a crash; the daemon's task list knows it was stopped.
+    const stopped = child("c-stop", {
+      type: "ended",
+      generation: 1,
+      code: null,
+      integrity: complete,
+    });
+    const rows = deriveSubagentRows("parent", [stopped], [], new Map([["c-stop", "cancelled"]]));
+    expect(rows[0]).toMatchObject({ status: "stopped" });
+  });
+
+  it("reads a failed task-list child as failed even when the roster reads a clean exit", () => {
+    const clean = child("c-fail", { type: "ended", generation: 1, code: 1, integrity: complete });
+    const rows = deriveSubagentRows("parent", [clean], [], new Map([["c-fail", "failed"]]));
+    expect(rows[0]).toMatchObject({ status: "failed" });
+  });
+
   it("keeps a task whose id equals a child's id as its own row", () => {
     const rows = deriveSubagentRows("parent", [child("same", idleLive, "idle")], [task("same")]);
     expect(rows.map((row) => row.kind)).toEqual(["child", "task"]);
@@ -179,5 +216,36 @@ describe("the rows one parent's pill lists", () => {
       stopped: 1,
       unknown: 0,
     });
+  });
+});
+
+describe("the child states the task list hands the pill", () => {
+  it("maps each child session the list names to its task state, and skips tasks without one", () => {
+    const list = {
+      epoch: "e1",
+      revision: 1,
+      omitted: 0,
+      tasks: [
+        {
+          id: "a",
+          kind: "agent",
+          title: "A",
+          state: "cancelled",
+          sessionId: "p",
+          childSessionId: "child-a",
+          startedAtMs: 1,
+        },
+        {
+          id: "cmd",
+          kind: "command",
+          title: "npm test",
+          state: "running",
+          sessionId: "p",
+          startedAtMs: 1,
+        },
+      ],
+    } as unknown as Parameters<typeof childTaskStates>[0];
+    expect([...childTaskStates(list)]).toEqual([["child-a", "cancelled"]]);
+    expect([...childTaskStates(null)]).toEqual([]);
   });
 });

@@ -12,6 +12,7 @@ use devboule_protocol::{
     SubagentTaskStatus,
 };
 
+use crate::command_status::is_clean_exit_code;
 use crate::process_argv_redact::redact_line;
 
 /// A task row names its command; it does not print it. Cut at a char
@@ -124,6 +125,11 @@ fn held_state(state: &SessionState, stop_requested: bool) -> SessionTaskState {
         SessionState::Live { .. } | SessionState::Silent { .. } => SessionTaskState::Running,
         SessionState::Ended { .. } if stop_requested => SessionTaskState::Cancelled,
         SessionState::Ended { code: Some(0), .. } => SessionTaskState::Finished,
+        // A clean non-zero exit closed without a verdict; no code, a signal or a
+        // timeout-range code is a crash.
+        SessionState::Ended {
+            code: Some(code), ..
+        } if i32::try_from(*code).is_ok_and(is_clean_exit_code) => SessionTaskState::Cancelled,
         SessionState::Ended { .. } => SessionTaskState::Failed,
         // The roster reads a lost transcript the same way: it never
         // completed, and nothing says it failed.

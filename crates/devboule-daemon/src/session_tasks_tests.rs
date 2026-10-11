@@ -105,6 +105,7 @@ mod derive {
                 held("s.ok", ended(Some(0))),
                 held("s.bad", ended(Some(1))),
                 held("s.nocode", ended(None)),
+                held("s.killed", ended(Some(137))),
                 held(
                     "s.gone",
                     SessionState::Recovered {
@@ -129,8 +130,11 @@ mod derive {
         assert_eq!(state("s.live"), SessionTaskState::Running);
         assert_eq!(state("s.silent"), SessionTaskState::Running);
         assert_eq!(state("s.ok"), SessionTaskState::Finished);
-        assert_eq!(state("s.bad"), SessionTaskState::Failed);
+        // A clean non-zero exit is no verdict: the child closed without finishing.
+        assert_eq!(state("s.bad"), SessionTaskState::Cancelled);
+        // No exit code, or a signal, is a crash.
         assert_eq!(state("s.nocode"), SessionTaskState::Failed);
+        assert_eq!(state("s.killed"), SessionTaskState::Failed);
         assert_eq!(state("s.gone"), SessionTaskState::Cancelled);
     }
 

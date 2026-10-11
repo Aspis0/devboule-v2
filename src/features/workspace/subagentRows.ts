@@ -5,7 +5,8 @@ import type {
   AgentSubagentStatus,
   AgentSubagentStatusCounts,
 } from "../../lib/agentSession";
-import type { AgentActivityState, Session, SessionState } from "../../types/ipc";
+import type { AgentActivityState, Session, SessionState, SessionTask } from "../../types/ipc";
+import type { BackgroundTaskState } from "../../lib/backgroundTasks";
 import { sessionTitle } from "./workspaceSessions";
 
 export interface SubagentRow {
@@ -30,22 +31,33 @@ const ARCHIVABLE_STATUSES: ReadonlySet<AgentSubagentStatus> = new Set([
   "stopped",
 ]);
 
+/** A child's exit that ended its process cleanly with a non-zero code: the shell
+ * convention range up to 123. 124 and up are timeouts, signals and shell errors. */
+function isCleanExit(code: number): boolean {
+  return code >= 1 && code <= 123;
+}
+
 // `state` is the process, `activity` is the turn: a live or silent process is
 // finished only when the daemon says its turn is idle, never because it is up.
 function childStatus(
   state: SessionState | undefined,
   activity: AgentActivityState | undefined,
+  taskState: SessionTask["state"] | undefined,
 ): AgentSubagentStatus {
+  // The daemon's task list knows whether a person or the parent stopped the child;
+  // the roster alone reads a stopped child's kill as a crash.
+  if (taskState === "cancelled") return "stopped";
+  if (taskState === "failed") return "failed";
   switch (state?.type) {
     case "live":
     case "silent":
       if (activity === "working" || activity === "blocked") return "running";
       return activity === "idle" ? "finished" : "unknown";
-    // An exit code alone is no verdict: a child that ended without a clean
-    // exit is closed, not failed. A provider-reported failure is the only
-    // thing that makes it failed, and an ended session carries none.
     case "ended":
-      return state.code === 0 ? "finished" : "stopped";
+      // An exit code alone is no verdict. Exit 0 finished; a clean non-zero exit
+      // closed without a verdict; no code, a signal, or a timeout-range code is a crash.
+      if (state.code === 0) return "finished";
+      return state.code !== null && isCleanExit(state.code) ? "stopped" : "failed";
     case "recovered":
       return "stopped";
     case undefined:
@@ -53,14 +65,25 @@ function childStatus(
   }
 }
 
-export function childRow(session: RosterChild): SubagentRow {
+export function childRow(session: RosterChild, taskState?: SessionTask["state"]): SubagentRow {
   return {
     kind: "child",
     id: session.id,
     title: sessionTitle(session),
-    status: childStatus(session.state, session.activity),
+    status: childStatus(session.state, session.activity, taskState),
     generation: session.state?.generation ?? null,
   };
+}
+
+/** The task list's state for each child session it names; a task with no child session has none. */
+export function childTaskStates(
+  list: BackgroundTaskState | null,
+): ReadonlyMap<string, SessionTask["state"]> {
+  const states = new Map<string, SessionTask["state"]>();
+  for (const task of list?.tasks ?? []) {
+    if (task.childSessionId !== undefined) states.set(task.childSessionId, task.state);
+  }
+  return states;
 }
 
 /** Only a created child can close: a provider task has no session of its own. */
@@ -74,12 +97,14 @@ export function deriveSubagentRows(
   parentId: string,
   roster: ReadonlyArray<RosterChild> | undefined,
   tasks: readonly AgentSubagent[],
+  /** The daemon's task-list state per child session, when the list has one. */
+  taskStates?: ReadonlyMap<string, SessionTask["state"]>,
 ): SubagentRow[] {
   const children = (roster ?? []).filter(
     (session) => session.createdBy === parentId && session.id !== parentId,
   );
   return [
-    ...children.map(childRow),
+    ...children.map((session) => childRow(session, taskStates?.get(session.id))),
     ...tasks.map((task): SubagentRow => ({
       kind: "task",
       id: task.id,

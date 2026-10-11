@@ -58,7 +58,8 @@ import { useFileAttachments } from "./useFileAttachments";
 import type { FileUploader } from "./fileUpload";
 import { SubagentMenu, type SubagentArchiveTarget } from "./SubagentMenu";
 import { BackgroundTasksPill } from "./BackgroundTasksPill";
-import { childRow, deriveSubagentRows, isArchivable } from "./subagentRows";
+import { childRow, childTaskStates, deriveSubagentRows, isArchivable } from "./subagentRows";
+import { useBackgroundTaskState } from "./useBackgroundTaskState";
 import { AgentReadingPublisher } from "./statusBar/AgentReadingPublisher";
 import { AgentContextMeter } from "./statusBar/AgentContextMeter";
 import { liveEffortOptions } from "./liveEffortOptions";
@@ -430,9 +431,12 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     return { sessionById, deviceNames: deviceNames ?? new Map<string, string>() };
   }, [sessionRoster, deviceNames]);
 
+  // The daemon's task list says whether a child was stopped; the roster alone reads a kill as a crash.
+  const backgroundTasks = useBackgroundTaskState(agent);
+  const childStates = useMemo(() => childTaskStates(backgroundTasks), [backgroundTasks]);
   const subagentRows = useMemo(
-    () => deriveSubagentRows(sessionId, sessionRoster, state.subagents),
-    [sessionId, sessionRoster, state.subagents],
+    () => deriveSubagentRows(sessionId, sessionRoster, state.subagents, childStates),
+    [sessionId, sessionRoster, state.subagents, childStates],
   );
 
   // The composer's handed-back draft. `focus` is false for a refused edit whose
@@ -665,6 +669,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         sessionId,
         rosterRef.current,
         sessionRef.current?.getState().subagents ?? [],
+        childTaskStates(sessionRef.current?.getTaskState() ?? null),
       ).filter((row) => !(row.kind === "child" && closed.has(row.id)));
       // The last row takes the pill and the menu with it: focus has to land
       // somewhere that stays, and a disabled composer cannot take it.
