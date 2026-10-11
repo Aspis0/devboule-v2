@@ -1,6 +1,8 @@
 // @vitest-environment happy-dom
 
-import { act, type ReactNode } from "react";
+import { act, useEffect, type ReactNode } from "react";
+import { fakeTaskSource } from "./backgroundTaskSourceHarness";
+import type { BackgroundTaskState } from "../../lib/backgroundTasks";
 import { openListedSessionsForTest } from "./workspaceSessionTestSetup";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -132,6 +134,20 @@ vi.mock("../terminal/TerminalSurface", () => ({
 // so a test can prove the tab's label and the header's title are one string.
 const surfaceQueueSupported = vi.hoisted(() => ({ bySession: new Map<string, boolean>() }));
 const surfaceGifWebpSupported = vi.hoisted(() => ({ bySession: new Map<string, boolean>() }));
+/** The agent a session's surface reports once attached, per session id. */
+const surfaceAgents = vi.hoisted(
+  () =>
+    new Map<
+      string,
+      {
+        getState: () => { status: string };
+        getTaskState: () => BackgroundTaskState | null;
+        subscribeTasks: (listener: () => void) => () => void;
+        subscribe: (listener: () => void) => () => void;
+        send: (text: string) => Promise<boolean>;
+      }
+    >(),
+);
 
 vi.mock("./AgentChatSurface", () => ({
   AgentChatSurface: ({
@@ -142,9 +158,11 @@ vi.mock("./AgentChatSurface", () => ({
     gifWebpSupported,
     onPermissionRequest,
     onPermissionResolved,
+    onAgentChange,
   }: {
     sessionId: string;
     auxiliary?: ReactNode;
+    onAgentChange?: (sessionId: string, agent: unknown) => void;
     hasPendingPermission?: boolean;
     queueSupported?: boolean;
     gifWebpSupported?: boolean;
@@ -157,6 +175,14 @@ vi.mock("./AgentChatSurface", () => ({
   }) => {
     surfaceQueueSupported.bySession.set(sessionId, queueSupported === true);
     surfaceGifWebpSupported.bySession.set(sessionId, gifWebpSupported === true);
+    const agent = surfaceAgents.get(sessionId);
+    // Reports its agent while mounted and clears the report when it unmounts, as
+    // the real surface does.
+    useEffect(() => {
+      if (agent === undefined || onAgentChange === undefined) return undefined;
+      onAgentChange(sessionId, agent);
+      return () => onAgentChange(sessionId, null);
+    }, [agent, onAgentChange, sessionId]);
     return (
       <div data-testid="agent-chat-surface">
         {sessionId}
@@ -575,6 +601,29 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 }
 
 /** The + menu's entry: every strip flow opens the menu and picks from it. */
+/** An agent controller double: attached and idle, with a send that answers as told. */
+function agentDouble(answer: boolean) {
+  const send = vi.fn(async (_text: string) => answer);
+  return {
+    send,
+    agent: {
+      ...fakeTaskSource(),
+      getState: () => ({ status: "idle" }),
+      subscribe: () => () => undefined,
+      send,
+    },
+  };
+}
+
+/** The session the first-message tests start, in the workspace the sheet makes. */
+function firstPromptAgentSession() {
+  return {
+    ...terminal("session-agent", "Agent"),
+    kind: "acp" as const,
+    workspaceId: "workspace-created",
+  };
+}
+
 /** The sheet's group legends, in print order. */
 function sheetLegends(): string[] {
   return [...document.querySelectorAll(".new-workspace-sheet legend")].map(
@@ -1700,9 +1749,12 @@ describe("Workspace sessions", () => {
     await startAgentFromNewWorkspace("hello");
 
     expect(sessionCreate).toHaveBeenCalledWith("workspace-created", "acp", "grok");
-    // The surface is a stand-in here: the send itself is pinned in firstMessage.test.ts.
-    // What this pins is the hand-over: the draft composer leaves the pane.
-    expect(container.querySelector('textarea[aria-label="Message the agent"]')).toBeNull();
+    // The agent has not confirmed the prompt, so the composer keeps it: it is
+    // cleared only on the agent's answer (see the tests below).
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
+        ?.value,
+    ).toBe("hello");
   });
 
   it("New workspace opens the sheet and asks for no provider: providers are read for the first message only", async () => {
@@ -1765,6 +1817,52 @@ describe("Workspace sessions", () => {
     await sendDraftMessage("hi there");
 
     expect(sessionCreate).toHaveBeenCalledWith("workspace-created", "claude");
+  });
+
+  it("a first prompt the agent confirms clears the composer once, and the pane takes the agent", async () => {
+    const double = agentDouble(true);
+    surfaceAgents.set("session-agent", double.agent);
+    vi.mocked(sessionsList).mockResolvedValue([firstPromptAgentSession()]);
+    vi.mocked(sessionCreate).mockResolvedValue(firstPromptAgentSession());
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+    await createFromSheet({ isolation: "local", branch: null });
+
+    await sendDraftMessage("first prompt");
+
+    expect(double.send).toHaveBeenCalledTimes(1);
+    expect(double.send).toHaveBeenCalledWith("first prompt");
+    expect(container.querySelector('textarea[aria-label="Message the agent"]')).toBeNull();
+    expect(container.textContent).not.toContain("did not take the message");
+  });
+
+  it("a first prompt the agent refuses stays in the composer with its reason, and is not sent again by the pane", async () => {
+    const double = agentDouble(false);
+    surfaceAgents.set("session-agent", double.agent);
+    vi.mocked(sessionsList).mockResolvedValue([firstPromptAgentSession()]);
+    vi.mocked(sessionCreate).mockResolvedValue(firstPromptAgentSession());
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+    await createFromSheet({ isolation: "local", branch: null });
+
+    await sendDraftMessage("first prompt");
+    await act(async () => undefined);
+    await act(async () => undefined);
+
+    expect(double.send).toHaveBeenCalledTimes(1);
+    const textarea = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Message the agent"]',
+    );
+    expect(textarea?.value, "the prompt is still in the composer").toBe("first prompt");
+    expect(container.textContent).toContain("did not take the message");
   });
 
   it("with no agent installed the first-message composer says so and starts nothing", async () => {

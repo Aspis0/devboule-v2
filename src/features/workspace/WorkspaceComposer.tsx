@@ -96,6 +96,10 @@ interface WorkspaceComposerProps {
    * Keeping the images while dropping the words would orphan half the
    * prompt. */
   restoreTextOnFailure?: boolean;
+  /** The text stays in the box while the send is in flight, and clears only
+   * once the parent answers true: the prompt is never out of the composer
+   * before someone has confirmed it. A refusal or a rejection leaves it there. */
+  keepUntilSettled?: boolean;
   /** The resolved setting: Enter queues while the turn runs (the permission rule flips it to steer). */
   enterQueues?: boolean;
   onStop?: () => void;
@@ -157,6 +161,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   enterQueues = false,
   confirmSend = false,
   restoreTextOnFailure = false,
+  keepUntilSettled = false,
   onStop,
   taskPill = null,
   backgroundPill = null,
@@ -390,6 +395,17 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
     // the submission whole without a hand-back. The parent clears its files
     // once its own send settles.
     if (attachedImages.length === 0 && fileReferences.length === 0) {
+      if (keepUntilSettled) {
+        void Promise.resolve()
+          .then(() => onSend(text, attachedImages))
+          .then(
+            (sent) => {
+              if (sent) setInput((current) => (current.trim() === text ? "" : current));
+            },
+            () => undefined,
+          );
+        return;
+      }
       if (!confirmSend) {
         onSend(text, attachedImages);
         setInput("");
@@ -441,6 +457,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   }, [
     attachedImages,
     confirmSend,
+    keepUntilSettled,
     restoreTextOnFailure,
     imageOnlySendable,
     disabled,

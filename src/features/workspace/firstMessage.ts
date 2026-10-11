@@ -10,19 +10,38 @@ export interface FirstMessageAgent {
 const READY_STATUS = "idle";
 
 /**
- * Sends a new agent's first message once it is attached and idle: a controller
- * refuses a send before its attach completes, so the message waits for the
- * status change that says it is ready. Sends at most once. The returned
- * function drops the wait when the surface goes away first.
+ * Sends a message only when the agent is attached and idle: a controller
+ * refuses a send before its attach completes. Resolves with what the agent
+ * answered; a send that is not ready resolves false without being attempted.
  */
-export function sendFirstMessageWhenReady(agent: FirstMessageAgent, text: string): () => void {
+export async function sendWhenReady(agent: FirstMessageAgent, text: string): Promise<boolean> {
+  if (agent.getState().status !== READY_STATUS) return false;
+  try {
+    return await agent.send(text);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Sends a new agent's first message once it is attached and idle, and reports
+ * the answer once. A message is never sent twice by this wait: when the agent
+ * answers, the wait ends. The returned function drops the wait when the
+ * surface goes away first; a dropped wait reports nothing, so the caller
+ * keeps the text.
+ */
+export function sendFirstMessageWhenReady(
+  agent: FirstMessageAgent,
+  text: string,
+  onSettled: (sent: boolean) => void,
+): () => void {
   let settled = false;
   let unsubscribe: (() => void) | null = null;
   const trySend = (): boolean => {
     if (settled || agent.getState().status !== READY_STATUS) return false;
     settled = true;
     unsubscribe?.();
-    void agent.send(text);
+    void sendWhenReady(agent, text).then(onSettled);
     return true;
   };
   if (trySend()) return () => undefined;

@@ -290,6 +290,28 @@ interface QueuedPermission {
   stale?: boolean;
 }
 
+/**
+ * A new workspace's first prompt, held until its agent confirms it. `queued`
+ * waits for the agent to attach, `sending` is the send in flight, `failed`
+ * means the agent refused it, and `handed` means the pane closed before the
+ * send: in both of the last two the text waits for the person to send it.
+ */
+interface FirstPrompt {
+  workspaceKey: WorkspaceKey;
+  sessionId: string;
+  text: string;
+  state: "queued" | "sending" | "failed" | "handed";
+  /** Bumped when the text is handed back, so the composer restores it once. */
+  attempt: number;
+}
+
+const FIRST_PROMPT_FAILED =
+  "The agent did not take the message. It is still here: press send to try again.";
+const FIRST_PROMPT_HANDED =
+  "Not sent: the agent closed before it took the message. It is still here: press send to send it.";
+const FIRST_PROMPT_NOT_ATTACHED =
+  "The agent is not attached right now. Open the workspace's agent, then press send.";
+
 export function Workspace({
   sidePanelRegistry = SIDE_PANEL_REGISTRY,
   delegation: delegationControllerProp,
@@ -1643,14 +1665,24 @@ export function Workspace({
     },
     [endProviderChoice, loadChatProviders, selectedKey],
   );
-  /** The workspace a sheet just created: its pane shows the first-message composer. */
+  /** The workspace a sheet just created: its pane shows the first-message composer until the prompt is confirmed. */
   const [draftKey, setDraftKey] = useState<WorkspaceKey | null>(null);
   /** The chat-capable providers for the draft composer; null while they load. */
   const [draftProviders, setDraftProviders] = useState<ProviderInfo[] | null>(null);
   const [draftProviderId, setDraftProviderId] = useState<string | null>(null);
-  /** The first message waiting for its agent to attach: sent once, then dropped. */
-  const pendingFirstRef = useRef<{ sessionId: string; text: string } | null>(null);
-  const firstMessageCancelRef = useRef<{ sessionId: string; cancel: () => void } | null>(null);
+  const [firstPrompt, setFirstPromptState] = useState<FirstPrompt | null>(null);
+  /** The ref mirrors the state for the callbacks, which must see the latest prompt. */
+  const firstPromptRef = useRef<FirstPrompt | null>(null);
+  const setFirstPrompt = useCallback((next: FirstPrompt | null) => {
+    firstPromptRef.current = next;
+    setFirstPromptState(next);
+  }, []);
+  const [firstPromptNotice, setFirstPromptNotice] = useState<string | null>(null);
+  /** The composer's pending answer: resolved once the agent confirms, refuses, or the pane closes. */
+  const firstPromptAnswerRef = useRef<((sent: boolean) => void) | null>(null);
+  const firstPromptCancelRef = useRef<(() => void) | null>(null);
+  /** The agent of the session the pane shows, for a retry from the composer. */
+  const paneAgentRef = useRef<{ sessionId: string; agent: AgentSession } | null>(null);
   // The new-workspace sheet is mounted per opening, keyed by its nonce, so each
   // one starts from the project it was asked for and the defaults.
   const [sheet, setSheet] = useState<{ nonce: number; projectId: string | null } | null>(null);
@@ -1681,11 +1713,58 @@ export function Workspace({
       current = false;
     };
   }, [draftKey, loadChatProviders]);
+  // The composer's answer: a confirmed prompt clears the draft, a refused one
+  // stays in the composer for the person to send again.
+  const answerFirstPrompt = useCallback(
+    (sent: boolean) => {
+      const answer = firstPromptAnswerRef.current;
+      firstPromptAnswerRef.current = null;
+      firstPromptCancelRef.current = null;
+      const current = firstPromptRef.current;
+      if (current !== null) {
+        if (sent) {
+          setFirstPrompt(null);
+          setDraftKey(null);
+          setFirstPromptNotice(null);
+        } else {
+          setFirstPrompt({ ...current, state: "failed" });
+          setFirstPromptNotice(FIRST_PROMPT_FAILED);
+        }
+      }
+      answer?.(sent);
+    },
+    [setFirstPrompt],
+  );
+  // Sends the held prompt once the agent is attached and idle; the answer goes to
+  // the composer's pending promise. Nothing is sent again by this wait.
+  const startFirstPromptSend = useCallback(
+    (sessionId: string, agent: AgentSession, text: string) => {
+      firstPromptCancelRef.current?.();
+      const current = firstPromptRef.current;
+      if (current !== null) setFirstPrompt({ ...current, sessionId, text, state: "sending" });
+      firstPromptCancelRef.current = sendFirstMessageWhenReady(agent, text, answerFirstPrompt);
+    },
+    [answerFirstPrompt, setFirstPrompt],
+  );
   // Starts the agent the first message is for, with the provider picked in the
-  // composer. The message is sent once the agent is attached; see reportPaneAgentWithFirstMessage.
+  // composer. The composer keeps its text until the agent confirms it.
   const sendDraft = useCallback(
     async (text: string): Promise<boolean> => {
       if (draftKey === null) return false;
+      const current = firstPromptRef.current;
+      if (current !== null && current.workspaceKey === draftKey) {
+        // A retry: the prompt goes to the agent it was held for, if that agent is open.
+        const attached = paneAgentRef.current;
+        if (attached === null || attached.sessionId !== current.sessionId) {
+          setFirstPromptNotice(FIRST_PROMPT_NOT_ATTACHED);
+          return false;
+        }
+        return new Promise<boolean>((answer) => {
+          firstPromptAnswerRef.current = answer;
+          setFirstPromptNotice(null);
+          startFirstPromptSend(current.sessionId, attached.agent, text);
+        });
+      }
       const providers = draftProviders ?? [];
       const provider =
         providers.find((candidate) => candidate.id === draftProviderId) ?? providers[0];
@@ -1697,35 +1776,62 @@ export function Workspace({
         args.provider,
         parseWorkspaceKey(draftKey).workspaceId,
       );
-      if (session === null) return false;
-      pendingFirstRef.current = { sessionId: session.id, text };
-      setDraftKey(null);
-      return true;
+      if (session === null) {
+        setFirstPromptNotice("The agent did not start. Your message is still here.");
+        return false;
+      }
+      setFirstPrompt({
+        workspaceKey: draftKey,
+        sessionId: session.id,
+        text,
+        state: "queued",
+        attempt: 0,
+      });
+      setFirstPromptNotice(null);
+      return new Promise<boolean>((answer) => {
+        firstPromptAnswerRef.current = answer;
+      });
     },
-    [createAndShowSession, draftKey, draftProviderId, draftProviders],
+    [
+      createAndShowSession,
+      draftKey,
+      draftProviderId,
+      draftProviders,
+      setFirstPrompt,
+      startFirstPromptSend,
+    ],
   );
-  // The pane's agent report also sends a pending first message, once its agent is ready.
+  // The pane reports its agent as it attaches and as it leaves. A held prompt is
+  // sent once, when its own agent first attaches; a pane that closes first hands
+  // the text back instead.
   const reportPaneAgentWithFirstMessage = useCallback(
     (sessionId: string, agent: AgentSession | null) => {
       reportPaneAgent(sessionId, agent);
-      const cancel = firstMessageCancelRef.current;
       if (agent === null) {
-        if (cancel?.sessionId === sessionId) {
-          cancel.cancel();
-          firstMessageCancelRef.current = null;
+        if (paneAgentRef.current?.sessionId === sessionId) paneAgentRef.current = null;
+        const current = firstPromptRef.current;
+        if (
+          current !== null &&
+          current.sessionId === sessionId &&
+          (current.state === "queued" || current.state === "sending")
+        ) {
+          firstPromptCancelRef.current?.();
+          firstPromptCancelRef.current = null;
+          setFirstPrompt({ ...current, state: "handed", attempt: current.attempt + 1 });
+          setFirstPromptNotice(FIRST_PROMPT_HANDED);
+          const answer = firstPromptAnswerRef.current;
+          firstPromptAnswerRef.current = null;
+          answer?.(false);
         }
         return;
       }
-      const pending = pendingFirstRef.current;
-      if (pending === null || pending.sessionId !== sessionId) return;
-      pendingFirstRef.current = null;
-      cancel?.cancel();
-      firstMessageCancelRef.current = {
-        sessionId,
-        cancel: sendFirstMessageWhenReady(agent, pending.text),
-      };
+      paneAgentRef.current = { sessionId, agent };
+      const current = firstPromptRef.current;
+      if (current !== null && current.sessionId === sessionId && current.state === "queued") {
+        startFirstPromptSend(sessionId, agent, current.text);
+      }
     },
-    [reportPaneAgent],
+    [reportPaneAgent, setFirstPrompt, startFirstPromptSend],
   );
   // The sheet creates the workspace and selects it; the workspace then waits
   // for its first message, with the provider chosen in its composer.
@@ -2272,6 +2378,143 @@ export function Workspace({
       hostOnlineMap,
     ],
   );
+  const firstPromptOnPane =
+    draftShowing &&
+    firstPrompt !== null &&
+    paneSession !== null &&
+    firstPrompt.sessionId === paneSession.id;
+  const sendingPrompt =
+    firstPrompt !== null && (firstPrompt.state === "queued" || firstPrompt.state === "sending");
+  const sessionPaneNode =
+    paneSession === null ? null : (
+      <>
+        {isAgentKind(paneSession.kind) ? (
+          <AgentChatSurface
+            key={paneSession.id}
+            id={WORKSPACE_TERMINAL_PANEL_ID}
+            sessionId={paneSession.id}
+            fileLinks={chatFileLinks}
+            loadFileIndex={loadPaneFileIndex}
+            focusMessage={
+              transcriptFocus?.sessionId === paneSession.id
+                ? {
+                    messageId: transcriptFocus.messageId,
+                    nonce: transcriptFocus.nonce,
+                  }
+                : null
+            }
+            observedState={paneSession.state}
+            initialGoal={paneSession.goal}
+            activity={paneSession.activity}
+            daemonState={daemon.state}
+            daemonInstanceId={daemon.instanceId}
+            sessionRoster={sessions}
+            onOpenSubagent={handleOpenSubagent}
+            subagentAttention={subagentAttention}
+            onRefreshSubagents={refreshSessions}
+            onOpenTasks={openTasksTab}
+            onAgentChange={reportPaneAgentWithFirstMessage}
+            deviceNames={peerNames}
+            hasPendingPermission={hasPendingPermission}
+            pendingPlanToolCallId={pendingPlanToolCallId}
+            // The daemon owns this session's follow-up queue (see
+            // `queueSupported`): the surface renders its snapshots, and
+            // Enter mid-turn queues instead of interrupting.
+            queueSupported={queueSupported}
+            gifWebpSupported={gifWebpSupported}
+            fileUploadSupported={fileUploadSupported}
+            auxiliary={
+              selectedPermission !== null ? (
+                <WorkspacePermissionCard
+                  // Session and tool call: a new identity mounts a new
+                  // card, so its terminal flag starts from the queue item.
+                  key={`${paneSession.id}\n${selectedPermission.request.toolCallId}`}
+                  sessionId={paneSession.id}
+                  subscriptionId={selectedPermission.subscriptionId}
+                  request={selectedPermission.request}
+                  capabilities={daemon.capabilities}
+                  daemonState={daemon.state}
+                  origin={paneSession.origin}
+                  deviceNames={peerNames}
+                  resolution={selectedPermission.resolution ?? null}
+                  creatorId={paneSession.createdBy ?? null}
+                  stale={selectedPermission.stale === true}
+                  onStale={markPermissionStale}
+                  onResolved={dismissResolvedPermission}
+                />
+              ) : undefined
+            }
+            onPermissionRequest={handlePermissionRequest}
+            onPermissionResolved={handlePermissionResolved}
+            // The recovered notice rides the header's own row instead of
+            // adding one: banner, state word and Reopen share the pane
+            // header on a recovered transcript, and a live pane shows
+            // nothing (the bar renders null off a recovered state).
+            headerTrailing={
+              <RecoveredSessionBar
+                key={`recovered-bar-${paneSession.id}`}
+                session={paneSession}
+                onReopened={handleReopenSession}
+                onResumeFailed={handleResumeFailed}
+              />
+            }
+          />
+        ) : (
+          <TerminalSurface
+            key={paneSession.id}
+            id={WORKSPACE_TERMINAL_PANEL_ID}
+            workspaceKey={selectedKey}
+            sessionId={paneSession.id}
+            observedState={paneSession.state}
+            cwd={paneSession.cwd}
+            activity={paneSession.activity}
+            attention={activeSessionAttention(paneSession)}
+            autoFocus={terminalAutoFocus}
+            autoFocusGuard={mayTakeTerminalFocus}
+            onAutoFocusTaken={takeTerminalFocus}
+            onClosed={handleSessionClosed}
+            onExited={handleSessionClosed}
+            onCloseTab={() => tabClose.closeSingle(paneSession.id)}
+            headerMenuSeam={{
+              workspaceKey: paneWorkspaceKey,
+              closeEntries: buildTabCloseEntries(
+                composedTabs.findIndex((tab) => tab.id === paneSession.id),
+                composedTabs.length,
+              ),
+              onCloseEntry: (key) => tabClose.activatePaneEntry(paneSession.id, key),
+            }}
+            onPermissionRequest={handlePermissionRequest}
+            onPermissionResolved={handlePermissionResolved}
+          />
+        )}
+      </>
+    );
+  // The first-message composer: the provider and the prompt, with the held text
+  // kept until the agent confirms it.
+  const draftComposer = (
+    <DraftAgentComposer
+      providers={draftProviders ?? []}
+      providerId={draftProviderId}
+      onProviderChange={setDraftProviderId}
+      onSend={sendDraft}
+      notice={firstPromptNotice}
+      restore={
+        firstPrompt !== null && firstPrompt.state === "handed"
+          ? { text: firstPrompt.text, nonce: firstPrompt.attempt }
+          : null
+      }
+      disabledReason={
+        sendingPrompt
+          ? "Sending to the agent…"
+          : draftProviders === null
+            ? "Loading agents…"
+            : draftProviders.length === 0
+              ? "No agent is installed to start."
+              : null
+      }
+    />
+  );
+
   return (
     <section className="workspace-screen" data-screen-label="Workspace">
       <div className="workspace-panels">
@@ -2521,107 +2764,7 @@ export function Workspace({
                       )}
                     </div>
                   ) : paneSession !== null && !draftShowing ? (
-                    <>
-                      {isAgentKind(paneSession.kind) ? (
-                        <AgentChatSurface
-                          key={paneSession.id}
-                          id={WORKSPACE_TERMINAL_PANEL_ID}
-                          sessionId={paneSession.id}
-                          fileLinks={chatFileLinks}
-                          loadFileIndex={loadPaneFileIndex}
-                          focusMessage={
-                            transcriptFocus?.sessionId === paneSession.id
-                              ? {
-                                  messageId: transcriptFocus.messageId,
-                                  nonce: transcriptFocus.nonce,
-                                }
-                              : null
-                          }
-                          observedState={paneSession.state}
-                          initialGoal={paneSession.goal}
-                          activity={paneSession.activity}
-                          daemonState={daemon.state}
-                          daemonInstanceId={daemon.instanceId}
-                          sessionRoster={sessions}
-                          onOpenSubagent={handleOpenSubagent}
-                          subagentAttention={subagentAttention}
-                          onRefreshSubagents={refreshSessions}
-                          onOpenTasks={openTasksTab}
-                          onAgentChange={reportPaneAgentWithFirstMessage}
-                          deviceNames={peerNames}
-                          hasPendingPermission={hasPendingPermission}
-                          pendingPlanToolCallId={pendingPlanToolCallId}
-                          // The daemon owns this session's follow-up queue (see
-                          // `queueSupported`): the surface renders its snapshots, and
-                          // Enter mid-turn queues instead of interrupting.
-                          queueSupported={queueSupported}
-                          gifWebpSupported={gifWebpSupported}
-                          fileUploadSupported={fileUploadSupported}
-                          auxiliary={
-                            selectedPermission !== null ? (
-                              <WorkspacePermissionCard
-                                // Session and tool call: a new identity mounts a new
-                                // card, so its terminal flag starts from the queue item.
-                                key={`${paneSession.id}\n${selectedPermission.request.toolCallId}`}
-                                sessionId={paneSession.id}
-                                subscriptionId={selectedPermission.subscriptionId}
-                                request={selectedPermission.request}
-                                capabilities={daemon.capabilities}
-                                daemonState={daemon.state}
-                                origin={paneSession.origin}
-                                deviceNames={peerNames}
-                                resolution={selectedPermission.resolution ?? null}
-                                creatorId={paneSession.createdBy ?? null}
-                                stale={selectedPermission.stale === true}
-                                onStale={markPermissionStale}
-                                onResolved={dismissResolvedPermission}
-                              />
-                            ) : undefined
-                          }
-                          onPermissionRequest={handlePermissionRequest}
-                          onPermissionResolved={handlePermissionResolved}
-                          // The recovered notice rides the header's own row instead of
-                          // adding one: banner, state word and Reopen share the pane
-                          // header on a recovered transcript, and a live pane shows
-                          // nothing (the bar renders null off a recovered state).
-                          headerTrailing={
-                            <RecoveredSessionBar
-                              key={`recovered-bar-${paneSession.id}`}
-                              session={paneSession}
-                              onReopened={handleReopenSession}
-                              onResumeFailed={handleResumeFailed}
-                            />
-                          }
-                        />
-                      ) : (
-                        <TerminalSurface
-                          key={paneSession.id}
-                          id={WORKSPACE_TERMINAL_PANEL_ID}
-                          workspaceKey={selectedKey}
-                          sessionId={paneSession.id}
-                          observedState={paneSession.state}
-                          cwd={paneSession.cwd}
-                          activity={paneSession.activity}
-                          attention={activeSessionAttention(paneSession)}
-                          autoFocus={terminalAutoFocus}
-                          autoFocusGuard={mayTakeTerminalFocus}
-                          onAutoFocusTaken={takeTerminalFocus}
-                          onClosed={handleSessionClosed}
-                          onExited={handleSessionClosed}
-                          onCloseTab={() => tabClose.closeSingle(paneSession.id)}
-                          headerMenuSeam={{
-                            workspaceKey: paneWorkspaceKey,
-                            closeEntries: buildTabCloseEntries(
-                              composedTabs.findIndex((tab) => tab.id === paneSession.id),
-                              composedTabs.length,
-                            ),
-                            onCloseEntry: (key) => tabClose.activatePaneEntry(paneSession.id, key),
-                          }}
-                          onPermissionRequest={handlePermissionRequest}
-                          onPermissionResolved={handlePermissionResolved}
-                        />
-                      )}
-                    </>
+                    sessionPaneNode
                   ) : (
                     <div
                       id={WORKSPACE_TERMINAL_PANEL_ID}
@@ -2633,21 +2776,12 @@ export function Workspace({
                 one line under the strip, and this pane stays what the spec
                 says it is (SPEC-regions "Empty and error"). */}
                       {draftShowing ? (
-                        // A workspace the sheet just made: its first message starts the
-                        // agent, and the provider is picked in this composer.
-                        <DraftAgentComposer
-                          providers={draftProviders ?? []}
-                          providerId={draftProviderId}
-                          onProviderChange={setDraftProviderId}
-                          onSend={sendDraft}
-                          disabledReason={
-                            draftProviders === null
-                              ? "Loading agents…"
-                              : draftProviders.length === 0
-                                ? "No agent is installed to start."
-                                : null
-                          }
-                        />
+                        // One place for the composer whether or not the session is
+                        // on the pane: a held prompt keeps its text across the switch.
+                        <>
+                          {firstPromptOnPane ? <div hidden>{sessionPaneNode}</div> : null}
+                          {draftComposer}
+                        </>
                       ) : sessionsLoading || projectsLoading ? (
                         <div role="status" className="workspace-empty-note">
                           Loading sessions…
