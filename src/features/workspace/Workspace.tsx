@@ -3071,7 +3071,7 @@ export function Workspace({
           aria-label="Workspace side panel"
         >
           {rightCollapsed ? (
-            <PanelStub side="right" autoFocus onShow={() => setRightCollapsed(false)} />
+            <PanelStub side="right" onShow={() => setRightCollapsed(false)} />
           ) : (
             <div className="workspace-panel-open">
               <SidePanelTabs

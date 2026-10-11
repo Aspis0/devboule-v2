@@ -79,9 +79,20 @@ describe("the side-panel toggles", () => {
     expect(onShow).toHaveBeenCalledTimes(1);
   });
 
-  it("takes focus when asked, as the right stub does after its panel collapses", () => {
-    act(() => root.render(<PanelStub side="right" autoFocus onShow={() => undefined} />));
+  it("takes focus when the collapse left none, so the keyboard keeps its place", () => {
+    (document.activeElement as HTMLElement | null)?.blur();
+    act(() => root.render(<PanelStub side="right" onShow={() => undefined} />));
 
     expect(document.activeElement).toBe(button("Show panel"));
+  });
+
+  it("leaves focus where it is when a chord collapses the panel from elsewhere", () => {
+    const composer = document.createElement("textarea");
+    document.body.appendChild(composer);
+    composer.focus();
+    act(() => root.render(<PanelStub side="right" onShow={() => undefined} />));
+
+    expect(document.activeElement).toBe(composer);
+    composer.remove();
   });
 });

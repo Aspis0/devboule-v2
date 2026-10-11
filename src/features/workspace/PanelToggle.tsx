@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { commandKeycap } from "../../lib/keymap";
 import { PanelIcon } from "./panel/PanelIcon";
 import "./PanelToggle.css";
@@ -42,25 +43,23 @@ export function PanelToggle({ side, onCollapse }: { side: PanelSide; onCollapse:
 }
 
 /** The collapsed side: a whole-height button that shows the panel again. */
-export function PanelStub({
-  side,
-  onShow,
-  autoFocus = false,
-}: {
-  side: PanelSide;
-  onShow: () => void;
-  /** The right panel's stub takes focus when it replaces the open panel. */
-  autoFocus?: boolean;
-}) {
+export function PanelStub({ side, onShow }: { side: PanelSide; onShow: () => void }) {
   const { name, chord, icon } = SIDE_TEXT[side];
   const label = `Show ${name}`;
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  // A header toggle that collapsed the panel was focused, and unmounting it drops
+  // focus to the body; a chord leaves focus where the person typed, and keeps it.
+  useEffect(() => {
+    const active = document.activeElement;
+    if (active === null || active === document.body) buttonRef.current?.focus();
+  }, []);
   return (
     <button
+      ref={buttonRef}
       type="button"
       className={`workspace-collapsed-panel panel-stub panel-stub-${side}`}
       aria-label={label}
       aria-expanded="false"
-      autoFocus={autoFocus}
       onClick={onShow}
     >
       <PanelIcon name={icon} size={16} strokeWidth={1.6} />
