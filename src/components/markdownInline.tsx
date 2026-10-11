@@ -2,7 +2,8 @@ import type { ReactNode } from "react";
 import { ExternalLink } from "./ExternalLink";
 import { parseChatCodeFilePath, scanChatFilePaths, type ChatFileLinks } from "../lib/chatFilePaths";
 import { opensExternally } from "../lib/externalUrl";
-import { isFolderTarget, localPathFromHref } from "../lib/markdownLocalPath";
+import { endsInSeparator, localPathFromHref } from "../lib/markdownLocalPath";
+import { FileLinkButton } from "./FileLinkButton";
 import { workspaceRelativePath } from "../lib/workspaceRelativePath";
 
 /** The workspace-relative spelling a candidate path names, or null when it is outside the workspace. */
@@ -22,7 +23,7 @@ function localPathLink(
   path: string,
   links: ChatFileLinks | null,
 ): ReactNode {
-  if (isFolderTarget(path)) return label;
+  if (endsInSeparator(path)) return label;
   if (links === null) return <span key={key}>{label}</span>;
   const relative = insideRoot(path, links);
   if (relative === null) {
@@ -32,17 +33,7 @@ function localPathLink(
       </span>
     );
   }
-  return (
-    <button
-      key={key}
-      type="button"
-      className="plan-markdown-file-link"
-      title={`${links.root}/${relative}`}
-      onClick={() => links.open(relative)}
-    >
-      {label}
-    </button>
-  );
+  return <FileLinkButton key={key} label={label} relative={relative} links={links} />;
 }
 
 export function inline(text: string, fileLinks?: ChatFileLinks | null): ReactNode[] {
@@ -99,7 +90,7 @@ export function inline(text: string, fileLinks?: ChatFileLinks | null): ReactNod
       const relative = insideRoot(text.slice(start + token.start, start + token.end), links);
       return relative === null ? [] : [{ token, relative }];
     });
-    if (inside.length === 0) {
+    if (links === null || inside.length === 0) {
       nodes.push(plain(start, end));
       return;
     }
@@ -107,15 +98,12 @@ export function inline(text: string, fileLinks?: ChatFileLinks | null): ReactNod
     for (const { token, relative } of inside) {
       if (token.start > cursor) nodes.push(plain(start + cursor, start + token.start));
       nodes.push(
-        <button
-          type="button"
+        <FileLinkButton
           key={start + token.start}
-          className="plan-markdown-file-link"
-          title={relative}
-          onClick={() => links?.open(relative)}
-        >
-          {plain(start + token.start, start + token.end)}
-        </button>,
+          label={plain(start + token.start, start + token.end)}
+          relative={relative}
+          links={links}
+        />,
       );
       cursor = token.end;
     }
@@ -228,18 +216,11 @@ export function inline(text: string, fileLinks?: ChatFileLinks | null): ReactNod
       const displayed = links === null ? null : parseChatCodeFilePath(content, links.root);
       const relative = displayed === null ? null : insideRoot(content, links);
       nodes.push(
-        relative === null ? (
+        links === null || relative === null ? (
           <code key={key}>{links === null ? content : content.replace(/\n/g, " ")}</code>
         ) : (
           <code key={key}>
-            <button
-              type="button"
-              className="plan-markdown-file-link"
-              title={relative}
-              onClick={() => links?.open(relative)}
-            >
-              {content}
-            </button>
+            <FileLinkButton label={content} relative={relative} links={links} />
           </code>
         ),
       );

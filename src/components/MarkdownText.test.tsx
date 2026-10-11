@@ -48,7 +48,7 @@ describe("MarkdownText", () => {
     const input = chunk.repeat(Math.ceil((128 * 1024) / chunk.length)).slice(0, 128 * 1024);
     const started = performance.now();
     const markup = renderToStaticMarkup(
-      <MarkdownText text={input} fileLinks={{ root: "/home/u/repo", open: () => undefined }} />,
+      <MarkdownText text={input} fileLinks={{ root: "/home/u/repo", open: async () => "file" }} />,
     );
 
     expect(markup).toContain('class="plan-markdown-file-link" title="src/a.ts"');

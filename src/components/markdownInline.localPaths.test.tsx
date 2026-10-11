@@ -81,20 +81,41 @@ describe("a file outside the workspace", () => {
 });
 
 describe("a folder", () => {
-  it.each([
-    [
-      "a folder without a trailing separator",
-      "[screenshots](C:/Users/gualt/Desktop/test/mockups/screenshots)",
-    ],
-    ["a folder with a trailing slash", "[mockups](mockups/)"],
-  ])("shows %s as plain text, with no button and no error", async (_, text) => {
+  it("shows a folder written with a trailing slash as plain text", async () => {
     const open = vi.fn();
-    await show(text, links(open));
+    await show("[mockups](mockups/)", links(open));
 
     expect(host.querySelector("button")).toBeNull();
-    expect(host.querySelector("span[title='Outside this workspace']")).toBeNull();
     expect(open).not.toHaveBeenCalled();
-    expect(host.textContent).not.toContain("](");
+    expect(host.textContent).toBe("mockups");
+  });
+
+  it("keeps a link to a name without a trailing separator, and marks it Folder when the editor says so", async () => {
+    const open = vi.fn().mockResolvedValue("folder");
+    await show("[screenshots](mockups/screenshots)", links(open));
+
+    const link = host.querySelector<HTMLButtonElement>("button.plan-markdown-file-link");
+    expect(link?.title).toBe("mockups/screenshots");
+    await act(async () => link?.click());
+
+    expect(open).toHaveBeenCalledWith("mockups/screenshots");
+    expect(link?.textContent).toBe("screenshots");
+    expect(link?.title).toBe("Folder");
+    expect(host.querySelector("[role='alert']")).toBeNull();
+  });
+
+  it.each([
+    ["Gemfile", "[gemfile](Gemfile)"],
+    ["README", "[readme](README)"],
+    [".github", "[workflows](.github)"],
+    ["assets.v2", "[assets](assets.v2)"],
+  ])("links %s, which is a file or a folder the editor decides", async (_, text) => {
+    const open = vi.fn().mockResolvedValue("file");
+    await show(text, links(open));
+
+    await act(async () => host.querySelector<HTMLButtonElement>("button")?.click());
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(host.querySelector<HTMLButtonElement>("button")?.title).not.toBe("Folder");
   });
 
   it("leaves a folder written with a trailing backslash as the text the agent wrote", async () => {

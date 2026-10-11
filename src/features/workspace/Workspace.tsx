@@ -184,8 +184,10 @@ import {
   type AttentionTarget,
   providerVocabularyGet,
   sessionSetModel,
+  workspaceFileEditorOpen,
 } from "../../lib/tauri";
 import { workspaceFileIndex } from "./workspaceFileIndex";
+import { openChatFileLink } from "./chatFileOpen";
 import type { TranscriptSearchProps } from "./sidebar/TranscriptSearchResults";
 import { isCommandError } from "../../lib/commandError";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
@@ -1432,9 +1434,15 @@ export function Workspace({
   const paneCwd = paneSession?.cwd;
   const chatFileLinks = useMemo(() => {
     if (paneWorkspaceId === null || paneCwd === undefined || paneWorkspaceKey === null) return null;
+    const workspaceId = paneWorkspaceId;
     return {
       root: paneCwd,
-      open: (relativePath: string) => openToolTab(paneWorkspaceKey, relativePath, "file"),
+      open: (relativePath: string) =>
+        openChatFileLink(
+          relativePath,
+          (path) => workspaceFileEditorOpen(workspaceId, path),
+          (path) => openToolTab(paneWorkspaceKey, path, "file"),
+        ),
     };
   }, [paneWorkspaceId, paneCwd, paneWorkspaceKey, openToolTab]);
   // The "@" menu's file index: built on the first mention, per workspace.

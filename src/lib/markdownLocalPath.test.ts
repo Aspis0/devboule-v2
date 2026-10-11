@@ -1,20 +1,26 @@
 import { describe, expect, it } from "vitest";
-import { isFolderTarget, localPathFromHref } from "./markdownLocalPath";
+import { endsInSeparator, localPathFromHref } from "./markdownLocalPath";
 
-describe("isFolderTarget", () => {
-  it.each(["mockups/", "mockups\\", "mockups/screenshots", "C:/x/screenshots"])(
-    "takes %s for a folder",
+describe("endsInSeparator", () => {
+  it.each(["mockups/", "mockups\\", "C:/x/screenshots/"])(
+    "reads %s as a folder spelling",
     (path) => {
-      expect(isFolderTarget(path)).toBe(true);
+      expect(endsInSeparator(path)).toBe(true);
     },
   );
 
-  it.each(["src/app.ts", "LICENSE", "docker/Dockerfile", ".env", "C:/x/a.html"])(
-    "takes %s for a file",
-    (path) => {
-      expect(isFolderTarget(path)).toBe(false);
-    },
-  );
+  // Without a trailing separator the spelling says nothing: the editor's answer decides.
+  it.each([
+    "mockups",
+    "mockups/screenshots",
+    "Gemfile",
+    "README",
+    ".github",
+    "assets.v2",
+    "src/app.ts",
+  ])("leaves %s to the editor's answer", (path) => {
+    expect(endsInSeparator(path)).toBe(false);
+  });
 });
 
 describe("localPathFromHref", () => {

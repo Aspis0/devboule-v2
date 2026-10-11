@@ -21,8 +21,11 @@ export interface ChatFileLink {
  * resolve, and what opening one does. Null turns recognition off. */
 export interface ChatFileLinks {
   root: string;
-  open: (relativePath: string) => void;
+  /** Resolves "folder" when the path names a folder, which opens nothing. */
+  open: (relativePath: string) => Promise<ChatFileTarget>;
 }
+
+export type ChatFileTarget = "file" | "folder";
 
 /** A recognized token inside one plain-text segment, at raw offsets. */
 export interface ChatFilePathToken {

@@ -20,13 +20,13 @@ function buttonMarkup(text: string): string {
 
 describe("file links in markdown", () => {
   it("renders a prose path as a button and keeps the trailing comma outside it", () => {
-    expect(render("edit src/a.ts, then run", { root: ROOT, open: () => undefined })).toBe(
+    expect(render("edit src/a.ts, then run", { root: ROOT, open: async () => "file" })).toBe(
       `<div><p>edit ${buttonMarkup("src/a.ts")}, then run</p></div>`,
     );
   });
 
   it("links a code span whose displayed bytes equal its resolved target", () => {
-    expect(render("touch `src/a.ts` now", { root: ROOT, open: () => undefined })).toBe(
+    expect(render("touch `src/a.ts` now", { root: ROOT, open: async () => "file" })).toBe(
       `<div><p>touch <code>${buttonMarkup("src/a.ts")}</code> now</p></div>`,
     );
   });
@@ -44,7 +44,7 @@ describe("file links in markdown", () => {
     "src/x/../a.ts:12",
     "src\\a.ts",
   ])("keeps code plain when displayed bytes differ from the resolved target: %s", (candidate) => {
-    expect(render(`touch \`${candidate}\` now`, { root: ROOT, open: () => undefined })).toBe(
+    expect(render(`touch \`${candidate}\` now`, { root: ROOT, open: async () => "file" })).toBe(
       `<div><p>touch <code>${candidate}</code> now</p></div>`,
     );
   });
@@ -53,7 +53,7 @@ describe("file links in markdown", () => {
     "keeps whitespace other than embedded spaces plain in code: %s",
     (candidate) => {
       expect(
-        render(`touch \`${candidate}\` now`, { root: ROOT, open: () => undefined }),
+        render(`touch \`${candidate}\` now`, { root: ROOT, open: async () => "file" }),
       ).not.toContain("plan-markdown-file-link");
     },
   );
