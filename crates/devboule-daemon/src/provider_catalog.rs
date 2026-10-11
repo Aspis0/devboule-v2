@@ -1201,6 +1201,28 @@ pub(crate) fn mode_self_answers(
     )
 }
 
+/// Whether the mode answers the card for `tool` itself, so the person is not
+/// asked. A mode the gate table auto-answers answers every tool; the rest of the
+/// table is per tool.
+#[cfg(feature = "server")]
+pub(crate) fn mode_approves_tool(
+    kind: Option<devboule_protocol::SessionKind>,
+    mode_id: Option<&str>,
+    tool: &str,
+) -> bool {
+    let Some(mode_id) = mode_id else {
+        return false;
+    };
+    if mode_is_auto_answered(kind.clone(), mode_id) {
+        return true;
+    }
+    // Claude asks for shell commands even in `acceptEdits`, so the mode answers
+    // only the edit tools.
+    matches!(kind, Some(devboule_protocol::SessionKind::Claude))
+        && mode_id == "acceptEdits"
+        && crate::wire_json::tool_kind_from_name(tool) == "edit"
+}
+
 /// The one feature key that means "approve my permission prompts"
 /// (`create-from-profile`).
 ///

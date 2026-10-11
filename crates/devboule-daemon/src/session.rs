@@ -3872,11 +3872,15 @@ impl SessionRegistry {
         };
         let reports_mode = switcher.reports_mode_from_provider();
         switcher.set_mode(mode_id)?;
-        if reports_mode {
-            Ok(())
-        } else {
-            runtime.set_current_mode_id(mode_id)
+        if !reports_mode {
+            runtime.set_current_mode_id(mode_id)?;
         }
+        // Cards raised before the switch were judged under the old mode; the new
+        // one may approve them, so they are judged again now.
+        if let Some(broker) = runtime.permission_broker() {
+            broker.reconsider_session(session_id, &runtime);
+        }
+        Ok(())
     }
 
     /// Rename a live session (`SessionSetName`).

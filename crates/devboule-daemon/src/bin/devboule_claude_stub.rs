@@ -232,6 +232,25 @@ fn emit_aborted_result(peer: &str) {
     }));
 }
 
+/// The answer an `EDIT` prompt gets once its edit is made, and how it was approved.
+fn emit_edit_done(how: &str) {
+    emit(&json!({
+        "type": "assistant",
+        "message": {
+            "id": format!("stub-edit-done-{how}"),
+            "model": "stub-model",
+            "role": "assistant",
+            "content": [{"type": "text", "text": format!("STUB-EDIT-DONE:{how}")}],
+        },
+    }));
+    emit(&json!({
+        "type": "result",
+        "subtype": "success",
+        "stop_reason": "end_turn",
+        "model": "stub-model",
+    }));
+}
+
 fn main() -> io::Result<()> {
     let argv: Vec<String> = std::env::args().collect();
     let argv_file = flag_value(&argv, "--argv-file").unwrap_or_default();
@@ -264,6 +283,11 @@ fn main() -> io::Result<()> {
     // sends it.
     let mut abort_mode = AbortEmission::None;
     let mut deferred_abort = false;
+    // The mode the daemon last set. An `EDIT` prompt asks for permission only
+    // where the mode asks, the way the CLI approves edits in `acceptEdits`.
+    let mut mode = String::from("default");
+    let mut asked: Option<String> = None;
+    let mut card_seq: u32 = 0;
     for line in stdin.lock().lines() {
         let line = line?;
         if line.trim().is_empty() {
@@ -272,11 +296,39 @@ fn main() -> io::Result<()> {
         let Ok(frame) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
+        if frame.get("type").and_then(Value::as_str) == Some("control_response") {
+            let answered = frame
+                .pointer("/response/request_id")
+                .and_then(Value::as_str);
+            if answered.is_some() && answered == asked.as_deref() {
+                asked = None;
+                emit_edit_done("asked");
+            }
+            continue;
+        }
         if frame.get("type").and_then(Value::as_str) == Some("control_request") {
             let request_id = frame
                 .get("request_id")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
+            if frame.pointer("/request/subtype").and_then(Value::as_str)
+                == Some("set_permission_mode")
+            {
+                mode = frame
+                    .pointer("/request/mode")
+                    .and_then(Value::as_str)
+                    .unwrap_or("default")
+                    .to_string();
+                emit(&json!({
+                    "type": "control_response",
+                    "response": {
+                        "subtype": "success",
+                        "request_id": request_id,
+                        "response": {"mode": mode},
+                    },
+                }));
+                continue;
+            }
             if frame.pointer("/request/subtype").and_then(Value::as_str) == Some("interrupt") {
                 emit(&json!({
                     "type": "control_response",
@@ -331,6 +383,27 @@ fn main() -> io::Result<()> {
         if deferred_abort {
             deferred_abort = false;
             emit_aborted_result(&peer);
+        }
+        if text.starts_with("EDIT") {
+            if mode == "acceptEdits" {
+                emit_edit_done("auto");
+            } else {
+                card_seq += 1;
+                let request_id = format!("stub-edit-{card_seq}");
+                emit(&json!({
+                    "type": "control_request",
+                    "request_id": request_id,
+                    "request": {
+                        "subtype": "can_use_tool",
+                        "tool_name": "Edit",
+                        "display_name": "Edit",
+                        "input": {"file_path": "notes.md", "old_string": "a", "new_string": "b"},
+                        "tool_use_id": format!("toolu_stub_edit_{card_seq}"),
+                    },
+                }));
+                asked = Some(request_id);
+            }
+            continue;
         }
         if text.starts_with("HOLD") {
             abort_mode = if text.starts_with("HOLD-SILENT") {

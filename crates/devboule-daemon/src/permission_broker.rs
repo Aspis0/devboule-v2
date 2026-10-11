@@ -898,7 +898,7 @@ impl PermissionBroker {
         if origin.kind == SessionOriginKind::Peer && origin.role == Some(PeerRole::Daemon) {
             return Ok(false);
         }
-        if !matches!(runtime.mode_gate(), crate::provider_catalog::ModeGate::Auto) {
+        if !self.mode_approves_card(tool_call_id, runtime) {
             return Ok(false);
         }
         let Some(AutoAnswer { pending, option }) = self.take_auto_answerable(tool_call_id)? else {
@@ -912,6 +912,50 @@ impl PermissionBroker {
         // protocol field.
         self.complete(&pending, result, Some(&option), &option.kind, None)?;
         Ok(true)
+    }
+
+    /// Judge the cards a session holds again under its current mode. A switch to
+    /// a mode that approves a waiting card answers it at once, rather than at the
+    /// next card the agent raises.
+    pub(crate) fn reconsider_session(&self, session_id: &str, runtime: &Arc<SessionRuntime>) {
+        let waiting: Vec<String> = match self.pending.lock() {
+            Ok(table) => table
+                .entries
+                .values()
+                .filter(|pending| pending.session_id == session_id)
+                .map(|pending| pending.tool_call_id.clone())
+                .collect(),
+            Err(_) => return,
+        };
+        for tool_call_id in waiting {
+            let _ = self.auto_answer(&tool_call_id, runtime);
+        }
+    }
+
+    /// Whether the session's current mode answers this card itself. The tool is
+    /// the card's title, which is the tool's own name for a tool card. The table
+    /// lock is released before the runtime is read, so the two never nest.
+    fn mode_approves_card(&self, tool_call_id: &str, runtime: &Arc<SessionRuntime>) -> bool {
+        let tool = self
+            .pending
+            .lock()
+            .ok()
+            .and_then(|table| {
+                match table
+                    .entries
+                    .get(tool_call_id)
+                    .map(|pending| &pending.request)
+                {
+                    Some(SessionEvent::PermissionRequest { title, .. }) => Some(title.clone()),
+                    _ => None,
+                }
+            })
+            .unwrap_or_default();
+        crate::provider_catalog::mode_approves_tool(
+            runtime.agent_kind(),
+            runtime.current_mode_id().as_deref(),
+            &tool,
+        )
     }
 
     #[cfg(test)]

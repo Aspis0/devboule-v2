@@ -1655,6 +1655,36 @@ fn the_auto_answer_table_is_per_family() {
     }
 }
 
+/// Whether a mode answers one tool's card itself: every mode the gate table
+/// auto-answers answers every tool, and Claude's `acceptEdits` answers the edit
+/// tools only, since the CLI asks for shell commands in that mode.
+#[test]
+fn a_mode_answers_a_tool_card_by_the_family_table() {
+    use super::mode_approves_tool;
+    use devboule_protocol::SessionKind::{Claude, Codex, Pi};
+    let cases: &[(devboule_protocol::SessionKind, &str, &str, bool)] = &[
+        (Claude, "acceptEdits", "Edit", true),
+        (Claude, "acceptEdits", "Write", true),
+        (Claude, "acceptEdits", "NotebookEdit", true),
+        (Claude, "acceptEdits", "Bash", false),
+        (Claude, "default", "Edit", false),
+        (Claude, "plan", "Edit", false),
+        (Claude, "bypassPermissions", "Bash", true),
+        (Codex, "full-access", "Bash", true),
+        (Codex, "auto-review", "Edit", false),
+        (Codex, "read-only", "Bash", false),
+        (Pi, "bypass", "Bash", true),
+    ];
+    for (kind, mode, tool, expected) in cases {
+        assert_eq!(
+            mode_approves_tool(Some(kind.clone()), Some(*mode), tool),
+            *expected,
+            "{kind:?} in {mode} with {tool}"
+        );
+    }
+    assert!(!mode_approves_tool(None, None, "Edit"));
+}
+
 /// The refusal half of the same table: each family's own never-write id
 /// refuses, everything agent-authored that the table does not name cards —
 /// including every ACP plan-like spelling, which no family owns.

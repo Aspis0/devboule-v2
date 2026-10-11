@@ -1199,3 +1199,51 @@ fn missing_tool_use_id_falls_back_to_request_id() {
     journal.shutdown();
     let _ = std::fs::remove_file(path);
 }
+
+fn tool_line(tool_name: &str, tool_use_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "control_request",
+        "request_id": format!("req-{tool_use_id}"),
+        "request": {
+            "subtype": "can_use_tool",
+            "tool_name": tool_name,
+            "display_name": tool_name,
+            "input": {"file_path": "notes.md", "old_string": "a", "new_string": "b"},
+            "tool_use_id": tool_use_id
+        }
+    })
+}
+
+/// A card raised under an asking mode waits; switching to Allow edits answers it
+/// without a new card, because the card's tool is one the mode approves.
+#[test]
+fn an_accept_edits_switch_answers_the_edit_card_already_waiting() {
+    let (broker, captured, _, runtime, _conn) = harness_with(tool_line("Edit", "toolu_edit"));
+    runtime.set_agent_kind(devboule_protocol::SessionKind::Claude);
+    assert_eq!(
+        broker.pending_len(),
+        1,
+        "the edit waits under the asking mode"
+    );
+    set_runtime_mode(&runtime, "acceptEdits");
+
+    broker.reconsider_session("s.claude.test", &runtime);
+
+    let frames = captured.lock().expect("captured");
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0]["response"]["response"]["behavior"], "allow");
+    assert_eq!(broker.pending_len(), 0);
+}
+
+/// Allow edits does not approve a shell command: its card stays with the person.
+#[test]
+fn an_accept_edits_switch_leaves_a_shell_card_waiting() {
+    let (broker, captured, _, runtime, _conn) = harness_with(tool_line("Bash", "toolu_bash"));
+    runtime.set_agent_kind(devboule_protocol::SessionKind::Claude);
+    set_runtime_mode(&runtime, "acceptEdits");
+
+    broker.reconsider_session("s.claude.test", &runtime);
+
+    assert!(captured.lock().expect("captured").is_empty());
+    assert_eq!(broker.pending_len(), 1);
+}
