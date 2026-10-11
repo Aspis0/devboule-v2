@@ -5,7 +5,7 @@
 use super::*;
 
 const METADATA: &str = "http://169.254.169.254/latest/meta-data/";
-const PRIVATE_PORT: &str = "http://127.0.0.1:5173/";
+const PRIVATE_PORT: &str = "http://10.0.0.5:5173/";
 
 fn watch_of(drive: &Arc<AgentDrive>) -> TabWatch {
     TabWatch::new(Arc::new(DestinationPolicy::load(None)), Arc::clone(drive))
@@ -72,7 +72,7 @@ fn a_frame_of_an_agent_tab_is_checked_like_a_navigation() {
     let drive = Arc::new(AgentDrive::opened_by_agent());
     let watch = watch_of(&drive);
     assert!(watch.blocked_frame(METADATA).is_some());
-    assert!(watch.blocked_frame("http://[::1]:8080/").is_some());
+    assert!(watch.blocked_frame("http://[fe80::1]:8080/").is_some());
     assert!(
         watch.blocked_frame("not a url").is_some(),
         "an address nothing can read is not vouched for"

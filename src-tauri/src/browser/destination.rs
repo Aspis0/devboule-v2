@@ -172,9 +172,19 @@ impl DestinationPolicy {
         if self.allowlist.allows(host, port) {
             return Ok(());
         }
+        if host.ends_with('.') {
+            return Err(Blocked::new(format!(
+                "{host}:{port} is a trailing-dot host, which agent browsing does not resolve."
+            )));
+        }
         // The host itself, before any lookup: every spelling a resolver would
-        // accept as an address is decided here.
+        // accept as an address is decided here. The agent's own machine is
+        // open by default (its dev server, the page it is building); see
+        // `is_own_machine` for why a name that answers with loopback is not.
         if let Some(address) = literal_address(host) {
+            if is_own_machine(address) {
+                return Ok(());
+            }
             if let Some(blocked) = blocked_for(address, host, port) {
                 return Err(blocked);
             }
@@ -186,12 +196,7 @@ impl DestinationPolicy {
             )));
         }
         if is_localhost(host) {
-            return Err(refusal("loopback host", host, port));
-        }
-        if host.ends_with('.') {
-            return Err(Blocked::new(format!(
-                "{host}:{port} is a trailing-dot host, which agent browsing does not resolve."
-            )));
+            return Ok(());
         }
         let key = (normalise_host(host), port);
         if let Some((expires, blocked)) = self
@@ -255,9 +260,27 @@ impl DestinationPolicy {
     }
 }
 
+/// The agent's own machine: the loopback addresses, IPv4 and IPv6, mapped
+/// IPv4 included. It is open to agent browsing by default, because an agent
+/// already runs commands on this machine and the page it is building lives
+/// here. A **name** that answers with loopback is not this: `resolve` still
+/// refuses it, so a public host cannot be rebound onto a local service.
+fn is_own_machine(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(address) => address.is_loopback(),
+        IpAddr::V6(address) => {
+            address.is_loopback()
+                || address
+                    .to_ipv4_mapped()
+                    .is_some_and(|mapped| mapped.is_loopback())
+        }
+    }
+}
+
 /// The refusal one address earns, or `None` when it is public. The subject is
 /// the address the verdict was about; when the host was a name, the name
-/// follows it so the person can find the entry to allow.
+/// follows it. The sentence names no setting: an exception is not a thing the
+/// person can reach from here.
 fn blocked_for(address: IpAddr, host: &str, port: u16) -> Option<Blocked> {
     let category = address_blocked(address)?;
     let as_address = display_address(address, port);
@@ -267,7 +290,7 @@ fn blocked_for(address: IpAddr, host: &str, port: u16) -> Option<Blocked> {
         format!("{as_address} ({host}:{port})")
     };
     Some(Blocked::new(format!(
-        "{category} {subject} is blocked for agent browsing; the person can allow {host}:{port} in Settings."
+        "{category} {subject} is blocked for agent browsing."
     )))
 }
 
@@ -276,12 +299,6 @@ fn display_address(address: IpAddr, port: u16) -> String {
         IpAddr::V4(address) => format!("{address}:{port}"),
         IpAddr::V6(address) => format!("[{address}]:{port}"),
     }
-}
-
-fn refusal(category: &str, host: &str, port: u16) -> Blocked {
-    Blocked::new(format!(
-        "{category} {host}:{port} is blocked for agent browsing; the person can allow {host}:{port} in Settings."
-    ))
 }
 
 #[cfg(test)]

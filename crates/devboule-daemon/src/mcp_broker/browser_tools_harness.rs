@@ -277,7 +277,8 @@ pub(super) fn tool_text(body: &Value) -> &str {
         .flatten()
         .filter_map(|block| block.get("text").and_then(Value::as_str))
         .find(|text| {
-            !text.starts_with("[devboule: untrusted content]") && !text.starts_with("content-end ")
+            !text.starts_with("[devboule: untrusted content]")
+                && !text.trim_start().starts_with("content-end ")
         })
         .unwrap_or("<no text>")
 }

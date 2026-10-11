@@ -105,9 +105,13 @@ fn untrusted_payload_cannot_close_frame() {
         let label = source.label();
         let (head, tail) = source.fence();
         let nonce = tail
+            .trim_start()
             .strip_prefix("content-end ")
             .unwrap_or_else(|| panic!("{label}: the tail is the end line: {tail}"));
-        assert!(head.ends_with(&format!("content-begin {nonce}")), "{label}");
+        assert!(
+            head.trim_end().ends_with(&format!("content-begin {nonce}")),
+            "{label}"
+        );
         assert_eq!(head.matches(nonce).count(), 2, "{label}: named, then begun");
         assert!(
             !head.contains("</devboule-system") && !head.contains("<devboule-system"),
@@ -145,8 +149,17 @@ fn untrusted_payload_cannot_close_frame() {
 #[test]
 fn the_fence_halves_share_a_nonce_and_name_the_end() {
     let (head, tail) = Source::BrowserPage { url: None }.fence();
-    let nonce = tail.strip_prefix("content-end ").expect("the tail");
-    assert!(head.ends_with(&format!("content-begin {nonce}")));
+    // Each half owns its line, so a client that joins the blocks cannot glue
+    // the end marker onto the content's last word.
+    assert!(
+        head.ends_with('\n') && tail.starts_with('\n'),
+        "{head:?} {tail:?}"
+    );
+    let nonce = tail
+        .trim_start()
+        .strip_prefix("content-end ")
+        .expect("the tail");
+    assert!(head.trim_end().ends_with(&format!("content-begin {nonce}")));
     assert!(
         head.contains(&format!("`content-end {nonce}`")),
         "the head names the end"
@@ -345,9 +358,12 @@ fn the_frames_read_the_way_the_app_hides_them() {
         url: Some("https://shop.example.test/cart"),
     }
     .fence();
-    let nonce = tail.strip_prefix("content-end ").expect("the tail");
+    let nonce = tail
+        .trim_start()
+        .strip_prefix("content-end ")
+        .expect("the tail");
     assert_eq!(
-        head.replace(nonce, "0123456789abcdef"),
+        head.replace(nonce, "0123456789abcdef").trim_end(),
         [
             "[devboule: untrusted content]",
             "source: browser page",

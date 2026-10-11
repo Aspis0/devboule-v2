@@ -30,11 +30,15 @@ fn assert_framed(blocks: &[String], provenance: &[&str]) -> String {
     let (head, rest) = blocks.split_first().expect("a head");
     let (tail, content) = rest.split_last().expect("a tail");
     let nonce = tail
+        .trim_start()
         .strip_prefix("content-end ")
         .unwrap_or_else(|| panic!("the last block is the end line: {tail}"));
     assert!(head.starts_with("[devboule: untrusted content]"), "{head}");
     assert!(head.contains("trust: UNTRUSTED DATA"), "{head}");
-    assert!(head.ends_with(&format!("content-begin {nonce}")), "{head}");
+    assert!(
+        head.trim_end().ends_with(&format!("content-begin {nonce}")),
+        "{head}"
+    );
     for fact in provenance {
         assert!(head.contains(fact), "{fact} in {head}");
     }
@@ -162,7 +166,7 @@ fn a_screenshot_is_framed_around_its_picture() {
     assert_eq!(content[1]["type"], "image");
     assert!(content[3]["text"]
         .as_str()
-        .is_some_and(|tail| tail.starts_with("content-end ")));
+        .is_some_and(|tail| tail.trim_start().starts_with("content-end ")));
 }
 
 #[test]
