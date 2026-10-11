@@ -45,6 +45,14 @@ vi.mock("../../lib/tauri", () => ({
   workspaceCreate: vi.fn(),
   workspaceDelete: vi.fn(async () => undefined),
   workspaceArchive: vi.fn(async () => undefined),
+  sessionSetModel: vi.fn(async () => undefined),
+  sessionSetMode: vi.fn(async () => undefined),
+  providerVocabularyGet: vi.fn(async () => ({
+    provider: "claude",
+    models: { state: "present", items: [] },
+    modes: { state: "present", items: [] },
+    source: "probe",
+  })),
   projectRemove: vi.fn(async () => undefined),
   workspaceGitStatus: vi.fn(async () => ({
     isGit: true,

@@ -6,7 +6,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderInfo } from "../../types/ipc";
-import { DraftAgentComposer } from "./DraftAgentComposer";
+import { DraftAgentComposer, resolveDraftSelection } from "./DraftAgentComposer";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -90,5 +90,155 @@ describe("the first-message composer", () => {
 
     expect(container.querySelector('[data-testid="draft-provider-chip"]')).toBeNull();
     expect(container.textContent).toContain("No agent is installed to start.");
+  });
+});
+
+describe("the first-message composer's model, effort and mode", () => {
+  const CHOICES = {
+    models: [
+      {
+        modelId: "sonnet",
+        name: "Sonnet",
+        providerId: "claude",
+        efforts: [
+          { id: "low", label: "Low" },
+          { id: "medium", label: "Medium", default: true },
+        ],
+      },
+      { modelId: "haiku", name: "Haiku", providerId: "claude" },
+    ],
+    modes: [{ id: "plan", name: "Plan" }],
+  } as never;
+
+  it("shows the first model, its default effort and the first mode when nothing is picked", async () => {
+    await act(async () =>
+      root.render(
+        <DraftAgentComposer
+          providers={[provider("claude")]}
+          providerId={null}
+          onProviderChange={vi.fn()}
+          choices={CHOICES}
+          onSend={vi.fn(async () => true)}
+          disabledReason={null}
+        />,
+      ),
+    );
+
+    expect(container.querySelector('[data-testid="draft-model-chip"]')?.textContent).toContain(
+      "Sonnet",
+    );
+    expect(container.querySelector('[data-testid="draft-effort-chip"]')?.textContent).toContain(
+      "Medium",
+    );
+    expect(container.querySelector('[data-testid="draft-mode-chip"]')?.textContent).toContain(
+      "Plan",
+    );
+  });
+
+  it("reports an effort pick with the model it belongs to, and keeps the other picks", async () => {
+    const onSelectionChange = vi.fn();
+    await act(async () =>
+      root.render(
+        <DraftAgentComposer
+          providers={[provider("claude")]}
+          providerId={null}
+          onProviderChange={vi.fn()}
+          choices={CHOICES}
+          selection={{ modelId: "sonnet", effort: null, modeId: null }}
+          onSelectionChange={onSelectionChange}
+          onSend={vi.fn(async () => true)}
+          disabledReason={null}
+        />,
+      ),
+    );
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="draft-effort-chip"]');
+    if (chip === null) throw new Error("the effort chip did not render");
+    await act(async () => chip.click());
+    const low = document.querySelector<HTMLElement>('[data-testid="draft-effort-option-low"]');
+    if (low === null) throw new Error("the Low option did not open");
+    await act(async () => low.click());
+
+    expect(onSelectionChange).toHaveBeenCalledWith({
+      modelId: "sonnet",
+      effort: "low",
+      modeId: null,
+    });
+  });
+
+  it("offers no model chip while the catalog is still loading, and no effort chip for a model without efforts", async () => {
+    await act(async () =>
+      root.render(
+        <DraftAgentComposer
+          providers={[provider("claude")]}
+          providerId={null}
+          onProviderChange={vi.fn()}
+          choices={null}
+          onSend={vi.fn(async () => true)}
+          disabledReason={null}
+        />,
+      ),
+    );
+    expect(container.querySelector('[data-testid="draft-model-chip"]')).toBeNull();
+    expect(container.querySelector('[data-testid="draft-effort-chip"]')).toBeNull();
+    expect(container.querySelector('[data-testid="draft-mode-chip"]')).toBeNull();
+  });
+});
+
+describe("resolveDraftSelection", () => {
+  it("resolves to what the composer shows: the first model and its default effort", () => {
+    expect(
+      resolveDraftSelection(
+        {
+          models: [
+            {
+              modelId: "sonnet",
+              name: "Sonnet",
+              efforts: [
+                { id: "low", label: "Low" },
+                { id: "high", label: "High", default: true },
+              ],
+            },
+          ],
+          modes: [{ id: "plan", name: "Plan" }],
+        } as never,
+        { modelId: null, effort: null, modeId: null },
+      ),
+    ).toEqual({ modelId: "sonnet", effort: "high", modeId: "plan" });
+  });
+
+  it("keeps a pick that exists and falls back when a pick is gone", () => {
+    const choices = {
+      models: [
+        {
+          modelId: "a",
+          name: "A",
+          efforts: [
+            { id: "x", label: "X" },
+            { id: "y", label: "Y" },
+          ],
+        },
+        { modelId: "b", name: "B" },
+      ],
+      modes: [],
+    } as never;
+    expect(resolveDraftSelection(choices, { modelId: "b", effort: null, modeId: null })).toEqual({
+      modelId: "b",
+      effort: null,
+      modeId: null,
+    });
+    // The model falls back to the first; an effort that model offers is kept.
+    expect(resolveDraftSelection(choices, { modelId: "gone", effort: "y", modeId: null })).toEqual({
+      modelId: "a",
+      effort: "y",
+      modeId: null,
+    });
+    // An effort the fallback model does not offer falls back to its first.
+    expect(resolveDraftSelection(choices, { modelId: "gone", effort: "zz", modeId: null })).toEqual(
+      {
+        modelId: "a",
+        effort: "x",
+        modeId: null,
+      },
+    );
   });
 });

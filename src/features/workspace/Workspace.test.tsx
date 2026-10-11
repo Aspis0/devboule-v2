@@ -77,6 +77,14 @@ vi.mock("../../lib/tauri", () => ({
   journalUsage: vi.fn(),
   sessionDelete: vi.fn(),
   sessionCreate: vi.fn(),
+  sessionSetModel: vi.fn(async () => undefined),
+  sessionSetMode: vi.fn(async () => undefined),
+  providerVocabularyGet: vi.fn(async () => ({
+    provider: "claude",
+    models: { state: "present", items: [] },
+    modes: { state: "present", items: [] },
+    source: "probe",
+  })),
   providersList: vi.fn(),
   sessionPresence: vi.fn(async () => undefined),
   daemonRestart: vi.fn(async () => undefined),
@@ -373,6 +381,9 @@ import {
   workspaceGitStatus,
   workspacesList,
   sessionCreate,
+  sessionSetMode,
+  sessionSetModel,
+  providerVocabularyGet,
   sessionDelete,
   sessionPermissionRespond,
   createSessionStateChannel,
@@ -1817,6 +1828,81 @@ describe("Workspace sessions", () => {
     await sendDraftMessage("hi there");
 
     expect(sessionCreate).toHaveBeenCalledWith("workspace-created", "claude");
+  });
+
+  it("the agent is started with the model, effort and mode the composer shows, before the prompt goes", async () => {
+    const double = agentDouble(true);
+    surfaceAgents.set("session-agent", double.agent);
+    vi.mocked(sessionsList).mockResolvedValue([firstPromptAgentSession()]);
+    vi.mocked(sessionCreate).mockResolvedValue(firstPromptAgentSession());
+    vi.mocked(providerVocabularyGet).mockResolvedValue({
+      provider: "claude",
+      models: {
+        state: "present",
+        items: [
+          {
+            modelId: "sonnet",
+            name: "Sonnet",
+            efforts: [
+              { id: "low", label: "Low" },
+              { id: "medium", label: "Medium", default: true },
+            ],
+          },
+        ],
+      },
+      modes: { state: "present", items: [{ id: "plan", name: "Plan" }] },
+      source: "probe",
+    } as never);
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+    await createFromSheet({ isolation: "local", branch: null });
+    await act(async () => undefined);
+
+    await sendDraftMessage("first prompt");
+
+    expect(sessionSetModel).toHaveBeenCalledWith("session-agent", "sonnet", "medium");
+    expect(sessionSetMode).toHaveBeenCalledWith("session-agent", "plan");
+    expect(double.send).toHaveBeenCalledWith("first prompt");
+    // The settings land before the message does.
+    expect(vi.mocked(sessionSetModel).mock.invocationCallOrder[0]).toBeLessThan(
+      double.send.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("a model or mode that does not take holds the prompt: nothing is sent with other settings", async () => {
+    const double = agentDouble(true);
+    surfaceAgents.set("session-agent", double.agent);
+    vi.mocked(sessionsList).mockResolvedValue([firstPromptAgentSession()]);
+    vi.mocked(sessionCreate).mockResolvedValue(firstPromptAgentSession());
+    vi.mocked(providerVocabularyGet).mockResolvedValue({
+      provider: "claude",
+      models: { state: "present", items: [{ modelId: "sonnet", name: "Sonnet" }] },
+      modes: { state: "present", items: [] },
+      source: "probe",
+    } as never);
+    vi.mocked(sessionSetModel).mockRejectedValueOnce(new Error("model refused"));
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+    await createFromSheet({ isolation: "local", branch: null });
+    await act(async () => undefined);
+
+    await sendDraftMessage("first prompt");
+    await act(async () => undefined);
+
+    expect(double.send).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("could not be set");
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
+        ?.value,
+    ).toBe("first prompt");
   });
 
   it("a first prompt the agent confirms clears the composer once, and the pane takes the agent", async () => {

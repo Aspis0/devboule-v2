@@ -2405,3 +2405,10 @@
   min-height: 0;
   padding: var(--space-12);
 }
+
+/* What happened to the last first-prompt send, in one line above its composer. */
+.workspace-draft-notice {
+  margin: 0 0 var(--space-8);
+  color: var(--tone-attention-text);
+  font-size: var(--type-meta);
+}

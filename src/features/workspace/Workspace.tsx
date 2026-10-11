@@ -21,7 +21,12 @@ import { ConfirmProvider } from "../../components/ConfirmHost";
 import { SurfaceErrorBoundary } from "../../app/SurfaceErrorBoundary";
 import { NewProjectDialog } from "../../components/NewProjectDialog";
 import type { AgentSession } from "../../lib/agentSession";
-import { DraftAgentComposer } from "./DraftAgentComposer";
+import {
+  DraftAgentComposer,
+  resolveDraftSelection,
+  type DraftChoices,
+  type DraftSelection,
+} from "./DraftAgentComposer";
 import { sendFirstMessageWhenReady } from "./firstMessage";
 import {
   NewWorkspaceSheet,
@@ -173,6 +178,9 @@ import {
   sessionStop,
   workspaceFilesList,
   type AttentionTarget,
+  providerVocabularyGet,
+  sessionSetMode,
+  sessionSetModel,
 } from "../../lib/tauri";
 import { workspaceFileIndex } from "./workspaceFileIndex";
 import type { TranscriptSearchProps } from "./sidebar/TranscriptSearchResults";
@@ -309,6 +317,9 @@ const FIRST_PROMPT_FAILED =
   "The agent did not take the message. It is still here: press send to try again.";
 const FIRST_PROMPT_HANDED =
   "Not sent: the agent closed before it took the message. It is still here: press send to send it.";
+const FIRST_PROMPT_SETTINGS =
+  "The agent started, but its model or mode could not be set. It is still here: press send to send it with the agent's current settings.";
+const NO_DRAFT_SELECTION: DraftSelection = { modelId: null, effort: null, modeId: null };
 const FIRST_PROMPT_NOT_ATTACHED =
   "The agent is not attached right now. Open the workspace's agent, then press send.";
 
@@ -1670,6 +1681,9 @@ export function Workspace({
   /** The chat-capable providers for the draft composer; null while they load. */
   const [draftProviders, setDraftProviders] = useState<ProviderInfo[] | null>(null);
   const [draftProviderId, setDraftProviderId] = useState<string | null>(null);
+  /** The chosen provider's models and modes, as its catalog reports them. */
+  const [draftChoices, setDraftChoices] = useState<DraftChoices | null>(null);
+  const [draftSelection, setDraftSelection] = useState<DraftSelection>(NO_DRAFT_SELECTION);
   const [firstPrompt, setFirstPromptState] = useState<FirstPrompt | null>(null);
   /** The ref mirrors the state for the callbacks, which must see the latest prompt. */
   const firstPromptRef = useRef<FirstPrompt | null>(null);
@@ -1713,6 +1727,35 @@ export function Workspace({
       current = false;
     };
   }, [draftKey, loadChatProviders]);
+  const draftProviderPick =
+    (
+      (draftProviders ?? []).find((candidate) => candidate.id === draftProviderId) ??
+      draftProviders?.[0]
+    )?.id ?? null;
+  // The chosen provider's catalog, read before any agent runs: its models, their
+  // efforts, and its modes.
+  useEffect(() => {
+    setDraftChoices(null);
+    if (draftProviderPick === null) return undefined;
+    let current = true;
+    void providerVocabularyGet(draftProviderPick, "", false).then(
+      (vocabulary) => {
+        if (current) {
+          setDraftChoices({ models: vocabulary.models.items, modes: vocabulary.modes.items });
+        }
+      },
+      () => {
+        if (current) setDraftChoices(null);
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [draftProviderPick]);
+  const pickDraftProvider = useCallback((providerId: string) => {
+    setDraftProviderId(providerId);
+    setDraftSelection(NO_DRAFT_SELECTION);
+  }, []);
   // The composer's answer: a confirmed prompt clears the draft, a refused one
   // stays in the composer for the person to send again.
   const answerFirstPrompt = useCallback(
@@ -1780,6 +1823,25 @@ export function Workspace({
         setFirstPromptNotice("The agent did not start. Your message is still here.");
         return false;
       }
+      // The agent is started with what the composer shows. A pick that does not
+      // take holds the prompt for the person: nothing is sent with other settings.
+      const picks = resolveDraftSelection(draftChoices, draftSelection);
+      try {
+        if (picks.modelId !== null) {
+          await sessionSetModel(session.id, picks.modelId, picks.effort ?? undefined);
+        }
+        if (picks.modeId !== null) await sessionSetMode(session.id, picks.modeId);
+      } catch {
+        setFirstPrompt({
+          workspaceKey: draftKey,
+          sessionId: session.id,
+          text,
+          state: "failed",
+          attempt: 0,
+        });
+        setFirstPromptNotice(FIRST_PROMPT_SETTINGS);
+        return false;
+      }
       setFirstPrompt({
         workspaceKey: draftKey,
         sessionId: session.id,
@@ -1794,9 +1856,11 @@ export function Workspace({
     },
     [
       createAndShowSession,
+      draftChoices,
       draftKey,
       draftProviderId,
       draftProviders,
+      draftSelection,
       setFirstPrompt,
       startFirstPromptSend,
     ],
@@ -2495,7 +2559,10 @@ export function Workspace({
     <DraftAgentComposer
       providers={draftProviders ?? []}
       providerId={draftProviderId}
-      onProviderChange={setDraftProviderId}
+      onProviderChange={pickDraftProvider}
+      choices={draftChoices}
+      selection={draftSelection}
+      onSelectionChange={setDraftSelection}
       onSend={sendDraft}
       notice={firstPromptNotice}
       restore={
