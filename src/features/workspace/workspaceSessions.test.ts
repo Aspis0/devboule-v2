@@ -1861,7 +1861,7 @@ describe("attention raises from the roster", () => {
   /** The toast path awaits the window answer before it sends: microtask turns
    *  let that continuation run without a timer. */
   const settleToast = async (): Promise<void> => {
-    for (let turn = 0; turn < 6; turn += 1) await Promise.resolve();
+    for (let turn = 0; turn < 30; turn += 1) await Promise.resolve();
   };
 
   const awayFromWindow = async () => ({ visible: false, focused: false, minimized: false });

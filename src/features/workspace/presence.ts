@@ -1,6 +1,6 @@
 import { sessionPresence, type CommandArgs } from "../../lib/tauri";
 import type { WindowState } from "./attentionNotice";
-import { withinMs } from "../../lib/boundedWait";
+import { windowReaderFor } from "./windowReader";
 
 /** How often production re-asks the window state: hiding the window fires
  *  no DOM event inside WebView2, so a poll is the safety net behind the
@@ -156,6 +156,7 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
   // and resolves later is dropped instead of overwriting a newer answer.
   let lastRequestedRead = 0;
   let lastAppliedRead = 0;
+  let watchingSettle = false;
 
   const emit = async (): Promise<void> => {
     if (disposed) return;
@@ -163,16 +164,15 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
     // A rejected read can never be replaced by the document's answer: the
     // live check measured that answer lying for a hidden window. Not seen
     // is the only honest reading when the window cannot be asked.
-    let asked: WindowState | null = null;
-    let readFailed = false;
-    if (deps?.windowState) {
-      asked = await withinMs(
-        "the window state",
-        PRESENCE_READ_TIMEOUT_MS,
-        deps.windowState(),
-      ).catch(() => {
-        readFailed = true;
-        return null;
+    const reader = deps?.windowState ? windowReaderFor(deps.windowState) : null;
+    const answer = reader ? await reader.read(PRESENCE_READ_TIMEOUT_MS, "the window state") : null;
+    // A stale answer means a read is still out. When it lands, the window's
+    // real state is judged then, so the presence is re-read at that moment.
+    if (reader !== null && answer?.reason === "stale" && !watchingSettle) {
+      watchingSettle = true;
+      void reader.whenSettled().then(() => {
+        watchingSettle = false;
+        if (!disposed) emitForgotten();
       });
     }
     // `disposed` again: dispose may have landed while the state read was in
@@ -181,15 +181,24 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
     // A read that started earlier and resolves later is dropped: the newer
     // answer has already been applied.
     if (readNumber <= lastAppliedRead) return;
+    for (const listener of presenceSettledListeners) listener();
+    // Nothing answered yet and nothing known: report nothing rather than
+    // guess "away" or "attended".
+    if (answer !== null && answer.reason === "unknown") return;
     lastAppliedRead = readNumber;
-    const appVisible = deps?.windowState
-      ? !readFailed && asked !== null && asked.visible && asked.focused && !asked.minimized
+    // A window that is answering, or answered before and is stale, is judged by
+    // its state; a refused read is not visible. The document only stands in
+    // when the reporter has no window source at all.
+    const appVisible = answer
+      ? answer.state !== null &&
+        answer.state.visible &&
+        answer.state.focused &&
+        !answer.state.minimized
       : doc.visibilityState === "visible" && doc.hasFocus();
     const presence: Presence = {
       focusedSessionId: appVisible ? reportedSelection : null,
       appVisible,
     };
-    for (const listener of presenceSettledListeners) listener();
     if (
       lastSent !== null &&
       lastSent.focusedSessionId === presence.focusedSessionId &&

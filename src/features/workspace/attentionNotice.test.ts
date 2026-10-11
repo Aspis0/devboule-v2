@@ -23,6 +23,7 @@ import {
 } from "./attentionNotice";
 import {
   lookedAtSessionId,
+  onPresenceSettled,
   reportSelection,
   startPresenceReporting,
   type PresenceDeps,
@@ -951,8 +952,10 @@ describe("the attention path never waits on a read that does not answer", () => 
     expect(send.mock.calls[0]?.[0].title).toBe("agent one — needs approval");
   });
 
-  it("reports the window as not visible when its read never answers, so the presence settles", async () => {
+  it("reports nothing while no answer has ever come back, and still settles the held raises", async () => {
     const invoke = vi.fn(async (_command: unknown, _args: unknown) => undefined);
+    const settled = vi.fn();
+    const unsubscribe = onPresenceSettled(settled);
     const reporter = startPresenceReporting({
       window: fakeWin,
       document: fakeDoc,
@@ -961,13 +964,43 @@ describe("the attention path never waits on a read that does not answer", () => 
       pollIntervalMs: 60_000,
     });
     await vi.advanceTimersByTimeAsync(WINDOW_READ_TIMEOUT_MS);
-    expect(invoke).toHaveBeenCalledWith("session_presence", {
-      focusedSessionId: null,
-      appVisible: false,
-    });
+    // Never "away" by default: with no answer, no presence is claimed at all.
+    expect(invoke).not.toHaveBeenCalled();
+    expect(settled).toHaveBeenCalled();
+    unsubscribe();
     reporter.dispose();
   });
 
+  it("keeps the last known answer while a later read hangs, and starts no second read", async () => {
+    const seen: WindowState = { visible: true, focused: true, minimized: false };
+    let hang = false;
+    const source = vi.fn((): Promise<WindowState> =>
+      hang ? never<WindowState>() : Promise.resolve(seen),
+    );
+    const invoke = vi.fn(async (_command: unknown, _args: unknown) => undefined);
+    const reporter = startPresenceReporting({
+      window: fakeWin,
+      document: fakeDoc,
+      windowState: source,
+      invoke,
+      pollIntervalMs: 1_000,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(invoke).toHaveBeenLastCalledWith("session_presence", {
+      focusedSessionId: null,
+      appVisible: true,
+    });
+    hang = true;
+    invoke.mockClear();
+    await vi.advanceTimersByTimeAsync(10_000);
+    // The hung reads answer with the last known state: no "away" report.
+    expect(
+      invoke.mock.calls.some(([, args]) => (args as { appVisible: boolean }).appVisible === false),
+    ).toBe(false);
+    // One read was started for the hang; the polls after it wait on that one.
+    expect(source.mock.calls.length).toBe(2);
+    reporter.dispose();
+  });
   it("fails the OS permission answer after its bound, so the one retry can run", async () => {
     const plugin = {
       rustPermissionGranted: () => never<boolean>(),

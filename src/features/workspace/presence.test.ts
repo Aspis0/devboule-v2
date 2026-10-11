@@ -5,7 +5,10 @@ import type { WindowState } from "./attentionNotice";
 
 /** Lets an async emit settle before the assertions read the sends. */
 async function flush(): Promise<void> {
-  for (let i = 0; i < 6; i += 1) await Promise.resolve();
+  // A read is a short chain of promises (the shared reader, the bound, the
+  // report), and some tests run on fake timers, so this counts microtask turns
+  // with room to spare rather than waiting on a macrotask.
+  for (let i = 0; i < 30; i += 1) await Promise.resolve();
 }
 
 type Listener = () => void;
@@ -322,7 +325,7 @@ describe("presence reporting", () => {
     vi.useRealTimers();
   });
 
-  it("an older read never overwrites a newer one", async () => {
+  it("never starts a second read while one is out, and reports the answer when it lands", async () => {
     const env = createEnvironment({ visibilityState: "visible", hasFocus: true });
     const reads: Array<(state: WindowState) => void> = [];
     const reporter = startPresenceReporting({
@@ -336,22 +339,14 @@ describe("presence reporting", () => {
     });
     await flush();
     expect(reads.length).toBe(1);
-    // The window hides while the first read is still in flight; a second
-    // read starts (the selection change re-emits).
+    // The selection changes while the read is still out: no second read, and
+    // nothing is claimed before the window has answered.
     reportSelection("session-a");
-    expect(reads.length).toBe(2);
-    // The newer read answers hidden first.
-    reads[1]({ visible: false, focused: false, minimized: false });
+    expect(reads.length).toBe(1);
+    expect(env.invoke).not.toHaveBeenCalled();
+    // The answer lands hidden: the report says so, and the session is not attended.
+    reads[0]({ visible: false, focused: false, minimized: false });
     await flush();
-    expect(env.invoke).toHaveBeenLastCalledWith("session_presence", {
-      focusedSessionId: null,
-      appVisible: false,
-    });
-    // The older read answers visible and focused, late: it is dropped (it
-    // was the startup read), so the daemon keeps the hidden answer.
-    reads[0]({ visible: true, focused: true, minimized: false });
-    await flush();
-    expect(env.invoke).toHaveBeenCalledTimes(1);
     expect(env.invoke).toHaveBeenLastCalledWith("session_presence", {
       focusedSessionId: null,
       appVisible: false,

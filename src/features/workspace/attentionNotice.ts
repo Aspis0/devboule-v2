@@ -3,6 +3,7 @@ import { invokeTyped, type AttentionTarget, type AttentionToast } from "../../li
 import { getShowMessagePreviews, getShowNotifications } from "../../lib/notificationPrefs";
 import { lookedAtSessionId, onPresenceSettled } from "./presence";
 import { traceAttention, withinMs } from "../../lib/boundedWait";
+import { windowReaderFor } from "./windowReader";
 
 /** How long the window state may take before the gate decides without it. A
  * window that cannot answer in this time is treated as not seen: the toast
@@ -460,14 +461,15 @@ export function fireAttentionToast(
     daemonToAppMs: Date.now() - attention.atMs,
   });
   void (async () => {
-    let snapshot: WindowState;
-    try {
-      snapshot = await withinMs("the window state", WINDOW_READ_TIMEOUT_MS, state());
-    } catch {
-      // A rejected read cannot say the user is looking: the window might
-      // be in the tray, so behave as if they are not.
-      snapshot = { visible: false, focused: false, minimized: false };
-    }
+    // The read is bounded and shared (see windowReader): a stale answer is the
+    // last one the window gave, and a refused or never-answered read counts as
+    // not seen, so the toast is never held on a read that cannot come back.
+    const answer = await windowReaderFor(state).read(WINDOW_READ_TIMEOUT_MS, "the window state");
+    const snapshot: WindowState = answer.state ?? {
+      visible: false,
+      focused: false,
+      minimized: false,
+    };
     // The gate: both halves read at the moment of decision —
     // the user may have reached this session, or left it, while the window was being asked.
     const mayAnnounce = toastGate(snapshot, sessionId, lookedAtSessionId());
