@@ -35,6 +35,7 @@ use crate::visible_text::escape_for_model;
 
 use super::browser_args::parse;
 use super::browser_commands::spec_for;
+use super::browser_ports::ports_for_call;
 
 /// Answer one `tools/call` for any of the browser tools.
 ///
@@ -68,11 +69,28 @@ pub(in crate::mcp_broker) fn call(
             return Ok(Some(rpc_error(id, -32602, &sentence)));
         }
     };
-    let context = match browser_caller(state, registration, &caller) {
+    let mut context = match browser_caller(state, registration, &caller) {
         Ok(context) => context,
         // The ownership door refused this caller its own row, so the daemon
         // cannot say which workspace its tabs belong to. Answering anyway would
         // quietly hand it a scope of its own.
+        Err(sentence) => {
+            audit("denied");
+            return Ok(Some(tool_error(&id, &sentence)));
+        }
+    };
+    // The local ports this agent may open, decided here by the daemon and
+    // enforced by the host. A navigation to a port it does not own asks the
+    // person in the chat first.
+    context.local_ports = match ports_for_call(
+        state,
+        &registration.session_id,
+        &registration.owner,
+        context.workspace_id.as_deref(),
+        spec.command,
+        &call.args,
+    ) {
+        Ok(ports) => ports,
         Err(sentence) => {
             audit("denied");
             return Ok(Some(tool_error(&id, &sentence)));

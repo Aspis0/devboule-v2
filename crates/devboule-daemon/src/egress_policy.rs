@@ -196,3 +196,31 @@ pub(crate) fn classify_gh_host(host: &str) -> Result<GhHost, Refusal> {
 #[cfg(test)]
 #[path = "egress_policy_tests.rs"]
 pub(crate) mod tests;
+
+/// The port a URL names, the scheme's own when it names none. Parsing only: it
+/// makes no request, and it is how the browser allowance reads a port.
+pub(crate) fn url_port(raw: &str) -> Option<u16> {
+    Url::parse(raw).ok()?.port_or_known_default()
+}
+
+/// The port a URL names when the URL names this machine (`localhost`, a
+/// loopback IPv4 or IPv6 address, or an IPv4 mapped loopback), or `None` when it
+/// names another host or does not parse.
+pub(crate) fn local_url_port(raw: &str) -> Option<u16> {
+    use std::net::IpAddr;
+    let parsed = Url::parse(raw).ok()?;
+    let host = parsed.host_str()?;
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host.to_ascii_lowercase().ends_with(".localhost")
+        || match host.trim_matches(['[', ']']).parse::<IpAddr>() {
+            Ok(IpAddr::V4(address)) => address.is_loopback(),
+            Ok(IpAddr::V6(address)) => {
+                address.is_loopback()
+                    || address
+                        .to_ipv4_mapped()
+                        .is_some_and(|mapped| mapped.is_loopback())
+            }
+            Err(_) => false,
+        };
+    loopback.then(|| parsed.port_or_known_default()).flatten()
+}

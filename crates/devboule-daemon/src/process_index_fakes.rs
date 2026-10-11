@@ -56,6 +56,7 @@ pub(super) fn proof(id: &str, workspace: Option<&str>) -> SessionProof {
     SessionProof {
         id: id.to_string(),
         workspace_id: workspace.map(str::to_string),
+        terminal: false,
         label: format!("agent {id}"),
         job: Arc::new(JobObject::new().expect("a proof handle")),
     }

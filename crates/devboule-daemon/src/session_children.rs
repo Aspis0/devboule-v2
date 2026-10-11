@@ -1766,6 +1766,7 @@ impl super::SessionRegistry {
                 Some(SessionProof {
                     id: id.clone(),
                     workspace_id: child.metadata.workspace_id.clone(),
+                    terminal: child.metadata.kind == devboule_protocol::SessionKind::Terminal,
                     label: child
                         .metadata
                         .display_name

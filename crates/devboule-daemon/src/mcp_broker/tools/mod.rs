@@ -5,6 +5,7 @@ mod archive_text;
 pub(super) mod browser_args;
 pub(super) mod browser_commands;
 pub(super) mod browser_login;
+pub(super) mod browser_ports;
 pub(super) mod browser_steps;
 pub(super) mod browser_tools;
 pub(super) mod ci_watch;

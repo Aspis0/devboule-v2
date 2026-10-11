@@ -263,6 +263,9 @@ pub struct ServerState {
     /// The per-session process index, rooted in each live session's own job
     /// or group proof.
     pub(crate) process_index: crate::process_index::ProcessIndex,
+    /// The local ports the person allowed each session's agent to open in agent
+    /// browsing, by session id, from the cards answered in the chat.
+    local_port_grants: Mutex<HashMap<String, std::collections::BTreeSet<u16>>>,
     /// The outbound dial budget (`peer_dial.rs`): how many calls this daemon
     /// may have in flight toward the tailnet at once. The mirror of the
     /// accept path's per-source cap, held on the state so it is per-daemon
@@ -366,6 +369,26 @@ impl Drop for AuthFlightGuard<'_> {
 }
 
 impl ServerState {
+    /// The local ports the person allowed this session's agent to open.
+    pub(crate) fn local_port_grants(&self, session_id: &str) -> Vec<u16> {
+        self.local_port_grants
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(session_id)
+            .map(|ports| ports.iter().copied().collect())
+            .unwrap_or_default()
+    }
+
+    /// Remember that the person allowed `port` for this session's agent.
+    pub(crate) fn grant_local_port(&self, session_id: &str, port: u16) {
+        self.local_port_grants
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .entry(session_id.to_string())
+            .or_default()
+            .insert(port);
+    }
+
     #[cfg(test)]
     pub fn new(instance_id: String) -> Arc<Self> {
         // Each test state needs its own SQLite path: parallel WAL writers
@@ -543,6 +566,7 @@ impl ServerState {
             peer_listener: Mutex::new(None),
             peer_transport: OnceLock::new(),
             process_index: crate::process_index::ProcessIndex::new(),
+            local_port_grants: Mutex::new(HashMap::new()),
             outbound_dials: super::peer_dial::DialSlots::default(),
             peer_links: super::peer_link::PeerLinks::new(),
             browser: crate::browser_broker::BrowserBroker::new(),

@@ -23,6 +23,8 @@ use crate::process_tree::JobObject;
 pub(crate) struct SessionProof {
     pub(crate) id: String,
     pub(crate) workspace_id: Option<String>,
+    /// Whether the session is a terminal the person opened, not an agent.
+    pub(crate) terminal: bool,
     pub(crate) label: String,
     pub(crate) job: Arc<JobObject>,
 }
@@ -180,10 +182,20 @@ mod platform {
     }
 }
 
+/// One rooted session and the ports its proven processes listen on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SessionPorts {
+    pub(crate) id: String,
+    pub(crate) workspace_id: Option<String>,
+    pub(crate) terminal: bool,
+    pub(crate) ports: Vec<u16>,
+}
+
 /// One session's cached view: its label, its proven entries, and the members
 /// the OS refused to vouch for.
 struct SessionProcesses {
     workspace_id: Option<String>,
+    terminal: bool,
     agent: String,
     entries: HashMap<u32, ProcessEntry>,
     unproven: HashSet<u32>,
@@ -249,6 +261,7 @@ impl ProcessIndex {
                 .entry(root.id.clone())
                 .or_insert_with(|| SessionProcesses {
                     workspace_id: None,
+                    terminal: false,
                     agent: String::new(),
                     entries: HashMap::new(),
                     unproven: HashSet::new(),
@@ -256,6 +269,7 @@ impl ProcessIndex {
                     agent_root: None,
                 });
             state.workspace_id = root.workspace_id.clone();
+            state.terminal = root.terminal;
             state.agent = root.label.clone();
             state.membership_unreadable = unreadable;
             state.entries.retain(|pid, _| members.contains(pid));
@@ -309,6 +323,33 @@ impl ProcessIndex {
             });
         }
         Ok(())
+    }
+
+    /// Every rooted session with the ports its proven processes listen on, for
+    /// the browser allowance. The ports are the platform's own answer at the last
+    /// refresh; a session with no listener is still listed, with none.
+    pub(crate) fn listening_by_session(&self) -> Vec<SessionPorts> {
+        let sessions = self.sessions();
+        let mut listed: Vec<SessionPorts> = sessions
+            .iter()
+            .map(|(id, state)| {
+                let mut ports: Vec<u16> = state
+                    .entries
+                    .values()
+                    .flat_map(|entry| entry.ports.iter().copied())
+                    .collect();
+                ports.sort_unstable();
+                ports.dedup();
+                SessionPorts {
+                    id: id.clone(),
+                    workspace_id: state.workspace_id.clone(),
+                    terminal: state.terminal,
+                    ports,
+                }
+            })
+            .collect();
+        listed.sort_by(|left, right| left.id.cmp(&right.id));
+        listed
     }
 
     /// Every proven entry of one session, sorted by pid.
