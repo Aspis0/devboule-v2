@@ -209,6 +209,47 @@ export function projectView(
   };
 }
 
+function viewId(view: WorkspaceView): string {
+  return `${view.hostId}\u0000${view.id}`;
+}
+
+function sameWorkspaceView(previous: WorkspaceView, next: WorkspaceView): boolean {
+  // Every field but the counts is compared as a value; the counts are one
+  // object, so they are compared inside.
+  const before: Record<string, unknown> = { ...previous, agents: null };
+  const after: Record<string, unknown> = { ...next, agents: null };
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (before[key] !== after[key]) return false;
+  }
+  return (
+    previous.agents.working === next.agents.working &&
+    previous.agents.waiting === next.agents.waiting
+  );
+}
+
+/**
+ * Hands back the previous object for every row whose printed facts did not
+ * change, so a memoized row is not asked to repaint for a session update that
+ * touched another workspace. Also answers the views it kept, for the next call.
+ */
+export function reuseUnchangedViews(
+  previous: ReadonlyMap<string, WorkspaceView>,
+  projects: readonly WorkspaceProject[],
+): { projects: WorkspaceProject[]; views: Map<string, WorkspaceView> } {
+  const views = new Map<string, WorkspaceView>();
+  const kept = projects.map((project) => ({
+    ...project,
+    workspaces: project.workspaces.map((view) => {
+      const id = viewId(view);
+      const before = previous.get(id);
+      const reused = before !== undefined && sameWorkspaceView(before, view) ? before : view;
+      views.set(id, reused);
+      return reused;
+    }),
+  }));
+  return { projects: kept, views };
+}
+
 export function useWorkspaceProjects(restoredWorkspaceKey: WorkspaceKey | null) {
   const [projectRecords, setProjectRecords] = useState<ProjectRecord[]>([]);
   const [sessionFacts, setSessionFactsState] = useState<Session[]>([]);
@@ -273,10 +314,17 @@ export function useWorkspaceProjects(restoredWorkspaceKey: WorkspaceKey | null) 
     () => [...projectRecords, ...remoteRecords],
     [projectRecords, remoteRecords],
   );
-  const projectViews = useMemo(
-    () => allRecords.map((project) => projectView(project, sessionIndex)),
-    [allRecords, sessionIndex],
-  );
+  // Each row's view is kept by identity while its facts hold, so a session
+  // update repaints only the rows it changed.
+  const viewCache = useRef<ReadonlyMap<string, WorkspaceView>>(new Map());
+  const projectViews = useMemo(() => {
+    const next = reuseUnchangedViews(
+      viewCache.current,
+      allRecords.map((project) => projectView(project, sessionIndex)),
+    );
+    viewCache.current = next.views;
+    return next.projects;
+  }, [allRecords, sessionIndex]);
 
   useEffect(() => {
     if (loading || error !== null) return;

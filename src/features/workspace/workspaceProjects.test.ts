@@ -7,6 +7,7 @@ import {
   projectView,
   reconcileProjectRecords,
   remoteProjectRecords,
+  reuseUnchangedViews,
   workspaceView,
   type HostWorkspace,
 } from "./workspaceProjects";
@@ -207,6 +208,61 @@ describe("projectView", () => {
       "devboule-v2",
       "devboule-v2 2",
     ]);
+  });
+});
+
+describe("reuseUnchangedViews", () => {
+  const row = (id: string): HostWorkspace => ({
+    id,
+    projectId: "project-1",
+    title: id,
+    hostId: LOCAL_HOST_ID,
+    isolation: "local",
+    path: `C:\\devboule\\${id}`,
+  });
+  const record = () => ({
+    id: "project-1",
+    name: "devboule",
+    hostId: LOCAL_HOST_ID,
+    path: "C:\\devboule",
+    workspaces: [row("w1"), row("w2")],
+  });
+
+  it("hands back the same row object when a fresh derivation shows the same facts", () => {
+    const first = reuseUnchangedViews(new Map(), [projectView(record(), new Map())]);
+    const second = reuseUnchangedViews(first.views, [projectView(record(), new Map())]);
+
+    expect(second.projects[0]?.workspaces[0]).toBe(first.projects[0]?.workspaces[0]);
+    expect(second.projects[0]?.workspaces[1]).toBe(first.projects[0]?.workspaces[1]);
+  });
+
+  it("gives a new object only to the row whose facts changed", () => {
+    const first = reuseUnchangedViews(new Map(), [projectView(record(), new Map())]);
+    const changed = projectView(record(), new Map());
+    const [kept, moved] = changed.workspaces;
+    if (kept === undefined || moved === undefined) throw new Error("two rows expected");
+    const next = reuseUnchangedViews(first.views, [
+      { ...changed, workspaces: [kept, { ...moved, stateDot: "attention" }] },
+    ]);
+
+    expect(next.projects[0]?.workspaces[0]).toBe(first.projects[0]?.workspaces[0]);
+    expect(next.projects[0]?.workspaces[1]).not.toBe(first.projects[0]?.workspaces[1]);
+    expect(next.projects[0]?.workspaces[1]?.stateDot).toBe("attention");
+  });
+
+  it("gives a new object when only the agent counts changed", () => {
+    const first = reuseUnchangedViews(new Map(), [projectView(record(), new Map())]);
+    const [kept, moved] = projectView(record(), new Map()).workspaces;
+    if (kept === undefined || moved === undefined) throw new Error("two rows expected");
+    const next = reuseUnchangedViews(first.views, [
+      {
+        ...projectView(record(), new Map()),
+        workspaces: [kept, { ...moved, agents: { working: 1, waiting: 0 } }],
+      },
+    ]);
+
+    expect(next.projects[0]?.workspaces[1]?.agents.working).toBe(1);
+    expect(next.projects[0]?.workspaces[1]).not.toBe(first.projects[0]?.workspaces[1]);
   });
 });
 
