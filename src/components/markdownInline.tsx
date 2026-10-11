@@ -1,7 +1,46 @@
 import type { ReactNode } from "react";
 import { ExternalLink } from "./ExternalLink";
-import { parseChatCodeFilePath, scanChatFilePaths, type ChatFileLinks } from "../lib/chatFilePaths";
+import {
+  parseChatCodeFilePath,
+  parseChatFilePath,
+  scanChatFilePaths,
+  type ChatFileLinks,
+} from "../lib/chatFilePaths";
 import { opensExternally } from "../lib/externalUrl";
+import { localPathFromHref } from "../lib/markdownLocalPath";
+
+/**
+ * A `[label](path)` that names a file: a link that opens it in the workspace, or
+ * the label as plain text when the file is outside the workspace (or cannot be
+ * resolved at all). The raw `[label](…)` is never shown.
+ */
+function localPathLink(
+  key: number,
+  label: string,
+  path: string,
+  links: ChatFileLinks | null,
+): ReactNode {
+  if (links === null) return <span key={key}>{label}</span>;
+  const link = parseChatFilePath(path, links.root);
+  if (link === null) {
+    return (
+      <span key={key} title="Outside this workspace">
+        {label}
+      </span>
+    );
+  }
+  return (
+    <button
+      key={key}
+      type="button"
+      className="plan-markdown-file-link"
+      title={link.absolutePath ?? link.relativePath}
+      onClick={() => links.open(link.relativePath)}
+    >
+      {label}
+    </button>
+  );
+}
 
 export function inline(text: string, fileLinks?: ChatFileLinks | null): ReactNode[] {
   const links = fileLinks ?? null;
@@ -212,15 +251,18 @@ export function inline(text: string, fileLinks?: ChatFileLinks | null): ReactNod
       // An http(s) destination the command would refuse stays the text the agent
       // wrote: a link that opens nothing is worse than none, and hiding the URL
       // protects nothing that the raw message, journal and copy do not show.
-      nodes.push(
-        opensExternally(href) || /^mailto:/i.test(href) ? (
+      const localPath = localPathFromHref(href);
+      if (opensExternally(href) || /^mailto:/i.test(href)) {
+        nodes.push(
           <ExternalLink key={key} href={href}>
             {label}
-          </ExternalLink>
-        ) : (
-          text.slice(index, end)
-        ),
-      );
+          </ExternalLink>,
+        );
+      } else if (localPath !== null) {
+        nodes.push(localPathLink(key, label, localPath, links));
+      } else {
+        nodes.push(text.slice(index, end));
+      }
     }
     renderedUntil = end;
     offset = end;

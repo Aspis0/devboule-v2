@@ -150,11 +150,12 @@ describe("markdownParser safety", () => {
     expect(out).toContain("[click](javascript:alert(1))");
   });
 
-  it("keeps a relative link as literal text", () => {
+  it("shows a relative link as its label when no workspace is known", () => {
     const out = markup("[docs](docs/index.md)");
 
     expect(out).not.toContain("<a ");
-    expect(out).toContain("[docs](docs/index.md)");
+    expect(out).not.toContain("[docs](");
+    expect(out).toContain("docs");
   });
 
   it("renders raw HTML as text, never as elements", () => {
@@ -177,14 +178,25 @@ describe("markdownParser link targets", () => {
     "\u0001javascript:alert(1)",
     "data:text/html,<script>alert(1)</script>",
     "vbscript:MsgBox(1)",
-    "file:///etc/passwd",
-    "//host/spoof",
   ])("keeps [%j] literal, never an anchor", (target) => {
     const out = markup(`[click](${target})`);
 
     expect(out).not.toContain("<a ");
     expect(out).toContain("[click](");
   });
+
+  // A local path outside any workspace shows only its label: never the raw
+  // destination, never an anchor that would open the file.
+  it.each(["file:///etc/passwd", "//host/spoof"])(
+    "shows [%j] as its label, never an anchor",
+    (target) => {
+      const out = markup(`[click](${target})`);
+
+      expect(out).not.toContain("<a ");
+      expect(out).not.toContain("[click](");
+      expect(out).toContain("click");
+    },
+  );
 
   it("keeps an entity-colon scheme literal too", () => {
     const out = markup("[click](javascript&#58;alert(1))");

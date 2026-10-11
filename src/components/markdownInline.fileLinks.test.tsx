@@ -74,7 +74,9 @@ describe("file links in markdown", () => {
   it("leaves fenced code, explicit links and URLs untouched", () => {
     const links = { root: ROOT, open: vi.fn() };
     expect(render("```\nsrc/a.ts\n```", links)).not.toContain("plan-markdown-file-link");
-    expect(render("[a](src/x.ts)", links)).toContain("[a](src/x.ts)");
+    // A local path inside the workspace is a link to open; its raw destination is never shown.
+    expect(render("[a](src/x.ts)", links)).toContain("plan-markdown-file-link");
+    expect(render("[a](src/x.ts)", links)).not.toContain("](");
     expect(render("[docs](https://e.com)", links)).toContain(
       '<a href="https://e.com" target="_blank" rel="noreferrer">docs</a>',
     );

@@ -64,8 +64,9 @@ const headOutput = [
     expected: '<div><a href="https://e.com" target="_blank" rel="noreferrer">la\nbel</a></div>',
   },
   {
+    // A local path with no workspace shows its label, never the raw destination.
     text: "[a](src/a.ts)",
-    expected: "<div>[a](src/a.ts)</div>",
+    expected: "<div><span>a</span></div>",
   },
   {
     text: "[a](javascript:alert(1))",

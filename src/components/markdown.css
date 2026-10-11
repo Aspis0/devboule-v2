@@ -22,6 +22,9 @@
   background: none;
   color: inherit;
   text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
   font: inherit;
   line-height: inherit;
   text-align: inherit;
@@ -30,7 +33,7 @@
 }
 
 .plan-markdown-file-link:hover {
-  text-decoration: underline;
+  text-decoration-color: currentColor;
 }
 
 .plan-markdown-table {
