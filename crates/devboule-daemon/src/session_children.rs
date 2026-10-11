@@ -882,7 +882,7 @@ impl super::SessionRegistry {
         owner: &OwnerId,
         text: &str,
     ) -> Result<(), WireError> {
-        self.deliver_to_creator(creator, owner, text, None)
+        self.deliver_to_creator(creator, owner, text, None, None)
             .map(|_| ())
     }
 
@@ -1018,7 +1018,7 @@ impl super::SessionRegistry {
         // The notice has no event beside it, so its delivery id is not needed:
         // a parked child is visible on its own session, and the text is the
         // whole message.
-        let _ = self.deliver_to_creator(&creator, &owner, &envelope, Some(child));
+        let _ = self.deliver_to_creator(&creator, &owner, &envelope, Some(child), None);
     }
 
     /// Read-only activity answer for one agent session: the derived headline,
@@ -1254,9 +1254,9 @@ impl super::SessionRegistry {
         }
         // The creator is gone: nothing is deposited and nothing is sent. The
         // child's journal still has its end; the creator's is closed.
-        let Some(creator_runtime) = self.live_runtime(&creator, owner) else {
+        if self.live_runtime(&creator, owner).is_none() {
             return;
-        };
+        }
         let (state, note) = child_finish_state(session, runtime);
         let snapshot = runtime.agent_message_snapshot();
         let (artifacts, note) = match snapshot.as_ref() {
@@ -1297,50 +1297,43 @@ impl super::SessionRegistry {
             note.as_deref(),
             &session.origin,
         ));
-        // The delivery answers the id of the message it left on the creator's
-        // transcript, and that id is what the event carries (audit S5-04). A
-        // creator that is live but did not take the text is told so in the
-        // note and gets no id at all: naming whatever message happened to be
-        // last would point the app at somebody else's turn.
-        let (message_id, note) =
-            match self.deliver_to_creator(&creator, owner, &envelope, Some(child)) {
-                Ok(Some(message_id)) => (Some(message_id), note),
-                // Delivered, and the creator's provider kept no transcript record
-                // for it: there is nothing to correlate to, and the text is there.
-                Ok(None) => (None, note),
-                Err(_) => (
-                    None,
-                    Some(match note {
-                        Some(note) => format!("{note} finish report not delivered"),
-                        None => "finish report not delivered".to_string(),
-                    }),
-                ),
-            };
-        match creator_runtime.publish_child_finished(
-            message_id,
-            &session.id,
-            &display_name,
+        // The finish is published with the delivery: once the text it refers to
+        // has landed, the event carries that text's id (audit S5-04). A creator
+        // that is live but did not take the text is told so in the note and
+        // gets no id at all: naming whatever message happened to be last would
+        // point the app at somebody else's turn. A held text publishes its
+        // finish when the drain delivers it.
+        let finish = PendingFinish {
+            child_id: session.id.clone(),
+            display_name,
             state,
             note,
             artifacts,
-        ) {
-            Some(event) => self
-                .refresh_session_tasks(&creator, &[(event, crate::agent_activity::wall_now_ms())]),
-            None => creator_runtime.mark_journal_degraded(),
-        }
+        };
+        // An uncertain write is published by the delivery itself, so its error
+        // needs no handling here.
+        let _ = self.deliver_to_creator(&creator, owner, &envelope, Some(child), Some(finish));
     }
 
     /// Deliver a wake to `creator`: the daemon's message that a child finished,
     /// errored or needs permission. It starts the creator's next turn. A creator
     /// that is stopped, whose kill is in flight, or whose turn is running keeps
-    /// the wake held; a creator that is gone drops it with a muted notice in the
-    /// child. Answers the transcript id of the text when it was written now.
+    /// the wake held, with the child's finish if the wake carries one. A creator
+    /// that is gone drops the wake with a muted notice in the child.
+    ///
+    /// A finish is published on the creator's transcript once its text has
+    /// landed, so the event carries that text's id (audit S5-04). A finish whose
+    /// text is held waits for the drain; one whose text was refused for an
+    /// uncertain write is published without an id and says so in its note.
+    ///
+    /// Answers the transcript id of the text when it was written now.
     pub(super) fn deliver_to_creator(
         &self,
         creator: &str,
         owner: &OwnerId,
         text: &str,
         child: Option<&str>,
+        finish: Option<PendingFinish>,
     ) -> Result<Option<String>, WireError> {
         let Some(runtime) = self.live_runtime(creator, owner) else {
             self.drop_wake(child, owner, "its creator is no longer here");
@@ -1349,23 +1342,40 @@ impl super::SessionRegistry {
         // A stopped creator, or one whose kill is in flight, takes no writes:
         // the wake waits until a resume (or the creator is gone for good).
         if self.creator_fenced(creator, &runtime) {
-            self.hold_wake(creator, owner, text, child, 0);
+            self.hold_wake(creator, owner, text, child, finish, 0);
             return Ok(None);
         }
         // A creator mid-turn takes the wake when that turn ends: a steer would
         // fold the child's news into a turn the creator may be ending anyway,
         // and nothing would start a turn for it afterwards.
         if runtime.is_running_turn() {
-            self.hold_wake(creator, owner, text, child, 0);
+            self.hold_wake(creator, owner, text, child, finish, 0);
+            self.drain_at_turn_end(creator, &runtime);
             return Ok(None);
         }
         match self.send_wake(creator, owner, text) {
-            Ok(message_id) => Ok(message_id),
+            Ok(message_id) => {
+                if let Some(finish) = finish {
+                    self.publish_finish(creator, &runtime, finish, message_id.clone(), None);
+                }
+                Ok(message_id)
+            }
             // The bytes may already be with the creator: a repeat could say the
             // same thing twice, so an uncertain write is not held.
-            Err(error @ crate::session::SendError::Uncertain(_)) => Err(WireError::from(error)),
+            Err(error @ crate::session::SendError::Uncertain(_)) => {
+                if let Some(finish) = finish {
+                    self.publish_finish(
+                        creator,
+                        &runtime,
+                        finish,
+                        None,
+                        Some("finish report not delivered"),
+                    );
+                }
+                Err(WireError::from(error))
+            }
             Err(_) => {
-                self.hold_wake(creator, owner, text, child, 1);
+                self.hold_wake(creator, owner, text, child, finish, 1);
                 Ok(None)
             }
         }
@@ -1417,13 +1427,15 @@ impl super::SessionRegistry {
     }
 
     /// Hold a wake for its creator's next turn end. Past the attempt bound it
-    /// is dropped, and the creator is told so once.
+    /// is dropped, the creator is told so once, and a finish it carried is
+    /// published without an id.
     fn hold_wake(
         &self,
         creator: &str,
         owner: &OwnerId,
         text: &str,
         child: Option<&str>,
+        finish: Option<PendingFinish>,
         attempts: u32,
     ) {
         if attempts >= MAX_WAKE_ATTEMPTS {
@@ -1435,6 +1447,15 @@ impl super::SessionRegistry {
                     ),
                     devboule_protocol::NoticeSeverity::Warning,
                 );
+                if let Some(finish) = finish {
+                    self.publish_finish(
+                        creator,
+                        &runtime,
+                        finish,
+                        None,
+                        Some("finish report not delivered"),
+                    );
+                }
             }
             return;
         }
@@ -1450,8 +1471,39 @@ impl super::SessionRegistry {
                 owner: owner.clone(),
                 text: text.to_string(),
                 child: child.map(str::to_string),
+                finish,
                 attempts,
             });
+    }
+
+    /// Publish a child's finish on its creator's transcript, now that the text
+    /// it refers to has landed (or has not, when `note` says so).
+    fn publish_finish(
+        &self,
+        creator: &str,
+        runtime: &SessionRuntime,
+        finish: PendingFinish,
+        message_id: Option<String>,
+        note: Option<&str>,
+    ) {
+        let note = match (finish.note, note) {
+            (Some(existing), Some(extra)) => Some(format!("{existing} {extra}")),
+            (Some(existing), None) => Some(existing),
+            (None, Some(extra)) => Some(extra.to_string()),
+            (None, None) => None,
+        };
+        match runtime.publish_child_finished(
+            message_id,
+            &finish.child_id,
+            &finish.display_name,
+            finish.state,
+            note,
+            finish.artifacts,
+        ) {
+            Some(event) => self
+                .refresh_session_tasks(creator, &[(event, crate::agent_activity::wall_now_ms())]),
+            None => runtime.mark_journal_degraded(),
+        }
     }
 
     /// Drop a wake that can no longer reach its creator, leaving a muted line in
@@ -1499,25 +1551,56 @@ impl super::SessionRegistry {
                 );
                 continue;
             };
-            if self.creator_fenced(creator, &runtime) || runtime.is_running_turn() {
+            if self.creator_fenced(creator, &runtime) {
                 self.push_front_wake(creator, wake);
                 return;
             }
+            if runtime.is_running_turn() {
+                self.push_front_wake(creator, wake);
+                self.drain_at_turn_end(creator, &runtime);
+                return;
+            }
             match self.send_wake(creator, &wake.owner, &wake.text) {
-                Ok(_) => continue,
-                Err(crate::session::SendError::Uncertain(_)) => return,
+                Ok(message_id) => {
+                    if let Some(finish) = wake.finish {
+                        self.publish_finish(creator, &runtime, finish, message_id, None);
+                    }
+                    continue;
+                }
+                Err(crate::session::SendError::Uncertain(_)) => {
+                    if let Some(finish) = wake.finish {
+                        self.publish_finish(
+                            creator,
+                            &runtime,
+                            finish,
+                            None,
+                            Some("finish report not delivered"),
+                        );
+                    }
+                    return;
+                }
                 Err(_) => {
                     self.hold_wake(
                         creator,
                         &wake.owner,
                         &wake.text,
                         wake.child.as_deref(),
+                        wake.finish,
                         wake.attempts + 1,
                     );
                     return;
                 }
             }
         }
+    }
+
+    /// Drain the creator's held wakes once its running turn is over. The finish
+    /// notify runs before the turn is marked over, so a drain there can find
+    /// the creator still running; a turn-end hook runs after the mark.
+    fn drain_at_turn_end(&self, creator: &str, runtime: &SessionRuntime) {
+        let registry = self.clone();
+        let creator = creator.to_string();
+        runtime.on_turn_end(move || registry.drain_wakes(&creator));
     }
 
     fn push_front_wake(&self, creator: &str, wake: PendingWake) {

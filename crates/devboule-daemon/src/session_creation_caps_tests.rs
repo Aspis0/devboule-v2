@@ -782,7 +782,13 @@ fn a_wake_starts_the_next_turn_of_every_provider_it_reaches() {
         );
         creator.begin_turn();
         let held = registry
-            .deliver_to_creator("wake-creator", &owner, "child finished: all green", None)
+            .deliver_to_creator(
+                "wake-creator",
+                &owner,
+                "child finished: all green",
+                None,
+                None,
+            )
             .expect("a held wake is not an error");
         assert_eq!(
             held, None,
@@ -858,6 +864,7 @@ fn a_refused_wake_is_held_and_delivered_at_the_next_turn_end() {
             &owner,
             "the second child is done",
             None,
+            None,
         )
         .expect("a refused delivery is held, not an error");
     assert!(written.lock().expect("written").is_empty());
@@ -901,6 +908,7 @@ fn a_wake_to_a_stopped_creator_is_held_and_never_written() {
             &owner,
             "child finished: stopped",
             None,
+            None,
         )
         .expect("a held wake is not an error");
     assert_eq!(held, None, "a fenced creator takes the wake later");
@@ -937,6 +945,7 @@ fn a_wake_to_a_creator_that_is_gone_is_dropped() {
             &owner,
             "child finished",
             Some("no-such-child"),
+            None,
         )
         .expect("a dropped wake is not an error");
     assert_eq!(held, None);

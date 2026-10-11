@@ -436,9 +436,21 @@ pub(super) struct PendingWake {
     pub(super) text: String,
     /// The child the wake is about: where a muted line goes if it is dropped.
     pub(super) child: Option<String>,
+    /// The child's finish, when the wake carries one: it is published on the
+    /// creator's transcript once the text lands, so its id is the text's.
+    pub(super) finish: Option<PendingFinish>,
     /// How many deliveries have been refused, so a wake that never lands is
     /// dropped with a notice rather than retried forever.
     pub(super) attempts: u32,
+}
+
+/// A child's finish, held with the report that announces it.
+pub(super) struct PendingFinish {
+    pub(super) child_id: String,
+    pub(super) display_name: String,
+    pub(super) state: devboule_protocol::AgentTaskState,
+    pub(super) note: Option<String>,
+    pub(super) artifacts: Vec<devboule_protocol::FinishArtifact>,
 }
 
 /// One child, as its creator's bookkeeping sees it.
