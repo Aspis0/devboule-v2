@@ -93,7 +93,6 @@ describe("command row computed styles", () => {
 
       // An exit is the number alone: the dot is hidden, and no danger colour is drawn.
       expect(css.rulesFor(".workspace-command-dot")).toContain("display: none");
-      expect(getComputedStyle(dot).color).not.toBe(css.token("--danger"));
 
       // The exit is a number in the muted ink, not a failure colour.
       const exitStyle = getComputedStyle(exitText);

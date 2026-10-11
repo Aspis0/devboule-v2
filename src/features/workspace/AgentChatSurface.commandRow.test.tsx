@@ -134,7 +134,7 @@ describe("command tool row", () => {
     return parts.join(" ");
   }
 
-  it("renders a provider's failed call with its exit number", async () => {
+  it("renders a non-zero exit as a muted number, not as a failure", async () => {
     await mount();
     await act(async () => {
       channelHarness.active?.(CODEX_CALL);
@@ -150,10 +150,12 @@ describe("command tool row", () => {
     });
 
     const row = onlyRow();
-    expect(row.classList.contains("is-failed")).toBe(true);
-    // A failure's words open on the line's click, like any other output.
+    // Exit 1 alone is a normal answer (git diff, grep): no red, no "failed" label.
+    expect(row.classList.contains("is-failed")).toBe(false);
+    expect(row.querySelector(".workspace-chat-tool-failed")).toBeNull();
+    // The output keeps the normal collapsed style: it sits behind the line.
     const details = row.querySelector("details");
-    if (details === null) throw new Error("the failed row had nothing to open");
+    if (details === null) throw new Error("the row had nothing to open");
     // A command row reads as its verb and the command.
     expect(row.querySelector(".workspace-chat-tool-label")?.textContent).toBe("Run");
     // The text block comes from the real row output, not a test fixture.
@@ -171,13 +173,8 @@ describe("command tool row", () => {
     expect(row.querySelector(".workspace-command-exit")?.textContent).toBe("exit 1");
     const summary = row.querySelector(".workspace-chat-tool-summary");
     if (summary === null) throw new Error("summary did not render");
-    expect(accessibleName(summary)).toBe("Run Command git status exit 1 failed");
-    // The failure label is always said, as a muted word; the exit stays a number.
-    expect(row.querySelector(".workspace-chat-tool-failed")?.textContent).toBe("failed");
-    await act(async () => {
-      details.open = true;
-      details.dispatchEvent(new Event("toggle"));
-    });
+    expect(accessibleName(summary)).toBe("Run Command git status exit 1");
+    await openRow(row);
     expect(row.querySelector(".workspace-chat-tool-output")?.textContent).toContain(
       "fatal: not a git repository",
     );
