@@ -102,6 +102,8 @@ interface WorkspaceComposerProps {
   keepUntilSettled?: boolean;
   /** The resolved setting: Enter queues while the turn runs (the permission rule flips it to steer). */
   enterQueues?: boolean;
+  /** What a send while the turn runs does: the submit button's words name it. */
+  sendWhileRunning?: "steer" | "interrupt";
   onStop?: () => void;
   /** Rows above the composer, first: the agent's plan checklist. */
   taskPill?: ReactNode;
@@ -159,6 +161,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   onSend,
   onQueue,
   enterQueues = false,
+  sendWhileRunning = "interrupt",
   confirmSend = false,
   restoreTextOnFailure = false,
   keepUntilSettled = false,
@@ -706,7 +709,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   );
 
   // The submit button's words name what Enter does.
-  const actionLabel = composerActionLabel(defaultActionQueues);
+  const actionLabel = composerActionLabel(defaultActionQueues, sendWhileRunning);
 
   return (
     <div className="workspace-composer-wrap">

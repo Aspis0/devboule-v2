@@ -3169,6 +3169,42 @@ describe("AgentChatSurface", () => {
     expect(container.querySelector('button[aria-label="Stop the current turn"]')).toBeNull();
   });
 
+  it("a send while the turn runs steers into it under the default setting", async () => {
+    // Paseo's default send while an agent runs is a steer
+    // (packages/app/src/hooks/use-settings/storage.ts:141). Devboule matches it:
+    // the text joins the running turn rather than interrupting it.
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="running-agent"
+          observedState={LIVE_OBSERVED}
+          activity="working"
+        />,
+      );
+    });
+    await act(async () => undefined);
+    const textarea = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Message the agent"]',
+    );
+    // While the turn runs Stop stands where Send was, so Enter is the send.
+    if (textarea === null) throw new Error("agent chat controls did not render");
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    if (setValue === undefined) throw new Error("textarea value setter did not exist");
+    setValue.call(textarea, "Also check the tests");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await act(async () => {
+      textarea.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+      );
+    });
+    const call = vi.mocked(sessionSend).mock.calls.at(-1) ?? [];
+    expect(call[2]).toBe("Also check the tests");
+    expect(call).toContain("steer");
+    expect(call).not.toContain("interrupt");
+  });
+
   it("with no queue handed over, a mid-turn Enter sends plainly and queues nothing", async () => {
     root = createRoot(container);
     await act(async () => {

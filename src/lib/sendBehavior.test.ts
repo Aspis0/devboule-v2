@@ -2,6 +2,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  activeTurnBehaviorFor,
   composerActionLabel,
   getSendBehavior,
   resolveActiveSendBehavior,
@@ -22,15 +23,15 @@ async function freshStore() {
 describe("sendBehavior setting", () => {
   beforeEach(() => {
     localStorage.removeItem(STORAGE_KEY);
-    setSendBehavior("queue");
+    setSendBehavior("steer-and-send");
   });
 
-  it("defaults to queue on a boot with nothing stored", async () => {
+  it("defaults to steer on a boot with nothing stored, as Paseo does", async () => {
     // beforeEach may have left a stored value behind; a boot with nothing
     // stored is the thing under test.
     localStorage.removeItem(STORAGE_KEY);
     const fresh = await freshStore();
-    expect(fresh.getSendBehavior()).toBe("queue");
+    expect(fresh.getSendBehavior()).toBe("steer-and-send");
   });
 
   it("round-trips the chosen value through the store", () => {
@@ -39,6 +40,12 @@ describe("sendBehavior setting", () => {
     expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "")).toBe("interrupt-and-send");
     setSendBehavior("queue");
     expect(getSendBehavior()).toBe("queue");
+  });
+
+  it("keeps a stored queue choice across a boot", async () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify("queue"));
+    const fresh = await freshStore();
+    expect(fresh.getSendBehavior()).toBe("queue");
   });
 
   it("carries an already-stored steer over to interrupt-and-send", async () => {
@@ -52,13 +59,13 @@ describe("sendBehavior setting", () => {
   it("reads a stored value this build does not know as the default", async () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify("steers"));
     const fresh = await freshStore();
-    expect(fresh.getSendBehavior()).toBe("queue");
+    expect(fresh.getSendBehavior()).toBe("steer-and-send");
   });
 
   it("reads corrupt storage as the default", async () => {
     localStorage.setItem(STORAGE_KEY, "{not json");
     const fresh = await freshStore();
-    expect(fresh.getSendBehavior()).toBe("queue");
+    expect(fresh.getSendBehavior()).toBe("steer-and-send");
   });
 
   it("notifies subscribers when the value changes", () => {
@@ -78,9 +85,16 @@ describe("sendBehavior setting", () => {
     expect(resolveActiveSendBehavior("interrupt-and-send", false)).toBe("interrupt-and-send");
   });
 
-  it("labels the composer action so the interrupt is never hidden", () => {
+  it("labels the composer action so the act is never hidden", () => {
     expect(composerActionLabel(true)).toBe("Queue message");
     expect(composerActionLabel(false)).toBe("Send and interrupt");
+    expect(composerActionLabel(false, "steer")).toBe("Send and steer");
+  });
+
+  it("sends steer under steer, and interrupt under interrupt or queue", () => {
+    expect(activeTurnBehaviorFor("steer-and-send")).toBe("steer");
+    expect(activeTurnBehaviorFor("interrupt-and-send")).toBe("interrupt");
+    expect(activeTurnBehaviorFor("queue")).toBe("interrupt");
   });
 
   it("stores only words that can never be handed to a session_send", async () => {

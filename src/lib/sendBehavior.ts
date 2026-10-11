@@ -1,27 +1,32 @@
 /**
- * What Enter does while the agent works — the app's "Default send" choice:
- * queue the message, or interrupt the running turn and send it as a new turn
- * (the UI's "Steer"). One JSON value in localStorage, best-effort both ways,
- * the same pattern as the model-effort preference: no daemon round-trip for a
- * preference only this app reads.
+ * What Enter does while the agent works — the app's "Enter while the agent
+ * runs" choice, the same three choices Paseo offers (`interrupt`, `steer`,
+ * `queue`; packages/app/src/hooks/use-settings/storage.ts:219). Paseo defaults
+ * to steer (storage.ts:141): Enter joins the running turn, and the queue
+ * button, or Command/Ctrl+Enter, queues behind it. One JSON value in
+ * localStorage, best-effort both ways, the same pattern as the model-effort
+ * preference: no daemon round-trip for a preference only this app reads.
  *
  * The stored words are this setting's own vocabulary, deliberately not the
- * protocol's: a `session_send` takes `activeTurnBehavior: "steer"` (delivered
- * into the running turn — never what this setting means), and `"queue"` is a
- * word the wire does not know. Nothing stored here can be handed to a send and
- * look like a behaviour the daemon never agreed to.
+ * protocol's: `steer-and-send` and `interrupt-and-send` name what Enter does,
+ * and `activeTurnBehaviorFor` maps them onto the wire's words.
  */
-export type SendBehavior = "queue" | "interrupt-and-send";
+export type SendBehavior = "steer-and-send" | "interrupt-and-send" | "queue";
 
 /** The setting's values at runtime, so a test (or a future reader) can hold
  * the stored vocabulary against the wire's words without retyping it. */
-export const SEND_BEHAVIOR_VALUES: readonly SendBehavior[] = ["queue", "interrupt-and-send"];
+export const SEND_BEHAVIOR_VALUES: readonly SendBehavior[] = [
+  "steer-and-send",
+  "interrupt-and-send",
+  "queue",
+];
 
 const STORAGE_KEY = "devboule.sendBehavior";
 
-/** The one value an earlier build stored for interrupt-and-send, and the word
- * it becomes. Reading is where an old value is carried over, so the old word
- * is gone for good the first time the setting is touched. */
+/** The stored values an earlier build wrote, and the words they become. The
+ * old `steer` meant interrupt-and-send, so it keeps that meaning. Reading is
+ * where an old value is carried over, so the old word is gone for good the
+ * first time the setting is touched. */
 const MIGRATED_VALUES: Record<string, SendBehavior> = {
   steer: "interrupt-and-send",
 };
@@ -29,7 +34,8 @@ const MIGRATED_VALUES: Record<string, SendBehavior> = {
 function readStoredValue(): SendBehavior {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw === null) return "queue";
+    // A boot with nothing stored takes Paseo's default: steer.
+    if (raw === null) return "steer-and-send";
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed === "string" && SEND_BEHAVIOR_VALUES.includes(parsed as SendBehavior)) {
       return parsed as SendBehavior;
@@ -39,10 +45,10 @@ function readStoredValue(): SendBehavior {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
       return migrated;
     }
-    return "queue";
+    return "steer-and-send";
   } catch {
     // Corrupt or unavailable storage means the default, never a broken chat.
-    return "queue";
+    return "steer-and-send";
   }
 }
 
@@ -73,7 +79,8 @@ export function subscribeSendBehavior(listener: (value: SendBehavior) => void): 
 /**
  * Queueing behind a permission prompt would strand the message: the turn is
  * parked until the request is answered, so a queued send behind an open
- * permission card resolves to interrupt-and-send instead.
+ * permission card resolves to interrupt-and-send instead (Paseo:
+ * packages/app/src/composer/input/state.ts:9-12).
  */
 export function resolveActiveSendBehavior(
   sendBehavior: SendBehavior,
@@ -82,10 +89,21 @@ export function resolveActiveSendBehavior(
   return sendBehavior === "queue" && hasPendingPermission ? "interrupt-and-send" : sendBehavior;
 }
 
-export type ComposerActionLabel = "Queue message" | "Send and interrupt";
+/** The wire's active-turn word for a send made while a turn runs. Send does
+ * what the setting says, and the queue setting's send is the interrupt, as
+ * Paseo's alternate submit does under queue (composer/index.tsx:1506). */
+export function activeTurnBehaviorFor(sendBehavior: SendBehavior): "steer" | "interrupt" {
+  return sendBehavior === "steer-and-send" ? "steer" : "interrupt";
+}
+
+export type ComposerActionLabel = "Queue message" | "Send and steer" | "Send and interrupt";
 
 /** The submit-button words on the button that does what Enter does while
- * the turn runs: queue, or interrupt-and-send — the label says it interrupts. */
-export function composerActionLabel(defaultActionQueues: boolean): ComposerActionLabel {
-  return defaultActionQueues ? "Queue message" : "Send and interrupt";
+ * the turn runs: queue, steer, or interrupt — the label names the act. */
+export function composerActionLabel(
+  defaultActionQueues: boolean,
+  sendWhileRunning: "steer" | "interrupt" = "interrupt",
+): ComposerActionLabel {
+  if (defaultActionQueues) return "Queue message";
+  return sendWhileRunning === "steer" ? "Send and steer" : "Send and interrupt";
 }

@@ -266,13 +266,16 @@ function tabStripRows(): readonly ShortcutRow[] {
 
 function composerRows(behavior: SendBehavior): readonly ShortcutRow[] {
   const queued = behavior === "queue";
+  const steers = behavior === "steer-and-send";
   return [
     {
       keys: composerChordLabel("submit"),
       title: "Send the message",
       detail: queued
         ? "While the agent is working, Enter queues the message when queueing is available; otherwise it sends."
-        : "While the agent is working, Enter interrupts the turn and sends the message.",
+        : steers
+          ? "While the agent is working, Enter steers the message into the running turn."
+          : "While the agent is working, Enter interrupts the turn and sends the message.",
     },
     { keys: composerChordLabel("newline"), title: "Start a new line" },
     {

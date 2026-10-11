@@ -80,6 +80,7 @@ import { setHeldAssistantText } from "./attentionNotice";
 import { QueueTrack } from "./QueueTrack";
 import { useMessageQueue } from "./useMessageQueue";
 import {
+  activeTurnBehaviorFor,
   getSendBehavior,
   resolveActiveSendBehavior,
   subscribeSendBehavior,
@@ -547,8 +548,10 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   // The setting's resolved default. Queueing behind a permission prompt would
   // strand the message, so the queue action becomes steer while a card is open.
   const sendBehavior = useSyncExternalStore(subscribeSendBehavior, getSendBehavior);
-  const enterQueues =
-    queueSupported && resolveActiveSendBehavior(sendBehavior, hasPendingPermission) === "queue";
+  const activeSendBehavior = resolveActiveSendBehavior(sendBehavior, hasPendingPermission);
+  const enterQueues = queueSupported && activeSendBehavior === "queue";
+  // What a send made while the turn runs asks the daemon to do.
+  const runningSend = activeTurnBehaviorFor(activeSendBehavior);
   // The composer's one predicate: the roster's activity, or a send of this view
   // that the daemon has not answered yet.
   const turnActive = composerQueue.turnActive;
@@ -998,6 +1001,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         restoreDraft={restoreDraft}
         onQueue={queueSupported ? composerQueue.queueMessage : undefined}
         enterQueues={enterQueues}
+        sendWhileRunning={runningSend}
         captureTextarea={captureComposerTextarea}
         onSend={async (text, attachments, fileReferences) => {
           // A stopped session: the send resumes it, and the text and images
@@ -1033,14 +1037,11 @@ export const AgentChatSurface = memo(function AgentChatSurface({
               return false;
             }
           }
-          // Text the user types while a turn runs goes straight to the agent as
-          // one send that replaces that turn: the wire's own interrupt
-          // behaviour, which waits out the turn it displaced on the daemon's
-          // side. It never becomes a queued row — nothing is waiting to be
-          // sent later, and a queued row could not move until the turn the
-          // user is interrupting had already ended.
-          const steer = turnActive || hasPendingPermission;
-          return sendSession(text, [], steer ? "interrupt" : undefined, fileReferences).then(
+          // Text the user types while a turn runs does what the setting says,
+          // as Paseo's submit does (packages/app/src/composer/index.tsx:1506):
+          // steer joins the running turn, interrupt replaces it. The queue
+          // button, or the alternate key under steer, waits for the turn to end.
+          return sendSession(text, [], turnActive ? runningSend : undefined, fileReferences).then(
             (sent: boolean) => {
               if (!sent) handDraftBack(text, true);
               if (sent) fileAttachments.clearReady();

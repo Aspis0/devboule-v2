@@ -33,7 +33,7 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   localStorage.removeItem("devboule.sendBehavior");
-  setSendBehavior("queue");
+  setSendBehavior("steer-and-send");
 });
 
 afterEach(async () => {
@@ -52,22 +52,26 @@ describe("SendBehaviorSetting", () => {
     expect(container.querySelector("[data-settings-row-description]")).toBeNull();
   });
 
-  it("offers Queue and Steer, Queue checked by default", async () => {
+  it("offers Steer, Interrupt and Queue, Steer checked by default", async () => {
     await renderSetting();
-    expect(radios()).toHaveLength(2);
-    expect(radioFor("queue").checked).toBe(true);
+    expect(radios()).toHaveLength(3);
+    expect(radioFor("steer-and-send").checked).toBe(true);
     expect(radioFor("interrupt-and-send").checked).toBe(false);
+    expect(radioFor("queue").checked).toBe(false);
     // The alternate key is the act the composer's button names, and the copy
-    // has to say so: under the queue default it interrupts the running turn.
-    // The copy sits under the collapsed Advanced disclosure.
+    // has to say so. The copy sits under the collapsed Advanced disclosure.
     expect(container.querySelector("[data-settings-advanced]")).not.toBeNull();
+    expect(container.textContent).toContain(
+      "When the agent is running, Enter steers the message into the running turn. Command/Ctrl+Enter queues.",
+    );
+    expect(container.textContent).toContain(
+      "When the agent is running, Enter interrupts the turn and sends. Command/Ctrl+Enter queues.",
+    );
     expect(container.textContent).toContain(
       "When the agent is running, Enter queues. Command/Ctrl+Enter interrupts the running turn and sends.",
     );
-    expect(container.textContent).toContain(
-      "When the agent is running, Enter interrupts. Command/Ctrl+Enter queues.",
-    );
-    expect(radioFor("interrupt-and-send").closest("label")?.textContent).toContain("Steer");
+    expect(radioFor("steer-and-send").closest("label")?.textContent).toContain("Steer");
+    expect(radioFor("interrupt-and-send").closest("label")?.textContent).toContain("Interrupt");
   });
 
   it("persists Steer through the store so the next surface reads it back", async () => {
@@ -84,7 +88,7 @@ describe("SendBehaviorSetting", () => {
 
   it("follows a change made elsewhere while the row is mounted", async () => {
     await renderSetting();
-    expect(radioFor("queue").checked).toBe(true);
+    expect(radioFor("steer-and-send").checked).toBe(true);
     await act(async () => setSendBehavior("interrupt-and-send"));
     expect(radioFor("interrupt-and-send").checked).toBe(true);
     await act(async () => setSendBehavior("queue"));

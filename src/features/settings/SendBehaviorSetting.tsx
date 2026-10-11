@@ -7,22 +7,29 @@ import {
 } from "../../lib/sendBehavior";
 import { SettingsAdvanced, SettingsRow } from "./rows";
 
-/** The two send behaviours. Their full effect sits under Advanced: under the
- * queue default the alternate key is not a second submit — it interrupts the
- * running turn and sends, the act the composer's "Send and interrupt" button
- * names. The value lives in the sendBehavior store, so a change here
- * re-renders every mounted surface that reads it. */
+/** The three choices, Paseo's own (packages/app/src/hooks/use-settings/storage.ts:219)
+ * and its default, steer. Their full effect sits under Advanced: the alternate
+ * key queues under steer and interrupt, and interrupts under queue. The value
+ * lives in the sendBehavior store, so a change here re-renders every mounted
+ * surface that reads it. */
 const OPTIONS: readonly { value: SendBehavior; label: string; description: string }[] = [
+  {
+    value: "steer-and-send",
+    label: "Steer",
+    description:
+      "When the agent is running, Enter steers the message into the running turn. Command/Ctrl+Enter queues.",
+  },
+  {
+    value: "interrupt-and-send",
+    label: "Interrupt",
+    description:
+      "When the agent is running, Enter interrupts the turn and sends. Command/Ctrl+Enter queues.",
+  },
   {
     value: "queue",
     label: "Queue",
     description:
       "When the agent is running, Enter queues. Command/Ctrl+Enter interrupts the running turn and sends.",
-  },
-  {
-    value: "interrupt-and-send",
-    label: "Steer",
-    description: "When the agent is running, Enter interrupts. Command/Ctrl+Enter queues.",
   },
 ];
 
