@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 use super::caller::McpCaller;
 use super::tools::creation::request::AgentCreateRequest;
-use super::tools::creation::run::create_agent;
+use super::tools::creation::run::{create_agent, create_agent_now};
 use super::RegisteredSession;
 use crate::provider_catalog::ToolOverlay;
 use crate::server::ServerState;
@@ -137,10 +137,11 @@ fn request() -> AgentCreateRequest {
 /// decided. Returns whether a card was raised at all.
 fn attempt(state: &Arc<ServerState>, frame: u64) -> (Value, bool) {
     let thread_state = Arc::clone(state);
+    // The blocking road: the card is awaited in the call itself. The public
+    // road answers a card-owed creation at once (see `create_agent`).
     let handle = std::thread::spawn(move || {
-        create_agent(
+        create_agent_now(
             &thread_state,
-            &thread_state.mcp,
             &McpCaller::Local,
             &registration("d1a-creator"),
             &json!(frame),
@@ -277,4 +278,100 @@ fn a_plan_switch_after_a_person_opened_the_gate_refuses_the_next_creation() {
         "This session is in plan mode; switch mode to let the agent proceed.",
         "plan refuses even with an open gate"
     );
+}
+
+/// A creation whose card waits for the person answers the parent at once: the
+/// card is raised in the background, a retry of the same frame never raises a
+/// second one, and the answer when the person decides arrives as a message.
+#[test]
+fn a_card_owed_creation_answers_at_once_and_keeps_its_card_in_the_background() {
+    let state = ServerState::new("create-mode-background".to_string());
+    tick_probe_profile(&state);
+    let _runtime = creator(&state, "d1a-creator");
+    // The launchability check reads the global provider rows: seed them first,
+    // as the blocking tests above do, so the check reaches the card.
+    seed_probe_provider(&state);
+
+    let started = Instant::now();
+    // The provider rows are a global snapshot a concurrent test may replace
+    // between the road's read and its resolve: retry that one refusal.
+    let mut answered = json!(null);
+    for _ in 0..8 {
+        seed_probe_provider(&state);
+        answered = create_agent(
+            &state,
+            &state.mcp,
+            &McpCaller::Local,
+            &registration("d1a-creator"),
+            &json!(41),
+            request(),
+        );
+        if answered.pointer("/result/structuredContent/state") == Some(&json!("awaiting_approval"))
+        {
+            break;
+        }
+        assert!(
+            answered.to_string().contains("provider not installed"),
+            "the card is owed, so the call answers awaiting: {answered}"
+        );
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the parent is not held for the person's card"
+    );
+    assert_eq!(
+        answered.pointer("/result/structuredContent/state"),
+        Some(&json!("awaiting_approval")),
+        "{answered}"
+    );
+
+    // The card is raised in the background, for the person to answer.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let card = loop {
+        let pending = state
+            .sessions
+            .live_runtime("d1a-creator", &owner())
+            .expect("live session")
+            .permission_broker()
+            .expect("test broker")
+            .test_pending_ids();
+        if let Some(card) = pending.into_iter().next() {
+            break card;
+        }
+        assert!(Instant::now() < deadline, "the card was never raised");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    // A retry of the same frame is answered as waiting, and raises no second card.
+    seed_probe_provider(&state);
+    let retried = create_agent(
+        &state,
+        &state.mcp,
+        &McpCaller::Local,
+        &registration("d1a-creator"),
+        &json!(41),
+        request(),
+    );
+    // The frame is still in flight: the retry is refused as a retry of a call
+    // that has not answered, and it names no session.
+    assert!(
+        retried
+            .pointer("/result/structuredContent/sessionId")
+            .is_none(),
+        "the retry names no new session: {retried}"
+    );
+    let pending_now = state
+        .sessions
+        .live_runtime("d1a-creator", &owner())
+        .expect("live session")
+        .permission_broker()
+        .expect("test broker")
+        .test_pending_ids();
+    assert_eq!(
+        pending_now,
+        vec![card.clone()],
+        "one card for the one creation"
+    );
+
+    answer(&state, "d1a-creator", &card);
 }

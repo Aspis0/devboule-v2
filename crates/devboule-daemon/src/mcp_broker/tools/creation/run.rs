@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::mcp_broker::caller::McpCaller;
 use crate::mcp_broker::dispatch::{rpc_error, tool_error};
@@ -35,6 +35,142 @@ pub(in crate::mcp_broker) fn create_agent(
     registration: &RegisteredSession,
     id: &Value,
     request: AgentCreateRequest,
+) -> Value {
+    // A creation that needs the person's card does not hold the creator's
+    // turn: the checks run here and answer as they always did, and once a card
+    // is owed the card waits for the person in the background, with the outcome
+    // coming back to the creator as a message that wakes it.
+    run_creation(state, caller, registration, id, request, true)
+}
+
+/// The creations whose card is waiting for the person, by creator and frame id.
+/// A retry of a waiting frame is answered as waiting, and never raises a
+/// second card.
+static AWAITING_CARD: std::sync::Mutex<Option<std::collections::HashSet<String>>> =
+    std::sync::Mutex::new(None);
+
+fn await_card_in_background(
+    state: &Arc<ServerState>,
+    caller: &McpCaller,
+    registration: &RegisteredSession,
+    id: &Value,
+    request: AgentCreateRequest,
+) -> Value {
+    let waiting = crate::server::creation_retry_key(&registration.session_id, id);
+    let awaiting = |text: &str| {
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {
+                "content": [{"type": "text", "text": text}],
+                "structuredContent": {"state": "awaiting_approval"},
+                "isError": false,
+            },
+        })
+    };
+    if let Some(key) = waiting.as_deref() {
+        let mut guard = AWAITING_CARD
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let set = guard.get_or_insert_with(Default::default);
+        if !set.insert(key.to_string()) {
+            return awaiting("This creation is already waiting for the person's approval.");
+        }
+    }
+    let worker_state = Arc::clone(state);
+    let worker_caller = caller.clone();
+    let worker_registration = registration.clone();
+    let worker_id = id.clone();
+    let worker_key = waiting.clone();
+    let spawned = std::thread::Builder::new()
+        .name("agent-creation-card".to_string())
+        .spawn(move || {
+            let answer = create_agent_now(
+                &worker_state,
+                &worker_caller,
+                &worker_registration,
+                &worker_id,
+                request,
+            );
+            if let Some(key) = worker_key.as_deref() {
+                let mut guard = AWAITING_CARD
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if let Some(set) = guard.as_mut() {
+                    set.remove(key);
+                }
+            }
+            let text = creation_outcome_text(&answer);
+            if let Err(error) = worker_state.sessions.wake_creator(
+                &worker_registration.session_id,
+                &worker_registration.owner,
+                &text,
+            ) {
+                eprintln!("the creation outcome was not delivered: {}", error.message);
+            }
+        });
+    match spawned {
+        Ok(_) => awaiting(
+            "Asked the person to approve creating this agent. Its session and start reach you as a message that wakes you: end your turn now, and do not poll for it.",
+        ),
+        Err(error) => {
+            if let Some(key) = waiting.as_deref() {
+                let mut guard = AWAITING_CARD.lock().unwrap_or_else(|error| error.into_inner());
+                if let Some(set) = guard.as_mut() {
+                    set.remove(key);
+                }
+            }
+            tool_error(id, &format!("the creation could not wait for approval: {error}"))
+        }
+    }
+}
+
+/// The message a creator gets when a card-waiting creation has run its course:
+/// the new session and its name, or the reason it did not start.
+fn creation_outcome_text(answer: &Value) -> String {
+    if let Some(session_id) = answer
+        .pointer("/result/structuredContent/sessionId")
+        .and_then(Value::as_str)
+    {
+        let name = answer
+            .pointer("/result/structuredContent/displayName")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        return format!(
+            "The person approved the agent creation: '{name}' started as session {session_id}. Its finish, error or permission need reaches you as a message that wakes you."
+        );
+    }
+    let reason = answer
+        .pointer("/result/content/0/text")
+        .or_else(|| answer.pointer("/error/message"))
+        .and_then(Value::as_str)
+        .unwrap_or("the creation did not start");
+    format!("The agent creation did not start: {reason}")
+}
+
+/// The creation with its card awaited in the call: the road the background
+/// worker runs once the person has been asked, and the one a creator that owes
+/// no card takes.
+pub(in crate::mcp_broker) fn create_agent_now(
+    state: &Arc<ServerState>,
+    caller: &McpCaller,
+    registration: &RegisteredSession,
+    id: &Value,
+    request: AgentCreateRequest,
+) -> Value {
+    run_creation(state, caller, registration, id, request, false)
+}
+
+/// One creation. `background` answers a card-owed creation at once: every
+/// check that spends nothing has run by then, so a refusal still comes back
+/// here, and the card is raised by the worker that this call starts.
+fn run_creation(
+    state: &Arc<ServerState>,
+    caller: &McpCaller,
+    registration: &RegisteredSession,
+    id: &Value,
+    request: AgentCreateRequest,
+    background: bool,
 ) -> Value {
     let creator_id = registration.session_id.clone();
     // The retry identity, and the payload it must match.
@@ -204,6 +340,10 @@ pub(in crate::mcp_broker) fn create_agent(
         return tool_error(id, sentence);
     }
     let needs_card = !matches!(creator_gate, Some(crate::provider_catalog::ModeGate::Auto));
+    if background && needs_card {
+        drop(hold);
+        return await_card_in_background(state, caller, registration, id, request);
+    }
     let ticket = match state
         .sessions
         .reserve_agent_creation(&creator_id, depth, needs_card)

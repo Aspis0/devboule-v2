@@ -873,6 +873,18 @@ impl super::SessionRegistry {
         Some(link.creator.clone())
     }
 
+    /// A message from outside the registry to a creator: the outcome of a
+    /// creation that waited for the person's card. It starts the creator's
+    /// next turn, or waits for its running turn to end, like any wake.
+    pub(crate) fn wake_creator(
+        &self,
+        creator: &str,
+        owner: &OwnerId,
+        text: &str,
+    ) -> Result<(), WireError> {
+        self.deliver_to_creator(creator, owner, text).map(|_| ())
+    }
+
     /// Whether `child` is `creator`'s own child that asked to be told how it
     /// ends. A message to such a child is answered with the wake sentence: its
     /// finish will come back to the creator as a message, so no poll is owed.

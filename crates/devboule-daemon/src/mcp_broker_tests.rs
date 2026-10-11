@@ -13,7 +13,7 @@ use super::tools::creation::profile::{
 };
 use super::tools::creation::request::{creation_fingerprint, AgentCreateRequest};
 use super::tools::creation::result::{created_result, created_result_for_tools};
-use super::tools::creation::run::{create_agent, provider_is_launchable};
+use super::tools::creation::run::{create_agent, create_agent_now, provider_is_launchable};
 use super::transport::{is_transient_accept_error, ConnectionPermit};
 use super::*;
 use crate::provider_catalog::{
@@ -5226,9 +5226,10 @@ fn a_create_through_the_route_delivers_the_stored_spawn_prompt() {
             crate::session::apply_user_rows(rows.clone());
         }
         let request = AgentCreateRequest::parse(&arguments).expect("the request parses");
-        let attempt = create_agent(
+        // The blocking road: this test is about the spawn that follows the
+        // person's answer, and the answer is given inside the call.
+        let attempt = create_agent_now(
             &state,
-            &state.mcp,
             &McpCaller::Local,
             &registration,
             &serde_json::json!(7),

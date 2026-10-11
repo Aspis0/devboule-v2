@@ -27,7 +27,7 @@ use super::dispatch::rpc_error;
 /// ecosystem already retries exactly that sentence. Absent is still a refusal —
 /// on a consent surface the unknown never renders as the benign one — but it
 /// is a transient refusal, not a verdict.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) enum McpCaller {
     Local,
     Peer {
