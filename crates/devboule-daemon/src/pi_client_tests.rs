@@ -4413,3 +4413,30 @@ fn bare_set_model_refuses_ambiguous_ids_naming_their_providers() {
         error.message
     );
 }
+
+/// Pi is told where it runs on its own command line, before the caller's `--`
+/// (owner bug #14), so the instruction is an option and not a message.
+#[test]
+fn pi_spawn_args_tell_pi_where_it_runs() {
+    let command = PtyCommand::new(
+        "pi",
+        Vec::new(),
+        std::env::current_dir().expect("cwd"),
+        Vec::new(),
+    );
+    let path = Path::new(r"C:\runtime\devboule-pi-permissions.ts");
+    let args = spawn_args(&command, path, None).expect("Pi args");
+    let at = args
+        .iter()
+        .position(|arg| arg == "--append-system-prompt")
+        .expect("the instructions flag");
+    assert_eq!(
+        args[at + 1],
+        crate::provider_catalog::DEVBOULE_AGENT_INSTRUCTIONS
+    );
+    let end = args
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(args.len());
+    assert!(at < end, "the flag sits among Pi's options: {args:?}");
+}

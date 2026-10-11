@@ -53,6 +53,7 @@ pub(super) fn handle_rpc(
                     .unwrap_or_else(|| json!("2025-03-26")),
                 "capabilities": {"tools": {"listChanged": false}},
                 "serverInfo": {"name": MCP_SERVER_NAME, "version": env!("CARGO_PKG_VERSION")},
+                "instructions": crate::provider_catalog::DEVBOULE_AGENT_INSTRUCTIONS,
             },
         }))),
         "notifications/initialized" => Ok(None),

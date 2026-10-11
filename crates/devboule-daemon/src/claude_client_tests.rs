@@ -3486,3 +3486,25 @@ fn max_is_accepted_only_where_the_model_lists_it() {
         .expect_err("an unlisted max is refused");
     assert!(error.message.contains("is not among"), "{}", error.message);
 }
+
+/// Claude is told where it runs on the command line it starts with, once
+/// (owner bug #14): the append flag carries the instructions, and adding them
+/// again changes nothing.
+#[test]
+fn claude_launch_carries_the_devboule_instructions_once() {
+    let args = super::launch_with_instructions(vec![
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+    ]);
+    let flags = |args: &[String]| {
+        args.windows(2)
+            .filter(|pair| {
+                pair[0] == "--append-system-prompt"
+                    && pair[1] == crate::provider_catalog::DEVBOULE_AGENT_INSTRUCTIONS
+            })
+            .count()
+    };
+    assert_eq!(flags(&args), 1);
+    let again = super::launch_with_instructions(args);
+    assert_eq!(flags(&again), 1, "a second pass adds no second instruction");
+}

@@ -2002,14 +2002,23 @@ fn thread_start_params(cwd: &Path, mode_id: &str) -> Value {
         "cwd".to_string(),
         Value::String(cwd.to_string_lossy().into_owned()),
     );
+    params.insert(
+        "developerInstructions".to_string(),
+        Value::String(crate::provider_catalog::DEVBOULE_AGENT_INSTRUCTIONS.to_string()),
+    );
     Value::Object(params)
 }
 
-/// `thread/resume` takes the handle alone: the thread loaded from disk
-/// already carries its cwd, model and policy (measured against the installed
-/// app-server schema: `ThreadResumeParams` requires only `threadId`).
+/// `thread/resume` takes the handle and the developer instructions: the
+/// thread loaded from disk already carries its cwd, model and policy (measured
+/// against the installed app-server schema: `ThreadResumeParams` requires only
+/// `threadId`). The instructions ride every request that loads the thread, as
+/// Paseo's ensure-loaded does, so a resumed agent is told where it runs too.
 fn thread_resume_params(thread_id: &str) -> Value {
-    serde_json::json!({ "threadId": thread_id })
+    serde_json::json!({
+        "threadId": thread_id,
+        "developerInstructions": crate::provider_catalog::DEVBOULE_AGENT_INSTRUCTIONS,
+    })
 }
 
 /// One JSON-RPC frame onto the child's stdin, shared by the approval sender

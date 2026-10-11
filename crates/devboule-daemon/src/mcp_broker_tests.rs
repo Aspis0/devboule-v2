@@ -6795,3 +6795,31 @@ fn the_create_schema_publishes_the_direct_settings() {
     }
     assert_eq!(schema["required"], json!(["title", "initialPrompt"]));
 }
+
+/// Every provider that reaches the broker is told where it runs, at its own
+/// `initialize`: the server introduces Devboule in its instructions (owner
+/// bug #14, the agent that did not know it ran inside Devboule).
+#[test]
+fn the_broker_introduces_devboule_at_initialize() {
+    let state = ServerState::new("mcp-instructions".to_string());
+    let owner = owner("mcp-instructions-user", "mcp-instructions-client");
+    crate::session::insert_test_live_agent(&state.sessions, "instructions-caller", owner.clone());
+    let guard = state
+        .mcp
+        .register("instructions-caller", &owner, &SessionKind::Acp)
+        .expect("registration")
+        .expect("caller MCP guard");
+    let token = state.mcp.test_token("instructions-caller").expect("token");
+    let server = state.mcp.start(&state).expect("MCP server");
+    let initialized = http_request(
+        &state.mcp.url,
+        Some(&format!("Bearer {token}")),
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#,
+    );
+    assert_eq!(
+        response_json(&initialized)["result"]["instructions"],
+        crate::provider_catalog::DEVBOULE_AGENT_INSTRUCTIONS
+    );
+    drop(guard);
+    drop(server);
+}

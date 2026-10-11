@@ -1520,16 +1520,21 @@ fn spawn_args(
         let index = option_end(&args);
         args.splice(index..index, ["--mode".to_string(), "rpc".to_string()]);
     }
-    let mut extensions = vec![
+    let mut additions = vec![
         "-e".to_string(),
         permission_path.to_string_lossy().into_owned(),
     ];
     if let Some(bridge) = bridge_path {
-        extensions.push("-e".to_string());
-        extensions.push(bridge.to_string_lossy().into_owned());
+        additions.push("-e".to_string());
+        additions.push(bridge.to_string_lossy().into_owned());
     }
+    // Where Pi runs (owner bug #14), on its own system prompt's append flag.
+    additions.extend([
+        "--append-system-prompt".to_string(),
+        crate::provider_catalog::DEVBOULE_AGENT_INSTRUCTIONS.to_string(),
+    ]);
     let index = option_end(&args);
-    args.splice(index..index, extensions);
+    args.splice(index..index, additions);
     Ok(args)
 }
 

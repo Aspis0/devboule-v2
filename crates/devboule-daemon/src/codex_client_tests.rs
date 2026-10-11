@@ -725,10 +725,14 @@ fn measured_control_frames_and_turn_modes_keep_the_wire_shapes() {
         "thread/start",
     );
     let cwd = thread["params"]["cwd"].as_str().expect("cwd");
-    assert_eq!(
-        thread["params"],
-        thread_start_params(Path::new(cwd), "auto")
-    );
+    // The capture predates the developer instructions, which the frame now
+    // carries beside the measured fields; the measured fields must still match.
+    let mut expected = thread_start_params(Path::new(cwd), "auto");
+    expected
+        .as_object_mut()
+        .expect("thread params are an object")
+        .remove("developerInstructions");
+    assert_eq!(thread["params"], expected);
 
     let initialized = method_frame(
         include_str!("../fixtures/wire/codex/E1-step1-handshake.jsonl"),
@@ -2204,12 +2208,17 @@ fn codex_carrier_road_puts_the_overrides_on_argv_and_the_token_in_env() {
 }
 
 #[test]
-fn thread_resume_params_carry_the_handle_and_nothing_else() {
+fn thread_resume_params_carry_the_handle_and_the_instructions() {
     // Measured against the installed schema: `ThreadResumeParams` requires
     // exactly `threadId`; the thread on disk carries its cwd, model and policy.
+    // The developer instructions are the one other field: Paseo sends them on
+    // the same request, so the schema takes them (owner bug #14).
     assert_eq!(
         thread_resume_params(PERSISTED_THREAD),
-        serde_json::json!({ "threadId": PERSISTED_THREAD })
+        serde_json::json!({
+            "threadId": PERSISTED_THREAD,
+            "developerInstructions": crate::provider_catalog::DEVBOULE_AGENT_INSTRUCTIONS,
+        })
     );
 }
 
@@ -3154,3 +3163,20 @@ fn live_codex_result(
 
 #[path = "codex_client_tests/image_only_input_tests.rs"]
 mod image_only_input_tests;
+
+/// Codex is told where it runs on the thread it starts and on the thread it
+/// resumes (owner bug #14): the developer instructions ride both requests.
+#[test]
+fn codex_threads_carry_the_devboule_instructions() {
+    let start = super::thread_start_params(Path::new("C:/work"), "auto");
+    assert_eq!(
+        start["developerInstructions"],
+        crate::provider_catalog::DEVBOULE_AGENT_INSTRUCTIONS
+    );
+    let resume = super::thread_resume_params("thread-1");
+    assert_eq!(
+        resume["developerInstructions"],
+        crate::provider_catalog::DEVBOULE_AGENT_INSTRUCTIONS
+    );
+    assert_eq!(resume["threadId"], "thread-1");
+}

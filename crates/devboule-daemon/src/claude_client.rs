@@ -322,6 +322,18 @@ fn refuse_launch_only_effort(effort: Option<&str>) -> Result<(), WireError> {
     }
 }
 
+/// Tell Claude where it runs (owner bug #14): the append flag carries the
+/// Devboule instructions on top of Claude's own system prompt. One copy only:
+/// any earlier copy is taken out first.
+fn launch_with_instructions(argv: Vec<String>) -> Vec<String> {
+    let mut args = strip_flag(argv, "--append-system-prompt");
+    args.extend([
+        "--append-system-prompt".to_string(),
+        crate::provider_catalog::DEVBOULE_AGENT_INSTRUCTIONS.to_string(),
+    ]);
+    args
+}
+
 fn strip_flag(argv: Vec<String>, flag: &str) -> Vec<String> {
     let with_equals = format!("{flag}=");
     let mut args = Vec::with_capacity(argv.len());
@@ -668,13 +680,13 @@ pub(super) fn spawn_process(
     // CLI's own default would run a different model at a different price than
     // the one the card named. A create that resolved no profile keeps the
     // catalog's preference, exactly as before this delivery existed.
-    let args = launch_with_effort(
+    let args = launch_with_instructions(launch_with_effort(
         launch_with_model(
             launch_in_bypass_mode(args),
             launch_model_id(&delivery, &state.claude_models().models).as_deref(),
         ),
         delivery.thinking_option_id.as_deref(),
-    );
+    ));
     spawn_claude_child(&command, args, requested_mode, &delivery, None)
 }
 
@@ -727,7 +739,10 @@ pub(super) fn spawn_process_resuming(
             args.push("--strict-mcp-config".to_string());
         }
     }
-    let args = push_resume_flag(launch_in_bypass_mode(args), &peer_session_id);
+    let args = push_resume_flag(
+        launch_with_instructions(launch_in_bypass_mode(args)),
+        &peer_session_id,
+    );
     spawn_claude_child(
         &command,
         args,
