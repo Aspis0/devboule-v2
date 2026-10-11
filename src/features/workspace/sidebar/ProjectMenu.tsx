@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -28,6 +29,7 @@ export function ProjectMenu({ projectName, onRemove }: ProjectMenuProps) {
   const kebabRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const removingRef = useRef(false);
+  const refusalId = useId();
 
   const dismissMenu = useCallback(() => setMenuOpen(false), []);
   useMenuOpen(menuOpen, dismissMenu);
@@ -107,11 +109,7 @@ export function ProjectMenu({ projectName, onRemove }: ProjectMenuProps) {
       ) : null}
       {refusal !== null ? (
         <div className="workspace-project-error" role="alert">
-          <ErrorText
-            sentence={refusal.sentence}
-            detail={refusal.detail}
-            id={`project-remove-refusal-${projectName}`}
-          />
+          <ErrorText sentence={refusal.sentence} detail={refusal.detail} id={refusalId} />
         </div>
       ) : null}
       <ConfirmDialog
