@@ -148,6 +148,58 @@ fn removing_a_project_takes_it_off_the_list_and_adding_its_folder_lists_it_again
 }
 
 #[test]
+fn removing_a_project_refuses_a_live_session_in_one_of_its_archived_rows() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let (_, project, local) = project_with_local_row(&dir, &journal);
+    registry.workspace_archive(&local.id).expect("archive");
+    // A session resumed into the archived row is live, though the row is off the list.
+    let _agent = super::tests::insert_live_agent_in_workspace(
+        &registry,
+        "s.resumed",
+        super::tests::test_owner("user", "client"),
+        &local.id,
+    );
+
+    assert!(
+        registry.project_remove(&project.id).is_err(),
+        "a live session in any row of the project refuses the removal"
+    );
+    assert!(
+        journal
+            .projects_list()
+            .expect("project list")
+            .iter()
+            .any(|listed| listed.id == project.id),
+        "a refused removal leaves the project listed"
+    );
+
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn removing_a_project_waits_for_a_session_starting_in_an_archived_row() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let (_, project, local) = project_with_local_row(&dir, &journal);
+    registry.workspace_archive(&local.id).expect("archive");
+    let starting = registry
+        .workspace_creation_guard(Some(&local.id))
+        .expect("a start in an archived row is taken while its project is listed");
+
+    assert!(
+        registry.project_remove(&project.id).is_err(),
+        "a start in flight in any row of the project refuses the removal"
+    );
+    drop(starting);
+    registry
+        .project_remove(&project.id)
+        .expect("the removal goes through once the start has ended");
+
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_removed_project_stays_off_the_list_after_the_journal_reopens() {
     let (dir, registry, journal) = tmp_delete_registry();
     let (_, project, _local) = project_with_local_row(&dir, &journal);

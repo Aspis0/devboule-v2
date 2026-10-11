@@ -878,6 +878,10 @@ enum JournalCmd {
         project_id: String,
         reply: mpsc::Sender<Result<Vec<WorkspaceRecord>, JournalError>>,
     },
+    ProjectWorkspaceRows {
+        project_id: String,
+        reply: mpsc::Sender<Result<Vec<WorkspaceRecord>, JournalError>>,
+    },
     WorkspaceCreate {
         record: WorkspaceRecord,
         derive_default_title: bool,
@@ -1547,6 +1551,18 @@ impl Journal {
 
     pub fn workspaces_list(&self, project_id: &str) -> Result<Vec<WorkspaceRecord>, JournalError> {
         self.rpc(|reply| JournalCmd::WorkspacesList {
+            project_id: project_id.to_string(),
+            reply,
+        })
+    }
+
+    /// Every row the project holds, archived ones included: a session can be
+    /// live in an archived row, and a removal must see it.
+    pub fn project_workspace_rows(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<WorkspaceRecord>, JournalError> {
+        self.rpc(|reply| JournalCmd::ProjectWorkspaceRows {
             project_id: project_id.to_string(),
             reply,
         })
@@ -2499,6 +2515,9 @@ fn journal_loop(
             JournalCmd::WorkspacesList { project_id, reply } => {
                 let _ = reply.send(list_workspaces(&conn, &project_id));
             }
+            JournalCmd::ProjectWorkspaceRows { project_id, reply } => {
+                let _ = reply.send(project_workspace_rows(&conn, &project_id));
+            }
             JournalCmd::WorkspaceCreate {
                 record,
                 derive_default_title,
@@ -2842,6 +2861,18 @@ fn list_workspaces(
 
 /// A project's rows in creation order: the order the app numbers equal titles
 /// in, and the order a new row's default title is chosen from.
+fn project_workspace_rows(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<Vec<WorkspaceRecord>, JournalError> {
+    if get_project(conn, project_id)?.is_none() || project_archived(conn, project_id)? {
+        return Err(JournalError::InvalidRequest(format!(
+            "Project '{project_id}' does not exist."
+        )));
+    }
+    query_workspaces(conn, project_id)
+}
+
 fn query_workspaces(
     conn: &Connection,
     project_id: &str,

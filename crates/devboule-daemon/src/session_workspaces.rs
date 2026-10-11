@@ -197,39 +197,49 @@ impl super::SessionRegistry {
         let Some(workspace_id) = workspace_id else {
             return Ok(None);
         };
-        // The row's project is read before the gate is taken: a session may
-        // start only in a row of a project that is still listed.
-        if let Some(journal) = self.journal.as_ref() {
-            if let Some(record) = journal
+        let project_id = match self.journal.as_ref() {
+            Some(journal) => journal
                 .workspace_get(workspace_id)
                 .map_err(WireError::from)?
+                .map(|record| record.project_id),
+            None => None,
+        };
+        let guard = {
+            let mut gate = self
+                .workspace_creation_gate
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if gate.archiving.contains(workspace_id) {
+                return Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    "Workspace is being archived.",
+                ));
+            }
+            if project_id
+                .as_ref()
+                .is_some_and(|id| gate.removing_projects.contains(id))
             {
-                let listed = journal
-                    .projects_list()
-                    .map_err(WireError::from)?
-                    .iter()
-                    .any(|project| project.id == record.project_id);
-                if !listed {
-                    return Err(project_leaving());
-                }
-                self.refuse_while_project_removing(&record.project_id)?;
+                return Err(project_leaving());
+            }
+            *gate.creating.entry(workspace_id.to_string()).or_insert(0) += 1;
+            WorkspaceCreationGuard {
+                registry: self,
+                workspace_id: workspace_id.to_string(),
+            }
+        };
+        // Read after the count is taken: a removal that reserves this row first
+        // sees the count and refuses, and one that stamped first is seen here.
+        if let (Some(journal), Some(project_id)) = (self.journal.as_ref(), project_id.as_deref()) {
+            let listed = journal
+                .projects_list()
+                .map_err(WireError::from)?
+                .iter()
+                .any(|project| project.id == project_id);
+            if !listed {
+                return Err(project_leaving());
             }
         }
-        let mut gate = self
-            .workspace_creation_gate
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if gate.archiving.contains(workspace_id) {
-            return Err(WireError::new(
-                ErrorCode::InvalidRequest,
-                "Workspace is being archived.",
-            ));
-        }
-        *gate.creating.entry(workspace_id.to_string()).or_insert(0) += 1;
-        Ok(Some(WorkspaceCreationGuard {
-            registry: self,
-            workspace_id: workspace_id.to_string(),
-        }))
+        Ok(Some(guard))
     }
 
     /// Refuses while the project is leaving the list. A create checks it at its
@@ -1017,25 +1027,24 @@ impl super::SessionRegistry {
     /// Takes a project off the list (`ProjectRemove`). Its folder stays on disk;
     /// its active workspace rows are archived with it, and adding the same path
     /// again lists the project without them.
-    /// Refused while a session runs in one of its listed workspaces. Archived
-    /// workspaces hold no live session: archiving refuses one, and a create
-    /// cannot start into an archiving row.
+    /// Refused while a session runs in any row of the project, archived rows
+    /// included: a resume can start a session in an archived row.
     pub fn project_remove(&self, project_id: &str) -> Result<(), WireError> {
         let journal = self.journal.as_ref().ok_or_else(journal_unavailable)?;
-        // The mark goes up before anything is read: from here a create or a
-        // session start in this project refuses, so the list and the live check
-        // below cover every row that can hold a live session.
+        // The mark goes up before anything is read, so a start that has not yet
+        // taken its count is refused from here on.
         let _removal = self.mark_project_removing(project_id)?;
-        // The read names the project as unknown when it is not there.
-        let workspaces = journal
-            .workspaces_list(project_id)
+        let rows = journal
+            .project_workspace_rows(project_id)
             .map_err(WireError::from)?;
-        let mut reservations = Vec::with_capacity(workspaces.len());
-        for workspace in &workspaces {
-            reservations.push(self.reserve_workspace_for_delete(&workspace.id)?);
+        // A row reserved here refuses a start until the stamp below has landed,
+        // because the reservations drop only when this function returns.
+        let mut reservations = Vec::with_capacity(rows.len());
+        for row in &rows {
+            reservations.push(self.reserve_workspace_for_delete(&row.id)?);
         }
-        for workspace in &workspaces {
-            if !self.live_sessions_in_workspace(&workspace.id)?.is_empty() {
+        for row in &rows {
+            if !self.live_sessions_in_workspace(&row.id)?.is_empty() {
                 return Err(sessions_still_running());
             }
         }
