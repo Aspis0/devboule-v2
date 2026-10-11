@@ -3,7 +3,7 @@ use super::*;
 use crate::mcp_broker::tools::first_use::{
     ensure_write_allowed, WORKSPACES_GROUP, WORKSPACE_ARCHIVE_GROUP,
 };
-use devboule_protocol::{OwnerId, PermissionOutcome, SessionEvent, SessionKind};
+use devboule_protocol::{PermissionOutcome, SessionEvent, SessionKind};
 use std::time::{Duration, Instant};
 
 fn archive_with_card_action(
@@ -62,7 +62,7 @@ fn pending_card(state: &Arc<ServerState>, session: &str) -> String {
 }
 
 #[test]
-fn archive_closes_agents_and_terminals_before_removing_workspace() {
+fn a_live_agent_and_a_live_terminal_refuse_the_archive_and_stay_open() {
     let (state, project, _own, _dir) = setup("cascade");
     let (target, path) = add_worktree(&state, &project, "archive-cascade");
     crate::session::insert_test_live_session_in_workspace(
@@ -79,90 +79,62 @@ fn archive_closes_agents_and_terminals_before_removing_workspace() {
         SessionKind::Terminal,
         &target,
     );
-    for id in ["archive-cascade-agent", "archive-cascade-terminal"] {
-        assert!(state.sessions.session_journal_has_record(id));
-    }
-    let result = run_with_answer(
-        &state,
-        "cascade",
-        &target,
-        PermissionOutcome::AllowOnce,
-        "once",
-    )
-    .expect("archive succeeds");
-    assert_eq!(result["closedSessionIds"].as_array().unwrap().len(), 2);
-    assert!(path.is_dir(), "an archive keeps the folder");
-    assert!(state
-        .sessions
-        .live_sessions_in_workspace(&target)
-        .unwrap()
-        .is_empty());
-    for id in ["archive-cascade-agent", "archive-cascade-terminal"] {
-        assert!(state.sessions.session_journal_has_record(id));
-    }
+    let result = archive_workspace(&state, &state.mcp, "cascade", &owner(), &target);
+    assert!(matches!(
+        result,
+        Err(WorkspaceError::Refused(message))
+            if message == "sessions or terminals are still running in this workspace; close them first"
+    ));
+    assert!(path.is_dir());
+    assert_eq!(
+        state
+            .sessions
+            .live_sessions_in_workspace(&target)
+            .unwrap()
+            .len(),
+        2
+    );
 }
 
 #[test]
-fn failed_session_close_keeps_the_checkout() {
-    let (state, project, _own, _dir) = setup("close-fail");
-    let (target, path) = add_worktree(&state, &project, "archive-close-fail");
-    crate::session::insert_test_live_session_in_workspace(
+fn local_refusal_does_not_raise_a_card_or_open_a_gate() {
+    let (state, project, local, _dir) = setup("local-no-write");
+    let (caller_workspace, _) = add_worktree(&state, &project, "archive-local-no-write-caller");
+    crate::session::insert_test_live_agent_in_workspace(
         &state.sessions,
-        "archive-partial-a",
+        "local-no-write-caller",
         owner(),
-        SessionKind::Acp,
-        &target,
+        &caller_workspace,
     );
-    crate::session::insert_test_live_session_in_workspace(
-        &state.sessions,
-        "invalid session id",
-        owner(),
-        SessionKind::Acp,
-        &target,
-    );
-    let result = run_with_answer(
-        &state,
-        "close-fail",
-        &target,
-        PermissionOutcome::AllowOnce,
-        "once",
-    );
-    assert!(
-        matches!(result, Err(WorkspaceError::Refused(message)) if message.contains("Could not close session") && message.contains("archive-partial-a"))
-    );
-    assert!(path.is_dir());
+    let runtime = state
+        .sessions
+        .live_runtime("local-no-write-caller", &owner())
+        .expect("caller runtime");
+    let permission_broker = runtime.permission_broker().expect("permission broker");
+    assert!(matches!(
+        archive_workspace(
+            &state,
+            &state.mcp,
+            "local-no-write-caller",
+            &owner(),
+            &local
+        ),
+        Err(WorkspaceError::Refused(_))
+    ));
+    assert!(permission_broker.test_pending_ids().is_empty());
+    assert!(state
+        .sessions
+        .workspace_records(&project)
+        .unwrap()
+        .iter()
+        .any(|w| w.id == local));
 }
-
-#[path = "mcp_workspace_archive_privacy_tests.rs"]
-mod privacy_tests;
 
 #[path = "mcp_workspace_archive_creation_tests.rs"]
 mod creation_tests;
 
 #[path = "mcp_workspace_archive_audit_tests.rs"]
 mod audit_tests;
-
-#[test]
-fn archive_card_names_sessions_and_returns_the_closed_ids() {
-    let (state, project, _own, _dir) = setup("card-names");
-    let (target, _) = add_worktree(&state, &project, "archive-card-names");
-    crate::session::insert_test_live_session_in_workspace(
-        &state.sessions,
-        "archive-card-agent",
-        owner(),
-        SessionKind::Acp,
-        &target,
-    );
-    let result = run_with_answer(
-        &state,
-        "card-names",
-        &target,
-        PermissionOutcome::AllowOnce,
-        "once",
-    )
-    .expect("archive succeeds");
-    assert_eq!(result["closedSessionIds"][0], "archive-card-agent");
-}
 
 #[test]
 fn workspace_create_and_archive_session_approvals_are_independent() {

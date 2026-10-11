@@ -188,6 +188,9 @@ mod session_types;
 mod session_workspace_volume;
 #[path = "session_workspaces.rs"]
 mod session_workspaces;
+/// The sidebar's refusal for a workspace with a session running, so the MCP
+/// archive answers with the same sentence.
+pub(crate) use session_workspaces::sessions_still_running;
 #[path = "shell_command.rs"]
 mod shell_command;
 #[cfg(test)]
@@ -1460,19 +1463,6 @@ impl SessionRegistry {
                 )
             })
             .collect())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn session_journal_has_record(&self, session_id: &str) -> bool {
-        rusqlite::Connection::open(self.paths.journal_file())
-            .and_then(|connection| {
-                connection.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?1)",
-                    [session_id],
-                    |row| row.get::<_, bool>(0),
-                )
-            })
-            .unwrap_or(false)
     }
 
     #[cfg(test)]
@@ -4653,11 +4643,6 @@ pub(crate) fn insert_test_live_session_in_workspace(
         }
     }
     tests::insert_live_session_in_workspace(registry, id, owner, kind, workspace_id)
-}
-
-#[cfg(test)]
-pub(crate) fn insert_test_transcript(registry: &SessionRegistry, id: &str, owner: OwnerId) {
-    tests::insert_transcript(registry, id, owner);
 }
 
 /// Test-only live agent that is somebody's child: `created_by` is the fact

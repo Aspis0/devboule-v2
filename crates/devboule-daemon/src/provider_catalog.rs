@@ -309,7 +309,7 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
     (
         MCP_ARCHIVE_WORKSPACE_TOOL,
-        "Archives a workspace in the calling session's own project after the human approves workspace archiving from this session the first time when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses). workspaceId names the target. The approval card names up to three live sessions owned by the caller and counts sessions of other users without showing their titles; their session rows and transcripts stay in history. Archive closes those sessions, then takes the workspace off the list: its folder stays on disk and nothing is deleted.",
+        "Archives a workspace in the calling session's own project after the human approves workspace archiving from this session the first time when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses). workspaceId names the target. A workspace with a session running is refused, as the app refuses it: close the session first. The project folder itself (a local workspace) is refused. Otherwise the workspace leaves the list and its folder stays on disk; nothing is deleted.",
     ),
     (
         MCP_FILE_COLLISIONS_TOOL,

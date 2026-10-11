@@ -1,7 +1,7 @@
 pub(super) mod agents;
 pub(super) mod always_card;
 pub(super) mod archive;
-mod archive_sessions;
+mod archive_text;
 pub(super) mod browser_args;
 pub(super) mod browser_commands;
 pub(super) mod browser_login;

@@ -1314,7 +1314,7 @@ fn worktree_branch_seed() -> u64 {
 
 /// The refusal a removal or an archive gives while an agent or terminal still
 /// runs in the workspace: the owner closes it first, nothing is cut under it.
-fn sessions_still_running() -> WireError {
+pub(crate) fn sessions_still_running() -> WireError {
     WireError::new(
         ErrorCode::InvalidRequest,
         "sessions or terminals are still running in this workspace; close them first",

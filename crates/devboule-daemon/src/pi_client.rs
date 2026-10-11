@@ -1084,7 +1084,7 @@ export default function (pi) {
   pi.registerTool({
     name: "devboule_archive_workspace",
     label: "Archive Devboule workspace",
-    description: `Archives a workspace in the calling session's own project after the human approves workspace archiving from this session the first time when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses). workspaceId names the target. The approval card names up to three live sessions owned by the caller and counts sessions of other users without showing their titles; their session rows and transcripts stay in history. Archive closes those sessions, then takes the workspace off the list: its folder stays on disk and nothing is deleted.`,
+    description: `Archives a workspace in the calling session's own project after the human approves workspace archiving from this session the first time when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses). workspaceId names the target. A workspace with a session running is refused, as the app refuses it: close the session first. The project folder itself (a local workspace) is refused. Otherwise the workspace leaves the list and its folder stays on disk; nothing is deleted.`,
     parameters: Type.Object(
       { workspaceId: Type.String({ description: "The worktree workspace id from devboule_list_workspaces." }) },
       { required: ["workspaceId"], additionalProperties: false },

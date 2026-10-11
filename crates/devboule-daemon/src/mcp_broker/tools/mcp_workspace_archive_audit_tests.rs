@@ -27,60 +27,35 @@ fn peer_caller() -> McpCaller {
 }
 
 #[test]
-fn partial_archive_audits_refusal_without_workspace_archive_close_rows() {
-    let (state, project, _own, _dir) = setup("archive-audit-partial");
-    let (target, _) = add_worktree(&state, &project, "archive-audit-partial");
+fn a_running_session_refuses_the_archive_before_any_card_and_is_audited_as_denied() {
+    let (state, project, _own, _dir) = setup("archive-audit-running");
+    let (target, _) = add_worktree(&state, &project, "archive-audit-running");
     crate::session::insert_test_live_session_in_workspace(
         &state.sessions,
-        "archive-audit-partial-a",
+        "archive-audit-running-session",
         owner(),
         SessionKind::Acp,
         &target,
     );
-    crate::session::insert_test_live_session_in_workspace(
-        &state.sessions,
-        "invalid session id",
-        owner(),
-        SessionKind::Acp,
+    let caller = peer_caller();
+    let result = archive_workspace(
+        &state,
+        &state.mcp,
+        "archive-audit-running",
+        &owner(),
         &target,
     );
-    let call_state = Arc::clone(&state);
-    let workspace_id = target.clone();
-    let archive = std::thread::spawn(move || {
-        let caller = peer_caller();
-        let result = super::super::super::archive_workspace_audited(
-            &call_state,
-            &call_state.mcp,
-            Some(&caller),
-            "archive-audit-partial",
-            &owner(),
-            &workspace_id,
+    if let Err(error) = &result {
+        super::super::super::audit_archive(
+            &state,
+            &caller,
+            "archive-audit-running",
+            super::super::super::archive_audit_outcome(error),
         );
-        if let Err(error) = &result {
-            super::super::super::audit_archive(
-                &call_state,
-                &caller,
-                "archive-audit-partial",
-                super::super::super::archive_audit_outcome(error),
-            );
-        }
-        result
-    });
-    let broker = state
-        .sessions
-        .live_runtime("archive-audit-partial", &owner())
-        .expect("caller runtime")
-        .permission_broker()
-        .expect("permission broker");
-    let card_id = pending_card(&state, "archive-audit-partial");
-    broker
-        .test_answer(&card_id, PermissionOutcome::AllowOnce, "once")
-        .expect("approve archive");
-    let result = archive.join().expect("archive call");
+    }
     assert!(matches!(
         result,
-        Err(WorkspaceError::Refused(message))
-            if message.contains("archive-audit-partial-a")
+        Err(WorkspaceError::Refused(message)) if message.contains("still running")
     ));
 
     let rows = audit_rows(&state);
@@ -110,7 +85,6 @@ fn an_archive_refused_by_a_starting_session_is_not_audited_as_denied() {
         let result = super::super::super::archive_workspace_audited(
             &call_state,
             &call_state.mcp,
-            Some(&caller),
             "archive-audit-starting",
             &owner(),
             &workspace_id,

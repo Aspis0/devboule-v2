@@ -122,14 +122,9 @@ fn run_with_answer(
         description.contains("Allow workspace archiving for this session"),
         "{description}"
     );
-    assert!(
-        description.contains("| sessions to close:"),
-        "{description}"
-    );
-    if !description.contains("0 session(s)") {
-        assert!(description.contains("session(s):"), "{description}");
-        assert!(description.contains("\"Agent\""), "{description}");
-    }
+    // A session running in the workspace is refused before the card: the card
+    // names no sessions.
+    assert!(!description.contains("sessions to close"), "{description}");
     broker
         .test_answer(&card_id, outcome, choice)
         .expect("answer archive card");
@@ -160,41 +155,72 @@ fn archive_refuses_another_projects_workspace_and_the_callers_own() {
 }
 
 #[test]
-fn archive_takes_the_local_row_off_the_list_and_keeps_the_project_folder() {
+fn archive_refuses_local_workspace_with_daemon_sentence() {
     let (state, project, local, _dir) = setup("local");
     let (caller_workspace, _) = add_worktree(&state, &project, "archive-local-caller");
     crate::session::insert_test_live_agent_in_workspace(
         &state.sessions,
-        "local-archive",
+        "local-worktree-caller",
         owner(),
         &caller_workspace,
     );
-    let project_path = state
-        .sessions
-        .workspace_records(&project)
-        .unwrap()
-        .into_iter()
-        .find(|w| w.id == local)
-        .map(|w| std::path::PathBuf::from(w.path))
-        .expect("the local row");
-    let result = run_with_answer(
+    let result = archive_workspace(
         &state,
-        "local-archive",
+        &state.mcp,
+        "local-worktree-caller",
+        &owner(),
         &local,
-        PermissionOutcome::AllowOnce,
-        "once",
     );
-    assert!(
-        result.is_ok(),
-        "the local row archives like any other: {result:?}"
+    let Err(WorkspaceError::Refused(message)) = result else {
+        panic!("local workspace must be refused");
+    };
+    assert_eq!(
+        message,
+        "The local workspace is the project folder and is not removed as a worktree."
     );
-    assert!(project_path.is_dir(), "the project folder is never removed");
-    assert!(!state
+}
+
+#[test]
+fn archive_refuses_a_workspace_with_a_session_running_as_the_sidebar_does() {
+    let (state, project, _own, _dir) = setup("running");
+    let (target, path) = add_worktree(&state, &project, "archive-running");
+    crate::session::insert_test_live_agent_in_workspace(
+        &state.sessions,
+        "running-session",
+        owner(),
+        &target,
+    );
+    let result = archive_workspace(&state, &state.mcp, "running", &owner(), &target);
+    let Err(WorkspaceError::Refused(message)) = result else {
+        panic!("a running session refuses the archive: {result:?}");
+    };
+    assert_eq!(
+        message,
+        "sessions or terminals are still running in this workspace; close them first"
+    );
+    // Refused before the approval card: nothing is asked, and the session is not closed.
+    let broker = state
+        .sessions
+        .live_runtime("running", &owner())
+        .expect("caller runtime")
+        .permission_broker()
+        .expect("permission broker");
+    assert!(broker.test_pending_ids().is_empty());
+    assert!(path.is_dir());
+    assert!(state
         .sessions
         .workspace_records(&project)
         .unwrap()
         .iter()
-        .any(|w| w.id == local));
+        .any(|w| w.id == target));
+    assert_eq!(
+        state
+            .sessions
+            .live_sessions_in_workspace(&target)
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -320,7 +346,7 @@ fn archive_tool_is_hidden_from_design_and_peer_door_requires_admin() {
     };
     assert!(matches!(
         frames.as_slice(),
-        [devboule_protocol::ClientMessage::WorkspaceDelete { force: false, .. }]
+        [devboule_protocol::ClientMessage::WorkspaceArchive { .. }]
     ));
 }
 
@@ -335,19 +361,7 @@ fn archive_parser_rejects_blank_ids_without_normalising_nonblank_ids() {
 }
 
 #[test]
-fn archive_card_truncates_session_names_and_escapes_workspace_titles() {
-    let sessions = (0..5)
-        .map(|index| {
-            (
-                format!("session-{index}"),
-                owner(),
-                format!("Terminal {index}"),
-            )
-        })
-        .collect::<Vec<_>>();
-    let description = describe_sessions(&sessions, &owner());
-    assert!(description.contains("\"Terminal 0\", \"Terminal 1\", \"Terminal 2\", and 2 more"));
-    assert!(!description.contains("Terminal 3"));
+fn archive_card_escapes_workspace_titles() {
     let title = quote_title("unsafe ' \"\r\n title");
     assert!(!title.contains('\n'));
     assert!(!title.contains('\r'));

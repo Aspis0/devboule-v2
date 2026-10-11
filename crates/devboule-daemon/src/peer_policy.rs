@@ -970,10 +970,11 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
             branch: None,
         }]))
     } else if tool == MCP_ARCHIVE_WORKSPACE_TOOL {
-        Some(McpToolWire::Judged(vec![ClientMessage::WorkspaceDelete {
+        // The archive frame, not the delete: a peer's archive takes the row off
+        // the list and keeps the folder, as the tool does on this machine.
+        Some(McpToolWire::Judged(vec![ClientMessage::WorkspaceArchive {
             id: 0,
             workspace_id: String::new(),
-            force: false,
         }]))
     } else if tool == MCP_ORACLE_SEARCH_TOOL {
         // The semantic search ships source text — snippets, paths, line

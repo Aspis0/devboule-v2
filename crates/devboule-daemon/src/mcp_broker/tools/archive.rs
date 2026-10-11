@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use devboule_protocol::OwnerId;
+use devboule_protocol::{OwnerId, WorkspaceIsolation};
 use serde_json::{json, Value};
 
 use crate::mcp_broker::caller::{audit_mcp_tool, McpCaller};
@@ -11,7 +11,7 @@ use crate::mcp_broker::tools::first_use::{ensure_write_allowed, WORKSPACE_ARCHIV
 use crate::mcp_broker::{McpBroker, RegisteredSession};
 use crate::server::ServerState;
 
-use super::archive_sessions::{close_sessions, describe_sessions, quote_title};
+use super::archive_text::quote_title;
 use super::workspaces::{WorkspaceError, WorkspaceError::Refused};
 
 pub(in crate::mcp_broker) fn archive(
@@ -52,7 +52,6 @@ pub(in crate::mcp_broker) fn archive(
     let result = archive_workspace_audited(
         state,
         broker,
-        Some(&caller),
         &registration.session_id,
         &registration.owner,
         &workspace_id,
@@ -162,67 +161,23 @@ fn archive_workspace(
     owner: &OwnerId,
     workspace_id: &str,
 ) -> Result<Value, WorkspaceError> {
-    archive_workspace_audited(state, broker, None, session_id, owner, workspace_id)
+    archive_workspace_audited(state, broker, session_id, owner, workspace_id)
 }
 
 fn archive_workspace_audited(
     state: &Arc<ServerState>,
     broker: &McpBroker,
-    caller: Option<&McpCaller>,
     session_id: &str,
     owner: &OwnerId,
     workspace_id: &str,
-) -> Result<Value, WorkspaceError> {
-    archive_workspace_audited_with_hook(
-        state,
-        broker,
-        caller,
-        session_id,
-        owner,
-        workspace_id,
-        || {},
-    )
-}
-
-#[cfg(test)]
-fn archive_workspace_with_close_hook(
-    state: &Arc<ServerState>,
-    broker: &McpBroker,
-    session_id: &str,
-    owner: &OwnerId,
-    workspace_id: &str,
-    after_close: impl FnMut(),
-) -> Result<Value, WorkspaceError> {
-    archive_workspace_audited_with_hook(
-        state,
-        broker,
-        None,
-        session_id,
-        owner,
-        workspace_id,
-        after_close,
-    )
-}
-
-fn archive_workspace_audited_with_hook(
-    state: &Arc<ServerState>,
-    broker: &McpBroker,
-    caller: Option<&McpCaller>,
-    session_id: &str,
-    owner: &OwnerId,
-    workspace_id: &str,
-    mut after_close: impl FnMut(),
 ) -> Result<Value, WorkspaceError> {
     let target = validate_archive_scope(state, session_id, owner, workspace_id)?;
-    let sessions = live_sessions(state, workspace_id)?;
+    // A workspace with a session running is refused, as the sidebar refuses it:
+    // nothing is closed on the agent's say-so.
+    refuse_while_sessions_run(state, workspace_id)?;
     let subject = format!("archive workspace {}", quote_title(&target.title));
     let path = crate::verbatim_path::plain_path(&target.path);
-    let session_facts = describe_sessions(&sessions, owner);
-    let facts = [
-        ("workspace", target.id.as_str()),
-        ("path", path.as_str()),
-        ("sessions to close", session_facts.as_str()),
-    ];
+    let facts = [("workspace", target.id.as_str()), ("path", path.as_str())];
     ensure_write_allowed(
         state,
         broker,
@@ -239,32 +194,8 @@ fn archive_workspace_audited_with_hook(
         .sessions
         .mark_workspace_archiving(workspace_id)
         .map_err(|error| Refused(error.message))?;
-    let current_sessions = live_sessions(state, workspace_id)?;
-    if session_ids(&sessions) != session_ids(&current_sessions) {
-        return Err(Refused(
-            "Live sessions changed while archive approval was pending; retry.".to_string(),
-        ));
-    }
-    let close_result =
-        close_sessions(state, current_sessions, &mut after_close).map_err(|failure| {
-            let closed = if failure.closed_session_ids.is_empty() {
-                "none".to_string()
-            } else {
-                failure.closed_session_ids.join(", ")
-            };
-            Refused(format!(
-                "{} Sessions already closed: {closed}.",
-                failure.message
-            ))
-        })?;
-
-    let remaining_sessions = live_sessions(state, workspace_id)?;
-    if !remaining_sessions.is_empty() {
-        return Err(Refused(
-            "Live sessions remain in the workspace; retry the archive.".to_string(),
-        ));
-    }
-
+    // A session that started while the approval was pending is refused the same way.
+    refuse_while_sessions_run(state, workspace_id)?;
     validate_archive_scope(state, session_id, owner, workspace_id)?;
     // An archive takes the row off the list and keeps the folder: nothing is
     // deleted here, whatever the isolation. Deleting a worktree stays a
@@ -273,22 +204,20 @@ fn archive_workspace_audited_with_hook(
         .sessions
         .workspace_archive(workspace_id)
         .map_err(|error| Refused(error.message))?;
-    if let Some(caller) = caller {
-        for session_id in close_result.audited_session_ids {
-            audit_mcp_tool(
-                state,
-                caller,
-                "SessionClose",
-                &session_id,
-                "workspace_archive",
-            );
-        }
-    }
     Ok(json!({
         "workspaceId": workspace_id,
         "removed": true,
-        "closedSessionIds": close_result.closed_session_ids,
     }))
+}
+
+fn refuse_while_sessions_run(
+    state: &ServerState,
+    workspace_id: &str,
+) -> Result<(), WorkspaceError> {
+    if live_sessions(state, workspace_id)?.is_empty() {
+        return Ok(());
+    }
+    Err(Refused(crate::session::sessions_still_running().message))
 }
 
 fn validate_archive_scope(
@@ -314,6 +243,14 @@ fn validate_archive_scope(
             "The caller's own workspace cannot be archived.".to_string(),
         ));
     }
+    // The project's own folder is not a worktree: the agent does not take it off
+    // the list. The person does, in the app.
+    if target.isolation == WorkspaceIsolation::Local {
+        return Err(Refused(
+            "The local workspace is the project folder and is not removed as a worktree."
+                .to_string(),
+        ));
+    }
     Ok(target)
 }
 
@@ -327,10 +264,6 @@ fn live_sessions(
         .map_err(|error| Refused(error.message))?;
     sessions.sort_by_key(|session| session.0.clone());
     Ok(sessions)
-}
-
-fn session_ids(sessions: &[(String, OwnerId, String)]) -> Vec<String> {
-    sessions.iter().map(|(id, _, _)| id.clone()).collect()
 }
 
 #[cfg(test)]
