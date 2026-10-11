@@ -8,6 +8,10 @@ use super::*;
 /// `session_send` in this file already declines a parameter object for the
 /// same reason: one call shape, one place to read.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
+#[path = "dispatch_search_tests.rs"]
+mod search_tests;
+
 pub(super) fn dispatch(
     state: &Arc<ServerState>,
     owner: &OwnerId,
@@ -87,6 +91,15 @@ pub(super) fn dispatch(
     // the connection, and the newest search cancels the one before it.
     if let ClientMessage::SessionsSearch { id, query } = &request {
         let id = *id;
+        // The same capability checks every session read makes, before anything
+        // is started: a connection that did not negotiate sessions, or the
+        // journal the search reads, is refused exactly as the other reads are.
+        if !sessions_ok {
+            return Some(capability_not_supported(Some(id), caps::SESSIONS));
+        }
+        if !journal_ok {
+            return Some(capability_not_supported(Some(id), caps::JOURNAL));
+        }
         let run = match state.sessions.start_transcript_search(owner, query) {
             Ok(run) => run,
             Err(error) => return Some(DaemonMessage::Error(error.with_id(id))),
