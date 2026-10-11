@@ -343,10 +343,11 @@ use session_prompt_planning::{
 use session_registry_state::{
     compose_first_prompt, AgentChild, AgentCreationTable, AgentCreatorCaps, ConnectionPresence,
     CreationGate, CreationKeyHold, DeferredChildEnd, JournalRosterCache, MessageBrake,
-    MessageBrakeTable, MessageSlotRef, OutstandingMessage, ProviderProvenance, Recipient,
-    SendRequest, SessionCreateMeta, TransitionSink, WorkspacePathCache, MAX_CREATIONS_PER_WINDOW,
-    MAX_LIVE_AGENT_SESSIONS, MAX_LIVE_CHILDREN_PER_CREATOR, MAX_MESSAGE_OUTSTANDING,
-    MAX_MESSAGE_RECIPIENTS, MAX_MESSAGE_SENT_PER_WINDOW, MESSAGE_RATE_WINDOW, MESSAGE_SLOT_EXPIRY,
+    MessageBrakeTable, MessageSlotRef, OutstandingMessage, PendingWake, ProviderProvenance,
+    Recipient, SendRequest, SessionCreateMeta, TransitionSink, WorkspacePathCache,
+    MAX_CREATIONS_PER_WINDOW, MAX_LIVE_AGENT_SESSIONS, MAX_LIVE_CHILDREN_PER_CREATOR,
+    MAX_MESSAGE_OUTSTANDING, MAX_MESSAGE_RECIPIENTS, MAX_MESSAGE_SENT_PER_WINDOW,
+    MESSAGE_RATE_WINDOW, MESSAGE_SLOT_EXPIRY,
 };
 pub(crate) use session_registry_state::{
     AgentCreation, AgentCreationTicket, AgentCreator, ChildProfileFacts, LiveAgentEntry,

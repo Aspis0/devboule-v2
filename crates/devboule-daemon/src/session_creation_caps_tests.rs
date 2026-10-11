@@ -511,12 +511,11 @@ impl SessionSteerer for ErroringSteerer {
     }
 }
 
-/// Audit S5B-06, unit level: a steer that comes back as an **error** must
-/// not take the report with it. The same envelope goes out once more as a
-/// plain prompt, and the structured finish record carries the id that
-/// delivery got — not `None` and not "finish report not delivered".
+/// A child's report to a creator that is mid-turn waits for that turn to end.
+/// The steerer is never asked: a steer would fold the child's news into a turn
+/// the creator may be ending anyway, and nothing would start a turn for it.
 #[test]
-fn a_report_survives_a_steerer_that_errors_and_lands_as_a_prompt() {
+fn a_report_to_a_running_creator_waits_for_the_turn_end_and_is_never_steered() {
     let (dir, registry, journal) = tmp_delete_registry();
     let owner = test_owner("S-1-5-21-s5b06", "process-s5b06");
     let received = Arc::new(Mutex::new(Vec::new()));
@@ -531,7 +530,6 @@ fn a_report_survives_a_steerer_that_errors_and_lands_as_a_prompt() {
         Box::new(NoopKiller),
         Box::new(ErroringSteerer),
     );
-    // The creator is mid-turn: the report is a steer, and this one fails.
     creator.begin_turn();
     registry.test_ticket("creator-s5b06", 1).expect("reserve");
     registry.accept_agent_creation("creator-s5b06");
@@ -556,26 +554,26 @@ fn a_report_survives_a_steerer_that_errors_and_lands_as_a_prompt() {
         Some(&child_runtime),
         Some(&owner),
     );
+    assert!(
+        received.lock().expect("written").is_empty(),
+        "the report is held while the creator's turn runs"
+    );
 
-    // The envelope went out as a plain prompt after the steer failed.
+    // The creator's turn ends: the held report becomes its next prompt.
+    creator.publish_agent_event_with_seq(
+        SessionEvent::AgentFinished {
+            stop_reason: "completed".to_string(),
+            model_id: None,
+            usage: None,
+        },
+        None,
+        None,
+    );
+    registry.drain_wakes("creator-s5b06");
     let written = String::from_utf8_lossy(&received.lock().expect("written")).into_owned();
     assert!(
         written.contains("agent_finished"),
-        "the fallback prompt carried the report: {written}"
-    );
-    // And the delivery answers the id of the message it left on the
-    // creator's transcript (`S5-04`) — the value `ChildFinished.message_id`
-    // carries. The creator is mid-turn again, so this second delivery takes
-    // the same steer-then-fallback route; with the fallback removed it is an
-    // `Err`, and that is exactly what turns the record into
-    // `message_id: None` plus the note "finish report not delivered".
-    creator.begin_turn();
-    let delivered = registry
-        .deliver_to_creator("creator-s5b06", &owner, "finish report for child-s5b06")
-        .expect("a refused steer must not take the report with it");
-    assert!(
-        delivered.is_some(),
-        "the id of the delivered prompt, not None"
+        "the report became the creator's next prompt: {written}"
     );
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);
@@ -639,55 +637,6 @@ fn a_notice_steers_a_mid_turn_creator_instead_of_a_plain_prompt() {
     assert!(
         written.lock().expect("written").is_empty(),
         "the notice never became a plain prompt"
-    );
-    journal.shutdown();
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-/// The steerer whose frame may have reached the provider but whose answer
-/// never came: a timeout or a lost response, never a refusal.
-struct UncertainSteerer;
-
-impl SessionSteerer for UncertainSteerer {
-    fn steer_active_turn(
-        &mut self,
-        _text: &str,
-        _turn: &mut TurnToken<'_>,
-        _origin: super::session_items::SteerOrigin,
-    ) -> Result<bool, WireError> {
-        Err(WireError::new(ErrorCode::Io, "Pi steer response timed out"))
-    }
-
-    fn clone_steerer(&self) -> Box<dyn SessionSteerer> {
-        Box::new(Self)
-    }
-}
-
-/// A steer that timed out may already be queued with the creator: the report
-/// is never sent again as a plain prompt. Only a steer the provider answered
-/// earns the fallback.
-#[test]
-fn an_uncertain_steer_is_not_repeated_as_a_plain_prompt() {
-    let (dir, registry, journal) = tmp_delete_registry();
-    let owner = test_owner("S-1-5-21-s5b06c", "process-s5b06c");
-    let written = Arc::new(Mutex::new(Vec::new()));
-    let creator = insert_live_agent_with_turn_control(
-        &registry,
-        "creator-s5b06c",
-        owner.clone(),
-        SessionKind::Acp,
-        Box::new(RecordingWriter(Arc::clone(&written))),
-        None,
-        None,
-        Box::new(NoopKiller),
-        Box::new(UncertainSteerer),
-    );
-    creator.begin_turn();
-    let delivered = registry.deliver_to_creator("creator-s5b06c", &owner, "finish report");
-    assert!(delivered.is_err(), "the send is uncertain, not refused");
-    assert!(
-        written.lock().expect("written").is_empty(),
-        "no duplicate plain prompt after an uncertain steer"
     );
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);
@@ -778,4 +727,142 @@ fn a_pending_creation_card_refuses_a_concurrent_creation_and_spends_nothing() {
     registry.abandon_agent_creation_for_test(alex);
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&_dir);
+}
+
+/// A writer that refuses its first write and takes every later one.
+struct RefuseFirstWrite {
+    refuse: Arc<std::sync::atomic::AtomicBool>,
+    written: Arc<Mutex<Vec<u8>>>,
+}
+
+impl Write for RefuseFirstWrite {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.refuse.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            return Err(super::session_items::transport_closed_error("creator"));
+        }
+        self.written
+            .lock()
+            .expect("recording writer lock")
+            .extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A child's finish arriving while its creator runs a turn is held, and the
+/// creator's turn end starts a new one with it, on every provider the
+/// creator can be. The turn end is the event the runtime publishes, and the
+/// drain is the registry's own step on it (the finish hook calls it).
+#[test]
+fn a_wake_starts_the_next_turn_of_every_provider_it_reaches() {
+    for kind in [
+        SessionKind::Claude,
+        SessionKind::Codex,
+        SessionKind::Pi,
+        SessionKind::Acp,
+    ] {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-wake-kinds", "process-wake-kinds");
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let steered = Arc::new(Mutex::new(Vec::new()));
+        let creator = insert_live_agent_with_turn_control(
+            &registry,
+            "wake-creator",
+            owner.clone(),
+            kind.clone(),
+            Box::new(RecordingWriter(Arc::clone(&written))),
+            None,
+            None,
+            Box::new(NoopKiller),
+            Box::new(RecordingSteerer(Arc::clone(&steered))),
+        );
+        creator.begin_turn();
+        let held = registry
+            .deliver_to_creator("wake-creator", &owner, "child finished: all green")
+            .expect("a held wake is not an error");
+        assert_eq!(
+            held, None,
+            "{kind:?}: a running creator takes the wake later"
+        );
+        assert!(
+            written.lock().expect("written").is_empty(),
+            "{kind:?}: nothing is written into the running turn"
+        );
+        assert!(
+            steered.lock().expect("steer log").is_empty(),
+            "{kind:?}: a wake is never a steer"
+        );
+
+        creator.publish_agent_event_with_seq(
+            SessionEvent::AgentFinished {
+                stop_reason: "completed".to_string(),
+                model_id: None,
+                usage: None,
+            },
+            None,
+            None,
+        );
+        assert!(
+            !creator.is_running_turn(),
+            "{kind:?}: the creator's turn ended"
+        );
+        registry.drain_wakes("wake-creator");
+        let text = String::from_utf8_lossy(&written.lock().expect("written")).to_string();
+        assert!(
+            text.contains("child finished: all green"),
+            "{kind:?}: the wake became the creator's next prompt: {text}"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+/// A wake the creator refuses is held again, and lands at the next turn end
+/// once the creator takes writes again.
+#[test]
+fn a_refused_wake_is_held_and_delivered_at_the_next_turn_end() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-wake-retry", "process-wake-retry");
+    let written = Arc::new(Mutex::new(Vec::new()));
+    let refuse = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let creator = insert_live_agent_with_turn_control(
+        &registry,
+        "wake-retry-creator",
+        owner.clone(),
+        SessionKind::Claude,
+        Box::new(RefuseFirstWrite {
+            refuse: Arc::clone(&refuse),
+            written: Arc::clone(&written),
+        }),
+        None,
+        None,
+        Box::new(NoopKiller),
+        Box::new(RecordingSteerer(Arc::new(Mutex::new(Vec::new())))),
+    );
+    let finish = || SessionEvent::AgentFinished {
+        stop_reason: "completed".to_string(),
+        model_id: None,
+        usage: None,
+    };
+    // The creator is idle, and its first write is refused: the wake is held.
+    refuse.store(true, std::sync::atomic::Ordering::Release);
+    registry
+        .deliver_to_creator("wake-retry-creator", &owner, "the second child is done")
+        .expect("a refused delivery is held, not an error");
+    assert!(written.lock().expect("written").is_empty());
+
+    // The next turn end retries it, and the write lands.
+    creator.begin_turn();
+    creator.publish_agent_event_with_seq(finish(), None, None);
+    registry.drain_wakes("wake-retry-creator");
+    let text = String::from_utf8_lossy(&written.lock().expect("written")).to_string();
+    assert!(
+        text.contains("the second child is done"),
+        "the held wake lands at the next turn end: {text}"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
 }

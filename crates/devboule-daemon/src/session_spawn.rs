@@ -298,6 +298,8 @@ pub(super) fn start_spawned_session(
         let session_id = metadata.id.clone();
         runtime.set_finish_notify(Arc::new(move || {
             registry.report_child_finish(&session_id);
+            // The turn ended, so a wake held for this session may start its next one.
+            registry.drain_wakes(&session_id);
         }));
     }
     if metadata.kind.is_agent() {

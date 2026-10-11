@@ -430,6 +430,15 @@ impl AgentCreatorCaps {
     }
 }
 
+/// One wake waiting for its creator's next turn to start.
+pub(super) struct PendingWake {
+    pub(super) owner: OwnerId,
+    pub(super) text: String,
+    /// How many deliveries have been refused, so a wake that never lands is
+    /// dropped with a notice rather than retried forever.
+    pub(super) attempts: u32,
+}
+
 /// One child, as its creator's bookkeeping sees it.
 pub(super) struct AgentChild {
     pub(super) creator: String,
@@ -474,6 +483,11 @@ pub(super) type DeferredChildEnd = (
 #[derive(Default)]
 pub(crate) struct AgentCreationTable {
     pub(super) creators: HashMap<String, AgentCreatorCaps>,
+    /// Wakes a creator has not taken yet, per creator, in order: a child's
+    /// finish, error or permission need that arrived while the creator's turn
+    /// ran, or that a refused write left behind. In memory only, like the rest
+    /// of this table: a restart ends every session anyway.
+    pub(super) pending_wakes: HashMap<String, VecDeque<PendingWake>>,
     pub(super) children: HashMap<String, AgentChild>,
     /// Children closed because they went idle, in close order, bounded by
     /// `IDLE_CLOSED_KEPT`: the only place the *reason* survives the link

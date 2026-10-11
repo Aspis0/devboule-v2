@@ -272,10 +272,7 @@ pub(super) fn write_child_stdin(
         .lock()
         .map_err(|_| std::io::Error::other(format!("{label} stdin lock poisoned")))?;
     let Some(stdin) = stdin.as_mut() else {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::BrokenPipe,
-            TransportClosed(label),
-        ));
+        return Err(transport_closed_error(label));
     };
     stdin.write_all(bytes)?;
     stdin.flush()
@@ -299,6 +296,11 @@ impl std::fmt::Display for TransportClosed {
 }
 
 impl std::error::Error for TransportClosed {}
+
+/// The write error a closed transport answers with: no byte went out.
+pub(super) fn transport_closed_error(label: &'static str) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::BrokenPipe, TransportClosed(label))
+}
 
 /// Whether this write failed because the transport was already closed — a
 /// failure that happened before any byte went out.

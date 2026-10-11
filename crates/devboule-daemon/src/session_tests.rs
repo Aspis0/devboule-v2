@@ -4290,11 +4290,11 @@ fn a_paired_devices_agent_message_steer_still_dismisses_the_cards() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The child's completion report may steer its creator's turn, but it is
-/// the daemon speaking: the steer lands and the creator's open card stays
-/// exactly where it was, because no person asked for it to move.
+/// The child's completion report waits for its creator's running turn to end,
+/// and it is the daemon speaking: nothing steers the turn, and the creator's
+/// open card stays exactly where it was, because no person asked for it to move.
 #[test]
-fn a_childs_report_steers_its_creator_and_leaves_the_creators_cards_alone() {
+fn a_childs_report_waits_for_its_creators_turn_and_leaves_the_creators_cards_alone() {
     let (dir, registry, journal) = tmp_delete_registry();
     let owner = test_owner("S-1-5-21-child-report", "process-child-report");
     let calls = Arc::new(AtomicU64::new(0));
@@ -4343,8 +4343,8 @@ fn a_childs_report_steers_its_creator_and_leaves_the_creators_cards_alone() {
 
     assert_eq!(
         calls.load(Ordering::Acquire),
-        1,
-        "the report still steers the creator's running turn"
+        0,
+        "the report never steers the creator's running turn"
     );
     assert_eq!(
         broker.pending_len(),

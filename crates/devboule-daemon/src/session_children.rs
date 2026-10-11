@@ -13,6 +13,11 @@ use crate::process_index::SessionProof;
 use crate::untrusted_frame::Source;
 use crate::visible_text::escape_for_model;
 
+/// How many refused deliveries one wake may take before it is dropped with a
+/// notice to its creator. A held wake waits for the creator's turn to end, so
+/// each retry is one turn end or one sweep away.
+const MAX_WAKE_ATTEMPTS: u32 = 5;
+
 impl super::SessionRegistry {
     /// Hold one creation's idempotency key for as long as the call that claimed
     /// it runs (audit S5-03).
@@ -1332,8 +1337,160 @@ impl super::SessionRegistry {
         owner: &OwnerId,
         text: &str,
     ) -> Result<Option<String>, WireError> {
-        self.deliver_steered_or_prompt(creator, owner, text, crate::mcp_broker::ready_timeout())
-            .map_err(WireError::from)
+        let Some(runtime) = self.live_runtime(creator, owner) else {
+            return Ok(None);
+        };
+        // A creator mid-turn takes the wake when that turn ends: a steer would
+        // fold the child's news into a turn the creator may be ending anyway,
+        // and nothing would start a turn for it afterwards.
+        if runtime.is_running_turn() {
+            self.hold_wake(creator, owner, text, 0);
+            return Ok(None);
+        }
+        match self.send_wake(creator, owner, text) {
+            Ok(message_id) => Ok(message_id),
+            // The bytes may already be with the creator: a repeat could say the
+            // same thing twice, so an uncertain write is not held.
+            Err(error @ crate::session::SendError::Uncertain(_)) => Err(WireError::from(error)),
+            Err(_) => {
+                self.hold_wake(creator, owner, text, 1);
+                Ok(None)
+            }
+        }
+    }
+
+    /// One plain prompt that starts the creator's next turn. It is refused
+    /// while a turn runs, so a wake that raced a turn is held rather than
+    /// written into it.
+    fn send_wake(
+        &self,
+        creator: &str,
+        owner: &OwnerId,
+        text: &str,
+    ) -> Result<Option<String>, crate::session::SendError> {
+        let internal_conn = ConnHandle::with_peer(0, None);
+        self.send_with_subscription_timeout(&SendRequest {
+            session_id: creator,
+            subscription_id: 0,
+            text,
+            attachments: &[],
+            attachment_references: &[],
+            owner,
+            conn: &internal_conn,
+            mcp_timeout: crate::mcp_broker::ready_timeout(),
+            active_turn_behavior: None,
+            require_attachment: false,
+            interrupt_on_steer_refusal: false,
+            message_slot: None,
+            preset_preamble: None,
+            spawn_prompt: None,
+            author: UserMessageAuthor::Agent,
+            message_kind: UserMessageKind::SystemNotice,
+            steer_origin: SteerOrigin::Agent,
+            require_no_turn_running: true,
+            require_queue_unfenced: false,
+        })
+        .map(|outcome| outcome.message_id)
+    }
+
+    /// Hold a wake for its creator's next turn end. Past the attempt bound it
+    /// is dropped, and the creator is told so once.
+    fn hold_wake(&self, creator: &str, owner: &OwnerId, text: &str, attempts: u32) {
+        if attempts >= MAX_WAKE_ATTEMPTS {
+            eprintln!("a wake for {creator} was dropped after {attempts} refused deliveries");
+            if let Some(runtime) = self.live_runtime(creator, owner) {
+                runtime.publish_session_notice(
+                    format!(
+                        "A message from one of your agents could not be delivered after {attempts} attempts."
+                    ),
+                    devboule_protocol::NoticeSeverity::Warning,
+                );
+            }
+            return;
+        }
+        let mut table = self
+            .creations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        table
+            .pending_wakes
+            .entry(creator.to_string())
+            .or_default()
+            .push_back(PendingWake {
+                owner: owner.clone(),
+                text: text.to_string(),
+                attempts,
+            });
+    }
+
+    /// The creator's turn ended: deliver its held wakes, one turn each. A
+    /// wake the creator refuses goes back to the end of the line with one more
+    /// attempt counted, and the drain stops there until the next turn end or sweep.
+    pub(crate) fn drain_wakes(&self, creator: &str) {
+        loop {
+            let next = {
+                let mut table = self
+                    .creations
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                let Some(queue) = table.pending_wakes.get_mut(creator) else {
+                    return;
+                };
+                let next = queue.pop_front();
+                if queue.is_empty() {
+                    table.pending_wakes.remove(creator);
+                }
+                next
+            };
+            let Some(wake) = next else {
+                return;
+            };
+            let Some(runtime) = self.live_runtime(creator, &wake.owner) else {
+                // The creator is gone: nothing can take the wake now.
+                return;
+            };
+            if runtime.is_running_turn() {
+                self.push_front_wake(creator, wake);
+                return;
+            }
+            match self.send_wake(creator, &wake.owner, &wake.text) {
+                Ok(_) => continue,
+                Err(crate::session::SendError::Uncertain(_)) => return,
+                Err(_) => {
+                    self.hold_wake(creator, &wake.owner, &wake.text, wake.attempts + 1);
+                    return;
+                }
+            }
+        }
+    }
+
+    fn push_front_wake(&self, creator: &str, wake: PendingWake) {
+        let mut table = self
+            .creations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        table
+            .pending_wakes
+            .entry(creator.to_string())
+            .or_default()
+            .push_front(wake);
+    }
+
+    /// The minute sweep's retry: every creator with held wakes gets a drain,
+    /// so a wake a refused write left behind is tried again when the creator
+    /// is idle.
+    pub(crate) fn retry_pending_wakes(&self) {
+        let creators: Vec<String> = self
+            .creations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .pending_wakes
+            .keys()
+            .cloned()
+            .collect();
+        for creator in creators {
+            self.drain_wakes(&creator);
+        }
     }
 
     /// One daemon notice a creator is owed without urgency: the same
