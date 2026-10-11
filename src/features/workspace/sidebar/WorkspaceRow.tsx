@@ -403,7 +403,12 @@ export const WorkspaceRow = memo(function WorkspaceRow({
             />
             <span className="workspace-row-body">
               <span className="workspace-row-line">
-                <span className="workspace-row-title">{workspace.displayTitle}</span>
+                <span
+                  className="workspace-row-title"
+                  onDoubleClick={remote ? undefined : startRename}
+                >
+                  {workspace.displayTitle}
+                </span>
               </span>
               {countLine === null ? null : (
                 <span

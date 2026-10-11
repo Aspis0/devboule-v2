@@ -185,6 +185,18 @@ describe("the sidebar's workspace rows", () => {
     expect(editInput()).toBeNull();
   });
 
+  it("opens the inline editor on a double-click of the row's title", async () => {
+    await renderTree();
+    const title = rowButtons()[1]?.querySelector(".workspace-row-title");
+    if (title === undefined || title === null) throw new Error("row title did not render");
+    await act(async () => {
+      title.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+    });
+
+    expect(editInput()).not.toBeNull();
+    expect(editInput()?.value).toBe("devboule-v2 2");
+  });
+
   it("cancels the edit with Escape, calling nothing", async () => {
     await renderTree();
     const input = await openEditor(1, "half typed");

@@ -110,6 +110,40 @@ fn a_rename_stores_the_title_on_the_row_and_leaves_its_id_alone() {
 }
 
 #[test]
+fn a_rename_survives_a_journal_reopen() {
+    let dir = crate::test_dirs::test_temp_dir("devboule-workspace-rename-restart");
+    let db = dir.join("journal.db");
+    let project_path = dir.join("devboule-v2");
+    std::fs::create_dir_all(&project_path).expect("project folder");
+    let journal = crate::journal::Journal::open(&db).expect("journal");
+    let project = journal
+        .project_add(
+            crate::workspace::project_record(project_path.to_str().expect("project path is UTF-8"))
+                .expect("project record"),
+        )
+        .expect("persist project");
+    let row = journal
+        .workspace_create(crate::workspace::local_workspace_record(&project))
+        .expect("persist row");
+    journal
+        .workspace_set_title(&row.id, "night build")
+        .expect("rename");
+    journal.shutdown();
+
+    let reopened = crate::journal::Journal::open(&db).expect("reopen journal");
+    let stored = reopened
+        .workspace_get(&row.id)
+        .expect("read row")
+        .expect("the row is still listed after a restart");
+    assert_eq!(
+        stored.title, "night build",
+        "the rename is in the journal, so a restart shows the same name"
+    );
+    reopened.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_rename_the_title_rule_refuses_leaves_the_row_as_it_was() {
     let dir = project_folder("workspace-rename-refused");
     let root = dir.join("devboule-v2");
