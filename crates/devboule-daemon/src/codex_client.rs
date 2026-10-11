@@ -2203,6 +2203,13 @@ impl CodexReader {
                         }
                     }
                     self.compactions.turn_started();
+                    // A send began its own turn before the write, so this frame
+                    // finds the run active. A turn Codex started on its own —
+                    // the one after an automatic compaction — finds it idle, and
+                    // would read as idle until its completion.
+                    if !runtime.is_running_turn() {
+                        runtime.begin_turn();
+                    }
                 }
             } else if method == "turn/completed" {
                 if root_thread {

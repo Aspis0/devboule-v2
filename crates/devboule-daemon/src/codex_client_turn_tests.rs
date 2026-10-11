@@ -559,6 +559,33 @@ fn a_stale_completion_does_not_close_the_compaction_pairing() {
     );
 }
 
+#[test]
+fn a_root_turn_codex_starts_on_its_own_runs_the_session() {
+    // Codex starts root turns nobody sent: the turn that follows an automatic
+    // compaction is one. The daemon begins a turn only when it writes a prompt,
+    // so the run must read as working from the root `turn/started` alone — or
+    // the composer offers Send where Stop belongs and the agent looks stopped.
+    let (mut reader, state, runtime, _conn) = started_reader();
+    assert!(!runtime.is_running_turn());
+
+    reader.dispatch_value(turn_started("turn-A"), &runtime);
+    assert!(
+        runtime.is_running_turn(),
+        "a provider-started root turn runs the session"
+    );
+    reader.dispatch_value(turn_completed(ROOT, "turn-A", "completed"), &runtime);
+    assert!(!runtime.is_running_turn());
+
+    reader.dispatch_value(turn_started("turn-B"), &runtime);
+    assert!(
+        runtime.is_running_turn(),
+        "the turn Codex starts after a settled run runs the session again"
+    );
+    assert_eq!(state.current_turn().as_deref(), Some("turn-B"));
+    reader.dispatch_value(turn_completed(ROOT, "turn-B", "completed"), &runtime);
+    assert!(!runtime.is_running_turn());
+}
+
 fn notices(conn: &Arc<ConnHandle>) -> Vec<String> {
     published(conn)
         .into_iter()
