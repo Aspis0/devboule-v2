@@ -117,6 +117,8 @@ mod journal_lookback;
 mod journal_resume;
 #[cfg(feature = "server")]
 mod journal_search;
+#[cfg(feature = "server")]
+mod line_diff;
 mod lock;
 #[cfg(all(windows, feature = "server"))]
 mod log_pipeline;

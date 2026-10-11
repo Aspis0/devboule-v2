@@ -253,3 +253,63 @@ fn a_path_outside_the_workspace_keeps_the_providers_spelling() {
     .expect("write");
     assert_eq!(edits[0].path, outside.to_string_lossy());
 }
+
+#[test]
+fn a_replace_counts_the_lines_it_removed_and_added() {
+    let edit = claude_tool_edits(
+        "Edit",
+        &json!({"file_path": "src/lib.rs", "old_string": "a\nb\nc\n", "new_string": "a\nB\nc\n"}),
+        None,
+    )
+    .expect("edit");
+    assert_eq!((edit[0].added, edit[0].removed), (1, 1));
+}
+
+#[test]
+fn a_write_counts_every_line_as_added() {
+    let edits = claude_tool_edits(
+        "Write",
+        &json!({"file_path": "notes.txt", "content": "a\nb\n"}),
+        None,
+    )
+    .expect("write");
+    assert_eq!((edits[0].added, edits[0].removed), (2, 0));
+}
+
+#[test]
+fn a_codex_diff_counts_its_hunk_lines() {
+    let edits = codex_file_change_edits(
+        Some(&json!([
+            {"kind": "update", "path": "src/lib.rs", "diff": "@@ -1 +1 @@\n-old\n+new\n"},
+            {"kind": "delete", "path": "gone.txt", "diff": "-x\n-y\n"},
+        ])),
+        None,
+    )
+    .expect("changes");
+    assert_eq!((edits[0].added, edits[0].removed), (1, 1));
+    assert_eq!((edits[1].added, edits[1].removed), (0, 2));
+}
+
+#[test]
+fn an_acp_delete_counts_the_old_lines_it_removed() {
+    let edits = acp_diff_edits(
+        Some(&json!([{"type": "diff", "path": "gone.txt", "oldText": "bye\n"}])),
+        Some("delete"),
+        None,
+    )
+    .expect("diff");
+    assert_eq!((edits[0].added, edits[0].removed), (0, 1));
+}
+
+#[test]
+fn counts_come_from_the_whole_text_not_the_cut_one() {
+    let content = "line\n".repeat(60_000);
+    let edits = claude_tool_edits(
+        "Write",
+        &json!({"file_path": "big.txt", "content": content}),
+        None,
+    )
+    .expect("write");
+    assert!(edits[0].truncated);
+    assert_eq!(edits[0].added, 60_000);
+}

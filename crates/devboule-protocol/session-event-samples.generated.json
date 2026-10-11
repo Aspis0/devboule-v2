@@ -99,8 +99,10 @@
     "command": "cargo test",
     "edits": [
       {
+        "added": 1,
         "kind": "edit",
         "path": "src/lib.rs",
+        "removed": 1,
         "text": {
           "form": "replace",
           "new": "two",
@@ -109,8 +111,10 @@
         "truncated": false
       },
       {
+        "added": 1,
         "kind": "edit",
         "path": "src/main.rs",
+        "removed": 1,
         "text": {
           "form": "diff",
           "text": "@@ -1 +1 @@\n-old\n+new\n"

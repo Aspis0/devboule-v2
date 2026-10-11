@@ -1706,7 +1706,7 @@ pub enum AgentEditKind {
     /// The provider named the text it replaced between.
     Edit,
     /// A whole-file write. The text before the write is not in the frame, so
-    /// a write over an existing file shows its added side only.
+    /// its counts treat every line as added: an overwrite reads as a full add.
     Write,
     Delete,
 }
@@ -1741,6 +1741,10 @@ pub struct AgentToolEdit {
     /// The stored text is not the whole text the provider sent.
     #[serde(default)]
     pub truncated: bool,
+    /// Lines this edit added and removed, counted from the whole text the
+    /// provider sent: a cut `text` never changes them.
+    pub added: u64,
+    pub removed: u64,
 }
 
 /// The only terminal statuses Claude exposes for a subagent task

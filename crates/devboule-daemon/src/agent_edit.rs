@@ -11,6 +11,7 @@ use std::path::Path;
 use devboule_protocol::{AgentEditKind, AgentEditText, AgentToolEdit};
 use serde_json::Value;
 
+use crate::line_diff::{changed_counts, replace_lines, unified_lines};
 use crate::tool_paths::relativize_tool_path;
 
 /// How much text one tool call keeps across all of its edits, counted as the
@@ -48,11 +49,17 @@ fn replace_or_none(
         old: old.unwrap_or_default().to_string(),
         new: new.unwrap_or_default().to_string(),
     });
+    let (added, removed) = changed_counts(&replace_lines(
+        old.unwrap_or_default(),
+        new.unwrap_or_default(),
+    ));
     AgentToolEdit {
         path,
         kind,
         text,
         truncated: false,
+        added,
+        removed,
     }
 }
 
@@ -125,6 +132,7 @@ pub(crate) fn codex_file_change_edits(
                 .get("diff")
                 .and_then(Value::as_str)
                 .filter(|diff| !diff.is_empty());
+            let (added, removed) = changed_counts(&diff.map(unified_lines).unwrap_or_default());
             Some(AgentToolEdit {
                 path: edit_path(path, cwd),
                 kind,
@@ -132,6 +140,8 @@ pub(crate) fn codex_file_change_edits(
                     text: text.to_string(),
                 }),
                 truncated: false,
+                added,
+                removed,
             })
         })
         .collect();

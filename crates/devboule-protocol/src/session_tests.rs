@@ -2157,6 +2157,8 @@ fn tool_call_edits_round_trip_and_a_row_without_them_still_loads() {
                     new: "two\n".to_string(),
                 }),
                 truncated: false,
+                added: 1,
+                removed: 1,
             },
             AgentToolEdit {
                 path: "src/new.rs".to_string(),
@@ -2165,6 +2167,8 @@ fn tool_call_edits_round_trip_and_a_row_without_them_still_loads() {
                     text: "@@ -1 +1 @@\n-old\n+new\n".to_string(),
                 }),
                 truncated: true,
+                added: 1,
+                removed: 1,
             },
         ]),
         subagent_type: None,
@@ -2186,6 +2190,8 @@ fn tool_call_edits_round_trip_and_a_row_without_them_still_loads() {
         "@@ -1 +1 @@\n-old\n+new\n"
     );
     assert_eq!(encoded["edits"][1]["truncated"], true);
+    assert_eq!(encoded["edits"][0]["added"], 1);
+    assert_eq!(encoded["edits"][0]["removed"], 1);
     let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
     assert_eq!(decoded, with);
 

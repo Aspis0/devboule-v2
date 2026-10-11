@@ -1464,6 +1464,10 @@ export interface AgentToolEdit {
   text?: AgentEditText;
   /** The stored text is not the whole text the provider sent. */
   truncated?: boolean;
+  /** Lines this edit added, counted from the whole text the provider sent. */
+  added: number;
+  /** Lines this edit removed, counted from the whole text the provider sent. */
+  removed: number;
 }
 
 /**

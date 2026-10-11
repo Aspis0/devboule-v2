@@ -112,6 +112,8 @@ pub(crate) fn session_event_samples() -> Vec<SessionEvent> {
                         new: "two".to_string(),
                     }),
                     truncated: false,
+                    added: 1,
+                    removed: 1,
                 },
                 crate::AgentToolEdit {
                     path: "src/main.rs".to_string(),
@@ -120,6 +122,8 @@ pub(crate) fn session_event_samples() -> Vec<SessionEvent> {
                         text: "@@ -1 +1 @@\n-old\n+new\n".to_string(),
                     }),
                     truncated: true,
+                    added: 1,
+                    removed: 1,
                 },
             ]),
             subagent_type: None,
