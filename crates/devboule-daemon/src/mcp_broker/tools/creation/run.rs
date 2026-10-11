@@ -281,11 +281,19 @@ fn run_creation(
         return tool_error(id, "not allowed for this peer");
     }
     // A provider this daemon cannot launch is refused before a session id, a
-    // card or a slot is spent on it. The provider is the profile's:
-    // a creation cannot name one, so this is the only provider that can be
-    // missing, and the sentence says what it is about.
+    // card or a slot is spent on it. The provider comes from the profile the
+    // person ticked or from the caller's direct choice (`resolve_creation`),
+    // and either way it must be installed or declared here.
     if !provider_is_launchable(&profile.provider) {
         return tool_error(id, "provider not installed");
+    }
+    // A provider the person turned OFF is not started by a child either, and
+    // the refusal comes before a card: the same switch the ordinary create
+    // path honours (`session.rs`), read at this moment.
+    if let Err(error) =
+        crate::provider_switches::refuse_unless_enabled(&state.provider_switches, &profile.provider)
+    {
+        return tool_error(id, &error.message);
     }
     // A profile combination never fails the creation (owner bug #16). The
     // tick over a mode that answers its own permission prompts — the

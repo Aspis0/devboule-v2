@@ -136,6 +136,15 @@ fn request() -> AgentCreateRequest {
 /// person's Allow answers it, and the joined value tells what the road
 /// decided. Returns whether a card was raised at all.
 fn attempt(state: &Arc<ServerState>, frame: u64) -> (Value, bool) {
+    attempt_with(state, frame, request)
+}
+
+/// `attempt` for any request: the road is the same whatever the caller named.
+fn attempt_with(
+    state: &Arc<ServerState>,
+    frame: u64,
+    make: fn() -> AgentCreateRequest,
+) -> (Value, bool) {
     let thread_state = Arc::clone(state);
     // The blocking road: the card is awaited in the call itself. The public
     // road answers a card-owed creation at once (see `create_agent`).
@@ -145,7 +154,7 @@ fn attempt(state: &Arc<ServerState>, frame: u64) -> (Value, bool) {
             &McpCaller::Local,
             &registration("d1a-creator"),
             &json!(frame),
-            request(),
+            make(),
         )
     });
     let start = Instant::now();
@@ -374,4 +383,35 @@ fn a_card_owed_creation_answers_at_once_and_keeps_its_card_in_the_background() {
     );
 
     answer(&state, "d1a-creator", &card);
+}
+
+/// A child creation that names a provider the person turned OFF is refused
+/// with the switch's own sentence, before any card is raised (review fix: the
+/// create tool honours the switch the ordinary create path honours).
+#[test]
+fn a_create_naming_a_switched_off_provider_is_refused_before_any_card() {
+    fn direct_request() -> AgentCreateRequest {
+        AgentCreateRequest::parse(&json!({
+            "provider": "devboule-acp-stub",
+            "model": "stub-model",
+            "mode": "ask",
+            "title": "Probe child",
+            "initialPrompt": "Do the probe thing.",
+        }))
+        .expect("direct request parses")
+    }
+    let state = ServerState::new("create-switch".to_string());
+    seed_probe_provider(&state);
+    creator(&state, "d1a-creator");
+    state
+        .provider_switches
+        .set("devboule-acp-stub", false)
+        .expect("the person turns the provider off");
+    let (value, carded) = attempt_with(&state, 1, direct_request);
+    assert!(!carded, "a switched-off provider raises no card");
+    assert_eq!(
+        error_text(&value),
+        crate::provider_switches::disabled_sentence("devboule-acp-stub"),
+        "the refusal is the switch's own sentence"
+    );
 }
