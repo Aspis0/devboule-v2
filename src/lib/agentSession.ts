@@ -937,8 +937,7 @@ export class AgentSession {
         return;
       case "unknown":
       case undefined:
-        // Legacy rows predate `message_kind`; retain their parser-based
-        // behavior until those stored rows no longer matter.
+        // Legacy rows predate `message_kind`: plain text, never parsed into a card.
         this.handleLegacyAgentUserMessage(event);
         return;
       default:
