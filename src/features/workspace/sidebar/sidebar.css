@@ -426,27 +426,29 @@
   height: 20px;
   padding: 7px;
   border-radius: var(--radius-full);
+  background-origin: content-box;
   background-clip: content-box;
 }
 
+/* background-image, not the shorthand: the shorthand would reset the clip and
+   origin the base rule sets, and the gradient would fill the whole lane. */
 .workspace-row-status-running {
-  background: radial-gradient(circle closest-side, var(--tone-live) 100%, transparent 100%);
+  background-image: radial-gradient(circle closest-side, var(--tone-live) 100%, transparent 100%);
 }
 
 /* The attention dot carries a 2px halo in the sidebar's own colour, so it
    stands off a selected fill, as Orca's ring-2 does. */
 .workspace-row-status-attention {
   padding: 5px;
-  background: radial-gradient(
+  background-image: radial-gradient(
     circle closest-side,
     var(--tone-attention) 60%,
     var(--panel-side) 60% 100%
   );
-  background-clip: content-box;
 }
 
 .workspace-row-status-idle {
-  background: radial-gradient(circle closest-side, transparent 58%, var(--muted) 60% 100%);
+  background-image: radial-gradient(circle closest-side, transparent 58%, var(--muted) 60% 100%);
 }
 
 .workspace-row-selected .workspace-row-sub {
