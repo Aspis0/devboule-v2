@@ -866,7 +866,10 @@ fn main() -> io::Result<()> {
                         .append(true)
                         .open(path)
                     {
-                        let _ = writeln!(file, "{config_id}={value}");
+                        // One write for the whole line: `writeln!` on an unbuffered
+                        // file makes several writes, and a reader that counts lines
+                        // while it lands can see the config id with no value yet.
+                        let _ = file.write_all(format!("{config_id}={value}\n").as_bytes());
                     }
                 }
                 if !config_mode {

@@ -122,15 +122,6 @@ fn id_in_closed_alphabet(id: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
 }
 
-/// Parse and validate a whole document, or refuse it whole with the reason.
-/// A record wrong in any row is refused whole, never truncated: half a list
-/// of providers is not a smaller catalogue, it is a different one.
-///
-/// A leading UTF-8 BOM is stripped, and an empty or whitespace-only document
-/// reads as no rows (the first run), not as damage.
-///
-/// `native_ids` is the ids the native families bind by, from the impls —
-/// this module never spells one.
 /// The ids the providers file declares, as the loader accepts them. A gate that
 /// asks whether a declared row may start reads this, not the live registry,
 /// which another swap can change between the resolution and the check. The
@@ -151,6 +142,15 @@ pub(crate) fn declared_row_ids(runtime_dir: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Parse and validate a whole document, or refuse it whole with the reason.
+/// A record wrong in any row is refused whole, never truncated: half a list
+/// of providers is not a smaller catalogue, it is a different one.
+///
+/// A leading UTF-8 BOM is stripped, and an empty or whitespace-only document
+/// reads as no rows (the first run), not as damage.
+///
+/// `native_ids` is the ids the native families bind by, from the impls —
+/// this module never spells one.
 pub(crate) fn parse_providers_document(
     bytes: &[u8],
     native_ids: &[String],
