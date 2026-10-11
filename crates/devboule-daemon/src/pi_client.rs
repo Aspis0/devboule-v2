@@ -80,7 +80,7 @@ mod pi_turn_watch;
 #[path = "pi_usage_poller.rs"]
 mod pi_usage_poller;
 
-const COMMAND_ENV: &str = "DEVBOULE_PI_COMMAND";
+pub(crate) const COMMAND_ENV: &str = "DEVBOULE_PI_COMMAND";
 const HANDSHAKE_TIMEOUT_ENV: &str = "DEVBOULE_PI_HANDSHAKE_TIMEOUT_MS";
 /// The handshake budget: three RPCs share one 60 s deadline. A healthy
 /// cold start measured ~6 s, so the deadline is a ceiling the daemon

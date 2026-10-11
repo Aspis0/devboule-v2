@@ -42,7 +42,7 @@ use crate::process_tree::{JobObject, ProcessHandle};
 use crate::profile_delivery::{DeliveredFeature, ProfileDelivery};
 use crate::server::ServerState;
 
-const COMMAND_ENV: &str = "DEVBOULE_CLAUDE_COMMAND";
+pub(crate) const COMMAND_ENV: &str = "DEVBOULE_CLAUDE_COMMAND";
 const MAX_LINE_BYTES: usize = 10 * 1024 * 1024;
 /// The hot-path control wait: a mode switch on a session that is already
 /// running. The child has answered before, so the old patience stands.

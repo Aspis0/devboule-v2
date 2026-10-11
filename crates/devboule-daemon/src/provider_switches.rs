@@ -86,11 +86,40 @@ pub(crate) fn disabled_sentence(provider_id: &str) -> String {
     )
 }
 
-/// The default a provider with no choice takes: on when it is installed here,
-/// never for an on-demand npx wrapper (its row says nothing is installed for
-/// it, so it starts off until a person switches it on).
+/// The default a provider with no choice takes: on when it is installed here or
+/// its launch command is named by the environment, never for an on-demand npx
+/// wrapper (its row says nothing is installed for it, so it starts off until a
+/// person switches it on).
 pub(crate) fn default_on(agent: &crate::provider_catalog::InstalledAgent) -> bool {
-    agent.installed && agent.origin != crate::provider_catalog::ProviderOrigin::NpxWrapper
+    (agent.installed || launch_override_names(&agent.id))
+        && agent.origin != crate::provider_catalog::ProviderOrigin::NpxWrapper
+}
+
+/// Whether the environment names a launch command for `canonical`: the override
+/// the spawn reads before it looks on PATH, under the same rule. ACP's override
+/// is read only in a debug build, and only for the provider id paired with it.
+/// A provider whose command is named here resolves, so it needs no install.
+fn launch_override_names(canonical: &str) -> bool {
+    let names = |variable: &str| std::env::var(variable).is_ok_and(|argv| names_a_program(&argv));
+    match canonical {
+        "claude" => names(crate::session::claude_client::COMMAND_ENV),
+        "pi" => names(crate::session::pi_client::COMMAND_ENV),
+        _ => {
+            cfg!(debug_assertions)
+                && std::env::var(crate::session::acp_client::COMMAND_PROVIDER_ENV)
+                    .is_ok_and(|id| id == canonical)
+                && names(crate::session::acp_client::COMMAND_ENV)
+        }
+    }
+}
+
+/// A JSON string array whose first entry names a program: the shape every
+/// command override takes.
+fn names_a_program(argv: &str) -> bool {
+    serde_json::from_str::<Vec<String>>(argv).is_ok_and(|argv| {
+        argv.first()
+            .is_some_and(|program| !program.trim().is_empty())
+    })
 }
 
 /// Whether a start may use `provider_id` right now: the person's saved choice
@@ -189,16 +218,21 @@ impl ProviderSwitchStore {
     }
 
     /// The default for a canonical id with no saved choice. A row the providers
-    /// file declares is on (the person declared it). A CLI found on PATH is on
-    /// when installed. Anything else — an npx wrapper, an id nothing holds — is
-    /// off, the same rule `default_on` gives the catalog rows. Reads the file and
-    /// the PATH now, so no shared registry snapshot can change the answer.
+    /// file declares is on (the person declared it). A launch command the
+    /// environment names is on, the override the spawn reads first. A CLI found
+    /// on PATH is on when installed. Anything else — an npx wrapper, an id
+    /// nothing holds — is off, the same rule `default_on` gives the catalog
+    /// rows. Reads the file, the environment and the PATH now, so no shared
+    /// registry snapshot can change the answer.
     pub(crate) fn default_for(&self, canonical: &str) -> bool {
         let runtime_dir = self.path.parent().unwrap_or(Path::new("."));
         if crate::user_providers::declared_row_ids(runtime_dir)
             .iter()
             .any(|id| id == canonical)
         {
+            return true;
+        }
+        if launch_override_names(canonical) {
             return true;
         }
         crate::provider_catalog::find_available(canonical).is_some_and(|agent| default_on(&agent))
@@ -604,6 +638,15 @@ mod tests {
         );
         assert!(!store.default_for("bad id!"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_command_override_counts_only_when_it_names_a_program() {
+        assert!(names_a_program(r#"["/opt/claude/bin/claude","--x"]"#));
+        assert!(!names_a_program("[]"));
+        assert!(!names_a_program(r#"["  "]"#));
+        assert!(!names_a_program(r#""just a string""#));
+        assert!(!names_a_program("not json"));
     }
 
     #[test]

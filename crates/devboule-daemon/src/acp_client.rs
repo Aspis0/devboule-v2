@@ -49,7 +49,7 @@ use super::{
 };
 use crate::profile_delivery::{DeliveredFeature, ProfileDelivery};
 
-const COMMAND_ENV: &str = "DEVBOULE_ACP_COMMAND";
+pub(crate) const COMMAND_ENV: &str = "DEVBOULE_ACP_COMMAND";
 
 /// Serialises the tests that write the ACP override environment.
 ///
@@ -69,7 +69,7 @@ pub(crate) fn lock_acp_env() -> std::sync::MutexGuard<'static, ()> {
 /// Test/direct-command counterpart to [`COMMAND_ENV`]. A direct command has
 /// no catalog row to identify it; tests set this to the stub provider id so a
 /// later resume can still exercise the named-provider path.
-const COMMAND_PROVIDER_ENV: &str = "DEVBOULE_ACP_PROVIDER_ID";
+pub(crate) const COMMAND_PROVIDER_ENV: &str = "DEVBOULE_ACP_PROVIDER_ID";
 
 /// Silence after `session/prompt` with no inbound traffic and no outstanding
 /// client work. Grok stays mute instead of erroring when `terminal` is missing.

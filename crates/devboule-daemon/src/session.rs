@@ -114,7 +114,7 @@ pub(crate) use session_runtime::{
     roster_task_state, AgentMessageSnapshot, SessionRuntime, TurnToken,
 };
 #[path = "acp_client.rs"]
-mod acp_client;
+pub(crate) mod acp_client;
 /// One function out of a private module, under test only: `DEVBOULE_ACP_COMMAND`
 /// and `DEVBOULE_ACP_PROVIDER_ID` are process-global, so every writer - the
 /// ACP tests in `pi_client_tests`, `server_tests` and the session test files,
@@ -143,7 +143,7 @@ mod acp_pending;
 #[path = "acp_questions.rs"]
 mod acp_questions;
 #[path = "claude_client.rs"]
-mod claude_client;
+pub(crate) mod claude_client;
 #[path = "claude_steer_latch.rs"]
 mod claude_steer_latch;
 #[path = "claude_task_seed.rs"]
@@ -159,7 +159,7 @@ mod codex_questions;
 #[path = "event_pull.rs"]
 mod event_pull;
 #[path = "pi_client.rs"]
-mod pi_client;
+pub(crate) mod pi_client;
 /// The class-level provider seam: the `Provider` trait, one implementation
 /// per family, and the registry the spawn road resolves through. Declared
 /// from here like the other children; the mode lists live in the impls,
