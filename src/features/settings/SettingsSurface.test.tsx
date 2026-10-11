@@ -474,6 +474,22 @@ describe("Settings menu shell", () => {
     expect(content.textContent).toContain(intro);
   });
 
+  it("shows the Window page as its title, the close row with its one line, and no other page's intro", async () => {
+    await renderShell();
+    await act(async () => openPage("Window").click());
+    await act(async () => undefined);
+
+    const content = container.querySelector("[data-settings-content]");
+    expect(content?.querySelector(".settings-page-title")?.textContent).toBe("Window");
+    expect(content?.querySelector(".settings-page-intro")).toBeNull();
+    const row = content?.querySelector("[data-settings-row]");
+    expect(row?.querySelector(".settings-row-title")?.textContent).toBe("When I close the window");
+    expect(row?.querySelector("[data-settings-row-description]")?.textContent).toBe(
+      "Closing to the tray keeps your agents running.",
+    );
+    expect(content?.textContent).not.toContain("Shown when a provider reports it");
+  });
+
   it("holds the close behaviour on Window and the send behaviour on Editing", async () => {
     await renderShell();
     await act(async () => openPage("Window").click());

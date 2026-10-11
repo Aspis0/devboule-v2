@@ -2511,6 +2511,13 @@ export function Workspace({
     [providerAnchor, providerPicker, dismissProviderPicker, openProvidersSettings, pickProvider],
   );
 
+  // The daemon poll hands out a new object every 2 s; the bar reads only these
+  // three fields, so an unchanged daemon keeps its identity and the bar's memo holds.
+  const barDaemon = useMemo(
+    () => daemon,
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- the snapshot is the same object until one of these fields moves.
+    [daemon.state, daemon.pid, daemon.message],
+  );
   // The rail's bundle, stable across renders that change nothing it shows:
   // without this the inline literal below is a new identity every render
   // and the rail re-traverses its tree on every session and daemon update.
@@ -3132,7 +3139,7 @@ export function Workspace({
       </div>
       <StatusBar
         agent={focusedAgent}
-        daemon={daemon}
+        daemon={barDaemon}
         daemonNote={restartFailureNote}
         progress={statusProgress}
       />
