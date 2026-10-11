@@ -9,6 +9,7 @@ import type {
   SessionEvent,
   SessionManifest,
   SessionResumeReset,
+  SessionTask,
   SessionTaskList,
   ToolLocation,
 } from "../types/ipc";
@@ -30,7 +31,7 @@ import {
   taskTransitions,
   type BackgroundTaskState,
 } from "./backgroundTasks";
-import { taskRowText } from "./backgroundTaskText";
+import { taskRowFacts, taskRowText, type TaskRowFacts } from "./backgroundTaskText";
 
 export type AgentChannel = SessionChannel;
 export type AgentStatus = "initializing" | "idle" | "running" | "error" | "closed";
@@ -100,7 +101,14 @@ export type AgentChatItem =
       /** The demoted raw text (env vars, OS errors, internal words), under the sentence. */
       detail?: string;
     }
-  | { id: string; role: "system"; text: string; severity: "info" | "warning" }
+  | {
+      id: string;
+      role: "system";
+      text: string;
+      severity: "info" | "warning";
+      /** A background task's row, as facts: set on the rows a task transition writes. */
+      task?: TaskRowFacts;
+    }
   | {
       /** One `agent_permission_request` envelope, parsed (see `agentPermissionRequest.ts`). */
       id: string;
@@ -1127,6 +1135,22 @@ export class AgentSession {
     this.notify();
   }
 
+  private appendTaskRow(task: SessionTask): void {
+    this.closeActiveBlocks();
+    this.update({
+      items: [
+        ...this.state.items,
+        {
+          id: `system-${this.nextItemId++}`,
+          role: "system",
+          text: taskRowText(task),
+          severity: "info",
+          task: taskRowFacts(task),
+        },
+      ],
+    });
+  }
+
   private appendSystemMessage(text: string): void {
     text = hideUntrustedFrame(text);
     this.closeActiveBlocks();
@@ -1897,9 +1921,7 @@ export class AgentSession {
     if (next === null) return;
     const rows = taskTransitions(current, next);
     this.writeTaskState(next);
-    for (const task of rows) {
-      this.appendSystemMessage(taskRowText(task));
-    }
+    for (const task of rows) this.appendTaskRow(task);
   }
 
   /** The one writer of `state.backgroundTasks`: it wakes the task lane and not the transcript. */

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { AgentChatItem } from "../../../lib/agentSession";
 import { isToolCallGroup } from "../../../lib/toolCallGroups";
 import type { ChatFileLinks } from "../../../lib/chatFilePaths";
@@ -33,6 +33,8 @@ interface TranscriptRowsProps {
   streamingThoughtId: string | null;
   /** A turn is running: its own footer waits for the finish. */
   turnRunning?: boolean;
+  /** Opens a child agent's tab, from a line about that child. */
+  onOpenChild?: (sessionId: string) => void;
 }
 
 export function TranscriptRows({
@@ -43,7 +45,15 @@ export function TranscriptRows({
   transcriptEnded,
   streamingThoughtId,
   turnRunning = false,
+  onOpenChild,
 }: TranscriptRowsProps) {
+  // The rows get one function that never changes, so a new callback from the
+  // workspace does not re-render every row; it always calls the latest one.
+  const openChildRef = useRef(onOpenChild);
+  useLayoutEffect(() => {
+    openChildRef.current = onOpenChild;
+  });
+  const openChild = useCallback((sessionId: string) => openChildRef.current?.(sessionId), []);
   const entries = useTranscriptEntries(items, recoveredAttach);
   // The previous footers are handed back in, so an unchanged turn keeps its object.
   const endsRef = useRef<Map<string, TurnEnd>>(new Map());
@@ -72,6 +82,7 @@ export function TranscriptRows({
             isStreamingThought={context === "streamingThought" && entry.id === streamingThoughtId}
             turnEnd={isToolCallGroup(entry) ? undefined : ends.get(entry.id)}
             compactionLive={role === "system" ? liveNotices.has(entry.id) : undefined}
+            onOpenChild={role === "system" || role === "tool" ? openChild : undefined}
           />
         );
       })}

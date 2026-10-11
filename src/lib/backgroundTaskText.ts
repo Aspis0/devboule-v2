@@ -45,32 +45,43 @@ export function taskRowText(task: SessionTask): string {
   return parts.join(" · ");
 }
 
-export interface SettledAgentRow {
-  state: "finished" | "failed" | "stopped";
+/**
+ * A task's row as facts. The transcript draws the row from these, so it never
+ * reads its own words back, and a click knows which child to open.
+ */
+export interface TaskRowFacts {
+  kind: SessionTask["kind"];
+  state: SessionTask["state"];
   title: string;
-  /** The run's compact duration (`7m`, `45s`), absent when the row named none. */
-  took?: string;
+  /** The child session an agent task opens. */
+  childSessionId?: string;
+  /** How long the task ran, once it has ended. */
+  durationMs?: number;
 }
 
-const SETTLED_AGENT_ROW = /^Background agent (finished|failed|stopped) · (.+?)(?: · took (.+))?$/;
-
-/** The inverse of `taskRowText` for an agent's settled row; null for any other text. */
-export function parseSettledAgentRow(text: string): SettledAgentRow | null {
-  const match = SETTLED_AGENT_ROW.exec(text);
-  if (match === null) return null;
-  const [, state, title, took] = match;
-  // A zero unit is noise on a quiet line: `7m 0s` reads as `7m`.
+export function taskRowFacts(task: SessionTask): TaskRowFacts {
+  const durationMs = task.endedAtMs === undefined ? undefined : task.endedAtMs - task.startedAtMs;
   return {
-    state: state as SettledAgentRow["state"],
-    title,
-    ...(took === undefined ? {} : { took: took.replace(/\s0[sm]$/, "") }),
+    kind: task.kind,
+    state: task.state,
+    title: task.title,
+    ...(task.childSessionId === undefined ? {} : { childSessionId: task.childSessionId }),
+    ...(durationMs === undefined || durationMs < 0 ? {} : { durationMs }),
   };
 }
 
-/** The quiet line a settled agent row reads as: `Explore auth finished · 7m`. */
-export function settledAgentLineText(row: SettledAgentRow): string {
-  if (row.state === "stopped" || row.took === undefined) return `${row.title} ${row.state}`;
-  return `${row.title} ${row.state} · ${row.took}`;
+/** A run's duration with its zero unit dropped: `7m`, `7m 12s`, `45s`. */
+export function compactTaskDuration(milliseconds: number): string | null {
+  return formatTaskDuration(milliseconds)?.replace(/\s0[sm]$/, "") ?? null;
+}
+
+/** The quiet line a settled agent task reads as: `Explore auth finished · 7m`. */
+export function agentTaskLineText(facts: TaskRowFacts): string {
+  if (facts.state === "cancelled") return `${facts.title} stopped`;
+  const took = facts.durationMs === undefined ? null : compactTaskDuration(facts.durationMs);
+  return took === null
+    ? `${facts.title} ${facts.state}`
+    : `${facts.title} ${facts.state} · ${took}`;
 }
 
 /** The word a task's row carries beside its title. */

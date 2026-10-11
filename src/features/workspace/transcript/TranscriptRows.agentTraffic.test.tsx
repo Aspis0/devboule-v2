@@ -25,7 +25,7 @@ function assistant(id: string, text: string, parentToolUseId?: string): AgentCha
   };
 }
 
-function system(id: string, text: string): AgentChatItem {
+function system(id: string, text: string): Extract<AgentChatItem, { role: "system" }> {
   return { id, role: "system", text, severity: "info" };
 }
 
@@ -88,7 +88,12 @@ describe("agent-to-agent traffic is not drawn", () => {
   });
 
   it("drops a running agent's task row; the Tasks panel keeps its state", async () => {
-    await show([system("sys-1", "Running agent Website redesign · test-model · 2 tools")]);
+    await show([
+      {
+        ...system("sys-1", "Running agent Website redesign · test-model · 2 tools"),
+        task: { kind: "agent" as const, state: "running" as const, title: "Website redesign" },
+      },
+    ]);
 
     expect(host.textContent).not.toContain("Running agent");
   });

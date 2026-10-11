@@ -963,6 +963,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
             transcriptEnded={osGone}
             streamingThoughtId={streamingThoughtId}
             turnRunning={turnRunning}
+            onOpenChild={onOpenSubagent}
           />
           {turnRunning ? <WorkingLine startedAtMs={state.turnStartedAtMs ?? null} /> : null}
           {state.lastFinished !== null ? (

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionTask } from "../types/ipc";
-import { parseSettledAgentRow, settledAgentLineText, taskRowText } from "./backgroundTaskText";
+import { agentTaskLineText, compactTaskDuration, taskRowFacts } from "./backgroundTaskText";
 
 function agent(overrides: Partial<SessionTask>): SessionTask {
   return {
@@ -15,44 +15,44 @@ function agent(overrides: Partial<SessionTask>): SessionTask {
   };
 }
 
-describe("parseSettledAgentRow", () => {
-  it("reads back every settled agent row the producer writes", () => {
-    const rows = [
-      agent({ state: "finished" }),
-      agent({ state: "failed", endedAtMs: 180_000 }),
-      agent({ state: "cancelled", endedAtMs: 60_000 }),
-      agent({ title: "Build · site", state: "finished", endedAtMs: 45_000 }),
-    ];
-    for (const row of rows) {
-      const parsed = parseSettledAgentRow(taskRowText(row));
-      expect(parsed).not.toBeNull();
-      expect(parsed?.title).toBe(row.title);
-    }
-  });
-
-  it("drops a zero unit from the duration, so 7m 0s reads as 7m", () => {
-    expect(parseSettledAgentRow(taskRowText(agent({ endedAtMs: 420_000 })))).toEqual({
+describe("taskRowFacts", () => {
+  it("keeps the child to open and the run's length, and drops a length it cannot have", () => {
+    expect(taskRowFacts(agent({ childSessionId: "s.kid.1", endedAtMs: 420_000 }))).toEqual({
+      kind: "agent",
       state: "finished",
       title: "Explore auth",
-      took: "7m",
+      childSessionId: "s.kid.1",
+      durationMs: 420_000,
     });
-    expect(parseSettledAgentRow(taskRowText(agent({ endedAtMs: 432_000 })))?.took).toBe("7m 12s");
-  });
-
-  it("returns null for a command task and for any other text", () => {
-    expect(parseSettledAgentRow("Background command finished · npm test · took 4s")).toBeNull();
-    expect(parseSettledAgentRow("Running agent Explore auth · 2 tools")).toBeNull();
-    expect(parseSettledAgentRow("Codex declined an out-of-scope request.")).toBeNull();
+    expect(taskRowFacts(agent({ endedAtMs: -5 })).durationMs).toBeUndefined();
+    expect(
+      taskRowFacts(agent({ state: "running", endedAtMs: undefined })).durationMs,
+    ).toBeUndefined();
   });
 });
 
-describe("settledAgentLineText", () => {
-  it("reads a finished run with its duration, and a stopped one without", () => {
-    expect(settledAgentLineText({ state: "finished", title: "Explore auth", took: "7m" })).toBe(
-      "Explore auth finished · 7m",
-    );
-    expect(settledAgentLineText({ state: "stopped", title: "Explore auth", took: "7m" })).toBe(
+describe("compactTaskDuration", () => {
+  it("drops a zero unit, so 7m 0s reads as 7m and 7m 12s stays", () => {
+    expect(compactTaskDuration(420_000)).toBe("7m");
+    expect(compactTaskDuration(432_000)).toBe("7m 12s");
+    expect(compactTaskDuration(45_000)).toBe("45s");
+    expect(compactTaskDuration(-1)).toBeNull();
+  });
+});
+
+describe("agentTaskLineText", () => {
+  it("reads a finished or failed run with its duration", () => {
+    const facts = taskRowFacts(agent({ endedAtMs: 420_000 }));
+    expect(agentTaskLineText(facts)).toBe("Explore auth finished · 7m");
+    expect(agentTaskLineText({ ...facts, state: "failed" })).toBe("Explore auth failed · 7m");
+  });
+
+  it("reads a stopped run without a duration, and a run with no end without one", () => {
+    expect(agentTaskLineText(taskRowFacts(agent({ state: "cancelled" })))).toBe(
       "Explore auth stopped",
+    );
+    expect(agentTaskLineText({ kind: "agent", state: "finished", title: "Explore auth" })).toBe(
+      "Explore auth finished",
     );
   });
 });

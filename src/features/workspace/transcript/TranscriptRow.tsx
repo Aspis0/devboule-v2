@@ -6,7 +6,7 @@ import { MarkdownText } from "../../../components/MarkdownText";
 import { A2aMessageCard, type A2aNameSource } from "../A2aMessageCard";
 import { A2aOutgoingMessageCard } from "../A2aOutgoingMessageCard";
 import { DaemonNoticeCard } from "../DaemonNoticeCard";
-import { parseSettledAgentRow, settledAgentLineText } from "../../../lib/backgroundTaskText";
+import { agentTaskLineText } from "../../../lib/backgroundTaskText";
 import { ThoughtRow } from "../ThoughtRow";
 import { entryFrame } from "./entryFrame";
 import { QuietLine } from "./QuietLine";
@@ -30,6 +30,7 @@ interface TranscriptRowProps {
   turnEnd?: TurnEnd;
   /** The turn is live: a compaction start with no finish is still running. */
   compactionLive?: boolean;
+  onOpenChild?: (sessionId: string) => void;
 }
 
 const EMPTY_NAMES: A2aNameSource = { sessionById: new Map(), deviceNames: new Map() };
@@ -42,13 +43,14 @@ export const TranscriptRow = memo(function TranscriptRow({
   isStreamingThought,
   turnEnd,
   compactionLive = true,
+  onOpenChild,
 }: TranscriptRowProps) {
   if (isToolCallGroup(item)) {
     return <ToolCallGroupRow group={item} transcriptEnded={transcriptEnded} />;
   }
   const { className, style } = entryFrame(item);
   if (item.role === "tool") {
-    return <ToolRow item={item} transcriptEnded={transcriptEnded} />;
+    return <ToolRow item={item} transcriptEnded={transcriptEnded} onOpenChild={onOpenChild} />;
   }
   if (item.role === "thought") {
     return (
@@ -70,11 +72,21 @@ export const TranscriptRow = memo(function TranscriptRow({
         </div>
       );
     }
-    const settled = parseSettledAgentRow(item.text);
-    if (settled !== null) {
+    if (item.task !== undefined) {
+      const { task } = item;
+      const childSessionId = task.kind === "agent" ? task.childSessionId : undefined;
       return (
         <div className={className} style={style}>
-          <QuietLine failed={settled.state === "failed"}>{settledAgentLineText(settled)}</QuietLine>
+          <QuietLine
+            failed={task.state === "failed"}
+            onOpen={
+              childSessionId !== undefined && onOpenChild !== undefined
+                ? () => onOpenChild(childSessionId)
+                : undefined
+            }
+          >
+            {task.kind === "agent" ? agentTaskLineText(task) : item.text}
+          </QuietLine>
         </div>
       );
     }

@@ -13,7 +13,7 @@ function tool(title: string, output = ""): AgentChatItem {
   };
 }
 
-function system(text: string): AgentChatItem {
+function system(text: string): Extract<AgentChatItem, { role: "system" }> {
   return { id: `sys-${text}`, role: "system", text, severity: "info" };
 }
 
@@ -95,7 +95,12 @@ describe("isAgentTraffic", () => {
       ),
     ).toBe(true);
     expect(isAgentTraffic(system("The agent creation did not start: no provider."))).toBe(true);
-    expect(isAgentTraffic(system("Running agent Explore auth · test-model · 2 tools"))).toBe(true);
+    expect(
+      isAgentTraffic({
+        ...system("Running agent Explore auth · test-model · 2 tools"),
+        task: { kind: "agent" as const, state: "running" as const, title: "Explore auth" },
+      }),
+    ).toBe(true);
     expect(isAgentTraffic(system("Background agent finished · Explore auth · took 8s"))).toBe(
       false,
     );
@@ -137,7 +142,15 @@ describe("dropDuplicateFinishNotices", () => {
   it("drops a finish notice when its turn already draws the child's settled row", () => {
     const items = [
       user("u1"),
-      system("Background agent finished · worker · took 7m 0s"),
+      {
+        ...system("Background agent finished · worker · took 7m 0s"),
+        task: {
+          kind: "agent" as const,
+          state: "finished" as const,
+          title: "worker",
+          durationMs: 420_000,
+        },
+      },
       finishNotice("worker"),
     ];
     expect(dropDuplicateFinishNotices(items)).toEqual([items[0], items[1]]);
@@ -146,7 +159,15 @@ describe("dropDuplicateFinishNotices", () => {
   it("keeps a finish notice whose turn draws no settled row, and the other turns' rows", () => {
     const items = [
       user("u1"),
-      system("Background agent finished · worker · took 7m 0s"),
+      {
+        ...system("Background agent finished · worker · took 7m 0s"),
+        task: {
+          kind: "agent" as const,
+          state: "finished" as const,
+          title: "worker",
+          durationMs: 420_000,
+        },
+      },
       user("u2"),
       finishNotice("worker"),
     ];

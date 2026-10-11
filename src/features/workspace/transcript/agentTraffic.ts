@@ -1,5 +1,4 @@
 import type { AgentChatItem } from "../../../lib/agentSession";
-import { parseSettledAgentRow } from "../../../lib/backgroundTaskText";
 import { devbouleActivity, devbouleToolName } from "../devbouleToolLine";
 import { isFailedToolCall } from "./toolFailure";
 
@@ -14,9 +13,6 @@ const CREATOR_WAKE_PREFIXES = [
   "The person approved the agent creation:",
   "The agent creation did not start:",
 ];
-
-// A running agent's task row (backgroundTaskText.ts); the Tasks panel carries its state.
-const RUNNING_AGENT_PREFIX = "Running agent ";
 
 // Calls the orchestrator makes to answer or poll for its children's cards.
 const PLUMBING_TOOLS = new Set(["answer_permissions", "list_pending_permissions"]);
@@ -35,8 +31,9 @@ export function isAgentTraffic(item: AgentChatItem): boolean {
   if (isChildOwned(item)) return true;
   switch (item.role) {
     case "system":
+      // A running agent's row: the Tasks panel carries its state, the chat only its end.
       return (
-        item.text.startsWith(RUNNING_AGENT_PREFIX) ||
+        (item.task?.kind === "agent" && item.task.state === "running") ||
         CREATOR_WAKE_PREFIXES.some((prefix) => item.text.startsWith(prefix))
       );
     case "tool": {
@@ -91,9 +88,8 @@ export function dropDuplicateFinishNotices(items: AgentChatItem[]): AgentChatIte
   const settledByTurn: Set<string>[] = [new Set()];
   for (const item of items) {
     if (item.role === "user") settledByTurn.push(new Set());
-    if (item.role !== "system") continue;
-    const row = parseSettledAgentRow(item.text);
-    if (row !== null) settledByTurn[settledByTurn.length - 1].add(row.title);
+    if (item.role !== "system" || item.task?.kind !== "agent") continue;
+    if (item.task.state !== "running") settledByTurn[settledByTurn.length - 1].add(item.task.title);
   }
   let turn = 0;
   return items.filter((item) => {

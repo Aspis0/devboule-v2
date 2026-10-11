@@ -59,7 +59,7 @@ describe("ToolRow for Devboule's agent tools", () => {
     expect(shown.textContent).not.toContain("delivered");
   });
 
-  it("keeps the raw result behind the line's click", async () => {
+  it("keeps a check call's raw result off the line, since the line opens the child", async () => {
     const shown = await renderRow(
       tool({
         title: "devboule_agent_activity",
@@ -68,13 +68,7 @@ describe("ToolRow for Devboule's agent tools", () => {
       }),
     );
     expect(shown.querySelector(".workspace-chat-tool-body")).toBeNull();
-    const details = shown.querySelector("details");
-    if (details === null) throw new Error("the call had nothing to open");
-    await act(async () => {
-      details.open = true;
-      details.dispatchEvent(new Event("toggle"));
-    });
-    expect(shown.querySelector(".workspace-chat-tool-output")?.textContent).toContain("sessionId");
+    expect(shown.querySelector("details")).toBeNull();
   });
 
   it("leaves another tool's row as it was", async () => {

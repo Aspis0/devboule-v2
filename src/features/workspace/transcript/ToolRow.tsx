@@ -4,7 +4,7 @@ import { hideUntrustedFrame } from "../../../lib/untrustedFrame";
 import { ExternalLink } from "../../../components/ExternalLink";
 import { MarkdownText } from "../../../components/MarkdownText";
 import { toolPathText, toolRowDisplay, type ToolPhase } from "../toolRowDisplay";
-import { devbouleShowsOutput, devbouleToolLine } from "../devbouleToolLine";
+import { devbouleChildSession, devbouleShowsOutput, devbouleToolLine } from "../devbouleToolLine";
 import { AgentIcon } from "../ActivityRow";
 import { ErrorTriangleIcon } from "../ErrorTriangleIcon";
 import { CommandChip, ExitMarker } from "../CommandRow";
@@ -27,10 +27,12 @@ export const ToolRow = memo(function ToolRow({
   item,
   transcriptEnded,
   expansion,
+  onOpenChild,
 }: {
   item: ToolChatItem;
   transcriptEnded: boolean;
   expansion?: OutputExpansion;
+  onOpenChild?: (sessionId: string) => void;
 }) {
   const { className, style } = entryFrame(item);
   const interrupted = isInterruptedToolStatus(item.status, transcriptEnded);
@@ -50,6 +52,9 @@ export const ToolRow = memo(function ToolRow({
   const devboule = useMemo(() => devbouleToolLine(item, phase), [item, phase]);
   const showsOutput = devboule === undefined || devbouleShowsOutput(item.title);
   const shownOutput = showsOutput ? item.output : "";
+  // A line about a child opens that child; its raw result stays behind no click.
+  const childSession =
+    devboule !== undefined && !showsOutput ? devbouleChildSession(item.output) : undefined;
   const linkUrl = model.linkUrl;
   const isPlan = item.kind === "plan";
   const planDecision =
@@ -155,6 +160,19 @@ export const ToolRow = memo(function ToolRow({
       ) : null}
     </>
   );
+  if (childSession !== undefined && onOpenChild !== undefined) {
+    return (
+      <div className={toolClassName} style={style}>
+        <button
+          type="button"
+          className="workspace-chat-tool-summary"
+          onClick={() => onOpenChild(childSession)}
+        >
+          {line}
+        </button>
+      </div>
+    );
+  }
   return (
     <div className={toolClassName} style={style}>
       {hasBody ? (

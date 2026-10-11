@@ -4,7 +4,7 @@
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatItem } from "../../../lib/agentSession";
 import { TranscriptRows } from "./TranscriptRows";
 
@@ -62,12 +62,29 @@ describe("quiet lines", () => {
         role: "system",
         severity: "info",
         text: "Background agent finished · Explore auth · took 7m 0s",
+        task: { kind: "agent", state: "finished", title: "Explore auth", durationMs: 420_000 },
       },
     ]);
 
     expect(host.textContent).toContain("Explore auth finished · 7m");
     expect(host.textContent).not.toContain("Background agent");
     expect(host.querySelector(".workspace-chat-quiet-line svg")).toBeNull();
+  });
+
+  it("draws a background command's row as one quiet line, in its own wording", async () => {
+    await show([
+      {
+        id: "sys-1",
+        role: "system",
+        severity: "info",
+        text: "Background command finished · npm test · took 4s",
+        task: { kind: "command", state: "finished", title: "npm test", durationMs: 4_000 },
+      },
+    ]);
+
+    expect(host.querySelector(".workspace-chat-quiet-line")?.textContent).toBe(
+      "Background command finished · npm test · took 4s",
+    );
   });
 
   it("marks a failed agent row with the triangle, and keeps the word in the line", async () => {
@@ -77,11 +94,77 @@ describe("quiet lines", () => {
         role: "system",
         severity: "info",
         text: "Background agent failed · Explore auth · took 3m 0s",
+        task: { kind: "agent", state: "failed", title: "Explore auth", durationMs: 180_000 },
       },
     ]);
 
     expect(host.textContent).toContain("Explore auth failed · 3m");
     expect(host.querySelector(".workspace-chat-quiet-line svg")).not.toBeNull();
+  });
+
+  it("opens a finished child's tab from its line, and does not draw the raw row text", async () => {
+    const opened = vi.fn();
+    root?.unmount();
+    root = createRoot(host);
+    await act(async () =>
+      root?.render(
+        <TranscriptRows
+          items={[
+            {
+              id: "sys-1",
+              role: "system",
+              severity: "info",
+              text: "Background agent finished · Explore auth · took 7m 0s",
+              task: {
+                kind: "agent",
+                state: "finished",
+                title: "Explore auth",
+                childSessionId: "s.kid.1",
+                durationMs: 420_000,
+              },
+            },
+          ]}
+          recoveredAttach={false}
+          a2aNames={names}
+          fileLinks={null}
+          transcriptEnded={false}
+          streamingThoughtId={null}
+          onOpenChild={opened}
+        />,
+      ),
+    );
+
+    await act(async () => host.querySelector<HTMLButtonElement>("button")?.click());
+    expect(opened).toHaveBeenCalledWith("s.kid.1");
+  });
+
+  it("opens the child a started agent's result names, without drawing that result", async () => {
+    const opened = vi.fn();
+    root?.unmount();
+    root = createRoot(host);
+    await act(async () =>
+      root?.render(
+        <TranscriptRows
+          items={[
+            call(
+              "mcp__devboule__devboule_create_agent",
+              "completed",
+              '{"displayName":"Website redesign","sessionId":"s.site.1"}',
+            ),
+          ]}
+          recoveredAttach={false}
+          a2aNames={names}
+          fileLinks={null}
+          transcriptEnded={false}
+          streamingThoughtId={null}
+          onOpenChild={opened}
+        />,
+      ),
+    );
+
+    await act(async () => host.querySelector<HTMLButtonElement>("button")?.click());
+    expect(opened).toHaveBeenCalledWith("s.site.1");
+    expect(host.textContent).not.toContain("sessionId");
   });
 
   it("opens a turn error's detail only on click", async () => {

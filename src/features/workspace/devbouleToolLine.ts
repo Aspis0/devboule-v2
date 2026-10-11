@@ -144,7 +144,10 @@ export function devbouleToolLine(
   return `${verb} ${agent}`;
 }
 
-/** Whether a Devboule call's raw result may be opened behind its line. A created agent's result is never shown. */
+/**
+ * Whether a Devboule call's raw result may open behind its line: a sent message's
+ * body only. The other calls open the child they touched, so their result stays hidden.
+ */
 export function devbouleShowsOutput(title: string): boolean {
-  return FAMILY_BY_NAME.get(splitTitle(title).name) !== "create";
+  return FAMILY_BY_NAME.get(splitTitle(title).name) === "send";
 }
