@@ -174,7 +174,7 @@ impl ProfileDelivery {
     ) -> Self {
         Self {
             mode_id: Some(mode_id.to_string()),
-            model_id: Some(model_id.to_string()),
+            model_id: (!model_id.is_empty()).then(|| model_id.to_string()),
             model_provider: model_provider.map(str::to_string),
             thinking_option_id: thinking_option_id.map(str::to_string),
             auto_accept,

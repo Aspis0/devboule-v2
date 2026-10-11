@@ -221,10 +221,13 @@ pub(in crate::mcp_broker) fn resolve_creation(
         id: String::new(),
         name: match preset {
             Some(preset_id) => format!("{catalog_id} {preset_id}"),
-            None => format!("{catalog_id} {model}"),
+            None => format!(
+                "{catalog_id} {}",
+                model.as_deref().unwrap_or("default model")
+            ),
         },
         provider: catalog_id,
-        model: model.clone(),
+        model: model.clone().unwrap_or_default(),
         model_provider: None,
         mode,
         thinking_option_id: effort.clone(),

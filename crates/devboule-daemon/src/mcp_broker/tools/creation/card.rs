@@ -255,12 +255,23 @@ pub(in crate::mcp_broker) fn creation_card(
     // The profile facts and the decision metadata are built apart, because a
     // spawn-prompt block slots between them: its lines are all marked with
     // `| `, and the metadata that follows is the card's own unprefixed voice.
+    // A direct creation names no stored profile: it says what it is, and a
+    // model the caller left out is the provider's own default.
+    let who = if profile.id.is_empty() {
+        format!("Direct creation '{}'", profile.name)
+    } else {
+        format!("Profile '{}' ({})", profile.name, profile.id)
+    };
+    let model = if profile.model.is_empty() {
+        "the provider's default".to_string()
+    } else {
+        profile.model.clone()
+    };
     let facts = format!(
-        "Asked for by '{creator_name}'. Profile '{name}' ({id}): provider {provider}, model {model}, mode {mode}, thinking {thinking}, features {features}, auto accept: {auto}.",
-        name = profile.name,
-        id = profile.id,
+        "Asked for by '{creator_name}'. {who}: provider {provider}, model {model}, mode {mode}, thinking {thinking}, features {features}, auto accept: {auto}.",
+        who = who,
         provider = profile.provider,
-        model = profile.model,
+        model = model,
         mode = profile.mode,
         auto = auto,
     );

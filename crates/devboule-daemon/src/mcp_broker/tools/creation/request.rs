@@ -25,7 +25,8 @@ pub(in crate::mcp_broker) enum CreationChoice {
     /// the preset's (`design`, `worker`), which also carries the tool overlay.
     Direct {
         provider: String,
-        model: String,
+        /// Absent only with a preset: the provider's own default model answers.
+        model: Option<String>,
         mode: Option<String>,
         effort: Option<String>,
         preset: Option<String>,
@@ -182,8 +183,6 @@ fn choice_of(object: &serde_json::Map<String, Value>) -> Result<CreationChoice, 
     let Some(name) = profile else {
         let provider =
             provider.ok_or_else(|| "provider is required when no profile is named".to_string())?;
-        let model =
-            model.ok_or_else(|| "model is required when no profile is named".to_string())?;
         if let Some(id) = &preset {
             if mode.is_some() {
                 return Err(
@@ -198,6 +197,9 @@ fn choice_of(object: &serde_json::Map<String, Value>) -> Result<CreationChoice, 
             }
         } else if mode.is_none() {
             return Err("mode is required when no preset or profile is named".to_string());
+        }
+        if preset.is_none() && model.is_none() {
+            return Err("model is required when no profile is named".to_string());
         }
         return Ok(CreationChoice::Direct {
             provider,

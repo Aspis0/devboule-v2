@@ -6823,3 +6823,170 @@ fn the_broker_introduces_devboule_at_initialize() {
     drop(guard);
     drop(server);
 }
+
+/// A workspace agent's design child needs only a provider and the preset, as
+/// it did before the profile rework (owner bug #34, review fix pass): the model
+/// is the provider's own default and the preset gives the mode and overlay.
+#[test]
+fn a_design_child_needs_only_a_provider_and_the_preset() {
+    let request = AgentCreateRequest::parse(&json!({
+        "provider": "codex",
+        "preset": "design",
+        "title": "Design pass",
+        "initialPrompt": "Draft the landing page.",
+    }))
+    .expect("a provider and the preset are enough");
+    let store = profile_store(document(vec![], ""));
+    let resolved = resolve_creation(&store, &request.choice).expect("design resolves");
+    assert_eq!(resolved.overlay, ToolOverlay::DESIGN);
+    assert_eq!(resolved.mode, "auto", "the design cell's own mode");
+    assert!(
+        resolved.model.is_empty(),
+        "no model named: the provider's default answers"
+    );
+}
+
+/// A workspace agent creates a design child with the preset alone, and the
+/// child is what the preset promises, end to end (owner bug #34, the Design
+/// route restored): it spawns on the provider the caller named, and its own
+/// tool list keeps the roster while losing the creation tool and the browser
+/// lane.
+#[test]
+fn a_workspace_agent_spawns_a_design_child_end_to_end() {
+    let stub = crate::session::session_resume_fixture::acp_stub();
+    let dir = crate::test_dirs::test_temp_dir("devboule-design-child");
+    let _stub_override = StubOverride::set("devboule-acp-stub", &stub);
+    let state = ServerState::with_paths(
+        "mcp-design-child".to_string(),
+        crate::paths::RuntimePaths::from_dir(dir.clone()),
+    )
+    .expect("state");
+    let owner = owner("mcp-design-user", "mcp-design-client");
+    let creator = "s.design-creator".to_string();
+    let (workspace, _root) =
+        super::terminal_write_harness::project_workspace(&state, "design-child");
+    crate::session::insert_test_live_session_in_workspace(
+        &state.sessions,
+        &creator,
+        owner.clone(),
+        SessionKind::Pi,
+        &workspace,
+    );
+    let registration = RegisteredSession {
+        session_id: creator.clone(),
+        owner: owner.clone(),
+        provider_id: Some("pi".to_string()),
+        depth: 0,
+        overlay: ToolOverlay::NONE,
+        bearer: "the bearer".to_string(),
+        claude_config_path: None,
+        runtime: None,
+        broker_ready: Arc::new(AtomicBool::new(true)),
+    };
+    let server = state.mcp.start(&state).expect("MCP server");
+    let request = AgentCreateRequest::parse(&json!({
+        "provider": "devboule-acp-stub",
+        "preset": "design",
+        "title": "Design pass",
+        "initialPrompt": "Draft the landing page.",
+    }))
+    .expect("the design request parses");
+    let answer = create_agent(
+        &state,
+        &state.mcp,
+        &McpCaller::Local,
+        &registration,
+        &json!(7),
+        request,
+    );
+    // The creation is owed a card: the person approves it, and the child starts
+    // in the background (its session reaches the creator as a message).
+    assert_eq!(
+        answer["result"]["structuredContent"]["state"], "awaiting_approval",
+        "{answer}"
+    );
+    // The card is raised in the background, so it is awaited, not read at once.
+    let card_deadline = Instant::now() + Duration::from_secs(20);
+    let card = loop {
+        let pending = state
+            .sessions
+            .live_runtime(&creator, &owner)
+            .expect("live creator")
+            .permission_broker()
+            .expect("test broker")
+            .test_pending_ids();
+        if let Some(card) = pending.into_iter().next() {
+            break card;
+        }
+        assert!(
+            Instant::now() < card_deadline,
+            "the creation card is raised"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    state
+        .sessions
+        .live_runtime(&creator, &owner)
+        .expect("live creator")
+        .permission_broker()
+        .expect("test broker")
+        .test_answer(
+            &card,
+            devboule_protocol::PermissionOutcome::AllowOnce,
+            "allow",
+        )
+        .expect("the person allows the creation");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let child = loop {
+        let found = state
+            .sessions
+            .live_agent_entries(&owner)
+            .expect("the roster")
+            .into_iter()
+            .find(|entry| entry.session.created_by.as_deref() == Some(creator.as_str()))
+            .map(|entry| entry.session.id);
+        if let Some(child) = found {
+            break child;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the design child is never created"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert!(
+        state.sessions.live_runtime(&child, &owner).is_some(),
+        "the design child is live"
+    );
+    let token = state
+        .mcp
+        .test_token(&child)
+        .expect("the child holds a broker token");
+    let listed = http_request(
+        &state.mcp.url,
+        Some(&format!("Bearer {token}")),
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+    );
+    let names: Vec<String> = response_json(&listed)["result"]["tools"]
+        .as_array()
+        .expect("the child lists its tools")
+        .iter()
+        .filter_map(|tool| tool["name"].as_str().map(str::to_string))
+        .collect();
+    assert!(
+        names.iter().any(|name| name == MCP_ROSTER_TOOL),
+        "{names:?}"
+    );
+    assert!(
+        !names.iter().any(|name| name == MCP_CREATE_AGENT_TOOL),
+        "a design child creates no agents: {names:?}"
+    );
+    assert!(
+        !names
+            .iter()
+            .any(|name| name == crate::provider_catalog::MCP_BROWSER_NEW_TAB_TOOL),
+        "a design child has no browser lane: {names:?}"
+    );
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
+}
