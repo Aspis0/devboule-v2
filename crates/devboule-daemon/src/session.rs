@@ -897,8 +897,6 @@ pub struct SessionRegistry {
     #[cfg(test)]
     journal_checkpoint_calls: Arc<AtomicU64>,
     #[cfg(test)]
-    workspace_delete_calls: Arc<AtomicU64>,
-    #[cfg(test)]
     full_roster_builds: Arc<AtomicU64>,
     #[cfg(test)]
     journal_roster_after_list_hook: Arc<Mutex<Option<JournalRosterAfterListHook>>>,
@@ -1036,8 +1034,6 @@ impl SessionRegistry {
             journal_list_calls: Arc::new(AtomicU64::new(0)),
             #[cfg(test)]
             journal_checkpoint_calls: Arc::new(AtomicU64::new(0)),
-            #[cfg(test)]
-            workspace_delete_calls: Arc::new(AtomicU64::new(0)),
             #[cfg(test)]
             full_roster_builds: Arc::new(AtomicU64::new(0)),
             #[cfg(test)]
@@ -1464,11 +1460,6 @@ impl SessionRegistry {
                 )
             })
             .collect())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn workspace_delete_call_count(&self) -> u64 {
-        self.workspace_delete_calls.load(Ordering::Relaxed)
     }
 
     #[cfg(test)]

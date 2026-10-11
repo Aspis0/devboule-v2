@@ -15,7 +15,7 @@ use crate::server::ServerState;
 /// Creating a workspace has its own permission mark.
 pub(in crate::mcp_broker) const WORKSPACES_GROUP: &str = "workspaces";
 /// Removing a workspace has a separate mark because it closes sessions and
-/// removes an existing checkout.
+/// archives an existing workspace.
 pub(in crate::mcp_broker) const WORKSPACE_ARCHIVE_GROUP: &str = "workspace_archiving";
 /// The three terminal-write groups: one per act, never one for all three.
 /// Opening a shell, typing into one and killing one are different powers, so

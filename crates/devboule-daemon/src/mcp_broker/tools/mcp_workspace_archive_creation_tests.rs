@@ -81,7 +81,7 @@ fn creation_during_the_close_loop_is_refused_and_archive_clears_the_mark() {
         result["closedSessionIds"][0],
         "archive-create-during-close-existing"
     );
-    assert!(!path.exists());
+    assert!(path.is_dir(), "an archive keeps the folder");
     assert!(state
         .sessions
         .workspace_creation_guard(Some(&target))

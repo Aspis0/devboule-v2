@@ -91,7 +91,7 @@ fn archive_closes_agents_and_terminals_before_removing_workspace() {
     )
     .expect("archive succeeds");
     assert_eq!(result["closedSessionIds"].as_array().unwrap().len(), 2);
-    assert!(!path.exists());
+    assert!(path.is_dir(), "an archive keeps the folder");
     assert!(state
         .sessions
         .live_sessions_in_workspace(&target)
@@ -162,46 +162,6 @@ fn archive_card_names_sessions_and_returns_the_closed_ids() {
     )
     .expect("archive succeeds");
     assert_eq!(result["closedSessionIds"][0], "archive-card-agent");
-}
-
-#[test]
-fn local_refusal_does_not_raise_a_card_or_open_a_gate() {
-    let (state, project, local, _dir) = setup("local-no-write");
-    let (caller_workspace, _) = add_worktree(&state, &project, "archive-local-no-write-caller");
-    crate::session::insert_test_live_agent_in_workspace(
-        &state.sessions,
-        "local-no-write-caller",
-        owner(),
-        &caller_workspace,
-    );
-    let runtime = state
-        .sessions
-        .live_runtime("local-no-write-caller", &owner())
-        .expect("caller runtime");
-    let permission_broker = runtime.permission_broker().expect("permission broker");
-    let delete_calls = state.sessions.workspace_delete_call_count();
-    assert!(matches!(
-        archive_workspace(
-            &state,
-            &state.mcp,
-            "local-no-write-caller",
-            &owner(),
-            &local
-        ),
-        Err(WorkspaceError::Refused(_))
-    ));
-    assert!(permission_broker.test_pending_ids().is_empty());
-    assert_eq!(
-        state.sessions.workspace_delete_call_count(),
-        delete_calls,
-        "local refusal must not reach the delete path"
-    );
-    assert_eq!(
-        state
-            .mcp
-            .first_use_mark("local-no-write-caller", WORKSPACE_ARCHIVE_GROUP),
-        None
-    );
 }
 
 #[test]

@@ -67,36 +67,6 @@ fn add_worktree(state: &ServerState, project: &str, branch: &str) -> (String, st
 /// travels in an MCP reply, and git's own wording carries the repository's
 /// absolute path. Every other failure keeps its wording (the family's
 /// by-design behavior).
-#[test]
-fn the_dirty_pre_check_refusal_answers_the_dubious_ownership_sentence() {
-    let dubious = "fatal: detected dubious ownership in repository at 'C:/Users/someone/repo'";
-    match dirty_check_refusal(dubious.to_string()) {
-        WorkspaceError::Refused(sentence) => {
-            assert_eq!(
-                sentence,
-                "Could not check worktree status: git refuses this repository because the \
-                 folder is owned by another user; if you trust it, add it to git's safe.directory"
-            );
-            assert!(
-                !sentence.contains('\\') && !sentence.contains('/'),
-                "no path in the reply: {sentence}"
-            );
-            assert!(
-                !sentence.contains("dubious ownership in repository"),
-                "git's own wording leaked: {sentence}"
-            );
-        }
-        other => panic!("the dirty check refuses, not {other:?}"),
-    }
-    match dirty_check_refusal("fatal: not a git repository: '/nowhere/repo'".to_string()) {
-        WorkspaceError::Refused(sentence) => assert_eq!(
-            sentence,
-            "Could not check worktree status: fatal: not a git repository: '/nowhere/repo'"
-        ),
-        other => panic!("the dirty check refuses, not {other:?}"),
-    }
-}
-
 fn run_with_answer(
     state: &Arc<ServerState>,
     session: &str,
@@ -190,29 +160,41 @@ fn archive_refuses_another_projects_workspace_and_the_callers_own() {
 }
 
 #[test]
-fn archive_refuses_local_workspace_with_daemon_sentence() {
+fn archive_takes_the_local_row_off_the_list_and_keeps_the_project_folder() {
     let (state, project, local, _dir) = setup("local");
     let (caller_workspace, _) = add_worktree(&state, &project, "archive-local-caller");
     crate::session::insert_test_live_agent_in_workspace(
         &state.sessions,
-        "local-worktree-caller",
+        "local-archive",
         owner(),
         &caller_workspace,
     );
-    let result = archive_workspace(
+    let project_path = state
+        .sessions
+        .workspace_records(&project)
+        .unwrap()
+        .into_iter()
+        .find(|w| w.id == local)
+        .map(|w| std::path::PathBuf::from(w.path))
+        .expect("the local row");
+    let result = run_with_answer(
         &state,
-        &state.mcp,
-        "local-worktree-caller",
-        &owner(),
+        "local-archive",
         &local,
+        PermissionOutcome::AllowOnce,
+        "once",
     );
-    let Err(WorkspaceError::Refused(message)) = result else {
-        panic!("local workspace must be refused");
-    };
-    assert_eq!(
-        message,
-        "The local workspace is the project folder and is not removed as a worktree."
+    assert!(
+        result.is_ok(),
+        "the local row archives like any other: {result:?}"
     );
+    assert!(project_path.is_dir(), "the project folder is never removed");
+    assert!(!state
+        .sessions
+        .workspace_records(&project)
+        .unwrap()
+        .iter()
+        .any(|w| w.id == local));
 }
 
 #[test]
@@ -224,7 +206,7 @@ fn archive_rejects_force_as_unknown() {
 }
 
 #[test]
-fn archive_dirty_worktree_is_refused_and_kept() {
+fn archive_keeps_a_dirty_worktree_folder_and_takes_its_row_off_the_list() {
     let (state, project, _own, _dir) = setup("dirty");
     let (target, path) = add_worktree(&state, &project, "archive-dirty");
     std::fs::write(path.join("uncommitted.txt"), "keep me").expect("dirty file");
@@ -235,9 +217,16 @@ fn archive_dirty_worktree_is_refused_and_kept() {
         PermissionOutcome::AllowOnce,
         "once",
     );
-    assert!(matches!(result, Err(WorkspaceError::Refused(message)) if message.contains("dirty")));
-    assert!(path.is_dir());
-    assert!(state
+    assert!(
+        result.is_ok(),
+        "archive does not look at the checkout: {result:?}"
+    );
+    assert!(path.is_dir(), "an archive never deletes a folder");
+    assert!(
+        path.join("uncommitted.txt").is_file(),
+        "the uncommitted work is kept"
+    );
+    assert!(!state
         .sessions
         .workspace_records(&project)
         .unwrap()
@@ -246,12 +235,12 @@ fn archive_dirty_worktree_is_refused_and_kept() {
 }
 
 #[test]
-fn archive_allows_once_then_asks_again_and_removes_worktrees() {
+fn archive_allows_once_then_asks_again_and_keeps_the_worktrees() {
     let (state, project, _own, _dir) = setup("once");
     let (first, first_path) = add_worktree(&state, &project, "archive-once-first");
     let (second, second_path) = add_worktree(&state, &project, "archive-once-second");
     assert!(run_with_answer(&state, "once", &first, PermissionOutcome::AllowOnce, "once").is_ok());
-    assert!(!first_path.exists());
+    assert!(first_path.is_dir());
     assert!(run_with_answer(
         &state,
         "once",
@@ -260,7 +249,7 @@ fn archive_allows_once_then_asks_again_and_removes_worktrees() {
         "once"
     )
     .is_ok());
-    assert!(!second_path.exists());
+    assert!(second_path.is_dir());
     let records = state.sessions.workspace_records(&project).unwrap();
     assert!(!records.iter().any(|w| w.id == first || w.id == second));
 }
@@ -278,9 +267,9 @@ fn archive_session_approval_covers_next_workspace_and_deny_keeps_target() {
         "session"
     )
     .is_ok());
-    assert!(!first_path.exists());
+    assert!(first_path.is_dir());
     assert!(archive_workspace(&state, &state.mcp, "session", &owner(), &second).is_ok());
-    assert!(!second_path.exists());
+    assert!(second_path.is_dir());
 
     let (denied_state, denied_project, _denied_own, _denied_dir) = setup("deny");
     let (denied_target, denied_path) =

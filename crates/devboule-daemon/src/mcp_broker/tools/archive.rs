@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use devboule_protocol::{OwnerId, WorkspaceIsolation};
+use devboule_protocol::OwnerId;
 use serde_json::{json, Value};
 
 use crate::mcp_broker::caller::{audit_mcp_tool, McpCaller};
@@ -213,7 +213,7 @@ fn archive_workspace_audited_with_hook(
     workspace_id: &str,
     mut after_close: impl FnMut(),
 ) -> Result<Value, WorkspaceError> {
-    let target = validate_archive_scope(state, session_id, owner, workspace_id, false)?;
+    let target = validate_archive_scope(state, session_id, owner, workspace_id)?;
     let sessions = live_sessions(state, workspace_id)?;
     let subject = format!("archive workspace {}", quote_title(&target.title));
     let path = crate::verbatim_path::plain_path(&target.path);
@@ -234,7 +234,7 @@ fn archive_workspace_audited_with_hook(
     )
     .map_err(Refused)?;
 
-    validate_archive_scope(state, session_id, owner, workspace_id, true)?;
+    validate_archive_scope(state, session_id, owner, workspace_id)?;
     let _archiving = state
         .sessions
         .mark_workspace_archiving(workspace_id)
@@ -265,10 +265,13 @@ fn archive_workspace_audited_with_hook(
         ));
     }
 
-    validate_archive_scope(state, session_id, owner, workspace_id, true)?;
+    validate_archive_scope(state, session_id, owner, workspace_id)?;
+    // An archive takes the row off the list and keeps the folder: nothing is
+    // deleted here, whatever the isolation. Deleting a worktree stays a
+    // separate act the person takes.
     state
         .sessions
-        .workspace_delete(workspace_id, false)
+        .workspace_archive(workspace_id)
         .map_err(|error| Refused(error.message))?;
     if let Some(caller) = caller {
         for session_id in close_result.audited_session_ids {
@@ -293,7 +296,6 @@ fn validate_archive_scope(
     session_id: &str,
     owner: &OwnerId,
     workspace_id: &str,
-    check_dirty: bool,
 ) -> Result<crate::journal::WorkspaceRecord, WorkspaceError> {
     let (own_workspace_id, project_id) = state
         .sessions
@@ -312,39 +314,7 @@ fn validate_archive_scope(
             "The caller's own workspace cannot be archived.".to_string(),
         ));
     }
-    if target.isolation == WorkspaceIsolation::Local {
-        return Err(Refused(
-            "The local workspace is the project folder and is not removed as a worktree."
-                .to_string(),
-        ));
-    }
-    if check_dirty {
-        let path = std::path::Path::new(&target.path);
-        match crate::worktree::checkout_has_dirty_files(path) {
-            Ok(true) => {
-                return Err(Refused(crate::worktree::worktree_dirty_remove_message(
-                    path,
-                )));
-            }
-            Ok(false) => {}
-            Err(error) => return Err(dirty_check_refusal(error)),
-        }
-    }
     Ok(target)
-}
-
-/// The dirty pre-check's refusal. The worktree family's failures carry git's
-/// stderr, and this one travels in an MCP reply: the repository-level
-/// dubious-ownership refusal is answered with the shared static sentence, so
-/// the repository's absolute path never reaches the calling agent on the
-/// failure every archive approval can hit.
-fn dirty_check_refusal(error: String) -> WorkspaceError {
-    let reason = if crate::workspace_git_support::is_dubious_ownership_message(&error) {
-        crate::workspace_git_support::DUBIOUS_OWNERSHIP.to_string()
-    } else {
-        error
-    };
-    Refused(format!("Could not check worktree status: {reason}"))
 }
 
 fn live_sessions(
