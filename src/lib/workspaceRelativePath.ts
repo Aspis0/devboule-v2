@@ -13,6 +13,12 @@
 const LOCATION_SUFFIX = /:\d+(?::\d+)?$/;
 const DRIVE = /^([A-Za-z]):/;
 const UNC = /^[\\/]{2}/;
+// The Windows verbatim prefix names the same drive path; a verbatim UNC share stays a share.
+const VERBATIM_DRIVE = /^(?:\\\\\?\\|\/\/\?\/)(?=[A-Za-z]:)/;
+
+function withoutVerbatim(path: string): string {
+  return path.replace(VERBATIM_DRIVE, "");
+}
 
 interface Parts {
   drive: string | null;
@@ -43,8 +49,9 @@ function componentsOf(path: string): Parts | null {
   };
 }
 
-export function workspaceRelativePath(path: string, root: string): string | null {
-  const target = path.replace(LOCATION_SUFFIX, "");
+export function workspaceRelativePath(path: string, workspaceRoot: string): string | null {
+  const target = withoutVerbatim(path.replace(LOCATION_SUFFIX, ""));
+  const root = withoutVerbatim(workspaceRoot);
   if (target.startsWith("~") || UNC.test(target) || UNC.test(root)) return null;
   // `C:folder/x` names a place relative to the drive's working folder, not the root.
   if (DRIVE.test(target) && !/^[A-Za-z]:[\\/]/.test(target)) return null;

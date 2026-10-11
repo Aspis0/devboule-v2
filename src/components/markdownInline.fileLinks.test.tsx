@@ -104,47 +104,40 @@ describe("clicking a file link", () => {
       candidate: "src/x.ts:12",
       workspaceRoot: ROOT,
       relativePath: "src/x.ts",
-      absolutePath: "/home/u/repo/src/x.ts",
     },
     {
       candidate: "src/x.ts:12:3",
       workspaceRoot: ROOT,
       relativePath: "src/x.ts",
-      absolutePath: "/home/u/repo/src/x.ts",
     },
     {
       candidate: "src/New folder/a.ts",
       workspaceRoot: ROOT,
       relativePath: "src/New folder/a.ts",
-      absolutePath: "/home/u/repo/src/New folder/a.ts",
     },
     {
       candidate: "/home/u/repo/src/a.ts",
       workspaceRoot: ROOT,
       relativePath: "src/a.ts",
-      absolutePath: "/home/u/repo/src/a.ts",
     },
     {
       candidate: String.raw`C:\Users\u\New folder\repo\src\a.ts`,
       workspaceRoot: String.raw`\\?\C:\Users\u\New folder\repo`,
       relativePath: "src/a.ts",
-      absolutePath: "C:/Users/u/New folder/repo/src/a.ts",
     },
     {
       candidate: String.raw`\\?\C:\Users\u\New folder\repo\src\a.ts`,
       workspaceRoot: String.raw`C:\Users\u\New folder\repo`,
       relativePath: "src/a.ts",
-      absolutePath: "C:/Users/u/New folder/repo/src/a.ts",
     },
     {
       candidate: String.raw`\\?\C:\Users\u\New folder\repo\src\a.ts:12:3`,
       workspaceRoot: String.raw`\\?\C:\Users\u\New folder\repo`,
       relativePath: "src/a.ts",
-      absolutePath: "C:/Users/u/New folder/repo/src/a.ts",
     },
   ])(
-    "preserves the code label and opens its absolute target: $candidate",
-    async ({ candidate, workspaceRoot, relativePath, absolutePath }) => {
+    "preserves the code label and opens it relative to the root: $candidate",
+    async ({ candidate, workspaceRoot, relativePath }) => {
       const open = vi.fn();
       container = document.createElement("div");
       document.body.appendChild(container);
@@ -165,7 +158,7 @@ describe("clicking a file link", () => {
         expect(button.title).toBe(relativePath);
         await act(async () => button.click());
         expect(open).toHaveBeenCalledTimes(1);
-        expect(open).toHaveBeenCalledWith(absolutePath);
+        expect(open).toHaveBeenCalledWith(relativePath);
       } finally {
         await act(async () => root.unmount());
       }
@@ -187,7 +180,7 @@ describe("clicking a file link", () => {
       button.click();
     });
     expect(open).toHaveBeenCalledTimes(1);
-    expect(open).toHaveBeenCalledWith("/home/u/repo/src/a.ts");
+    expect(open).toHaveBeenCalledWith("src/a.ts");
     await act(async () => root.unmount());
   });
 
@@ -195,16 +188,14 @@ describe("clicking a file link", () => {
     {
       candidate: "/home/u/repo/src/a.ts",
       workspaceRoot: ROOT,
-      absolutePath: "/home/u/repo/src/a.ts",
     },
     {
       candidate: "C:\\repo\\src\\a.ts",
       workspaceRoot: "C:\\repo",
-      absolutePath: "C:/repo/src/a.ts",
     },
   ])(
-    "opens the resolved absolute path for prose $candidate",
-    async ({ candidate, workspaceRoot, absolutePath }) => {
+    "opens the path relative to the root for prose $candidate",
+    async ({ candidate, workspaceRoot }) => {
       const open = vi.fn();
       container = document.createElement("div");
       document.body.appendChild(container);
@@ -221,7 +212,7 @@ describe("clicking a file link", () => {
         expect(button.title).toBe("src/a.ts");
         await act(async () => button.click());
         expect(open).toHaveBeenCalledTimes(1);
-        expect(open).toHaveBeenCalledWith(absolutePath);
+        expect(open).toHaveBeenCalledWith("src/a.ts");
       } finally {
         await act(async () => root.unmount());
       }

@@ -5,6 +5,11 @@ import { opensExternally } from "../lib/externalUrl";
 import { isFolderTarget, localPathFromHref } from "../lib/markdownLocalPath";
 import { workspaceRelativePath } from "../lib/workspaceRelativePath";
 
+/** The workspace-relative spelling a candidate path names, or null when it is outside the workspace. */
+function insideRoot(candidate: string, links: ChatFileLinks | null): string | null {
+  return links === null ? null : workspaceRelativePath(candidate, links.root);
+}
+
 /**
  * A `[label](path)` naming a file: a button that opens it when the file is inside
  * the workspace, and the label alone otherwise. An agent's text cannot make the app
@@ -19,7 +24,7 @@ function localPathLink(
 ): ReactNode {
   if (isFolderTarget(path)) return label;
   if (links === null) return <span key={key}>{label}</span>;
-  const relative = workspaceRelativePath(path, links.root);
+  const relative = insideRoot(path, links);
   if (relative === null) {
     return (
       <span key={key} title="Outside this workspace">
@@ -89,20 +94,25 @@ export function inline(text: string, fileLinks?: ChatFileLinks | null): ReactNod
   };
   const pushPlain = (start: number, end: number) => {
     const found = links === null ? null : scanChatFilePaths(text.slice(start, end), links.root);
-    if (found === null || found.length === 0) {
+    // A token outside the workspace is left in the plain text around it.
+    const inside = (found ?? []).flatMap((token) => {
+      const relative = insideRoot(text.slice(start + token.start, start + token.end), links);
+      return relative === null ? [] : [{ token, relative }];
+    });
+    if (inside.length === 0) {
       nodes.push(plain(start, end));
       return;
     }
     let cursor = 0;
-    for (const token of found) {
+    for (const { token, relative } of inside) {
       if (token.start > cursor) nodes.push(plain(start + cursor, start + token.start));
       nodes.push(
         <button
           type="button"
           key={start + token.start}
           className="plan-markdown-file-link"
-          title={token.link.relativePath}
-          onClick={() => links?.open(token.link.absolutePath ?? token.link.relativePath)}
+          title={relative}
+          onClick={() => links?.open(relative)}
         >
           {plain(start + token.start, start + token.end)}
         </button>,
@@ -215,17 +225,18 @@ export function inline(text: string, fileLinks?: ChatFileLinks | null): ReactNod
     const key = index;
     const content = text.slice(contentStart, contentEnd);
     if (kind === "code") {
-      const link = links === null ? null : parseChatCodeFilePath(content, links.root);
+      const displayed = links === null ? null : parseChatCodeFilePath(content, links.root);
+      const relative = displayed === null ? null : insideRoot(content, links);
       nodes.push(
-        link === null ? (
+        relative === null ? (
           <code key={key}>{links === null ? content : content.replace(/\n/g, " ")}</code>
         ) : (
           <code key={key}>
             <button
               type="button"
               className="plan-markdown-file-link"
-              title={link.relativePath}
-              onClick={() => links?.open(link.absolutePath ?? link.relativePath)}
+              title={relative}
+              onClick={() => links?.open(relative)}
             >
               {content}
             </button>

@@ -41,6 +41,32 @@ describe("workspaceRelativePath: outside the root", () => {
   });
 });
 
+describe("workspaceRelativePath: a Windows verbatim drive path", () => {
+  it.each([
+    [
+      String.raw`\\?\C:\Users\u\New folder\repo\src\a.ts`,
+      String.raw`C:\Users\u\New folder\repo`,
+      "src/a.ts",
+    ],
+    [
+      String.raw`C:\Users\u\New folder\repo\src\a.ts`,
+      String.raw`\\?\C:\Users\u\New folder\repo`,
+      "src/a.ts",
+    ],
+    [
+      String.raw`\\?\C:\Users\u\New folder\repo\src\a.ts`,
+      String.raw`\\?\C:\Users\u\New folder\repo`,
+      "src/a.ts",
+    ],
+  ])("maps %s inside the root %s", (path, root, relative) => {
+    expect(workspaceRelativePath(path, root)).toBe(relative);
+  });
+
+  it("still refuses a verbatim UNC share", () => {
+    expect(workspaceRelativePath(String.raw`\\?\UNC\server\share\a.ts`, ROOT)).toBeNull();
+  });
+});
+
 describe("workspaceRelativePath: a POSIX root", () => {
   const POSIX_ROOT = "/home/u/project";
 
