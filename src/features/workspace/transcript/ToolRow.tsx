@@ -87,7 +87,7 @@ export const ToolRow = memo(function ToolRow({
     [item.locations, model.summary],
   );
   // A picture stands under its line, open or closed. A browser call that is not a
-  // screenshot stays bare, as it always has.
+  // screenshot draws no picture.
   const picture =
     item.images !== undefined && item.images.length > 0 && (screenshot || !noOutputRow);
   // Decided from the raw output, so a closed line does not split it to know it has some.

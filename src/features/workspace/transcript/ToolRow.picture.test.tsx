@@ -75,7 +75,7 @@ describe("a tool's picture", () => {
     expect(picture?.querySelector("button")?.getAttribute("aria-label")).toBe("Image 1 of 1");
   });
 
-  it("keeps a browser call that is not a screenshot bare, as before", async () => {
+  it("draws no picture for a browser call that is not a screenshot", async () => {
     await show(tool("browser_click", [IMAGE]));
 
     expect(container.querySelector(".workspace-chat-tool-picture")).toBeNull();
