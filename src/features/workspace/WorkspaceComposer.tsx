@@ -516,6 +516,9 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 
   const queueAvailable = turnActive && queueAllowed && !disabled && onQueue !== undefined;
   const defaultActionQueues = enterQueues && queueAvailable;
+  // The primary button follows Paseo's rule: sendable content is a send, and
+  // Stop takes the slot only for an empty composer while the turn runs.
+  const hasSendableContent = input.trim() !== "" || attachedImages.length > 0 || files.length > 0;
 
   const runDefaultAction = useCallback(() => {
     if (defaultActionQueues) queueInput();
@@ -863,7 +866,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
               </svg>
             </button>
           ) : null}
-          {(streaming || turnActive) && onStop ? (
+          {!hasSendableContent && (streaming || turnActive) && onStop ? (
             <button
               type="button"
               className="workspace-stop-action"

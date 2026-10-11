@@ -1,6 +1,7 @@
 // The composer chrome's look contract: the send control is a button named
-// "Send" that sends, the running turn replaces it with a still-named Stop that
-// interrupts, and the queue action's icon follows its label — the queue mark
+// "Send" that sends; while a turn runs and the composer is empty, that slot is
+// a still-named Stop that interrupts (sendable content makes it Send again),
+// and the queue action's icon follows its label — the queue mark
 // while it queues, the send arrow while the interrupt-and-send default steers. The keys' contract is `WorkspaceComposer.sendKeys.test.tsx`; the trigger
 // labels' proof is the provider·model chip tests in `AgentChatSurface.test.tsx`.
 // @vitest-environment happy-dom
@@ -175,6 +176,21 @@ describe("the send control", () => {
 
     expect(onStop).toHaveBeenCalledTimes(1);
     expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("shows Stop during a running turn only while the composer is empty", async () => {
+    // Paseo's rule: sendable content is a send, and Stop takes the slot only
+    // when there is nothing to send and the turn runs.
+    await renderComposer({ streaming: false, turnActive: true });
+    expect(container.querySelector(".workspace-stop-action")).not.toBeNull();
+    expect(container.querySelector(".workspace-send-action")).toBeNull();
+
+    await drive.type("steer this");
+
+    expect(container.querySelector(".workspace-stop-action")).toBeNull();
+    const send = container.querySelector<HTMLButtonElement>(".workspace-send-action");
+    if (send === null) throw new Error("send button did not render");
+    expect(send.getAttribute("aria-label")).toBe("Send");
   });
 
   it("stays disabled with an empty composer", async () => {
