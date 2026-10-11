@@ -288,10 +288,13 @@
   background: var(--fill-hover);
 }
 
+/* The rows sit under their project's name, indented, so a workspace that
+   shares the project's name reads as a child, not a second project. */
 .workspace-project-items {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+  margin-left: var(--space-8);
 }
 
 .workspace-row {
