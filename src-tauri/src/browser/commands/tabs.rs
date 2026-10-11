@@ -135,7 +135,7 @@ async fn new_tab(
         &workspace,
         Channel::new(|_| Ok(())),
         deadline,
-        Arc::new(AgentDrive::opened_by_agent()),
+        Arc::new(AgentDrive::opened_by_agent(&caller.local_ports)),
     )
     .await
     .map_err(|error| host_error(format!("This address could not be opened: {error}")))?;

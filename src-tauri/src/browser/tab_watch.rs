@@ -24,7 +24,10 @@ impl TabWatch {
     /// agent opened or acted on is the agent's even while a person is looking
     /// at it; a tab no agent has touched is never checked.
     pub(super) fn blocked(&self, candidate: &Url) -> Option<String> {
-        match self.policy.admit(candidate, self.drive.audience()) {
+        match self
+            .policy
+            .admit_for(candidate, self.drive.audience(), &self.drive.local_ports())
+        {
             Ok(()) => None,
             Err(blocked) => {
                 self.drive.note_refusal(blocked.message().to_string());

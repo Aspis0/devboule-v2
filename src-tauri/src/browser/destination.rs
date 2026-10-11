@@ -157,9 +157,15 @@ impl DestinationPolicy {
         Self::new(allowlist, Arc::new(SystemResolver))
     }
 
-    /// The one verdict. A person is never checked; an agent's URL is refused
-    /// unless the person allowed its exact host and port.
-    pub fn admit(&self, url: &Url, audience: Audience) -> Result<(), Blocked> {
+    /// The one verdict. A person is never checked. An agent's URL is refused
+    /// unless the person allowed its exact host and port, or it names this
+    /// machine at a port the daemon allowed the agent (`local_ports`).
+    pub fn admit_for(
+        &self,
+        url: &Url,
+        audience: Audience,
+        local_ports: &[u16],
+    ) -> Result<(), Blocked> {
         if audience == Audience::Person {
             return Ok(());
         }
@@ -178,12 +184,12 @@ impl DestinationPolicy {
             )));
         }
         // The host itself, before any lookup: every spelling a resolver would
-        // accept as an address is decided here. The agent's own machine is
-        // open by default (its dev server, the page it is building); see
-        // `is_own_machine` for why a name that answers with loopback is not.
+        // accept as an address is decided here. This machine is open only at the
+        // ports the daemon allowed (`local_verdict`); see `is_own_machine` for why
+        // a name that answers with loopback is never this machine.
         if let Some(address) = literal_address(host) {
             if is_own_machine(address) {
-                return Ok(());
+                return local_verdict(host, port, local_ports);
             }
             if let Some(blocked) = blocked_for(address, host, port) {
                 return Err(blocked);
@@ -196,7 +202,7 @@ impl DestinationPolicy {
             )));
         }
         if is_localhost(host) {
-            return Ok(());
+            return local_verdict(host, port, local_ports);
         }
         let key = (normalise_host(host), port);
         if let Some((expires, blocked)) = self
@@ -260,11 +266,21 @@ impl DestinationPolicy {
     }
 }
 
+/// The verdict for this machine, when the agent may open it at `port` only if the
+/// daemon allowed that port for the agent.
+fn local_verdict(host: &str, port: u16, local_ports: &[u16]) -> Result<(), Blocked> {
+    if local_ports.contains(&port) {
+        return Ok(());
+    }
+    Err(Blocked::new(format!(
+        "{host}:{port} is this machine, and the agent has not been allowed that port; ask the person to allow localhost:{port} for this session."
+    )))
+}
+
 /// The agent's own machine: the loopback addresses, IPv4 and IPv6, mapped
-/// IPv4 included. It is open to agent browsing by default, because an agent
-/// already runs commands on this machine and the page it is building lives
-/// here. A **name** that answers with loopback is not this: `resolve` still
-/// refuses it, so a public host cannot be rebound onto a local service.
+/// IPv4 included. A **name** that answers with loopback is not this machine:
+/// `resolve` still refuses it, so a public host cannot be rebound onto a local
+/// service.
 fn is_own_machine(address: IpAddr) -> bool {
     match address {
         IpAddr::V4(address) => address.is_loopback(),

@@ -261,7 +261,9 @@ pub async fn dispatch(
     if let Some(raw) = agent_named_url(command, &request.args) {
         let target =
             super::url::accept(raw).map_err(|error| refused(BrowserErrorCode::HostError, error))?;
-        if let Err(blocked) = policy_of(app).admit(&target, Audience::Agent) {
+        if let Err(blocked) =
+            policy_of(app).admit_for(&target, Audience::Agent, &request.caller.local_ports)
+        {
             return Err(host_error(blocked.message().to_string()));
         }
     }
@@ -298,6 +300,11 @@ pub async fn dispatch(
     // Every navigation this command causes is agent-driven until it answers,
     // whatever the pane is showing; the page's own hook reads this hold.
     let drive = registry.drive_of(&browser_id);
+    // The ports the daemon allowed this agent now bound the tab's later
+    // navigations too, not only the one this command names.
+    if let Some(drive) = drive.as_ref() {
+        drive.note_local_ports(&request.caller.local_ports);
+    }
     let _driving = drive.as_ref().map(|drive| drive.begin());
     let page = WebviewPage::new(app, &tab.label);
     let outcome = match routed(command) {

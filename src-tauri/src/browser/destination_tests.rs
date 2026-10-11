@@ -73,7 +73,11 @@ fn policy(resolver: Arc<dyn Resolver>) -> DestinationPolicy {
 }
 
 fn admit(policy: &DestinationPolicy, raw: &str) -> Result<(), Blocked> {
-    policy.admit(&Url::parse(raw).expect("a fixture URL"), Audience::Agent)
+    policy.admit_for(
+        &Url::parse(raw).expect("a fixture URL"),
+        Audience::Agent,
+        &[],
+    )
 }
 
 const PUBLIC: &str = "93.184.216.34";
@@ -161,25 +165,36 @@ fn dns_rebind_second_address_refused() {
     assert!(admit(&policy, "http://rebind-ok.test/").is_ok());
 }
 
+/// The agent's own machine is open only at the ports the daemon allowed the
+/// agent (review fix: loopback was open to every agent on every port). Every
+/// spelling of loopback is decided the same way, and a port not in the list is
+/// refused whatever the spelling.
 #[test]
-fn the_agents_own_machine_is_open_by_default() {
+fn the_agents_own_machine_is_open_only_at_its_allowed_ports() {
     let policy = policy(FakeResolver::new(&[]));
     for raw in [
         "http://127.0.0.1:4173/",
-        "http://127.0.0.1/",
-        "http://127.1/",
-        "http://2130706433/",
-        "http://0x7f000001/",
-        "http://0177.0.0.1/",
-        "http://localhost/",
         "https://localhost:4173/",
         "http://sub.localhost:4173/",
         "http://[::1]:4173/",
-        "http://[::ffff:127.0.0.1]/",
+        "http://[::ffff:127.0.0.1]:4173/",
+        "http://2130706433:4173/",
+        "http://0x7f000001:4173/",
+        "http://0177.0.0.1:4173/",
+        "http://127.1:4173/",
     ] {
+        let url = Url::parse(raw).expect("a fixture URL");
         assert!(
-            admit(&policy, raw).is_ok(),
-            "{raw} is the agent's own machine"
+            policy.admit_for(&url, Audience::Agent, &[4173]).is_ok(),
+            "{raw} is allowed at its port"
+        );
+        assert!(
+            policy.admit_for(&url, Audience::Agent, &[]).is_err(),
+            "{raw} is refused when nothing is allowed"
+        );
+        assert!(
+            policy.admit_for(&url, Audience::Agent, &[5173]).is_err(),
+            "{raw} is refused at another port"
         );
     }
 }
@@ -228,7 +243,7 @@ fn person_driven_tab_unchanged() {
     ] {
         let url = Url::parse(raw).expect("a fixture URL");
         assert!(
-            policy.admit(&url, Audience::Person).is_ok(),
+            policy.admit_for(&url, Audience::Person, &[]).is_ok(),
             "{raw} is the person's to open"
         );
     }

@@ -17,7 +17,7 @@ fn url(raw: &str) -> Url {
 
 #[test]
 fn a_page_an_agent_opened_cannot_script_its_way_to_the_metadata_service() {
-    let drive = Arc::new(AgentDrive::opened_by_agent());
+    let drive = Arc::new(AgentDrive::opened_by_agent(&[]));
     let watch = watch_of(&drive);
     assert!(!drive.in_flight(), "no agent command is running");
     assert!(watch.blocked(&url(METADATA)).is_some());
@@ -45,7 +45,7 @@ fn a_page_an_agent_navigated_stays_checked_after_the_command_returns() {
 
 #[test]
 fn the_persons_own_address_bar_hands_the_tab_back() {
-    let drive = Arc::new(AgentDrive::opened_by_agent());
+    let drive = Arc::new(AgentDrive::opened_by_agent(&[]));
     let watch = watch_of(&drive);
     drive.clear_taint();
     assert!(watch.blocked(&url(PRIVATE_PORT)).is_none());
@@ -69,7 +69,7 @@ fn a_tab_only_the_person_used_is_never_checked() {
 
 #[test]
 fn a_frame_of_an_agent_tab_is_checked_like_a_navigation() {
-    let drive = Arc::new(AgentDrive::opened_by_agent());
+    let drive = Arc::new(AgentDrive::opened_by_agent(&[]));
     let watch = watch_of(&drive);
     assert!(watch.blocked_frame(METADATA).is_some());
     assert!(watch.blocked_frame("http://[fe80::1]:8080/").is_some());
@@ -81,7 +81,7 @@ fn a_frame_of_an_agent_tab_is_checked_like_a_navigation() {
 
 #[test]
 fn frames_that_carry_their_own_content_are_not_destinations() {
-    let drive = Arc::new(AgentDrive::opened_by_agent());
+    let drive = Arc::new(AgentDrive::opened_by_agent(&[]));
     let watch = watch_of(&drive);
     for raw in ["about:blank", "about:srcdoc", "data:text/html,hi"] {
         assert!(watch.blocked_frame(raw).is_none(), "{raw}");

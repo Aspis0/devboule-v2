@@ -106,16 +106,35 @@ pub struct AgentDrive {
     /// person navigates that tab themselves.
     tainted: AtomicBool,
     refusal: Mutex<Option<String>>,
+    /// The local ports the daemon last allowed the agent that drives this tab.
+    /// A navigation the page makes later is judged against the same list.
+    local_ports: Mutex<Vec<u16>>,
 }
 
 impl AgentDrive {
     /// The drive of a tab an agent creates: tainted from the first byte it
     /// loads, so the page's own redirects are already the agent's to police.
-    pub fn opened_by_agent() -> Self {
+    pub fn opened_by_agent(local_ports: &[u16]) -> Self {
         Self {
             tainted: AtomicBool::new(true),
+            local_ports: Mutex::new(local_ports.to_vec()),
             ..Self::default()
         }
+    }
+
+    /// The local ports the daemon allowed the agent on its latest command.
+    pub fn note_local_ports(&self, local_ports: &[u16]) {
+        *self
+            .local_ports
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = local_ports.to_vec();
+    }
+
+    pub fn local_ports(&self) -> Vec<u16> {
+        self.local_ports
+            .lock()
+            .map(|ports| ports.clone())
+            .unwrap_or_default()
     }
 
     /// Count an agent command for as long as the guard lives, and mark the tab
