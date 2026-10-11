@@ -44,7 +44,7 @@ describe("devbouleToolLine", () => {
       runMs: 217_000,
     });
     expect(devbouleToolLine(call("devboule_stop_agent", output))).toBe(
-      "Stopped Finish Kalsa website (3m 37s)",
+      "Stopped Finish Kalsa website · 3m 37s",
     );
   });
 
@@ -54,12 +54,21 @@ describe("devbouleToolLine", () => {
     ).toBe("Stopped Finish Kalsa website");
   });
 
-  it("reads a cancel and a create in the same plain shape", () => {
+  it("reads a cancel plainly and a create as the agent's start, with its name", () => {
     expect(devbouleToolLine(call("devboule_cancel_agent", '{"displayName":"Kid"}'))).toBe(
       "Canceled Kid",
     );
     expect(devbouleToolLine(call("devboule_create_agent", '{"displayName":"Kid"}'))).toBe(
-      "Created Kid",
+      "Started agent · Kid",
+    );
+    expect(
+      devbouleToolLine(call("devboule_create_agent", '{"displayName":"Kid"}'), "running"),
+    ).toBe("Starting agent · Kid");
+  });
+
+  it("reads a failed create as a sentence that names no agent, since the call has none", () => {
+    expect(devbouleToolLine(call("devboule_create_agent", ""), "failed")).toBe(
+      "Couldn't start the agent",
     );
   });
 

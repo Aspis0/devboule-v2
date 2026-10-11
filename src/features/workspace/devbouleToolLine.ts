@@ -4,9 +4,10 @@ import type { ToolPhase } from "./toolRowDisplay";
 
 /**
  * The one line a Devboule agent tool reads as: its verb, the agent it touched and
- * what that came to. The raw result stays behind the line's click. A call's
- * title is the tool's name, optionally with its Claude or MCP qualifier, and any
- * words after the name are the agent's name when the result names none.
+ * what that came to. The raw result stays behind the line's click, except a
+ * created agent's, which the chat never shows. A call's title is the tool's name,
+ * optionally with its Claude or MCP qualifier, and any words after the name are
+ * the agent's name when the result names none.
  */
 
 type Family = "activity" | "send" | "create" | "cancel" | "stop";
@@ -19,12 +20,27 @@ const FAMILY_BY_NAME = new Map<string, Family>([
   ["stop_agent", "stop"],
 ]);
 
-const VERBS: Record<Family, { done: string; running: string }> = {
-  activity: { done: "Checked", running: "Checking" },
-  send: { done: "Sent a message to", running: "Sending a message to" },
-  create: { done: "Created", running: "Creating" },
-  cancel: { done: "Canceled", running: "Canceling" },
-  stop: { done: "Stopped", running: "Stopping" },
+const VERBS: Record<Family, Record<ToolPhase, string>> = {
+  activity: {
+    done: "Checked",
+    running: "Checking",
+    cancelled: "Checked",
+    failed: "Couldn't check",
+  },
+  send: {
+    done: "Sent a message to",
+    running: "Sending a message to",
+    cancelled: "Sent a message to",
+    failed: "Couldn't send a message to",
+  },
+  create: { done: "Started", running: "Starting", cancelled: "Started", failed: "Couldn't start" },
+  cancel: {
+    done: "Canceled",
+    running: "Canceling",
+    cancelled: "Canceled",
+    failed: "Couldn't cancel",
+  },
+  stop: { done: "Stopped", running: "Stopping", cancelled: "Stopped", failed: "Couldn't stop" },
 };
 
 const QUALIFIER = /^(?:mcp__devboule__)?(?:devboule_)?/;
@@ -75,6 +91,11 @@ function resultActivity(result: Result | null): string | undefined {
   return typeof value === "string" && ACTIVITY_STATES.has(value) ? value : undefined;
 }
 
+/** The activity a check call's result reports, or undefined when it reports none. */
+export function devbouleActivity(output: string): string | undefined {
+  return resultActivity(parseResult(output));
+}
+
 /** The tool's name, and the words after it in the title. */
 function splitTitle(title: string): { name: string; rest: string } {
   const bare = title.trim().replace(QUALIFIER, "");
@@ -97,15 +118,27 @@ export function devbouleToolLine(
   const family = FAMILY_BY_NAME.get(name);
   if (family === undefined) return undefined;
   const result = parseResult(item.output);
-  const agent = resultName(result) ?? (rest === "" ? UNNAMED_AGENT : rest);
-  const verb = VERBS[family][phase === "running" ? "running" : "done"];
+  const named = resultName(result) ?? (rest === "" ? undefined : rest);
+  if (family === "create") {
+    if (phase === "failed") return "Couldn't start the agent";
+    const head = `${phase === "running" ? "Starting" : "Started"} agent`;
+    return named === undefined ? head : `${head} · ${named}`;
+  }
+  const agent = named ?? UNNAMED_AGENT;
+  const verb = VERBS[family][phase];
   if (family === "activity") {
     const activity = resultActivity(result);
+    if (activity === "blocked") return `${agent} is blocked`;
     return activity === undefined ? `${verb} ${agent}` : `${verb} ${agent}: ${activity}`;
   }
   if (family === "stop") {
     const took = resultDuration(result);
-    return took === null ? `${verb} ${agent}` : `${verb} ${agent} (${took})`;
+    return took === null ? `${verb} ${agent}` : `${verb} ${agent} · ${took}`;
   }
   return `${verb} ${agent}`;
+}
+
+/** Whether a Devboule call's raw result may be opened behind its line. A created agent's result is never shown. */
+export function devbouleShowsOutput(title: string): boolean {
+  return FAMILY_BY_NAME.get(splitTitle(title).name) !== "create";
 }

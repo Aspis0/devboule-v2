@@ -661,7 +661,7 @@ describe("AgentChatSurface", () => {
       throw new Error("both thought rows did not render");
     }
     expect(completedRow.querySelector(".workspace-chat-thought-label")?.textContent).toBe(
-      "Thinking",
+      "Thought",
     );
     expect(completedRow.textContent).not.toContain("Checking the config loader");
     expect(streamingRow.querySelector(".workspace-chat-thought-status")?.textContent).toBe("…");
@@ -2639,7 +2639,7 @@ describe("AgentChatSurface", () => {
       "402 Payment Required",
     );
     expect(container.querySelector('[role="alert"] .workspace-chat-label')).toBeNull();
-    const errorLine = container.querySelector(".workspace-chat-error-line");
+    const errorLine = container.querySelector('[role="alert"] .workspace-chat-quiet-line');
     expect(errorLine?.querySelector('svg[aria-hidden="true"] path')?.getAttribute("d")).toBe(
       "M6 1.6 11 10.4H1Z",
     );
@@ -2673,7 +2673,9 @@ describe("AgentChatSurface", () => {
     // The component hard-codes the class; only a computed style proves the
     // sheet still answers it — a rename renders the replaced default box.
     workspaceCss.inject([".workspace-error-line-icon"]);
-    const icon = container.querySelector<SVGElement>(".workspace-chat-error-line svg");
+    const icon = container.querySelector<SVGElement>(
+      '[role="alert"] .workspace-chat-quiet-line svg',
+    );
     if (icon === null) throw new Error("the transcript error icon did not render");
     const style = getComputedStyle(icon);
     expect(style.width).toBe("12px");
@@ -4506,7 +4508,7 @@ describe("creator daemon notice cards", () => {
     expect(item).not.toBeNull();
     // The line names the event; the sentence and the child's words wait behind it.
     const copy = item?.querySelector(".workspace-chat-activity-line");
-    expect(copy?.textContent).toBe("Message from worker one · completed");
+    expect(copy?.textContent).toBe("worker one finished · completed");
     const sentence = item?.querySelector(
       ".workspace-chat-activity-body .workspace-chat-activity-quote:not(.is-child)",
     );
@@ -4632,7 +4634,7 @@ describe("creator daemon notice cards", () => {
     expect(item?.textContent).not.toContain("<devboule-system>");
   });
 
-  it("renders the idle-close notice as the daemon's fact: the child, and closed: idle after N minutes", async () => {
+  it("draws no row for an idle-close notice: the child's close is not news to the person", async () => {
     await renderEnvelope(
       [
         "<devboule-system>",
@@ -4649,11 +4651,9 @@ describe("creator daemon notice cards", () => {
         "</devboule-system>",
       ].join("\n"),
     );
-    const item = container.querySelector("[data-testid='agent-daemon-notice']");
-    const copy = item?.querySelector(".workspace-chat-activity-line")?.textContent ?? "";
-    expect(copy).toBe("Closed worker one · idle 30 minutes");
-    expect(item?.querySelector(".workspace-chat-activity-quote.is-child")).toBeNull();
-    expect(item?.textContent).not.toContain("<devboule-system>");
+    expect(container.querySelector("[data-testid='agent-daemon-notice']")).toBeNull();
+    expect(container.textContent).not.toContain("Closed worker one");
+    expect(container.textContent).not.toContain("<devboule-system>");
   });
 
   it("renders the input-required notice as the daemon's fact, without a quoted block", async () => {

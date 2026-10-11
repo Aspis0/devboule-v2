@@ -57,9 +57,28 @@ const MAX_HUMANIZED_LENGTH = 128;
  * Each word is case-mapped only when that keeps its code-point count,
  * otherwise its letters stay as sent, and only the first code point is
  * uppercased. */
+// A Devboule tool's first word, in the past tense its row reads in.
+const DEVBOULE_PAST_TENSE: Record<string, string> = {
+  archive: "Archived",
+  close: "Closed",
+  create: "Created",
+  list: "Listed",
+  open: "Opened",
+  remove: "Removed",
+  rename: "Renamed",
+  set: "Set",
+  update: "Updated",
+};
+
+const DEVBOULE_TOOL_NAME = /^(?:mcp__devboule__)?devboule_/;
+
 export function humanizeToolName(name: string): string {
   const trimmed = name.trim();
   if (!trimmed) return name;
+  if (DEVBOULE_TOOL_NAME.test(trimmed)) {
+    const [first = "", ...others] = trimmed.replace(DEVBOULE_TOOL_NAME, "").split("_");
+    return humanizeToolName([DEVBOULE_PAST_TENSE[first] ?? first, ...others].join(" "));
+  }
   if (trimmed.length > MAX_HUMANIZED_LENGTH) return trimmed;
   if (/[:./]/.test(trimmed) || trimmed.includes("__")) return trimmed;
   const words: string[] = [];
@@ -170,7 +189,7 @@ export function toolPathText(path: string): string {
   return path.replaceAll("\\", "/");
 }
 
-export type ToolPhase = "done" | "running" | "cancelled";
+export type ToolPhase = "done" | "running" | "cancelled" | "failed";
 
 export function toolRowDisplay(item: ToolItem, phase: ToolPhase = "done"): ToolRowModel {
   const kind = item.kind?.trim().toLowerCase();

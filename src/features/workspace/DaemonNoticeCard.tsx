@@ -39,10 +39,9 @@ function minutesSpan(minutes: number): string {
 /** The line: the event in a few words, the child's name first. */
 function recognizedSummary(notice: Extract<DaemonNotice, { recognized: true }>): string {
   const child = childReference(notice);
+  // A finish that names its state keeps it: "finished" over a failure would be a lie.
   if (notice.kind === "agent_finished") {
-    return notice.state === null
-      ? `Message from ${child}`
-      : `Message from ${child} · ${notice.state}`;
+    return notice.state === null ? `${child} finished` : `${child} finished · ${notice.state}`;
   }
   if (notice.kind === "agent_input_required") return `${child} needs an answer`;
   if (notice.kind === "agent_idle_closed") {

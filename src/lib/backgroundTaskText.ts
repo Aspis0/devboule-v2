@@ -45,6 +45,34 @@ export function taskRowText(task: SessionTask): string {
   return parts.join(" · ");
 }
 
+export interface SettledAgentRow {
+  state: "finished" | "failed" | "stopped";
+  title: string;
+  /** The run's compact duration (`7m`, `45s`), absent when the row named none. */
+  took?: string;
+}
+
+const SETTLED_AGENT_ROW = /^Background agent (finished|failed|stopped) · (.+?)(?: · took (.+))?$/;
+
+/** The inverse of `taskRowText` for an agent's settled row; null for any other text. */
+export function parseSettledAgentRow(text: string): SettledAgentRow | null {
+  const match = SETTLED_AGENT_ROW.exec(text);
+  if (match === null) return null;
+  const [, state, title, took] = match;
+  // A zero unit is noise on a quiet line: `7m 0s` reads as `7m`.
+  return {
+    state: state as SettledAgentRow["state"],
+    title,
+    ...(took === undefined ? {} : { took: took.replace(/\s0[sm]$/, "") }),
+  };
+}
+
+/** The quiet line a settled agent row reads as: `Explore auth finished · 7m`. */
+export function settledAgentLineText(row: SettledAgentRow): string {
+  if (row.state === "stopped" || row.took === undefined) return `${row.title} ${row.state}`;
+  return `${row.title} ${row.state} · ${row.took}`;
+}
+
 /** The word a task's row carries beside its title. */
 export function taskStateWord(state: SessionTask["state"]): string {
   switch (state) {

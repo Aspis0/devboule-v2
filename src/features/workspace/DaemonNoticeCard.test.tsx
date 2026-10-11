@@ -107,7 +107,7 @@ function copyText(): string | null | undefined {
 describe("the finish report's header", () => {
   it("names the child and its state as a message from the subagent", async () => {
     await render(itemFrom(finish({ summary: ["ok"] })));
-    expect(copyText()).toBe("Message from worker one · completed");
+    expect(copyText()).toBe("worker one finished · completed");
     expect(host.querySelector(".workspace-chat-activity-line")?.getAttribute("title")).toBe(
       "worker one · s.child.7 · state: completed",
     );
@@ -115,7 +115,7 @@ describe("the finish report's header", () => {
 
   it("leaves the state out when the frame carries none", async () => {
     await render(itemFrom(finish({ state: null, summary: ["ok"] })));
-    expect(copyText()).toBe("Message from worker one");
+    expect(copyText()).toBe("worker one finished");
   });
 
   it("draws the event as one closed line, its sentence and the child's words behind the click", async () => {

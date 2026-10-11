@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { RECOVERED_SESSION_UNAVAILABLE, type AgentChatItem } from "../../../lib/agentSession";
 import { groupToolCalls, isToolCallGroup, type ToolCallGroup } from "../../../lib/toolCallGroups";
-import { isAgentTraffic } from "./agentTraffic";
+import { dropDuplicateFinishNotices, isAgentTraffic } from "./agentTraffic";
+import { dropRecoveredFailures } from "./recoveredFailures";
 
 /** One quiet line per event group: the daemon announces a compaction twice
  * (start, then finish), and only the finish earns a row. Exact strings — a
@@ -44,10 +45,16 @@ function deriveEntries(
   recoveredAttach: boolean,
   previous: readonly (AgentChatItem | ToolCallGroup)[],
 ) {
-  const visibleItems = items.filter(
-    (item) =>
-      !isAgentTraffic(item) &&
-      (!recoveredAttach || item.role !== "error" || item.text !== RECOVERED_SESSION_UNAVAILABLE),
+  const visibleItems = dropDuplicateFinishNotices(
+    dropRecoveredFailures(
+      items.filter(
+        (item) =>
+          !isAgentTraffic(item) &&
+          (!recoveredAttach ||
+            item.role !== "error" ||
+            item.text !== RECOVERED_SESSION_UNAVAILABLE),
+      ),
+    ),
   );
   return groupToolCalls(collapseCompactNotices(visibleItems), previous).filter(
     (entry) => isToolCallGroup(entry) || !(entry.role === "tool" && entry.kind === "plan"),

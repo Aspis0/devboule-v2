@@ -6,9 +6,10 @@ import { MarkdownText } from "../../../components/MarkdownText";
 import { A2aMessageCard, type A2aNameSource } from "../A2aMessageCard";
 import { A2aOutgoingMessageCard } from "../A2aOutgoingMessageCard";
 import { DaemonNoticeCard } from "../DaemonNoticeCard";
-import { ErrorTriangleIcon } from "../ErrorTriangleIcon";
+import { parseSettledAgentRow, settledAgentLineText } from "../../../lib/backgroundTaskText";
 import { ThoughtRow } from "../ThoughtRow";
 import { entryFrame } from "./entryFrame";
+import { QuietLine } from "./QuietLine";
 import { ChatImageThumbnails } from "./ChatImageThumbnails";
 import { PermissionRequestRow } from "./PermissionRequestRow";
 import { ToolCallGroupRow } from "./ToolCallGroupRow";
@@ -45,15 +46,14 @@ export const TranscriptRow = memo(function TranscriptRow({
   if (isToolCallGroup(item)) {
     return <ToolCallGroupRow group={item} transcriptEnded={transcriptEnded} />;
   }
-  const { className, style, isSubagent, measuredDepth } = entryFrame(item);
+  const { className, style } = entryFrame(item);
   if (item.role === "tool") {
     return <ToolRow item={item} transcriptEnded={transcriptEnded} />;
   }
   if (item.role === "thought") {
-    const depthCopy = isSubagent && measuredDepth === null ? " · depth unavailable" : "";
     return (
       <ThoughtRow
-        label={isSubagent ? `Subagent thinking${depthCopy}` : "Thinking"}
+        label={isStreamingThought ? "Thinking" : "Thought"}
         className={className}
         style={style}
         text={item.text}
@@ -70,6 +70,14 @@ export const TranscriptRow = memo(function TranscriptRow({
         </div>
       );
     }
+    const settled = parseSettledAgentRow(item.text);
+    if (settled !== null) {
+      return (
+        <div className={className} style={style}>
+          <QuietLine failed={settled.state === "failed"}>{settledAgentLineText(settled)}</QuietLine>
+        </div>
+      );
+    }
     return (
       <div className={className} data-severity={item.severity} style={style}>
         <div className="workspace-chat-copy">{item.text}</div>
@@ -83,11 +91,16 @@ export const TranscriptRow = memo(function TranscriptRow({
   if (item.role === "error") {
     return (
       <div className={className} role="alert" style={style}>
-        <div className="workspace-chat-error-line">
-          <ErrorTriangleIcon />
-          <span className="workspace-chat-copy">{item.text}</span>
-        </div>
-        {item.detail ? <div className="workspace-chat-error-detail">{item.detail}</div> : null}
+        <QuietLine
+          failed
+          detail={
+            item.detail ? (
+              <div className="workspace-chat-error-detail">{item.detail}</div>
+            ) : undefined
+          }
+        >
+          {item.text}
+        </QuietLine>
       </div>
     );
   }
@@ -110,12 +123,7 @@ export const TranscriptRow = memo(function TranscriptRow({
     );
   }
   return (
-    <div
-      className={className}
-      data-message-id={item.messageId ?? undefined}
-      style={style}
-      title={isSubagent && measuredDepth === null ? "Subagent depth unavailable" : undefined}
-    >
+    <div className={className} data-message-id={item.messageId ?? undefined} style={style}>
       {item.text.length > 0 ? (
         <div className="workspace-chat-copy">
           <MarkdownText text={item.text} fileLinks={fileLinks} />

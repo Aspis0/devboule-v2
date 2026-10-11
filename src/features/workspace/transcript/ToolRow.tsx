@@ -3,9 +3,10 @@ import type { ToolChatItem } from "../../../lib/toolCallGroups";
 import { hideUntrustedFrame } from "../../../lib/untrustedFrame";
 import { ExternalLink } from "../../../components/ExternalLink";
 import { MarkdownText } from "../../../components/MarkdownText";
-import { toolPathText, toolRowDisplay } from "../toolRowDisplay";
-import { devbouleToolLine } from "../devbouleToolLine";
+import { toolPathText, toolRowDisplay, type ToolPhase } from "../toolRowDisplay";
+import { devbouleShowsOutput, devbouleToolLine } from "../devbouleToolLine";
 import { AgentIcon } from "../ActivityRow";
+import { ErrorTriangleIcon } from "../ErrorTriangleIcon";
 import { CommandChip, ExitMarker } from "../CommandRow";
 import {
   INTERRUPTED_TOOL_CLASS,
@@ -36,12 +37,20 @@ export const ToolRow = memo(function ToolRow({
   const running = isToolRunningStatus(item.status) && !interrupted;
   const status = item.status.toLowerCase();
   const cancelled = status === "cancelled" || status === "canceled";
-  const phase = running ? "running" : cancelled ? "cancelled" : "done";
+  const failed = item.kind !== "plan" && isFailedToolCall(item);
+  const phase: ToolPhase = running
+    ? "running"
+    : cancelled
+      ? "cancelled"
+      : failed
+        ? "failed"
+        : "done";
   const model = useMemo(() => toolRowDisplay(item, phase), [item, phase]);
   // Devboule's own agent calls read as one sentence; their raw result waits behind the click.
   const devboule = useMemo(() => devbouleToolLine(item, phase), [item, phase]);
+  const showsOutput = devboule === undefined || devbouleShowsOutput(item.title);
+  const shownOutput = showsOutput ? item.output : "";
   const linkUrl = model.linkUrl;
-  const failed = item.kind !== "plan" && isFailedToolCall(item);
   const isPlan = item.kind === "plan";
   const planDecision =
     isPlan && ["Approved", "Rejected", "Withdrawn"].includes(item.title) ? item.title : undefined;
@@ -59,8 +68,8 @@ export const ToolRow = memo(function ToolRow({
   // The output is split only for a line the person opened.
   const needsLines = opened && !quiet;
   const lines = useMemo(
-    () => (needsLines ? outputLines(hideUntrustedFrame(item.output)) : []),
-    [item.output, needsLines],
+    () => (needsLines ? outputLines(hideUntrustedFrame(shownOutput)) : []),
+    [shownOutput, needsLines],
   );
   const isEdit = item.kind === "edit" || item.kind === "delete";
   // A file row's summary is the path itself, so it prints with forward slashes.
@@ -82,7 +91,7 @@ export const ToolRow = memo(function ToolRow({
   const picture = screenshot && hasImages;
   const bodyImages = hasImages && !picture && !noOutputRow;
   // Decided from the raw output, so a closed line does not split it to know it has some.
-  const bodyOutput = !isPlan && !quiet && item.output.trim().length > 0;
+  const bodyOutput = !isPlan && !quiet && shownOutput.trim().length > 0;
   const hasBody =
     linkUrl !== undefined ||
     locations.length > 0 ||
@@ -92,7 +101,13 @@ export const ToolRow = memo(function ToolRow({
   const toolClassName = `${className}${isPlan ? " is-plan" : ""}${running ? " is-running" : ""}${failed ? " is-failed" : ""}${cancelled ? " is-cancelled" : ""}${interrupted ? ` ${INTERRUPTED_TOOL_CLASS}` : ""}`;
   const line: ReactNode = (
     <>
-      {devboule !== undefined ? <AgentIcon /> : <ToolIcon kind={item.kind} title={item.title} />}
+      {failed ? (
+        <ErrorTriangleIcon />
+      ) : devboule !== undefined ? (
+        <AgentIcon />
+      ) : (
+        <ToolIcon kind={item.kind} title={item.title} />
+      )}
       {devboule !== undefined ? (
         <span className="workspace-chat-tool-text">
           <span className="workspace-chat-tool-label is-sentence" title={devboule}>
@@ -128,7 +143,14 @@ export const ToolRow = memo(function ToolRow({
       {interrupted ? (
         <span className="workspace-chat-tool-interrupted">{INTERRUPTED_TOOL_COPY}</span>
       ) : null}
-      {failed ? <span className="workspace-chat-tool-failed">failed</span> : null}
+      {failed && devboule === undefined ? (
+        <>
+          <span className="workspace-chat-tool-sep" aria-hidden="true">
+            ·
+          </span>
+          <span className="workspace-chat-tool-failed">failed</span>
+        </>
+      ) : null}
       {running ? (
         <span className="workspace-chat-tool-running" role="img" aria-label="Running" />
       ) : null}
