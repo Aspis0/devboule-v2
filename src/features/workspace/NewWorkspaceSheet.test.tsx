@@ -160,6 +160,18 @@ describe("the new-workspace sheet's groups", () => {
     expect(isChosen("Project", "p-1")).toBe(true);
   });
 
+  it("keeps Create disabled, and submits nothing, when the preset project's host is offline", async () => {
+    const { onCreate } = await render({
+      presetProjectId: "p-mac",
+      pairedHosts: [{ id: "device-mac", name: "MacBookPro.lan", online: false }],
+    });
+
+    expect(isChosen("Where", "device-mac")).toBe(true);
+    expect(createButton().disabled).toBe(true);
+    await submit();
+    expect(onCreate).not.toHaveBeenCalled();
+  });
+
   it("asks for a starting branch only for a new worktree", async () => {
     await render();
     expect(container.querySelector("#new-workspace-branch")).toBeNull();

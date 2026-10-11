@@ -129,13 +129,17 @@ export const NewWorkspaceSheet = memo(function NewWorkspaceSheet({
     })),
   ];
 
-  const canCreate = projectId !== null && !submitting;
+  // A preset project on a host that is offline keeps that host chosen, shown as
+  // offline, and Create stays off: the daemon there cannot take the request.
+  const whereReachable =
+    where === THIS_PC || pairedHosts.some((host) => host.id === where && host.online);
+  const canCreate = projectId !== null && whereReachable && !submitting;
 
   // Not memoized: it is the form's own submit, read once per submit, and a
   // memo over these inputs cannot be kept (the compiler said so).
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (projectId === null || submittingRef.current) return;
+    if (!canCreate || submittingRef.current || projectId === null) return;
     submittingRef.current = true;
     setSubmitting(true);
     setError(null);
