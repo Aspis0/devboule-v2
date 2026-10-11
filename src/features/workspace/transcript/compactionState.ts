@@ -1,3 +1,6 @@
+import type { AgentChatItem } from "../../../lib/agentSession";
+import { isToolCallGroup, type ToolCallGroup } from "../../../lib/toolCallGroups";
+
 /**
  * Where a compaction stands, read from the daemon's own notice words. A start
  * with no finish is still compacting only while its turn is live; once the turn
@@ -14,4 +17,24 @@ export function compactionState(text: string, live = true): CompactionState | nu
   if (START_WORDS.has(text)) return live ? "loading" : "unfinished";
   if (DONE_WORDS.has(text)) return "done";
   return null;
+}
+
+/**
+ * The compaction starts that belong to the live turn: the last turn only, and
+ * only while it runs. A start before a later user row belongs to a turn that
+ * has moved on, so it reads as unfinished and never spins again.
+ */
+export function liveCompactionIds(
+  entries: ReadonlyArray<AgentChatItem | ToolCallGroup>,
+  live: boolean,
+): ReadonlySet<string> {
+  const ids = new Set<string>();
+  if (!live) return ids;
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (isToolCallGroup(entry)) continue;
+    if (entry.role === "user") break;
+    if (entry.role === "system" && compactionState(entry.text) === "loading") ids.add(entry.id);
+  }
+  return ids;
 }

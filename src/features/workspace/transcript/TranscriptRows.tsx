@@ -7,6 +7,7 @@ import { TranscriptRow } from "./TranscriptRow";
 import { createOpenedRows, OpenedRowsContext } from "./openedRows";
 import { useTranscriptEntries } from "./useTranscriptEntries";
 import { turnEnds, type TurnEnd } from "./turnEnds";
+import { liveCompactionIds } from "./compactionState";
 
 type RowContext = "none" | "fileLinks" | "a2aNames" | "transcriptEnded" | "streamingThought";
 
@@ -51,7 +52,10 @@ export function TranscriptRows({
     endsRef.current = next;
     return next;
   }, [entries, turnRunning]);
-  const compactionLive = turnRunning && !transcriptEnded;
+  const liveNotices = useMemo(
+    () => liveCompactionIds(entries, turnRunning && !transcriptEnded),
+    [entries, turnRunning, transcriptEnded],
+  );
   const [openedRows] = useState(createOpenedRows);
   return (
     <OpenedRowsContext.Provider value={openedRows}>
@@ -67,7 +71,7 @@ export function TranscriptRows({
             transcriptEnded={context === "transcriptEnded" && transcriptEnded}
             isStreamingThought={context === "streamingThought" && entry.id === streamingThoughtId}
             turnEnd={isToolCallGroup(entry) ? undefined : ends.get(entry.id)}
-            compactionLive={role === "system" ? compactionLive : undefined}
+            compactionLive={role === "system" ? liveNotices.has(entry.id) : undefined}
           />
         );
       })}
