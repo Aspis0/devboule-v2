@@ -20,6 +20,15 @@ import { ErrorText } from "../../components/ErrorText";
 import { ConfirmProvider } from "../../components/ConfirmHost";
 import { SurfaceErrorBoundary } from "../../app/SurfaceErrorBoundary";
 import { NewProjectDialog } from "../../components/NewProjectDialog";
+import type { AgentSession } from "../../lib/agentSession";
+import { DraftAgentComposer } from "./DraftAgentComposer";
+import { sendFirstMessageWhenReady } from "./firstMessage";
+import {
+  NewWorkspaceSheet,
+  REMOTE_CREATE_UNAVAILABLE,
+  THIS_PC,
+  type NewWorkspaceChoice,
+} from "./NewWorkspaceSheet";
 import {
   SIDE_PANEL_REGISTRY,
   type AgentTasksContext,
@@ -311,7 +320,7 @@ export function Workspace({
     renameWorkspace,
     archiveWorkspace,
     removeProject,
-    reuseOrCreateWorkspace,
+    createWorkspace,
   } = useWorkspaceProjects(restoredWorkspaceKey);
   // The one seam Settings → Providers may use: the last-selected workspace,
   // read when a provider install/login opens its terminal tab. It is also what
@@ -1574,18 +1583,6 @@ export function Workspace({
     },
     [createAndShowSession],
   );
-  const createWorkspaceAndAgent = useCallback(
-    async (projectId: string, provider: ProviderInfo | undefined) => {
-      // Defect (a): the project's local workspace is reused — selected, then
-      // the agent spawns there — and minted only when the project has none,
-      // so "+" stops producing look-alike "devboule-v2" rows. Distinct
-      // workspaces arrive with the worktree slice (R2b).
-      const workspace = await reuseOrCreateWorkspace(projectId);
-      if (workspace !== null) startAgentSession(provider, workspace.id);
-      endProviderChoice();
-    },
-    [endProviderChoice, reuseOrCreateWorkspace, startAgentSession],
-  );
   const addSessionToWorkspace = useCallback(
     (provider: ProviderInfo | undefined) => {
       startAgentSession(provider, selectedWorkspaceId);
@@ -1646,15 +1643,133 @@ export function Workspace({
     },
     [endProviderChoice, loadChatProviders, selectedKey],
   );
-  const handleNewWorkspace = useCallback(
-    (trigger: HTMLButtonElement, projectId: string) => {
-      void chooseProvider(
-        { kind: "project", projectId },
-        (provider) => void createWorkspaceAndAgent(projectId, provider),
-        trigger,
+  /** The workspace a sheet just created: its pane shows the first-message composer. */
+  const [draftKey, setDraftKey] = useState<WorkspaceKey | null>(null);
+  /** The chat-capable providers for the draft composer; null while they load. */
+  const [draftProviders, setDraftProviders] = useState<ProviderInfo[] | null>(null);
+  const [draftProviderId, setDraftProviderId] = useState<string | null>(null);
+  /** The first message waiting for its agent to attach: sent once, then dropped. */
+  const pendingFirstRef = useRef<{ sessionId: string; text: string } | null>(null);
+  const firstMessageCancelRef = useRef<{ sessionId: string; cancel: () => void } | null>(null);
+  // The new-workspace sheet is mounted per opening, keyed by its nonce, so each
+  // one starts from the project it was asked for and the defaults.
+  const [sheet, setSheet] = useState<{ nonce: number; projectId: string | null } | null>(null);
+  const sheetTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const handleNewWorkspace = useCallback((trigger: HTMLButtonElement, projectId: string) => {
+    sheetTriggerRef.current = trigger;
+    setSheet((open) => ({ nonce: (open?.nonce ?? 0) + 1, projectId }));
+  }, []);
+  const closeSheet = useCallback(() => {
+    setSheet(null);
+    sheetTriggerRef.current?.focus({ preventScroll: true });
+  }, []);
+  useEffect(() => {
+    if (draftKey === null) return undefined;
+    let current = true;
+    void loadChatProviders().then(
+      (providers) => {
+        if (current) setDraftProviders(providers);
+      },
+      (cause: unknown) => {
+        if (current) {
+          setDraftProviders([]);
+          setProviderError(errorSentence(cause));
+        }
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [draftKey, loadChatProviders]);
+  // Starts the agent the first message is for, with the provider picked in the
+  // composer. The message is sent once the agent is attached; see reportPaneAgentWithFirstMessage.
+  const sendDraft = useCallback(
+    async (text: string): Promise<boolean> => {
+      if (draftKey === null) return false;
+      const providers = draftProviders ?? [];
+      const provider =
+        providers.find((candidate) => candidate.id === draftProviderId) ?? providers[0];
+      // With no provider to start there is no agent to send to: the text stays.
+      if (provider === undefined) return false;
+      const args = sessionCreateFromProvider(provider);
+      const session = await createAndShowSession(
+        args.kind,
+        args.provider,
+        parseWorkspaceKey(draftKey).workspaceId,
       );
+      if (session === null) return false;
+      pendingFirstRef.current = { sessionId: session.id, text };
+      setDraftKey(null);
+      return true;
     },
-    [chooseProvider, createWorkspaceAndAgent],
+    [createAndShowSession, draftKey, draftProviderId, draftProviders],
+  );
+  // The pane's agent report also sends a pending first message, once its agent is ready.
+  const reportPaneAgentWithFirstMessage = useCallback(
+    (sessionId: string, agent: AgentSession | null) => {
+      reportPaneAgent(sessionId, agent);
+      const cancel = firstMessageCancelRef.current;
+      if (agent === null) {
+        if (cancel?.sessionId === sessionId) {
+          cancel.cancel();
+          firstMessageCancelRef.current = null;
+        }
+        return;
+      }
+      const pending = pendingFirstRef.current;
+      if (pending === null || pending.sessionId !== sessionId) return;
+      pendingFirstRef.current = null;
+      cancel?.cancel();
+      firstMessageCancelRef.current = {
+        sessionId,
+        cancel: sendFirstMessageWhenReady(agent, pending.text),
+      };
+    },
+    [reportPaneAgent],
+  );
+  // The sheet creates the workspace and selects it; the workspace then waits
+  // for its first message, with the provider chosen in its composer.
+  const localProjectsForSheet = useMemo(
+    () =>
+      projects
+        .filter((project) => project.hostId === LOCAL_HOST_ID)
+        .map((project) => ({ id: project.id, name: project.name })),
+    [projects],
+  );
+  const pairedHostsForSheet = useMemo(
+    () =>
+      [...hostNameMap]
+        .filter(([hostId]) => hostId !== LOCAL_HOST_ID)
+        .map(([hostId, name]) => ({
+          id: hostId,
+          name,
+          online: hostOnlineMap.get(hostId) ?? false,
+        })),
+    [hostNameMap, hostOnlineMap],
+  );
+  // The workspace a sheet just made shows its first-message composer, even when the
+  // pane still remembers a tab of the workspace it came from.
+  const draftShowing = draftKey !== null && draftKey === selectedKey;
+  const createFromSheet = useCallback(
+    async (choice: NewWorkspaceChoice): Promise<ErrorSentence | null> => {
+      // Creating on another PC is not built: the sheet says so before it asks.
+      if (choice.where !== THIS_PC) return { sentence: REMOTE_CREATE_UNAVAILABLE, detail: null };
+      const { key, refusal } = await createWorkspace(
+        choice.projectId,
+        choice.isolation,
+        choice.branch,
+      );
+      if (refusal !== null) return refusal;
+      // The person created this workspace: the view stays where they put it,
+      // as it does after a row click, rather than returning to a restored one.
+      userNavigatedRef.current = true;
+      setDraftKey(key);
+      setDraftProviderId(null);
+      setSheet(null);
+      sheetTriggerRef.current?.focus({ preventScroll: true });
+      return null;
+    },
+    [createWorkspace],
   );
   const handleResizeStart = useCallback(
     (event: ReactMouseEvent<HTMLButtonElement>) => startDrag("left", event),
@@ -2405,7 +2520,7 @@ export function Workspace({
                         />
                       )}
                     </div>
-                  ) : paneSession !== null ? (
+                  ) : paneSession !== null && !draftShowing ? (
                     <>
                       {isAgentKind(paneSession.kind) ? (
                         <AgentChatSurface
@@ -2432,7 +2547,7 @@ export function Workspace({
                           subagentAttention={subagentAttention}
                           onRefreshSubagents={refreshSessions}
                           onOpenTasks={openTasksTab}
-                          onAgentChange={reportPaneAgent}
+                          onAgentChange={reportPaneAgentWithFirstMessage}
                           deviceNames={peerNames}
                           hasPendingPermission={hasPendingPermission}
                           pendingPlanToolCallId={pendingPlanToolCallId}
@@ -2517,7 +2632,23 @@ export function Workspace({
                       {/* The empty state never carries the error: the failure has its
                 one line under the strip, and this pane stays what the spec
                 says it is (SPEC-regions "Empty and error"). */}
-                      {sessionsLoading || projectsLoading ? (
+                      {draftShowing ? (
+                        // A workspace the sheet just made: its first message starts the
+                        // agent, and the provider is picked in this composer.
+                        <DraftAgentComposer
+                          providers={draftProviders ?? []}
+                          providerId={draftProviderId}
+                          onProviderChange={setDraftProviderId}
+                          onSend={sendDraft}
+                          disabledReason={
+                            draftProviders === null
+                              ? "Loading agents…"
+                              : draftProviders.length === 0
+                                ? "No agent is installed to start."
+                                : null
+                          }
+                        />
+                      ) : sessionsLoading || projectsLoading ? (
                         <div role="status" className="workspace-empty-note">
                           Loading sessions…
                         </div>
@@ -2677,6 +2808,17 @@ export function Workspace({
         </aside>
       </div>
       <StatusBar agent={focusedAgent} daemon={daemon} progress={statusProgress} />
+
+      {sheet === null ? null : (
+        <NewWorkspaceSheet
+          key={sheet.nonce}
+          projects={localProjectsForSheet}
+          presetProjectId={sheet.projectId}
+          pairedHosts={pairedHostsForSheet}
+          onCreate={createFromSheet}
+          onClose={closeSheet}
+        />
+      )}
 
       <NewProjectDialog
         open={projectDialogOpen}

@@ -292,46 +292,38 @@ export function useWorkspaceProjects(restoredWorkspaceKey: WorkspaceKey | null) 
     setSessionFactsState([...sessions]);
   }, []);
 
-  const addWorkspace = useCallback(async (projectId: string): Promise<Workspace | null> => {
-    try {
-      const workspace = await workspaceCreate(projectId, "local");
-      setProjectRecords((currentProjects) =>
-        currentProjects.map((project) =>
-          project.id === projectId
-            ? {
-                ...project,
-                workspaces: [...project.workspaces, { ...workspace, hostId: LOCAL_HOST_ID }],
-              }
-            : project,
-        ),
-      );
-      setSelectedKey(keyOfWorkspace({ ...workspace, hostId: LOCAL_HOST_ID }));
-      setError(null);
-      return workspace;
-    } catch (cause: unknown) {
-      setError(errorSentence(cause));
-      return null;
-    }
-  }, []);
-
   /**
-   * The project-level "+" policy: reuse the project's existing local
-   * workspace — selecting it — and mint one only when the project has none.
-   * Spawning an agent is not a reason to create a look-alike row; distinct
-   * workspaces arrive with the worktree slice.
+   * Creates a workspace in a project and selects it. A refusal comes back as
+   * the sentence the sheet that asked shows: the sidebar's own error line is
+   * for the list, not for a create the person is still looking at.
    */
-  const reuseOrCreateWorkspace = useCallback(
-    async (projectId: string): Promise<Workspace | null> => {
-      const existing = projectRecords
-        .find((project) => project.id === projectId)
-        ?.workspaces.find((workspace) => workspace.isolation === "local");
-      if (existing !== undefined) {
-        setSelectedKey(keyOfWorkspace(existing));
-        return existing;
+  const createWorkspace = useCallback(
+    async (
+      projectId: string,
+      isolation: Workspace["isolation"],
+      branch: string | null,
+    ): Promise<{ key: WorkspaceKey | null; refusal: ErrorSentence | null }> => {
+      try {
+        const workspace = await workspaceCreate(projectId, isolation, branch);
+        const key = keyOfWorkspace({ ...workspace, hostId: LOCAL_HOST_ID });
+        setProjectRecords((currentProjects) =>
+          currentProjects.map((project) =>
+            project.id === projectId
+              ? {
+                  ...project,
+                  workspaces: [...project.workspaces, { ...workspace, hostId: LOCAL_HOST_ID }],
+                }
+              : project,
+          ),
+        );
+        setSelectedKey(key);
+        setError(null);
+        return { key, refusal: null };
+      } catch (cause: unknown) {
+        return { key: null, refusal: errorSentence(cause) };
       }
-      return addWorkspace(projectId);
     },
-    [addWorkspace, projectRecords],
+    [],
   );
 
   /**
@@ -467,8 +459,7 @@ export function useWorkspaceProjects(restoredWorkspaceKey: WorkspaceKey | null) 
     setSessionFacts,
     search,
     handleSearchChange,
-    addWorkspace,
-    reuseOrCreateWorkspace,
+    createWorkspace,
     renameWorkspace,
     archiveWorkspace,
     removeProject,

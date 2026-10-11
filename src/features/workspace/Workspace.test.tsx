@@ -575,6 +575,80 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 }
 
 /** The + menu's entry: every strip flow opens the menu and picks from it. */
+/** The sheet's group legends, in print order. */
+function sheetLegends(): string[] {
+  return [...document.querySelectorAll(".new-workspace-sheet legend")].map(
+    (legend) => legend.textContent ?? "",
+  );
+}
+
+async function openSheet(): Promise<void> {
+  const add = document.querySelector<HTMLButtonElement>('button[aria-label="New workspace"]');
+  if (add === null) throw new Error("the New workspace action did not render");
+  await act(async () => add.click());
+  await act(async () => undefined);
+}
+
+async function submitSheet(): Promise<void> {
+  const form = document.querySelector<HTMLFormElement>(".new-workspace-sheet form");
+  if (form === null) throw new Error("the new workspace sheet did not open");
+  await act(async () => {
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
+  await act(async () => undefined);
+  await act(async () => undefined);
+}
+
+/** Opens the sheet, picks the isolation and branch, and creates the workspace. */
+async function createFromSheet(choice: { isolation: "local" | "worktree"; branch: string | null }) {
+  // The daemon lists what it just created; a reload must keep the new row.
+  vi.mocked(workspaceCreate).mockResolvedValue(createdWorkspace);
+  vi.mocked(workspacesList).mockResolvedValue([workspace, createdWorkspace]);
+  await openSheet();
+  if (choice.isolation === "worktree") {
+    const worktree = document.querySelector<HTMLInputElement>(
+      'input[name="new-workspace-isolation"][value="worktree"]',
+    );
+    if (worktree === null) throw new Error("the worktree choice did not render");
+    await act(async () => worktree.click());
+    if (choice.branch !== null) {
+      const branch = document.querySelector<HTMLInputElement>("#new-workspace-branch");
+      if (branch === null) throw new Error("the branch field did not render");
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      await act(async () => {
+        setValue?.call(branch, choice.branch);
+        branch.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    }
+  }
+  await submitSheet();
+}
+
+/** Types the first message into the draft composer and sends it. */
+async function sendDraftMessage(text: string): Promise<void> {
+  const textarea = document.querySelector<HTMLTextAreaElement>(
+    'textarea[aria-label="Message the agent"]',
+  );
+  const send = document.querySelector<HTMLButtonElement>(".workspace-send-action");
+  if (textarea === null || send === null) {
+    throw new Error("the first-message composer did not render");
+  }
+  const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+  await act(async () => {
+    setValue?.call(textarea, text);
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => send.click());
+  await act(async () => undefined);
+  await act(async () => undefined);
+}
+
+/** The new flow, end to end: the sheet makes the workspace, then the first message starts the agent. */
+async function startAgentFromNewWorkspace(text: string): Promise<void> {
+  await createFromSheet({ isolation: "local", branch: null });
+  await sendDraftMessage(text);
+}
+
 function newTabMenuItem(container: HTMLElement, label: string): HTMLButtonElement {
   // The menu portals to the document — the container's own document hosts it.
   const item = [
@@ -1611,7 +1685,7 @@ describe("Workspace sessions", () => {
     );
   });
 
-  it("starts an ACP session when a new workspace is added", async () => {
+  it("the first message starts the agent the composer picked, in the new workspace", async () => {
     root = createRoot(container);
     await act(async () => {
       await openListedSessionsForTest();
@@ -1619,18 +1693,96 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-new");
-    if (newWorkspace === null) throw new Error("new workspace control did not render");
-    await act(async () => newWorkspace.click());
+    vi.mocked(sessionCreate).mockResolvedValue({
+      ...terminal("session-agent", "Agent"),
+      kind: "acp",
+    });
+    await startAgentFromNewWorkspace("hello");
 
-    expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "acp", "grok");
-    expect(container.querySelector("[data-testid=agent-chat-surface]")).not.toBeNull();
+    expect(sessionCreate).toHaveBeenCalledWith("workspace-created", "acp", "grok");
+    // The surface is a stand-in here: the send itself is pinned in firstMessage.test.ts.
+    // What this pins is the hand-over: the draft composer leaves the pane.
+    expect(container.querySelector('textarea[aria-label="Message the agent"]')).toBeNull();
   });
 
-  it("shows a workspace creation error without falling back or creating a session", async () => {
-    // The reuse policy only mints when the project has no local workspace,
-    // so this flow's refusal needs a project that has none.
-    vi.mocked(workspacesList).mockResolvedValue([]);
+  it("New workspace opens the sheet and asks for no provider: providers are read for the first message only", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    await openSheet();
+
+    // Where is drawn here because the fixture has a paired device; no agent is ever asked.
+    expect(sheetLegends()).toEqual(expect.arrayContaining(["Project", "Isolation"]));
+    expect(sheetLegends()).not.toContain("Agent");
+    expect(document.querySelector('[aria-label="Choose agent"]')).toBeNull();
+    expect(providersList).not.toHaveBeenCalled();
+    expect(sessionCreate).not.toHaveBeenCalled();
+  });
+
+  it("the sheet makes the worktree on the branch typed, and the pane waits for its first message", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    await createFromSheet({ isolation: "worktree", branch: "feat/sheet" });
+
+    expect(workspaceCreate).toHaveBeenCalledWith("project-1", "worktree", "feat/sheet");
+    expect(sessionCreate).not.toHaveBeenCalled();
+    expect(
+      container.querySelector('textarea[aria-label="Message the agent"]'),
+      "the first-message composer is what the pane shows",
+    ).not.toBeNull();
+  });
+
+  it("the draft composer starts the agent with the provider picked there, and sends the message to it", async () => {
+    vi.mocked(providersList).mockResolvedValue({
+      providers: [grokProvider, claudeProvider],
+      unreadableDirs: 0,
+    });
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+    await createFromSheet({ isolation: "local", branch: null });
+
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="draft-provider-chip"]');
+    if (chip === null) throw new Error("the provider chip did not render in the draft");
+    await act(async () => chip.click());
+    const claude = document.querySelector<HTMLElement>(
+      '[data-testid="draft-provider-option-claude"]',
+    );
+    if (claude === null) throw new Error("the Claude option did not open");
+    await act(async () => claude.click());
+    await sendDraftMessage("hi there");
+
+    expect(sessionCreate).toHaveBeenCalledWith("workspace-created", "claude");
+  });
+
+  it("with no agent installed the first-message composer says so and starts nothing", async () => {
+    vi.mocked(providersList).mockResolvedValue({ providers: [], unreadableDirs: 0 });
+    root = createRoot(container);
+    await act(async () => {
+      await openListedSessionsForTest();
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+    await createFromSheet({ isolation: "local", branch: null });
+
+    expect(container.textContent).toContain("No agent is installed to start.");
+    expect(container.querySelector('[data-testid="draft-provider-chip"]')).toBeNull();
+    expect(sessionCreate).not.toHaveBeenCalled();
+  });
+
+  it("a refused worktree create shows its sentence in the sheet, keeps the sheet open, and starts nothing", async () => {
     vi.mocked(workspaceCreate).mockRejectedValueOnce(
       new Error("worktree isolation is unimplemented"),
     );
@@ -1641,14 +1793,13 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-new");
-    if (newWorkspace === null) throw new Error("new workspace control did not render");
-    await act(async () => newWorkspace.click());
-    await act(async () => undefined);
+    await openSheet();
+    await submitSheet();
 
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+    expect(document.querySelector('.new-workspace-sheet [role="alert"]')?.textContent).toContain(
       "worktree isolation is unimplemented",
     );
+    expect(document.querySelector(".new-workspace-sheet")).not.toBeNull();
     expect(sessionCreate).not.toHaveBeenCalled();
   });
 
@@ -1666,185 +1817,6 @@ describe("Workspace sessions", () => {
     authentication: "unknown" as const,
     protocol: "stream-json",
   };
-  // Run-on-demand: the workspace picker never offers it, whatever its start history.
-  const npxProvider = {
-    id: "codex-acp",
-    executable: "@agentclientprotocol/codex-acp@1.10.0",
-    acpAvailable: true,
-    authentication: "unknown" as const,
-    protocol: "acp" as const,
-    origin: "npx-wrapper" as const,
-    launchArgs: ["--registry=https://evil"],
-  };
-
-  it("lists chat-capable providers in a popover and creates claude when chosen", async () => {
-    vi.mocked(providersList).mockResolvedValue({
-      providers: [grokProvider, claudeProvider],
-      unreadableDirs: 0,
-    });
-    vi.mocked(sessionCreate).mockResolvedValue({
-      ...terminal("session-claude", "Agent"),
-      kind: "claude",
-    });
-    root = createRoot(container);
-    await act(async () => {
-      await openListedSessionsForTest();
-      root.render(<Workspace />);
-    });
-    await act(async () => undefined);
-
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-new");
-    if (newWorkspace === null) throw new Error("new workspace control did not render");
-    await act(async () => newWorkspace.click());
-    await act(async () => undefined);
-
-    expect(sessionCreate).not.toHaveBeenCalled();
-    const menu = document.querySelector('[aria-label="Choose agent"]');
-    if (menu === null) throw new Error("provider popover did not render");
-    expect(menu.textContent).toContain("grok");
-    expect(menu.textContent).toContain("claude");
-    const groups = menu.querySelectorAll(".workspace-provider-group");
-    expect(groups).toHaveLength(1);
-    expect(groups[0].textContent).toContain("Installed");
-
-    const claudeOption = Array.from(menu.querySelectorAll("button")).find(
-      (button) => button.textContent === "claude",
-    );
-    if (claudeOption === undefined) throw new Error("claude option did not render");
-    await act(async () => claudeOption.click());
-    await act(async () => undefined);
-
-    expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "claude");
-    expect(document.querySelector('[aria-label="Choose agent"]')).toBeNull();
-  });
-
-  it("creates immediately with the only chat-capable provider", async () => {
-    vi.mocked(providersList).mockResolvedValue({
-      providers: [grokProvider],
-      unreadableDirs: 0,
-    });
-    root = createRoot(container);
-    await act(async () => {
-      await openListedSessionsForTest();
-      root.render(<Workspace />);
-    });
-    await act(async () => undefined);
-
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-new");
-    if (newWorkspace === null) throw new Error("new workspace control did not render");
-    await act(async () => newWorkspace.click());
-    await act(async () => undefined);
-
-    expect(document.querySelector('[aria-label="Choose agent"]')).toBeNull();
-    expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "acp", "grok");
-  });
-
-  it("an npx-only catalog never starts a session from New workspace: the picker shows the empty state", async () => {
-    vi.mocked(providersList).mockResolvedValue({
-      providers: [npxProvider],
-      unreadableDirs: 0,
-    });
-    root = createRoot(container);
-    await act(async () => {
-      await openListedSessionsForTest();
-      root.render(<Workspace />);
-    });
-    await act(async () => undefined);
-
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-new");
-    if (newWorkspace === null) throw new Error("new workspace control did not render");
-    await act(async () => newWorkspace.click());
-    await act(async () => undefined);
-
-    const picker = document.querySelector('[aria-label="Choose agent"]');
-    expect(picker?.textContent).toContain("No agent CLI is installed on this machine.");
-    expect(picker?.textContent).toContain("Run on demand (npx)");
-    expect(sessionCreate).not.toHaveBeenCalled();
-  });
-
-  it("surfaces a provider-list failure without creating a workspace or session", async () => {
-    vi.mocked(providersList).mockRejectedValueOnce(new Error("provider catalog unavailable"));
-    root = createRoot(container);
-    await act(async () => {
-      await openListedSessionsForTest();
-      root.render(<Workspace />);
-    });
-    await act(async () => undefined);
-
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-new");
-    if (newWorkspace === null) throw new Error("new workspace control did not render");
-    await act(async () => newWorkspace.click());
-    await act(async () => undefined);
-
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "provider catalog unavailable",
-    );
-    expect(workspaceCreate).not.toHaveBeenCalled();
-    expect(sessionCreate).not.toHaveBeenCalled();
-  });
-
-  it("retries the provider catalog, not the projects, from the provider refusal", async () => {
-    vi.mocked(providersList).mockRejectedValueOnce(new Error("provider catalog unavailable"));
-    root = createRoot(container);
-    await act(async () => {
-      await openListedSessionsForTest();
-      root.render(<Workspace />);
-    });
-    await act(async () => undefined);
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-new");
-    if (newWorkspace === null) throw new Error("new workspace control did not render");
-    await act(async () => newWorkspace.click());
-    await act(async () => undefined);
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain("provider catalog");
-
-    vi.mocked(providersList).mockClear();
-    vi.mocked(providersList).mockResolvedValue({ providers: [grokProvider], unreadableDirs: 0 });
-    vi.mocked(projectsList).mockClear();
-    const retry = container.querySelector<HTMLButtonElement>(".workspace-secondary-action");
-    if (retry === null) throw new Error("the refusal drew no retry");
-    await act(async () => retry.click());
-    await act(async () => undefined);
-
-    expect(providersList).toHaveBeenCalledTimes(1);
-    expect(projectsList).not.toHaveBeenCalled();
-    expect(container.querySelector('[role="alert"]')).toBeNull();
-  });
-
-  it("lets the latest provider retry win over a slower earlier failure", async () => {
-    vi.mocked(providersList).mockRejectedValueOnce(new Error("provider catalog unavailable"));
-    root = createRoot(container);
-    await act(async () => {
-      await openListedSessionsForTest();
-      root.render(<Workspace />);
-    });
-    await act(async () => undefined);
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-new");
-    if (newWorkspace === null) throw new Error("new workspace control did not render");
-    await act(async () => newWorkspace.click());
-    await act(async () => undefined);
-
-    // Two retries are in flight; the second answers first.
-    let failFirst: (cause: Error) => void = () => undefined;
-    let answerSecond: (catalog: { providers: never[]; unreadableDirs: number }) => void = () =>
-      undefined;
-    vi.mocked(providersList)
-      .mockImplementationOnce(
-        () => new Promise((_resolve, reject) => void (failFirst = reject)) as never,
-      )
-      .mockImplementationOnce(
-        () => new Promise((resolve) => void (answerSecond = resolve)) as never,
-      );
-    const retry = container.querySelector<HTMLButtonElement>(".workspace-secondary-action");
-    if (retry === null) throw new Error("the refusal drew no retry");
-    await act(async () => retry.click());
-    await act(async () => retry.click());
-    await act(async () => answerSecond({ providers: [], unreadableDirs: 0 }));
-    expect(container.querySelector('[role="alert"]')).toBeNull();
-
-    await act(async () => failFirst(new Error("a slower, older failure")));
-
-    expect(container.querySelector('[role="alert"]')).toBeNull();
-  });
 
   it("shows the create error only over the workspace it failed for", async () => {
     // Two workspaces in one project; the create is refused under the
@@ -1890,106 +1862,6 @@ describe("Workspace sessions", () => {
     expect(container.querySelector(".workspace-error-line")).not.toBeNull();
   });
 
-  it("gates the new-workspace road when no chat-capable CLI is installed", async () => {
-    vi.mocked(providersList).mockResolvedValue({
-      providers: [
-        {
-          id: "codex",
-          executable: "codex.exe",
-          acpAvailable: false,
-          authentication: "unknown",
-          protocol: null,
-        },
-      ],
-      unreadableDirs: 0,
-    });
-    root = createRoot(container);
-    await act(async () => {
-      await openListedSessionsForTest();
-      root.render(<Workspace />);
-    });
-    await act(async () => undefined);
-
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-new");
-    if (newWorkspace === null) throw new Error("new workspace control did not render");
-    await act(async () => newWorkspace.click());
-    await act(async () => undefined);
-
-    // The gate: the empty picker opens, the doomed create never runs.
-    const picker = document.querySelector('[aria-label="Choose agent"]');
-    expect(picker).not.toBeNull();
-    expect(picker?.textContent).toContain("No agent CLI is installed on this machine.");
-    expect(sessionCreate).not.toHaveBeenCalled();
-  });
-
-  it("dismisses the provider popover on Escape without creating", async () => {
-    vi.mocked(providersList).mockResolvedValue({
-      providers: [grokProvider, claudeProvider],
-      unreadableDirs: 0,
-    });
-    root = createRoot(container);
-    await act(async () => {
-      await openListedSessionsForTest();
-      root.render(<Workspace />);
-    });
-    await act(async () => undefined);
-
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-new");
-    if (newWorkspace === null) throw new Error("new workspace control did not render");
-    await act(async () => newWorkspace.click());
-    await act(async () => undefined);
-    expect(document.querySelector('[aria-label="Choose agent"]')).not.toBeNull();
-
-    await act(async () => {
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    });
-
-    expect(document.querySelector('[aria-label="Choose agent"]')).toBeNull();
-    expect(sessionCreate).not.toHaveBeenCalled();
-  });
-
-  it("clicking New workspace twice before providersList resolves runs one flow and never mints a workspace", async () => {
-    let release:
-      | ((value: { providers: (typeof grokProvider)[]; unreadableDirs: number }) => void)
-      | undefined;
-    const pending = new Promise<{ providers: (typeof grokProvider)[]; unreadableDirs: number }>(
-      (resolve) => {
-        release = resolve;
-      },
-    );
-    vi.mocked(providersList).mockImplementation(() => pending);
-    root = createRoot(container);
-    await act(async () => {
-      await openListedSessionsForTest();
-      root.render(<Workspace />);
-    });
-    await act(async () => undefined);
-
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-new");
-    if (newWorkspace === null) throw new Error("new workspace control did not render");
-    const rowsBefore = container.querySelectorAll(".workspace-row").length;
-
-    await act(async () => {
-      newWorkspace.click();
-      newWorkspace.click();
-    });
-    expect(container.querySelectorAll(".workspace-row").length).toBe(rowsBefore);
-    expect(sessionCreate).not.toHaveBeenCalled();
-
-    await act(async () => {
-      if (release === undefined) throw new Error("providersList was not called");
-      release({ providers: [grokProvider], unreadableDirs: 0 });
-    });
-    await act(async () => undefined);
-
-    // The reuse policy: no look-alike row is minted — the agent spawns in
-    // the project's existing local workspace.
-    expect(container.querySelectorAll(".workspace-row").length).toBe(rowsBefore);
-    expect(workspaceCreate).not.toHaveBeenCalled();
-    expect(sessionCreate).toHaveBeenCalledTimes(1);
-    expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "acp", "grok");
-  });
-
   it("a session with no workspace stays visible in every workspace's strip", async () => {
     // A null-workspace session has no home to navigate to: it renders in
     // every strip (reopening it from History keeps it reachable), never
@@ -2026,101 +1898,6 @@ describe("Workspace sessions", () => {
     expect(container.querySelector("[data-testid=terminal-surface]")?.textContent).toContain(
       "legacy-1",
     );
-  });
-
-  it("a project with no local workspace mints one, selects it, and starts the agent there", async () => {
-    // The reuse policy only mints when the project has no local workspace;
-    // this pins the success path of that fallback.
-    vi.mocked(workspacesList).mockResolvedValue([]);
-    vi.mocked(workspaceCreate).mockResolvedValue(createdWorkspace);
-    vi.mocked(providersList).mockResolvedValue({
-      providers: [{ ...grokProvider, protocol: "acp" }],
-      unreadableDirs: 0,
-    });
-    root = createRoot(container);
-    await act(async () => {
-      await openListedSessionsForTest();
-      root.render(<Workspace />);
-    });
-    await act(async () => undefined);
-
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-new");
-    if (newWorkspace === null) throw new Error("new workspace control did not render");
-    await act(async () => newWorkspace.click());
-    await act(async () => undefined);
-
-    expect(workspaceCreate).toHaveBeenCalledWith(project.id, "local");
-    expect(sessionCreate).toHaveBeenCalledWith(createdWorkspace.id, "acp", "grok");
-    // The created workspace is the selected one: its row is the pressed row.
-    const selectedRow = container.querySelector<HTMLButtonElement>(
-      "button[aria-pressed='true'].workspace-row",
-    );
-    expect(selectedRow?.textContent).toContain(createdWorkspace.title);
-  });
-
-  it("the double-mint guard holds while the first create is pending: clicks inside the real window mint once", async () => {
-    // The window: providers resolve, the first workspaceCreate is still
-    // pending, and a second click arrives — releasing the guard at provider
-    // resolution would mint a second look-alike workspace here.
-    vi.mocked(workspacesList).mockResolvedValue([]);
-    vi.mocked(providersList).mockResolvedValue({
-      providers: [{ ...grokProvider, protocol: "acp" }],
-      unreadableDirs: 0,
-    });
-    const pendingCreate = deferred<IpcWorkspace>();
-    vi.mocked(workspaceCreate).mockImplementationOnce(() => pendingCreate.promise);
-    root = createRoot(container);
-    await act(async () => {
-      await openListedSessionsForTest();
-      root.render(<Workspace />);
-    });
-    await act(async () => undefined);
-
-    const projectAdd = container.querySelector<HTMLButtonElement>(".workspace-project-new");
-    if (projectAdd === null) throw new Error("project add control did not render");
-    await act(async () => projectAdd.click());
-    await act(async () => undefined);
-    expect(workspaceCreate).toHaveBeenCalledTimes(1);
-    expect(sessionCreate).not.toHaveBeenCalled();
-
-    // Second click while the first create is still pending.
-    await act(async () => projectAdd.click());
-    await act(async () => undefined);
-    expect(workspaceCreate).toHaveBeenCalledTimes(1);
-
-    pendingCreate.resolve(createdWorkspace);
-    await act(async () => undefined);
-    await act(async () => undefined);
-
-    expect(workspaceCreate).toHaveBeenCalledTimes(1);
-    expect(sessionCreate).toHaveBeenCalledTimes(1);
-    expect(sessionCreate).toHaveBeenCalledWith(createdWorkspace.id, "acp", "grok");
-  });
-
-  it("dismisses the provider popover on outside mousedown without creating", async () => {
-    vi.mocked(providersList).mockResolvedValue({
-      providers: [grokProvider, claudeProvider],
-      unreadableDirs: 0,
-    });
-    root = createRoot(container);
-    await act(async () => {
-      await openListedSessionsForTest();
-      root.render(<Workspace />);
-    });
-    await act(async () => undefined);
-
-    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-project-new");
-    if (newWorkspace === null) throw new Error("new workspace control did not render");
-    await act(async () => newWorkspace.click());
-    await act(async () => undefined);
-    expect(document.querySelector('[aria-label="Choose agent"]')).not.toBeNull();
-
-    await act(async () => {
-      document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-    });
-
-    expect(document.querySelector('[aria-label="Choose agent"]')).toBeNull();
-    expect(sessionCreate).not.toHaveBeenCalled();
   });
 
   it("opens History from the left sidebar", async () => {

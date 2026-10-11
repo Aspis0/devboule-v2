@@ -151,12 +151,19 @@ async function archiveWorkspaceRow(index: number): Promise<void> {
 
 /** The project's "+": one capable provider with no consent to ask for is
  * enough to reach the create. */
+/** The project's "+" opens the sheet; its Create makes the project-folder workspace. */
 async function addWorkspaceFromProject(): Promise<void> {
   const add = document.querySelector<HTMLButtonElement>(
     `[aria-label="New workspace in ${project.name}"]`,
   );
   if (add === null) throw new Error("the project's + did not render");
   await act(async () => add.click());
+  await flush();
+  const form = document.querySelector<HTMLFormElement>(".new-workspace-sheet form");
+  if (form === null) throw new Error("the new workspace sheet did not open");
+  await act(async () => {
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
   await flush();
   await flush();
 }
@@ -320,7 +327,7 @@ describe("how long the tab memory keeps it", () => {
     vi.mocked(providersList).mockResolvedValue({ providers: [claude], unreadableDirs: 0 });
     vi.mocked(workspaceCreate).mockResolvedValue({ ...beta, path: "C:\\devboule-beta-2" });
     await addWorkspaceFromProject();
-    expect(workspaceCreate).toHaveBeenCalledWith(project.id, "local");
+    expect(workspaceCreate).toHaveBeenCalledWith(project.id, "local", null);
 
     await showWorkspace("beta");
     expect(tabElement("b-one").getAttribute("aria-selected")).toBe("true");

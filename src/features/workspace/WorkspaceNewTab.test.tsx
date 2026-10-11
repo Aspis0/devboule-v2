@@ -1132,28 +1132,6 @@ describe("the + new-tab menu", () => {
     }
   });
 
-  it("pressing the trigger that opened the picker does not dismiss it", async () => {
-    vi.mocked(providersList).mockResolvedValue({
-      providers: [grokProvider, claudeProvider],
-      unreadableDirs: 0,
-    });
-    ({ container, unmount } = await renderWorkspace());
-    const trigger = container.querySelector<HTMLButtonElement>(".workspace-project-new");
-    if (trigger === null) throw new Error("new workspace control did not render");
-    await act(async () => trigger.click());
-    await act(async () => undefined);
-    expect(document.querySelector('[aria-label="Choose agent"]')).not.toBeNull();
-
-    await act(async () => {
-      trigger.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-    });
-
-    // The anchor is not outside its own popover's world: pressing it again
-    // must not dismiss the flow and restart it — event containment is what
-    // keeps the press from reaching the dismiss layer.
-    expect(document.querySelector('[aria-label="Choose agent"]')).not.toBeNull();
-  });
-
   it("re-measures the strip when a list change moves the selected tab", async () => {
     vi.mocked(sessionsList).mockResolvedValue([
       terminal("session-1", "shell one"),
@@ -1270,27 +1248,6 @@ describe("the + new-tab menu", () => {
     await act(async () => {
       document.querySelector(".workspace-session-tabs")?.dispatchEvent(new Event("scroll"));
     });
-    expect(document.querySelector('[aria-label="Choose agent"]')).toBeNull();
-    expect(sessionCreate).not.toHaveBeenCalled();
-  });
-
-  it("closes the picker when its anchor is removed from the document", async () => {
-    vi.mocked(providersList).mockResolvedValue({
-      providers: [grokProvider, claudeProvider],
-      unreadableDirs: 0,
-    });
-    ({ container, unmount } = await renderWorkspace());
-    const trigger = container.querySelector<HTMLButtonElement>(".workspace-project-new");
-    if (trigger === null) throw new Error("new workspace control did not render");
-    await act(async () => trigger.click());
-    await act(async () => undefined);
-    expect(document.querySelector('[aria-label="Choose agent"]')).not.toBeNull();
-
-    await act(async () => {
-      trigger.remove();
-    });
-    await act(async () => undefined);
-
     expect(document.querySelector('[aria-label="Choose agent"]')).toBeNull();
     expect(sessionCreate).not.toHaveBeenCalled();
   });

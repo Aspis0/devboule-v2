@@ -2358,3 +2358,50 @@
 .workspace-composer-images.is-sending {
   opacity: 0.6;
 }
+
+/* The new-workspace sheet: three short groups of choices, each under a quiet legend. */
+.new-workspace-sheet fieldset {
+  min-width: 0;
+  margin: 0 0 var(--space-12);
+  padding: 0;
+  border: 0;
+}
+
+.new-workspace-sheet legend {
+  padding: 0;
+  margin-bottom: var(--space-4);
+  color: var(--muted);
+  font-size: var(--type-meta);
+}
+
+.new-workspace-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-height: 28px;
+  color: var(--ink);
+  font-size: var(--type-interface);
+  cursor: pointer;
+}
+
+.new-workspace-offline {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: var(--type-meta);
+}
+
+.new-workspace-note {
+  margin: 0 0 var(--space-8);
+  color: var(--muted);
+  font-size: var(--type-meta);
+}
+
+/* The first message composer fills the empty pane and sits at its foot. */
+.workspace-draft-agent {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  height: 100%;
+  min-height: 0;
+  padding: var(--space-12);
+}
