@@ -129,6 +129,7 @@ describe("a managed child's pill status", () => {
       title: "Named",
       status: "finished",
       generation: 3,
+      provider: "acp",
     });
   });
 });

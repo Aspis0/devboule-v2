@@ -106,10 +106,10 @@ export async function settleSubagent(
 }
 
 export async function openMenu(): Promise<void> {
-  const pill = document.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
-  if (pill === null) throw new Error("subagent pill did not render");
+  const line = document.querySelector<HTMLButtonElement>('[data-testid="who-is-working"]');
+  if (line === null) throw new Error("who-is-working line did not render");
   await act(async () => {
-    pill.click();
+    line.click();
   });
 }
 
@@ -118,8 +118,8 @@ export function archiveAction(): HTMLButtonElement | null {
 }
 
 export function rowTitles(): string[] {
-  return [...document.querySelectorAll(".workspace-subagent-row")].map(
-    (row) => row.textContent ?? "",
+  return [...document.querySelectorAll(".workspace-subagent-row-title")].map(
+    (title) => title.textContent ?? "",
   );
 }
 

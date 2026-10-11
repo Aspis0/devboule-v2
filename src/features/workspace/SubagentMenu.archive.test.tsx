@@ -61,6 +61,7 @@ describe("the subagent menu's archive ask and its guard", () => {
     await act(async () => root.render(surface([], refresh)));
     await addSubagent("child-gone", "Finished child");
     await settleSubagent("child-gone", "completed");
+    await addSubagent("child-run", "Working child");
     await openMenu();
     expect(document.querySelector(".workspace-subagent-list")).not.toBeNull();
     expect(archiveAction()).toBeNull();
@@ -129,7 +130,7 @@ describe("the subagent menu's archive ask and its guard", () => {
     await openMenu();
 
     const action = archiveAction();
-    expect(action?.textContent).toBe("Archive 2 finished subagents");
+    expect(action?.textContent).toBe("Archive 2 finished");
     const buttons = document.querySelectorAll(".workspace-subagent-list button");
     expect(buttons[0]).toBe(action);
 
@@ -153,7 +154,11 @@ describe("the subagent menu's archive ask and its guard", () => {
     const refresh = vi.fn(async () => undefined);
     const daemon = closingDaemon(
       (node) => root.render(node),
-      [ended("child-a", 1, "First child"), ended("child-b", 1, "Second child")],
+      [
+        ended("child-a", 1, "First child"),
+        ended("child-b", 1, "Second child"),
+        live("child-run", 1, "Working child"),
+      ],
       refresh,
     );
     vi.mocked(sessionClose).mockImplementation(daemon.close);
@@ -164,7 +169,11 @@ describe("the subagent menu's archive ask and its guard", () => {
     // A push lands while the ask is up: the same id is a running session
     // again, under a new generation.
     await act(async () =>
-      daemon.push([live("child-a", 2, "First child"), ended("child-b", 1, "Second child")]),
+      daemon.push([
+        live("child-a", 2, "First child"),
+        ended("child-b", 1, "Second child"),
+        live("child-run", 1, "Working child"),
+      ]),
     );
 
     await answerAsk("Archive");
@@ -173,7 +182,7 @@ describe("the subagent menu's archive ask and its guard", () => {
     expect(vi.mocked(sessionClose)).toHaveBeenCalledWith("child-b");
     expect(vi.mocked(sessionClose)).not.toHaveBeenCalledWith("child-a");
     // The restarted child keeps its row and says why it was left alone.
-    expect(rowTitles()).toEqual(["First child"]);
+    expect(rowTitles()).toEqual(["First child", "Working child"]);
     const sentence = document.querySelector<HTMLElement>(".workspace-subagent-row-failure");
     expect(sentence?.textContent).toBe("It changed since you asked, so it was left open.");
   });
@@ -182,7 +191,11 @@ describe("the subagent menu's archive ask and its guard", () => {
     const refresh = vi.fn(async () => undefined);
     const daemon = closingDaemon(
       (node) => root.render(node),
-      [ended("child-a", 1, "First child"), ended("child-b", 1, "Second child")],
+      [
+        ended("child-a", 1, "First child"),
+        ended("child-b", 1, "Second child"),
+        live("child-run", 1, "Working child"),
+      ],
       refresh,
     );
     vi.mocked(sessionClose).mockImplementation(daemon.close);
@@ -193,7 +206,11 @@ describe("the subagent menu's archive ask and its guard", () => {
     // A restart and a fresh finish both land while the ask is up: same
     // finished state, a different generation of the same id.
     await act(async () =>
-      daemon.push([ended("child-a", 2, "First child"), ended("child-b", 1, "Second child")]),
+      daemon.push([
+        ended("child-a", 2, "First child"),
+        ended("child-b", 1, "Second child"),
+        live("child-run", 1, "Working child"),
+      ]),
     );
 
     await answerAsk("Archive");
@@ -201,7 +218,7 @@ describe("the subagent menu's archive ask and its guard", () => {
     expect(vi.mocked(sessionClose)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(sessionClose)).toHaveBeenCalledWith("child-b");
     expect(vi.mocked(sessionClose)).not.toHaveBeenCalledWith("child-a");
-    expect(rowTitles()).toEqual(["First child"]);
+    expect(rowTitles()).toEqual(["First child", "Working child"]);
     const sentence = document.querySelector<HTMLElement>(".workspace-subagent-row-failure");
     expect(sentence?.textContent).toBe("It changed since you asked, so it was left open.");
   });
@@ -210,7 +227,14 @@ describe("the subagent menu's archive ask and its guard", () => {
     const refresh = vi.fn(async () => undefined);
     await act(async () =>
       root.render(
-        surface([ended("child-a", 1, "First child"), ended("child-b", 1, "Second child")], refresh),
+        surface(
+          [
+            ended("child-a", 1, "First child"),
+            ended("child-b", 1, "Second child"),
+            live("child-run", 1, "Working child"),
+          ],
+          refresh,
+        ),
       ),
     );
     await openMenu();

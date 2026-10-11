@@ -76,11 +76,7 @@ describe("the deleted labels are gone", () => {
 });
 
 describe("the restyled labels speak the UI font at 12px or above", () => {
-  const UI_FONT_AT_12 = [
-    ".workspace-chat-label",
-    ".workspace-subagent-pill",
-    ".workspace-composer-hint",
-  ];
+  const UI_FONT_AT_12 = [".workspace-chat-label", ".workspace-composer-hint"];
 
   it.each(UI_FONT_AT_12)("%s is the UI font at 12px", (selector) => {
     const css = assembleCssProof(OWNED_SHEETS);
@@ -101,6 +97,13 @@ describe("the restyled labels speak the UI font at 12px or above", () => {
       expect(rules).toContain("height: calc(28px + 4px);");
     },
   );
+
+  it("the who-is-working line is the UI font at the spec's 13px", () => {
+    const css = assembleCssProof(OWNED_SHEETS);
+    const rules = css.rulesFor(".workspace-who-line");
+    expect(rules).toContain('font-family: "Inter", system-ui, sans-serif');
+    expect(rules).toContain("font-size: 13px");
+  });
 
   it("the subagent rows are the UI font at the mockup's 13px", () => {
     // The mockup's row is 13 px (skeleton .sub-row) — above the 12 px floor

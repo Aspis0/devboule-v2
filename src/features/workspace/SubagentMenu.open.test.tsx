@@ -54,8 +54,8 @@ describe("a provider task row in the subagent menu", () => {
         title: "Internal task",
       }),
     );
-    const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
-    expect(pill?.getAttribute("aria-label")).toBe("Subagents: 1 working");
+    const pill = container.querySelector<HTMLButtonElement>('[data-testid="who-is-working"]');
+    expect(pill?.getAttribute("aria-label")).toBe("Internal task working");
     await act(async () => pill?.click());
 
     const row = document.querySelector<HTMLButtonElement>("button.workspace-subagent-row");
@@ -74,6 +74,7 @@ describe("a provider task row in the subagent menu", () => {
       title: "Child",
       createdBy: "parent",
       state: { type: "live" as const, generation: 1 },
+      activity: "working" as const,
     };
     await act(async () =>
       root.render(
@@ -86,7 +87,7 @@ describe("a provider task row in the subagent menu", () => {
       ),
     );
     await act(async () =>
-      container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]')?.click(),
+      container.querySelector<HTMLButtonElement>('[data-testid="who-is-working"]')?.click(),
     );
     const row = document.querySelector<HTMLButtonElement>("button.workspace-subagent-row");
     if (row === null) throw new Error("child button did not render");

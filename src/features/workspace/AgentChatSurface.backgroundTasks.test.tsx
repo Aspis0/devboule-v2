@@ -1,6 +1,6 @@
 // The background-task list as the chat surface carries it: the attach-time ask
 // reaches the daemon through the surface's own command table, and a snapshot
-// changes the running-task pill and the transcript.
+// changes the who-is-working line and the transcript.
 // @vitest-environment happy-dom
 import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { act } from "react";
@@ -37,15 +37,14 @@ import { AgentChatSurface } from "./AgentChatSurface";
 let container: HTMLDivElement;
 let root: Root;
 
-function agentTask(overrides: Partial<SessionTask> = {}): SessionTask {
+function commandTask(overrides: Partial<SessionTask> = {}): SessionTask {
   return {
-    id: "child-1",
-    kind: "agent",
-    title: "Explore auth",
+    id: "tool-1",
+    kind: "command",
+    title: "npm test",
     state: "running",
     sessionId: "agent-1",
-    childSessionId: "child-1",
-    startedAtMs: 1_000,
+    startedAtMs: Date.now() - 9_000,
     ...overrides,
   };
 }
@@ -56,18 +55,16 @@ function pushSnapshot(revision: number, tasks: SessionTask[]): void {
   });
 }
 
-async function renderSurface(onOpenTasks?: () => void): Promise<void> {
+async function renderSurface(): Promise<void> {
   root = createRoot(container);
   await act(async () => {
-    root.render(
-      <AgentChatSurface daemonState="connected" sessionId="agent-1" onOpenTasks={onOpenTasks} />,
-    );
+    root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" />);
   });
   await act(async () => undefined);
 }
 
-function pill(): HTMLButtonElement | null {
-  return container.querySelector<HTMLButtonElement>('[data-testid="background-tasks-pill"]');
+function line(): HTMLButtonElement | null {
+  return container.querySelector<HTMLButtonElement>('[data-testid="who-is-working"]');
 }
 
 beforeEach(() => {
@@ -93,41 +90,70 @@ describe("AgentChatSurface background tasks", () => {
   it("keeps a starting task out of the transcript; its state lives in the Tasks panel", async () => {
     await renderSurface();
 
-    pushSnapshot(1, [agentTask()]);
+    pushSnapshot(1, [
+      {
+        id: "child-1",
+        kind: "agent",
+        title: "Explore auth",
+        state: "running",
+        sessionId: "agent-1",
+        childSessionId: "child-1",
+        startedAtMs: 1_000,
+      },
+    ]);
 
     expect(container.textContent).not.toContain("Running agent Explore auth");
   });
 
-  it("counts the running tasks in the pill and opens the Tasks tab when it is pressed", async () => {
-    const onOpenTasks = vi.fn();
-    await renderSurface(onOpenTasks);
+  it("names a running command on the line, with its clock", async () => {
+    await renderSurface();
 
-    pushSnapshot(1, [
-      agentTask(),
-      agentTask({ id: "child-2", kind: "command", title: "npm test" }),
-    ]);
-    expect(pill()?.textContent).toBe("2 running tasks");
+    pushSnapshot(1, [commandTask()]);
 
-    act(() => pill()?.click());
-    expect(onOpenTasks).toHaveBeenCalledTimes(1);
+    expect(line()?.textContent).toContain("1 command");
+    expect(line()?.textContent).toContain("running");
+    expect(line()?.textContent).toContain("00:09");
   });
 
-  it("says the singular for one running task", async () => {
-    await renderSurface(() => undefined);
+  it("opens the list when the line is pressed", async () => {
+    await renderSurface();
+    pushSnapshot(1, [commandTask()]);
 
-    pushSnapshot(1, [agentTask()]);
+    act(() => line()?.click());
 
-    expect(pill()?.textContent).toBe("1 running task");
+    expect(line()?.getAttribute("aria-expanded")).toBe("true");
   });
 
-  it("takes the pill away when nothing is running any more", async () => {
-    await renderSurface(() => undefined);
-    pushSnapshot(1, [agentTask()]);
-    expect(pill()).not.toBeNull();
+  it("takes the line away when nothing is running any more", async () => {
+    await renderSurface();
+    pushSnapshot(1, [commandTask()]);
+    expect(line()).not.toBeNull();
 
-    pushSnapshot(2, [agentTask({ state: "finished", endedAtMs: 4_000 })]);
+    pushSnapshot(2, [commandTask({ state: "finished", endedAtMs: Date.now() })]);
 
-    expect(pill()).toBeNull();
+    expect(line()).toBeNull();
+  });
+
+  it("keeps the line across a resume-tail reset, and the next snapshot moves it", async () => {
+    await renderSurface();
+    pushSnapshot(1, [commandTask()]);
+    expect(line()).not.toBeNull();
+
+    // A bounded-tail reset replaces the transcript and nothing else about the list.
+    act(() => {
+      harness.emit?.({
+        outcome: "reset",
+        reason: "epoch_changed",
+        tail: { cursor: { generation: 1, seq: 9 }, events: [], tail_complete: true },
+        oldest_seq: 0,
+        head: 9,
+      } as unknown as SessionEvent);
+    });
+    expect(line()).not.toBeNull();
+
+    pushSnapshot(2, [commandTask({ state: "finished", endedAtMs: Date.now() })]);
+
+    expect(line()).toBeNull();
   });
 
   it("reports its controller on mount and clears the report when it unmounts", async () => {
@@ -148,36 +174,6 @@ describe("AgentChatSurface background tasks", () => {
     await act(async () => root.unmount());
 
     expect(onAgentChange).toHaveBeenLastCalledWith("agent-1", null);
-  });
-
-  it("keeps the pill's count across a resume-tail reset, and the next snapshot moves it", async () => {
-    await renderSurface(() => undefined);
-    pushSnapshot(1, [agentTask()]);
-    expect(pill()?.textContent).toBe("1 running task");
-
-    // A bounded-tail reset replaces the transcript and nothing else about the list.
-    act(() => {
-      harness.emit?.({
-        outcome: "reset",
-        reason: "epoch_changed",
-        tail: { cursor: { generation: 1, seq: 9 }, events: [], tail_complete: true },
-        oldest_seq: 0,
-        head: 9,
-      } as unknown as SessionEvent);
-    });
-    expect(pill()?.textContent).toBe("1 running task");
-
-    pushSnapshot(2, [agentTask({ state: "finished", endedAtMs: 4_000 })]);
-
-    expect(pill()).toBeNull();
-  });
-
-  it("draws no pill when the surface has no Tasks tab to open", async () => {
-    await renderSurface();
-
-    pushSnapshot(1, [agentTask()]);
-
-    expect(pill()).toBeNull();
   });
 });
 

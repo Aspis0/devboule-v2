@@ -809,7 +809,7 @@ describe("AgentChatSurface", () => {
     });
     await act(async () => undefined);
 
-    expect(container.querySelector('[data-testid="subagent-pill"]')).toBeNull();
+    expect(container.querySelector('[data-testid="who-is-working"]')).toBeNull();
     expect(container.textContent).not.toContain("Subagents");
   });
 
@@ -849,9 +849,9 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
+    const pill = container.querySelector<HTMLButtonElement>('[data-testid="who-is-working"]');
     if (pill === null) throw new Error("subagent pill did not render");
-    expect(pill.textContent).toContain("1 working");
+    expect(pill.getAttribute("aria-label")).toBe("Inspect the workspace working");
     expect(pill.textContent).not.toContain("running");
     expect(pill.textContent).not.toContain("stopped");
     expect(pill.textContent).not.toContain("unknown");
@@ -886,6 +886,12 @@ describe("AgentChatSurface", () => {
     await act(async () => {
       channelHarness.active?.({
         type: "agent_task_started",
+        taskId: "task-live",
+        title: "Live task",
+        subagentType: "worker",
+      });
+      channelHarness.active?.({
+        type: "agent_task_started",
         taskId: "task-finished",
         title: "Finished task",
         subagentType: "verifier",
@@ -908,10 +914,9 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
+    const pill = container.querySelector<HTMLButtonElement>('[data-testid="who-is-working"]');
     if (pill === null) throw new Error("subagent pill did not render");
-    expect(pill.textContent).not.toContain("failed");
-    expect(pill.textContent).not.toContain("finished");
+    expect(pill.getAttribute("aria-label")).toBe("Live task working");
 
     await act(async () => pill.click());
     const list = document.querySelector(".workspace-subagent-list");
@@ -927,6 +932,13 @@ describe("AgentChatSurface", () => {
     await act(async () => undefined);
 
     await act(async () => {
+      channelHarness.active?.({
+        type: "agent_task_started",
+        taskId: "task-running",
+        title: "Still running",
+        subagentType: "worker",
+        toolUseId: "toolu-running",
+      });
       channelHarness.active?.({
         type: "agent_task_started",
         taskId: "task-no-title",
@@ -979,7 +991,7 @@ describe("AgentChatSurface", () => {
       "Child output",
     );
 
-    const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
+    const pill = container.querySelector<HTMLButtonElement>('[data-testid="who-is-working"]');
     if (pill === null) throw new Error("subagent pill did not render");
     await act(async () => pill.click());
     const list = document.querySelector(".workspace-subagent-list");
@@ -1002,7 +1014,7 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
+    const pill = container.querySelector<HTMLButtonElement>('[data-testid="who-is-working"]');
     if (pill === null) throw new Error("subagent pill did not render");
     await act(async () => pill.click());
     expect(document.querySelector(".workspace-subagent-list")).not.toBeNull();

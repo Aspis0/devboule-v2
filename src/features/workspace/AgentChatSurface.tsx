@@ -42,6 +42,7 @@ import type {
   SessionManifest,
   SessionModel,
   SessionState,
+  SessionTask,
 } from "../../types/ipc";
 import { acquire, release, peek } from "../../lib/agentSessionRegistry";
 import { AgentSession, lastAssistantMessage, normalizeGoal } from "../../lib/agentSession";
@@ -57,7 +58,6 @@ import { sendChatImagesByReference } from "./chatImageTransport";
 import { useFileAttachments } from "./useFileAttachments";
 import type { FileUploader } from "./fileUpload";
 import { SubagentMenu, type SubagentArchiveTarget } from "./SubagentMenu";
-import { BackgroundTasksPill } from "./BackgroundTasksPill";
 import { childRow, childTaskStates, deriveSubagentRows, isArchivable } from "./subagentRows";
 import { useBackgroundTaskState } from "./useBackgroundTaskState";
 import { AgentReadingPublisher } from "./statusBar/AgentReadingPublisher";
@@ -127,6 +127,8 @@ export function composerResumesEnded(
 /** The universal `/goal` entry: `/goal x` travels to the daemon as plain
  * text, which intercepts it, so the app only makes it discoverable. */
 /** The plan chip's state: a dot that is lit while plan mode is on. */
+const EMPTY_TASKS: readonly SessionTask[] = [];
+
 function planDotClass(id: string): string {
   return id === "on" ? "workspace-plan-dot is-on" : "workspace-plan-dot is-off";
 }
@@ -177,10 +179,10 @@ interface AgentChatSurfaceProps {
    * composer is disabled as before. */
   resumeStopped?: () => Promise<boolean>;
   onOpenSubagent?: (sessionId: string) => void;
+  /** Stops a running child from the who-is-working list; answers with the refusal, or null. */
+  onStopSubagent?: (sessionId: string) => Promise<string | null>;
   subagentAttention?: ReadonlyMap<string, string>;
   onRefreshSubagents?: () => Promise<void>;
-  /** Opens the side panel on its Tasks tab. Absent: the running-task pill is not drawn. */
-  onOpenTasks?: () => void;
   /** The session's controller once it exists: the Tasks tab reads its task lane through the workspace. */
   onAgentChange?: (sessionId: string, agent: AgentSession | null) => void;
   /**
@@ -208,10 +210,10 @@ interface AgentChatSurfaceProps {
   daemonInstanceId?: string | null;
   /**
    * The roster rows the agent-to-agent card resolves a relay's sender against,
-   * the subagent pill lists this session's created children from, and the
-   * archive act rechecks before each close. Handed none, the card can only
+   * the who-is-working line lists this session's created children from, and
+   * the archive act rechecks before each close. Handed none, the card can only
    * show the session id the frame named — the truth it has, minus the name —
-   * and the pill lists provider tasks alone.
+   * and the line lists provider tasks alone.
    */
   sessionRoster?: ReadonlyArray<
     Pick<Session, "displayName" | "id" | "kind" | "title" | "createdBy" | "activity"> & {
@@ -396,7 +398,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   onOpenSubagent,
   subagentAttention,
   onRefreshSubagents,
-  onOpenTasks,
+  onStopSubagent,
   onAgentChange,
   fileLinks = null,
   loadFileIndex,
@@ -417,7 +419,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   onPermissionResolved,
 }: AgentChatSurfaceProps) {
   const sessionRef = useRef<AgentSession | null>(null);
-  // The controller as state, so the pill and the workspace can read its task lane.
+  // The controller as state, so the line and the workspace can read its task lane.
   const [agent, setAgent] = useState<AgentSession | null>(null);
   const [state, setState] = useState<AgentSessionState>(
     () =>
@@ -707,7 +709,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         sessionRef.current?.getState().subagents ?? [],
         childTaskStates(sessionRef.current?.getTaskState() ?? null),
       ).filter((row) => !(row.kind === "child" && closed.has(row.id)));
-      // The last row takes the pill and the menu with it: focus has to land
+      // The last row takes the line and its list with it: focus has to land
       // somewhere that stays, and a disabled composer cannot take it.
       if (closed.size > 0 && remaining.length === 0) {
         focusComposer();
@@ -847,12 +849,25 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     () => <AgentTaskPill items={state.agentTasks ?? []} />,
     [state.agentTasks],
   );
-  const backgroundPill = useMemo(
-    () =>
-      onOpenTasks === undefined ? null : (
-        <BackgroundTasksPill source={agent} onOpen={onOpenTasks} />
-      ),
-    [agent, onOpenTasks],
+  const whoIsWorking = useMemo(
+    () => (
+      <SubagentMenu
+        rows={subagentRows}
+        tasks={backgroundTasks?.tasks ?? EMPTY_TASKS}
+        onOpenSession={onOpenSubagent}
+        attentionById={subagentAttention}
+        onArchiveFinished={archiveFinishedSubagents}
+        onStopSubagent={onStopSubagent}
+      />
+    ),
+    [
+      subagentRows,
+      backgroundTasks,
+      onOpenSubagent,
+      subagentAttention,
+      archiveFinishedSubagents,
+      onStopSubagent,
+    ],
   );
   // `/goal` rides to the daemon as plain text, which intercepts it: the app
   // only makes it discoverable, for a live agent session alone.
@@ -928,17 +943,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
       />
       {/* No row of its own: the wrapper has zero height on a live pane without
           subagents. Archive lives in the tab menu. */}
-      <div className="workspace-agent-extras">
-        {subagentRows.length > 0 ? (
-          <SubagentMenu
-            rows={subagentRows}
-            onOpenSession={onOpenSubagent}
-            attentionById={subagentAttention}
-            onArchiveFinished={archiveFinishedSubagents}
-          />
-        ) : null}
-        {headerTrailing}
-      </div>
+      <div className="workspace-agent-extras">{headerTrailing}</div>
       {/* Remounted per goal text: the disclosure state belongs to the text,
           so a replaced goal arrives collapsed. */}
       <GoalLine key={state.goal ?? "no-goal"} goal={state.goal ?? null} />
@@ -1011,7 +1016,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         disabledReason={recoveredAttach || resumesEnded ? null : disabledReason}
         availableCommands={composerCommands}
         taskPill={taskPill}
-        backgroundPill={backgroundPill}
+        whoIsWorking={whoIsWorking}
         queuedTrack={queuedTrack}
         restoreDraft={restoreDraft}
         onQueue={queueSupported ? queueFromComposer : undefined}

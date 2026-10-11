@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 
-// Children the parent created reach the pill from the roster alone: no task
+// Children the parent created reach the line from the roster alone: no task
 // event fires in any test but the mixed list's, because none fires for them.
+// A finished child draws no line, so each list here keeps one child working.
 import { resetRegistry } from "../../lib/agentSessionRegistry";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -48,26 +49,30 @@ afterEach(async () => {
   channelHarness.activeSubscriptionId = null;
 });
 
-function pill(): HTMLButtonElement | null {
-  return container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
+function line(): HTMLButtonElement | null {
+  return container.querySelector<HTMLButtonElement>('[data-testid="who-is-working"]');
 }
 
 describe("a child the parent created, with no task event", () => {
-  it("shows the child in the pill and lists it in the menu", async () => {
+  it("shows the working child on the line and lists it in the menu", async () => {
     const refresh = vi.fn(async () => undefined);
-    await act(async () => root.render(surface([idle("child-a", 1, "Created child")], refresh)));
+    await act(async () => root.render(surface([live("child-a", 1, "Created child")], refresh)));
 
-    expect(pill()).not.toBeNull();
+    expect(line()).not.toBeNull();
     await openMenu();
     expect(rowTitles()).toEqual(["Created child"]);
   });
 
-  it("offers the archive for an idle child and closes it on confirm", async () => {
+  it("offers the archive for a finished child and closes it on confirm", async () => {
     const refresh = vi.fn(async () => undefined);
-    await act(async () => root.render(surface([idle("child-a", 1, "Created child")], refresh)));
+    await act(async () =>
+      root.render(
+        surface([idle("child-a", 1, "Created child"), live("child-run", 1, "Busy child")], refresh),
+      ),
+    );
     await openMenu();
 
-    expect(archiveAction()?.textContent).toBe("Archive 1 finished subagent");
+    expect(archiveAction()?.textContent).toBe("Archive 1 finished");
     await pressArchiveAction();
     await answerAsk("Archive");
 
@@ -80,7 +85,7 @@ describe("a child the parent created, with no task event", () => {
     const refresh = vi.fn(async () => undefined);
     await act(async () => root.render(surface([live("child-a", 1, "Busy child")], refresh)));
 
-    expect(pill()?.getAttribute("aria-label")).toBe("Subagents: 1 working");
+    expect(line()?.getAttribute("aria-label")).toBe("Busy child working");
     await openMenu();
     expect(archiveAction()).toBeNull();
   });
@@ -90,19 +95,24 @@ describe("a child the parent created, with no task event", () => {
     const stranger = { ...idle("child-x", 1, "Not mine"), createdBy: "someone-else" };
     await act(async () => root.render(surface([stranger], refresh)));
 
-    expect(pill()).toBeNull();
+    expect(line()).toBeNull();
   });
 
   it("never offers to archive the parent, even when its own row names it as creator", async () => {
     const refresh = vi.fn(async () => undefined);
     const selfParented = { ...ended("parent", 1, "Parent row"), createdBy: "parent" };
     await act(async () =>
-      root.render(surface([selfParented, idle("child-a", 1, "Created child")], refresh)),
+      root.render(
+        surface(
+          [selfParented, idle("child-a", 1, "Created child"), live("child-run", 1, "Busy child")],
+          refresh,
+        ),
+      ),
     );
     await openMenu();
 
-    expect(rowTitles()).toEqual(["Created child"]);
-    expect(archiveAction()?.textContent).toBe("Archive 1 finished subagent");
+    expect(rowTitles()).toEqual(["Created child", "Busy child"]);
+    expect(archiveAction()?.textContent).toBe("Archive 1 finished");
     await pressArchiveAction();
     await answerAsk("Archive");
 
@@ -115,7 +125,14 @@ describe("a child the parent created, with no task event", () => {
     const refresh = vi.fn(async () => undefined);
     const opened = vi.fn();
     await act(async () =>
-      root.render(surface([idle("child-a", 1, "Created child")], refresh, undefined, opened)),
+      root.render(
+        surface(
+          [idle("child-a", 1, "Created child"), live("child-run", 1, "Busy child")],
+          refresh,
+          undefined,
+          opened,
+        ),
+      ),
     );
     await openMenu();
 
@@ -132,7 +149,14 @@ describe("a child the parent created, with no task event", () => {
     const refresh = vi.fn(async () => undefined);
     await act(async () =>
       root.render(
-        surface([idle("child-a", 1, "First child"), idle("child-b", 1, "Second child")], refresh),
+        surface(
+          [
+            idle("child-a", 1, "First child"),
+            idle("child-b", 1, "Second child"),
+            live("child-run", 1, "Busy child"),
+          ],
+          refresh,
+        ),
       ),
     );
     await openMenu();
@@ -140,7 +164,14 @@ describe("a child the parent created, with no task event", () => {
     await pressArchiveAction();
     await act(async () =>
       root.render(
-        surface([live("child-a", 1, "First child"), idle("child-b", 1, "Second child")], refresh),
+        surface(
+          [
+            live("child-a", 1, "First child"),
+            idle("child-b", 1, "Second child"),
+            live("child-run", 1, "Busy child"),
+          ],
+          refresh,
+        ),
       ),
     );
     await answerAsk("Archive");
@@ -155,13 +186,17 @@ describe("a child the parent created, with no task event", () => {
 describe("the list that mixes created children and provider tasks", () => {
   it("lists children first, then tasks, and archives only the child", async () => {
     const refresh = vi.fn(async () => undefined);
-    await act(async () => root.render(surface([idle("child-a", 1, "Created child")], refresh)));
+    await act(async () =>
+      root.render(
+        surface([idle("child-a", 1, "Created child"), live("child-run", 1, "Busy child")], refresh),
+      ),
+    );
     await addSubagent("task-1", "Provider task");
     await settleSubagent("task-1", "completed");
     await openMenu();
 
-    expect(rowTitles()).toEqual(["Created child", "Provider taskUnavailable"]);
-    expect(archiveAction()?.textContent).toBe("Archive 1 finished subagent");
+    expect(rowTitles()).toEqual(["Created child", "Busy child", "Provider task"]);
+    expect(archiveAction()?.textContent).toBe("Archive 1 finished");
     await pressArchiveAction();
     await answerAsk("Archive");
 
@@ -176,7 +211,7 @@ describe("the list that mixes created children and provider tasks", () => {
     await settleSubagent("same-id", "completed");
     await openMenu();
 
-    expect(rowTitles()).toEqual(["Busy child", "Provider taskUnavailable"]);
+    expect(rowTitles()).toEqual(["Busy child", "Provider task"]);
     expect(archiveAction()).toBeNull();
   });
 });

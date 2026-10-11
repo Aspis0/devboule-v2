@@ -59,8 +59,20 @@ const waitingChild = {
   activity: "blocked" as const,
 };
 
+// Keeps the line up: a settled child alone draws no line, so no list would open.
+const runningChild = {
+  id: "child-running",
+  kind: "acp" as const,
+  title: "Still working",
+  createdBy: "parent",
+  state: { type: "live" as const, generation: 1 },
+  activity: "working" as const,
+};
+
+type Child = typeof failedChild | typeof waitingChild | typeof runningChild;
+
 async function renderParent(
-  sessionRoster: readonly (typeof failedChild | typeof waitingChild)[],
+  sessionRoster: readonly Child[],
   subagentAttention?: ReadonlyMap<string, string>,
 ) {
   await act(async () =>
@@ -74,7 +86,7 @@ async function renderParent(
     ),
   );
   await act(async () =>
-    container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]')?.click(),
+    container.querySelector<HTMLButtonElement>('[data-testid="who-is-working"]')?.click(),
   );
 }
 
@@ -87,7 +99,7 @@ function rowDot(title: string): Element | null {
 
 describe("subagent dots: a child waiting on a person is ochre, an exit code is not a failure", () => {
   it("paints a child that ended on an exit code as stopped, never failed", async () => {
-    await renderParent([failedChild]);
+    await renderParent([failedChild, runningChild]);
     const dot = rowDot("Crashed child");
     expect(dot?.classList.contains("workspace-subagent-status-stopped")).toBe(true);
     expect(dot?.classList.contains("workspace-subagent-status-failed")).toBe(false);
@@ -102,20 +114,19 @@ describe("subagent dots: a child waiting on a person is ochre, an exit code is n
     expect(dot?.classList.contains("workspace-subagent-status-failed")).toBe(false);
   });
 
-  it("paints the pill's approval dot with the attention class, never the failed one", async () => {
+  it("paints the line's approval dot with the attention tone, never the danger one", async () => {
     await renderParent([waitingChild], new Map([["child-waiting", "Needs your approval"]]));
-    const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
-    const dot = pill?.querySelector(".workspace-subagent-attention .workspace-subagent-status-dot");
-    expect(dot?.classList.contains("workspace-subagent-status-attention")).toBe(true);
-    expect(dot?.classList.contains("workspace-subagent-status-failed")).toBe(false);
+    const line = container.querySelector<HTMLButtonElement>('[data-testid="who-is-working"]');
+    expect(line?.querySelector(".workspace-who-dot-attention")).not.toBeNull();
+    expect(line?.querySelector(".workspace-who-dot-danger")).toBeNull();
   });
 
-  it("keeps a failed child off the pill: its failure shows in the list the pill opens", async () => {
-    await renderParent([failedChild]);
-    const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
-    expect(pill?.getAttribute("aria-label")).not.toContain("failed");
-    expect(pill?.querySelector(".workspace-subagent-status-failed")).toBeNull();
-    expect(pill?.textContent).not.toContain("failed");
+  it("keeps a failed child off the line: its failure shows in the list the line opens", async () => {
+    await renderParent([failedChild, runningChild]);
+    const line = container.querySelector<HTMLButtonElement>('[data-testid="who-is-working"]');
+    expect(line?.getAttribute("aria-label")).not.toContain("failed");
+    expect(line?.querySelector(".workspace-who-dot-danger")).toBeNull();
+    expect(line?.textContent).not.toContain("failed");
   });
 
   it("gives the failed class the failed token, and the attention class the approval token", () => {

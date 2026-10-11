@@ -1,11 +1,18 @@
-// What one parent's subagent pill lists: the children it created, read from
-// the roster, and the provider's own task rows, kept apart by kind.
+// What the who-is-working line and its list read for one parent: the children
+// it created, read from the roster, and the provider's own task rows, kept
+// apart by kind.
 import type {
   AgentSubagent,
   AgentSubagentStatus,
   AgentSubagentStatusCounts,
 } from "../../lib/agentSession";
-import type { AgentActivityState, Session, SessionState, SessionTask } from "../../types/ipc";
+import type {
+  AgentActivityState,
+  Session,
+  SessionKind,
+  SessionState,
+  SessionTask,
+} from "../../types/ipc";
 import type { BackgroundTaskState } from "../../lib/backgroundTasks";
 import { sessionTitle } from "./workspaceSessions";
 
@@ -17,6 +24,8 @@ export interface SubagentRow {
   status: AgentSubagentStatus;
   /** The roster generation a child had; a task has none. */
   generation: number | null;
+  /** The provider a child runs under, for its mark; a task has none. */
+  provider?: SessionKind;
 }
 
 type RosterChild = Pick<
@@ -72,6 +81,7 @@ export function childRow(session: RosterChild, taskState?: SessionTask["state"])
     title: sessionTitle(session),
     status: childStatus(session.state, session.activity, taskState),
     generation: session.state?.generation ?? null,
+    provider: session.kind,
   };
 }
 

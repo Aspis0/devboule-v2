@@ -41,11 +41,11 @@ describe("user-opened workspace tabs", () => {
     ]);
     expect(tabTitles()).toHaveLength(1);
     expect(document.querySelector(".permission-card")).toBeNull();
-    const pill = document.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
-    expect(pill?.getAttribute("aria-label")).toContain("1 needs your approval");
+    const pill = document.querySelector<HTMLButtonElement>('[data-testid="who-is-working"]');
+    expect(pill?.getAttribute("aria-label")).toBe("Child needs you");
     await act(async () => pill?.click());
     const row = document.querySelector<HTMLButtonElement>("button.workspace-subagent-row");
-    expect(row?.textContent).toContain("Needs your approval");
+    expect(row?.textContent).toContain("needs you");
     expect(row?.getAttribute("aria-label")).toContain("Open in tab");
     await act(async () => row?.click());
     expect(tabElement(child.id).getAttribute("aria-selected")).toBe("true");
@@ -66,9 +66,9 @@ describe("user-opened workspace tabs", () => {
       { ...liveSnapshot(child.id, child.title, "acp"), createdBy: parent.id },
     ]);
     await chipClick(child.id);
-    const clearedPill = document.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
-    expect(clearedPill?.getAttribute("aria-label")).not.toContain("your approval");
-    expect(clearedPill?.querySelector(".workspace-subagent-attention")).toBeNull();
+    const clearedPill = document.querySelector<HTMLButtonElement>('[data-testid="who-is-working"]');
+    expect(clearedPill?.getAttribute("aria-label") ?? "").not.toContain("needs you");
+    expect(document.querySelector(".workspace-subagent-attention")).toBeNull();
     const trigger = document.querySelector(".workspace-rate");
     expect(trigger?.getAttribute("aria-label")).not.toContain("your approval");
     expect(trigger?.querySelector(".strip-dot-attention")).toBeNull();
@@ -91,13 +91,17 @@ describe("user-opened workspace tabs", () => {
     vi.mocked(sessionsList).mockResolvedValue([parent, child, recovered]);
     await pushSnapshots([
       liveSnapshot(parent.id, parent.title, "acp"),
-      { ...liveSnapshot(child.id, child.title, "acp"), createdBy: parent.id },
+      {
+        ...liveSnapshot(child.id, child.title, "acp"),
+        createdBy: parent.id,
+        activity: "working",
+      },
       { ...liveSnapshot(recovered.id, recovered.title, "acp"), state: recovered.state },
     ]);
     expect(tabTitles()).toHaveLength(1);
     expect(sharedSessionController().getState().sessions).toHaveLength(3);
     await act(async () =>
-      document.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]')?.click(),
+      document.querySelector<HTMLButtonElement>('[data-testid="who-is-working"]')?.click(),
     );
     const row = document.querySelector<HTMLButtonElement>("button.workspace-subagent-row");
     if (row === null) throw new Error("child row did not render");

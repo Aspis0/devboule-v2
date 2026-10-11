@@ -1577,7 +1577,7 @@ export function Workspace({
     },
     [sessions, handleReopenSession, refreshSessions],
   );
-  // The Tasks tab's open road: the subagent pill's road, except that a child the
+  // The Tasks tab's open road: the who-is-working list's road, except that a child the
   // roster does not list says so rather than doing nothing.
   const openTaskAgent = useCallback(
     (sessionId: string): string | null => {
@@ -1626,10 +1626,6 @@ export function Workspace({
     },
     [sessions],
   );
-  const openTasksTab = useCallback(() => {
-    setActiveSidePanel("tasks");
-    setRightCollapsed(false);
-  }, [setRightCollapsed]);
   const agentTasks = useMemo<AgentTasksContext | null>(
     () =>
       paneSession !== null && paneAgent?.sessionId === paneSession.id
@@ -2639,7 +2635,7 @@ export function Workspace({
             onOpenSubagent={handleOpenSubagent}
             subagentAttention={subagentAttention}
             onRefreshSubagents={refreshSessions}
-            onOpenTasks={openTasksTab}
+            onStopSubagent={stopAgent}
             onAgentChange={reportPaneAgentWithFirstMessage}
             deviceNames={peerNames}
             hasPendingPermission={hasPendingPermission}

@@ -13,7 +13,6 @@ import { fakeTaskSource } from "./backgroundTaskSourceHarness";
 import type { BackgroundTaskSource } from "./useBackgroundTaskState";
 
 const surface = vi.hoisted(() => ({
-  openTasks: null as (() => void) | null,
   reportAgent: null as ((sessionId: string, agent: BackgroundTaskSource | null) => void) | null,
 }));
 
@@ -63,20 +62,13 @@ vi.mock("../terminal/TerminalSurface", () => ({
 vi.mock("./AgentChatSurface", () => ({
   AgentChatSurface: ({
     sessionId,
-    onOpenTasks,
     onAgentChange,
   }: {
     sessionId: string;
-    onOpenTasks?: () => void;
     onAgentChange?: (sessionId: string, agent: BackgroundTaskSource | null) => void;
   }) => {
-    surface.openTasks = onOpenTasks ?? null;
     surface.reportAgent = onAgentChange ?? null;
-    return (
-      <div data-testid="agent-chat-surface" data-session={sessionId}>
-        <button type="button" data-testid="stub-open-tasks" onClick={() => onOpenTasks?.()} />
-      </div>
-    );
+    return <div data-testid="agent-chat-surface" data-session={sessionId} />;
   },
 }));
 
@@ -167,7 +159,6 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
-  surface.openTasks = null;
   surface.reportAgent = null;
   vi.clearAllMocks();
 });
@@ -270,13 +261,5 @@ describe("the workspace's Tasks tab", () => {
     await act(async () => container.querySelector<HTMLButtonElement>(".tasks-panel-open")?.click());
 
     expect(container.querySelector('[role="alert"]')?.textContent).toBe("This agent was archived.");
-  });
-
-  it("opens on the Tasks tab when the pill's press asks for it", async () => {
-    await renderWorkspace();
-
-    await act(async () => surface.openTasks?.());
-
-    expect(tab("tasks").getAttribute("aria-selected")).toBe("true");
   });
 });

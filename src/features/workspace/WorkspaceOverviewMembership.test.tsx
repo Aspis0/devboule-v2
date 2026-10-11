@@ -28,11 +28,6 @@ function trigger(): HTMLButtonElement {
   return button;
 }
 
-function subagentPill(): HTMLButtonElement {
-  const button = document.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
-  if (button === null) throw new Error("Subagent pill did not render");
-  return button;
-}
 const optionIds = () =>
   [...document.querySelectorAll<HTMLElement>("[data-overview-option]")]
     .map((option) => option.dataset.overviewOption)
@@ -209,18 +204,9 @@ describe("workspace overview eligibility", () => {
       expect(trigger().getAttribute("aria-label")).not.toContain("needs your approval");
       expect(trigger().querySelector(".strip-dot-attention")).toBeNull();
       if (open) expect(tabElement(child.id).querySelector(".strip-dot-attention")).toBeNull();
-      const pill = subagentPill();
-      expect(pill.getAttribute("aria-label")).not.toContain("working");
-      expect(pill.getAttribute("aria-label")).not.toContain("needs your approval");
-      expect(pill.querySelector(".workspace-subagent-attention")).toBeNull();
-      await act(async () => pill.click());
-      expect(
-        document.querySelector(".workspace-subagent-row")?.getAttribute("aria-label"),
-      ).toContain("Ended child, finished");
-      expect(
-        document.querySelector(".workspace-subagent-row .workspace-subagent-attention"),
-      ).toBeNull();
-      await act(async () => pill.click());
+      // A settled child draws no line, so nothing here can light.
+      expect(document.querySelector('[data-testid="who-is-working"]')).toBeNull();
+      expect(document.querySelector(".workspace-subagent-attention")).toBeNull();
       await act(async () => trigger().click());
       expect(optionIds()).toEqual(open ? [child.id, parent.id] : [parent.id]);
       expect(document.querySelector(".workspace-overview-attention")).toBeNull();
@@ -242,8 +228,8 @@ describe("workspace overview eligibility", () => {
       expect(document.querySelector(".sidebar-row-dot-attention")).toBeNull();
       expect(trigger().getAttribute("aria-label")).not.toContain("your approval");
       expect(trigger().querySelector(".strip-dot-attention")).toBeNull();
-      const pill = subagentPill();
-      expect(pill.getAttribute("aria-label")).not.toContain("your approval");
+      // A settled child draws no line, so no approval can be named on one.
+      expect(document.querySelector('[data-testid="who-is-working"]')).toBeNull();
       await act(async () => trigger().click());
       const childOption = document.querySelector('[data-overview-option="child"]');
       expect(childOption?.textContent).toContain(reason === "finished" ? "Done" : "Failed");

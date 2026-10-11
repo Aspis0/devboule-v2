@@ -1,24 +1,24 @@
-// The subagent pill in the pane header and the menu it opens. The menu
-// renders through the shared anchored portal because the pill sits at the
-// top of the centre panel, where the panel's overflow would clip whatever
-// opens from it. Which side the menu opens on is the portal's placement
-// call: above when the content fits above, below over the transcript when
-// it does not.
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+// The one "who is working" line above the composer and the list it opens. The
+// list renders through the shared anchored portal because the line sits in the
+// composer, where the panel's overflow would clip what opens from it. Which side
+// the list opens on is the portal's placement call.
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { AnchoredPopover } from "./popoverPlace";
 import { useMenuOpen } from "../../lib/menuOpen";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { useConfirmAsk } from "../../components/ConfirmHost";
 import "./SubagentMenu.css";
+import type { SessionTask } from "../../types/ipc";
 import type { AgentSubagentStatus } from "../../lib/agentSession";
 import { isArchivable, type SubagentRow } from "./subagentRows";
-
-function shortSubagentId(id: string): string {
-  return id.length > 16 ? `${id.slice(0, 12)}…` : id;
-}
-
-function subagentTitle(title: string | null, id: string): string {
-  return title?.trim() ? title : shortSubagentId(id);
-}
+import { StripKindMark } from "./strip/StripKindMark";
+import { useTaskClock } from "./useTaskClock";
+import {
+  rowClock,
+  subagentTitle,
+  whoIsWorkingSegments,
+  type LineSegment,
+} from "./whoIsWorkingLine";
 
 /** A row paints its state, except a child waiting on a person paints the approval. */
 type SubagentDot = AgentSubagentStatus | "attention";
@@ -31,6 +31,7 @@ function subagentDotClass(dot: SubagentDot): string {
 // roster, the transcript stays in History, and attachments do not survive it.
 const ARCHIVE_ASK_MESSAGE =
   "They leave this list and their tabs close. Their transcripts stay in History; their attached files are removed.";
+const STOP_MESSAGE = "The agent stops where it is. Its transcript stays in History.";
 
 /** One child as the ask takes it: its id and the generation its roster row
  * held then; the act closes it only while that still matches. */
@@ -41,6 +42,8 @@ export interface SubagentArchiveTarget {
 
 export interface SubagentMenuProps {
   rows: readonly SubagentRow[];
+  /** The open agent's task list: its running commands and the start of each running turn. */
+  tasks: readonly SessionTask[];
   onOpenSession?: (sessionId: string) => void;
   attentionById?: ReadonlyMap<string, string>;
   /** Closes the named children, reads the roster back, and answers with one
@@ -48,30 +51,61 @@ export interface SubagentMenuProps {
   onArchiveFinished?: (
     targets: readonly SubagentArchiveTarget[],
   ) => Promise<ReadonlyMap<string, string>>;
+  /** Stops a running child; answers with the refusal sentence, or null. */
+  onStopSubagent?: (sessionId: string) => Promise<string | null>;
+}
+
+function segmentText(segment: LineSegment): string {
+  const parts = [segment.name, segment.word];
+  if (segment.tone === "live") {
+    if (segment.clock !== null) parts.push(segment.clock);
+    if (segment.commands !== null) parts.push(segment.commands);
+  }
+  return parts.join(" ");
 }
 
 export function SubagentMenu({
   rows,
+  tasks,
   onOpenSession,
   attentionById,
   onArchiveFinished,
+  onStopSubagent,
 }: SubagentMenuProps) {
-  const pillRef = useRef<HTMLButtonElement>(null);
+  const lineRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const listId = useId();
   const sentencePrefix = useId();
+  const askConfirm = useConfirmAsk();
   const [open, setOpen] = useState(false);
   const [sentences, setSentences] = useState<ReadonlyMap<string, string>>(new Map());
   const [archiving, setArchiving] = useState(false);
   const [archiveNonce, setArchiveNonce] = useState(0);
   /** The children the open ask was raised for; null while no ask is up. */
   const [ask, setAsk] = useState<readonly SubagentArchiveTarget[] | null>(null);
+  /** Failed children whose tab was opened from the list: the line stops naming them. */
+  const [seenFailed, setSeenFailed] = useState<ReadonlySet<string>>(new Set());
   /** Same-tick re-entry: the dialog's open state clears only on the next render. */
   const runningRef = useRef(false);
 
+  const live =
+    rows.some((row) => row.status === "running") || tasks.some((task) => task.state === "running");
+  const now = useTaskClock(live);
+  const segments = useMemo(
+    () =>
+      whoIsWorkingSegments({
+        rows,
+        waitingIds: new Set(attentionById?.keys()),
+        seenFailedIds: seenFailed,
+        tasks,
+        now,
+      }),
+    [rows, attentionById, seenFailed, tasks, now],
+  );
+
   const close = useCallback(() => {
     if (menuRef.current?.contains(document.activeElement)) {
-      pillRef.current?.focus({ preventScroll: true });
+      lineRef.current?.focus({ preventScroll: true });
     }
     setOpen(false);
   }, []);
@@ -80,18 +114,18 @@ export function SubagentMenu({
 
   useEffect(() => {
     // The ask owns Escape and the press outside itself while it is up:
-    // closing the menu under the ask unmounts the button Cancel returns to.
+    // closing the list under the ask unmounts the button Cancel returns to.
     if (!open || ask !== null) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") close();
     };
     // Outside press closes on pointerdown, the house pattern: the press
-    // that opens the menu is a click, and the pill's own click toggles.
+    // that opens the list is a click, and the line's own click toggles.
     const closeOnOutsidePress = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Node)) return;
       if (menuRef.current?.contains(target)) return;
-      if (pillRef.current?.contains(target)) return;
+      if (lineRef.current?.contains(target)) return;
       close();
     };
     document.addEventListener("keydown", closeOnEscape);
@@ -103,7 +137,7 @@ export function SubagentMenu({
   }, [open, ask, close]);
 
   // After an archive the focus lands on the first remaining row, else back on
-  // the pill; when the last row goes, the surface owns where focus lands.
+  // the line; when the last row goes, the surface owns where focus lands.
   useEffect(() => {
     if (archiveNonce === 0) return;
     const firstRow = menuRef.current?.querySelector<HTMLButtonElement>(
@@ -113,12 +147,12 @@ export function SubagentMenu({
       firstRow.focus({ preventScroll: true });
       return;
     }
-    pillRef.current?.focus({ preventScroll: true });
+    lineRef.current?.focus({ preventScroll: true });
     close();
   }, [archiveNonce, close]);
 
   // The dialog gives focus back to the action the ask came from; when the
-  // roster dropped the last target meanwhile, that action is gone and the pill
+  // roster dropped the last target meanwhile, that action is gone and the line
   // is the nearest control left. The dialog's own effect has already run.
   const askWasUpRef = useRef(false);
   useEffect(() => {
@@ -126,10 +160,10 @@ export function SubagentMenu({
     askWasUpRef.current = ask !== null;
     if (!wasUp || ask !== null) return;
     if (document.activeElement !== null && document.activeElement !== document.body) return;
-    pillRef.current?.focus({ preventScroll: true });
+    lineRef.current?.focus({ preventScroll: true });
   }, [ask]);
 
-  if (rows.length === 0) return null;
+  if (segments.length === 0) return null;
 
   const archivable = rows.filter(isArchivable);
 
@@ -160,57 +194,68 @@ export function SubagentMenu({
     }
   };
 
-  const attentionCount = rows.filter((row) => attentionOf(row) !== undefined).length;
-  // A child waiting on an approval card is counted once, as the approval it owes.
-  const working = rows.filter(
-    (row) => row.status === "running" && attentionOf(row) === undefined,
-  ).length;
-  const counts = [
-    ...(attentionCount > 0
-      ? [`${attentionCount} ${attentionCount === 1 ? "needs" : "need"} your approval`]
-      : []),
-    ...(working > 0 ? [`${working} working`] : []),
-  ].join(", ");
-  // A settled fan-out has no colour worth showing, so the pill names what
-  // its chevron opens instead of going wordless.
-  const totalLabel = `${rows.length} subagent${rows.length === 1 ? "" : "s"}`;
-  const pillLabel = counts === "" ? totalLabel : `Subagents: ${counts}`;
+  const openRow = (row: SubagentRow) => {
+    if (row.status === "failed") setSeenFailed((seen) => new Set(seen).add(row.id));
+    close();
+    onOpenSession?.(row.id);
+  };
+
+  const stopRow = async (row: SubagentRow): Promise<void> => {
+    if (onStopSubagent === undefined) return;
+    const confirmed = await askConfirm({
+      title: `Stop ${subagentTitle(row.title, row.id)}?`,
+      message: STOP_MESSAGE,
+      confirmLabel: "Stop",
+      cancelLabel: "Keep it running",
+    });
+    if (!confirmed) return;
+    const refusal = await onStopSubagent(row.id);
+    setSentences((current) => {
+      const next = new Map(current);
+      if (refusal === null) next.delete(row.id);
+      else next.set(row.id, refusal);
+      return next;
+    });
+  };
+
+  const label = segments.map(segmentText).join(", ");
 
   return (
     <div className="workspace-subagent-menu">
       <button
         type="button"
-        ref={pillRef}
-        className="workspace-subagent-pill"
-        data-testid="subagent-pill"
-        aria-label={pillLabel}
+        ref={lineRef}
+        className="workspace-who-line"
+        data-testid="who-is-working"
+        aria-label={label}
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
         onClick={() => setOpen((value) => !value)}
       >
-        {attentionCount > 0 ? (
-          <span className="workspace-subagent-pill-group workspace-subagent-attention">
+        {segments.map((segment) => (
+          <span className="workspace-who-segment" key={`${segment.tone}:${segment.name}`}>
             <span
-              className={`workspace-subagent-status-dot ${subagentDotClass("attention")}`}
+              className={`workspace-who-dot workspace-who-dot-${segment.tone}`}
               aria-hidden="true"
             />
-            <span>
-              {attentionCount} {attentionCount === 1 ? "needs" : "need"} your approval
-            </span>
+            <span className="workspace-who-name">{segment.name}</span>
+            {segment.tone === "attention" ? (
+              <span className="workspace-who-word workspace-who-word-attention">
+                {segment.word}
+              </span>
+            ) : (
+              <span className="workspace-who-word">{segment.word}</span>
+            )}
+            {segment.tone === "live" && segment.clock !== null ? (
+              <span className="workspace-who-clock">{segment.clock}</span>
+            ) : null}
+            {segment.tone === "live" && segment.commands !== null ? (
+              <span className="workspace-who-word">· {segment.commands}</span>
+            ) : null}
           </span>
-        ) : null}
-        {working > 0 ? (
-          <span className="workspace-subagent-pill-group">
-            <span
-              className={`workspace-subagent-status-dot ${subagentDotClass("running")} dot-pulse`}
-              aria-hidden="true"
-            />
-            <span>{working} working</span>
-          </span>
-        ) : null}
-        {counts === "" ? <span className="workspace-subagent-pill-group">{totalLabel}</span> : null}
+        ))}
         <svg
-          className="workspace-subagent-pill-chevron"
+          className={`workspace-who-chevron${open ? " is-open" : ""}`}
           width={12}
           height={12}
           viewBox="0 0 24 24"
@@ -222,7 +267,7 @@ export function SubagentMenu({
       </button>
       {open ? (
         <AnchoredPopover
-          anchorRef={pillRef}
+          anchorRef={lineRef}
           containerRef={menuRef}
           onDismiss={close}
           openAbove
@@ -230,7 +275,7 @@ export function SubagentMenu({
           id={listId}
         >
           <div className="workspace-subagent-list-head">
-            Subagents
+            Agents
             {onArchiveFinished !== undefined && archivable.length > 0 ? (
               <button
                 type="button"
@@ -239,8 +284,7 @@ export function SubagentMenu({
                 disabled={archiving}
                 onClick={() => setAsk(archivable.map(askTarget))}
               >
-                Archive {archivable.length} finished subagent
-                {archivable.length === 1 ? "" : "s"}
+                Archive {archivable.length} finished
               </button>
             ) : null}
           </div>
@@ -249,44 +293,59 @@ export function SubagentMenu({
               const sentence = row.kind === "child" ? sentences.get(row.id) : undefined;
               const attention = attentionOf(row);
               const title = subagentTitle(row.title, row.id);
+              const clock = rowClock(row, tasks, now);
+              const canStop =
+                row.kind === "child" &&
+                row.status === "running" &&
+                attention === undefined &&
+                onStopSubagent !== undefined;
               return (
                 <div key={`${row.kind}:${row.id}`} role="listitem">
-                  <button
-                    type="button"
-                    className="workspace-subagent-row"
-                    disabled={!openable(row) || onOpenSession === undefined}
-                    aria-label={`${title}, ${row.status}${attention !== undefined ? `, ${attention}` : ""}, ${openable(row) && onOpenSession !== undefined ? "Open in tab" : "Session unavailable"}`}
-                    aria-describedby={
-                      sentence !== undefined ? `${sentencePrefix}${row.id}` : undefined
-                    }
-                    title={!openable(row) ? "Session unavailable" : undefined}
-                    onClick={() => {
-                      close();
-                      onOpenSession?.(row.id);
-                    }}
-                  >
-                    <span
-                      className={`workspace-subagent-status-dot ${subagentDotClass(attention !== undefined ? "attention" : row.status)}`}
-                      aria-hidden="true"
-                    />
-                    <span className="workspace-subagent-row-title" title={title}>
-                      {title}
-                    </span>
-                    {attention !== undefined ? (
-                      <span className="workspace-subagent-attention">{attention}</span>
-                    ) : null}
-                    {!openable(row) ? <span>Unavailable</span> : null}
-                    <svg
-                      className="workspace-subagent-row-chevron"
-                      width={12}
-                      height={12}
-                      viewBox="0 0 24 24"
-                      aria-hidden="true"
-                      focusable="false"
+                  <div className="workspace-subagent-row-line">
+                    <button
+                      type="button"
+                      className="workspace-subagent-row"
+                      disabled={!openable(row) || onOpenSession === undefined}
+                      aria-label={`${title}, ${row.status}${attention !== undefined ? `, ${attention}` : ""}, ${openable(row) && onOpenSession !== undefined ? "Open in tab" : "Session unavailable"}`}
+                      aria-describedby={
+                        sentence !== undefined ? `${sentencePrefix}${row.id}` : undefined
+                      }
+                      title={!openable(row) ? "Session unavailable" : undefined}
+                      onClick={() => openRow(row)}
                     >
-                      <path d="m9 18 6-6-6-6" />
-                    </svg>
-                  </button>
+                      {row.kind === "child" && row.provider !== undefined ? (
+                        <span className="workspace-subagent-lane">
+                          <StripKindMark kind={row.provider} />
+                        </span>
+                      ) : null}
+                      <span className="workspace-subagent-row-title" title={title}>
+                        {title}
+                      </span>
+                      {openable(row) ? null : <span>Unavailable</span>}
+                      <span className="workspace-subagent-row-state">
+                        <span
+                          className={`workspace-subagent-status-dot ${subagentDotClass(attention !== undefined ? "attention" : row.status)}`}
+                          aria-hidden="true"
+                        />
+                        {attention !== undefined ? (
+                          <span className="workspace-subagent-attention">needs you</span>
+                        ) : row.status === "running" && clock !== null ? (
+                          <span className="workspace-subagent-clock">{clock}</span>
+                        ) : (
+                          <span>{row.status}</span>
+                        )}
+                      </span>
+                    </button>
+                    {canStop ? (
+                      <button
+                        type="button"
+                        className="workspace-subagent-stop"
+                        onClick={() => void stopRow(row)}
+                      >
+                        Stop
+                      </button>
+                    ) : null}
+                  </div>
                   {sentence !== undefined ? (
                     <p className="workspace-subagent-row-failure" id={`${sentencePrefix}${row.id}`}>
                       {sentence}

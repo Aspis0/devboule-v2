@@ -18,7 +18,6 @@ import {
   answerAsk,
 } from "./subagentArchiveHarness";
 import { sessionClose } from "../../lib/tauri";
-import type { SessionState } from "../../types/ipc";
 
 vi.mock("../../lib/tauri", async () => ({
   ...(await import("./sessionChannelHarness")).tauriMock,
@@ -57,7 +56,11 @@ describe("the subagent menu's archive outcome", () => {
     });
     const daemon = closingDaemon(
       (node) => root.render(node),
-      [ended("child-ok", 1, "Good child"), ended("child-bad", 1, "Bad child")],
+      [
+        ended("child-ok", 1, "Good child"),
+        ended("child-bad", 1, "Bad child"),
+        live("child-run", 1, "Working child"),
+      ],
       refresh,
     );
     await act(async () => root.render(daemon.node()));
@@ -66,7 +69,7 @@ describe("the subagent menu's archive outcome", () => {
     await pressArchiveAction();
     await answerAsk("Archive");
 
-    expect(rowTitles()).toEqual(["Bad child"]);
+    expect(rowTitles()).toEqual(["Bad child", "Working child"]);
     const failure = document.querySelector<HTMLElement>(".workspace-subagent-row-failure");
     expect(failure?.textContent).toBe("Saved history could not be read or written.");
     // The daemon's own words never reach the DOM, in any form.
@@ -74,7 +77,7 @@ describe("the subagent menu's archive outcome", () => {
     expect(document.querySelector('[title*="raw journal"]')).toBeNull();
     expect(document.querySelector(".error-detail-sr-only")).toBeNull();
     // The child stayed in the roster, so its row still offers the action.
-    expect(archiveAction()?.textContent).toBe("Archive 1 finished subagent");
+    expect(archiveAction()?.textContent).toBe("Archive 1 finished");
   });
 
   it("keeps the act's answers when the roster read fails", async () => {
@@ -87,7 +90,11 @@ describe("the subagent menu's archive outcome", () => {
     });
     const daemon = closingDaemon(
       (node) => root.render(node),
-      [ended("child-ok", 1, "Good child"), ended("child-bad", 1, "Bad child")],
+      [
+        ended("child-ok", 1, "Good child"),
+        ended("child-bad", 1, "Bad child"),
+        live("child-run", 1, "Working child"),
+      ],
       refresh,
     );
     await act(async () => root.render(daemon.node()));
@@ -97,7 +104,7 @@ describe("the subagent menu's archive outcome", () => {
     await answerAsk("Archive");
 
     expect(refresh).toHaveBeenCalledTimes(1);
-    expect(rowTitles()).toEqual(["Bad child"]);
+    expect(rowTitles()).toEqual(["Bad child", "Working child"]);
     const failure = document.querySelector<HTMLElement>(".workspace-subagent-row-failure");
     expect(failure?.textContent).toBe("Saved history could not be read or written.");
   });
@@ -122,36 +129,10 @@ describe("the subagent menu's archive outcome", () => {
 
     expect(document.querySelector(".workspace-subagent-list")).not.toBeNull();
     expect(document.activeElement?.classList.contains("workspace-subagent-row")).toBe(true);
-    expect(document.activeElement?.textContent).toBe("Working child");
+    expect(document.activeElement?.textContent).toContain("Working child");
   });
 
-  it("sends focus to the composer when the last child was archived", async () => {
-    const refresh = vi.fn(async () => undefined);
-    const daemon = closingDaemon(
-      (node) => root.render(node),
-      [ended("child-only", 1, "Only child")],
-      refresh,
-    );
-    vi.mocked(sessionClose).mockImplementation(daemon.close);
-    await act(async () => root.render(daemon.node()));
-    await act(async () => {
-      channelHarness.active?.({ type: "agent_finished", stopReason: "end_turn" });
-    });
-    await openMenu();
-    const composer = document.querySelector<HTMLTextAreaElement>(".workspace-composer textarea");
-    if (composer === null) throw new Error("composer did not render");
-
-    await pressArchiveAction();
-    await answerAsk("Archive");
-
-    expect(vi.mocked(sessionClose)).toHaveBeenCalledWith("child-only");
-    expect(document.querySelector(".workspace-subagent-list")).toBeNull();
-    expect(container.querySelector('[data-testid="subagent-pill"]')).toBeNull();
-    expect(document.activeElement).toBe(composer);
-    expect(document.activeElement).not.toBe(document.body);
-  });
-
-  it("takes the archived child out of the pill's counts", async () => {
+  it("takes the archived child out of the line's counts", async () => {
     const refresh = vi.fn(async () => undefined);
     const daemon = closingDaemon(
       (node) => root.render(node),
@@ -162,45 +143,16 @@ describe("the subagent menu's archive outcome", () => {
     await act(async () => root.render(daemon.node()));
     await openMenu();
 
-    const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
-    // An ended child with an exit code is stopped, not failed: the pill counts only the working one.
-    expect(pill?.getAttribute("aria-label")).toBe("Subagents: 1 working");
+    const pill = container.querySelector<HTMLButtonElement>('[data-testid="who-is-working"]');
+    // An ended child with an exit code is stopped, not failed: the line counts only the working one.
+    expect(pill?.getAttribute("aria-label")).toBe("Working child working");
 
     await pressArchiveAction();
     await answerAsk("Archive");
 
-    const after = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
-    expect(after?.getAttribute("aria-label")).toBe("Subagents: 1 working");
+    const after = container.querySelector<HTMLButtonElement>('[data-testid="who-is-working"]');
+    expect(after?.getAttribute("aria-label")).toBe("Working child working");
     expect(rowTitles()).toEqual(["Working child"]);
-  });
-
-  it("keeps focus off the body when the composer cannot take it", async () => {
-    const refresh = vi.fn(async () => undefined);
-    const observedState: SessionState = {
-      type: "ended",
-      generation: 1,
-      code: 0,
-      integrity: { kind: "complete" },
-    };
-    const daemon = closingDaemon(
-      (node) => root.render(node),
-      [ended("child-only", 1, "Only child")],
-      refresh,
-      observedState,
-    );
-    vi.mocked(sessionClose).mockImplementation(daemon.close);
-    await act(async () => root.render(daemon.node()));
-    await openMenu();
-    const composer = document.querySelector<HTMLTextAreaElement>(".workspace-composer textarea");
-    if (composer === null) throw new Error("composer did not render");
-    expect(composer.disabled).toBe(true);
-
-    await pressArchiveAction();
-    await answerAsk("Archive");
-
-    const transcript = document.querySelector<HTMLElement>(".workspace-conversation");
-    expect(document.activeElement).toBe(transcript);
-    expect(document.activeElement).not.toBe(document.body);
   });
 
   it("names the conversation, where focus falls back, as a region", async () => {
@@ -230,7 +182,7 @@ describe("the subagent menu's archive outcome", () => {
     await answerAsk("Cancel");
 
     expect(sessionClose).not.toHaveBeenCalled();
-    expect(document.activeElement).toBe(container.querySelector('[data-testid="subagent-pill"]'));
+    expect(document.activeElement).toBe(container.querySelector('[data-testid="who-is-working"]'));
   });
 });
 

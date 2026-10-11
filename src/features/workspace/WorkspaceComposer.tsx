@@ -108,7 +108,8 @@ interface WorkspaceComposerProps {
   /** Rows above the composer, first: the agent's plan checklist. */
   taskPill?: ReactNode;
   /** Rows above the composer, after the plan checklist: the running-task count. */
-  backgroundPill?: ReactNode;
+  /** The one "who is working" line, drawn above the field. */
+  whoIsWorking?: ReactNode;
   /** Rows above the composer: the session's queued follow-ups. */
   queuedTrack?: ReactNode;
   /** Draft handed back by the queue, applied once per nonce. */
@@ -167,7 +168,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   keepUntilSettled = false,
   onStop,
   taskPill = null,
-  backgroundPill = null,
+  whoIsWorking = null,
   queuedTrack = null,
   restoreDraft = null,
   captureTextarea,
@@ -718,7 +719,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
     <div className="workspace-composer-wrap">
       <div className="workspace-composer-track">
         {taskPill}
-        {backgroundPill}
+        {whoIsWorking}
         {queuedTrack}
       </div>
       <WorkspaceCommandMenu

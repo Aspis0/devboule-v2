@@ -33,7 +33,7 @@ function childSession(): Session {
 }
 
 async function openMenu(): Promise<void> {
-  const pill = document.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
+  const pill = document.querySelector<HTMLButtonElement>('[data-testid="who-is-working"]');
   if (pill === null) throw new Error("subagent pill did not render");
   await act(async () => {
     pill.click();
@@ -66,13 +66,23 @@ describe("archiving a child that is open as a tab", () => {
         state: { type: "ended", generation: 1, code: 0, integrity: { kind: "complete" } },
         elapsedMs: 0,
       },
+      {
+        id: "child-2",
+        workspaceId: "workspace-1",
+        kind: "acp",
+        title: "Still working",
+        createdBy: "parent-1",
+        state: { type: "live", generation: 1 },
+        activity: "working",
+        elapsedMs: 0,
+      },
     ]);
     expect(document.querySelector("#workspace-session-tab-child-1")).not.toBeNull();
 
     await openMenu();
     const action = document.querySelector<HTMLButtonElement>('[data-testid="subagent-archive"]');
     if (action === null) throw new Error("archive action did not render");
-    expect(action.textContent).toBe("Archive 1 finished subagent");
+    expect(action.textContent).toBe("Archive 1 finished");
     await act(async () => {
       action.click();
     });
@@ -86,6 +96,6 @@ describe("archiving a child that is open as a tab", () => {
     expect(vi.mocked(sessionClose)).toHaveBeenCalledWith("child-1");
     expect(document.querySelector("#workspace-session-tab-child-1")).toBeNull();
     expect(document.querySelector("#workspace-session-tab-parent-1")).not.toBeNull();
-    expect(document.querySelector('[data-testid="subagent-pill"]')).toBeNull();
+    expect(document.querySelector('[data-testid="who-is-working"]')).toBeNull();
   });
 });

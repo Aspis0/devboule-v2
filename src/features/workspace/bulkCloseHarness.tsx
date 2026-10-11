@@ -209,6 +209,7 @@ vi.mock("./AgentChatSurface", async () => {
               back; which children may close is pinned in its own tests. */}
           <SubagentMenu
             rows={rows}
+            tasks={[]}
             onOpenSession={onOpenSubagent}
             attentionById={subagentAttention}
             onArchiveFinished={async (targets) => {

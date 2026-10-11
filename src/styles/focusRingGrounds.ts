@@ -90,11 +90,6 @@ export const DIRECT_RING_GROUNDS: readonly DirectRingGround[] = [
     ground: centre,
   },
   {
-    file: "src/features/workspace/BackgroundTasksPill.css",
-    match: ".background-tasks-pill:focus-visible",
-    ground: centre,
-  },
-  {
     file: "src/features/workspace/TasksPanel.css",
     match: ".tasks-panel-open:focus-visible",
     ground: side,

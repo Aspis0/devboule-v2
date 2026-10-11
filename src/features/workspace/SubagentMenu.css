@@ -1,45 +1,94 @@
-/* The subagent pill in the pane header and the menu it opens.
-   Values from the mockups (.pill, .sub-menu, .sub-head, .sub-row). */
+/* The one "who is working" line above the composer, and the list it opens.
+   Values from the approved mockup (scout/mock/who-is-working). */
 
 .workspace-subagent-menu {
   flex: none;
 }
 
-.workspace-subagent-pill {
+.workspace-who-line {
   display: flex;
   align-items: center;
-  gap: var(--space-12);
+  gap: var(--space-8);
+  width: max-content;
+  max-width: 100%;
   height: var(--control-default);
-  padding: 0 var(--space-12);
-  color: var(--ink-soft);
-  background: var(--panel-menu);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-full);
-  box-shadow: var(--shadow-pop);
+  margin: 0 -8px 8px;
+  padding: 0 var(--space-8);
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
   cursor: pointer;
   font-family: var(--font-ui);
-  font-size: var(--type-meta);
-  line-height: var(--leading-dense);
+  font-size: var(--type-small);
+  line-height: 20px;
+  white-space: nowrap;
 }
 
-.workspace-subagent-pill:hover,
-.workspace-subagent-pill:focus-visible {
+.workspace-who-line:hover,
+.workspace-who-line:focus-visible,
+.workspace-who-line[aria-expanded="true"] {
+  background: var(--fill-hover);
   color: var(--ink);
 }
 
-.workspace-subagent-pill-group {
+.workspace-who-segment {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-6);
+  gap: var(--space-8);
 }
 
-.workspace-subagent-pill-chevron {
+.workspace-who-name {
+  color: var(--ink);
+}
+
+.workspace-who-word-attention {
+  color: var(--tone-attention-text);
+}
+
+.workspace-who-clock {
+  font-variant-numeric: tabular-nums;
+}
+
+.workspace-who-dot {
+  display: inline-block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+}
+
+.workspace-who-dot-live {
+  background: var(--tone-live);
+  animation: breathe 2s ease-in-out infinite;
+}
+
+.workspace-who-dot-attention {
+  background: var(--tone-attention);
+}
+
+.workspace-who-dot-danger {
+  background: var(--danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-who-dot-live {
+    animation: none;
+  }
+}
+
+.workspace-who-chevron {
+  flex: none;
   color: var(--tone-idle);
   fill: none;
   stroke: currentColor;
   stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+.workspace-who-chevron.is-open {
+  transform: rotate(180deg);
 }
 
 /* The subagent dots carry this one rule alone: the shared
@@ -72,11 +121,11 @@
 }
 
 .workspace-subagent-list {
-  width: 340px;
-  padding: var(--space-6);
+  width: 320px;
+  padding: var(--space-4);
   background: var(--panel-menu);
   border: 1px solid var(--line-strong);
-  border-radius: var(--radius-12);
+  border-radius: 8px;
   box-shadow: var(--shadow-pop);
 }
 
@@ -118,8 +167,15 @@
   opacity: 0.65;
 }
 
+.workspace-subagent-row-line {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
 .workspace-subagent-row {
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
   border: 0;
   background: transparent;
   text-align: left;
@@ -127,42 +183,79 @@
   display: flex;
   align-items: center;
   gap: var(--space-8);
-  height: var(--control-default);
+  height: 32px;
   padding: 0 var(--space-8);
   border-radius: var(--radius-6);
-  color: var(--ink-soft);
+  color: var(--ink);
   font-family: var(--font-ui);
   font-size: var(--type-small);
 }
 
 .workspace-subagent-row:hover,
 .workspace-subagent-row:focus-visible {
-  color: var(--ink);
   background: var(--fill-hover);
-}
-
-.workspace-subagent-row-chevron {
-  flex: none;
-  margin-left: auto;
-  color: var(--tone-idle);
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.workspace-subagent-row-title {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .workspace-subagent-row:disabled {
   cursor: default;
   opacity: 0.65;
 }
+
+.workspace-subagent-lane {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+}
+
+.workspace-subagent-row-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-subagent-row-state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  flex: none;
+  color: var(--muted);
+  font-size: var(--type-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Hovering a running child swaps its state for the Stop action in the same place. */
+.workspace-subagent-stop {
+  display: none;
+  position: absolute;
+  right: var(--space-8);
+  top: 50%;
+  transform: translateY(-50%);
+  height: var(--control-dense);
+  padding: 0 var(--space-8);
+  border: 0;
+  border-radius: var(--radius-6);
+  background: var(--fill-hover);
+  color: var(--ink);
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: var(--type-meta);
+}
+
+.workspace-subagent-row-line:hover .workspace-subagent-stop,
+.workspace-subagent-row-line:focus-within .workspace-subagent-stop {
+  display: inline-block;
+}
+
+.workspace-subagent-row-line:hover .workspace-subagent-row-state,
+.workspace-subagent-row-line:focus-within .workspace-subagent-row-state {
+  visibility: hidden;
+}
+
 .workspace-subagent-attention {
   color: var(--tone-attention-text);
   font-size: var(--type-meta);
