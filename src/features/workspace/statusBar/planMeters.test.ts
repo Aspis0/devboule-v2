@@ -21,9 +21,9 @@ describe("providerMeter", () => {
       NOW,
     );
     expect(meter?.name).toBe("OpenCode Go");
-    expect(meter?.parts).toEqual([
+    expect(meter?.parts).toMatchObject([
       { label: "5h", percent: 58 },
-      { label: "wk", percent: 41 },
+      { label: "weekly", percent: 41 },
     ]);
     expect(meter?.barPercent).toBe(58);
   });
@@ -38,9 +38,9 @@ describe("providerMeter", () => {
       NOW,
     );
     expect(meter?.name).toBe("Claude");
-    expect(meter?.parts).toEqual([
+    expect(meter?.parts).toMatchObject([
       { label: "5h", percent: 58 },
-      { label: "wk", percent: 41 },
+      { label: "weekly", percent: 41 },
     ]);
     expect(meter?.barPercent).toBe(58);
     expect(meter?.title).toContain("5-hour: 58% · resets in 2 h");
@@ -68,7 +68,7 @@ describe("providerMeter", () => {
       null,
       NOW,
     );
-    expect(meter?.parts).toEqual([{ label: "wk", percent: 37 }]);
+    expect(meter?.parts).toMatchObject([{ label: "weekly", percent: 37 }]);
     expect(meter?.barPercent).toBe(37);
   });
 
@@ -126,7 +126,7 @@ describe("a window that has reset", () => {
       null,
       NOW,
     );
-    expect(meter?.parts).toEqual([{ label: "wk", percent: 41 }]);
+    expect(meter?.parts).toMatchObject([{ label: "weekly", percent: 41 }]);
     expect(meter?.barPercent).toBe(41);
     expect(meter?.title).not.toContain("97");
   });
@@ -183,7 +183,7 @@ describe("a window that has reset", () => {
       NOW,
     );
     // Only the window that proves itself: the other has nothing to stand on.
-    expect(meter?.parts).toEqual([{ label: "wk", percent: 60 }]);
+    expect(meter?.parts).toMatchObject([{ label: "weekly", percent: 60 }]);
   });
 });
 

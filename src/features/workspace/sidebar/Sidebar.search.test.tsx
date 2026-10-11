@@ -69,8 +69,6 @@ function sidebarProps(overrides: Partial<SidebarProps> = {}): SidebarProps {
       branches: new Map(),
       hostNames: new Map(),
     },
-    daemon: CONNECTED,
-    daemonNote: null,
     ...overrides,
   };
 }
@@ -140,7 +138,8 @@ describe("the sidebar's search row", () => {
     if (top === null) throw new Error("the wordmark row did not render");
     expect(top.querySelector(".sidebar-search")).toBeNull();
     expect(top.querySelector(".sidebar-search-trigger")).toBeNull();
-    expect(top.textContent).toBe("devboule‹");
+    expect(top.textContent).toContain("devboule");
+    expect(top.querySelector('button[aria-label="Collapse sidebar"]')).not.toBeNull();
   });
 
   it("sits in the top actions under the wordmark row, naming itself and its shortcut", async () => {

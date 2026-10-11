@@ -223,14 +223,22 @@ describe("the command modifier display", () => {
 });
 
 describe("shortcutSections", () => {
-  it("groups the rows under the five scopes, in order", () => {
+  it("groups the rows under the six scopes, in order", () => {
     expect(shortcutSections("queue").map((section) => section.label)).toEqual([
       "Tabs",
       "Composer",
       "Navigation",
       "Panel",
+      "Layout",
       "Browser",
     ]);
+  });
+
+  it("lists the three panel toggles under Layout with the command key of this host", () => {
+    vi.stubGlobal("navigator", { platform: "Win32" });
+    expect(rows("queue")).toContain("Ctrl+B | Collapse sidebar |");
+    expect(rows("queue")).toContain("Ctrl+E | Collapse panel |");
+    expect(rows("queue")).toContain("Ctrl+. | Collapse both |");
   });
 
   it("lists the keys the matchers answer", () => {

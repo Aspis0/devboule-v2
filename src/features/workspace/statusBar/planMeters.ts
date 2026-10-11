@@ -12,10 +12,12 @@ import {
 const REPORTS_PLAN_LIMITS = new Set(["claude", "codex", "opencode-go"]);
 
 export interface WindowPart {
-  /** `5h`, `wk`, or the minutes when the provider names a window of another length. */
+  /** `5h`, `weekly`, or the minutes when the provider names a window of another length. */
   label: string;
   /** The provider's number, rounded to a whole percent; an overage keeps its size. */
   percent: number;
+  /** When the window resets, in seconds since the epoch, when the frame says. */
+  resetsAt?: number;
 }
 
 export interface ProviderMeter {
@@ -35,8 +37,24 @@ export interface ProviderMeter {
 
 function partLabel(durationMins: number): string {
   if (durationMins === 300) return "5h";
-  if (durationMins === 10_080) return "wk";
+  if (durationMins === 10_080) return "weekly";
   return `${durationMins}m`;
+}
+
+/**
+ * A reset as the bar prints it: the clock time when it falls today, else the
+ * weekday and the clock time. The locale and the 12/24-hour choice are the OS's.
+ */
+export function resetClockLabel(resetsAtSec: number, nowMs: number): string {
+  const at = new Date(resetsAtSec * 1000);
+  const time = at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  if (at.toDateString() === new Date(nowMs).toDateString()) return time;
+  return `${at.toLocaleDateString(undefined, { weekday: "short" })} ${time}`;
+}
+
+/** Whether the provider's frames carry plan limits, so a missing reading is worth saying. */
+export function reportsPlanLimits(providerId: string): boolean {
+  return REPORTS_PLAN_LIMITS.has(providerId);
 }
 
 /** A window's name in the hover's summary: "5-hour limit", "Weekly". */
@@ -100,7 +118,7 @@ export function providerMeter(
   recordedAtMs: number | null,
   nowMs: number,
 ): ProviderMeter | null {
-  const name = REPORTS_PLAN_LIMITS.has(plan.providerId) ? providerName(plan.providerId) : null;
+  const name = reportsPlanLimits(plan.providerId) ? providerName(plan.providerId) : null;
   if (name === null) return null;
   // The frame's own observation time when it carries one, else the store's
   // change stamp; with neither, the age is unknown.
@@ -114,6 +132,7 @@ export function providerMeter(
   const parts = measured.map((window) => ({
     label: partLabel(window.durationMins),
     percent: Math.round(window.usedPercent!),
+    resetsAt: window.resetsAt,
   }));
   const barWindow = measured.find((window) => window.durationMins === 300) ?? measured[0]!;
   const lines = measured.map(

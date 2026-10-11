@@ -11,6 +11,8 @@ export type PanelIconName =
   | "pr"
   | "tasks"
   | "panel"
+  | "panel-left"
+  | "panel-right"
   | "kebab"
   | "chevron-right";
 
@@ -66,6 +68,20 @@ function paths(name: PanelIconName): ReactNode {
           <path d="M9 3v18" />
         </>
       );
+    case "panel-left":
+      return (
+        <>
+          <rect x="3" y="4" width="18" height="16" rx="2" />
+          <path d="M9 4v16" />
+        </>
+      );
+    case "panel-right":
+      return (
+        <>
+          <rect x="3" y="4" width="18" height="16" rx="2" />
+          <path d="M15 4v16" />
+        </>
+      );
     case "kebab":
       return (
         <>
@@ -79,7 +95,15 @@ function paths(name: PanelIconName): ReactNode {
   }
 }
 
-export function PanelIcon({ name, size = 14 }: { name: PanelIconName; size?: number }) {
+export function PanelIcon({
+  name,
+  size = 14,
+  strokeWidth = 1.75,
+}: {
+  name: PanelIconName;
+  size?: number;
+  strokeWidth?: number;
+}) {
   return (
     <svg
       className="workspace-panel-icon"
@@ -88,7 +112,7 @@ export function PanelIcon({ name, size = 14 }: { name: PanelIconName; size?: num
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth={1.75}
+      strokeWidth={strokeWidth}
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"

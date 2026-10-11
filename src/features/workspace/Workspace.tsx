@@ -44,6 +44,8 @@ import { childRow } from "./subagentRows";
 import { useTasksAttention } from "./useTasksAttention";
 import type { BackgroundTaskSource } from "./useBackgroundTaskState";
 import { SIDE_PANEL_BODY_ID, SidePanelTabs, sidePanelTabId } from "./panel/SidePanelTabs";
+import { PanelStub } from "./PanelToggle";
+import { usePanelChords } from "./usePanelChords";
 import { useMenuOpen } from "../../lib/menuOpen";
 import { TerminalSurface } from "../terminal/TerminalSurface";
 import { AgentChatSurface } from "./AgentChatSurface";
@@ -396,6 +398,7 @@ export function Workspace({
     startDrag,
     handleResizeKey,
   } = useWorkspacePanelResize();
+  usePanelChords({ leftCollapsed, rightCollapsed, setLeftCollapsed, setRightCollapsed });
   const [activeSidePanel, setActiveSidePanel] = useState<ActiveSidePanel>("changes");
   // The front pane's session controller, as its surface reported it. The Tasks
   // tab reads its task lane only while the pane still shows that session.
@@ -2508,14 +2511,6 @@ export function Workspace({
     [providerAnchor, providerPicker, dismissProviderPicker, openProvidersSettings, pickProvider],
   );
 
-  // What the daemon's status poll hands out every 2 s is a new object even
-  // when nothing changed; the rail compares the fields its dot reads, so an
-  // unchanged daemon keeps its identity and the rail's memo holds.
-  const sidebarDaemon = useMemo(
-    () => daemon,
-    // oxlint-disable-next-line react-hooks/exhaustive-deps -- the snapshot is the same object until one of these fields moves.
-    [daemon.state, daemon.pid, daemon.message],
-  );
   // The rail's bundle, stable across renders that change nothing it shows:
   // without this the inline literal below is a new identity every render
   // and the rail re-traverses its tree on every session and daemon update.
@@ -2738,8 +2733,6 @@ export function Workspace({
           onAddProject={openProjectDialog}
           onOpenSettings={handleOpenSettings}
           addProjectRef={newProjectTriggerRef}
-          daemon={sidebarDaemon}
-          daemonNote={restartFailureNote}
           tree={sidebarTree}
           transcripts={transcriptSearch}
         />
@@ -3078,17 +3071,7 @@ export function Workspace({
           aria-label="Workspace side panel"
         >
           {rightCollapsed ? (
-            <button
-              type="button"
-              className="workspace-collapsed-panel"
-              autoFocus
-              onClick={() => setRightCollapsed(false)}
-              title="Show side panel"
-              aria-label="Show side panel"
-            >
-              <span aria-hidden="true">‹</span>
-              <span className="workspace-vertical-label">side panel</span>
-            </button>
+            <PanelStub side="right" autoFocus onShow={() => setRightCollapsed(false)} />
           ) : (
             <div className="workspace-panel-open">
               <SidePanelTabs
@@ -3147,7 +3130,12 @@ export function Workspace({
           )}
         </aside>
       </div>
-      <StatusBar agent={focusedAgent} daemon={daemon} progress={statusProgress} />
+      <StatusBar
+        agent={focusedAgent}
+        daemon={daemon}
+        daemonNote={restartFailureNote}
+        progress={statusProgress}
+      />
 
       {sheet === null ? null : (
         <NewWorkspaceSheet

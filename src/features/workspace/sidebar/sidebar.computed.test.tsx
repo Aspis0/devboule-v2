@@ -134,36 +134,13 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     expect(getComputedStyle(projectAvatar).borderRadius).toBe("6px");
   });
 
-  it("project header and foot carry their spec padding", async () => {
-    inject([".sidebar-project-head", ".sidebar-foot"]);
+  it("project header carries its spec padding", async () => {
+    inject([".sidebar-project-head"]);
     await renderWorkspace();
 
     const projectHead = document.querySelector<HTMLElement>(".workspace-project-heading");
     if (projectHead === null) throw new Error("project header did not render");
     expect(getComputedStyle(projectHead).paddingLeft).toBe("12px");
-
-    const foot = document.querySelector<HTMLElement>(".sidebar-foot");
-    if (foot === null) throw new Error("daemon foot did not render");
-    // The dot alone is drawn; what it stands for stays in the sentence the
-    // screen reader reads, never in a printed word of its own.
-    expect(foot.textContent).toContain("daemon ·");
-    expect(foot.textContent).not.toContain("Daemon");
-    expect(getComputedStyle(foot).paddingLeft).toBe("8px");
-  });
-
-  it("the foot's tip is not drawn at rest, and is what keyboard focus reveals", async () => {
-    // Focus-visible cannot be driven here, so the rule that shows the tip is
-    // read from the sheet and the rest state is read from the computed style.
-    expect(rulesFor(".sidebar-foot:focus-visible .sidebar-foot-tip")).toContain("display: block");
-    expect(rulesFor(".sidebar-foot:focus-visible")).toContain(
-      `outline: 2px solid ${token("--accent")}`,
-    );
-
-    inject([".sidebar-foot", ".sidebar-foot-tip"]);
-    await renderWorkspace();
-    const tip = document.querySelector<HTMLElement>(".sidebar-foot-tip");
-    if (tip === null) throw new Error("the foot's tip did not render");
-    expect(getComputedStyle(tip).display).toBe("none");
   });
 
   it("the wordmark row keeps the wordmark whole", async () => {
@@ -220,42 +197,6 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     if (input === null) throw new Error("search input did not render");
     expect(getComputedStyle(input).paddingLeft).toBe("0px");
     expect(getComputedStyle(input).paddingRight).toBe("0px");
-  });
-
-  it("the foot's dot sits on the body rows' 16px column", async () => {
-    // The composed left edge is what the eye sees: the foot's padding plus
-    // the status line's own padding must add up to the same 16px column the
-    // body rows start at. (The 994f6c1 pass shipped a 2px footer container,
-    // which put the Daemon row at 10px while body text sat at 16px.) The
-    // foot is an icon row now — add project, settings, the dot — so the
-    // column pins the dot, not a label.
-    inject([".sidebar-body", ".workspace-row", ".workspace-sidebar-footer", ".sidebar-foot"]);
-    await renderWorkspace();
-
-    const px = (el: HTMLElement, prop: "paddingLeft" | "paddingRight") =>
-      Number.parseFloat(getComputedStyle(el)[prop]);
-
-    const body = document.querySelector<HTMLElement>(".sidebar-body");
-    const row = document.querySelector<HTMLElement>(".workspace-row");
-    const footer = document.querySelector<HTMLElement>(".workspace-sidebar-footer");
-    const daemonRow = document.querySelector<HTMLElement>(".sidebar-foot");
-    for (const el of [body, row, footer, daemonRow]) {
-      if (el === null) throw new Error("a sidebar column element did not render");
-    }
-
-    // eslint-disable-next-line no-console
-    console.log(
-      "DEBUG cols:",
-      px(body!, "paddingLeft"),
-      px(row!, "paddingLeft"),
-      px(footer!, "paddingLeft"),
-      px(daemonRow!, "paddingLeft"),
-    );
-    const bodyColumn = px(body!, "paddingLeft") + px(row!, "paddingLeft");
-    const daemonColumn = px(footer!, "paddingLeft") + px(daemonRow!, "paddingLeft");
-
-    expect(bodyColumn).toBe(16);
-    expect(daemonColumn).toBe(bodyColumn);
   });
 
   it("the resize handle keeps its 6px track and col-resize cursor", async () => {

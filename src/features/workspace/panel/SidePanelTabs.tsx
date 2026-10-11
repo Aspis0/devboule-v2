@@ -9,6 +9,7 @@ import {
 } from "react";
 import type { SidePanelEntry } from "../sidePanelRegistry";
 import { PanelIcon } from "./PanelIcon";
+import { PanelToggle } from "../PanelToggle";
 import { panelTabsShowLabels } from "./panelTabLabels";
 import { usePanelTabsKeyboard } from "./usePanelTabsKeyboard";
 import { useMenuOpen } from "../../../lib/menuOpen";
@@ -34,8 +35,8 @@ interface SidePanelTabsProps {
 
 const NO_ATTENTION: readonly string[] = [];
 
-/** The right panel's tab row: the spec tabs in a tablist, a spacer, then the
- * kebab holding the menu-placed panels and the collapse entry. A kebab body is
+/** The right panel's tab row: the spec tabs in a tablist, a spacer, the kebab
+ * holding the menu-placed panels, then the collapse toggle. A kebab body is
  * menu-opened, not tab-associated, so it renders as a named region — never a
  * tabpanel — while the last real tab stays selected: APG tabs keeps exactly
  * one selected tab, and a tabpanel must be labelled by its own tab. */
@@ -215,24 +216,10 @@ export function SidePanelTabs({
                 </button>
               ))}
             </div>
-            <div className="workspace-menu-separator" role="separator" />
-            <div className="workspace-surface-options">
-              <button
-                type="button"
-                role="menuitem"
-                className="workspace-surface-option"
-                onClick={() => {
-                  onCollapse();
-                  setMenuOpen(false);
-                }}
-              >
-                <PanelIcon name="chevron-right" />
-                <span className="workspace-surface-name">Collapse panel</span>
-              </button>
-            </div>
           </div>
         ) : null}
       </div>
+      <PanelToggle side="right" onCollapse={onCollapse} />
     </div>
   );
 }

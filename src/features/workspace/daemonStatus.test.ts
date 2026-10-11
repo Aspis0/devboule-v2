@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { DaemonStatus } from "../../../types/ipc";
-import { daemonLabel } from "./SidebarFooter";
+import type { DaemonStatus } from "../../types/ipc";
+import { daemonLabel } from "./daemonStatus";
 
 const RECONNECT =
   "Devboule is having trouble reaching its background service. Try reconnecting or restart Devboule.";
@@ -38,7 +38,7 @@ describe("daemonLabel", () => {
     );
   });
 
-  it("keeps the quiet labels the foot authors itself", () => {
+  it("keeps the quiet labels the status bar authors itself", () => {
     expect(daemonLabel(status({ state: "connecting", message: null }))).toBe("daemon · connecting");
     expect(daemonLabel(status({ state: "unresponsive", message: null }))).toBe(
       "daemon · not answering",

@@ -20,33 +20,38 @@ afterEach(() => {
 });
 
 describe("the status bar's look", () => {
-  it.each(["light", "dark"] as const)(
-    "draws a 2px --line-strong top edge in the %s theme",
-    (theme) => {
-      const css = assembleCssProof(sheets, theme);
-      css.inject([".workspace-status-bar"]);
-      const bar = document.createElement("div");
-      bar.className = "workspace-status-bar";
-      document.body.append(bar);
+  it.each(["light", "dark"] as const)("draws a 1px --line top edge in the %s theme", (theme) => {
+    const css = assembleCssProof(sheets, theme);
+    css.inject([".workspace-status-bar"]);
+    const bar = document.createElement("div");
+    bar.className = "workspace-status-bar";
+    document.body.append(bar);
 
-      const style = getComputedStyle(bar);
-      expect(style.borderTopWidth).toBe("2px");
-      expect(style.borderTopColor).toBe(css.token("--line-strong"));
-      expect(style.height).toBe("26px");
-      bar.remove();
-    },
-  );
+    const style = getComputedStyle(bar);
+    expect(style.borderTopWidth).toBe("1px");
+    expect(style.borderTopColor).toBe(css.token("--line"));
+    expect(style.height).toBe("26px");
+    bar.remove();
+  });
 
-  it("fills its meters with the accent, which clears the track at 3:1 or more", () => {
+  it("fills a meter in the neutral control ink, and in the warn and danger tones past 70 and 90 percent", () => {
     const css = assembleCssProof(sheets, "light");
-    css.inject([".status-meter-fill"]);
-    const fill = document.createElement("span");
-    fill.className = "status-meter-fill";
-    document.body.append(fill);
-
-    expect(getComputedStyle(fill).backgroundColor).toBe(css.token("--accent"));
-    expect(css.rulesFor(".status-meter-fill")).not.toContain("--control-on");
-    fill.remove();
+    css.inject([".status-meter-fill", ".status-meter-fill-warn", ".status-meter-fill-danger"]);
+    const fillOf = (className: string) => {
+      const fill = document.createElement("span");
+      fill.className = className;
+      document.body.append(fill);
+      return fill;
+    };
+    // --control-on aliases --ink; token() reads one level, so name the base.
+    expect(getComputedStyle(fillOf("status-meter-fill")).backgroundColor).toBe(css.token("--ink"));
+    expect(
+      getComputedStyle(fillOf("status-meter-fill status-meter-fill-warn")).backgroundColor,
+    ).toBe(css.token("--tone-warn"));
+    expect(
+      getComputedStyle(fillOf("status-meter-fill status-meter-fill-danger")).backgroundColor,
+    ).toBe(css.token("--danger"));
+    for (const fill of document.querySelectorAll(".status-meter-fill")) fill.remove();
   });
 
   it("clips the title at 28 characters, so it never takes the bar's width", () => {

@@ -133,8 +133,6 @@ function sidebarProps(overrides: Partial<SidebarProps> = {}): SidebarProps {
       branches: new Map(),
       hostNames: new Map([[LOCAL_HOST_ID, "This PC"]]),
     },
-    daemon: CONNECTED,
-    daemonNote: null,
     ...overrides,
   };
 }
@@ -293,7 +291,7 @@ describe("the sidebar's top actions", () => {
     expect(onNewWorkspace.mock.calls[0][1]).toBe("project-alpha");
   });
 
-  it("closes the foot with an icon row: Settings and the daemon dot", async () => {
+  it("closes the foot with an icon row: Settings alone", async () => {
     const onOpenSettings = vi.fn();
     await render({ onOpenSettings });
 
@@ -306,7 +304,7 @@ describe("the sidebar's top actions", () => {
     await act(async () => settings.click());
     expect(onOpenSettings).toHaveBeenCalledTimes(1);
     expect(foot.querySelector('button[aria-label="New project"]')).toBeNull();
-    expect(foot.querySelector(".workspace-status-dot")).not.toBeNull();
+    expect(foot.querySelector(".workspace-status-dot")).toBeNull();
   });
 
   it("puts New project among the creation commands at the top, not in the foot", async () => {

@@ -154,11 +154,6 @@ export const DIRECT_RING_GROUNDS: readonly DirectRingGround[] = [
   },
   {
     file: "src/features/workspace/sidebar/sidebar.css",
-    match: ".sidebar-foot:focus-visible",
-    ground: side,
-  },
-  {
-    file: "src/features/workspace/sidebar/sidebar.css",
     match: ".workspace-row-selected",
     ground: "--fill-selected-soft",
   },

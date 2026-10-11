@@ -1,4 +1,4 @@
-import { daemonDotTone, daemonLabel } from "../workspace/sidebar/SidebarFooter";
+import { daemonDotTone, daemonLabel } from "../workspace/daemonStatus";
 import { useSettingsDaemon } from "./settingsDaemon";
 
 // The Devices group host row's live dot. It owns the surface's only daemon

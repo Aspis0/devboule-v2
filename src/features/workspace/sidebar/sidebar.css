@@ -18,10 +18,6 @@
   padding: 0 var(--space-12);
 }
 
-.sidebar-top .sidebar-top-button + .sidebar-top-button {
-  margin-left: var(--space-2);
-}
-
 .sidebar-wordmark {
   /* flex: none — the wordmark is the one thing the row never ellipsizes. The
      row's width decides whether the search beside it is the field or the
@@ -195,20 +191,6 @@
 
 .sidebar-search input::placeholder {
   color: var(--muted);
-}
-
-.sidebar-top .sidebar-top-button {
-  width: var(--control-default);
-  height: var(--control-default);
-  border-radius: var(--radius-6);
-  color: var(--muted);
-  font-size: var(--type-interface);
-}
-
-.sidebar-top .sidebar-top-button:hover,
-.sidebar-top .sidebar-top-button:focus-visible {
-  color: var(--ink);
-  background: var(--fill-hover);
 }
 
 .sidebar-body {
@@ -639,49 +621,4 @@
 .sidebar-icon-glyph {
   width: 14px;
   height: 14px;
-}
-
-.sidebar-foot {
-  position: relative;
-  display: flex;
-  align-items: center;
-  height: var(--control-default);
-  padding: 0 var(--space-8);
-  color: var(--muted);
-  font-size: var(--type-meta);
-  white-space: nowrap;
-  cursor: help;
-}
-
-.sidebar-foot .workspace-status-dot {
-  width: 6px;
-  height: 6px;
-}
-
-/* The line is a tab stop: focus draws the ring and shows the sentence a
-   pointer gets as a tooltip, which no browser shows for focus. */
-.sidebar-foot:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-.sidebar-foot-tip {
-  position: absolute;
-  z-index: 3;
-  bottom: calc(100% + var(--space-4));
-  left: 0;
-  display: none;
-  max-width: 100%;
-  padding: var(--space-4) var(--space-8);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-8);
-  color: var(--ink);
-  background: var(--panel-menu);
-  box-shadow: var(--shadow-pop);
-  font-size: var(--type-meta);
-  white-space: normal;
-}
-
-.sidebar-foot:focus-visible .sidebar-foot-tip {
-  display: block;
 }

@@ -4,10 +4,11 @@ import { usePlanRecordedAt, usePlanUsage } from "../../../lib/planUsageStore";
 import type { PlanUsage } from "../../../types/ipc";
 import { activeSessionAttention, sessionAttentionLabel } from "../sessionAttention";
 import { rosterStateDisplay } from "../sessionStateDisplay";
-import { daemonDotTone, daemonLabel } from "../sidebar/SidebarFooter";
+import { daemonDotTone, daemonLabel } from "../daemonStatus";
+import { providerName } from "../providerNames";
 import { useAgentReading } from "./agentReadingStore";
 import { MeterBar } from "./MeterBar";
-import { providerMeter } from "./planMeters";
+import { providerMeter, reportsPlanLimits, resetClockLabel } from "./planMeters";
 import "./StatusBar.css";
 
 /** The agent in the focused pane, as the bar names it. */
@@ -48,6 +49,8 @@ export function agentStateOf(session: Session): Omit<FocusedAgent, "sessionId" |
 interface StatusBarProps {
   agent: FocusedAgent | null;
   daemon: DaemonStatus;
+  /** The restart-recovery sentence, when a restart attempt failed; it joins the daemon tooltip. */
+  daemonNote?: string | null;
   /** What the app waits on ("Starting…", "Loading…"); it takes the title's place. */
   progress?: string | null;
 }
@@ -70,24 +73,47 @@ function useMinuteClock(): number {
   return now;
 }
 
-function ProviderUsage({ plan, nowMs }: { plan: PlanUsage; nowMs: number }) {
-  const recordedAt = usePlanRecordedAt(plan.providerId);
-  const meter = providerMeter(plan, recordedAt, nowMs);
-  if (meter === null) return null;
-  // The line shows one window: the 5-hour one when it is current, else the first
+function UnreportedUsage({ name }: { name: string }) {
+  return (
+    <span
+      className="status-bar-provider status-bar-unreported"
+      title={`${name} has not reported a usage window yet. It appears here once it does.`}
+    >
+      {name} usage not reported yet
+    </span>
+  );
+}
+
+function ProviderUsage({
+  providerId,
+  plan,
+  nowMs,
+}: {
+  providerId: string;
+  plan: PlanUsage | undefined;
+  nowMs: number;
+}) {
+  const recordedAt = usePlanRecordedAt(providerId);
+  const meter = plan === undefined ? null : providerMeter(plan, recordedAt, nowMs);
+  if (meter === null) {
+    return reportsPlanLimits(providerId) ? (
+      <UnreportedUsage name={providerName(providerId) ?? providerId} />
+    ) : null;
+  }
+  // The bar shows one window: the 5-hour one when it is current, else the first
   // current one, named so it is never read as the 5-hour figure. The rest wait in the hover.
   const primary = meter.parts.find((part) => part.label === "5h") ?? meter.parts[0];
-  const label =
-    primary === undefined
-      ? meter.name
-      : `${meter.name} ${primary.percent}%${primary.label === "5h" ? "" : ` ${primary.label}`}`;
+  const reset =
+    primary?.resetsAt === undefined ? "" : ` · resets ${resetClockLabel(primary.resetsAt, nowMs)}`;
+  const detail = primary === undefined ? "" : ` ${primary.label} ${primary.percent}% used${reset}`;
   // A reading ten minutes to an hour old stays in the bar, dimmed; the hover says how old it is.
   return (
     <span
       className={meter.stale ? "status-bar-provider status-meter--stale" : "status-bar-provider"}
       title={meter.title}
     >
-      <span>{label}</span>
+      <span className="status-bar-name">{meter.name}</span>
+      <span>{`${detail}${meter.ageSuffix ?? ""}`}</span>
       <MeterBar percent={meter.barPercent} />
     </span>
   );
@@ -96,10 +122,10 @@ function ProviderUsage({ plan, nowMs }: { plan: PlanUsage; nowMs: number }) {
 /**
  * The app's one status line, under every panel: who is working, the focused
  * agent's provider plan usage, and the daemon. The focused agent's context sits
- * beside its composer instead. It shows only what the app holds — a provider
- * that has sent no usage, or none with a percent in it, simply has no meter.
+ * beside its composer instead. A provider that reports plan limits but has no
+ * current window says so; one that never reports them shows nothing.
  */
-export function StatusBar({ agent, daemon, progress = null }: StatusBarProps) {
+export function StatusBar({ agent, daemon, daemonNote = null, progress = null }: StatusBarProps) {
   const nowMs = useMinuteClock();
   const reading = useAgentReading(agent?.sessionId ?? null);
   // A plan step counts only while the agent is on one: idle reads idle.
@@ -111,7 +137,9 @@ export function StatusBar({ agent, daemon, progress = null }: StatusBarProps) {
         (agent.working ? (reading?.task ?? "working") : "idle"));
   const stateTone =
     agent === null ? "border" : (agent.attentionTone ?? (agent.working ? "green" : "border"));
-  const tooltip = daemonLabel(daemon);
+  const tooltip = [daemonLabel(daemon), daemonNote]
+    .filter((part): part is string => part !== null && part !== "")
+    .join(" · ");
   // Only the focused agent's provider is subscribed: a frame for any other provider
   // leaves this bar as it is.
   const focusedPlan = usePlanUsage(agent?.providerId ?? null) ?? undefined;
@@ -141,9 +169,14 @@ export function StatusBar({ agent, daemon, progress = null }: StatusBarProps) {
           </span>
         </span>
       )}
-      {focusedPlan === undefined ? null : (
-        <ProviderUsage key={focusedPlan.providerId} plan={focusedPlan} nowMs={nowMs} />
-      )}
+      {agent?.providerId ? (
+        <ProviderUsage
+          key={agent.providerId}
+          providerId={agent.providerId}
+          plan={focusedPlan}
+          nowMs={nowMs}
+        />
+      ) : null}
       <span className="status-bar-spacer" />
       <span className="status-bar-daemon" title={tooltip}>
         <span className={`workspace-status-dot workspace-dot-${daemonDotTone(daemon.state)}`} />

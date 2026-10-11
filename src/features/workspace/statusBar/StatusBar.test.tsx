@@ -243,7 +243,7 @@ describe("the status bar", () => {
     const meters = Array.from(bar.querySelectorAll(".status-bar-provider")).map(
       (meter) => meter.textContent,
     );
-    expect(meters).toEqual(["Claude 41% wk"]);
+    expect(meters).toEqual([expect.stringMatching(/^Claude weekly 41% used · resets /)]);
     expect(bar.textContent).not.toContain("97");
   });
 
@@ -266,7 +266,9 @@ describe("the status bar", () => {
     );
 
     const meters = bar.querySelectorAll(".status-bar-provider");
-    expect(Array.from(meters).map((meter) => meter.textContent)).toEqual(["Claude 45%"]);
+    expect(Array.from(meters).map((meter) => meter.textContent)).toEqual([
+      expect.stringMatching(/^Claude 5h 45% used · resets /),
+    ]);
     expect(meters[0]?.querySelector(".status-meter-bar")).not.toBeNull();
     expect(meters[0]?.getAttribute("title")?.split("\n")[0]).toBe(
       "5-hour limit: 45% used · Weekly: 66% used",
@@ -287,7 +289,7 @@ describe("the status bar", () => {
 
     expect(
       Array.from(bar.querySelectorAll(".status-bar-provider")).map((meter) => meter.textContent),
-    ).toEqual(["Codex 37% wk"]);
+    ).toEqual([expect.stringMatching(/^Codex weekly 37% used · resets /)]);
   });
 
   it("keeps the context out of the bar: the composer beside the agent shows it", async () => {

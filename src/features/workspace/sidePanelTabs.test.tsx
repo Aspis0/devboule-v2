@@ -420,7 +420,7 @@ describe("the right panel's tabs", () => {
     if (menu === null) throw new Error("kebab menu did not render");
     expect(menu.getAttribute("role")).toBe("menu");
     expect(tablist().contains(menu)).toBe(false);
-    expect(menuItems().map((item) => item.textContent)).toEqual(["Pull request", "Collapse panel"]);
+    expect(menuItems().map((item) => item.textContent)).toEqual(["Pull request"]);
   });
 
   it("paints no tab underline while a kebab panel shows, only the kebab's mark", async () => {
@@ -521,17 +521,17 @@ describe("the right panel's tabs", () => {
     expect(tabs()[1]?.getAttribute("aria-selected")).toBe("true");
   });
 
-  it("closes the kebab on Escape and returns focus, and walks its items with arrows", async () => {
+  it("closes the kebab on Escape and returns focus, and keeps arrows on its only item", async () => {
     await renderWorkspace();
 
     await act(async () => kebab().click());
-    expect(menuItems()).toHaveLength(2);
+    expect(menuItems()).toHaveLength(1);
     await act(async () => {
       menuItems()[0].dispatchEvent(
         new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
       );
     });
-    expect(document.activeElement).toBe(menuItems()[1]);
+    expect(document.activeElement).toBe(menuItems()[0]);
     await act(async () => {
       menuItems()[0].dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     });
@@ -586,15 +586,16 @@ describe("the right panel's tabs", () => {
     expect(document.activeElement).not.toBe(kebab());
   });
 
-  it("collapses the rail from the kebab and restores the same tab", async () => {
+  it("collapses the rail from its header toggle and restores the same tab", async () => {
     await renderWorkspace();
 
     await act(async () => tabByName("Files").click());
-    await act(async () => kebab().click());
-    const collapse = menuItems().find((item) => item.textContent === "Collapse panel");
-    if (collapse === undefined) throw new Error("Collapse panel menu entry did not render");
+    const collapse = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Collapse panel"]',
+    );
+    if (collapse === null) throw new Error("Collapse panel toggle did not render");
     await act(async () => collapse.click());
-    const show = container.querySelector<HTMLButtonElement>('button[aria-label="Show side panel"]');
+    const show = container.querySelector<HTMLButtonElement>('button[aria-label="Show panel"]');
     if (show === null) throw new Error("collapsed rail did not render");
     // Collapse lands focus on the control that re-opens the panel, not <body>.
     expect(document.activeElement).toBe(show);

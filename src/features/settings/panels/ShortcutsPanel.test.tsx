@@ -51,15 +51,15 @@ describe("ShortcutsPanel", () => {
       const labelId = section.getAttribute("aria-labelledby");
       return labelId === null ? null : document.getElementById(labelId)?.textContent;
     });
-    expect(names).toEqual(["Tabs", "Composer", "Navigation", "Panel", "Browser"]);
+    expect(names).toEqual(["Tabs", "Composer", "Navigation", "Panel", "Layout", "Browser"]);
   });
 
-  it("groups the rows under the five scopes, in order", async () => {
+  it("groups the rows under the six scopes, in order", async () => {
     await renderPanel();
     const headings = Array.from(container.querySelectorAll(".settings-section-label")).map(
       (heading) => heading.textContent,
     );
-    expect(headings).toEqual(["Tabs", "Composer", "Navigation", "Panel", "Browser"]);
+    expect(headings).toEqual(["Tabs", "Composer", "Navigation", "Panel", "Layout", "Browser"]);
   });
 
   it("prints the strip chord and the tab-list keys", async () => {

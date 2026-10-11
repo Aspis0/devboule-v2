@@ -3203,7 +3203,7 @@ describe("Workspace sessions", () => {
       });
       await act(async () => undefined);
 
-      const strip = container.querySelector(".workspace-daemon-status");
+      const strip = container.querySelector(".status-bar-daemon");
       if (strip === null) throw new Error("daemon status strip did not render");
       expect(strip.textContent).toContain("daemon");
       expect(strip.getAttribute("title")).toContain(UNRESPONSIVE_MESSAGE);
@@ -3228,7 +3228,7 @@ describe("Workspace sessions", () => {
 
       // The state stays visible after the decline: the dot turns and the
       // sentence rides in the tooltip.
-      const strip = container.querySelector(".workspace-daemon-status");
+      const strip = container.querySelector(".status-bar-daemon");
       if (strip === null) throw new Error("daemon status strip did not render");
       expect(strip.textContent).toContain("daemon");
       expect(strip.getAttribute("title")).toContain(UNRESPONSIVE_MESSAGE);
@@ -3258,7 +3258,7 @@ describe("Workspace sessions", () => {
       });
       await act(async () => undefined);
 
-      const strip = container.querySelector(".workspace-daemon-status");
+      const strip = container.querySelector(".status-bar-daemon");
       if (strip === null) throw new Error("daemon status strip did not render");
       // Both facts at once, in the tooltip: the daemon's own sentence and the
       // failed attempt.

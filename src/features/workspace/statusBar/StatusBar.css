@@ -8,7 +8,7 @@
   height: 26px;
   padding: 0 var(--space-12);
   overflow: hidden;
-  border-top: 2px solid var(--line-strong);
+  border-top: 1px solid var(--line);
   background: var(--panel-side);
   color: var(--muted);
   font-size: var(--type-meta);
@@ -66,10 +66,27 @@
   background: color-mix(in srgb, var(--ink) 14%, transparent);
 }
 
+.status-bar-name {
+  color: var(--ink-soft);
+}
+
+.status-bar-unreported {
+  color: var(--muted);
+}
+
+/* The fill is neutral; the tone only changes once a window nears its limit. */
 .status-meter-fill {
   display: block;
   height: 100%;
-  background: var(--accent);
+  background: var(--control-on);
+}
+
+.status-meter-fill-warn {
+  background: var(--tone-warn);
+}
+
+.status-meter-fill-danger {
+  background: var(--danger);
 }
 
 /* A reading ten minutes to an hour old: still shown, but dimmed so its age reads at a glance. */

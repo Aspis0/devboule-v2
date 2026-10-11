@@ -3,8 +3,8 @@ import type { ChangeEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent } fro
 import { searchChordFor, searchChordLabel } from "../../../lib/keymap";
 import { useMenuOpen } from "../../../lib/menuOpen";
 import { moveMenuFocus } from "../strip/menuNav";
-import type { DaemonStatus } from "../../../types/ipc";
 import type { WorkspaceProject } from "../workspaceProjects";
+import { PanelStub, PanelToggle } from "../PanelToggle";
 import { SidebarFooter } from "./SidebarFooter";
 import { TranscriptSearchResults, type TranscriptSearchProps } from "./TranscriptSearchResults";
 import { WorkspaceTree, type WorkspaceTreeProps } from "./WorkspaceTree";
@@ -30,8 +30,6 @@ export interface SidebarProps {
   tree: WorkspaceTreeProps;
   /** The message matches under the search field. Absent: the search matches titles only. */
   transcripts?: TranscriptSearchProps;
-  daemon: DaemonStatus;
-  daemonNote: string | null;
 }
 
 /**
@@ -41,8 +39,8 @@ export interface SidebarProps {
  * while this rail keeps showing the workspaces. The resize handle is this
  * region's other half — a sibling of the aside in the screen's flex row.
  *
- * Memoised: the daemon poll and roster pushes re-render the surface, and a
- * rail whose every prop kept its identity must not re-traverse its tree.
+ * Memoised: roster pushes re-render the surface, and a rail whose every prop
+ * kept its identity must not re-traverse its tree.
  */
 export const Sidebar = memo(function Sidebar({
   width,
@@ -61,8 +59,6 @@ export const Sidebar = memo(function Sidebar({
   addProjectRef,
   tree,
   transcripts,
-  daemon,
-  daemonNote,
 }: SidebarProps) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
@@ -186,30 +182,13 @@ export const Sidebar = memo(function Sidebar({
         aria-label="Workspaces"
       >
         {collapsed ? (
-          <button
-            type="button"
-            className="workspace-collapsed-panel"
-            onClick={() => onCollapsedChange(false)}
-            title="Show workspaces"
-            aria-label="Show workspaces"
-          >
-            <span aria-hidden="true">›</span>
-            <span className="workspace-vertical-label">workspaces</span>
-          </button>
+          <PanelStub side="left" onShow={() => onCollapsedChange(false)} />
         ) : (
           <div className="workspace-panel-open">
             <div className="sidebar-top">
               <span className="sidebar-wordmark">devboule</span>
               <span className="sidebar-top-spacer" />
-              <button
-                type="button"
-                className="workspace-icon-button sidebar-top-button"
-                onClick={() => onCollapsedChange(true)}
-                title="Collapse"
-                aria-label="Collapse workspaces"
-              >
-                ‹
-              </button>
+              <PanelToggle side="left" onCollapse={() => onCollapsedChange(true)} />
             </div>
 
             <div className="sidebar-actions">
@@ -331,7 +310,7 @@ export const Sidebar = memo(function Sidebar({
               <WorkspaceTree {...tree} />
             </div>
 
-            <SidebarFooter onOpenSettings={onOpenSettings} daemon={daemon} note={daemonNote} />
+            <SidebarFooter onOpenSettings={onOpenSettings} />
           </div>
         )}
       </aside>

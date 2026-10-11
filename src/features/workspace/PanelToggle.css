@@ -1,0 +1,86 @@
+/* The side-panel toggles: a 28px header button, and the collapsed side's
+   whole-height stub. Each carries a key tip that appears on hover and on focus. */
+
+.panel-toggle {
+  position: relative;
+  display: grid;
+  width: var(--control-default);
+  height: var(--control-default);
+  flex: none;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-6);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.panel-toggle:hover,
+.panel-toggle:focus-visible {
+  background: var(--fill-hover);
+  color: var(--ink);
+}
+
+.panel-toggle:focus-visible,
+.panel-stub:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 0;
+}
+
+.panel-stub {
+  position: relative;
+}
+
+.panel-key-tip {
+  position: absolute;
+  top: calc(100% + var(--space-6));
+  right: 0;
+  z-index: 5;
+  display: none;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-4) var(--space-8);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-6);
+  background: var(--panel-menu);
+  box-shadow: var(--shadow-pop);
+  color: var(--ink);
+  font-size: var(--type-meta);
+  font-weight: 400;
+  line-height: 18px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.panel-stub-left .panel-key-tip {
+  top: 0;
+  right: auto;
+  left: calc(100% + var(--space-6));
+}
+
+.panel-stub-right .panel-key-tip {
+  top: 0;
+  right: calc(100% + var(--space-6));
+}
+
+.panel-toggle:hover > .panel-key-tip,
+.panel-toggle:focus-visible > .panel-key-tip,
+.panel-stub:hover > .panel-key-tip,
+.panel-stub:focus-visible > .panel-key-tip {
+  display: flex;
+}
+
+.panel-key-tip-label {
+  color: var(--ink);
+}
+
+.panel-key-tip-key {
+  padding: 0 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--ink-soft);
+  font-family: inherit;
+  font-size: var(--type-meta);
+  line-height: 18px;
+}

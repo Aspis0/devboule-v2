@@ -1,36 +1,23 @@
 // @vitest-environment happy-dom
 
-// The foot's contract as a bottom icon row: add project and settings name
-// themselves, and the daemon dot keeps its contract with the three ways of
-// reading it — only the dot is drawn at rest, what it stands for rides in the
-// tooltip a pointer reads, in the status text a screen reader reads and in the
-// tip keyboard focus reveals, and the status line is exactly one tab stop.
+// The sidebar's footer is the Settings button alone: the daemon's status is
+// shown once, in the status bar, so the footer draws no dot.
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DaemonStatus } from "../../../types/ipc";
 import { SidebarFooter } from "./SidebarFooter";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const CONNECTED: DaemonStatus = {
-  state: "connected",
-  pid: 40220,
-  instanceId: "daemon-test",
-  protocolVersion: 21,
-  clients: 1,
-  capabilities: [],
-  message: null,
-};
-
-describe("the sidebar foot's status dot", () => {
+describe("the sidebar footer", () => {
   let container: HTMLDivElement;
   let root: Root;
 
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    root = createRoot(container);
   });
 
   afterEach(async () => {
@@ -38,74 +25,31 @@ describe("the sidebar foot's status dot", () => {
     container.remove();
   });
 
-  async function render(daemon: DaemonStatus, note: string | null = null): Promise<HTMLElement> {
-    root = createRoot(container);
+  async function render(onOpenSettings = vi.fn()): Promise<HTMLElement> {
     await act(async () => {
-      root.render(<SidebarFooter onOpenSettings={vi.fn()} daemon={daemon} note={note} />);
+      root.render(<SidebarFooter onOpenSettings={onOpenSettings} />);
     });
-    const foot = container.querySelector<HTMLElement>(".workspace-sidebar-footer");
-    if (foot === null) throw new Error("the foot did not render");
-    return foot;
-  }
-
-  function dot(): HTMLElement {
-    const status = container.querySelector<HTMLElement>(".sidebar-foot");
-    if (status === null) throw new Error("the daemon status did not render");
-    return status;
-  }
-
-  it("is an icon row: Settings and the daemon dot, and no project button", async () => {
-    const onOpenSettings = vi.fn();
-    root = createRoot(container);
-    await act(async () => {
-      root.render(<SidebarFooter onOpenSettings={onOpenSettings} daemon={CONNECTED} note={null} />);
-    });
-
     const row = container.querySelector<HTMLElement>('.sidebar-icon-row[role="group"]');
     if (row === null) throw new Error("the icon row did not render");
-    // New project moved to the top with the other creation commands.
+    return row;
+  }
+
+  it("holds the Settings button and no project button", async () => {
+    const onOpenSettings = vi.fn();
+    const row = await render(onOpenSettings);
+
     expect(row.querySelector('button[aria-label="New project"]')).toBeNull();
     const settings = row.querySelector<HTMLButtonElement>('button[aria-label="Settings"]');
-    if (!settings) throw new Error("the icon row's buttons did not render");
+    if (!settings) throw new Error("the Settings button did not render");
     await act(async () => settings.click());
     expect(onOpenSettings).toHaveBeenCalledTimes(1);
-    expect(row.querySelector(".sidebar-foot")).not.toBeNull();
-    // The old bottom-of-sidebar History is gone from the foot.
-    expect(container.querySelector(".workspace-history-button")).toBeNull();
+    expect(row.querySelectorAll("button")).toHaveLength(1);
   });
 
-  it("draws the dot and no printed word beside it", async () => {
-    await render(CONNECTED);
-    const foot = dot();
+  it("draws no daemon dot, so the status is not repeated here", async () => {
+    await render();
 
-    expect(foot.querySelector(".workspace-status-dot")?.className).toContain("workspace-dot-green");
-    expect(foot.querySelector(".workspace-daemon-status-label")).toBeNull();
-    expect(foot.textContent).not.toContain("Daemon");
-  });
-
-  it("gives a pointer and a screen reader the same sentence, pid included", async () => {
-    await render(CONNECTED, "restart failed");
-    const foot = dot();
-
-    expect(foot.getAttribute("title")).toBe("daemon · pid 40220 · restart failed");
-    expect(foot.querySelector(".sr-only")?.textContent).toBe("daemon · pid 40220 · restart failed");
-  });
-
-  it("announces the state it holds and is one tab stop whose tip a screen reader skips", async () => {
-    await render({
-      ...CONNECTED,
-      state: "disconnected",
-      message: "daemon unreachable",
-    });
-    const foot = dot();
-
-    expect(foot.getAttribute("tabindex")).toBe("0");
-    expect(foot.querySelectorAll("[tabindex]")).toHaveLength(0);
-    const tip = foot.querySelector(".sidebar-foot-tip");
-    expect(tip?.getAttribute("aria-hidden")).toBe("true");
-    expect(tip?.textContent).toBe(foot.querySelector(".sr-only")?.textContent);
-    expect(foot.getAttribute("role")).toBe("status");
-    expect(foot.querySelector(".workspace-dot-terracotta")).not.toBeNull();
-    expect(foot.textContent).toContain("daemon · ");
+    expect(container.querySelector(".workspace-status-dot")).toBeNull();
+    expect(container.querySelector(".sidebar-foot")).toBeNull();
   });
 });

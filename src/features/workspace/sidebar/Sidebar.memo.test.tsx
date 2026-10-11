@@ -8,7 +8,6 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DaemonStatus } from "../../../types/ipc";
 import { MAX_LEFT_WIDTH, MIN_LEFT_WIDTH } from "../workspaceResize";
 import { Sidebar, type SidebarProps } from "./Sidebar";
 
@@ -35,16 +34,6 @@ vi.mock("../../../lib/tauri", async (importOriginal) => ({
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
-
-const CONNECTED: DaemonStatus = {
-  state: "connected",
-  pid: 42,
-  instanceId: "daemon-test",
-  protocolVersion: 21,
-  clients: 1,
-  capabilities: [],
-  message: null,
-};
 
 function sidebarProps(): SidebarProps {
   return {
@@ -81,8 +70,6 @@ function sidebarProps(): SidebarProps {
       branches: new Map(),
       hostNames: new Map(),
     },
-    daemon: CONNECTED,
-    daemonNote: null,
   };
 }
 
