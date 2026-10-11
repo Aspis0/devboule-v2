@@ -3266,32 +3266,32 @@ impl SessionRegistry {
         Ok(removed)
     }
 
-    /// Record that a stop ended `session_id` on request. Taken on its own, after
-    /// the registry lock is released: the creation table never nests under it.
+    /// Record that a stop ended `session_id` on request, on the session's own
+    /// row, so a restart still reads it as stopped. A mark the journal refuses
+    /// is logged: the kill still happens, and the status reads failed until a
+    /// later read finds the row.
     fn note_stopped(&self, session_id: &str) {
-        let mut table = self
-            .creations
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        table.stopped.insert(session_id.to_string());
+        if let Some(journal) = &self.journal {
+            if let Err(error) = journal.set_session_stopped(session_id, true) {
+                eprintln!("journal could not record the stop of {session_id}: {error}");
+            }
+        }
     }
 
     /// Whether a stop ended `session_id` and no resume has started it since.
     pub(crate) fn was_stopped(&self, session_id: &str) -> bool {
-        let table = self
-            .creations
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        table.stopped.contains(session_id)
+        self.journal
+            .as_ref()
+            .is_some_and(|journal| journal.session_stopped(session_id).unwrap_or(false))
     }
 
     /// A resume started `session_id` again: its next end is its own.
     fn forget_stopped(&self, session_id: &str) {
-        let mut table = self
-            .creations
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        table.stopped.remove(session_id);
+        if let Some(journal) = &self.journal {
+            if let Err(error) = journal.set_session_stopped(session_id, false) {
+                eprintln!("journal could not clear the stop of {session_id}: {error}");
+            }
+        }
     }
 
     pub fn stop(&self, session_id: &str, owner: &OwnerId) -> Result<(), WireError> {

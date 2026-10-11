@@ -481,11 +481,6 @@ pub(crate) struct AgentCreationTable {
     /// `children` the moment its close runs. In memory only — a restart ends
     /// every session anyway, so nothing reads it across one.
     pub(super) idle_closed: VecDeque<String>,
-    /// Sessions a stop ended on request, until a resume starts them again. The
-    /// journal row of a stopped session records the exit, not its cause, so a
-    /// stored read needs this set to say `canceled` rather than `failed`. In
-    /// memory only, like `idle_closed`: a restart ends every session anyway.
-    pub(super) stopped: std::collections::HashSet<String>,
     /// Children an agent's creation has spawned but not committed yet
     /// (audit-2 §2): their end waits instead of running against a link that
     /// does not exist yet.

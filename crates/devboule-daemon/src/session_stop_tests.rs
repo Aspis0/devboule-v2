@@ -140,6 +140,16 @@ fn a_stop_records_the_request_on_the_live_runtime() {
     let (dir, registry, journal) = tmp_delete_registry();
     let owner = test_owner("S-1-5-21-stop-records", "process-stop-records");
     let session_id = compose_session_id(&owner.session_token(), "stoprec").expect("id");
+    // A live session always has its journal row: the stop marks that row.
+    journal
+        .create_session(crate::journal::new_session_record(
+            &session_id,
+            owner.user.clone(),
+            None,
+            SessionKind::Acp,
+            "Stop record",
+        ))
+        .expect("the row exists");
     insert_live(&registry, &session_id, owner.clone());
     let conn = ConnHandle::new(12);
     registry

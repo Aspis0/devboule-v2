@@ -2571,3 +2571,32 @@ fn goal_column_round_trip_set_and_clear() {
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A stop is a mark on the row, so a restart reads the session as stopped and
+/// a resume (the clear) reads it as not stopped again.
+#[test]
+fn a_stopped_mark_survives_a_restart_and_a_clear_undoes_it() {
+    let (dir, path) = tmp_journal();
+    let journal = Journal::open(&path).expect("open");
+    let record = sample_session("s.stopped.restart");
+    journal.create_session(record).expect("row");
+    assert!(!journal.session_stopped("s.stopped.restart").expect("read"));
+    journal
+        .set_session_stopped("s.stopped.restart", true)
+        .expect("the stop is written");
+    journal.shutdown();
+
+    let journal = Journal::open(&path).expect("reopen after a restart");
+    assert!(
+        journal
+            .session_stopped("s.stopped.restart")
+            .expect("read after the restart"),
+        "the stop survives the restart"
+    );
+    journal
+        .set_session_stopped("s.stopped.restart", false)
+        .expect("the resume clears it");
+    assert!(!journal.session_stopped("s.stopped.restart").expect("read"));
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+}

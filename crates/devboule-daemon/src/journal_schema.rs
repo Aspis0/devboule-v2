@@ -406,9 +406,25 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
                 )?;
             }
         }
+        if version < 20 {
+            // The stop a person or a parent asked for. The row records that a
+            // stop ended the session, not the exit the kill left: a stored read
+            // says canceled for it, and a restart keeps saying so. NULL-free
+            // from the start (DEFAULT 0), so every row that predates the column
+            // reads as not stopped. Written only by `set_session_stopped`.
+            if !session_has_column(&tx, "stopped")? {
+                tx.execute(
+                    "ALTER TABLE sessions ADD COLUMN stopped INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )?;
+            }
+            // The pre-stamp guard, same ordering as v12 to v19.
+            validate_stopped_column(&tx)?;
+        }
         tx.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
         tx.commit()?;
     }
+    repair_stopped_column(&conn)?;
     validate_v6_schema(&conn)?;
     // The two agent columns are checked by shape rather than by presence
     // — see [`validate_agent_columns`].
@@ -656,9 +672,44 @@ fn validate_v17_columns(conn: &Connection) -> Result<(), JournalError> {
     Ok(())
 }
 
-/// The v18 peers column, spelled once: `hosts_workspaces` is
+/// The v20 column, spelled once: `sessions.stopped` is
 /// `INTEGER NOT NULL DEFAULT 0`, the shape the migration adds. The pre-stamp
-/// guard and the post-commit check both read this predicate.
+/// guard and the post-open check both read this predicate.
+fn validate_stopped_column(conn: &Connection) -> Result<(), JournalError> {
+    let shape: Option<(String, i64, Option<String>)> = conn
+        .query_row(
+            "SELECT type, \"notnull\", dflt_value FROM pragma_table_info('sessions') WHERE name = 'stopped'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let ours = matches!(
+        shape,
+        Some((ref kind, 1, Some(ref default)))
+            if kind.eq_ignore_ascii_case("integer") && default == "0"
+    );
+    if !ours {
+        return Err(JournalError::Corrupt(
+            "journal schema has an unexpected sessions.stopped column".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// The post-open check for the `stopped` column. A database another build
+/// stamped at this version without the column gets it back here, so a stop
+/// can be recorded; a column of another shape is refused as corrupt.
+fn repair_stopped_column(conn: &Connection) -> Result<(), JournalError> {
+    if !session_has_column(conn, "stopped")? {
+        eprintln!("journal: sessions.stopped was missing at schema v20; adding it");
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN stopped INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    validate_stopped_column(conn)
+}
+
 fn validate_v18_columns(conn: &Connection) -> Result<(), JournalError> {
     let hosts = peer_column_shape(conn, "hosts_workspaces")?;
     let ours = matches!(

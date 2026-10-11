@@ -61,7 +61,7 @@ pub(crate) use journal_transcript_time::{time_a_finish, time_a_kindless_report};
 
 /// Stored in `PRAGMA user_version`. Bump whenever the journal schema gains
 /// tables or columns that need migration.
-pub const JOURNAL_SCHEMA_VERSION: i32 = 19;
+pub const JOURNAL_SCHEMA_VERSION: i32 = 20;
 
 /// How often the append path enforces the audit age floor and per-device cap.
 /// The session retention sweep is byte-driven, not time-driven, so the hourly
@@ -777,6 +777,18 @@ enum JournalCmd {
     MarkClosed {
         session_id: String,
     },
+    /// The stop a person or a parent asked for (`sessions.stopped`): written
+    /// before the kill, cleared by a resume, read by the stored status so a
+    /// stopped session reads canceled after a restart too.
+    MarkStopped {
+        session_id: String,
+        stopped: bool,
+        reply: mpsc::Sender<Result<(), JournalError>>,
+    },
+    SessionStopped {
+        session_id: String,
+        reply: mpsc::Sender<Result<bool, JournalError>>,
+    },
     SetPeerSessionId {
         session_id: String,
         peer_session_id: String,
@@ -1303,6 +1315,24 @@ impl Journal {
             generation,
             code,
         });
+    }
+
+    /// Record (or clear) the stop a session was ended by. Synchronous: a stop
+    /// is answered only once the mark is on disk, so a restart keeps it.
+    pub fn set_session_stopped(&self, session_id: &str, stopped: bool) -> Result<(), JournalError> {
+        self.rpc(|reply| JournalCmd::MarkStopped {
+            session_id: session_id.to_string(),
+            stopped,
+            reply,
+        })
+    }
+
+    /// Whether the session was ended by a stop that no resume has undone.
+    pub fn session_stopped(&self, session_id: &str) -> Result<bool, JournalError> {
+        self.rpc(|reply| JournalCmd::SessionStopped {
+            session_id: session_id.to_string(),
+            reply,
+        })
     }
 
     pub fn try_mark_closed(&self, session_id: &str) {
@@ -2286,6 +2316,16 @@ fn journal_loop(
                     retention_state.session_set_changed();
                     session_set_revision.fetch_add(1, Ordering::AcqRel);
                 }
+            }
+            JournalCmd::MarkStopped {
+                session_id,
+                stopped,
+                reply,
+            } => {
+                let _ = reply.send(set_stopped(&conn, &session_id, stopped));
+            }
+            JournalCmd::SessionStopped { session_id, reply } => {
+                let _ = reply.send(session_stopped(&conn, &session_id));
             }
             JournalCmd::MarkClosed { session_id } => {
                 if let Err(error) = mark_closed(&conn, &session_id) {
@@ -3772,6 +3812,31 @@ fn append_permission(conn: &Connection, record: &PermissionRecord) -> Result<(),
         ],
     )?;
     Ok(())
+}
+
+fn set_stopped(conn: &Connection, session_id: &str, stopped: bool) -> Result<(), JournalError> {
+    let n = conn.execute(
+        "UPDATE sessions SET stopped = ?1 WHERE id = ?2",
+        params![i64::from(stopped), session_id],
+    )?;
+    if n == 0 {
+        Err(JournalError::SessionNotFound)
+    } else {
+        Ok(())
+    }
+}
+
+fn session_stopped(conn: &Connection, session_id: &str) -> Result<bool, JournalError> {
+    let stopped: Option<i64> = conn
+        .query_row(
+            "SELECT stopped FROM sessions WHERE id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    stopped
+        .map(|value| value != 0)
+        .ok_or(JournalError::SessionNotFound)
 }
 
 fn mark_closed(conn: &Connection, session_id: &str) -> Result<(), JournalError> {
