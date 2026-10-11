@@ -1,4 +1,4 @@
-export interface SidebarFooterProps {
+interface SidebarFooterProps {
   onOpenSettings: () => void;
 }
 

@@ -2,7 +2,7 @@ import { commandKeycap } from "../../lib/keymap";
 import { PanelIcon } from "./panel/PanelIcon";
 import "./PanelToggle.css";
 
-export type PanelSide = "left" | "right";
+type PanelSide = "left" | "right";
 
 const SIDE_TEXT: Record<
   PanelSide,
