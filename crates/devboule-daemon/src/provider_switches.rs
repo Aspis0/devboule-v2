@@ -15,10 +15,9 @@
 //! daemon's tools, this switch gates the provider itself, and one door must
 //! never imply the other.
 //!
-//! The start gates refuse only a provider a person switched off
-//! ([`ProviderSwitchStore::is_off`]); a provider with no choice and no install
-//! fails at its own spawn with the honest "not installed" answer, so no gate
-//! has to re-walk the PATH to decide.
+//! A start with no saved choice is refused unless the provider is declared in
+//! the providers file (as the loader accepts it) or installed on PATH; the
+//! default is read at the moment of the call. See [`ProviderSwitchStore::default_for`].
 //!
 //! A document that cannot be read or parsed is quarantined like a corrupt
 //! tool-policy file, and the store then reads every provider at its default.
@@ -547,7 +546,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("create runtime directory");
         std::fs::write(
             dir.join(crate::user_providers::PROVIDERS_FILE),
-            br#"{"route-declared-fixture": {"extends": "acp", "command": ["/bin/x"], "enabled": true}}"#,
+            br#"{"route-declared-fixture": {"extends": "acp", "command": ["/bin/x"]}}"#,
         )
         .expect("declare a row");
         let store = ProviderSwitchStore::load(&dir);
@@ -558,6 +557,26 @@ mod tests {
         assert!(is_on_now(&store, "route-declared-fixture"));
         refuse_unless_enabled(&store, "route-declared-fixture")
             .expect("a declared row passes the gate");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rows_from_a_document_the_loader_rejects_are_not_declared() {
+        // One bad row fails the whole document (the loader applies nothing from
+        // it), so the good row beside it is not declared either.
+        let dir = temp_dir("declared-invalid");
+        std::fs::create_dir_all(&dir).expect("create runtime directory");
+        std::fs::write(
+            dir.join(crate::user_providers::PROVIDERS_FILE),
+            br#"{"route-declared-fixture": {"extends": "acp", "command": ["/bin/x"]}, "bad id!": {"extends": "acp", "command": ["/bin/x"]}}"#,
+        )
+        .expect("declare two rows, one invalid");
+        let store = ProviderSwitchStore::load(&dir);
+        assert!(
+            !store.default_for("route-declared-fixture"),
+            "a document the loader refuses declares nothing"
+        );
+        assert!(!store.default_for("bad id!"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
