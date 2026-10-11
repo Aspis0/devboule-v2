@@ -914,9 +914,10 @@ impl PermissionBroker {
         Ok(true)
     }
 
-    /// Judge the cards a session holds again under its current mode. A switch to
-    /// a mode that approves a waiting card answers it at once, rather than at the
-    /// next card the agent raises.
+    /// Judge the cards a session holds again under its current mode. A mode that
+    /// approves a waiting card answers it at once; a mode that refuses writes
+    /// denies the tool cards it holds, so a write waiting for an answer cannot be
+    /// granted after the switch.
     pub(crate) fn reconsider_session(&self, session_id: &str, runtime: &Arc<SessionRuntime>) {
         let waiting: Vec<String> = match self.pending.lock() {
             Ok(table) => table
@@ -928,8 +929,41 @@ impl PermissionBroker {
             Err(_) => return,
         };
         for tool_call_id in waiting {
-            let _ = self.auto_answer(&tool_call_id, runtime);
+            if matches!(self.auto_answer(&tool_call_id, runtime), Ok(true)) {
+                continue;
+            }
+            if self.mode_refuses_card(&tool_call_id, runtime) {
+                let _ = self.respond(&tool_call_id, PermissionOutcome::Deny);
+            }
         }
+    }
+
+    /// Whether the session's mode refuses writes and this card asks for a tool. A
+    /// question or a plan is the person's own answer, not a write, so it stays.
+    fn mode_refuses_card(&self, tool_call_id: &str, runtime: &Arc<SessionRuntime>) -> bool {
+        let is_tool_card = self
+            .pending
+            .lock()
+            .ok()
+            .and_then(|table| {
+                match table
+                    .entries
+                    .get(tool_call_id)
+                    .map(|pending| &pending.request)
+                {
+                    Some(SessionEvent::PermissionRequest { kind, .. }) => Some(!matches!(
+                        kind,
+                        Some(PermissionRequestKind::Question | PermissionRequestKind::Plan)
+                    )),
+                    _ => None,
+                }
+            })
+            .unwrap_or(false);
+        is_tool_card
+            && matches!(
+                runtime.mode_gate(),
+                crate::provider_catalog::ModeGate::Refuse(_)
+            )
     }
 
     /// Whether the session's current mode answers this card itself. The tool is

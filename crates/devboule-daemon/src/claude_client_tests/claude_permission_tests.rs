@@ -1247,3 +1247,35 @@ fn an_accept_edits_switch_leaves_a_shell_card_waiting() {
     assert!(captured.lock().expect("captured").is_empty());
     assert_eq!(broker.pending_len(), 1);
 }
+
+/// A switch into plan refuses the write the person has not decided yet: its
+/// card is denied, not left open for a later answer.
+#[test]
+fn a_plan_switch_denies_the_waiting_edit_card() {
+    let (broker, captured, _, runtime, _conn) = harness_with(tool_line("Edit", "toolu_plan_edit"));
+    runtime.set_agent_kind(devboule_protocol::SessionKind::Claude);
+    set_runtime_mode(&runtime, "plan");
+
+    broker.reconsider_session("s.claude.test", &runtime);
+
+    let frames = captured.lock().expect("captured");
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0]["response"]["response"]["behavior"], "deny");
+    assert_eq!(broker.pending_len(), 0);
+}
+
+/// A switch into Claude's classifier mode does not answer a card the classifier
+/// never reviewed: the card stays for its parent and raises no attention of its own.
+#[test]
+fn an_auto_switch_leaves_the_queued_card_for_its_parent() {
+    let (broker, captured, _, runtime, _conn) = harness_with(tool_line("Edit", "toolu_queued"));
+    runtime.set_agent_kind(devboule_protocol::SessionKind::Claude);
+    let attention_before = runtime.attention();
+    set_runtime_mode(&runtime, "auto");
+
+    broker.reconsider_session("s.claude.test", &runtime);
+
+    assert!(captured.lock().expect("captured").is_empty());
+    assert_eq!(broker.pending_len(), 1);
+    assert_eq!(runtime.attention(), attention_before);
+}
