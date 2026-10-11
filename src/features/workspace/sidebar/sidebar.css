@@ -301,7 +301,8 @@
   text-align: left;
   width: 100%;
   min-width: 0;
-  padding: var(--space-8) var(--space-12);
+  /* Orca's card padding, measured: 5px above the row, 6px below. */
+  padding: 5px var(--space-12) 6px;
   color: var(--ink);
   background: transparent;
   border-radius: var(--radius-6);
@@ -338,8 +339,10 @@
   flex-direction: column;
 }
 
+/* A two-line row takes the same padding as a one-line row: the extra air was
+   the density the review measured against Orca. */
 .workspace-row-two {
-  padding-block: var(--space-4);
+  padding-block: 0;
 }
 
 .workspace-row-line {
@@ -410,26 +413,37 @@
 /* The status dot, in the slot the letter avatar held: running breathes,
    needs you is solid in the attention tone, idle is a hollow ring. A row
    always holds the slot, so the names line up. */
+/* The slot is a 20px lane, as in Orca; the dot is drawn inside it, 6px across,
+   by a gradient clipped to the padded-out content box. */
 .workspace-row-status {
   display: inline-block;
   flex: none;
   box-sizing: border-box;
-  width: 8px;
-  height: 8px;
+  width: 20px;
+  height: 20px;
+  padding: 7px;
   border-radius: var(--radius-full);
+  background-clip: content-box;
 }
 
 .workspace-row-status-running {
-  background: var(--tone-live);
+  background: radial-gradient(circle closest-side, var(--tone-live) 100%, transparent 100%);
 }
 
+/* The attention dot carries a 2px halo in the sidebar's own colour, so it
+   stands off a selected fill, as Orca's ring-2 does. */
 .workspace-row-status-attention {
-  background: var(--tone-attention);
+  padding: 5px;
+  background: radial-gradient(
+    circle closest-side,
+    var(--tone-attention) 60%,
+    var(--panel-side) 60% 100%
+  );
+  background-clip: content-box;
 }
 
 .workspace-row-status-idle {
-  border: 1px solid var(--muted);
-  background: transparent;
+  background: radial-gradient(circle closest-side, transparent 58%, var(--muted) 60% 100%);
 }
 
 .workspace-row-selected .workspace-row-sub {

@@ -47,9 +47,9 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     read("src/features/workspace/sidebar/sidebar.css"),
   ]);
 
-  it("workspace rows are laid out as spec'd: flex, padded 8/12, left-aligned", async () => {
+  it("workspace rows are laid out as spec'd: flex, padded 5/12/6 as Orca's cards, left-aligned", async () => {
     const body = rulesFor(".workspace-row");
-    expect(body).toContain("padding: 8px 12px");
+    expect(body).toContain("padding: 5px 12px 6px");
 
     inject([".workspace-row"]);
     await renderWorkspace();
@@ -59,7 +59,8 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     expect(style.display).toBe("flex");
     expect(style.textAlign).toBe("left");
     expect(style.paddingLeft).toBe("12px");
-    expect(style.paddingTop).toBe("8px");
+    expect(style.paddingTop).toBe("5px");
+    expect(style.paddingBottom).toBe("6px");
   });
 
   it("spaces the list itself by 4px", async () => {
@@ -117,13 +118,13 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     );
   });
 
-  it("the status dot is an 8px disc in the row's first slot, and the project badge stays 16px", async () => {
+  it("the status slot is a 20px lane in the row's first place, and the project badge stays 16px", async () => {
     inject([".workspace-row-status", ".sidebar-avatar-project", ".sidebar-avatar"]);
     await renderWorkspace();
     const dot = document.querySelector<HTMLElement>(".workspace-row-status");
     if (dot === null) throw new Error("the status dot did not render");
-    expect(getComputedStyle(dot).width).toBe("8px");
-    expect(getComputedStyle(dot).height).toBe("8px");
+    expect(getComputedStyle(dot).width).toBe("20px");
+    expect(getComputedStyle(dot).height).toBe("20px");
     expect(getComputedStyle(dot).borderRadius).toBe("999px");
     expect(dot.parentElement?.firstElementChild).toBe(dot);
 
