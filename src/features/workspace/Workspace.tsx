@@ -176,6 +176,7 @@ import {
   daemonRestart,
   providersList,
   sessionClose,
+  sessionResume,
   sessionStop,
   workspaceFilesList,
   type AttentionTarget,
@@ -1635,6 +1636,20 @@ export function Workspace({
   const handleResumeFailed = useCallback(() => {
     void refreshSessions();
   }, [refreshSessions]);
+  // A stopped session's composer resumes it: the same reopen road the recovered
+  // bar takes, so the pane opens the live session. The text stays in the composer.
+  const resumeStoppedSession = useCallback(
+    async (session: Session): Promise<boolean> => {
+      const result = await sessionResume(session.id).catch(() => null);
+      if (result?.type === "resumed") {
+        handleReopenSession(result.session);
+        return true;
+      }
+      handleResumeFailed();
+      return false;
+    },
+    [handleReopenSession, handleResumeFailed],
+  );
   const [providerPicker, setProviderPicker] = useState<ProviderInfo[] | null>(null);
   const [providerAnchor, setProviderAnchor] = useState<ProviderAnchor | null>(null);
   /** Set on the first row-click navigation: afterwards the user steers the
@@ -2586,6 +2601,9 @@ export function Workspace({
                 : null
             }
             observedState={paneSession.state}
+            resumeStopped={
+              paneSession.resumable ? () => resumeStoppedSession(paneSession) : undefined
+            }
             initialGoal={paneSession.goal}
             activity={paneSession.activity}
             daemonState={daemon.state}

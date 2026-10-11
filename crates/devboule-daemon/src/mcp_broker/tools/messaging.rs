@@ -50,15 +50,35 @@ pub(in crate::mcp_broker) fn send(
     if let Some(device_id) = device_id {
         return super::messaging_peer::send(state, registration, id, device_id, to_agent, text);
     }
-    let target = state
+    let internal_conn = caller_conn(state, &caller);
+    let lookup_error = |error: devboule_protocol::WireError| json!({"jsonrpc":"2.0", "id": id, "error": {"code": -32603, "message": error.message}});
+    let mut target_id = state
         .sessions
-        .live_agent_entries(&registration.owner)
-        .map_err(|error| {
-            json!({"jsonrpc":"2.0", "id": id, "error": {"code": -32603, "message": error.message}})
-        })?
-        .into_iter()
-        .find(|entry| entry.session.id == to_agent || entry.session.title == to_agent);
-    let Some(target) = target else {
+        .live_agent_id(&registration.owner, to_agent)
+        .map_err(lookup_error)?;
+    if target_id.is_none() {
+        // A stopped or closed child of the caller's own, named by id: the
+        // message resumes its provider session and then goes to it. Only the
+        // creator's message does this, and only for its own child.
+        let stored = state
+            .sessions
+            .own_stored_child_id(&registration.session_id, &registration.owner, to_agent)
+            .map_err(lookup_error)?;
+        if let Some(child) = stored {
+            if let Err(error) =
+                state
+                    .sessions
+                    .resume(state, &child, &registration.owner, &internal_conn)
+            {
+                return Ok(Some(rpc_error(id, -32602, &error.message)));
+            }
+            target_id = state
+                .sessions
+                .live_agent_id(&registration.owner, &child)
+                .map_err(lookup_error)?;
+        }
+    }
+    let Some(target_id) = target_id else {
         // A miss that is one of the caller's own children, closed, says so
         // with its reason; the sentence promises no reopen, and this road
         // holds none — nothing here writes a row or starts a session.
@@ -73,10 +93,9 @@ pub(in crate::mcp_broker) fn send(
             &refusal.unwrap_or_else(|| "target agent not found".to_string()),
         )));
     };
-    let internal_conn = caller_conn(state, &caller);
     match state.sessions.agent_message_send(
         &registration.session_id,
-        &target.session.id,
+        &target_id,
         text,
         &registration.owner,
         &internal_conn,
@@ -92,7 +111,7 @@ pub(in crate::mcp_broker) fn send(
             });
             if state
                 .sessions
-                .child_wakes_creator(&registration.session_id, &target.session.id)
+                .child_wakes_creator(&registration.session_id, &target_id)
             {
                 document["guidance"] = json!(crate::provider_catalog::AGENT_WAKE_SENTENCE);
             }

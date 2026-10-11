@@ -110,6 +110,19 @@ export function composerDisabledReason(
   }
 }
 
+/**
+ * Whether a send on an ended session resumes it instead of being refused: the
+ * session has a resume road, the daemon is reachable, and the session ended
+ * (stopped, or its process exited) rather than being recovered from a journal.
+ */
+export function composerResumesEnded(
+  observed: SessionState | null,
+  daemonGone: boolean,
+  hasResume: boolean,
+): boolean {
+  return hasResume && !daemonGone && observed?.type === "ended";
+}
+
 /** The universal `/goal` entry: `/goal x` travels to the daemon as plain
  * text, which intercepts it, so the app only makes it discoverable. */
 /** The plan chip's state: a dot that is lit while plan mode is on. */
@@ -157,6 +170,11 @@ interface AgentChatSurfaceProps {
   /** The recovered reopen bar: renders nothing on a live pane, so the
    * transcript gains a row only when the session was recovered. */
   headerTrailing?: ReactNode;
+  /** Resumes a stopped or ended session the daemon can reopen. Given, the composer
+   * stays usable on an ended session: a send resumes it, and the text comes back
+   * into the composer for the send that follows. Absent, an ended session's
+   * composer is disabled as before. */
+  resumeStopped?: () => Promise<boolean>;
   onOpenSubagent?: (sessionId: string) => void;
   subagentAttention?: ReadonlyMap<string, string>;
   onRefreshSubagents?: () => Promise<void>;
@@ -373,6 +391,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   id,
   auxiliary,
   headerTrailing,
+  resumeStopped,
   onOpenSubagent,
   subagentAttention,
   onRefreshSubagents,
@@ -789,7 +808,12 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   const streamingThoughtId =
     state.streaming && !osGone && lastItem?.role === "thought" ? lastItem.id : null;
   const disabledReason = composerDisabledReason(osGone, daemonGone, state.status);
-  const composerDisabled = disabledReason !== null;
+  const resumesEnded = composerResumesEnded(
+    observedState ?? null,
+    daemonGone,
+    resumeStopped !== undefined,
+  );
+  const composerDisabled = disabledReason !== null && !resumesEnded;
   // Memoised so an `agent_tasks` frame re-renders the pill alone: the
   // element's identity moves only when the checklist does.
   const interruptOnEscape = useInterruptOnEscape({
@@ -966,7 +990,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         onRemoveFile={fileAttachments.removeFile}
         loadFileIndex={loadFileIndex}
         disabled={composerDisabled}
-        disabledReason={recoveredAttach ? null : disabledReason}
+        disabledReason={recoveredAttach || resumesEnded ? null : disabledReason}
         availableCommands={composerCommands}
         taskPill={taskPill}
         backgroundPill={backgroundPill}
@@ -976,6 +1000,13 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         enterQueues={enterQueues}
         captureTextarea={captureComposerTextarea}
         onSend={async (text, attachments, fileReferences) => {
+          // A stopped session: the send resumes it, and the text and images
+          // come back into the composer for the send that follows the resume.
+          if (resumesEnded && resumeStopped !== undefined) {
+            await resumeStopped();
+            handDraftBack(text, true, attachments);
+            return false;
+          }
           // Images never join a running turn: the daemon refuses a steer
           // that carries them, so an image send waits in the queue behind
           // the turn or starts its own when nothing runs. The answer tells

@@ -358,3 +358,29 @@ fn a_resumed_session_seeds_its_goal_from_the_row() {
     let _ = fixture.registry().close(&id, &fixture.owner, &None);
     fixture.finish();
 }
+
+/// A session a stop ended is remembered as stopped until a resume starts it
+/// again; the resumed run's own end is not a stop. Mutant: the `forget_stopped`
+/// call dropped from the success tail, so the resumed child keeps reading
+/// `canceled` after it fails for a reason of its own.
+#[test]
+fn a_resume_clears_the_stop_its_session_was_ended_by() {
+    let fixture = ResumeFixture::new("stopped-resume");
+    let id = fixture.id("stopped-resume");
+    fixture.write_row(acp_row(&id, &fixture.owner, "stub-session"));
+    let _env = AcpEnv::stub(&[]);
+    take_bystander_slot(&fixture.state);
+    fixture.registry().note_stopped(&id);
+    assert!(fixture.registry().was_stopped(&id));
+
+    let session = fixture
+        .resume(&id, &fixture.conn())
+        .expect("the stub honours the load");
+    assert_eq!(session.id, id, "the resumed session is the row's own");
+    assert!(
+        !fixture.registry().was_stopped(&id),
+        "the resume started the session again: its next end is its own"
+    );
+    let _ = fixture.registry().close(&id, &fixture.owner, &None);
+    fixture.finish();
+}

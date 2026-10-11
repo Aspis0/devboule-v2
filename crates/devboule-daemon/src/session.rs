@@ -2740,6 +2740,7 @@ impl SessionRegistry {
                 return Err(error);
             }
         }
+        self.forget_stopped(session_id);
         self.resume_session_queue(session_id);
         self.resume_read_registered(session_id)
     }
@@ -3265,6 +3266,34 @@ impl SessionRegistry {
         Ok(removed)
     }
 
+    /// Record that a stop ended `session_id` on request. Taken on its own, after
+    /// the registry lock is released: the creation table never nests under it.
+    fn note_stopped(&self, session_id: &str) {
+        let mut table = self
+            .creations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        table.stopped.insert(session_id.to_string());
+    }
+
+    /// Whether a stop ended `session_id` and no resume has started it since.
+    pub(crate) fn was_stopped(&self, session_id: &str) -> bool {
+        let table = self
+            .creations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        table.stopped.contains(session_id)
+    }
+
+    /// A resume started `session_id` again: its next end is its own.
+    fn forget_stopped(&self, session_id: &str) {
+        let mut table = self
+            .creations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        table.stopped.remove(session_id);
+    }
+
     pub fn stop(&self, session_id: &str, owner: &OwnerId) -> Result<(), WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
@@ -3291,6 +3320,7 @@ impl SessionRegistry {
                 Arc::clone(&session.runtime),
             )
         };
+        self.note_stopped(session_id);
         // Fenced and cleared under the queue lock alone, then the kill: a stop
         // is the escape hatch for a hung agent, so it never waits on the session
         // writer. One drain write that passed its fence check before this goes
@@ -3368,7 +3398,7 @@ impl SessionRegistry {
         // the queue lock alone and never the session writer, as `stop` does:
         // one drain write past its fence check goes out once, then the kill.
         self.fence_and_clear_queue(session_id, Some(&runtime));
-        {
+        let stopped_live = {
             let mut map = self
                 .inner
                 .lock()
@@ -3377,15 +3407,23 @@ impl SessionRegistry {
             // `Configuring` entry here would be a *different* child — the
             // resume that replaced the one just killed — and must not
             // inherit its `preserve_on_exit`.
-            if let Some(session) = map
+            match map
                 .get_mut(session_id)
                 .and_then(RegistryEntry::as_peer_visible_mut)
             {
-                session.preserve_on_exit.store(true, Ordering::SeqCst);
-                if live_session_view(session).state.is_live() {
-                    session.runtime.request_stop();
+                Some(session) => {
+                    session.preserve_on_exit.store(true, Ordering::SeqCst);
+                    let is_live = live_session_view(session).state.is_live();
+                    if is_live {
+                        session.runtime.request_stop();
+                    }
+                    is_live
                 }
+                None => false,
             }
+        };
+        if stopped_live {
+            self.note_stopped(session_id);
         }
         let tree = job.capture_tree();
         killer.kill();

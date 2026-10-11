@@ -111,7 +111,7 @@ import {
 } from "../../lib/agentPrefs";
 import { AgentSession } from "../../lib/agentSession";
 import { recordCreatedSession, resetCreatedSessionsForTests } from "./createdSessions";
-import { AgentChatSurface, composerDisabledReason } from "./AgentChatSurface";
+import { AgentChatSurface, composerDisabledReason, composerResumesEnded } from "./AgentChatSurface";
 import { excerptRenderFor } from "./transcript/PermissionRequestRow";
 
 const LIVE_OBSERVED: SessionState = { type: "live", generation: 1 };
@@ -129,6 +129,23 @@ const MODES_MANIFEST: Extract<SessionEvent, { type: "session_manifest" }> = {
     ],
   },
 };
+
+describe("composerResumesEnded", () => {
+  it("resumes only an ended session with a resume road and a reachable daemon", () => {
+    const ended: SessionState = {
+      type: "ended",
+      generation: 1,
+      code: 1,
+      integrity: { kind: "complete" },
+    };
+    const live: SessionState = { type: "live", generation: 1 };
+    expect(composerResumesEnded(ended, false, true)).toBe(true);
+    expect(composerResumesEnded(ended, false, false), "no road, no resume").toBe(false);
+    expect(composerResumesEnded(ended, true, true), "daemon gone").toBe(false);
+    expect(composerResumesEnded(live, false, true), "live is not ended").toBe(false);
+    expect(composerResumesEnded(null, false, true)).toBe(false);
+  });
+});
 
 describe("composerDisabledReason", () => {
   it("covers every agent status and availability fact with one composer decision", () => {
@@ -2315,6 +2332,45 @@ describe("AgentChatSurface", () => {
       container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
         ?.disabled,
     ).toBe(true);
+  });
+
+  it("keeps a stopped session composer usable: a send resumes it and hands the text back", async () => {
+    const ended: SessionState = {
+      type: "ended",
+      generation: 1,
+      code: 1,
+      integrity: { kind: "complete" },
+    };
+    const resumeStopped = vi.fn(async () => true);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="stopped-agent"
+          observedState={ended}
+          resumeStopped={resumeStopped}
+        />,
+      );
+    });
+    await act(async () => undefined);
+
+    const textarea = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Message the agent"]',
+    );
+    const send = container.querySelector<HTMLButtonElement>(".workspace-send-action");
+    if (textarea === null || send === null) throw new Error("agent chat controls did not render");
+    expect(textarea.disabled, "the stopped session still takes text").toBe(false);
+
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    if (setValue === undefined) throw new Error("textarea value setter did not exist");
+    setValue.call(textarea, "Pick this up");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await act(async () => send.click());
+
+    expect(resumeStopped).toHaveBeenCalledTimes(1);
+    expect(sessionSend).not.toHaveBeenCalled();
+    expect(textarea.value, "the text waits in the composer for the next send").toBe("Pick this up");
   });
 
   it("renders the replayed transcript for a recovered session: readable without resuming", async () => {

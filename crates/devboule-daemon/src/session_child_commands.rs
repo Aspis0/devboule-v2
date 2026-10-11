@@ -155,6 +155,39 @@ impl super::SessionRegistry {
         }
     }
 
+    /// The id of the live agent `target` names (its id or its title) among the
+    /// sessions `owner` can see, or `None` when no live agent carries it.
+    pub(crate) fn live_agent_id(
+        &self,
+        owner: &OwnerId,
+        target: &str,
+    ) -> Result<Option<String>, WireError> {
+        Ok(self
+            .live_agent_entries(owner)?
+            .into_iter()
+            .find(|entry| entry.session.id == target || entry.session.title == target)
+            .map(|entry| entry.session.id.clone()))
+    }
+
+    /// The id of the caller's own child that `target` names by id, when its
+    /// stored row can be resumed: the child a message may resume once it has
+    /// stopped or closed. `None` for anything else (no row, or a row whose
+    /// family or provider handle cannot resume), which the caller refuses.
+    pub(crate) fn own_stored_child_id(
+        &self,
+        creator_session_id: &str,
+        owner: &OwnerId,
+        target: &str,
+    ) -> Result<Option<String>, WireError> {
+        let Some(journal) = &self.journal else {
+            return Ok(None);
+        };
+        Ok(journal
+            .owned_child_record(target, &owner.user, creator_session_id)?
+            .filter(|row| row.to_session().resumable)
+            .map(|row| row.id))
+    }
+
     /// `devboule_list_pending_permissions`: every card the caller's own live
     /// children are parked on, one flat list ordered by child and card id,
     /// capped at [`MAX_LISTED_PENDING_CARDS`] — and whether the cap cut, which
@@ -316,8 +349,12 @@ impl super::SessionRegistry {
         // why (the close reason is C1b's), so borrowing the
         // Ended-without-a-code → `failed` word would escalate a clean close
         // into a crash a supervisor then alerts on.
+        // A stop ended on request reads `canceled`, the word the live roster
+        // gives it: the row holds the exit the kill left, not the cause.
         let state = if row.closed {
             "closed"
+        } else if self.was_stopped(&session.id) {
+            devboule_protocol::AgentTaskState::Canceled.as_str()
         } else {
             session.state.task_state(false).as_str()
         };

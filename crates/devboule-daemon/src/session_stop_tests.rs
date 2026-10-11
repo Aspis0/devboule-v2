@@ -152,6 +152,10 @@ fn a_stop_records_the_request_on_the_live_runtime() {
         .stop_with_subscription(&session_id, 17, &owner, &conn)
         .expect("the stop lands");
     assert!(runtime.stop_requested());
+    assert!(
+        registry.was_stopped(&session_id),
+        "the stopped session is remembered as stopped, not as failed"
+    );
 
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);
@@ -177,6 +181,7 @@ fn a_stop_of_an_ended_row_records_no_request() {
         !runtime.stop_requested(),
         "a stop of an ended row must not be recorded as the cause of its end"
     );
+    assert!(!registry.was_stopped(&session_id));
 
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);
