@@ -2600,3 +2600,29 @@ fn a_stopped_mark_survives_a_restart_and_a_clear_undoes_it() {
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A database another build stamped at this schema version without the stop
+/// column gets it back on open, so a stop can still be recorded and read.
+#[test]
+fn a_v20_database_missing_the_stopped_column_is_repaired_on_open() {
+    let (dir, path) = tmp_journal();
+    let journal = Journal::open(&path).expect("open");
+    journal.shutdown();
+    let conn = rusqlite::Connection::open(&path).expect("raw connection");
+    conn.execute("ALTER TABLE sessions DROP COLUMN stopped", [])
+        .expect("drop the column, as another build at v20 would lack it");
+    drop(conn);
+
+    let journal = Journal::open(&path).expect("the reopen repairs the column");
+    journal
+        .create_session(sample_session("s.repaired.stop"))
+        .expect("row");
+    journal
+        .set_session_stopped("s.repaired.stop", true)
+        .expect("the stop is recorded after the repair");
+    assert!(journal
+        .session_stopped("s.repaired.stop")
+        .expect("read after the repair"));
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+}
