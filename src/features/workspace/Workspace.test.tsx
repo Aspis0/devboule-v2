@@ -1865,7 +1865,9 @@ describe("Workspace sessions", () => {
     await sendDraftMessage("first prompt");
 
     expect(sessionSetModel).toHaveBeenCalledWith("session-agent", "sonnet", "medium");
-    expect(sessionSetMode).toHaveBeenCalledWith("session-agent", "plan");
+    // The mode rides the create: the agent starts in it, and no separate apply follows.
+    expect(vi.mocked(sessionCreate).mock.calls[0]).toContain("plan");
+    expect(sessionSetMode).not.toHaveBeenCalled();
     expect(double.send).toHaveBeenCalledWith("first prompt");
     // The settings land before the message does.
     expect(vi.mocked(sessionSetModel).mock.invocationCallOrder[0]).toBeLessThan(
@@ -1873,7 +1875,7 @@ describe("Workspace sessions", () => {
     );
   });
 
-  it("a model or mode that does not take holds the prompt: nothing is sent with other settings", async () => {
+  it("a model that does not take holds the prompt, and the next send sets it again before the prompt goes", async () => {
     const double = agentDouble(true);
     surfaceAgents.set("session-agent", double.agent);
     vi.mocked(sessionsList).mockResolvedValue([firstPromptAgentSession()]);
@@ -1903,6 +1905,17 @@ describe("Workspace sessions", () => {
       container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
         ?.value,
     ).toBe("first prompt");
+
+    // The next send sets the model again, from the composer's pick, and only then sends.
+    await sendDraftMessage("first prompt");
+    await act(async () => undefined);
+
+    expect(vi.mocked(sessionSetModel)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(sessionSetModel).mock.calls[1]?.slice(0, 2)).toEqual([
+      "session-agent",
+      "sonnet",
+    ]);
+    expect(double.send).toHaveBeenCalledWith("first prompt");
   });
 
   it("a second send while the first agent is still being set up starts no second agent", async () => {

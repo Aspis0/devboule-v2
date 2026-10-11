@@ -31,6 +31,7 @@ import {
   resolveDraftSelection,
   type DraftChoices,
   type DraftSelection,
+  type ResolvedDraftSelection,
 } from "./DraftAgentComposer";
 import { sendFirstMessageWhenReady } from "./firstMessage";
 import { NewWorkspaceSheet, THIS_PC, type NewWorkspaceChoice } from "./NewWorkspaceSheet";
@@ -179,7 +180,6 @@ import {
   workspaceFilesList,
   type AttentionTarget,
   providerVocabularyGet,
-  sessionSetMode,
   sessionSetModel,
 } from "../../lib/tauri";
 import { workspaceFileIndex } from "./workspaceFileIndex";
@@ -311,6 +311,8 @@ interface FirstPrompt {
   state: "queued" | "sending" | "failed" | "handed";
   /** Bumped when the text is handed back, so the composer restores it once. */
   attempt: number;
+  /** The model or effort did not take: the next send applies them again first. */
+  settingsPending?: boolean;
 }
 
 const FIRST_PROMPT_FAILED =
@@ -318,8 +320,14 @@ const FIRST_PROMPT_FAILED =
 const FIRST_PROMPT_HANDED =
   "Not sent: the agent closed before it took the message. It is still here: press send to send it.";
 const FIRST_PROMPT_SETTINGS =
-  "The agent started, but its model or mode could not be set. It is still here: press send to send it with the agent's current settings.";
+  "The agent started, but its model or effort could not be set. It is still here: press send to set them again and send it.";
 const NO_DRAFT_SELECTION: DraftSelection = { modelId: null, effort: null, modeId: null };
+/** The model and effort the composer shows, set on the session. A mode is not set
+ * here: it rides the create. */
+function applyDraftModel(sessionId: string, picks: ResolvedDraftSelection): Promise<void> {
+  if (picks.modelId === null) return Promise.resolve();
+  return sessionSetModel(sessionId, picks.modelId, picks.effort ?? undefined);
+}
 const FIRST_PROMPT_NOT_ATTACHED =
   "The agent is not attached right now. Open the workspace's agent, then press send.";
 
@@ -1282,10 +1290,15 @@ export function Workspace({
   // A landed create takes the pane only while the tool axis stood still: the
   // same tab as at start and no counted move in between. A move keeps the pane.
   const createAndShowSession = useCallback(
-    (kind: SessionKind, provider: string | null, workspaceId: string | null) => {
+    (
+      kind: SessionKind,
+      provider: string | null,
+      workspaceId: string | null,
+      mode: string | null = null,
+    ) => {
       const toolTabAtStart = activeToolTabIdRef.current;
       const toolNavAtStart = toolNavRef.current;
-      return createSession(kind, provider, workspaceId).then((session) => {
+      return createSession(kind, provider, workspaceId, mode).then((session) => {
         if (
           session !== null &&
           toolTabAtStart !== null &&
@@ -1822,6 +1835,21 @@ export function Workspace({
           setFirstPromptNotice(FIRST_PROMPT_NOT_ATTACHED);
           return false;
         }
+        // A model or effort that did not take the first time is set again, from
+        // what the composer shows now, before the prompt goes.
+        if (current.settingsPending === true) {
+          try {
+            await applyDraftModel(
+              current.sessionId,
+              resolveDraftSelection(draftChoices, draftSelection),
+            );
+          } catch {
+            setFirstPrompt({ ...current, state: "failed" });
+            setFirstPromptNotice(FIRST_PROMPT_SETTINGS);
+            return false;
+          }
+          setFirstPrompt({ ...current, settingsPending: false });
+        }
         return new Promise<boolean>((answer) => {
           firstPromptAnswerRef.current = answer;
           setFirstPromptNotice(null);
@@ -1834,23 +1862,23 @@ export function Workspace({
       // With no provider to start there is no agent to send to: the text stays.
       if (provider === undefined) return false;
       const args = sessionCreateFromProvider(provider);
+      // The mode goes with the create, so the agent starts in it and no prompt
+      // can go out before it is set. The model and effort follow the create.
+      const picks = resolveDraftSelection(draftChoices, draftSelection);
       const session = await createAndShowSession(
         args.kind,
         args.provider,
         parseWorkspaceKey(draftKey).workspaceId,
+        picks.modeId,
       );
       if (session === null) {
         setFirstPromptNotice("The agent did not start. Your message is still here.");
         return false;
       }
-      // The agent is started with what the composer shows. A pick that does not
-      // take holds the prompt for the person: nothing is sent with other settings.
-      const picks = resolveDraftSelection(draftChoices, draftSelection);
+      // A model or effort that does not take holds the prompt for the person:
+      // nothing is sent with other settings, and the next send sets them again.
       try {
-        if (picks.modelId !== null) {
-          await sessionSetModel(session.id, picks.modelId, picks.effort ?? undefined);
-        }
-        if (picks.modeId !== null) await sessionSetMode(session.id, picks.modeId);
+        await applyDraftModel(session.id, picks);
       } catch {
         setFirstPrompt({
           workspaceKey: draftKey,
@@ -1858,6 +1886,7 @@ export function Workspace({
           text,
           state: "failed",
           attempt: 0,
+          settingsPending: true,
         });
         setFirstPromptNotice(FIRST_PROMPT_SETTINGS);
         return false;

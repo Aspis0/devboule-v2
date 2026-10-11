@@ -33,6 +33,7 @@ export interface WorkspaceSessionSource {
     workspaceId: string | null,
     kind?: SessionKind,
     provider?: string | null,
+    mode?: string | null,
   ) => Promise<Session>;
   watch?: (listener: (snapshots: SessionStateSnapshot[]) => void) => Promise<() => void>;
 }
@@ -68,6 +69,7 @@ export interface WorkspaceSessionController {
     kind?: SessionKind,
     provider?: string | null,
     workspaceId?: string | null,
+    mode?: string | null,
   ) => Promise<Session | null>;
   select: (sessionId: string | null) => void;
   open: (session: Session) => void;
@@ -79,14 +81,24 @@ export interface WorkspaceSessionController {
 
 const DEFAULT_SOURCE: WorkspaceSessionSource = {
   list: sessionsList,
-  create: (workspaceId, kind = "acp", provider = null) => {
-    if (provider != null) return sessionCreate(workspaceId, kind, provider);
+  create: (workspaceId, kind = "acp", provider = null, mode = null) => {
+    // A chosen mode rides the create: the daemon starts the agent in it, so no
+    // prompt can go out before the mode is set. Without one, the call keeps its
+    // old shape.
+    if (provider != null) {
+      return mode === null
+        ? sessionCreate(workspaceId, kind, provider)
+        : sessionCreate(workspaceId, kind, provider, mode);
+    }
     // Agents keep the daemon's default grid; only a shell opens in a pane
     // whose size another terminal has already measured.
     const grid = kind === "terminal" ? lastFittedGrid() : null;
-    return grid === null
-      ? sessionCreate(workspaceId, kind)
-      : sessionCreate(workspaceId, kind, null, undefined, grid);
+    if (grid === null) {
+      return mode === null
+        ? sessionCreate(workspaceId, kind)
+        : sessionCreate(workspaceId, kind, null, mode);
+    }
+    return sessionCreate(workspaceId, kind, null, mode ?? undefined, grid);
   },
   watch: async (listener) => {
     const channel = createSessionStateChannel(listener);
@@ -752,6 +764,7 @@ export function createWorkspaceSessionController(
     kind: SessionKind = "acp",
     provider: string | null = null,
     workspaceId: string | null = null,
+    mode: string | null = null,
   ): Promise<Session | null> => {
     if (state.creating) return null;
     ++refreshGeneration;
@@ -760,7 +773,10 @@ export function createWorkspaceSessionController(
     const capturedEpoch = selectionEpoch;
     publish({ ...state, creating: true, error: null });
     try {
-      const session = await source.create(workspaceId, kind, provider);
+      const session =
+        mode === null
+          ? await source.create(workspaceId, kind, provider)
+          : await source.create(workspaceId, kind, provider, mode);
       // The person started this one here, which is what lets the surface put
       // their remembered picks into it. Nothing else records an id: a session
       // the daemon creates for a child, or one opened from the roster, is not.
@@ -980,6 +996,7 @@ export function useWorkspaceSessions(workspaceId: string | null = null): Workspa
     kind?: SessionKind,
     provider?: string | null,
     workspaceId?: string | null,
+    mode?: string | null,
   ) => Promise<Session | null>;
   select: (sessionId: string | null) => void;
   open: (session: Session) => void;
@@ -1002,11 +1019,17 @@ export function useWorkspaceSessions(workspaceId: string | null = null): Workspa
   const refresh = useCallback(() => controller.refresh(), [controller]);
   const reconnect = useCallback(() => controller.reconnect(), [controller]);
   const create = useCallback(
-    (kind?: SessionKind, provider?: string | null, requestedWorkspaceId?: string | null) =>
+    (
+      kind?: SessionKind,
+      provider?: string | null,
+      requestedWorkspaceId?: string | null,
+      mode?: string | null,
+    ) =>
       controller.create(
         kind,
         provider,
         requestedWorkspaceId === undefined ? workspaceId : requestedWorkspaceId,
+        mode,
       ),
     [controller, workspaceId],
   );
