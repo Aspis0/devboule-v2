@@ -401,7 +401,7 @@ fn creation_result_reports_verification_per_state() {
         ),
     ] {
         let session = s2_session(SessionKind::Acp);
-        let result = created_result_for_tools(&id, &session, state);
+        let result = created_result_for_tools(&id, &session, state, None);
         let structured = &result["result"]["structuredContent"];
         assert_eq!(
             structured["tools"], word,
@@ -425,18 +425,44 @@ fn creation_result_reports_verification_per_state() {
     // The wrapper reads the registration FACT, not the kind — a Codex
     // child with a minted carrier reads unverified (establishing), one
     // without reads unavailable. Production-identical while the gate holds.
-    let unregistered = created_result(&id, &s2_session(SessionKind::Codex), false);
+    let unregistered = created_result(&id, &s2_session(SessionKind::Codex), false, false);
     assert_eq!(
         unregistered["result"]["structuredContent"]["tools"],
         "unavailable"
     );
-    let registered = created_result(&id, &s2_session(SessionKind::Codex), true);
+    let registered = created_result(&id, &s2_session(SessionKind::Codex), true, false);
     assert_eq!(
         registered["result"]["structuredContent"]["tools"],
         "unverified"
     );
-    let acp = created_result(&id, &s2_session(SessionKind::Acp), true);
+    let acp = created_result(&id, &s2_session(SessionKind::Acp), true, false);
     assert_eq!(acp["result"]["structuredContent"]["tools"], "unverified");
+}
+
+#[test]
+fn a_creation_answer_says_the_finish_wakes_the_creator_only_when_it_is_notified() {
+    // The answer is what the creator reads before it decides whether to wait.
+    // With notifyOnFinish on it must say the finish wakes the creator and that
+    // no poll is needed; with it off it must not promise a wake.
+    let id = json!(9);
+    let session = s2_session(SessionKind::Codex);
+    let notified = created_result(&id, &session, true, true);
+    let text = notified["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(text.contains("wakes you"), "names the wake: {text}");
+    assert!(
+        text.contains("do not poll"),
+        "says no poll is needed: {text}"
+    );
+    let quiet = created_result(&id, &session, true, false);
+    let quiet_text = quiet["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        !quiet_text.contains("wakes you"),
+        "no wake promised: {quiet_text}"
+    );
 }
 
 #[test]
@@ -5662,7 +5688,7 @@ fn a_creation_result_carries_the_task_id_and_the_context() {
         labels: Default::default(),
         resumable: false,
     };
-    let result = created_result(&json!(7), &session, true);
+    let result = created_result(&json!(7), &session, true, false);
     let content = &result["result"]["structuredContent"];
     assert_eq!(content["sessionId"], "s.parent.2");
     assert_eq!(

@@ -15,10 +15,15 @@ use crate::mcp_broker::{compute_tools_state, ToolsState};
 /// name one family without any bookkeeping of their own. The fallback is the rule
 /// `Session::context_id` states (a session with no creator is its own context),
 /// applied for a client that reads a frame from a daemon older than this field.
+///
+/// `notify` is the creator's `notifyOnFinish`: when it is set, the answer says
+/// that the child's finish wakes the creator, so the creator ends its turn
+/// instead of polling for the child.
 pub(in crate::mcp_broker) fn created_result(
     id: &Value,
     session: &devboule_protocol::Session,
     registered: bool,
+    notify: bool,
 ) -> Value {
     // S2 honesty, S8 fact: the result reports verification, the card promised
     // it. `registered` is the broker row — a fresh registered child is not yet
@@ -27,7 +32,8 @@ pub(in crate::mcp_broker) fn created_result(
     // (pinned by test) and arrives on live paths when verification flips the
     // runtime. Routed through the S1 single computation point.
     let tools = compute_tools_state(&session.kind, registered, false);
-    created_result_for_tools(id, session, tools)
+    let wake = notify.then_some(crate::provider_catalog::AGENT_WAKE_SENTENCE);
+    created_result_for_tools(id, session, tools, wake)
 }
 
 /// The result body for one explicit tools state (S2 test hook): the `tools`
@@ -40,6 +46,7 @@ pub(in crate::mcp_broker) fn created_result_for_tools(
     id: &Value,
     session: &devboule_protocol::Session,
     tools: ToolsState,
+    wake: Option<&str>,
 ) -> Value {
     let tools_sentence = match tools {
         ToolsState::Hosted => "",
@@ -58,11 +65,12 @@ pub(in crate::mcp_broker) fn created_result_for_tools(
         .context_id
         .clone()
         .unwrap_or_else(|| session.id.clone());
+    let wake_sentence = wake.map_or_else(String::new, |sentence| format!(" {sentence}"));
     json!({
         "jsonrpc": "2.0",
         "id": id,
         "result": {
-            "content": [{"type": "text", "text": format!("submitted {}{}", session.id, tools_sentence)}],
+            "content": [{"type": "text", "text": format!("submitted {}{}{}", session.id, tools_sentence, wake_sentence)}],
             "structuredContent": {
                 "sessionId": session.id,
                 "taskId": session.id,

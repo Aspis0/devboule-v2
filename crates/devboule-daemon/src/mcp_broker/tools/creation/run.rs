@@ -86,7 +86,12 @@ pub(in crate::mcp_broker) fn create_agent(
             if let Some(hold) = hold.as_mut() {
                 hold.commit();
             }
-            return created_result(id, &existing, state.mcp.is_registered(&existing.id));
+            return created_result(
+                id,
+                &existing,
+                state.mcp.is_registered(&existing.id),
+                request.notify,
+            );
         }
     }
     let profile = match resolve_profile(&state.agent_profiles, &request.profile) {
@@ -296,7 +301,12 @@ pub(in crate::mcp_broker) fn create_agent(
             if let Some(hold) = hold.as_mut() {
                 hold.commit();
             }
-            created_result(id, &session, state.mcp.is_registered(&session.id))
+            created_result(
+                id,
+                &session,
+                state.mcp.is_registered(&session.id),
+                request.notify,
+            )
         }
         // Every refusal above and this failure release the reservation
         // through the ticket's own `Drop`: one release path,

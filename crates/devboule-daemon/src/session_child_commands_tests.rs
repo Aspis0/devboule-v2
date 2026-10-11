@@ -724,3 +724,17 @@ fn a_card_that_is_not_a_permission_request_is_named_not_dropped() {
     assert_eq!(value["cardId"].as_str(), Some("card-odd"));
     assert_eq!(value["excerpt"].as_str(), Some(""));
 }
+
+#[test]
+fn a_child_its_creator_asked_to_hear_from_wakes_that_creator_only() {
+    // The answer to a message names the wake only for the creator whose child
+    // it is and whose finish comes back as a message: anyone else gets no wake.
+    let (dir, registry) = registry();
+    let owner = test_owner("wake-user", "wake-client");
+    insert_live_agent(&registry, "wake-parent", owner.clone());
+    registry.readmit_agent_child("wake-child", Some("wake-parent"), &owner);
+    assert!(registry.child_wakes_creator("wake-parent", "wake-child"));
+    assert!(!registry.child_wakes_creator("someone-else", "wake-child"));
+    assert!(!registry.child_wakes_creator("wake-parent", "no-such-child"));
+    let _ = std::fs::remove_dir_all(dir);
+}

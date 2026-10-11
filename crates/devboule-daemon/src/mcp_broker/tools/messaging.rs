@@ -83,11 +83,19 @@ pub(in crate::mcp_broker) fn send(
     ) {
         Ok(()) => {
             // The result names the recipient the way the roster does, so the
-            // app can say who the message went to without a session id.
-            let document = json!({
+            // app can say who the message went to without a session id. A child
+            // whose finish wakes this caller also says so: the caller ends its
+            // turn instead of polling the child.
+            let mut document = json!({
                 "state": "accepted",
                 "displayName": crate::session::roster_title(&target.session),
             });
+            if state
+                .sessions
+                .child_wakes_creator(&registration.session_id, &target.session.id)
+            {
+                document["guidance"] = json!(crate::provider_catalog::AGENT_WAKE_SENTENCE);
+            }
             Ok(Some(json!({
                 "jsonrpc": "2.0",
                 "id": id,

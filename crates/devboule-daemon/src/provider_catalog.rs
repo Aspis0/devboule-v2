@@ -213,6 +213,11 @@ const TEST_ONLY_AGENTS: &[KnownAgent] = &[
 #[cfg(not(debug_assertions))]
 const TEST_ONLY_AGENTS: &[KnownAgent] = &[];
 
+/// What a creator is told after a child it asked to be notified about starts:
+/// the finish comes back as a message, so the creator's turn ends here. The
+/// tool descriptions above say the same thing in their own words.
+pub const AGENT_WAKE_SENTENCE: &str = "The child's finish, error or permission need will reach you as a message that wakes you: end your turn or work on something else now, and do not poll for its status.";
+
 /// Every tool the daemon's MCP broker can serve, in `tools/list` order.
 ///
 /// One source of truth for the broker's `tools/list` body and for the
@@ -237,11 +242,11 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
     (
         MCP_SEND_MESSAGE_TOOL,
-        "Sends a message to one live Devboule agent session. Name a session on this machine with to_agent; to send to an agent on a paired device, pass that device's id from devboule_list_devices as deviceId and the session id devboule_list_peer_agents answered for it as to_agent. A paired-device send dials the device once and answers with that daemon's own delivery receipt - accepted, rejected_absent, rejected_denied and so on - never a delivery the far machine did not confirm. A send to a paired device always asks the person first, in every mode, naming the device, the session and the message, and waits for the answer; each call asks again.",
+        "Sends a message to one live Devboule agent session. Name a session on this machine with to_agent; to send to an agent on a paired device, pass that device's id from devboule_list_devices as deviceId and the session id devboule_list_peer_agents answered for it as to_agent. A paired-device send dials the device once and answers with that daemon's own delivery receipt - accepted, rejected_absent, rejected_denied and so on - never a delivery the far machine did not confirm. A send to a paired device always asks the person first, in every mode, naming the device, the session and the message, and waits for the answer; each call asks again. A message to one of your own children wakes you with a message when it finishes, errors or needs permission: after the send, end your turn or work on something else, and do not poll devboule_get_agent_status for it.",
     ),
     (
         MCP_CREATE_AGENT_TOOL,
-        "Creates a new Devboule agent session from a profile the human enabled for agents, and sends it an initial prompt. The human is asked to authorize each creation from this session when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses). Only the human answers that card: a parent agent never allows a creation, even when permission delegation is on. The result is the new session's id, its A2A task and context, and its display name. With notifyOnFinish false the child is also exempt from the idle (quiet) notice.",
+        "Creates a new Devboule agent session from a profile the human enabled for agents, and sends it an initial prompt. The human is asked to authorize each creation from this session when the session's mode asks (an automatic mode proceeds without a card; plan or read-only mode refuses). Only the human answers that card: a parent agent never allows a creation, even when permission delegation is on. The result is the new session's id, its A2A task and context, and its display name. With notifyOnFinish false the child is also exempt from the idle (quiet) notice. With notifyOnFinish true (the default) the child's finish, error or permission need reaches you as a message that wakes you: after this call, end your turn or work on something else, and do not poll devboule_get_agent_status for it.",
     ),
     (
         MCP_SET_AGENT_PROFILE_TOOL,
@@ -253,7 +258,7 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
     (
         MCP_ACTIVITY_TOOL,
-        "Reads what one live agent session of your own owner has been doing: its current activity (working, idle, blocked or unknown), how long since it last published, and its recent event kinds with timestamps. Metadata only, never transcript text. Name the session by id or display name; limit caps the recent lines (default 10, max 50; 0 returns the state with no recent lines).",
+        "Reads what one live agent session of your own owner has been doing: its current activity (working, idle, blocked or unknown), how long since it last published, and its recent event kinds with timestamps. Metadata only, never transcript text. Name the session by id or display name; limit caps the recent lines (default 10, max 50; 0 returns the state with no recent lines). Do not read it in a loop to wait for a child: the child's finish reaches you as a message.",
     ),
     (
         MCP_STOP_AGENT_TOOL,
@@ -273,7 +278,7 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
     (
         MCP_GET_AGENT_STATUS_TOOL,
-        "Reads one of your own children as a snapshot: its state (a parked card shows as input_required, a closed child reads as closed), provider, model, mode, profile, who created it, its depth, how long since it last published, and how many permission cards it is parked on - their ids, titles and excerpts come only from devboule_list_pending_permissions. Name a live child by id or display name and a closed child by its id; you can only read a session you created yourself. Anything else - a sibling, a stranger's session, an invented id - reads as not found.",
+        "Reads one of your own children as a snapshot: its state (a parked card shows as input_required, a closed child reads as closed), provider, model, mode, profile, who created it, its depth, how long since it last published, and how many permission cards it is parked on - their ids, titles and excerpts come only from devboule_list_pending_permissions. Name a live child by id or display name and a closed child by its id; you can only read a session you created yourself. Anything else - a sibling, a stranger's session, an invented id - reads as not found. Do not read it in a loop to wait for a child: the child's finish reaches you as a message.",
     ),
     (
         MCP_NEIGHBORHOOD_TOOL,

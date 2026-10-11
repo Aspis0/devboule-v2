@@ -868,6 +868,20 @@ impl super::SessionRegistry {
         Some(link.creator.clone())
     }
 
+    /// Whether `child` is `creator`'s own child that asked to be told how it
+    /// ends. A message to such a child is answered with the wake sentence: its
+    /// finish will come back to the creator as a message, so no poll is owed.
+    pub(crate) fn child_wakes_creator(&self, creator: &str, child: &str) -> bool {
+        let table = self
+            .creations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        table
+            .children
+            .get(child)
+            .is_some_and(|link| link.notify && link.creator == creator)
+    }
+
     /// The same, for the finish report: `Some(creator, notify)` once per child,
     /// whatever path observes the end first.
     pub(super) fn claim_child_report(&self, child: &str) -> Option<(String, bool)> {
