@@ -83,6 +83,7 @@ import {
 } from "../../lib/sendBehavior";
 
 import { TranscriptRows } from "./transcript/TranscriptRows";
+import type { WorkspaceFileIndex } from "./workspaceFileIndex";
 
 // One classifier owns both whether input is disabled and the sentence explaining it.
 export function composerDisabledReason(
@@ -167,7 +168,7 @@ interface AgentChatSurfaceProps {
    */
   fileLinks?: ChatFileLinks | null;
   /** The workspace's file paths for the composer's "@" menu. Absent: no "@" menu. */
-  loadFileIndex?: () => Promise<readonly string[]>;
+  loadFileIndex?: () => Promise<WorkspaceFileIndex>;
   /** A message the sidebar search opened this session at: the transcript scrolls
    * to its row once per nonce. Null for an ordinary open. */
   focusMessage?: { messageId: string | null; nonce: number } | null;

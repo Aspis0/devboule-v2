@@ -3,6 +3,11 @@ import { base64Of } from "../../lib/base64";
 import type { PromptAttachment } from "../../types/ipc";
 import { ComposerFileChips } from "./ComposerFileChips";
 import type { AttachedFile } from "./useFileAttachments";
+import { MAX_FILE_ATTACHMENT_BYTES } from "./fileUpload";
+import { MAX_COMPOSER_FILES } from "./useFileAttachments";
+
+/** The limits the attach button states: any file, but a bounded count and size. */
+const ATTACH_LIMITS_TEXT = `Attach files (up to ${MAX_COMPOSER_FILES}, ${MAX_FILE_ATTACHMENT_BYTES / (1024 * 1024)} MiB each)`;
 
 /**
  * Largest raw image the picker reads (128 KiB): the wire's per-attachment
@@ -164,7 +169,7 @@ export function ComposerAttachControl({
         type="button"
         className="workspace-composer-attach"
         aria-label="Attach files"
-        title="Attach files"
+        title={ATTACH_LIMITS_TEXT}
         onClick={() => inputRef.current?.click()}
         disabled={pickerDisabled}
       >

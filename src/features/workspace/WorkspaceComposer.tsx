@@ -22,6 +22,7 @@ import { isImeComposition } from "../../lib/imeComposition";
 import type { AttachmentReference, PromptAttachment } from "../../types/ipc";
 import { rankCommandMatches } from "./commandMatch";
 import { fileMentionQuery, insertFileMention, rankFileMatches } from "./fileMention";
+import type { WorkspaceFileIndex } from "./workspaceFileIndex";
 import {
   acceptedImageTypes,
   ComposerAttachControl,
@@ -65,7 +66,7 @@ interface WorkspaceComposerProps {
   onAddFiles?: (files: readonly File[]) => void;
   onRemoveFile?: (id: string) => void;
   /** The workspace file paths the "@" menu offers, read the first time an "@" is typed. */
-  loadFileIndex?: () => Promise<readonly string[]>;
+  loadFileIndex?: () => Promise<WorkspaceFileIndex>;
   disabled?: boolean;
   disabledReason: string | null;
   availableCommands?: readonly WorkspaceCommand[];
@@ -178,7 +179,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   const [activeIndex, setActiveIndex] = useState(0);
   // The "@" menu: the workspace's paths, read once per mention, and its own
   // dismissal and highlight, apart from the "/" command menu's.
-  const [fileIndex, setFileIndex] = useState<readonly string[] | null>(null);
+  const [fileIndex, setFileIndex] = useState<WorkspaceFileIndex | null>(null);
   const [fileMenuDismissed, setFileMenuDismissed] = useState(false);
   const [activeFileIndex, setActiveFileIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -550,26 +551,34 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   // is read the first time a mention is typed.
   const mention = fileMentionQuery(input);
   const mentioning = mention !== null;
+  // Each "@" asks for the index again: the loader serves a built index for its
+  // minute and rebuilds it after, so a file created meanwhile is found. Without
+  // a loader there is no menu at all, rather than one that loads forever.
   useEffect(() => {
-    if (!mentioning || fileIndex !== null || loadFileIndex === undefined) return;
-    let cancelled = false;
+    if (!mentioning || loadFileIndex === undefined) return;
+    let current = true;
     loadFileIndex().then(
-      (files) => {
-        if (!cancelled) setFileIndex(files);
+      (index) => {
+        if (current) setFileIndex(index);
       },
       () => {
-        if (!cancelled) setFileIndex([]);
+        if (current) setFileIndex({ files: [], truncated: false });
       },
     );
     return () => {
-      cancelled = true;
+      current = false;
     };
-  }, [fileIndex, loadFileIndex, mentioning]);
+  }, [loadFileIndex, mentioning]);
   const fileMatches = useMemo(
-    () => (mention === null || fileIndex === null ? [] : rankFileMatches(fileIndex, mention)),
+    () => (mention === null || fileIndex === null ? [] : rankFileMatches(fileIndex.files, mention)),
     [fileIndex, mention],
   );
-  const fileMenuVisible = !disabled && !commandMenuVisible && mentioning && !fileMenuDismissed;
+  const fileMenuVisible =
+    !disabled &&
+    !commandMenuVisible &&
+    mentioning &&
+    loadFileIndex !== undefined &&
+    !fileMenuDismissed;
   const activeFileRow =
     fileMatches.length === 0
       ? -1
@@ -707,7 +716,9 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
         activeOptionId={activeFileOptionId}
         onSelect={selectFile}
         prefix="@"
-        heading="Workspace files"
+        heading={
+          fileIndex?.truncated === true ? "Workspace files (partial list)" : "Workspace files"
+        }
         label="Workspace files"
         emptyText={fileIndex === null ? "Loading files…" : "No files found"}
       />

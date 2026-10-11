@@ -10,6 +10,9 @@ export const FILE_INDEX_MAX_FILES = 5_000;
  */
 export const FILE_INDEX_MAX_DIRECTORIES = 120;
 
+/** Folder listings in flight at once while the index is built. */
+export const FILE_INDEX_CONCURRENCY = 4;
+
 /** Folders the "@" index never descends into: tool state and build output. */
 const SKIPPED_DIRECTORIES: ReadonlySet<string> = new Set([
   ".git",
@@ -22,48 +25,64 @@ const SKIPPED_DIRECTORIES: ReadonlySet<string> = new Set([
 
 export type ListDirectory = (path: string) => Promise<WorkspaceDirectory>;
 
+/** What the "@" menu can offer. `truncated` is true when a cap stopped the walk,
+ * so files past it exist that the menu does not list. */
+export interface WorkspaceFileIndex {
+  files: string[];
+  truncated: boolean;
+}
+
 /**
  * The workspace's file paths, breadth-first from the root, relative and
- * `/`-separated like the Files panel's own keys. A folder the daemon refuses,
- * or a listing that throws, is skipped: the index is a menu, and a missing
- * folder costs one entry, never the whole index.
+ * `/`-separated like the Files panel's own keys. Folders are listed a few at a
+ * time, and the results are taken in queue order, so the index is the same
+ * however the replies interleave. A folder the daemon refuses, or a listing
+ * that throws, is skipped: a missing folder costs one entry, never the index.
  */
-export async function indexWorkspaceFiles(list: ListDirectory): Promise<string[]> {
+export async function indexWorkspaceFiles(list: ListDirectory): Promise<WorkspaceFileIndex> {
   const files: string[] = [];
   const queue: string[] = [""];
   let next = 0;
   let listed = 0;
-  while (
-    next < queue.length &&
-    files.length < FILE_INDEX_MAX_FILES &&
-    listed < FILE_INDEX_MAX_DIRECTORIES
-  ) {
-    const folder = queue[next];
-    next += 1;
-    listed += 1;
-    let reply: WorkspaceDirectory;
-    try {
-      reply = await list(folder);
-    } catch {
-      continue;
+  let truncated = false;
+  while (next < queue.length) {
+    if (files.length >= FILE_INDEX_MAX_FILES || listed >= FILE_INDEX_MAX_DIRECTORIES) {
+      truncated = true;
+      break;
     }
-    if (reply.error !== null) continue;
-    for (const entry of reply.entries) {
-      if (entry.kind === "dir") {
-        if (!SKIPPED_DIRECTORIES.has(entry.name)) queue.push(entry.path);
-      } else if (files.length < FILE_INDEX_MAX_FILES) {
-        files.push(entry.path);
+    const batch: string[] = [];
+    while (
+      batch.length < FILE_INDEX_CONCURRENCY &&
+      next < queue.length &&
+      listed + batch.length < FILE_INDEX_MAX_DIRECTORIES
+    ) {
+      batch.push(queue[next]);
+      next += 1;
+    }
+    listed += batch.length;
+    const replies = await Promise.all(batch.map((folder) => list(folder).catch(() => null)));
+    for (const reply of replies) {
+      if (reply === null || reply.error !== null) continue;
+      for (const entry of reply.entries) {
+        if (entry.kind === "dir") {
+          if (!SKIPPED_DIRECTORIES.has(entry.name)) queue.push(entry.path);
+        } else if (files.length < FILE_INDEX_MAX_FILES) {
+          files.push(entry.path);
+        } else {
+          truncated = true;
+        }
       }
     }
   }
-  return files;
+  if (next < queue.length) truncated = true;
+  return { files, truncated };
 }
 
 /** How long one built index serves the "@" menus before a new "@" rebuilds it. */
 export const FILE_INDEX_TTL_MS = 60_000;
 
 interface BuiltIndex {
-  files: Promise<string[]>;
+  index: Promise<WorkspaceFileIndex>;
   builtAt: number;
 }
 
@@ -74,14 +93,17 @@ interface BuiltIndex {
  */
 const indexes = new Map<string, BuiltIndex>();
 
-export function workspaceFileIndex(workspaceId: string, list: ListDirectory): Promise<string[]> {
+export function workspaceFileIndex(
+  workspaceId: string,
+  list: ListDirectory,
+): Promise<WorkspaceFileIndex> {
   const existing = indexes.get(workspaceId);
   if (existing !== undefined && Date.now() - existing.builtAt < FILE_INDEX_TTL_MS) {
-    return existing.files;
+    return existing.index;
   }
-  const files = indexWorkspaceFiles(list);
-  indexes.set(workspaceId, { files, builtAt: Date.now() });
-  return files;
+  const index = indexWorkspaceFiles(list);
+  indexes.set(workspaceId, { index, builtAt: Date.now() });
+  return index;
 }
 
 /** Test seam: forget every built index. */

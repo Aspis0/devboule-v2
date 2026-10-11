@@ -106,7 +106,7 @@ describe("indexWorkspaceFiles", () => {
       src: [file("src/App.tsx")],
       node_modules: [file("node_modules/left-pad/index.js")],
     });
-    expect(await indexWorkspaceFiles(list)).toEqual(["README.md", "src/App.tsx"]);
+    expect((await indexWorkspaceFiles(list)).files).toEqual(["README.md", "src/App.tsx"]);
     expect(calls).toEqual(["", "src"]);
   });
 
@@ -118,7 +118,7 @@ describe("indexWorkspaceFiles", () => {
       }
       return reply(path, [dir("locked"), dir("broken"), file("ok.ts")]);
     };
-    expect(await indexWorkspaceFiles(list)).toEqual(["ok.ts"]);
+    expect((await indexWorkspaceFiles(list)).files).toEqual(["ok.ts"]);
   });
 
   it("stops at the directory cap instead of walking the whole tree", async () => {
@@ -127,8 +127,9 @@ describe("indexWorkspaceFiles", () => {
       listed += 1;
       return reply(path, [dir(`${path}d`)]);
     };
-    await indexWorkspaceFiles(endless);
+    const index = await indexWorkspaceFiles(endless);
     expect(listed).toBe(FILE_INDEX_MAX_DIRECTORIES);
+    expect(index.truncated, "a walk the cap stopped says so").toBe(true);
   });
 });
 
@@ -138,7 +139,7 @@ describe("workspaceFileIndex", () => {
     const { list, calls } = treeLister({ "": [file("a.ts")] });
     const first = await workspaceFileIndex("w1", list);
     const second = await workspaceFileIndex("w1", list);
-    expect(first).toEqual(["a.ts"]);
+    expect(first.files).toEqual(["a.ts"]);
     expect(second).toBe(first);
     expect(calls).toEqual([""]);
   });
@@ -148,11 +149,11 @@ describe("workspaceFileIndex", () => {
     resetWorkspaceFileIndexesForTests();
     let tree: Record<string, WorkspaceFileEntry[]> = { "": [file("a.ts")] };
     const live: ListDirectory = (path) => treeLister(tree).list(path);
-    expect(await workspaceFileIndex("w3", live)).toEqual(["a.ts"]);
+    expect((await workspaceFileIndex("w3", live)).files).toEqual(["a.ts"]);
     tree = { "": [file("a.ts"), file("b.ts")] };
-    expect(await workspaceFileIndex("w3", live)).toEqual(["a.ts"]);
+    expect((await workspaceFileIndex("w3", live)).files).toEqual(["a.ts"]);
     await vi.advanceTimersByTimeAsync(FILE_INDEX_TTL_MS);
-    expect(await workspaceFileIndex("w3", live)).toEqual(["a.ts", "b.ts"]);
+    expect((await workspaceFileIndex("w3", live)).files).toEqual(["a.ts", "b.ts"]);
     vi.useRealTimers();
   });
 });
