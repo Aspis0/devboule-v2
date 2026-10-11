@@ -2143,6 +2143,17 @@ impl CodexReader {
             }
         }
         let event_seq = runtime.journal_agent_envelope(&value);
+        // The root thread's own activity report: Codex says it went idle while a
+        // turn is open when a turn is ending without a completion, so the
+        // sweep can settle it (`settle_stalled_turn`). An active report, a new
+        // turn, or the completion clears the mark.
+        if method == Some("thread/status/changed") && root_thread {
+            match params.pointer("/status/type").and_then(Value::as_str) {
+                Some("idle") => runtime.note_codex_thread_idle(std::time::Instant::now()),
+                Some("active") => runtime.clear_codex_thread_idle(),
+                _ => {}
+            }
+        }
         if method == Some("turn/started") && root_thread {
             if let Some(turn_id) = params.pointer("/turn/id").and_then(Value::as_str) {
                 self.state.assign_next_turn_mode(turn_id);
@@ -2195,7 +2206,14 @@ impl CodexReader {
                 // A frame that names no id leaves the slot alone rather
                 // than clearing it.
                 if root_thread {
-                    if self.state.current_turn().is_none() {
+                    // A send began its own turn before the write, so this frame
+                    // finds the run active. A turn Codex started on its own —
+                    // the one after an automatic compaction — finds it idle, and
+                    // would read as idle until its completion. That turn is the
+                    // one now running, so it replaces a tracked turn the run
+                    // already ended (the settle clears the run, not the slot).
+                    let starts_idle = !runtime.is_running_turn();
+                    if self.state.current_turn().is_none() || starts_idle {
                         if let Some(turn_id) =
                             value.pointer("/params/turn/id").and_then(Value::as_str)
                         {
@@ -2203,16 +2221,14 @@ impl CodexReader {
                         }
                     }
                     self.compactions.turn_started();
-                    // A send began its own turn before the write, so this frame
-                    // finds the run active. A turn Codex started on its own —
-                    // the one after an automatic compaction — finds it idle, and
-                    // would read as idle until its completion.
-                    if !runtime.is_running_turn() {
+                    runtime.clear_codex_thread_idle();
+                    if starts_idle {
                         runtime.begin_turn();
                     }
                 }
             } else if method == "turn/completed" {
                 if root_thread {
+                    runtime.clear_codex_thread_idle();
                     // The pairing state belongs to the turn that ends: a
                     // stale completion must not spend it on the live one.
                     if settling {

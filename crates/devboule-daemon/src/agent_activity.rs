@@ -26,6 +26,10 @@ pub const ACTIVITY_FEED_CAP: usize = 64;
 /// build and a wedged process look identical from outside, which is why the
 /// quiet path notifies and never acts.
 pub const CHILD_QUIET_AFTER: Duration = Duration::from_secs(20 * 60);
+/// How long Codex may report its root thread idle with a turn still open
+/// before the sweep ends that turn: its completion is due at once, so a short
+/// grace covers the frames in between.
+pub const CODEX_IDLE_GRACE: Duration = Duration::from_secs(30);
 /// How often the daemon sweeps children for quiet. A minute divides the
 /// threshold twenty times, so the worst notice lands at 21 minutes.
 pub const QUIET_SWEEP_INTERVAL: Duration = Duration::from_secs(60);

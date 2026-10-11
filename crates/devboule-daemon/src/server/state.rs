@@ -580,6 +580,7 @@ impl ServerState {
                 };
                 let now = Instant::now();
                 state.sessions.sweep_quiet_children(now);
+                state.sessions.settle_stalled_provider_turns(now);
                 state.sessions.sweep_idle_close_children(&state, now);
             })
         {

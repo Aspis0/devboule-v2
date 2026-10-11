@@ -205,6 +205,12 @@ pub(crate) struct SessionRuntime {
     next_turn_end_hook: AtomicU64,
     pub(crate) reader_finished: AtomicBool,
     pub(crate) child_reaped: AtomicBool,
+    /// When Codex last reported this root thread idle while a turn was still
+    /// open (`thread/status/changed`). A turn whose completion never comes is
+    /// settled once this has stood for the idle grace (see
+    /// [`Self::settle_stalled_turn`]). Cleared by any active report, a new
+    /// turn, and the turn's own completion.
+    pub(crate) codex_idle_since: Mutex<Option<Instant>>,
     /// Transition notifications are suppressed until spawn has inserted all
     /// runtime state, so an extremely short-lived child cannot publish an
     /// exit before the corresponding create snapshot.
@@ -633,6 +639,7 @@ impl SessionRuntime {
             next_turn_end_hook: AtomicU64::new(1),
             reader_finished: AtomicBool::new(false),
             child_reaped: AtomicBool::new(false),
+            codex_idle_since: Mutex::new(None),
             transition_ready: AtomicBool::new(false),
             exit_transition_sent: AtomicBool::new(false),
             published_frames: AtomicU64::new(0),
@@ -2651,6 +2658,60 @@ impl SessionRuntime {
 
     /// Time since the last publish at `now`. `None` never published (besides
     /// the creation stamp): the quiet rule reads that as Unknown, not idle.
+    /// Codex reported its root thread idle while this turn is open: the turn's
+    /// own completion is due, and a sweep settles it if none comes.
+    pub(crate) fn note_codex_thread_idle(&self, now: Instant) {
+        if !self.is_running_turn() {
+            return;
+        }
+        if let Ok(mut slot) = self.codex_idle_since.lock() {
+            slot.get_or_insert(now);
+        }
+    }
+
+    /// Codex reported its root thread active again, or a turn began or ended:
+    /// no idle report stands.
+    pub(crate) fn clear_codex_thread_idle(&self) {
+        if let Ok(mut slot) = self.codex_idle_since.lock() {
+            *slot = None;
+        }
+    }
+
+    /// End a running turn whose completion Codex never sent, once the evidence
+    /// says it is over: the root thread has reported idle for at least
+    /// `idle_grace`, or the session has published nothing for `silence_bound`.
+    /// The person is told why, and the run ends as a stalled turn. Answers
+    /// whether a turn was ended here.
+    pub(crate) fn settle_stalled_turn(
+        &self,
+        now: Instant,
+        idle_grace: Duration,
+        silence_bound: Duration,
+    ) -> bool {
+        if !self.is_running_turn() {
+            return false;
+        }
+        let idle_since = self.codex_idle_since.lock().ok().and_then(|slot| *slot);
+        let idle_stalled =
+            idle_since.is_some_and(|since| now.saturating_duration_since(since) >= idle_grace);
+        let silent = self
+            .activity_idle_at(now)
+            .is_some_and(|idle| idle >= silence_bound);
+        if !idle_stalled && !silent {
+            return false;
+        }
+        self.clear_codex_thread_idle();
+        self.publish_session_notice(
+            "Codex did not report the end of this turn, so Devboule ended the run.".to_string(),
+            devboule_protocol::NoticeSeverity::Warning,
+        );
+        self.publish_journaled_finish(SessionEvent::AgentFinished {
+            stop_reason: "stalled".to_string(),
+            model_id: None,
+            usage: None,
+        })
+    }
+
     pub(crate) fn activity_idle_at(&self, now: Instant) -> Option<Duration> {
         self.lock_stream()
             .ok()

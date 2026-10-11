@@ -595,3 +595,140 @@ fn notices(conn: &Arc<ConnHandle>) -> Vec<String> {
         })
         .collect()
 }
+
+/// The first turn of Codex's measured trace, from its start up to its own
+/// completion (or to, not including, the completion), with the thread renamed
+/// to the root every test here uses. The trace is the one this repository
+/// records from a real app-server (`fixtures/wire/codex`).
+fn measured_first_turn(include_completion: bool) -> Vec<serde_json::Value> {
+    const TRACE: &str = include_str!("../fixtures/wire/codex/E1-step1-handshake.jsonl");
+    const MEASURED_THREAD: &str = "01a08be5-699f-7393-820e-866145b22dff";
+    let mut frames = Vec::new();
+    for line in TRACE.lines() {
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if entry.get("dir").and_then(serde_json::Value::as_str) != Some("<<") {
+            continue;
+        }
+        let Some(raw) = entry.get("raw").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let Ok(frame) =
+            serde_json::from_str::<serde_json::Value>(&raw.replace(MEASURED_THREAD, ROOT))
+        else {
+            continue;
+        };
+        let method = frame
+            .get("method")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if frames.is_empty() && method != "turn/started" {
+            continue;
+        }
+        if method == "turn/completed" {
+            if include_completion {
+                frames.push(frame);
+            }
+            break;
+        }
+        frames.push(frame);
+    }
+    frames
+}
+
+#[test]
+fn a_measured_turn_whose_completion_never_comes_is_settled_once_the_root_is_idle() {
+    // The measured trace reports the root idle before the turn's completion.
+    // Without the completion the run stays open until the idle has stood for
+    // the grace, then ends as a stalled turn, once.
+    let (mut reader, _state, runtime, conn) = started_reader();
+    let frames = measured_first_turn(false);
+    assert!(
+        frames.iter().any(|frame| {
+            frame["method"] == "thread/status/changed"
+                && frame["params"]["status"]["type"] == "idle"
+        }),
+        "the measured trace reports idle before the completion"
+    );
+    for frame in frames {
+        reader.dispatch_value(frame, &runtime);
+    }
+    assert!(
+        runtime.is_running_turn(),
+        "the turn Codex started runs the session"
+    );
+
+    let now = std::time::Instant::now();
+    let grace = crate::agent_activity::CODEX_IDLE_GRACE;
+    let silence = crate::agent_activity::CHILD_QUIET_AFTER;
+    assert!(
+        !runtime.settle_stalled_turn(now, grace, silence),
+        "inside the idle grace the turn is still open"
+    );
+    assert!(runtime.is_running_turn());
+    assert!(
+        runtime.settle_stalled_turn(
+            now + grace + std::time::Duration::from_secs(1),
+            grace,
+            silence
+        ),
+        "after the idle grace the turn is ended"
+    );
+    assert!(!runtime.is_running_turn());
+    let events = published(&conn);
+    let ended = finished(&events);
+    assert_eq!(ended.len(), 1, "the stalled turn is finished once");
+    assert!(matches!(
+        ended[0],
+        SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "stalled"
+    ));
+    assert!(
+        !runtime.settle_stalled_turn(now + silence * 2, grace, silence),
+        "nothing running, nothing to settle"
+    );
+}
+
+#[test]
+fn a_measured_turn_that_completes_is_never_settled_as_stalled() {
+    // The normal path: the completion ends the run, and the sweep finds nothing.
+    let (mut reader, _state, runtime, conn) = started_reader();
+    for frame in measured_first_turn(true) {
+        reader.dispatch_value(frame, &runtime);
+    }
+    assert!(!runtime.is_running_turn(), "the completion ends the run");
+    let far_later = std::time::Instant::now() + crate::agent_activity::CHILD_QUIET_AFTER * 3;
+    assert!(!runtime.settle_stalled_turn(
+        far_later,
+        crate::agent_activity::CODEX_IDLE_GRACE,
+        crate::agent_activity::CHILD_QUIET_AFTER,
+    ));
+    let events = published(&conn);
+    assert_eq!(finished(&events).len(), 1, "one completion, one finish");
+}
+
+#[test]
+fn a_silent_codex_turn_is_settled_after_the_quiet_bound_even_without_an_idle_report() {
+    // No idle report at all: the session has published nothing for the whole
+    // quiet bound while its turn is open, so the turn is over as far as the
+    // daemon can tell, and it says so.
+    let (mut reader, _state, runtime, _conn) = started_reader();
+    let frames: Vec<_> = measured_first_turn(false)
+        .into_iter()
+        .filter(|frame| frame["method"] != "thread/status/changed")
+        .collect();
+    for frame in frames {
+        reader.dispatch_value(frame, &runtime);
+    }
+    assert!(runtime.is_running_turn());
+    let now = std::time::Instant::now();
+    let silence = crate::agent_activity::CHILD_QUIET_AFTER;
+    assert!(!runtime.settle_stalled_turn(now, crate::agent_activity::CODEX_IDLE_GRACE, silence));
+    assert!(runtime.settle_stalled_turn(
+        now + silence + std::time::Duration::from_secs(1),
+        crate::agent_activity::CODEX_IDLE_GRACE,
+        silence,
+    ));
+    assert!(!runtime.is_running_turn());
+}

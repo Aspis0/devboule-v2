@@ -1145,6 +1145,32 @@ impl super::SessionRegistry {
         delivered
     }
 
+    /// Settle the Codex turns whose completion never came (see
+    /// [`SessionRuntime::settle_stalled_turn`]). Driven by the same minute sweep
+    /// as the quiet check; the answer counts the turns it ended.
+    pub(crate) fn settle_stalled_provider_turns(&self, now: Instant) -> usize {
+        let runtimes: Vec<Arc<SessionRuntime>> = match self.inner.lock() {
+            Ok(map) => map
+                .values()
+                .filter_map(|entry| {
+                    let live = entry.as_peer_visible()?;
+                    (live.metadata.kind == SessionKind::Codex).then(|| Arc::clone(&live.runtime))
+                })
+                .collect(),
+            Err(_) => return 0,
+        };
+        runtimes
+            .iter()
+            .filter(|runtime| {
+                runtime.settle_stalled_turn(
+                    now,
+                    crate::agent_activity::CODEX_IDLE_GRACE,
+                    crate::agent_activity::CHILD_QUIET_AFTER,
+                )
+            })
+            .count()
+    }
+
     /// Sweep every commissioned child for quiet, sending at most one notice
     /// each. Driven once a minute by the server-owned thread; tests call it
     /// with injected instants.
