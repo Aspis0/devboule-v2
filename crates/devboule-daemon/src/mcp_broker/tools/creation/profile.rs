@@ -332,7 +332,7 @@ mod tests {
             Some((&SessionKind::Codex, "auto-review")),
         )
         .expect("the posture carries over");
-        assert_eq!(resolved.mode, "acceptEdits");
+        assert_eq!(resolved.mode, "auto");
     }
 
     /// A mode the caller names is its own choice, whatever the creator runs in.
