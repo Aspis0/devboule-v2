@@ -2004,17 +2004,23 @@ export function Workspace({
   const createFromSheet = useCallback(
     async (choice: NewWorkspaceChoice): Promise<ErrorSentence | null> => {
       if (choice.where !== THIS_PC) {
-        // A paired host creates the workspace with its own checks; it shows up in
-        // the host's list when the host next publishes it.
-        try {
-          await remoteHostWorkspaceCreate(
-            choice.where,
-            choice.projectId,
-            choice.isolation,
-            choice.branch,
-          );
-        } catch (cause: unknown) {
-          return errorSentence(cause);
+        // A paired host creates the workspace with its own checks. The new
+        // workspace opens on that host's surface, where its agent starts through
+        // the relay under the person's own grants: nothing is left to find. Its
+        // row joins the host's list when the host next publishes it.
+        const outcome = await remoteHostWorkspaceCreate(
+          choice.where,
+          choice.projectId,
+          choice.isolation,
+          choice.branch,
+        ).then(
+          (created) => ({ key: workspaceKey(choice.where as HostId, created.id) }),
+          (cause: unknown) => ({ refusal: errorSentence(cause) }),
+        );
+        if ("refusal" in outcome) return outcome.refusal;
+        if (outcome.key !== null) {
+          userNavigatedRef.current = true;
+          setSelectedKey(outcome.key);
         }
         setSheet(null);
         sheetTriggerRef.current?.focus({ preventScroll: true });
@@ -2035,7 +2041,7 @@ export function Workspace({
       sheetTriggerRef.current?.focus({ preventScroll: true });
       return null;
     },
-    [createWorkspace],
+    [createWorkspace, setSelectedKey],
   );
   const handleResizeStart = useCallback(
     (event: ReactMouseEvent<HTMLButtonElement>) => startDrag("left", event),
