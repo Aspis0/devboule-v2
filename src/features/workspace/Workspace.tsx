@@ -40,7 +40,7 @@ import {
   type AgentTasksContext,
   type SidePanelEntry,
 } from "./sidePanelRegistry";
-import { childRow } from "./subagentRows";
+import { childRow, isArchivable } from "./subagentRows";
 import { useTasksAttention } from "./useTasksAttention";
 import type { BackgroundTaskSource } from "./useBackgroundTaskState";
 import { SIDE_PANEL_BODY_ID, SidePanelTabs, sidePanelTabId } from "./panel/SidePanelTabs";
@@ -130,7 +130,7 @@ import { Sidebar } from "./sidebar/Sidebar";
 import { hostNames } from "./sidebar/hostNames";
 import { LOCAL_HOST_ID, type HostId } from "./hosts/hostIdentity";
 import type { WorkspaceTreeProps } from "./sidebar/WorkspaceTree";
-import { railAgentsOf } from "./sidebar/railAgents";
+import { useRailAgents } from "./sidebar/railAgents";
 import { HistoryPanel } from "../history/HistoryPanel";
 import { StatusBar, agentStateOf, type FocusedAgent } from "./statusBar/StatusBar";
 import { useWorkspaceStats } from "./sidebar/useWorkspaceStats";
@@ -420,15 +420,17 @@ export function Workspace({
     nonce: number;
   } | null>(null);
   const [historySearch, setHistorySearch] = useState("");
+  // The workspace the History page lists when opened from a rail's overflow; null lists all.
+  const [historyWorkspace, setHistoryWorkspace] = useState<WorkspaceKey | null>(null);
   const [historyHost, setHistoryHost] = useState("all");
   const [permissionQueue, setPermissionQueue] =
     useState<QueuedPermission[]>(pendingPermissionRequests);
   // Drop one session's cards. The close acts call this on success and on a
   // moot close, and the roster absence rule below calls it when the row is
   // gone: a failed close while the session still exists keeps them.
-  const dropSessionPermissions = (id: string) => {
+  const dropSessionPermissions = useCallback((id: string) => {
     setPermissionQueue((queue) => queue.filter((item) => item.sessionId !== id));
-  };
+  }, []);
   // What a toast may quote for a session — the pending permission card's
   // text and the last assistant message — is wired below, once the strip's
   // own rows exist: the provider's inputs are what this render puts on
@@ -2088,8 +2090,10 @@ export function Workspace({
     (event: ReactKeyboardEvent<HTMLButtonElement>) => handleResizeKey("left", event),
     [handleResizeKey],
   );
-  const handleToggleHistory = useCallback(() => setHistoryOpen((open) => !open), []);
-  const handleOpenHistory = useCallback(() => setHistoryOpen(true), []);
+  const handleToggleHistory = useCallback(() => {
+    setHistoryWorkspace(null);
+    setHistoryOpen((open) => !open);
+  }, []);
   const handleHistorySearchChange = useCallback((value: string) => setHistorySearch(value), []);
   const handleOpenSettings = useCallback(() => selectSurface("settings"), [selectSurface]);
   const handleRetryProjects = useCallback(() => void retryProjects(), [retryProjects]);
@@ -2538,11 +2542,35 @@ export function Workspace({
     }),
     [openTranscriptHit, sessions, transcriptSearchCanSearch],
   );
-  const selectedAgents = useMemo(
-    () => railAgentsOf(sessions, selectedKey),
-    [sessions, selectedKey],
-  );
   const focusedAgentId = focusedAgent?.sessionId ?? null;
+  const selectedAgents = useRailAgents(sessions, selectedKey, focusedAgentId);
+  const openTasksTab = useCallback(() => {
+    setActiveSidePanel("tasks");
+    setRightCollapsed(false);
+  }, [setRightCollapsed]);
+  // A finished agent leaves the rail the same way the list's Archive does: closed,
+  // and its tab with it. The transcript stays in History.
+  const archiveAgent = useCallback(
+    async (sessionId: string): Promise<string | null> => {
+      const row = sessions.find((session) => session.id === sessionId);
+      if (row === undefined || !isArchivable({ kind: "child", status: childRow(row).status })) {
+        return "It is no longer finished, so nothing was archived.";
+      }
+      try {
+        await sessionClose(sessionId);
+      } catch (cause: unknown) {
+        return errorSentence(cause).sentence;
+      }
+      dropSessionPermissions(sessionId);
+      await refreshSessions();
+      return null;
+    },
+    [sessions, refreshSessions, dropSessionPermissions],
+  );
+  const openHistoryForSelected = useCallback(() => {
+    setHistoryWorkspace(selectedKey);
+    setHistoryOpen(true);
+  }, [selectedKey]);
   const sidebarTree: WorkspaceTreeProps = useMemo(
     () => ({
       projects: visibleProjects,
@@ -2569,7 +2597,8 @@ export function Workspace({
         agents: selectedAgents,
         activeId: focusedAgentId,
         onOpenAgent: handleOpenOverviewSession,
-        onOpenHistory: handleOpenHistory,
+        onOpenHistory: openHistoryForSelected,
+        onArchiveAgent: archiveAgent,
       },
     }),
     [
@@ -2595,7 +2624,8 @@ export function Workspace({
       selectedAgents,
       focusedAgentId,
       handleOpenOverviewSession,
-      handleOpenHistory,
+      openHistoryForSelected,
+      archiveAgent,
     ],
   );
   const firstPromptOnPane =
@@ -2636,6 +2666,7 @@ export function Workspace({
             subagentAttention={subagentAttention}
             onRefreshSubagents={refreshSessions}
             onStopSubagent={stopAgent}
+            onOpenTasks={openTasksTab}
             onAgentChange={reportPaneAgentWithFirstMessage}
             deviceNames={peerNames}
             hasPendingPermission={hasPendingPermission}
@@ -3069,6 +3100,7 @@ export function Workspace({
               onReopenAgent={handleReopenAgent}
               hosts={historyHosts}
               hostFilter={historyHost}
+              workspaceFilter={historyWorkspace}
               onHostFilterChange={setHistoryHost}
             />
           ) : null}

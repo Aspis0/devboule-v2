@@ -25,6 +25,7 @@ import { errorSentence } from "../../lib/errorSentence";
 import { isInstalled, isRunOnDemand } from "../../lib/providerPredicates";
 import { lastFittedGrid } from "../terminal/lastFittedGrid";
 import { fireAttentionToast, forgetAttentionFor, markAttentionSeen } from "./attentionNotice";
+import { markSessionOpened } from "./openedSessions";
 import { createOpenSessionTabs, openTabsStorage } from "./openSessionTabs";
 
 export interface WorkspaceSessionSource {
@@ -578,6 +579,8 @@ export function createWorkspaceSessionController(
   const publish = (next: WorkspaceSessionState): void => {
     if (next.selectedSessionId !== state.selectedSessionId) selectionEpoch += 1;
     state = next;
+    // Every tab that is open, restored ones included, has been opened.
+    for (const session of next.openSessions) markSessionOpened(session.id);
     tabs.persist(state.sessions, state.selectedSessionId);
     for (const listener of listeners) listener();
   };

@@ -3,8 +3,10 @@ import type { SessionTask } from "../../types/ipc";
 import type { SubagentRow } from "./subagentRows";
 import {
   lineClock,
+  rowClock,
   subagentTitle,
-  whoIsWorkingSegments,
+  taskClocks,
+  whoIsWorking,
   type WhoIsWorkingInput,
 } from "./whoIsWorkingLine";
 
@@ -35,16 +37,23 @@ const commandTask = (id: string, startedAtMs: number): SessionTask => ({
   startedAtMs,
 });
 
-function segmentsOf(over: Partial<WhoIsWorkingInput>) {
-  return whoIsWorkingSegments({
-    rows: [],
-    waitingIds: new Set(),
-    seenFailedIds: new Set(),
-    tasks: [],
+function lineOf(over: {
+  rows?: SubagentRow[];
+  waitingIds?: string[];
+  seenFailedIds?: string[];
+  tasks?: SessionTask[];
+}) {
+  const input: WhoIsWorkingInput = {
+    rows: over.rows ?? [],
+    waitingIds: new Set(over.waitingIds ?? []),
+    seenFailedIds: new Set(over.seenFailedIds ?? []),
+    clocks: taskClocks(over.tasks ?? []),
     now: NOW,
-    ...over,
-  });
+  };
+  return whoIsWorking(input);
 }
+
+const segmentsOf = (over: Parameters<typeof lineOf>[0]) => lineOf(over).segments;
 
 describe("the line's states", () => {
   it("draws nothing when nobody works, waits or failed unseen", () => {
@@ -89,7 +98,7 @@ describe("the line's states", () => {
     expect(
       segmentsOf({
         rows: [child("w", "Kalsa"), child("r", "Website")],
-        waitingIds: new Set(["w"]),
+        waitingIds: ["w"],
         tasks: [agentTask("r", NOW - 5_000)],
       }),
     ).toEqual([
@@ -98,21 +107,21 @@ describe("the line's states", () => {
     ]);
   });
 
-  it("counts several waiting children as agents that need the person", () => {
+  it("uses the plural verb for several children waiting on the person", () => {
     expect(
       segmentsOf({
         rows: [child("w1", "Kalsa"), child("w2", "Website")],
-        waitingIds: new Set(["w1", "w2"]),
+        waitingIds: ["w1", "w2"],
       }),
-    ).toEqual([{ tone: "attention", name: "2 agents", word: "needs you" }]);
+    ).toEqual([{ tone: "attention", name: "2 agents", word: "need you" }]);
   });
 
-  it("shows a failed child until its tab was opened from the list", () => {
+  it("shows a failed child until its tab was opened", () => {
     const failed = [child("f", "Website redesign", "failed")];
     expect(segmentsOf({ rows: failed })).toEqual([
       { tone: "danger", name: "Website redesign", word: "failed" },
     ]);
-    expect(segmentsOf({ rows: failed, seenFailedIds: new Set(["f"]) })).toEqual([]);
+    expect(segmentsOf({ rows: failed, seenFailedIds: ["f"] })).toEqual([]);
   });
 
   it("does not name a provider task as failed on the line", () => {
@@ -120,10 +129,13 @@ describe("the line's states", () => {
     expect(segmentsOf({ rows: [failedTask] })).toEqual([]);
   });
 
-  it("names a command alone, with its clock", () => {
-    expect(segmentsOf({ tasks: [commandTask("c1", NOW - 9_000)] })).toEqual([
-      { tone: "live", name: "1 command", word: "running", clock: "00:09", commands: null },
-    ]);
+  it("names a command alone, with its clock, and says the line is commands only", () => {
+    expect(lineOf({ tasks: [commandTask("c1", NOW - 9_000)] })).toEqual({
+      segments: [
+        { tone: "live", name: "1 command", word: "running", clock: "00:09", commands: null },
+      ],
+      commandsOnly: true,
+    });
   });
 
   it("counts several commands alone", () => {
@@ -134,13 +146,13 @@ describe("the line's states", () => {
     ]);
   });
 
-  it("appends the commands run beside an agent", () => {
-    expect(
-      segmentsOf({
-        rows: [child("a", "Kalsa")],
-        tasks: [agentTask("a", NOW - 161_000), commandTask("c1", NOW - 9_000)],
-      }),
-    ).toEqual([
+  it("appends the commands run beside an agent, and is not commands only", () => {
+    const line = lineOf({
+      rows: [child("a", "Kalsa")],
+      tasks: [agentTask("a", NOW - 161_000), commandTask("c1", NOW - 9_000)],
+    });
+    expect(line.commandsOnly).toBe(false);
+    expect(line.segments).toEqual([
       { tone: "live", name: "Kalsa", word: "working", clock: "02:41", commands: "1 command" },
     ]);
   });
@@ -148,13 +160,19 @@ describe("the line's states", () => {
   it("orders the segments: a wait, then the work, then an unseen failure", () => {
     const segments = segmentsOf({
       rows: [child("w", "Waiting"), child("r", "Running"), child("f", "Failed", "failed")],
-      waitingIds: new Set(["w"]),
+      waitingIds: ["w"],
     });
     expect(segments.map((segment) => segment.tone)).toEqual(["attention", "live", "danger"]);
   });
 });
 
-describe("the clock and the name", () => {
+describe("the clocks", () => {
+  it("reads a row's clock from its running agent task", () => {
+    const clocks = taskClocks([agentTask("a", NOW - 161_000)]);
+    expect(rowClock(clocks, child("a", "Kalsa"), NOW)).toBe("02:41");
+    expect(rowClock(clocks, child("b", "Website"), NOW)).toBeNull();
+  });
+
   it("counts mm:ss, and h:mm:ss from an hour on", () => {
     expect(lineClock(0)).toBe("00:00");
     expect(lineClock(161_000)).toBe("02:41");

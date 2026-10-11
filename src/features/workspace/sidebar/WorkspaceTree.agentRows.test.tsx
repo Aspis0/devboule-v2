@@ -50,7 +50,9 @@ const agent = (over: Partial<RailAgent>): RailAgent => ({
   title: "cia",
   state: "idle",
   child: false,
+  parentId: null,
   parentTitle: null,
+  hasChildren: false,
   ...over,
 });
 

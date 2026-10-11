@@ -577,6 +577,31 @@ describe("HistoryPanel", () => {
     expect(onReopen).not.toHaveBeenCalled();
   });
 
+  it("lists only the rows of the workspace it is filtered to", async () => {
+    const live = {
+      ...endedSession("session-here"),
+      state: { type: "live" as const, generation: 1 },
+      createdAtMs: now,
+    };
+    const here = { ...live, id: "session-here", title: "joined title" };
+    const there = {
+      ...live,
+      id: "session-there",
+      workspaceId: "workspace-other",
+      title: "other title",
+    };
+    vi.mocked(journalUsage).mockResolvedValueOnce({ ...baseUsage(), perSession: [] });
+    vi.mocked(sessionsList).mockResolvedValueOnce([here, there]);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<HistoryPanel now={now} search="" workspaceFilter={keyFor("workspace-rust")} />);
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("joined title");
+    expect(container.textContent).not.toContain("other title");
+  });
+
   it("filters rows from the controlled search prop", async () => {
     await renderPanel();
     await act(async () => root.render(<HistoryPanel now={now} search="review" />));

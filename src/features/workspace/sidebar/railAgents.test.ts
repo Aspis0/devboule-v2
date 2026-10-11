@@ -15,7 +15,18 @@ const agent = (over: Partial<Session> = {}): Session => ({
   ...over,
 });
 
-const idsOf = (sessions: Session[]) => railAgentsOf(sessions, KEY).rows.map((row) => row.id);
+const ended = (): Session["state"] => ({
+  type: "ended",
+  generation: 1,
+  code: 0,
+  integrity: { kind: "complete" },
+});
+
+const rail = (sessions: Session[], activeId: string | null = null) =>
+  railAgentsOf(sessions, KEY, activeId);
+
+const idsOf = (sessions: Session[], activeId: string | null = null) =>
+  rail(sessions, activeId).rows.map((row) => row.id);
 
 describe("the agents the rail lists", () => {
   it("lists each root in roster order, its children right after it", () => {
@@ -37,25 +48,17 @@ describe("the agents the rail lists", () => {
         createdBy: "root",
         attention: { reason: "permission", atMs: 1 },
       }),
-      agent({
-        id: "crashed",
-        createdBy: "root",
-        state: { type: "ended", generation: 1, code: null, integrity: { kind: "complete" } },
-      }),
       agent({ id: "working-2", createdBy: "root", activity: "working" }),
     ];
-    expect(idsOf(sessions)).toEqual(["root", "asks", "working", "working-2", "crashed", "idle"]);
+    expect(idsOf(sessions)).toEqual(["root", "asks", "working", "working-2", "idle"]);
   });
 
   it("nests a grandchild one step in, under its own parent", () => {
-    const rows = railAgentsOf(
-      [
-        agent({ id: "root", title: "cia" }),
-        agent({ id: "child", createdBy: "root", title: "Kalsa" }),
-        agent({ id: "grandchild", createdBy: "child", title: "Sketch" }),
-      ],
-      KEY,
-    ).rows;
+    const rows = rail([
+      agent({ id: "root", title: "cia" }),
+      agent({ id: "child", createdBy: "root", title: "Kalsa" }),
+      agent({ id: "grandchild", createdBy: "child", title: "Sketch" }),
+    ]).rows;
     expect(rows.map((row) => [row.id, row.child, row.parentTitle])).toEqual([
       ["root", false, null],
       ["child", true, "cia"],
@@ -84,22 +87,44 @@ describe("the agents the rail lists", () => {
   });
 
   it("names the provider, and names none for an id the app does not know", () => {
-    const rows = railAgentsOf(
-      [agent({ id: "a", kind: "codex" }), agent({ id: "b", kind: "acp" })],
-      KEY,
-    ).rows;
+    const rows = rail([agent({ id: "a", kind: "codex" }), agent({ id: "b", kind: "acp" })]).rows;
     expect(rows.map((row) => row.provider)).toEqual(["Codex", null]);
   });
 
-  it("lists nothing when no workspace is selected", () => {
-    expect(railAgentsOf([agent()], null)).toEqual({ rows: [], hidden: 0 });
+  it("marks a parent that has rows under it", () => {
+    const rows = rail([
+      agent({ id: "root" }),
+      agent({ id: "child", createdBy: "root" }),
+      agent({ id: "alone" }),
+    ]).rows;
+    expect(rows.map((row) => [row.id, row.hasChildren])).toEqual([
+      ["root", true],
+      ["child", false],
+      ["alone", false],
+    ]);
   });
 
+  it("lists nothing when no workspace is selected", () => {
+    expect(railAgentsOf([agent()], null, null)).toEqual({ rows: [], hidden: 0 });
+  });
+
+  it("lists no ended agent, and an ended agent takes no place under the cap", () => {
+    const sessions = [
+      ...Array.from({ length: RAIL_AGENT_CAP }, (_, index) =>
+        agent({ id: `old-${index}`, state: ended() }),
+      ),
+      agent({ id: "live" }),
+    ];
+    expect(rail(sessions)).toEqual({ rows: [expect.objectContaining({ id: "live" })], hidden: 0 });
+  });
+});
+
+describe("the cap", () => {
   it("shows at most the cap and counts what waits behind it", () => {
     const roots = Array.from({ length: RAIL_AGENT_CAP + 2 }, (_, index) =>
       agent({ id: `root-${index}` }),
     );
-    const listed = railAgentsOf(roots, KEY);
+    const listed = rail(roots);
     expect(listed.rows).toHaveLength(RAIL_AGENT_CAP);
     expect(listed.hidden).toBe(2);
   });
@@ -111,8 +136,51 @@ describe("the agents the rail lists", () => {
         agent({ id: `child-${index}`, createdBy: "root" }),
       ),
     ];
-    const listed = railAgentsOf(sessions, KEY);
+    const listed = rail(sessions);
     expect(listed.rows).toHaveLength(RAIL_AGENT_CAP);
     expect(listed.hidden).toBe(1);
+  });
+
+  it("keeps a waiting and a running agent when idle roots fill the cap ahead of them", () => {
+    const idle = Array.from({ length: RAIL_AGENT_CAP + 1 }, (_, index) =>
+      agent({ id: `idle-${index}` }),
+    );
+    const sessions = [
+      ...idle,
+      agent({ id: "running", activity: "working" }),
+      agent({ id: "waiting", attention: { reason: "permission", atMs: 1 } }),
+    ];
+    const ids = idsOf(sessions);
+    expect(ids).toContain("running");
+    expect(ids).toContain("waiting");
+    expect(ids).toHaveLength(RAIL_AGENT_CAP);
+  });
+
+  it("keeps the front agent even when it is idle", () => {
+    const sessions = [
+      ...Array.from({ length: RAIL_AGENT_CAP + 1 }, (_, index) => agent({ id: `idle-${index}` })),
+      agent({ id: "front" }),
+    ];
+    expect(idsOf(sessions, "front")).toContain("front");
+  });
+
+  it("keeps the creator of a kept child, so the child never stands without its parent", () => {
+    const sessions = [
+      agent({ id: "parent" }),
+      ...Array.from({ length: RAIL_AGENT_CAP }, (_, index) => agent({ id: `idle-${index}` })),
+      agent({ id: "child", createdBy: "parent", activity: "working" }),
+    ];
+    const ids = idsOf(sessions);
+    expect(ids).toContain("parent");
+    expect(ids).toContain("child");
+  });
+
+  it("never cuts a waiting or running agent, even when they outnumber the cap", () => {
+    const sessions = Array.from({ length: RAIL_AGENT_CAP + 2 }, (_, index) =>
+      agent({ id: `busy-${index}`, activity: "working" }),
+    );
+    const listed = rail(sessions);
+    expect(listed.rows).toHaveLength(RAIL_AGENT_CAP + 2);
+    expect(listed.hidden).toBe(0);
   });
 });

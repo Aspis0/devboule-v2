@@ -181,6 +181,8 @@ interface AgentChatSurfaceProps {
   onOpenSubagent?: (sessionId: string) => void;
   /** Stops a running child from the who-is-working list; answers with the refusal, or null. */
   onStopSubagent?: (sessionId: string) => Promise<string | null>;
+  /** Opens the side panel's Tasks tab, where a running command's details are. */
+  onOpenTasks?: () => void;
   subagentAttention?: ReadonlyMap<string, string>;
   onRefreshSubagents?: () => Promise<void>;
   /** The session's controller once it exists: the Tasks tab reads its task lane through the workspace. */
@@ -399,6 +401,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   subagentAttention,
   onRefreshSubagents,
   onStopSubagent,
+  onOpenTasks,
   onAgentChange,
   fileLinks = null,
   loadFileIndex,
@@ -858,6 +861,8 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         attentionById={subagentAttention}
         onArchiveFinished={archiveFinishedSubagents}
         onStopSubagent={onStopSubagent}
+        onOpenTasks={onOpenTasks}
+        onEmptied={focusComposer}
       />
     ),
     [
@@ -867,6 +872,8 @@ export const AgentChatSurface = memo(function AgentChatSurface({
       subagentAttention,
       archiveFinishedSubagents,
       onStopSubagent,
+      onOpenTasks,
+      focusComposer,
     ],
   );
   // `/goal` rides to the daemon as plain text, which intercepts it: the app
@@ -942,7 +949,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         task={currentTask}
       />
       {/* No row of its own: the wrapper has zero height on a live pane without
-          subagents. Archive lives in the tab menu. */}
+          subagents. */}
       <div className="workspace-agent-extras">{headerTrailing}</div>
       {/* Remounted per goal text: the disclosure state belongs to the text,
           so a replaced goal arrives collapsed. */}

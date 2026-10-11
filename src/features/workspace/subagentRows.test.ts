@@ -187,6 +187,21 @@ describe("the rows one parent's pill lists", () => {
     expect(rows[0]).toMatchObject({ status: "failed" });
   });
 
+  it("reads a live child as running whatever the task list says until its process ends", () => {
+    const live = child("c-live", { type: "live", generation: 1 }, "working");
+    const rows = deriveSubagentRows("parent", [live], [], new Map([["c-live", "cancelled"]]));
+    expect(rows[0]).toMatchObject({ status: "running" });
+  });
+
+  it("reads an ended child's clean exit as finished even when its turn still says working", () => {
+    const ended = child(
+      "c-done",
+      { type: "ended", generation: 1, code: 0, integrity: complete },
+      "working",
+    );
+    expect(childRow(ended).status).toBe("finished");
+  });
+
   it("keeps a task whose id equals a child's id as its own row", () => {
     const rows = deriveSubagentRows("parent", [child("same", idleLive, "idle")], [task("same")]);
     expect(rows.map((row) => row.kind)).toEqual(["child", "task"]);

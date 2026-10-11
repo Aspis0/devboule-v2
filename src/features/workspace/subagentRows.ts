@@ -48,30 +48,26 @@ function isCleanExit(code: number): boolean {
 
 // `state` is the process, `activity` is the turn: a live or silent process is
 // finished only when the daemon says its turn is idle, never because it is up.
+// An ended process has no turn left to read, so its exit decides, and a stale
+// turn status cannot outrank it.
 function childStatus(
   state: SessionState | undefined,
   activity: AgentActivityState | undefined,
   taskState: SessionTask["state"] | undefined,
 ): AgentSubagentStatus {
-  // The daemon's task list knows whether a person or the parent stopped the child;
-  // the roster alone reads a stopped child's kill as a crash.
-  if (taskState === "cancelled") return "stopped";
-  if (taskState === "failed") return "failed";
-  switch (state?.type) {
-    case "live":
-    case "silent":
-      if (activity === "working" || activity === "blocked") return "running";
-      return activity === "idle" ? "finished" : "unknown";
-    case "ended":
-      // An exit code alone is no verdict. Exit 0 finished; a clean non-zero exit
-      // closed without a verdict; no code, a signal, or a timeout-range code is a crash.
-      if (state.code === 0) return "finished";
-      return state.code !== null && isCleanExit(state.code) ? "stopped" : "failed";
-    case "recovered":
-      return "stopped";
-    case undefined:
-      return "unknown";
+  if (state?.type === "ended") {
+    // The roster reads a killed child's exit as a crash; the task list knows it was stopped.
+    if (taskState === "cancelled") return "stopped";
+    if (taskState === "failed") return "failed";
+    // An exit code alone is no verdict. Exit 0 finished; a clean non-zero exit
+    // closed without a verdict; no code, a signal, or a timeout-range code is a crash.
+    if (state.code === 0) return "finished";
+    return state.code !== null && isCleanExit(state.code) ? "stopped" : "failed";
   }
+  if (state?.type === "recovered") return "stopped";
+  if (state === undefined) return "unknown";
+  if (activity === "working" || activity === "blocked") return "running";
+  return activity === "idle" ? "finished" : "unknown";
 }
 
 export function childRow(session: RosterChild, taskState?: SessionTask["state"]): SubagentRow {

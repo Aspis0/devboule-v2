@@ -1,6 +1,6 @@
 // What the one "who is working" line above the composer says: the open agent's
 // children that wait, work or failed, and its running commands. Pure: the line
-// and the list it opens read the same rows.
+// and the list it opens read the same rows and the same clocks.
 import type { SessionTask } from "../../types/ipc";
 import type { SubagentRow } from "./subagentRows";
 
@@ -17,13 +17,25 @@ export type LineSegment =
     }
   | { tone: "danger"; name: string; word: string };
 
+export interface WhoIsWorking {
+  segments: LineSegment[];
+  /** Only commands run: the line opens the Tasks tab rather than the list. */
+  commandsOnly: boolean;
+}
+
+/** When each running turn began, read from the open agent's task list. */
+export interface TaskClocks {
+  agentStarts: ReadonlyMap<string, number>;
+  commandStarts: readonly number[];
+}
+
 export interface WhoIsWorkingInput {
   rows: readonly SubagentRow[];
   /** Children waiting on the person. */
   waitingIds: ReadonlySet<string>;
-  /** Failed children whose tab was opened from the list: the line stops naming them. */
+  /** Failed children whose tab has opened: the line stops naming them. */
   seenFailedIds: ReadonlySet<string>;
-  tasks: readonly SessionTask[];
+  clocks: TaskClocks;
   now: number;
 }
 
@@ -45,24 +57,21 @@ export function subagentTitle(title: string | null, id: string): string {
   return title?.trim() ? title : shortId(id);
 }
 
-/** The start of each running agent turn, by the child session it runs in. */
-function agentStarts(tasks: readonly SessionTask[]): ReadonlyMap<string, number> {
-  const starts = new Map<string, number>();
+/** Reads the running turns out of a task list once; every row's clock comes from the result. */
+export function taskClocks(tasks: readonly SessionTask[]): TaskClocks {
+  const agentStarts = new Map<string, number>();
+  const commandStarts: number[] = [];
   for (const task of tasks) {
-    if (task.kind === "agent" && task.state === "running") {
-      starts.set(task.childSessionId ?? task.id, task.startedAtMs);
-    }
+    if (task.state !== "running") continue;
+    if (task.kind === "agent") agentStarts.set(task.childSessionId ?? task.id, task.startedAtMs);
+    else commandStarts.push(task.startedAtMs);
   }
-  return starts;
+  return { agentStarts, commandStarts };
 }
 
 /** The clock a row shows: how long its running turn has gone on, when the task list knows its start. */
-export function rowClock(
-  row: SubagentRow,
-  tasks: readonly SessionTask[],
-  now: number,
-): string | null {
-  const start = agentStarts(tasks).get(row.id);
+export function rowClock(clocks: TaskClocks, row: SubagentRow, now: number): string | null {
+  const start = clocks.agentStarts.get(row.id);
   return start === undefined ? null : lineClock(now - start);
 }
 
@@ -79,33 +88,36 @@ function nameOf(rows: readonly SubagentRow[]): string {
 }
 
 /**
- * The line's segments in the order the person needs them: a wait first, then
- * the work, then an unseen failure. Empty when nothing waits, works or failed
- * unseen, so the line is not drawn.
+ * The line's segments in the order the person needs them: a wait, then the
+ * work, then an unseen failure. None means the line is not drawn.
  */
-export function whoIsWorkingSegments({
+export function whoIsWorking({
   rows,
   waitingIds,
   seenFailedIds,
-  tasks,
+  clocks,
   now,
-}: WhoIsWorkingInput): LineSegment[] {
-  const waiting = rows.filter((row) => row.kind === "child" && waitingIds.has(row.id));
-  const running = rows.filter((row) => row.status === "running" && !waiting.includes(row));
-  const failed = rows.filter(
-    (row) => row.kind === "child" && row.status === "failed" && !seenFailedIds.has(row.id),
-  );
-  const commands = tasks.filter((task) => task.kind === "command" && task.state === "running");
-  const starts = agentStarts(tasks);
+}: WhoIsWorkingInput): WhoIsWorking {
+  const waiting: SubagentRow[] = [];
+  const running: SubagentRow[] = [];
+  const failed: SubagentRow[] = [];
+  for (const row of rows) {
+    if (row.kind === "child" && waitingIds.has(row.id)) waiting.push(row);
+    else if (row.status === "running") running.push(row);
+    else if (row.kind === "child" && row.status === "failed" && !seenFailedIds.has(row.id)) {
+      failed.push(row);
+    }
+  }
+  const commandCount = clocks.commandStarts.length;
   const runningStarts = running.flatMap((row) => {
-    const start = starts.get(row.id);
+    const start = clocks.agentStarts.get(row.id);
     return start === undefined ? [] : [start];
   });
-  const commandStarts = commands.map((task) => task.startedAtMs);
 
   const segments: LineSegment[] = [];
   if (waiting.length > 0) {
-    segments.push({ tone: "attention", name: nameOf(waiting), word: "needs you" });
+    const word = waiting.length === 1 ? "needs you" : "need you";
+    segments.push({ tone: "attention", name: nameOf(waiting), word });
   }
   if (running.length > 0) {
     segments.push({
@@ -116,19 +128,21 @@ export function whoIsWorkingSegments({
         waiting.length === 0 && runningStarts.length > 0
           ? lineClock(now - Math.min(...runningStarts))
           : null,
-      commands: commands.length > 0 ? commandsText(commands.length) : null,
+      commands: commandCount > 0 ? commandsText(commandCount) : null,
     });
-  } else if (commands.length > 0) {
+  } else if (commandCount > 0) {
     segments.push({
       tone: "live",
-      name: commandsText(commands.length),
+      name: commandsText(commandCount),
       word: "running",
-      clock: lineClock(now - Math.min(...commandStarts)),
+      clock: lineClock(now - Math.min(...clocks.commandStarts)),
       commands: null,
     });
   }
   if (failed.length > 0) {
     segments.push({ tone: "danger", name: nameOf(failed), word: "failed" });
   }
-  return segments;
+  const commandsOnly =
+    waiting.length === 0 && running.length === 0 && failed.length === 0 && commandCount > 0;
+  return { segments, commandsOnly };
 }

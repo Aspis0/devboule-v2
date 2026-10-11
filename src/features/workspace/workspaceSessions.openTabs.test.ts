@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
 import type { Session, SessionStateSnapshot } from "../../types/ipc";
+import { openedSessions, resetOpenedSessionsForTests } from "./openedSessions";
 import { createWorkspaceSessionController } from "./workspaceSessions";
 
 const session = (id: string, overrides: Partial<Session> = {}): Session => ({
@@ -36,6 +37,15 @@ function harness(roster: Session[]) {
 }
 
 describe("explicit session tab membership", () => {
+  it("records a session as opened when its tab opens, whichever surface asked", async () => {
+    const { controller } = harness([session("child")]);
+    await controller.refresh();
+    expect(openedSessions().has("child")).toBe(false);
+    controller.open(session("child"));
+    expect(openedSessions().has("child")).toBe(true);
+    resetOpenedSessionsForTests();
+  });
+
   it("does not publish or replace state for an empty tab close", async () => {
     const { controller } = harness([session("open")]);
     await controller.refresh();

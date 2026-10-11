@@ -82,10 +82,6 @@
   color: var(--tone-attention-text);
 }
 
-.agent-row-tail-danger {
-  color: var(--danger);
-}
-
 /* The 6 px badge sits on the mark's corner; its ring is the rail's own ground,
    so it reads as cut out of the mark. */
 .agent-row-badge {
@@ -107,10 +103,6 @@
   background: var(--tone-attention);
 }
 
-.agent-row-badge-failed {
-  background: var(--danger);
-}
-
 @media (prefers-reduced-motion: reduce) {
   .agent-row-badge-running {
     animation: none;
@@ -120,6 +112,44 @@
 .agent-row-more {
   color: var(--muted);
   font-size: var(--type-meta);
+}
+
+.agent-row-menu {
+  width: 200px;
+  padding: var(--space-4);
+  background: var(--panel-menu);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  box-shadow: var(--shadow-pop);
+}
+
+.agent-row-menu-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: var(--control-default);
+  padding: 0 var(--space-8);
+  border: 0;
+  border-radius: var(--radius-6);
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--type-small);
+  text-align: left;
+}
+
+.agent-row-menu-item:hover,
+.agent-row-menu-item:focus-visible {
+  background: var(--fill-hover);
+}
+
+.agent-row-refusal {
+  margin: 0;
+  padding: var(--space-2) var(--space-8) var(--space-4);
+  color: var(--danger);
+  font-size: var(--type-meta);
+  line-height: var(--leading-dense);
 }
 
 /* A workspace row's line under its title, only while someone works or waits there. */

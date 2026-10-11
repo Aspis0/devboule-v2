@@ -43,6 +43,8 @@ export interface HistoryPanelProps {
   hosts?: readonly HistoryHost[];
   hostFilter?: string;
   onHostFilterChange?: (host: string) => void;
+  /** Lists only the rows whose workspace is this one; null lists every workspace. */
+  workspaceFilter?: WorkspaceKey | null;
   onReopen?: (session: Session) => void;
   onReopenAgent?: (session: Session) => void;
   projects?: readonly WorkspaceProject[];
@@ -86,6 +88,7 @@ export function HistoryPanel({
   hosts = EMPTY_HOSTS,
   hostFilter = "all",
   onHostFilterChange,
+  workspaceFilter = null,
   onReopen,
   onReopenAgent,
   projects = EMPTY_PROJECTS,
@@ -277,9 +280,13 @@ export function HistoryPanel({
     // return an empty list. Remote rows arrive in a later slice.
     const effective = showHostFilter ? hostFilter : "all";
     return rows.filter(
-      (row) => (effective === "all" || row.hostId === effective) && historyRowMatches(row, search),
+      (row) =>
+        (effective === "all" || row.hostId === effective) &&
+        (workspaceFilter === null ||
+          (row.workspaceId !== null && localWorkspaceKey(row.workspaceId) === workspaceFilter)) &&
+        historyRowMatches(row, search),
     );
-  }, [hostFilter, rows, search, showHostFilter]);
+  }, [hostFilter, rows, search, showHostFilter, workspaceFilter]);
   // The rendered page, not the whole match: both the DOM and the status
   // sweep behind it stay bounded while a large history pages.
   const visibleRows = useMemo(

@@ -12,11 +12,13 @@ import type { SessionTask } from "../../types/ipc";
 import type { AgentSubagentStatus } from "../../lib/agentSession";
 import { isArchivable, type SubagentRow } from "./subagentRows";
 import { StripKindMark } from "./strip/StripKindMark";
+import { useOpenedSessions } from "./openedSessions";
 import { useTaskClock } from "./useTaskClock";
 import {
   rowClock,
   subagentTitle,
-  whoIsWorkingSegments,
+  taskClocks,
+  whoIsWorking,
   type LineSegment,
 } from "./whoIsWorkingLine";
 
@@ -53,6 +55,10 @@ export interface SubagentMenuProps {
   ) => Promise<ReadonlyMap<string, string>>;
   /** Stops a running child; answers with the refusal sentence, or null. */
   onStopSubagent?: (sessionId: string) => Promise<string | null>;
+  /** Opens the Tasks tab: the line's road when it names commands only. */
+  onOpenTasks?: () => void;
+  /** Runs when the line empties while focus was in it, so focus has somewhere to land. */
+  onEmptied?: () => void;
 }
 
 function segmentText(segment: LineSegment): string {
@@ -71,6 +77,8 @@ export function SubagentMenu({
   attentionById,
   onArchiveFinished,
   onStopSubagent,
+  onOpenTasks,
+  onEmptied,
 }: SubagentMenuProps) {
   const lineRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -83,25 +91,31 @@ export function SubagentMenu({
   const [archiveNonce, setArchiveNonce] = useState(0);
   /** The children the open ask was raised for; null while no ask is up. */
   const [ask, setAsk] = useState<readonly SubagentArchiveTarget[] | null>(null);
-  /** Failed children whose tab was opened from the list: the line stops naming them. */
-  const [seenFailed, setSeenFailed] = useState<ReadonlySet<string>>(new Set());
   /** Same-tick re-entry: the dialog's open state clears only on the next render. */
   const runningRef = useRef(false);
+  const opened = useOpenedSessions();
 
   const live =
     rows.some((row) => row.status === "running") || tasks.some((task) => task.state === "running");
   const now = useTaskClock(live);
-  const segments = useMemo(
-    () =>
-      whoIsWorkingSegments({
-        rows,
-        waitingIds: new Set(attentionById?.keys()),
-        seenFailedIds: seenFailed,
-        tasks,
-        now,
-      }),
-    [rows, attentionById, seenFailed, tasks, now],
+  const clocks = useMemo(() => taskClocks(tasks), [tasks]);
+  const waitingIds = useMemo(() => new Set(attentionById?.keys()), [attentionById]);
+  const { segments, commandsOnly } = useMemo(
+    () => whoIsWorking({ rows, waitingIds, seenFailedIds: opened, clocks, now }),
+    [rows, waitingIds, opened, clocks, now],
   );
+
+  const showing = segments.length > 0;
+  const wasShowing = useRef(showing);
+  useEffect(() => {
+    const was = wasShowing.current;
+    wasShowing.current = showing;
+    if (!was || showing || onEmptied === undefined) return;
+    // The line's own element is gone by now: focus that fell to the body, or to
+    // an element the removal detached, has nowhere to stay.
+    const focused = document.activeElement;
+    if (focused === null || focused === document.body || !focused.isConnected) onEmptied();
+  }, [showing, onEmptied]);
 
   const close = useCallback(() => {
     if (menuRef.current?.contains(document.activeElement)) {
@@ -195,7 +209,6 @@ export function SubagentMenu({
   };
 
   const openRow = (row: SubagentRow) => {
-    if (row.status === "failed") setSeenFailed((seen) => new Set(seen).add(row.id));
     close();
     onOpenSession?.(row.id);
   };
@@ -228,9 +241,9 @@ export function SubagentMenu({
         className="workspace-who-line"
         data-testid="who-is-working"
         aria-label={label}
-        aria-expanded={open}
+        aria-expanded={commandsOnly ? undefined : open}
         aria-controls={open ? listId : undefined}
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => (commandsOnly ? onOpenTasks?.() : setOpen((value) => !value))}
       >
         {segments.map((segment) => (
           <span className="workspace-who-segment" key={`${segment.tone}:${segment.name}`}>
@@ -254,16 +267,18 @@ export function SubagentMenu({
             ) : null}
           </span>
         ))}
-        <svg
-          className={`workspace-who-chevron${open ? " is-open" : ""}`}
-          width={12}
-          height={12}
-          viewBox="0 0 24 24"
-          aria-hidden="true"
-          focusable="false"
-        >
-          <path d="m18 15-6-6-6 6" />
-        </svg>
+        {commandsOnly ? null : (
+          <svg
+            className={`workspace-who-chevron${open ? " is-open" : ""}`}
+            width={12}
+            height={12}
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+            focusable="false"
+          >
+            <path d="m18 15-6-6-6 6" />
+          </svg>
+        )}
       </button>
       {open ? (
         <AnchoredPopover
@@ -293,7 +308,7 @@ export function SubagentMenu({
               const sentence = row.kind === "child" ? sentences.get(row.id) : undefined;
               const attention = attentionOf(row);
               const title = subagentTitle(row.title, row.id);
-              const clock = rowClock(row, tasks, now);
+              const clock = rowClock(clocks, row, now);
               const canStop =
                 row.kind === "child" &&
                 row.status === "running" &&

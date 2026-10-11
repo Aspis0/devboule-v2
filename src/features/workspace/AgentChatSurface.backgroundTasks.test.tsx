@@ -115,13 +115,21 @@ describe("AgentChatSurface background tasks", () => {
     expect(line()?.textContent).toContain("00:09");
   });
 
-  it("opens the list when the line is pressed", async () => {
-    await renderSurface();
+  it("opens the Tasks tab when a command-only line is pressed, and no list", async () => {
+    const onOpenTasks = vi.fn();
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface daemonState="connected" sessionId="agent-1" onOpenTasks={onOpenTasks} />,
+      );
+    });
+    await act(async () => undefined);
     pushSnapshot(1, [commandTask()]);
 
     act(() => line()?.click());
 
-    expect(line()?.getAttribute("aria-expanded")).toBe("true");
+    expect(onOpenTasks).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(".workspace-subagent-list")).toBeNull();
   });
 
   it("takes the line away when nothing is running any more", async () => {
