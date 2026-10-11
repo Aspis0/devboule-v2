@@ -1,6 +1,8 @@
 //! Translate Codex app-server notifications into Devboule agent events.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+
+use crate::command_status::settled_command_status;
 use std::io::{self, Read};
 use std::path::PathBuf;
 use std::process::ChildStdout;
@@ -1531,9 +1533,14 @@ fn item_event(
                 .filter(|command| !command.is_empty())
                 .map(str::to_string);
             if completed {
+                let exit_code = codex_exit_code(item);
                 vec![SessionEvent::AgentToolUpdate {
                     tool_call_id: id.to_string(),
-                    status: item.get("status").and_then(Value::as_str).map(status_name),
+                    // A `failed` that only says the process exited non-zero is a finished command.
+                    status: item
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .map(|status| settled_command_status(&status_name(status), exit_code)),
                     text: item
                         .get("aggregatedOutput")
                         .and_then(Value::as_str)
@@ -1544,7 +1551,7 @@ fn item_event(
                     locations: None,
                     parent_tool_use_id: None,
                     spawn_depth: None,
-                    exit_code: codex_exit_code(item),
+                    exit_code,
                     command,
                     replace: false,
 
@@ -2390,6 +2397,55 @@ mod tests {
         assert_eq!(call.1, None, "a started item has no exit yet");
         assert_eq!(update.0.as_deref(), Some(command_line));
         assert_eq!(update.1, Some(1), "the measured git status failed with 1");
+    }
+
+    /// The completed status and exit a command row carries for one finished
+    /// `commandExecution` item, read off the frame the way the row reads it.
+    fn finished_command(item: &str) -> (String, Option<i32>) {
+        let mut view = CodexView::new(None);
+        let events = view.ingest(&parse(&format!(
+            r#"{{"jsonrpc":"2.0","method":"item/completed","params":{{"threadId":"th","turnId":"tu","item":{item}}}}}"#
+        )));
+        events
+            .iter()
+            .find_map(|event| match event {
+                SessionEvent::AgentToolUpdate {
+                    status, exit_code, ..
+                } => Some((status.clone().expect("a status"), *exit_code)),
+                _ => None,
+            })
+            .expect("command update")
+    }
+
+    #[test]
+    fn a_git_diff_that_exits_one_is_completed_with_its_exit_not_failed() {
+        // `git diff` outside a repository, as the Codex app-server reports it: the
+        // process ran, printed its diff and exited 1 ("there are differences").
+        // Codex calls the item failed; the command did not fail.
+        let (status, exit) = finished_command(
+            r#"{"type":"commandExecution","id":"exec-2","status":"failed","command":"git diff -- notes.md","aggregatedOutput":"diff --git a/notes.md b/notes.md\n-old\n+new\n","exitCode":1}"#,
+        );
+        assert_eq!(status, "completed");
+        assert_eq!(exit, Some(1), "the muted exit line still carries the code");
+    }
+
+    #[test]
+    fn a_codex_command_that_never_exited_stays_failed() {
+        // No exit code: the command could not start, or the tool errored before
+        // the process reported anything. That is a real failure.
+        let (status, exit) = finished_command(
+            r#"{"type":"commandExecution","id":"exec-3","status":"failed","command":"nope","aggregatedOutput":"spawn failed","exitCode":null}"#,
+        );
+        assert_eq!(status, "failed");
+        assert_eq!(exit, None);
+    }
+
+    #[test]
+    fn a_declined_codex_command_keeps_its_declined_status() {
+        let (status, _) = finished_command(
+            r#"{"type":"commandExecution","id":"exec-4","status":"declined","command":"rm -rf x","aggregatedOutput":null,"exitCode":null}"#,
+        );
+        assert_eq!(status, "declined");
     }
 
     #[test]

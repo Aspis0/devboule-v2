@@ -218,3 +218,38 @@ fn the_replay_road_derives_the_same_command_row() {
         assert_eq!(replayed, live, "envelope: {envelope}");
     }
 }
+
+#[test]
+fn a_shell_that_only_exited_non_zero_is_completed_with_its_code() {
+    // The ACP shell reports `failed` for a process that ran and exited 1: the
+    // command finished. The code stays on the row for the muted exit line.
+    let line = parse(&tool_call_update(
+        r#","kind":"execute","status":"failed","rawOutput":{"exitCode":1}"#,
+    ));
+    match view_from_envelope(&line, SESSION).as_slice() {
+        [SessionEvent::AgentToolUpdate {
+            status, exit_code, ..
+        }] => {
+            assert_eq!(status.as_deref(), Some("completed"));
+            assert_eq!(*exit_code, Some(1));
+        }
+        other => panic!("expected one tool update, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_acp_failure_without_a_non_zero_exit_stays_failed() {
+    for extra in [
+        r#","kind":"execute","status":"failed","rawOutput":{"exitCode":0}"#,
+        r#","kind":"execute","status":"failed""#,
+        r#","kind":"execute","status":"failed","rawOutput":{"exitCode":"2"}"#,
+    ] {
+        let line = parse(&tool_call_update(extra));
+        match view_from_envelope(&line, SESSION).as_slice() {
+            [SessionEvent::AgentToolUpdate { status, .. }] => {
+                assert_eq!(status.as_deref(), Some("failed"), "extra {extra}");
+            }
+            other => panic!("expected one tool update, got {other:?}"),
+        }
+    }
+}

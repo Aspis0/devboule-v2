@@ -75,6 +75,8 @@ mod codex_prompt_expand;
 #[cfg(feature = "server")]
 mod codex_view;
 #[cfg(feature = "server")]
+mod command_status;
+#[cfg(feature = "server")]
 mod config_read;
 mod daemon_log;
 mod daemon_record;

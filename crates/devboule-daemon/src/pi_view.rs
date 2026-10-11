@@ -3,6 +3,7 @@
 //! Pi's RPC wire has no ACP-style tool ancestry or subagent type. The adapter
 //! therefore emits those fields as `None` by protocol choice.
 
+use crate::command_status::settled_command_status;
 use devboule_protocol::{AvailableCommandView, NoticeSeverity, SessionEvent, TurnUsage};
 use serde_json::Value;
 
@@ -336,9 +337,11 @@ fn tool_execution_end(value: &Value) -> Vec<SessionEvent> {
         .get("isError")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let exit_code = result_exit_code(value.get("result"));
     let mut events = vec![SessionEvent::AgentToolUpdate {
         tool_call_id: tool_call_id.to_string(),
-        status: Some(tool_status(failed).to_string()),
+        // `isError` with a non-zero code is a process that ran and exited: a finished command.
+        status: Some(settled_command_status(tool_status(failed), exit_code)),
         text: value.get("result").and_then(tool_result_text),
         title: None,
         kind: value
@@ -349,7 +352,7 @@ fn tool_execution_end(value: &Value) -> Vec<SessionEvent> {
         parent_tool_use_id: None,
         spawn_depth: None,
         command: None,
-        exit_code: result_exit_code(value.get("result")),
+        exit_code,
         replace: false,
 
         images: Vec::new(),
@@ -732,8 +735,9 @@ mod tests {
                 ..
             }] => {
                 assert_eq!(tool_call_id, "call_bash_exit_two");
-                // A non-zero code is pi's own error verdict for the row.
-                assert_eq!(status.as_deref(), Some("failed"));
+                // A non-zero code means the process ran and exited: the command
+                // finished, and its code is on the row. Not a failure.
+                assert_eq!(status.as_deref(), Some("completed"));
                 assert_eq!(*exit_code, Some(2));
             }
             other => panic!("expected one tool row, got {other:?}"),

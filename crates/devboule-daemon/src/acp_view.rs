@@ -6,6 +6,7 @@
 use std::path::Path;
 
 use crate::acp_tool_content::{call_content_update, ToolContentMemory};
+use crate::command_status::settled_command_status;
 use crate::tool_paths::relativize_tool_path;
 use devboule_protocol::{
     AgentTaskItem, AgentTaskStatus, AvailableCommandView, SessionEvent, SessionModeStateView,
@@ -241,7 +242,8 @@ fn view_from_session_update(
             let (command, exit_code) = command_row_from_update(update, Frame::Update);
             Some(SessionEvent::AgentToolUpdate {
                 tool_call_id: tool_call_id.to_string(),
-                status: status.map(str::to_string),
+                // A `failed` shell that only exited non-zero is a finished command; the code stays.
+                status: status.map(|status| settled_command_status(status, exit_code)),
                 text: added.map(|added| added.text),
                 title: update
                     .get("title")
