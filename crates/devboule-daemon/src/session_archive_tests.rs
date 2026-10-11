@@ -154,3 +154,77 @@ fn removing_an_unknown_project_is_refused() {
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_removed_project_takes_no_new_row_and_lists_none() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let (_, project, _local) = project_with_local_row(&dir, &journal);
+    registry.project_remove(&project.id).expect("remove");
+
+    assert!(
+        journal
+            .workspace_create(crate::workspace::local_workspace_record(&project))
+            .is_err(),
+        "a row cannot be added under a removed project"
+    );
+    assert!(
+        registry
+            .workspace_create(&project.id, WorkspaceIsolation::Local, None)
+            .is_err(),
+        "a create through the registry is refused too"
+    );
+    assert!(
+        journal.workspaces_list(&project.id).is_err(),
+        "a removed project lists no workspaces"
+    );
+
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_create_refuses_while_its_project_is_being_removed_and_again_once_it_is_listed() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let (_, project, _local) = project_with_local_row(&dir, &journal);
+
+    let removal = registry
+        .mark_project_removing(&project.id)
+        .expect("the mark goes up");
+    assert!(
+        registry
+            .workspace_create(&project.id, WorkspaceIsolation::Local, None)
+            .is_err(),
+        "nothing is created while the project leaves the list"
+    );
+    assert!(
+        registry.mark_project_removing(&project.id).is_err(),
+        "a second removal of the same project is refused"
+    );
+    drop(removal);
+
+    assert!(
+        registry
+            .workspace_create(&project.id, WorkspaceIsolation::Local, None)
+            .is_ok(),
+        "the mark clears when its removal settles"
+    );
+
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_session_cannot_start_in_a_row_of_a_removed_project() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let (_, project, local) = project_with_local_row(&dir, &journal);
+    assert!(registry.workspace_creation_guard(Some(&local.id)).is_ok());
+    registry.project_remove(&project.id).expect("remove");
+
+    assert!(
+        registry.workspace_creation_guard(Some(&local.id)).is_err(),
+        "a row of a removed project takes no session"
+    );
+
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}

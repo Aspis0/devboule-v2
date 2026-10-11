@@ -2660,6 +2660,19 @@ fn journal_disk_footprint(path: &Path) -> std::io::Result<u64> {
     Ok(main_bytes.saturating_add(wal_bytes))
 }
 
+/// Whether a project was removed from the list (its row stays for history).
+fn project_archived(conn: &Connection, id: &str) -> Result<bool, JournalError> {
+    let stamped: Option<i64> = conn
+        .query_row(
+            "SELECT archived_at_ms FROM projects WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(stamped.is_some())
+}
+
 /// The projects the list shows: a removed one keeps its row, not its place.
 fn list_projects(conn: &Connection) -> Result<Vec<ProjectRecord>, JournalError> {
     let mut stmt = conn.prepare(
@@ -2742,7 +2755,7 @@ fn list_workspaces(
     conn: &Connection,
     project_id: &str,
 ) -> Result<Vec<WorkspaceRecord>, JournalError> {
-    if get_project(conn, project_id)?.is_none() {
+    if get_project(conn, project_id)?.is_none() || project_archived(conn, project_id)? {
         return Err(JournalError::InvalidRequest(format!(
             "Project '{project_id}' does not exist."
         )));
@@ -2793,6 +2806,15 @@ fn add_workspace(
     let project = get_project(conn, &record.project_id)?.ok_or_else(|| {
         JournalError::InvalidRequest(format!("Project '{}' does not exist.", record.project_id))
     })?;
+    // Checked here, on the journal's own thread, so it cannot interleave with
+    // the stamp that removes the project: a row is either in the project before
+    // the removal or refused after it.
+    if project_archived(conn, &record.project_id)? {
+        return Err(JournalError::InvalidRequest(format!(
+            "Project '{}' was removed from the list.",
+            record.project_id
+        )));
+    }
     let record = if derive_default_title {
         let siblings = query_workspaces(conn, &record.project_id)?;
         let mut record = record.clone();

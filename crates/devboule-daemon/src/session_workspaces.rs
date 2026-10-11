@@ -17,6 +17,36 @@ use super::*;
 pub(crate) struct WorkspaceCreationGate {
     creating: std::collections::HashMap<String, usize>,
     archiving: std::collections::HashSet<String>,
+    /// Projects whose removal is under way: nothing may be created in them, and
+    /// no session may start in their rows, until the removal settles.
+    removing_projects: std::collections::HashSet<String>,
+}
+
+/// The mark a project removal holds for its whole run; dropping it clears the
+/// project, whether the removal stamped it or refused.
+pub(crate) struct ProjectRemovalGuard<'a> {
+    registry: &'a super::SessionRegistry,
+    project_id: String,
+}
+
+impl Drop for ProjectRemovalGuard<'_> {
+    fn drop(&mut self) {
+        let mut gate = self
+            .registry
+            .workspace_creation_gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        gate.removing_projects.remove(&self.project_id);
+    }
+}
+
+/// The refusal a create or a session start gets in a project that is leaving
+/// the list.
+fn project_leaving() -> WireError {
+    WireError::new(
+        ErrorCode::InvalidRequest,
+        "This project is being removed from the list.",
+    )
 }
 
 pub(crate) struct WorkspaceCreationGuard<'a> {
@@ -167,6 +197,24 @@ impl super::SessionRegistry {
         let Some(workspace_id) = workspace_id else {
             return Ok(None);
         };
+        // The row's project is read before the gate is taken: a session may
+        // start only in a row of a project that is still listed.
+        if let Some(journal) = self.journal.as_ref() {
+            if let Some(record) = journal
+                .workspace_get(workspace_id)
+                .map_err(WireError::from)?
+            {
+                let listed = journal
+                    .projects_list()
+                    .map_err(WireError::from)?
+                    .iter()
+                    .any(|project| project.id == record.project_id);
+                if !listed {
+                    return Err(project_leaving());
+                }
+                self.refuse_while_project_removing(&record.project_id)?;
+            }
+        }
         let mut gate = self
             .workspace_creation_gate
             .lock()
@@ -182,6 +230,39 @@ impl super::SessionRegistry {
             registry: self,
             workspace_id: workspace_id.to_string(),
         }))
+    }
+
+    /// Refuses while the project is leaving the list. A create checks it at its
+    /// start; the journal's own refusal covers the stamp itself.
+    pub(crate) fn refuse_while_project_removing(&self, project_id: &str) -> Result<(), WireError> {
+        let gate = self
+            .workspace_creation_gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if gate.removing_projects.contains(project_id) {
+            return Err(project_leaving());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn mark_project_removing(
+        &self,
+        project_id: &str,
+    ) -> Result<ProjectRemovalGuard<'_>, WireError> {
+        let mut gate = self
+            .workspace_creation_gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !gate.removing_projects.insert(project_id.to_string()) {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "This project is already being removed from the list.",
+            ));
+        }
+        Ok(ProjectRemovalGuard {
+            registry: self,
+            project_id: project_id.to_string(),
+        })
     }
 
     pub(crate) fn mark_workspace_archiving(
@@ -487,6 +568,7 @@ impl super::SessionRegistry {
         project_id: &str,
         title: Option<&str>,
     ) -> Result<Workspace, WireError> {
+        self.refuse_while_project_removing(project_id)?;
         let journal = self.journal.as_ref().ok_or_else(journal_unavailable)?;
         let project = self.require_project(journal, project_id)?;
         let mut record = crate::workspace::local_workspace_record(&project);
@@ -508,6 +590,7 @@ impl super::SessionRegistry {
         branch: Option<String>,
         title: Option<&str>,
     ) -> Result<Workspace, WireError> {
+        self.refuse_while_project_removing(project_id)?;
         let _serial = self
             .worktree_creation
             .lock()
@@ -902,6 +985,10 @@ impl super::SessionRegistry {
     /// cannot start into an archiving row.
     pub fn project_remove(&self, project_id: &str) -> Result<(), WireError> {
         let journal = self.journal.as_ref().ok_or_else(journal_unavailable)?;
+        // The mark goes up before anything is read: from here a create or a
+        // session start in this project refuses, so the list and the live check
+        // below cover every row that can hold a live session.
+        let _removal = self.mark_project_removing(project_id)?;
         // The read names the project as unknown when it is not there.
         let workspaces = journal
             .workspaces_list(project_id)
