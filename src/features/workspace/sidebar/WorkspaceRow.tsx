@@ -396,7 +396,7 @@ export const WorkspaceRow = memo(function WorkspaceRow({
                         <circle cx="7" cy="7.5" r="1" fill="currentColor" stroke="none" />
                         <circle cx="7" cy="16.5" r="1" fill="currentColor" stroke="none" />
                       </svg>
-                      {subHost}
+                      <span className="workspace-row-host-name">{subHost}</span>
                     </span>
                   )}
                   {remote && hostOffline ? (

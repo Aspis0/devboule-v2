@@ -355,8 +355,10 @@
   line-height: 16px;
 }
 
+/* The branch keeps a readable stretch when the row is narrow: it is the fact
+   the user reads a row by, so the host gives way to it, not the reverse. */
 .workspace-row-branch {
-  min-width: 0;
+  min-width: 6em;
   flex: 1 1 auto;
   overflow: hidden;
   font-family: var(--font-mono);
@@ -364,13 +366,22 @@
   white-space: nowrap;
 }
 
-/* The row's host, beside the branch when both show. */
+/* The row's host, beside the branch when both show. It shrinks first, and its
+   name ends in an ellipsis; the glyph never shrinks. */
 .workspace-row-host {
   display: inline-flex;
-  flex: none;
+  flex: 0 3 auto;
+  min-width: 0;
   align-items: center;
   gap: var(--space-4);
+  overflow: hidden;
   white-space: nowrap;
+}
+
+.workspace-row-host-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .workspace-row-host-glyph {
