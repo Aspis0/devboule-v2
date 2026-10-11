@@ -5,6 +5,7 @@ use devboule_protocol::BrowserCaller;
 fn caller() -> BrowserCaller {
     BrowserCaller {
         caller_session_id: "s-1".to_owned(),
+        local_ports: Vec::new(),
         workspace_id: Some("ws-1".to_owned()),
     }
 }
@@ -31,6 +32,7 @@ fn a_minted_id_is_a_uuid_and_never_the_same_one_twice() {
 fn a_caller_with_no_workspace_has_nowhere_to_open_a_tab() {
     let without = BrowserCaller {
         caller_session_id: "s-1".to_owned(),
+        local_ports: Vec::new(),
         workspace_id: None,
     };
 
@@ -116,6 +118,7 @@ fn a_list_of_tabs_is_the_callers_workspace_and_says_which_is_in_front() {
         &registry,
         &BrowserCaller {
             caller_session_id: "s-2".to_owned(),
+            local_ports: Vec::new(),
             workspace_id: Some("ws-2".to_owned()),
         },
     )

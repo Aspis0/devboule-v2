@@ -16,6 +16,7 @@ pub(super) const LONG: Duration = Duration::from_secs(30);
 pub(super) fn caller_in(workspace_id: Option<&str>) -> BrowserCaller {
     BrowserCaller {
         caller_session_id: "s.agent.1".to_string(),
+        local_ports: Vec::new(),
         workspace_id: workspace_id.map(str::to_string),
     }
 }

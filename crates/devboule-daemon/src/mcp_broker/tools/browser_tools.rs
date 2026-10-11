@@ -122,6 +122,7 @@ pub(in crate::mcp_broker) fn browser_caller(
         .map_err(|error| error.message)?;
     Ok(devboule_protocol::BrowserCaller {
         caller_session_id: registration.session_id.clone(),
+        local_ports: Vec::new(),
         workspace_id,
     })
 }

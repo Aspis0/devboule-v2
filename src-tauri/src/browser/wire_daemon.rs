@@ -288,6 +288,7 @@ fn connection(framed: Framed, commands: Receiver<ToServer>, frames: Sender<Clien
 pub fn caller() -> BrowserCaller {
     BrowserCaller {
         caller_session_id: "s.agent.1".to_owned(),
+        local_ports: Vec::new(),
         workspace_id: Some("ws-1".to_owned()),
     }
 }
@@ -303,6 +304,7 @@ pub fn request_without_a_workspace(id: &str) -> BrowserExecuteRequest {
         id,
         BrowserCaller {
             caller_session_id: "s.agent.1".to_owned(),
+            local_ports: Vec::new(),
             workspace_id: None,
         },
     )

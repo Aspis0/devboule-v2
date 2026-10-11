@@ -160,6 +160,12 @@ pub struct BrowserCaller {
     pub caller_session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
+    /// The local ports the daemon allowed this caller's agent to open in agent
+    /// browsing: a port its own processes or a workspace terminal listens on, or
+    /// one the person allowed for the session. The host refuses any other local
+    /// port for an agent. Absent means none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local_ports: Vec<u16>,
 }
 
 /// One command, as the daemon pushes it to the host it chose.

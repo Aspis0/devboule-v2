@@ -11,6 +11,7 @@ use serde_json::json;
 fn caller() -> BrowserCaller {
     BrowserCaller {
         caller_session_id: "s-1".to_owned(),
+        local_ports: Vec::new(),
         workspace_id: Some("ws-1".to_owned()),
     }
 }
@@ -293,6 +294,7 @@ fn a_tab_of_another_workspace_is_exactly_as_unknown_as_a_tab_that_is_not_there()
     let registry = crate::browser::test_support::registry_with("tab-1");
     let other = BrowserCaller {
         caller_session_id: "s-2".to_owned(),
+        local_ports: Vec::new(),
         workspace_id: Some("ws-2".to_owned()),
     };
 

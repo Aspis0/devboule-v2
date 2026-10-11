@@ -283,7 +283,11 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 /// `RemoteHostDone`. Each is relayed to the far side as its own frame, gated on
 /// that side advertising `workspace.archive` and `project.remove`. Same
 /// new-variant rule.
-pub const PROTOCOL_VERSION: u32 = 38;
+///
+/// Protocol 39 adds `BrowserCaller.local_ports`, the local ports the daemon
+/// allowed an agent to open. The host enforces it, so an older host that ignores
+/// the field would not enforce the allowance; the dialect moves.
+pub const PROTOCOL_VERSION: u32 = 39;
 /// Oldest dialect whose daemon speaks the in-app editor frames
 /// (`WorkspaceFileOpen` / `Version` / `Write` and their app-file spellings).
 /// A relay checks the far hello against this before writing one: an older

@@ -41,6 +41,7 @@ fn start_call(
         state.browser.execute(
             &BrowserCaller {
                 caller_session_id: "s.agent.1".to_string(),
+                local_ports: Vec::new(),
                 workspace_id: Some("w1".to_string()),
             },
             command,

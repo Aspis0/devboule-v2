@@ -2701,6 +2701,8 @@ export type BrowserOutcome = { status: "ok"; result: unknown } | ({ status: "err
 export interface BrowserCaller {
   callerSessionId: string;
   workspaceId?: string;
+  /** The local ports the daemon allowed this caller's agent to open. */
+  localPorts?: number[];
 }
 
 /**

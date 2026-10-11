@@ -130,6 +130,7 @@ fn the_execute_request_event_carries_the_caller_the_daemon_filled() {
         caller: BrowserCaller {
             caller_session_id: "s.a.1".to_string(),
             workspace_id: Some("w1".to_string()),
+            local_ports: Vec::new(),
         },
     });
     assert_eq!(
@@ -146,6 +147,7 @@ fn the_execute_request_event_carries_the_caller_the_daemon_filled() {
     let no_workspace = BrowserCaller {
         caller_session_id: "s.a.1".to_string(),
         workspace_id: None,
+        local_ports: Vec::new(),
     };
     assert_eq!(
         round_trip(&no_workspace),
@@ -223,4 +225,27 @@ fn a_payload_at_the_cap_still_fits_one_frame() {
         bytes <= MAX_FRAME_BYTES,
         "a response at the cap is {bytes} bytes against a {MAX_FRAME_BYTES} byte frame"
     );
+}
+
+/// The local ports the daemon allowed this caller's agent to open travel with
+/// the caller, and an older caller without them still parses (review fix: the
+/// host enforces the allowance, so the field is not optional in meaning).
+#[test]
+fn the_caller_carries_the_local_ports_the_daemon_allowed() {
+    let with_ports = BrowserCaller {
+        caller_session_id: "s.a.1".to_string(),
+        workspace_id: Some("w1".to_string()),
+        local_ports: vec![4173, 5173],
+    };
+    assert_eq!(
+        round_trip(&with_ports),
+        json!({
+            "callerSessionId": "s.a.1",
+            "workspaceId": "w1",
+            "localPorts": [4173, 5173],
+        })
+    );
+    let older: BrowserCaller = serde_json::from_value(json!({"callerSessionId": "s.a.1"}))
+        .expect("a caller without ports parses");
+    assert!(older.local_ports.is_empty());
 }
