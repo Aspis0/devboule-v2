@@ -42,7 +42,31 @@ describe("collapseCompactNotices", () => {
     expect(collapseCompactNotices(items).map((item) => item.id)).toEqual(["u1", "s1"]);
   });
 
-  it("keeps both lines when another row sits between them", () => {
+  it("drops the start when its finish comes later in the same turn, past a tool or answer row", () => {
+    const assistant = {
+      id: "a1",
+      role: "assistant",
+      text: "still working",
+      messageId: null,
+    } as const;
+    const items = [
+      system("s1", START),
+      assistant,
+      {
+        id: "t1",
+        role: "tool" as const,
+        title: "ls",
+        output: "",
+        toolCallId: "t1",
+        status: "completed",
+      },
+      system("s2", FINISH),
+    ];
+
+    expect(collapseCompactNotices(items).map((item) => item.id)).toEqual(["a1", "t1", "s2"]);
+  });
+
+  it("keeps the start when a user message comes between it and the finish: a new turn", () => {
     const items = [system("s1", START), user("u1", "wait"), system("s2", FINISH)];
 
     expect(collapseCompactNotices(items).map((item) => item.id)).toEqual(["s1", "u1", "s2"]);

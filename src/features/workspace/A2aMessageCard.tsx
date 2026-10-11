@@ -20,37 +20,36 @@ export interface A2aNameSource {
  * `agentPeerMessage.ts`: the daemon delivered another agent's message, so it
  * reads as one line naming its sender, with the envelope stripped. Names
  * resolve at render, never at reduce — names change, sessions get renamed,
- * and a name frozen into the reduced item goes stale and lies. An id the
- * roster cannot resolve still stands for itself: shown raw, never invented
- * into a name, never hidden. A sender the daemon verified (this machine, or a
+ * and a name frozen into the reduced item goes stale and lies. A sender the
+ * daemon or the roster cannot name is "another agent": a session id never
+ * reaches the line. A sender the daemon verified (this machine, or a
  * paired device) reads as a plain line; a sender it could not verify carries
  * the mark in the line itself. The body is another agent's words, quoted behind
  * the line's click, rendered as text only (React's default escaping keeps every
  * byte inert), never markup.
  */
 
+const UNNAMED_SENDER = "another agent";
+
 // The same layout bound as the daemon notice's fields: an unbreakable
 // sender name or device id must not push the pane sideways. The full values
 // stay on the line's `title`.
 const NAME_LIMIT = 200;
 
-function farSenderLabel(item: A2aMessageItem): string | null {
-  if (!item.fromAgent.startsWith("peer:")) return null;
-  if (item.origin.kind !== "peer" || item.origin.device === null) return item.fromAgent;
-
-  const prefix = `peer:${item.origin.device}/`;
-  return item.fromAgent.startsWith(prefix) ? item.fromAgent.slice(prefix.length) : item.fromAgent;
-}
-
+/**
+ * The name a card shows for its sender, never a session id: the daemon's own
+ * title on the event first, then this machine's roster for a local sender, else
+ * "another agent". A far id belongs to another device and is never looked up.
+ */
 function senderName(item: A2aMessageItem, names: A2aNameSource): string {
-  // A far label is never a local roster key: its namespace is the proof that
-  // its session id belongs to another device, not an id this machine may name.
-  const farLabel = farSenderLabel(item);
-  if (farLabel !== null) return farLabel;
-
+  const title = item.peerTitle?.trim() ?? "";
+  if (title !== "") return title;
+  // A `peer:` id names another device's agent: never a local roster key.
+  if (item.fromAgent.startsWith("peer:")) return UNNAMED_SENDER;
   const session = names.sessionById.get(item.fromAgent);
   // `sessionTitle` is the app's one name rule (displayName, then title).
-  return session !== undefined ? sessionTitle(session) : item.fromAgent;
+  const rostered = session === undefined ? "" : sessionTitle(session).trim();
+  return rostered === "" ? UNNAMED_SENDER : rostered;
 }
 
 /** Whether the daemon vouches for the sender: this machine, or a paired device it names. */

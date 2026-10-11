@@ -47,6 +47,7 @@ export function TranscriptRows({
 }: TranscriptRowsProps) {
   const entries = useTranscriptEntries(items, recoveredAttach, pendingPlanToolCallId);
   const ends = useMemo(() => turnEnds(entries, turnRunning), [entries, turnRunning]);
+  const compactionLive = turnRunning && !transcriptEnded;
   const [openedRows] = useState(createOpenedRows);
   return (
     <OpenedRowsContext.Provider value={openedRows}>
@@ -62,6 +63,7 @@ export function TranscriptRows({
             transcriptEnded={context === "transcriptEnded" && transcriptEnded}
             isStreamingThought={context === "streamingThought" && entry.id === streamingThoughtId}
             turnEnd={isToolCallGroup(entry) ? undefined : ends.get(entry.id)}
+            compactionLive={compactionLive}
           />
         );
       })}

@@ -72,8 +72,10 @@ describe("A2aMessageCard sender labels", () => {
       ),
     );
 
-    expect(summaryOf().textContent).toBe("Message from s.msg.source");
+    // A far sender is never looked up on this machine, so it has no title here.
+    expect(summaryOf().textContent).toBe("Message from another agent");
     expect(summaryOf().textContent).not.toContain("Local look-alike");
+    expect(summaryOf().textContent).not.toContain("s.msg.source");
     expect(summaryOf().getAttribute("title")).toBe(`${fromAgent} · ${DEVICE_ID}`);
   });
 
@@ -84,7 +86,8 @@ describe("A2aMessageCard sender labels", () => {
       names(new Map([[fromAgent, { id: fromAgent, title: "Forged local name", kind: "claude" }]])),
     );
 
-    expect(summaryOf().textContent).toBe(`Message from ${fromAgent}`);
+    expect(summaryOf().textContent).toBe("Message from another agent");
+    expect(summaryOf().textContent).not.toContain(fromAgent);
     expect(summaryOf().textContent).not.toContain("Forged local name");
   });
 
@@ -106,6 +109,27 @@ describe("A2aMessageCard sender labels", () => {
     expect(container.textContent).not.toContain("this machine");
   });
 
+  it("names a sender by the title the daemon gave on the event, never by its id", async () => {
+    await renderCard(
+      { ...message("s.kalsa.finish", { kind: "local" }), peerTitle: "Finish Kalsa website" },
+      names(new Map()),
+    );
+    expect(summaryOf().textContent).toBe("Message from Finish Kalsa website");
+    expect(summaryOf().textContent).not.toContain("s.kalsa.finish");
+  });
+
+  it("prefers the daemon's title to this machine's roster", async () => {
+    await renderCard(
+      { ...message("s.kalsa.finish", { kind: "local" }), peerTitle: "From the wire" },
+      names(
+        new Map([
+          ["s.kalsa.finish", { id: "s.kalsa.finish", title: "Roster name", kind: "claude" }],
+        ]),
+      ),
+    );
+    expect(summaryOf().textContent).toBe("Message from From the wire");
+  });
+
   it("never calls a verified peer's message unverified", async () => {
     await renderCard(
       message(`peer:${DEVICE_ID}/s.msg.source`, { kind: "peer", device: DEVICE_ID }),
@@ -116,7 +140,8 @@ describe("A2aMessageCard sender labels", () => {
 
   it("marks a sender the daemon could not verify, in the line itself", async () => {
     await renderCard(message("s.unknown.1", { kind: "unknown" }), names(new Map()));
-    expect(summaryOf().textContent).toBe("Message from s.unknown.1 · unverified sender");
+    expect(summaryOf().textContent).toBe("Message from another agent · unverified sender");
+    expect(summaryOf().textContent).not.toContain("s.unknown.1");
   });
 
   it("opens the sender's words on the line's click, without a caption", async () => {

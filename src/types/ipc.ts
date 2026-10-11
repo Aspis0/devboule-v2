@@ -1569,6 +1569,14 @@ export type SessionEvent =
        * the daemon itself wrote, never for a provider envelope's echo.
        */
       atMs?: number;
+      /**
+       * The title of the agent this message is about: the recipient on an
+       * outgoing echo, the sender on an incoming delivery. Set by the daemon
+       * from its own roster; absent for a far agent it holds no title for and
+       * for rows written before the field existed. The app names the agent by
+       * this, never by a session id.
+       */
+      peerTitle?: string;
     }
   /**
    * An agent created a child session (protocol `SessionEvent::AgentCreated`).

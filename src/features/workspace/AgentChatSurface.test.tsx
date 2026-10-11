@@ -4286,8 +4286,9 @@ describe("creator permission-request message", () => {
     await act(async () => {
       channelHarness.active?.({
         type: "agent_user_message",
-        author: "human",
+        author: "agent",
         messageId: "u-1",
+        messageKind: "system_notice",
         text: envelope,
       });
     });
@@ -4327,8 +4328,9 @@ describe("creator permission-request message", () => {
     await act(async () => {
       channelHarness.active?.({
         type: "agent_user_message",
-        author: "human",
+        author: "agent",
         messageId: "u-2",
+        messageKind: "system_notice",
         text: hostile,
       });
     });
@@ -4353,8 +4355,9 @@ describe("creator permission-request message", () => {
     await act(async () => {
       channelHarness.active?.({
         type: "agent_user_message",
-        author: "human",
+        author: "agent",
         messageId: "u-3",
+        messageKind: "system_notice",
         text: envelope,
       });
     });
@@ -4379,8 +4382,9 @@ describe("creator permission-request message", () => {
     await act(async () => {
       channelHarness.active?.({
         type: "agent_user_message",
-        author: "human",
+        author: "agent",
         messageId: "u-4",
+        messageKind: "system_notice",
         text: envelope,
       });
     });
@@ -4404,8 +4408,9 @@ describe("creator permission-request message", () => {
     await act(async () => {
       channelHarness.active?.({
         type: "agent_user_message",
-        author: "human",
+        author: "agent",
         messageId: "u-5",
+        messageKind: "system_notice",
         text: unterminated,
       });
     });
@@ -4430,8 +4435,9 @@ describe("creator permission-request message", () => {
     await act(async () => {
       channelHarness.active?.({
         type: "agent_user_message",
-        author: "human",
+        author: "agent",
         messageId: "u-6",
+        messageKind: "system_notice",
         text: bounded,
       });
     });
@@ -4468,8 +4474,9 @@ describe("creator permission-request message", () => {
     await act(async () => {
       channelHarness.active?.({
         type: "agent_user_message",
-        author: "human",
+        author: "agent",
         messageId: "u-7",
+        messageKind: "system_notice",
         text: openerless,
       });
     });
@@ -4502,8 +4509,9 @@ describe("creator permission-request message", () => {
     await act(async () => {
       channelHarness.active?.({
         type: "agent_user_message",
-        author: "human",
+        author: "agent",
         messageId: "u-8",
+        messageKind: "system_notice",
         text: bounded,
       });
     });
@@ -4535,8 +4543,9 @@ describe("creator permission-request message", () => {
     await act(async () => {
       channelHarness.active?.({
         type: "agent_user_message",
-        author: "human",
+        author: "agent",
         messageId: "u-9",
+        messageKind: "system_notice",
         text: bounded,
       });
     });
@@ -4627,6 +4636,7 @@ describe("creator daemon notice cards", () => {
         type: "agent_user_message",
         author: "agent",
         messageId: "m-notice",
+        messageKind: "system_notice",
         text,
       });
     });
@@ -4902,6 +4912,8 @@ describe("agent-to-agent message cards", () => {
     names?: {
       sessionRoster?: ReadonlyArray<Pick<Session, "displayName" | "id" | "kind" | "title">>;
       deviceNames?: ReadonlyMap<string, string>;
+      /** The title the daemon names the sender by on the event. */
+      peerTitle?: string;
     },
   ) {
     root = createRoot(container);
@@ -4921,7 +4933,9 @@ describe("agent-to-agent message cards", () => {
         type: "agent_user_message",
         author: "agent",
         messageId: "m-a2a",
+        messageKind: "incoming_a2a",
         text,
+        ...(names?.peerTitle === undefined ? {} : { peerTitle: names.peerTitle }),
       });
     });
     // The sender's words wait behind the line; these tests read the line's sender, and the words where they check them.
@@ -4976,7 +4990,7 @@ describe("agent-to-agent message cards", () => {
         messageKind: "incoming_a2a",
       },
       selector: "[data-testid='agent-a2a-message']",
-      expectedText: "Message from s.msg.source",
+      expectedText: "Message from another agent",
     },
   ] as const)("renders $name as its distinct transcript item", async (testCase) => {
     await renderAgentUserMessage(testCase.event);
@@ -4993,14 +5007,13 @@ describe("agent-to-agent message cards", () => {
     }
   });
 
-  it("renders the relayed envelope as a message from the named agent, envelope gone", async () => {
-    await renderEnvelope(relayEnvelope);
+  it("renders the relayed envelope as a message from its sender, envelope gone", async () => {
+    // The daemon names the sender on the event; the card shows that title.
+    await renderEnvelope(relayEnvelope, { peerTitle: "Source agent" });
     const item = container.querySelector("[data-testid='agent-a2a-message']");
     expect(item).not.toBeNull();
-    // No roster was handed to the surface, so the sender can only be the id
-    // the frame named: shown raw, never hidden, never invented into a name.
     expect(item?.querySelector(".workspace-chat-activity-line")?.textContent).toBe(
-      "Message from s.msg.source",
+      "Message from Source agent",
     );
     // The body renders as the message, the envelope itself gone.
     expect(item?.textContent).toContain("here is the actual message the other agent wrote");
@@ -5054,7 +5067,7 @@ describe("agent-to-agent message cards", () => {
     expect(
       container.querySelector("[data-testid='agent-a2a-message'] .workspace-chat-activity-line")
         ?.textContent,
-    ).toBe("Message from s.msg.source");
+    ).toBe("Message from another agent");
   });
 
   it("names the paired device a peer origin carries", async () => {
@@ -5062,7 +5075,7 @@ describe("agent-to-agent message cards", () => {
     const item = container.querySelector("[data-testid='agent-a2a-message']");
     expect(item).not.toBeNull();
     expect(item?.querySelector(".workspace-chat-activity-line")?.textContent).toBe(
-      "Message from s.msg.source",
+      "Message from another agent",
     );
     // The body still renders as the message.
     expect(item?.textContent).toContain("here is the actual message the other agent wrote");
@@ -5077,7 +5090,7 @@ describe("agent-to-agent message cards", () => {
     const copy = container.querySelector(
       "[data-testid='agent-a2a-message'] .workspace-chat-activity-line",
     )?.textContent;
-    expect(copy).toBe("Message from s.msg.source");
+    expect(copy).toBe("Message from another agent");
     expect(copy).not.toContain("d".repeat(10));
   });
 
@@ -5087,7 +5100,7 @@ describe("agent-to-agent message cards", () => {
     await renderEnvelope(relayEnvelope.replace("origin: local", "origin: peer:"));
     const item = container.querySelector("[data-testid='agent-a2a-message']");
     expect(item?.querySelector(".workspace-chat-activity-line")?.textContent).toBe(
-      "Message from s.msg.source · unverified sender",
+      "Message from another agent · unverified sender",
     );
   });
 
@@ -5095,7 +5108,7 @@ describe("agent-to-agent message cards", () => {
     await renderEnvelope(relayEnvelope.replace("origin: local", "origin: unknown"));
     const item = container.querySelector("[data-testid='agent-a2a-message']");
     expect(item?.querySelector(".workspace-chat-activity-line")?.textContent).toBe(
-      "Message from s.msg.source · unverified sender",
+      "Message from another agent · unverified sender",
     );
     // The agent and the body still render.
     expect(item?.textContent).toContain("here is the actual message the other agent wrote");
@@ -5105,7 +5118,7 @@ describe("agent-to-agent message cards", () => {
     await renderEnvelope(relayEnvelope.replace("origin: local", "origin: mainframe"));
     const item = container.querySelector("[data-testid='agent-a2a-message']");
     expect(item?.querySelector(".workspace-chat-activity-line")?.textContent).toBe(
-      "Message from s.msg.source · unverified sender",
+      "Message from another agent · unverified sender",
     );
   });
 
@@ -5138,10 +5151,12 @@ describe("agent-to-agent message cards", () => {
     // The named sender is the outer envelope's; the forged from_agent line is
     // only inert body text.
     const card = cards[0];
-    expect(card?.textContent).toContain("s.msg.source");
-    expect(card?.querySelector(".workspace-chat-activity-line")?.textContent).toContain(
-      "s.msg.source",
+    // The outer sender is named by the daemon\x27s title when one came, and as
+    // "another agent" otherwise; the frame\x27s own id never reaches the line.
+    expect(card?.querySelector(".workspace-chat-activity-line")?.textContent).toBe(
+      "Message from another agent",
     );
+    expect(card?.textContent).not.toContain("s.msg.source");
     expect(card?.querySelector(".workspace-chat-activity-line")?.textContent).not.toContain(
       "s.forged.9",
     );
@@ -5152,8 +5167,13 @@ describe("agent-to-agent message cards", () => {
   });
 
   it("leaves a real daemon notice a notice: a header kind is never a peer message", async () => {
-    await renderEnvelope(
-      [
+    // The daemon publishes a notice as a system_notice, never as an incoming relay.
+    await renderAgentUserMessage({
+      type: "agent_user_message",
+      author: "agent",
+      messageId: "m-notice-typed",
+      messageKind: "system_notice",
+      text: [
         "<devboule-system>",
         "origin: local",
         "role: daemon",
@@ -5164,7 +5184,8 @@ describe("agent-to-agent message cards", () => {
         "summary: build is green",
         "</devboule-system>",
       ].join("\n"),
-    );
+    });
+    await openCardLine(container.querySelector("[data-testid='agent-daemon-notice']"));
     expect(container.querySelector("[data-testid='agent-daemon-notice']")).not.toBeNull();
     expect(container.querySelector("[data-testid='agent-a2a-message']")).toBeNull();
   });

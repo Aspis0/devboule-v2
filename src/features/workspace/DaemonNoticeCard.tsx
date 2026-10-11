@@ -28,7 +28,8 @@ function bound(value: string): string {
 }
 
 function childReference(notice: Extract<DaemonNotice, { recognized: true }>): string {
-  return bound(notice.childName ?? notice.childSessionId);
+  // A child the notice does not name reads as "another agent": a session id never reaches the line.
+  return bound(notice.childName ?? "another agent");
 }
 
 function minutesSpan(minutes: number): string {

@@ -138,12 +138,16 @@ export type AgentChatItem =
       origin: AgentPeerOrigin;
       /** The sender's message, verbatim — hostile input, rendered as text only. */
       body: string;
+      /** The sender's title, as the daemon named it on the event. */
+      peerTitle?: string;
     }
   | {
       /** This session's raw echo of a message it sent to another agent. */
       id: string;
       role: "a2a_outgoing_message";
       text: string;
+      /** The recipient's title, as the daemon named it on the echo. */
+      peerTitle?: string;
     };
 
 /**
@@ -890,10 +894,12 @@ export class AgentSession {
         this.appendComposerMessage(event);
         return;
       case "outgoing_a2a":
-        this.appendOutgoingA2aMessage(event.text);
+        this.appendOutgoingA2aMessage(event.text, event.peerTitle);
         return;
       case "incoming_a2a":
-        if (!this.appendPeerMessage(event.text)) this.appendSystemMessage(event.text);
+        if (!this.appendPeerMessage(event.text, event.peerTitle)) {
+          this.appendSystemMessage(event.text);
+        }
         return;
       case "system_notice":
         if (!this.appendDaemonMessage(event.text)) this.appendSystemMessage(event.text);
@@ -931,7 +937,7 @@ export class AgentSession {
     );
   }
 
-  private appendOutgoingA2aMessage(text: string): void {
+  private appendOutgoingA2aMessage(text: string, peerTitle?: string): void {
     this.closeActiveBlocks();
     this.update({
       items: [
@@ -940,12 +946,13 @@ export class AgentSession {
           id: `a2a-outgoing-message-${this.nextItemId++}`,
           role: "a2a_outgoing_message",
           text,
+          ...(peerTitle === undefined ? {} : { peerTitle }),
         },
       ],
     });
   }
 
-  private appendPeerMessage(text: string): boolean {
+  private appendPeerMessage(text: string, peerTitle?: string): boolean {
     const peerMessage = parseAgentPeerMessage(text);
     if (peerMessage === null) return false;
     this.closeActiveBlocks();
@@ -958,6 +965,7 @@ export class AgentSession {
           fromAgent: peerMessage.fromAgent,
           origin: peerMessage.origin,
           body: peerMessage.body,
+          ...(peerTitle === undefined ? {} : { peerTitle }),
         },
       ],
     });
@@ -1000,11 +1008,11 @@ export class AgentSession {
   private handleLegacyAgentUserMessage(
     event: Extract<SessionEvent, { type: "agent_user_message" }>,
   ): void {
-    // THE ORDER OF THESE PARSES IS LOAD-BEARING: a permission frame is also
-    // a daemon notice, so the structured permission card must win. This is
-    // the compatibility path for rows written before `message_kind` existed.
-    if (this.appendDaemonMessage(event.text)) return;
-    if (this.appendPeerMessage(event.text)) return;
+    // A row written before `message_kind` carries no typed part, so its text is
+    // never parsed into a card: a daemon notice, a permission request or a peer
+    // message here would be whatever text the session wrote, dressed as the
+    // daemon's own. A person's row stays their message; anything else is plain
+    // text, with no mark that says it was verified.
     if ((event.author ?? "human") !== "human") {
       this.appendSystemMessage(event.text);
       return;

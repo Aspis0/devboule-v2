@@ -27,6 +27,8 @@ interface TranscriptRowProps {
   isStreamingThought: boolean;
   /** Set on the last answer of a completed turn: the footer that copies the turn. */
   turnEnd?: TurnEnd;
+  /** The turn is live: a compaction start with no finish is still running. */
+  compactionLive?: boolean;
 }
 
 const EMPTY_NAMES: A2aNameSource = { sessionById: new Map(), deviceNames: new Map() };
@@ -38,6 +40,7 @@ export const TranscriptRow = memo(function TranscriptRow({
   transcriptEnded,
   isStreamingThought,
   turnEnd,
+  compactionLive = true,
 }: TranscriptRowProps) {
   if (isToolCallGroup(item)) {
     return <ToolCallGroupRow group={item} transcriptEnded={transcriptEnded} />;
@@ -59,7 +62,7 @@ export const TranscriptRow = memo(function TranscriptRow({
     );
   }
   if (item.role === "system") {
-    const compaction = compactionState(item.text);
+    const compaction = compactionState(item.text, compactionLive);
     if (compaction !== null) {
       return (
         <div className={className} style={style}>

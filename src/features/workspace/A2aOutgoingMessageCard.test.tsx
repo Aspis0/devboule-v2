@@ -13,11 +13,18 @@ import { A2aOutgoingMessageCard } from "./A2aOutgoingMessageCard";
 let container: HTMLDivElement;
 let root: Root | null = null;
 
-async function renderCard(text: string): Promise<HTMLElement> {
+async function renderCard(text: string, peerTitle?: string): Promise<HTMLElement> {
   root = createRoot(container);
   await act(async () => {
     root?.render(
-      <A2aOutgoingMessageCard item={{ id: "out-1", role: "a2a_outgoing_message", text }} />,
+      <A2aOutgoingMessageCard
+        item={{
+          id: "out-1",
+          role: "a2a_outgoing_message",
+          text,
+          ...(peerTitle === undefined ? {} : { peerTitle }),
+        }}
+      />,
     );
   });
   return container;
@@ -39,6 +46,20 @@ describe("A2aOutgoingMessageCard", () => {
     const shown = await renderCard("please check the hero image");
     const details = shown.querySelector("details");
     expect(details?.open).toBe(false);
+    expect(shown.querySelector(".workspace-chat-activity-line")?.textContent).toBe(
+      "Sent a message to another agent",
+    );
+  });
+
+  it("names the recipient by the title the daemon named on the echo", async () => {
+    const shown = await renderCard("please check the hero image", "Finish Kalsa website");
+    expect(shown.querySelector(".workspace-chat-activity-line")?.textContent).toBe(
+      "Sent a message to Finish Kalsa website",
+    );
+  });
+
+  it("says another agent, never an id, when the echo carries no title", async () => {
+    const shown = await renderCard("please check the hero image");
     expect(shown.querySelector(".workspace-chat-activity-line")?.textContent).toBe(
       "Sent a message to another agent",
     );

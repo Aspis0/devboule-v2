@@ -75,6 +75,28 @@ describe("compaction notices", () => {
     expect(divider?.querySelector(".workspace-chat-compaction-spinner")).toBeNull();
   });
 
+  it("says a start whose turn ended did not finish, with no spinner, once it is not live", async () => {
+    expect(compactionState("Compacting the context.", false)).toBe("unfinished");
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        <TranscriptRow
+          entry={notice("Compacting the context.")}
+          fileLinks={null}
+          transcriptEnded={false}
+          isStreamingThought={false}
+          compactionLive={false}
+        />,
+      );
+    });
+    const divider = container.querySelector(".workspace-chat-compaction");
+    expect(divider?.getAttribute("data-state")).toBe("unfinished");
+    expect(divider?.querySelector(".workspace-chat-compaction-label")?.textContent).toBe(
+      "Compaction did not finish",
+    );
+    expect(divider?.querySelector(".workspace-chat-compaction-spinner")).toBeNull();
+  });
+
   it("reads a lone manual compaction as done too", async () => {
     const shown = await renderNotice("Context manually compacted");
     expect(shown.querySelector(".workspace-chat-compaction-label")?.textContent).toBe(
