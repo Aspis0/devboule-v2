@@ -64,13 +64,39 @@ fn attention_priority_preserves_permission_and_allows_escalation() {
     );
 }
 
+/// A permission card with its own id, so two cards can be told apart.
+fn permission_card(tool_call_id: &str) -> SessionEvent {
+    let mut event = permission_attention_event();
+    if let SessionEvent::PermissionRequest {
+        tool_call_id: id, ..
+    } = &mut event
+    {
+        *id = tool_call_id.to_string();
+    }
+    event
+}
+
+#[test]
+fn a_republished_permission_card_is_not_news_again() {
+    let runtime = Arc::new(SessionRuntime::new());
+    runtime.publish_agent_event(permission_card("card-1"), None);
+    let first = runtime.attention().expect("first permission attention");
+    std::thread::sleep(Duration::from_millis(2));
+    runtime.publish_agent_event(permission_card("card-1"), None);
+    let again = runtime.attention().expect("attention still stands");
+    assert_eq!(
+        again.at_ms, first.at_ms,
+        "the same card published again keeps its raise: no new toast"
+    );
+}
+
 #[test]
 fn a_second_permission_request_while_one_stands_raises_again() {
     let runtime = Arc::new(SessionRuntime::new());
-    runtime.publish_agent_event(permission_attention_event(), None);
+    runtime.publish_agent_event(permission_card("card-1"), None);
     let first = runtime.attention().expect("first permission attention");
     std::thread::sleep(Duration::from_millis(2));
-    runtime.publish_agent_event(permission_attention_event(), None);
+    runtime.publish_agent_event(permission_card("card-2"), None);
     let second = runtime.attention().expect("second permission attention");
     assert_eq!(
         second.reason,

@@ -116,6 +116,11 @@ pub(crate) fn roster_task_state(
     session.state.task_state(runtime.is_running_turn())
 }
 
+/// How many permission card ids a runtime remembers before it starts over. A
+/// card published again after that is news once more, which is the bounded
+/// cost of never growing the set for the life of a long session.
+const PERMISSION_CARDS_REMEMBERED: usize = 512;
+
 /// One `AgentMessage`, joined from the chunks that carried one message id.
 ///
 /// A *record*, not runtime state: the finish hook reads it and nothing else
@@ -242,6 +247,10 @@ pub(crate) struct SessionRuntime {
     /// state, not transcript history, so it is not journaled and does not
     /// survive a daemon restart.
     pub(crate) attention: Mutex<Option<Attention>>,
+    /// The permission cards this runtime has already raised, by card id. A
+    /// card's publication can repeat (a reattach replays it); only a card not
+    /// yet in here is news.
+    permission_cards_raised: Mutex<HashSet<String>>,
     attention_hooks: Mutex<Option<AttentionHooks>>,
     /// The delegated-surfacing observer: called once per parked card, at the
     /// moment it enters the pending table. Installed by the registry at
@@ -650,6 +659,7 @@ impl SessionRuntime {
                 crate::claude_catalog::ClaudeCatalogState::Provisional,
             ),
             attention: Mutex::new(None),
+            permission_cards_raised: Mutex::new(HashSet::new()),
             attention_hooks: Mutex::new(None),
             permission_park_hook: Mutex::new(None),
             tasks_refresh_hook: Mutex::new(None),
@@ -3225,14 +3235,18 @@ impl SessionRuntime {
             SessionEvent::PermissionRequest { .. } => AttentionReason::Permission,
             _ => return false,
         };
-        self.raise_attention(reason)
+        let card = match event {
+            SessionEvent::PermissionRequest { tool_call_id, .. } => Some(tool_call_id.as_str()),
+            _ => None,
+        };
+        self.raise_attention(reason, card)
     }
 
     /// Whether the raise took the row to a client: `false` on every path that
     /// stayed silent — no hooks, a suppressed presence, a raise already standing
     /// at equal or higher priority — which is exactly when a status change has to
     /// speak for itself.
-    fn raise_attention(&self, reason: AttentionReason) -> bool {
+    fn raise_attention(&self, reason: AttentionReason, card: Option<&str>) -> bool {
         let hooks = self
             .attention_hooks
             .lock()
@@ -3260,6 +3274,19 @@ impl SessionRuntime {
             if current.reason.priority() > reason.priority()
                 || (current.reason.priority() == reason.priority() && !refresh_permission)
             {
+                return false;
+            }
+        }
+        // A permission card the app has been told about is not news again, however
+        // often it is published: the dedupe is by card id, not by timestamp.
+        if let Some(card) = card.filter(|_| reason == AttentionReason::Permission) {
+            let Ok(mut raised) = self.permission_cards_raised.lock() else {
+                return false;
+            };
+            if raised.len() >= PERMISSION_CARDS_REMEMBERED {
+                raised.clear();
+            }
+            if !raised.insert(card.to_string()) {
                 return false;
             }
         }
