@@ -16,6 +16,13 @@
 //! The clip is in the CSS pixels of the viewport, the same space a `click_at`
 //! point is in. A zoom with no clip zooms the viewport, never nothing.
 //!
+//! **A capture's clip is in the document's pixels.** The viewport's origin is
+//! wherever the page is scrolled to, and a capture of a region the viewport is
+//! not showing comes back blank rather than refused — so the wanted clip is
+//! moved there by the scroll, and cut to the part the viewport really paints.
+//! A clip with nothing on screen is refused, never answered with the blank, and
+//! so is a capture after which the scroll has moved.
+//!
 //! What is capped is the **encoded answer** — the base64 and the JSON around
 //! it — under what the daemon and the wire allow, because a picture measured in
 //! decoded bytes becomes a third bigger on the wire and is refused on arrival.
@@ -84,9 +91,10 @@ pub async fn screenshot(
     act::ready(tab, page).await?;
     let (css_width, css_height) = act::viewport(page).await?;
     let display = act::display_scale(page).await?;
+    let (scroll_x, scroll_y) = act::viewport_origin(page).await?;
     // A zoom with no clip zooms the whole viewport: a picture labelled twice the
     // size must be twice the size, or a point read off it lands elsewhere.
-    let clip = match asked
+    let wanted = match asked
         .clip
         .filter(|clip| clip.width > 0.0 && clip.height > 0.0)
     {
@@ -98,6 +106,7 @@ pub async fn screenshot(
             height: css_height,
         },
     };
+    let (clip, document) = on_screen(&wanted, css_width, css_height, (scroll_x, scroll_y))?;
     let mut picture_zoom = zoom;
     loop {
         // The scale the renderer is asked for is the zoom over the display's
@@ -105,7 +114,15 @@ pub async fn screenshot(
         // the display does.
         let scale = picture_zoom / display;
         for quality in QUALITIES {
-            let picture = capture(page, &clip, quality, scale).await?;
+            let picture = capture(page, &document, quality, scale).await?;
+            // A page that moved while it was photographed pictured a band other
+            // than the one the answer describes, so it is refused rather than sent.
+            if act::viewport_origin(page).await? != (scroll_x, scroll_y) {
+                return Err(host_error(
+                    "The page scrolled while it was photographed, so the picture is not of \
+                     the part the answer names. Ask again once it has stopped moving.",
+                ));
+            }
             let answered = answer(&picture, &clip, css_width, css_height, picture_zoom);
             if encoded(&answered) <= MAX_ANSWER_BYTES {
                 return Ok(answered);
@@ -119,6 +136,48 @@ pub async fn screenshot(
         }
         picture_zoom = (picture_zoom / 2.0).max(MIN_ZOOM);
     }
+}
+
+/// The wanted clip as the two rectangles a capture is made of: what the
+/// viewport is showing of it, in the viewport's own pixels, and that same band
+/// in the document's, which is the space a capture's clip is written in.
+///
+/// The part of the wanted clip the viewport is not showing has no pixels to
+/// photograph, so it is cut rather than asked for. A clip with no such part is
+/// refused: the renderer would answer it with a blank picture, and a blank
+/// picture reads as "the page is blank".
+fn on_screen(
+    wanted: &Clip,
+    width: f64,
+    height: f64,
+    scroll: (f64, f64),
+) -> Result<(Clip, Clip), BrowserError> {
+    let x = wanted.x.max(0.0);
+    let y = wanted.y.max(0.0);
+    let right = (wanted.x + wanted.width).min(width);
+    let bottom = (wanted.y + wanted.height).min(height);
+    if right <= x || bottom <= y {
+        return Err(host_error(format!(
+            "This page's viewport shows none of that clip: it is {width} by {height} CSS pixels, \
+             and the page is scrolled to the document's {scroll_x}, {scroll_y}. Scroll to the part \
+             you mean, or clip inside the viewport.",
+            scroll_x = scroll.0,
+            scroll_y = scroll.1,
+        )));
+    }
+    let clip = Clip {
+        x,
+        y,
+        width: right - x,
+        height: bottom - y,
+    };
+    let document = Clip {
+        x: clip.x + scroll.0,
+        y: clip.y + scroll.1,
+        width: clip.width,
+        height: clip.height,
+    };
+    Ok((clip, document))
 }
 
 /// The answer: the picture, the space it is in, and the factor between them.
@@ -255,3 +314,11 @@ fn header_bytes(picture: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 #[path = "shot_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "shot_scroll_tests.rs"]
+mod scroll_tests;
+
+#[cfg(test)]
+#[path = "shot_live_tests.rs"]
+mod live_tests;

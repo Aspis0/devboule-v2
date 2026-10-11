@@ -28,7 +28,7 @@ fn scaled_viewport() -> Value {
 }
 
 /// A base64 run of `bytes` bytes, which is what a picture of that size costs.
-fn base64_of(bytes: usize) -> String {
+pub(super) fn base64_of(bytes: usize) -> String {
     let characters = bytes.div_ceil(3) * 4;
     "A".repeat(characters)
 }
@@ -66,7 +66,7 @@ fn base64_bytes(bytes: &[u8]) -> String {
     out
 }
 
-fn page_answering(data: String) -> FakePage {
+pub(super) fn page_answering(data: String) -> FakePage {
     FakePage::new()
         .answering("Accessibility.getFullAXTree", ax_fixture())
         .answering("Page.getLayoutMetrics", viewport())
@@ -87,7 +87,7 @@ fn too_big() -> Vec<u8> {
     vec![b'A'; 1 << 21]
 }
 
-fn shoot(page: &FakePage, args: Value) -> Result<Value, BrowserError> {
+pub(super) fn shoot(page: &FakePage, args: Value) -> Result<Value, BrowserError> {
     let tab = parked_tab("tab-1");
     tauri::async_runtime::block_on(on_tab(
         &tab,
@@ -98,7 +98,7 @@ fn shoot(page: &FakePage, args: Value) -> Result<Value, BrowserError> {
     ))
 }
 
-fn captures(page: &FakePage) -> Vec<Value> {
+pub(super) fn captures(page: &FakePage) -> Vec<Value> {
     page.calls()
         .into_iter()
         .filter(|(method, _)| method == "Page.captureScreenshot")
@@ -481,7 +481,6 @@ fn a_parked_page_is_put_on_screen_before_it_is_photographed() {
         .expect("photographed");
     assert!(override_at < shot_at, "two pixels of page is not a picture");
 }
-
 #[test]
 fn a_runtime_that_returns_no_picture_is_refused_rather_than_answered_blank() {
     let page = FakePage::new()

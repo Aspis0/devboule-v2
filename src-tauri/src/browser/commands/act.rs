@@ -132,14 +132,29 @@ pub async fn centre(page: &dyn Page, node: u64) -> Result<(f64, f64), BrowserErr
 /// number on a display that scales.
 pub async fn viewport(page: &dyn Page) -> Result<(f64, f64), BrowserError> {
     let metrics = call(page, "Page.getLayoutMetrics", json!({})).await?;
-    let side = |field: &str| {
-        metrics
-            .get("cssLayoutViewport")
-            .and_then(|viewport| viewport.get(field))
-            .and_then(Value::as_f64)
-            .ok_or_else(|| host_error("This page reports no layout viewport."))
-    };
-    Ok((side("clientWidth")?, side("clientHeight")?))
+    Ok((
+        css_viewport_field(&metrics, "clientWidth")?,
+        css_viewport_field(&metrics, "clientHeight")?,
+    ))
+}
+
+/// Where the visible band starts in the document's own pixels: the scroll
+/// position, which a capture's clip has to be moved by because it is written in
+/// the document's pixels and not the viewport's.
+pub async fn viewport_origin(page: &dyn Page) -> Result<(f64, f64), BrowserError> {
+    let metrics = call(page, "Page.getLayoutMetrics", json!({})).await?;
+    Ok((
+        css_viewport_field(&metrics, "pageX")?,
+        css_viewport_field(&metrics, "pageY")?,
+    ))
+}
+
+fn css_viewport_field(metrics: &Value, field: &str) -> Result<f64, BrowserError> {
+    metrics
+        .get("cssLayoutViewport")
+        .and_then(|viewport| viewport.get(field))
+        .and_then(Value::as_f64)
+        .ok_or_else(|| host_error("This page reports no layout viewport."))
 }
 
 /// How many device pixels one CSS pixel is here: the display's own scale.
