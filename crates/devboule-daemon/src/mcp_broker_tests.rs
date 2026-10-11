@@ -5098,12 +5098,12 @@ const STUB_ENV_NAMES: [&str; 4] = [
 /// span ends when the road stops reading them: the child has inherited its
 /// environment at spawn, and later attempts are none of this guard's
 /// business.
-struct StubOverride {
+pub(crate) struct StubOverride {
     _lock: std::sync::MutexGuard<'static, ()>,
 }
 
 impl StubOverride {
-    fn set(provider_id: &str, stub: &std::path::Path) -> Self {
+    pub(crate) fn set(provider_id: &str, stub: &std::path::Path) -> Self {
         let lock = crate::session::lock_acp_env();
         let [command, provider, modes, no_network] = STUB_ENV_NAMES;
         std::env::set_var(

@@ -99,7 +99,7 @@ pub(crate) fn default_on(agent: &crate::provider_catalog::InstalledAgent) -> boo
 /// the spawn reads before it looks on PATH, under the same rule. ACP's override
 /// is read only in a debug build, and only for the provider id paired with it.
 /// A provider whose command is named here resolves, so it needs no install.
-fn launch_override_names(canonical: &str) -> bool {
+pub(crate) fn launch_override_names(canonical: &str) -> bool {
     let names = |variable: &str| std::env::var(variable).is_ok_and(|argv| names_a_program(&argv));
     match canonical {
         "claude" => names(crate::session::claude_client::COMMAND_ENV),

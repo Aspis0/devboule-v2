@@ -400,6 +400,10 @@ fn a_create_naming_a_switched_off_provider_is_refused_before_any_card() {
         }))
         .expect("direct request parses")
     }
+    // The stub is the launch command the spawn reads first, so it is launchable
+    // and on by default wherever the tests run (Windows and macOS alike).
+    let stub = crate::session::session_resume_fixture::acp_stub();
+    let _stub = super::tests::StubOverride::set("devboule-acp-stub", &stub);
     let state = ServerState::new("create-switch".to_string());
     seed_probe_provider(&state);
     creator(&state, "d1a-creator");
@@ -431,6 +435,8 @@ fn a_provider_switched_off_while_the_card_waits_starts_no_child() {
         }))
         .expect("direct request parses")
     }
+    let stub = crate::session::session_resume_fixture::acp_stub();
+    let _stub = super::tests::StubOverride::set("devboule-acp-stub", &stub);
     let state = ServerState::new("create-switch-card-wait".to_string());
     creator(&state, "d1a-creator");
     // The card is owed, so the call answers at once and the card waits in the

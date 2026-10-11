@@ -6191,8 +6191,8 @@ fn a_creation_naming_an_uninstalled_provider_is_refused() {
     let events = test.attach(&creator);
     let calls = test.wait_for_observations("mcp calls.txt", 1);
     assert!(
-        calls[0].contains("provider not installed"),
-        "the refusal is the sentence §2 names: {}",
+        calls[0].contains("turned off"),
+        "the switch sentence comes first, for a provider the person has not turned on: {}",
         calls[0]
     );
     assert!(

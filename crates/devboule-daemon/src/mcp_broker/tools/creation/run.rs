@@ -280,20 +280,20 @@ fn run_creation(
     if !creator.may_create_sessions(state) {
         return tool_error(id, "not allowed for this peer");
     }
-    // A provider this daemon cannot launch is refused before a session id, a
-    // card or a slot is spent on it. The provider comes from the profile the
-    // person ticked or from the caller's direct choice (`resolve_creation`),
-    // and either way it must be installed or declared here.
-    if !provider_is_launchable(&profile.provider) {
-        return tool_error(id, "provider not installed");
-    }
-    // A provider the person turned OFF is not started by a child either, and
-    // the refusal comes before a card: the same switch the ordinary create
-    // path honours (`session.rs`), read at this moment.
+    // A provider the person has not turned on is refused first, with the
+    // switch's own sentence: the same gate the ordinary create path applies,
+    // read at this moment and before any card. A provider the person has on
+    // but the spawn cannot resolve is refused next, as not installed.
     if let Err(error) =
         crate::provider_switches::refuse_unless_enabled(&state.provider_switches, &profile.provider)
     {
         return tool_error(id, &error.message);
+    }
+    // A provider this daemon cannot launch is refused before a session id, a
+    // card or a slot is spent on it. The provider comes from the profile the
+    // person ticked or from the caller's direct choice (`resolve_creation`).
+    if !provider_is_launchable(&profile.provider) {
+        return tool_error(id, "provider not installed");
     }
     // A profile combination never fails the creation (owner bug #16). The
     // tick over a mode that answers its own permission prompts — the
@@ -471,11 +471,17 @@ fn run_creation(
 /// PATH/CDN walk). Asking PATH alone refuses every user provider on this road
 /// while the wire create road spawns it — one provider, two answers,
 /// depending on which door the caller came through.
+/// Whether the spawn can resolve `provider` here, by the same rule the switch gate
+/// uses for its default: a user row, a command on PATH, or a launch command the
+/// environment names (the override the spawn reads first).
 pub(in crate::mcp_broker) fn provider_is_launchable(provider: &str) -> bool {
+    let canonical = crate::provider_catalog::catalog_provider_id(provider)
+        .unwrap_or_else(|| provider.to_string());
     crate::session::catalog_registry()
         .user_row_for(provider)
         .is_some()
         || crate::provider_catalog::find_available(provider).is_some()
+        || crate::provider_switches::launch_override_names(&canonical)
 }
 
 pub(in crate::mcp_broker) fn create_agent_tool(
