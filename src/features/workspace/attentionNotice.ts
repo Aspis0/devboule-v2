@@ -2,6 +2,16 @@ import type { Attention, AttentionReason } from "../../types/ipc";
 import { invokeTyped, type AttentionTarget, type AttentionToast } from "../../lib/tauri";
 import { getShowMessagePreviews, getShowNotifications } from "../../lib/notificationPrefs";
 import { lookedAtSessionId, onPresenceSettled } from "./presence";
+import { traceAttention, withinMs } from "../../lib/boundedWait";
+
+/** How long the window state may take before the gate decides without it. A
+ * window that cannot answer in this time is treated as not seen: the toast
+ * goes out rather than waiting on a read that may never settle. */
+export const WINDOW_READ_TIMEOUT_MS = 500;
+
+/** How long the OS permission answer may take before the send is treated as
+ * failed and retried once. */
+export const PERMISSION_READ_TIMEOUT_MS = 1_000;
 
 /**
  * How a session's attention presents to the local user: the words for a
@@ -345,7 +355,11 @@ export async function sendWithPermission(
   toast: AttentionToast,
   plugin: NotificationPlugin,
 ): Promise<void> {
-  const granted = await plugin.rustPermissionGranted();
+  const granted = await withinMs(
+    "the OS permission answer",
+    PERMISSION_READ_TIMEOUT_MS,
+    plugin.rustPermissionGranted(),
+  );
   if (!granted) {
     throw new Error("the OS permission answer was not granted");
   }
@@ -440,10 +454,15 @@ export function fireAttentionToast(
   judging.set(sessionId, attention);
   const state = deps?.windowState ?? productionWindowState;
   const send = deps?.send ?? defaultSend;
+  traceAttention("offered", {
+    session: sessionId,
+    raisedAt: attention.atMs,
+    daemonToAppMs: Date.now() - attention.atMs,
+  });
   void (async () => {
     let snapshot: WindowState;
     try {
-      snapshot = await state();
+      snapshot = await withinMs("the window state", WINDOW_READ_TIMEOUT_MS, state());
     } catch {
       // A rejected read cannot say the user is looking: the window might
       // be in the tray, so behave as if they are not.
@@ -452,6 +471,12 @@ export function fireAttentionToast(
     // The gate: both halves read at the moment of decision —
     // the user may have reached this session, or left it, while the window was being asked.
     const mayAnnounce = toastGate(snapshot, sessionId, lookedAtSessionId());
+    traceAttention("decided", {
+      session: sessionId,
+      announce: mayAnnounce ? 1 : 0,
+      windowSeen: snapshot.visible && snapshot.focused && !snapshot.minimized ? 1 : 0,
+      decidedAfterMs: Date.now() - attention.atMs,
+    });
     if (judging.get(sessionId) === attention) judging.delete(sessionId);
     if (!mayAnnounce) {
       // Held back, and unrecorded: the daemon still owes this raise to someone,
@@ -476,7 +501,9 @@ export function fireAttentionToast(
     const held = getShowMessagePreviews() ? heldContentProvider?.(sessionId) : undefined;
     const content = toastContent(title, attention.reason, held);
     try {
+      traceAttention("invoking", { session: sessionId, reason: attention.reason });
       await send({ ...content, target });
+      traceAttention("accepted", { session: sessionId, reason: attention.reason });
     } catch {
       // A newer raise may have taken the record while this send was in
       // flight: a stale retry must not land after the newer toast.

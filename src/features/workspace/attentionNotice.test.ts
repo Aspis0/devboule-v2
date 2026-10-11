@@ -4,8 +4,10 @@ import type { Attention, AttentionReason, Session, SessionStateSnapshot } from "
 import type { AttentionTarget, AttentionToast } from "../../lib/tauri";
 import type { ToastDeps, WindowState } from "./attentionNotice";
 import {
+  PERMISSION_READ_TIMEOUT_MS,
   PREVIEW_LIMIT,
   TOAST_RETRY_DELAY_MS,
+  WINDOW_READ_TIMEOUT_MS,
   attentionRaised,
   fireAttentionToast,
   forgetAttentionFor,
@@ -498,10 +500,9 @@ describe("fireAttentionToast ordering and rejection", () => {
         throw new Error("the window could not be asked");
       },
     });
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(send).toHaveBeenCalledTimes(1);
+    // The read is bounded by a timer now, so wait for the toast rather than
+    // counting microtask turns.
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
   });
 });
 
@@ -913,6 +914,75 @@ describe("the toast gate holds raises for the session in view", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(send).toHaveBeenCalledTimes(1);
     release();
+  });
+});
+
+describe("the attention path never waits on a read that does not answer", () => {
+  const never = <T>(): Promise<T> => new Promise<T>(() => undefined);
+  const fakeWin = { addEventListener: () => undefined, removeEventListener: () => undefined };
+  const fakeDoc = {
+    visibilityState: "visible",
+    hasFocus: () => true,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    forgetAttentionFor(new Set());
+    reportSelection(null);
+  });
+
+  afterEach(() => {
+    reportSelection(null);
+    vi.useRealTimers();
+  });
+
+  it("announces a raise within the read bound when the window state never answers", async () => {
+    const send = vi.fn(async (_toast: AttentionToast) => undefined);
+    fireAttentionToast(target("s1"), "agent one", attention("permission", 1000), {
+      send,
+      windowState: () => never<WindowState>(),
+    });
+    await vi.advanceTimersByTimeAsync(WINDOW_READ_TIMEOUT_MS - 1);
+    expect(send).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]?.[0].title).toBe("agent one — needs approval");
+  });
+
+  it("reports the window as not visible when its read never answers, so the presence settles", async () => {
+    const invoke = vi.fn(async (_command: unknown, _args: unknown) => undefined);
+    const reporter = startPresenceReporting({
+      window: fakeWin,
+      document: fakeDoc,
+      windowState: () => never<WindowState>(),
+      invoke,
+      pollIntervalMs: 60_000,
+    });
+    await vi.advanceTimersByTimeAsync(WINDOW_READ_TIMEOUT_MS);
+    expect(invoke).toHaveBeenCalledWith("session_presence", {
+      focusedSessionId: null,
+      appVisible: false,
+    });
+    reporter.dispose();
+  });
+
+  it("fails the OS permission answer after its bound, so the one retry can run", async () => {
+    const plugin = {
+      rustPermissionGranted: () => never<boolean>(),
+      showToast: vi.fn(async () => undefined),
+    };
+    const settled = sendWithPermission(
+      { title: "t", body: "b", target: target("s1") },
+      plugin,
+    ).then(
+      () => "sent",
+      (cause: unknown) => (cause instanceof Error ? cause.message : "unknown"),
+    );
+    await vi.advanceTimersByTimeAsync(PERMISSION_READ_TIMEOUT_MS);
+    expect(await settled).toContain("did not answer within");
+    expect(plugin.showToast).not.toHaveBeenCalled();
   });
 });
 

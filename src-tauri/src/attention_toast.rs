@@ -107,6 +107,29 @@ static SHOWED: AtomicBool = AtomicBool::new(false);
 /// uninstalled run keeps the visible toast it has always had instead of one
 /// Windows may never show.
 fn show(app: &AppHandle, toast: &AttentionToast) -> Result<(), String> {
+    let result = show_by_route(app, toast);
+    // The last stage of the attention clock: the OS accepted the toast (or
+    // refused it) at this instant. Acceptance is not on-screen time; Windows
+    // may still hold it under Focus Assist. Off unless DEVBOULE_DEBUG_ATTENTION
+    // is set in the daemon's environment.
+    if std::env::var_os("DEVBOULE_DEBUG_ATTENTION").is_some() {
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        eprintln!(
+            "devboule: debug: attention toast {} at={at}",
+            if result.is_ok() {
+                "accepted"
+            } else {
+                "refused"
+            }
+        );
+    }
+    result
+}
+
+fn show_by_route(app: &AppHandle, toast: &AttentionToast) -> Result<(), String> {
     #[cfg(windows)]
     if clickable(app) {
         winrt::show(app, toast)?;

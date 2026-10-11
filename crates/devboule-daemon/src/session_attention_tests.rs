@@ -65,6 +65,24 @@ fn attention_priority_preserves_permission_and_allows_escalation() {
 }
 
 #[test]
+fn a_second_permission_request_while_one_stands_raises_again() {
+    let runtime = Arc::new(SessionRuntime::new());
+    runtime.publish_agent_event(permission_attention_event(), None);
+    let first = runtime.attention().expect("first permission attention");
+    std::thread::sleep(Duration::from_millis(2));
+    runtime.publish_agent_event(permission_attention_event(), None);
+    let second = runtime.attention().expect("second permission attention");
+    assert_eq!(
+        second.reason,
+        devboule_protocol::AttentionReason::Permission
+    );
+    assert!(
+        second.at_ms > first.at_ms,
+        "the second request is a new raise the app can announce: {first:?} then {second:?}"
+    );
+}
+
+#[test]
 fn attention_clear_cannot_complete_during_the_suppression_decision() {
     let runtime = Arc::new(SessionRuntime::new());
     let suppression_entered = Arc::new(std::sync::Barrier::new(2));

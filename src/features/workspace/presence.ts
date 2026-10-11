@@ -1,10 +1,16 @@
 import { sessionPresence, type CommandArgs } from "../../lib/tauri";
 import type { WindowState } from "./attentionNotice";
+import { withinMs } from "../../lib/boundedWait";
 
 /** How often production re-asks the window state: hiding the window fires
  *  no DOM event inside WebView2, so a poll is the safety net behind the
  *  focus-change subscription. */
 const DEFAULT_WINDOW_POLL_INTERVAL_MS = 5_000;
+
+/** A window read that has not answered by now counts as not visible, so one
+ * stuck read cannot hold the presence report, or the held toasts that wait on
+ * it, for the rest of the session. */
+const PRESENCE_READ_TIMEOUT_MS = 500;
 
 /**
  * Presence reporting for the daemon's per-session attention state.
@@ -160,7 +166,11 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
     let asked: WindowState | null = null;
     let readFailed = false;
     if (deps?.windowState) {
-      asked = await deps.windowState().catch(() => {
+      asked = await withinMs(
+        "the window state",
+        PRESENCE_READ_TIMEOUT_MS,
+        deps.windowState(),
+      ).catch(() => {
         readFailed = true;
         return null;
       });

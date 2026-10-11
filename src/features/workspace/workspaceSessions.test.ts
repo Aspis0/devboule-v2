@@ -700,18 +700,15 @@ describe("workspace session controller", () => {
     // The first push is the baseline; the second raises and toasts once.
     watched.listener?.(raise(1000));
     watched.listener?.(raise(2000));
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(send).toHaveBeenCalledTimes(1);
+    // The window read is bounded by a timer, so wait for the toast itself.
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
     // The watch is down, and a list refresh is the only update that removes
     // the row: its raise memory must go with it.
     await controller.refresh();
     expect(controller.getState().sessions).toEqual([]);
     // The row returns with the SAME timestamp; it is a fresh arrival now.
     watched.listener?.(raise(2000));
-    await Promise.resolve();
-    expect(send).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
     release();
   });
 

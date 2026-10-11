@@ -3249,22 +3249,34 @@ impl SessionRuntime {
         if hooks.as_ref().is_some_and(|suppressed| suppressed()) {
             return false;
         }
-        if attention
-            .as_ref()
-            .is_some_and(|current| current.reason.priority() >= reason.priority())
-        {
-            return false;
+        // A standing raise of higher priority keeps its place. An equal one
+        // keeps it too, except a permission request: a second card is a new
+        // request the person has not been told about, so it takes its own
+        // timestamp and announces again. Without that, a second "needs you"
+        // while the first still stood was dropped and never reached the app.
+        if let Some(current) = attention.as_ref() {
+            let refresh_permission = current.reason == AttentionReason::Permission
+                && reason == AttentionReason::Permission;
+            if current.reason.priority() > reason.priority()
+                || (current.reason.priority() == reason.priority() && !refresh_permission)
+            {
+                return false;
+            }
         }
-        *attention = Some(Attention {
-            reason,
-            at_ms: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis()
-                .try_into()
-                .unwrap_or(u64::MAX),
-        });
+        let at_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX);
+        *attention = Some(Attention { reason, at_ms });
         drop(attention);
+        // The daemon's end of the attention clock: the app's own lines carry
+        // the same stamp, so daemon-to-toast latency is their difference. Off
+        // unless the daemon runs with DEVBOULE_DEBUG_ATTENTION set.
+        if std::env::var_os("DEVBOULE_DEBUG_ATTENTION").is_some() {
+            eprintln!("devboule: debug: attention raised reason={reason:?} at={at_ms}");
+        }
         self.request_transition();
         hooks.is_some()
     }
