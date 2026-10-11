@@ -2,6 +2,7 @@ import { useState } from "react";
 import { RECOVERED_SESSION_UNAVAILABLE, type AgentChatItem } from "../../../lib/agentSession";
 import { groupToolCalls, isToolCallGroup, type ToolCallGroup } from "../../../lib/toolCallGroups";
 import { dropAgentAnsweredCards, dropDuplicateFinishNotices, isAgentTraffic } from "./agentTraffic";
+import { pairCreationOutcomes } from "./creationOutcomes";
 import { foldSubagentRuns } from "./subagentRuns";
 import { dropRecoveredFailures } from "./recoveredFailures";
 
@@ -48,7 +49,7 @@ function deriveEntries(
 ) {
   const visibleItems = dropDuplicateFinishNotices(
     dropRecoveredFailures(
-      foldSubagentRuns(dropAgentAnsweredCards(items)).filter(
+      pairCreationOutcomes(foldSubagentRuns(dropAgentAnsweredCards(items))).filter(
         (item) =>
           !isAgentTraffic(item) &&
           (!recoveredAttach ||

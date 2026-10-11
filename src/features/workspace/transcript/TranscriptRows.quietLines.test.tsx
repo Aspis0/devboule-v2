@@ -252,6 +252,8 @@ describe("quiet lines", () => {
 
     expect(host.textContent).toContain("Couldn't start the agent");
     expect(host.textContent).not.toContain("did not start");
+    // The same creation reads once: its start line does not stand beside the failure.
+    expect(host.textContent).not.toContain("Started agent");
   });
 
   it("humanises a Devboule tool's raw name instead of drawing it", async () => {
