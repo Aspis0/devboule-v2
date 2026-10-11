@@ -130,6 +130,7 @@ import { Sidebar } from "./sidebar/Sidebar";
 import { hostNames } from "./sidebar/hostNames";
 import { LOCAL_HOST_ID, type HostId } from "./hosts/hostIdentity";
 import type { WorkspaceTreeProps } from "./sidebar/WorkspaceTree";
+import { railAgentsOf } from "./sidebar/railAgents";
 import { HistoryPanel } from "../history/HistoryPanel";
 import { StatusBar, agentStateOf, type FocusedAgent } from "./statusBar/StatusBar";
 import { useWorkspaceStats } from "./sidebar/useWorkspaceStats";
@@ -2092,6 +2093,7 @@ export function Workspace({
     [handleResizeKey],
   );
   const handleToggleHistory = useCallback(() => setHistoryOpen((open) => !open), []);
+  const handleOpenHistory = useCallback(() => setHistoryOpen(true), []);
   const handleHistorySearchChange = useCallback((value: string) => setHistorySearch(value), []);
   const handleOpenSettings = useCallback(() => selectSurface("settings"), [selectSurface]);
   const handleRetryProjects = useCallback(() => void retryProjects(), [retryProjects]);
@@ -2540,6 +2542,11 @@ export function Workspace({
     }),
     [openTranscriptHit, sessions, transcriptSearchCanSearch],
   );
+  const selectedAgents = useMemo(
+    () => railAgentsOf(sessions, selectedKey),
+    [sessions, selectedKey],
+  );
+  const focusedAgentId = focusedAgent?.sessionId ?? null;
   const sidebarTree: WorkspaceTreeProps = useMemo(
     () => ({
       projects: visibleProjects,
@@ -2562,6 +2569,12 @@ export function Workspace({
       branches: workspaceBranches,
       hostNames: hostNameMap,
       hostOnline: hostOnlineMap,
+      selectedAgents: {
+        agents: selectedAgents,
+        activeId: focusedAgentId,
+        onOpenAgent: handleOpenOverviewSession,
+        onOpenHistory: handleOpenHistory,
+      },
     }),
     [
       visibleProjects,
@@ -2583,6 +2596,10 @@ export function Workspace({
       workspaceBranches,
       hostNameMap,
       hostOnlineMap,
+      selectedAgents,
+      focusedAgentId,
+      handleOpenOverviewSession,
+      handleOpenHistory,
     ],
   );
   const firstPromptOnPane =

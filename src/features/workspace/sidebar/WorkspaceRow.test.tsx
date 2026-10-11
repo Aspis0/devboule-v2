@@ -142,12 +142,14 @@ describe("the workspace row", () => {
       expect(row.getAttribute("aria-label")).toContain("idle");
     });
 
-    it("never prints a word for the state: the dot and the accessible name carry it", async () => {
+    it("keeps the dot wordless: the count line of a row not in front names the work", async () => {
       const row = await render(
         workspace({ stateDot: "pulse", agents: { working: 2, waiting: 0 } }),
       );
 
-      expect(row.textContent).not.toMatch(/working|waiting|ago|running unattended/);
+      expect(row.querySelector(".workspace-row-status")?.textContent).toBe("");
+      expect(row.querySelector(".workspace-row-count")?.textContent).toBe("2 working");
+      expect(row.textContent).not.toMatch(/ago|running unattended/);
     });
   });
 

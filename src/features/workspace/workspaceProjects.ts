@@ -186,7 +186,10 @@ function workspaceViewFromIndex(
   return {
     ...workspace,
     displayTitle,
-    agents: { working: running.length, waiting: waiting.length },
+    agents: {
+      working: running.filter((session) => isAgentKind(session.kind)).length,
+      waiting: waiting.length,
+    },
     stateDot: waiting.length > 0 ? "attention" : running.length > 0 ? "pulse" : null,
   };
 }

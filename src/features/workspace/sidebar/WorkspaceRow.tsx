@@ -18,6 +18,7 @@ import { moveMenuFocus } from "../strip/menuNav";
 import type { WorkspaceView } from "../workspaceProjects";
 import type { HostId, WorkspaceKey } from "../hosts/hostIdentity";
 import { compactLineCount } from "./diffCount";
+import { agentCountLine } from "./railAgents";
 import { rowStatus } from "./rowStatus";
 import type { WorkspaceStat } from "./useWorkspaceStats";
 
@@ -334,8 +335,12 @@ export const WorkspaceRow = memo(function WorkspaceRow({
   const status = rowStatus(workspace);
   const subHost = remote ? hostName : null;
   const totals = stat !== undefined && stat.additions + stat.deletions > 0 ? stat : null;
-  const twoLines = branch !== undefined || subHost !== null || totals !== null;
+  // A selected row lists its agents under it, so only the other rows count them.
+  const countLine = selected ? null : agentCountLine(workspace.agents);
+  const twoLines =
+    branch !== undefined || subHost !== null || totals !== null || countLine !== null;
   const nameParts = [workspace.displayTitle, status.label];
+  if (countLine !== null) nameParts.push(countLine.text);
   if (branch !== undefined) nameParts.push(branch);
   if (subHost !== null) nameParts.push(subHost);
   if (remote && hostOffline) nameParts.push(OFFLINE_LABEL);
@@ -396,6 +401,15 @@ export const WorkspaceRow = memo(function WorkspaceRow({
               <span className="workspace-row-line">
                 <span className="workspace-row-title">{workspace.displayTitle}</span>
               </span>
+              {countLine === null ? null : (
+                <span
+                  className={`workspace-row-line workspace-row-count${
+                    countLine.waiting ? " workspace-row-count-attention" : ""
+                  }`}
+                >
+                  {countLine.text}
+                </span>
+              )}
               {twoLines ? (
                 <span className="workspace-row-line workspace-row-sub">
                   {branch === undefined ? null : (

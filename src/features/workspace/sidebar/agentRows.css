@@ -1,0 +1,134 @@
+/* The agents nested under the selected workspace, and the count line of a
+   workspace that is not selected. */
+
+.agent-rows {
+  display: flex;
+  flex-direction: column;
+  margin-top: 2px;
+}
+
+.agent-row,
+.agent-row-more {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  width: 100%;
+  min-width: 0;
+  height: var(--control-default);
+  padding: 0 var(--space-12);
+  border: 0;
+  border-radius: var(--radius-6);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-row:hover,
+.agent-row:focus-visible,
+.agent-row-active,
+.agent-row-more:hover,
+.agent-row-more:focus-visible {
+  background: var(--fill-hover);
+}
+
+.agent-row-child {
+  padding-left: 28px;
+  gap: 6px;
+}
+
+.agent-row-lane {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  color: var(--muted);
+}
+
+.agent-row-child .agent-row-lane {
+  width: 16px;
+  height: 16px;
+}
+
+.agent-row-settled .agent-row-lane {
+  opacity: 0.7;
+}
+
+.agent-row-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--type-small);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.agent-row-settled .agent-row-name {
+  color: var(--muted);
+}
+
+.agent-row-tail {
+  flex: none;
+  font-size: var(--type-meta);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.agent-row-tail-attention {
+  color: var(--tone-attention-text);
+}
+
+.agent-row-tail-danger {
+  color: var(--danger);
+}
+
+/* The 6 px badge sits on the mark's corner; its ring is the rail's own ground,
+   so it reads as cut out of the mark. */
+.agent-row-badge {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--panel-side);
+}
+
+.agent-row-badge-running {
+  background: var(--tone-live);
+  animation: breathe 2s ease-in-out infinite;
+}
+
+.agent-row-badge-waiting {
+  background: var(--tone-attention);
+}
+
+.agent-row-badge-failed {
+  background: var(--danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-row-badge-running {
+    animation: none;
+  }
+}
+
+.agent-row-more {
+  color: var(--muted);
+  font-size: var(--type-meta);
+}
+
+/* A workspace row's line under its title, only while someone works or waits there. */
+.workspace-row-count {
+  font-size: var(--type-meta);
+  line-height: 16px;
+  color: var(--muted);
+}
+
+.workspace-row-count-attention {
+  color: var(--tone-attention-text);
+}

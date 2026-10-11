@@ -64,9 +64,9 @@ describe("workspaceView", () => {
       session({ id: "unstated" }),
       session({ id: "shell", kind: "terminal" }),
     ]);
-    // The agent rows read the same predicate: activity "working" alone runs.
-    // A live terminal holds its process, so it still counts.
-    expect(view.agents).toEqual({ working: 2, waiting: 0 });
+    // Only an agent answers to its turn: a live terminal holds its process and
+    // keeps the dot pulsing, but it is no one working.
+    expect(view.agents).toEqual({ working: 1, waiting: 0 });
     expect(view.stateDot).toBe("pulse");
   });
 

@@ -1,10 +1,11 @@
-import { useMemo, type ReactNode } from "react";
+import { Fragment, useMemo, type ReactNode } from "react";
 import { ErrorText } from "../../../components/ErrorText";
 import { firstGrapheme } from "../../../lib/graphemeBound";
 import type { ErrorSentence } from "../../../lib/errorSentence";
 import type { WorkspaceProject } from "../workspaceProjects";
 import { hostProjectKey, keyOfWorkspace } from "../workspaceProjects";
 import { LOCAL_HOST_ID, type HostId, type WorkspaceKey } from "../hosts/hostIdentity";
+import { AgentRows, type AgentRowsProps } from "./AgentRows";
 import { avatarStyle } from "./avatars";
 import { hostLabel } from "./hostNames";
 import { ProjectMenu } from "./ProjectMenu";
@@ -42,6 +43,8 @@ export interface WorkspaceTreeProps {
   /** Whether each host answers right now; the local host always does. A
    * surface that does not carry the map treats every host as offline. */
   hostOnline?: ReadonlyMap<HostId, boolean>;
+  /** The selected workspace's agents, listed under its row; absent when the surface does not carry them. */
+  selectedAgents?: AgentRowsProps;
 }
 
 /**
@@ -58,8 +61,8 @@ function parentFolder(path: string): string | null {
  * name, with the "+" that starts a workspace and the kebab that removes the
  * project at its far edge — above its rows. No count: the rows are the count.
  * Two projects sharing a name are told apart by the folder each sits in. What
- * a row prints is decided by the row itself (WorkspaceRow). The rail lists
- * workspaces only: an agent is reached through its tab.
+ * a row prints is decided by the row itself (WorkspaceRow). Only the selected
+ * workspace lists its agents, under its row (AgentRows).
  */
 export function WorkspaceTree({
   projects,
@@ -81,6 +84,7 @@ export function WorkspaceTree({
   branches,
   hostNames,
   hostOnline,
+  selectedAgents,
 }: WorkspaceTreeProps) {
   // Derived once per project list, not once per render: two headers may hold
   // the same name, and only the folder separates them.
@@ -178,21 +182,25 @@ export function WorkspaceTree({
                 const selected = key !== null && selectedWorkspace === key;
                 const local = project.hostId === LOCAL_HOST_ID;
                 return (
-                  <WorkspaceRow
-                    key={key ?? workspace.id}
-                    workspace={workspace}
-                    workspaceKey={key}
-                    hostName={hostLabel(hostNames, workspace.hostId)}
-                    selected={selected}
-                    stat={key === null ? undefined : stats.get(key)}
-                    branch={key === null ? undefined : branches.get(key)}
-                    onSelect={onSelectWorkspace}
-                    onRename={onRenameWorkspace}
-                    onArchive={onArchiveWorkspace}
-                    onDeleteWorktree={onDeleteWorktree}
-                    remote={!local}
-                    hostOffline={!local && !(hostOnline?.get(project.hostId) ?? false)}
-                  />
+                  <Fragment key={key ?? workspace.id}>
+                    <WorkspaceRow
+                      workspace={workspace}
+                      workspaceKey={key}
+                      hostName={hostLabel(hostNames, workspace.hostId)}
+                      selected={selected}
+                      stat={key === null ? undefined : stats.get(key)}
+                      branch={key === null ? undefined : branches.get(key)}
+                      onSelect={onSelectWorkspace}
+                      onRename={onRenameWorkspace}
+                      onArchive={onArchiveWorkspace}
+                      onDeleteWorktree={onDeleteWorktree}
+                      remote={!local}
+                      hostOffline={!local && !(hostOnline?.get(project.hostId) ?? false)}
+                    />
+                    {selected && selectedAgents !== undefined ? (
+                      <AgentRows {...selectedAgents} />
+                    ) : null}
+                  </Fragment>
                 );
               })}
             </div>
