@@ -145,10 +145,29 @@ pub const DIGEST_TEXT_CAP: usize = 2_000;
 pub const DIGEST_TOOL_CAP: usize = 256;
 /// Distinct files the digest keeps; the first seen stay.
 pub const DIGEST_FILE_CAP: usize = 100;
+/// Characters kept of one file path; a longer path is cut with `…`.
+pub const DIGEST_PATH_CAP: usize = 200;
+/// Files one answer lists, at most.
+pub const ANSWER_FILE_LIMIT: usize = 20;
+/// Characters of message text one answer may carry in all. The newest messages
+/// fill it first; a repeated message is listed once.
+pub const DIGEST_RESPONSE_CAP: usize = 6_000;
+
+/// `text` cut to `cap` characters, with `…` when it was cut.
+fn truncate_chars(text: &str, cap: usize) -> String {
+    if text.chars().count() <= cap {
+        return text.to_string();
+    }
+    let mut cut: String = text.chars().take(cap).collect();
+    cut.push('…');
+    cut
+}
 
 /// One agent message as the digest keeps it: the text so far and whether it was cut.
 #[derive(Clone, Debug, Default)]
 struct DigestMessage {
+    /// The message id the provider gave its chunks, when it gave one.
+    id: Option<String>,
     text: String,
     cut: bool,
 }
@@ -201,9 +220,22 @@ impl ActivityDigest {
     /// updates change the digest; everything else ends an open message.
     pub fn record(&mut self, event: &SessionEvent) {
         match event {
-            SessionEvent::AgentMessage { text, .. } => {
-                if !self.message_open {
-                    self.messages.push_back(DigestMessage::default());
+            SessionEvent::AgentMessage {
+                message_id, text, ..
+            } => {
+                // A chunk continues the open message only when it carries the
+                // same id; a different id is a different message even with no
+                // event between them.
+                let continues = self.message_open
+                    && self
+                        .messages
+                        .back()
+                        .is_some_and(|open| open.id.as_deref() == message_id.as_deref());
+                if !continues {
+                    self.messages.push_back(DigestMessage {
+                        id: message_id.clone(),
+                        ..DigestMessage::default()
+                    });
                     if self.messages.len() > ACTIVITY_MAX_LIMIT {
                         self.messages.pop_front();
                     }
@@ -237,14 +269,35 @@ impl ActivityDigest {
         self.message_open = false;
     }
 
-    /// The last `limit` messages, oldest first, each as its text so far.
+    /// The last `limit` messages, oldest first, each as its text so far. The
+    /// newest come first into a budget of [`DIGEST_RESPONSE_CAP`] characters,
+    /// and a message the budget cannot hold whole is cut with `…`. A text
+    /// listed twice is kept once, at its latest place.
     pub fn last_messages(&self, limit: usize) -> Vec<String> {
-        let skip = self.messages.len().saturating_sub(limit);
-        self.messages
-            .iter()
-            .skip(skip)
-            .map(DigestMessage::rendered)
-            .collect()
+        let mut newest_first: Vec<String> = Vec::new();
+        let mut budget = DIGEST_RESPONSE_CAP;
+        for message in self.messages.iter().rev() {
+            if newest_first.len() >= limit {
+                break;
+            }
+            let text = message.rendered();
+            if newest_first.contains(&text) {
+                continue;
+            }
+            let length = text.chars().count();
+            if length <= budget {
+                budget -= length;
+                newest_first.push(text);
+            } else {
+                if budget > 0 {
+                    let cut: String = text.chars().take(budget - 1).collect();
+                    newest_first.push(format!("{cut}…"));
+                }
+                break;
+            }
+        }
+        newest_first.reverse();
+        newest_first
     }
 
     /// Tool calls by their latest status: `(done, failed, running)`.
@@ -260,9 +313,10 @@ impl ActivityDigest {
             })
     }
 
-    /// The distinct paths the tool calls touched, first seen first.
-    pub fn files(&self) -> &[String] {
-        &self.files
+    /// The distinct paths the tool calls touched, first seen first: the first
+    /// [`ANSWER_FILE_LIMIT`] of them, which is what one answer lists.
+    pub fn answer_files(&self) -> &[String] {
+        &self.files[..self.files.len().min(ANSWER_FILE_LIMIT)]
     }
 
     fn upsert_tool(&mut self, id: &str, status: Option<&str>) {
@@ -289,8 +343,9 @@ impl ActivityDigest {
             if self.files.len() >= DIGEST_FILE_CAP {
                 return;
             }
-            if !self.files.contains(&location.path) {
-                self.files.push(location.path.clone());
+            let path = truncate_chars(&location.path, DIGEST_PATH_CAP);
+            if !self.files.contains(&path) {
+                self.files.push(path);
             }
         }
     }
@@ -504,6 +559,98 @@ mod tests {
         digest.record(&update("t1", "completed", Some("a.rs")));
         digest.record(&call("t2", "completed", Some("b.rs")));
         digest.record(&update("t3", "completed", Some("a.rs")));
-        assert_eq!(digest.files(), ["a.rs".to_string(), "b.rs".to_string()]);
+        assert_eq!(
+            digest.answer_files(),
+            ["a.rs".to_string(), "b.rs".to_string()]
+        );
+    }
+
+    fn message_with_id(id: &str, text: &str) -> SessionEvent {
+        SessionEvent::AgentMessage {
+            message_id: Some(id.to_string()),
+            text: text.to_string(),
+            parent_tool_use_id: None,
+            spawn_depth: None,
+            images: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn distinct_message_ids_are_distinct_messages_even_back_to_back() {
+        let mut digest = ActivityDigest::default();
+        digest.record(&message_with_id("m1", "first"));
+        digest.record(&message_with_id("m2", "second"));
+        assert_eq!(
+            digest.last_messages(10),
+            vec!["first".to_string(), "second".to_string()]
+        );
+    }
+
+    #[test]
+    fn chunks_that_share_an_id_still_join_into_one_message() {
+        let mut digest = ActivityDigest::default();
+        digest.record(&message_with_id("m1", "Hel"));
+        digest.record(&message_with_id("m1", "lo"));
+        assert_eq!(digest.last_messages(10), vec!["Hello".to_string()]);
+    }
+
+    #[test]
+    fn a_repeated_message_is_listed_once_at_its_latest_place() {
+        let mut digest = ActivityDigest::default();
+        digest.record(&message("Done."));
+        digest.record(&call("t1", "completed", None));
+        digest.record(&message("Working."));
+        digest.record(&call("t2", "completed", None));
+        digest.record(&message("Done."));
+        assert_eq!(
+            digest.last_messages(10),
+            vec!["Working.".to_string(), "Done.".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_response_is_bounded_in_characters_and_keeps_the_newest() {
+        let mut digest = ActivityDigest::default();
+        for index in 0..20 {
+            digest.record(&message_with_id(
+                &format!("m{index}"),
+                &format!("{index:02}").repeat(1_000),
+            ));
+            digest.record(&call(&format!("t{index}"), "completed", None));
+        }
+        let kept = digest.last_messages(ACTIVITY_MAX_LIMIT);
+        let total: usize = kept.iter().map(|text| text.chars().count()).sum();
+        assert!(total <= DIGEST_RESPONSE_CAP, "{total} characters");
+        assert!(
+            kept.last().is_some_and(|text| text.starts_with("19")),
+            "the newest message is the one kept whole or cut"
+        );
+    }
+
+    #[test]
+    fn a_file_path_is_cut_to_a_short_length() {
+        let mut digest = ActivityDigest::default();
+        let long = format!("{}.rs", "d/".repeat(400));
+        digest.record(&call("t1", "completed", Some(&long)));
+        let kept = digest.answer_files().first().expect("the path is kept");
+        assert!(
+            kept.chars().count() <= DIGEST_PATH_CAP + 1,
+            "{}",
+            kept.len()
+        );
+    }
+
+    #[test]
+    fn an_answer_lists_at_most_the_file_limit() {
+        let mut digest = ActivityDigest::default();
+        for index in 0..(ANSWER_FILE_LIMIT + 10) {
+            digest.record(&call(
+                &format!("t{index}"),
+                "completed",
+                Some(&format!("file{index}.rs")),
+            ));
+        }
+        assert_eq!(digest.answer_files().len(), ANSWER_FILE_LIMIT);
+        assert_eq!(digest.answer_files()[0], "file0.rs");
     }
 }

@@ -1070,7 +1070,7 @@ impl super::SessionRegistry {
             "state": activity_str,
             "lastMessages": digest.last_messages(limit),
             "toolCalls": {"done": done, "failed": failed, "running": running},
-            "filesTouched": digest.files(),
+            "filesTouched": digest.answer_files(),
         }))
     }
 
