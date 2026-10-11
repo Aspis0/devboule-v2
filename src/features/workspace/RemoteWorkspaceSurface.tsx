@@ -39,6 +39,7 @@ import {
   type SessionKind,
 } from "../../types/ipc";
 import { sessionCreateFromProvider, workspacePickerProviders } from "./workspaceSessions";
+import { isTurnActive } from "./queueStatus";
 
 interface RemoteWorkspaceSurfaceProps {
   deviceId: string;
@@ -691,7 +692,9 @@ export function RemoteWorkspaceSurface({
   const openIsAgent = openSession !== null && isAgentKind(openSession.kind);
   const openCards =
     openSessionId === null ? [] : cards.filter((card) => card.sessionId === openSessionId);
-  const turnActive = openSession?.activity === "working";
+  // The same rule the local composer uses: a blocked turn is still a turn, so
+  // Stop stays up while a permission card holds it.
+  const turnActive = isTurnActive(openSession?.activity ?? null, false);
   const sendReady = attached !== null && attached.sessionId === openSessionId && hostOnline;
 
   const stopTurn = useCallback(() => {

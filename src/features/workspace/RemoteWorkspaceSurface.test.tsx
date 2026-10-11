@@ -113,6 +113,22 @@ describe("the remote workspace surface", () => {
     expect(container.textContent).toContain("hello remote");
   });
 
+  it("shows Stop for a remote session the host reports as blocked", async () => {
+    vi.mocked(remoteHostList).mockResolvedValue({
+      list: "sessions",
+      rows: [{ ...SESSION, activity: "blocked" }],
+    });
+    await render(true);
+    const chip = [...container.querySelectorAll<HTMLButtonElement>("[role=tab]")].find(
+      (button) => button.textContent === "Agent one",
+    );
+    await act(async () => {
+      chip?.click();
+    });
+    await flush();
+    expect(container.querySelector(".workspace-stop-action")).not.toBeNull();
+  });
+
   it("keeps the roster live: a status word and a periodic re-read", async () => {
     vi.useFakeTimers();
     await render(true);
