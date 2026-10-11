@@ -1140,9 +1140,11 @@ export const AgentChatSurface = memo(function AgentChatSurface({
             {state.features?.planMode !== undefined ? (
               <PickerChip
                 label="Plan mode"
+                // "Default" is Codex's own name for its non-plan collaboration mode;
+                // a chip that names both states "Plan" cannot show which one is on.
                 options={[
                   { id: "on", name: "Plan" },
-                  { id: "off", name: "Plan" },
+                  { id: "off", name: "Default" },
                 ]}
                 currentId={planOn ? "on" : "off"}
                 onSelect={(id) => void sessionRef.current?.setFeature("planMode", id === "on")}

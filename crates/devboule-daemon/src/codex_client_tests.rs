@@ -127,6 +127,47 @@ fn plan_toggle_selects_plan_and_default_collaboration_modes_per_turn() {
 }
 
 #[test]
+fn the_plan_chip_matches_the_collaboration_mode_each_turn_sends() {
+    let state = CodexState::new(
+        "thread".to_string(),
+        catalog_from_response(&serde_json::json!({
+            "data": [{"id":"fake-model","isDefault":true}]
+        }))
+        .expect("catalog"),
+        "auto",
+    );
+    state
+        .set_collaboration_modes(&serde_json::json!({
+            "data": [
+                {"name":"Plan","mode":"plan","model":"plan-model"},
+                {"name":"Default","mode":"default","model":"default-model"}
+            ]
+        }))
+        .expect("modes");
+
+    for enabled in [true, false, true] {
+        state.set_plan_mode(enabled).expect("toggle");
+        let Some(SessionEvent::SessionFeatureState {
+            enabled: chip_on, ..
+        }) = state.plan_feature_state()
+        else {
+            panic!("the plan chip is offered once the modes are advertised");
+        };
+        let wire = with_collaboration_mode(
+            turn_start_params("thread", "p", None, None, None, None),
+            &state,
+        );
+        let wire_plan = state.is_plan_collaboration_mode(
+            wire["collaborationMode"]["mode"]
+                .as_str()
+                .expect("a sent turn names its collaboration mode"),
+        );
+        assert_eq!(chip_on, enabled);
+        assert_eq!(wire_plan, enabled, "the chip and the turn disagree");
+    }
+}
+
+#[test]
 fn configured_model_and_effort_override_the_list_entry() {
     let state = CodexState::new(
         "thread".to_string(),
