@@ -229,6 +229,7 @@ fn run_creation(
                 &existing,
                 state.mcp.is_registered(&existing.id),
                 request.notify,
+                None,
             );
         }
     }
@@ -399,6 +400,13 @@ fn run_creation(
     let creator_runtime = state
         .sessions
         .live_runtime(&creator_id, &registration.owner);
+    // What the creator reads when the child did not start in the mode it asked for.
+    let note = profile.replaced_mode.as_deref().map(|requested| {
+        format!(
+            "Mode '{requested}' is not one an agent's child starts in; it starts in your posture, '{}'.",
+            profile.mode
+        )
+    });
     let creation = crate::session::AgentCreation {
         creator_session_id: creator_id.clone(),
         creator_runtime,
@@ -465,6 +473,7 @@ fn run_creation(
                 &session,
                 state.mcp.is_registered(&session.id),
                 request.notify,
+                note.as_deref(),
             )
         }
         // Every refusal above and this failure release the reservation

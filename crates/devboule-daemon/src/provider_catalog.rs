@@ -772,7 +772,7 @@ pub(crate) fn agent_create_input_schema() -> serde_json::Value {
             },
             "mode": {
                 "type": "string",
-                "description": "The session mode the child starts in. Optional: left out, the child inherits your own permission posture, spelled for its provider. Name one only to choose a different posture."
+                "description": "The session mode the child starts in. Optional: left out, the child takes your own permission posture, spelled for its provider. A child never runs in an asking mode or wider than you; name plan or read-only to restrict it further."
             },
             "effort": {
                 "type": "string",

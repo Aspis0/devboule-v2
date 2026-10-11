@@ -3,7 +3,7 @@
 use devboule_protocol::SessionKind;
 use serde_json::{json, Value};
 
-use super::posture::inherited_mode;
+use super::posture::agent_child_mode;
 use super::request::CreationChoice;
 
 /// The name a profile's labels and the creation record are keyed on: the
@@ -37,6 +37,8 @@ pub(in crate::mcp_broker) struct ResolvedProfile {
     /// bare id, exactly as it reads those profiles today.
     pub(in crate::mcp_broker) model_provider: Option<String>,
     pub(in crate::mcp_broker) mode: String,
+    /// The mode an agent asked for when its child starts in its creator's posture instead.
+    pub(in crate::mcp_broker) replaced_mode: Option<String>,
     /// The provider's thinking option, exactly as saved.
     pub(in crate::mcp_broker) thinking_option_id: Option<String>,
     /// The provider's feature values, exactly as saved.
@@ -111,6 +113,7 @@ pub(in crate::mcp_broker) fn resolve_profile(
         model: profile.model.clone(),
         model_provider: profile.model_provider.clone(),
         mode: profile.mode_id.clone(),
+        replaced_mode: None,
         thinking_option_id: profile.thinking_option_id.clone(),
         features: profile.features.clone(),
         spawn_prompt: profile.spawn_prompt.clone(),
@@ -211,23 +214,15 @@ pub(in crate::mcp_broker) fn resolve_creation(
         provider,
     )
     .ok_or_else(|| format!("provider {provider} is not installed"))?;
-    let (mode, overlay) = match preset {
+    let (requested, overlay) = match preset {
         Some(preset_id) => {
             let (_, cell) = crate::provider_catalog::resolve_agent_preset(preset_id, &catalog_id)?;
-            (cell.mode.to_string(), cell.overlay)
+            (Some(cell.mode), cell.overlay)
         }
-        None => {
-            let mode = match mode {
-                Some(mode) => mode.clone(),
-                None => inherited_mode(creator, &crate::provider_catalog::session_kind_for(&catalog_id))
-                    .map(str::to_string)
-                    .ok_or_else(|| {
-                        format!("mode is required: the creating agent's mode does not carry over to {catalog_id}")
-                    })?,
-            };
-            (mode, crate::provider_catalog::ToolOverlay::NONE)
-        }
+        None => (mode.as_deref(), crate::provider_catalog::ToolOverlay::NONE),
     };
+    let child = crate::provider_catalog::session_kind_for(&catalog_id);
+    let chosen = agent_child_mode(&child, requested, creator)?;
     Ok(ResolvedProfile {
         id: String::new(),
         name: match preset {
@@ -240,7 +235,8 @@ pub(in crate::mcp_broker) fn resolve_creation(
         provider: catalog_id,
         model: model.clone().unwrap_or_default(),
         model_provider: None,
-        mode,
+        mode: chosen.mode,
+        replaced_mode: chosen.replaced,
         thinking_option_id: effort.clone(),
         features: serde_json::Map::new(),
         spawn_prompt: String::new(),
@@ -335,16 +331,50 @@ mod tests {
         assert_eq!(resolved.mode, "auto");
     }
 
-    /// A mode the caller names is its own choice, whatever the creator runs in.
+    /// A named mode that does not ask stands, even under a wider creator.
     #[test]
-    fn a_named_mode_wins_over_the_creators_posture() {
+    fn a_named_mode_that_does_not_ask_stands_under_a_wider_creator() {
         let resolved = resolve_creation(
             &store(),
-            &direct("claude", Some("default")),
+            &direct("claude", Some("acceptEdits")),
             Some((&SessionKind::Codex, "full-access")),
         )
         .expect("the named mode");
-        assert_eq!(resolved.mode, "default");
+        assert_eq!(resolved.mode, "acceptEdits");
+        assert_eq!(resolved.replaced_mode, None);
+    }
+
+    /// An agent's child cannot run in the asking mode the agent names: it takes
+    /// its creator's posture, and the replaced mode is reported.
+    #[test]
+    fn an_agent_child_cannot_ask_for_default_under_a_reviewed_creator() {
+        let resolved = resolve_creation(
+            &store(),
+            &direct("claude", Some("default")),
+            Some((&SessionKind::Codex, "auto-review")),
+        )
+        .expect("the posture is taken");
+        assert_eq!(resolved.mode, "auto");
+        assert_eq!(resolved.replaced_mode.as_deref(), Some("default"));
+    }
+
+    /// A preset's asking mode is replaced the same way; the preset's tool overlay stays.
+    #[test]
+    fn a_preset_child_takes_the_creators_posture() {
+        let choice = CreationChoice::Direct {
+            provider: "claude".to_string(),
+            model: None,
+            mode: None,
+            effort: None,
+            preset: Some("worker".to_string()),
+        };
+        let resolved = resolve_creation(
+            &store(),
+            &choice,
+            Some((&SessionKind::Codex, "auto-review")),
+        )
+        .expect("the preset resolves under the posture");
+        assert_eq!(resolved.mode, "auto");
     }
 
     /// Nothing to inherit from: the caller is told to name a mode.

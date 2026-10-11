@@ -426,17 +426,17 @@ fn creation_result_reports_verification_per_state() {
     // The wrapper reads the registration FACT, not the kind — a Codex
     // child with a minted carrier reads unverified (establishing), one
     // without reads unavailable. Production-identical while the gate holds.
-    let unregistered = created_result(&id, &s2_session(SessionKind::Codex), false, false);
+    let unregistered = created_result(&id, &s2_session(SessionKind::Codex), false, false, None);
     assert_eq!(
         unregistered["result"]["structuredContent"]["tools"],
         "unavailable"
     );
-    let registered = created_result(&id, &s2_session(SessionKind::Codex), true, false);
+    let registered = created_result(&id, &s2_session(SessionKind::Codex), true, false, None);
     assert_eq!(
         registered["result"]["structuredContent"]["tools"],
         "unverified"
     );
-    let acp = created_result(&id, &s2_session(SessionKind::Acp), true, false);
+    let acp = created_result(&id, &s2_session(SessionKind::Acp), true, false, None);
     assert_eq!(acp["result"]["structuredContent"]["tools"], "unverified");
 }
 
@@ -447,7 +447,7 @@ fn a_creation_answer_says_the_finish_wakes_the_creator_only_when_it_is_notified(
     // no poll is needed; with it off it must not promise a wake.
     let id = json!(9);
     let session = s2_session(SessionKind::Codex);
-    let notified = created_result(&id, &session, true, true);
+    let notified = created_result(&id, &session, true, true, None);
     let text = notified["result"]["content"][0]["text"]
         .as_str()
         .unwrap_or_default();
@@ -456,7 +456,7 @@ fn a_creation_answer_says_the_finish_wakes_the_creator_only_when_it_is_notified(
         text.contains("do not poll"),
         "says no poll is needed: {text}"
     );
-    let quiet = created_result(&id, &session, true, false);
+    let quiet = created_result(&id, &session, true, false, None);
     let quiet_text = quiet["result"]["content"][0]["text"]
         .as_str()
         .unwrap_or_default();
@@ -5743,7 +5743,7 @@ fn a_creation_result_carries_the_task_id_and_the_context() {
         labels: Default::default(),
         resumable: false,
     };
-    let result = created_result(&json!(7), &session, true, false);
+    let result = created_result(&json!(7), &session, true, false, None);
     let content = &result["result"]["structuredContent"];
     assert_eq!(content["sessionId"], "s.parent.2");
     assert_eq!(
@@ -6750,8 +6750,12 @@ fn a_create_names_its_provider_and_model_without_a_profile() {
     }))
     .expect("a direct creation parses");
     let store = profile_store(document(vec![], ""));
-    let resolved =
-        resolve_creation(&store, &request.choice, None).expect("a direct creation resolves");
+    let resolved = resolve_creation(
+        &store,
+        &request.choice,
+        Some((&SessionKind::Claude, "default")),
+    )
+    .expect("a direct creation resolves");
     assert_eq!(resolved.provider, "claude");
     assert_eq!(resolved.model, "claude-haiku-5-5");
     assert_eq!(resolved.mode, "default");
@@ -6774,8 +6778,8 @@ fn a_workspace_agent_can_create_a_design_child() {
     }))
     .expect("a design creation parses");
     let store = profile_store(document(vec![], ""));
-    let resolved =
-        resolve_creation(&store, &request.choice, None).expect("design resolves for codex");
+    let resolved = resolve_creation(&store, &request.choice, Some((&SessionKind::Codex, "auto")))
+        .expect("design resolves for codex");
     assert_eq!(resolved.overlay, ToolOverlay::DESIGN);
     assert_eq!(resolved.mode, "auto", "the design cell's own mode");
     assert!(
@@ -6906,7 +6910,8 @@ fn a_design_child_needs_only_a_provider_and_the_preset() {
     }))
     .expect("a provider and the preset are enough");
     let store = profile_store(document(vec![], ""));
-    let resolved = resolve_creation(&store, &request.choice, None).expect("design resolves");
+    let resolved = resolve_creation(&store, &request.choice, Some((&SessionKind::Codex, "auto")))
+        .expect("design resolves");
     assert_eq!(resolved.overlay, ToolOverlay::DESIGN);
     assert_eq!(resolved.mode, "auto", "the design cell's own mode");
     assert!(
@@ -6934,17 +6939,30 @@ fn a_workspace_agent_spawns_a_design_child_end_to_end() {
     let creator = "s.design-creator".to_string();
     let (workspace, _root) =
         super::terminal_write_harness::project_workspace(&state, "design-child");
-    crate::session::insert_test_live_session_in_workspace(
+    // The creator runs the same provider as its child, in its own mode: a child
+    // of that provider takes the mode as it is.
+    let creator_runtime = crate::session::insert_test_live_session_in_workspace(
         &state.sessions,
         &creator,
         owner.clone(),
-        SessionKind::Pi,
+        SessionKind::Acp,
         &workspace,
     );
+    creator_runtime.set_agent_kind(SessionKind::Acp);
+    creator_runtime.store_session_manifest(devboule_protocol::SessionEvent::SessionManifest {
+        provider_id: Some("devboule-acp-stub".to_string()),
+        current_model_id: None,
+        models: Vec::new(),
+        modes: Some(devboule_protocol::SessionModeStateView {
+            current_mode_id: "default".to_string(),
+            available_modes: Vec::new(),
+        }),
+        current_model_provider_id: None,
+    });
     let registration = RegisteredSession {
         session_id: creator.clone(),
         owner: owner.clone(),
-        provider_id: Some("pi".to_string()),
+        provider_id: Some("devboule-acp-stub".to_string()),
         depth: 0,
         overlay: ToolOverlay::NONE,
         bearer: "the bearer".to_string(),
@@ -7058,4 +7076,23 @@ fn a_workspace_agent_spawns_a_design_child_end_to_end() {
     );
     drop(server);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A child that did not start in the mode its creator asked for says so in the
+/// answer, in one sentence the creator reads.
+#[test]
+fn the_answer_says_when_the_child_started_in_the_creators_posture() {
+    let session = s2_session(SessionKind::Claude);
+    let answer = created_result(
+        &json!(3),
+        &session,
+        true,
+        false,
+        Some("Mode 'default' is not one an agent's child starts in; it starts in your posture, 'auto'."),
+    );
+    let text = answer
+        .pointer("/result/content/0/text")
+        .and_then(|text| text.as_str())
+        .expect("the answer text");
+    assert!(text.contains("starts in your posture, 'auto'"), "{text}");
 }

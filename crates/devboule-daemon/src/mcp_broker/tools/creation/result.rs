@@ -18,12 +18,14 @@ use crate::mcp_broker::{compute_tools_state, ToolsState};
 ///
 /// `notify` is the creator's `notifyOnFinish`: when it is set, the answer says
 /// that the child's finish wakes the creator, so the creator ends its turn
-/// instead of polling for the child.
+/// instead of polling for the child. `note` is one sentence the creator needs to
+/// read, such as a mode the child did not start in.
 pub(in crate::mcp_broker) fn created_result(
     id: &Value,
     session: &devboule_protocol::Session,
     registered: bool,
     notify: bool,
+    note: Option<&str>,
 ) -> Value {
     // S2 honesty, S8 fact: the result reports verification, the card promised
     // it. `registered` is the broker row — a fresh registered child is not yet
@@ -32,8 +34,15 @@ pub(in crate::mcp_broker) fn created_result(
     // (pinned by test) and arrives on live paths when verification flips the
     // runtime. Routed through the S1 single computation point.
     let tools = compute_tools_state(&session.kind, registered, false);
-    let wake = notify.then_some(crate::provider_catalog::AGENT_WAKE_SENTENCE);
-    created_result_for_tools(id, session, tools, wake)
+    let wake = match (notify, note) {
+        (true, Some(note)) => Some(format!(
+            "{} {note}",
+            crate::provider_catalog::AGENT_WAKE_SENTENCE
+        )),
+        (true, None) => Some(crate::provider_catalog::AGENT_WAKE_SENTENCE.to_string()),
+        (false, note) => note.map(str::to_string),
+    };
+    created_result_for_tools(id, session, tools, wake.as_deref())
 }
 
 /// The result body for one explicit tools state (S2 test hook): the `tools`
