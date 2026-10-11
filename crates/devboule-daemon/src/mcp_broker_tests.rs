@@ -6875,6 +6875,10 @@ fn the_broker_names_the_callers_workspace_at_initialize() {
         instructions.contains(&workspace.id),
         "the workspace id is named: {instructions}"
     );
+    assert!(
+        !instructions.contains(&root.to_string_lossy().into_owned()),
+        "the folder path stays out of the instructions: {instructions}"
+    );
     drop(guard);
     drop(server);
 }

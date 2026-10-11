@@ -14,7 +14,8 @@ use super::tools::always_card::{always_card, ask_peer_command, AlwaysCard};
 use super::{McpBroker, RegisteredSession, MCP_SERVER_NAME};
 
 /// The standing instructions, with the caller's own workspace named after
-/// them: the agent otherwise infers its workspace from the folder it runs in.
+/// them by title and id. The folder is left out: the agent already runs in it,
+/// and its absolute path would name the account and the project to the model.
 fn agent_instructions(state: &ServerState, registration: &RegisteredSession) -> String {
     let standing = crate::provider_catalog::DEVBOULE_AGENT_INSTRUCTIONS;
     match state
@@ -22,10 +23,8 @@ fn agent_instructions(state: &ServerState, registration: &RegisteredSession) -> 
         .caller_workspace_record(&registration.session_id, &registration.owner)
     {
         Some(workspace) => format!(
-            "{standing} This session's workspace is \"{}\" (id {}), in the folder {}.",
-            workspace.title,
-            workspace.id,
-            crate::verbatim_path::plain_path(&workspace.path),
+            "{standing} This session's workspace is \"{}\" (id {}).",
+            workspace.title, workspace.id,
         ),
         None => standing.to_string(),
     }
