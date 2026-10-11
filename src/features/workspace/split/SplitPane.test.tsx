@@ -140,7 +140,7 @@ describe("a workspace with a split", () => {
     // The share is written at the geometry's precision, not rounded to a whole
     // percent: a rounded one hands the pane below the pixels the floor took.
     expect(panes[0]?.style.height).toBe("42%");
-    expect(splitSizeAtPane(boundsOf(700).min)).toBe("39.857%");
+    expect(splitSizeAtPane(boundsOf(700).min)).toBe("41.571%");
     // The divider owns the height: the pane below takes what the top leaves.
     expect(ruleBody(".workspace-split-top")).toMatch(/flex:\s*none/);
     expect(ruleBody(".workspace-split-bottom")).toMatch(/flex:\s*1 1 0/);
@@ -162,7 +162,7 @@ describe("a workspace with a split", () => {
     render({ split: splitAt(0.5) });
     stubArea(700);
     await areaMeasured();
-    // 700 px: the top pane's 279 px floor is 39.9%, the lower pane's floor
+    // 700 px: the top pane's 291 px floor is 41.6%, the lower pane's floor
     // leaves 71.9% — so the advertised bounds are the pixels, not 20/80.
     const bounds = splitBoundsFor(700);
     expect(separator().getAttribute("aria-valuemin")).toBe(String(Math.round(bounds.min * 100)));
@@ -344,7 +344,7 @@ describe("a pane too small to read at full size", () => {
   it("leaves the floor to the geometry, so the two cannot disagree", () => {
     // A `min-height` here would be a second answer to a question splitGeometry
     // already answers, and the one the stylesheet would win: at a 300px area
-    // the geometry hands the pane above 103px and this floor would take 279.
+    // the geometry hands the pane above 103px and this floor would take 291.
     expect(ruleBody(".workspace-split-top")).not.toMatch(/min-height/);
     expect(ruleBody(".workspace-split-bottom")).not.toMatch(/min-height/);
     // What the stylesheet does own is that the three rows add up to the split's

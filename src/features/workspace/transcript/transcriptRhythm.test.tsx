@@ -50,7 +50,7 @@ function margins(host: HTMLElement): string[] {
 }
 
 describe("transcript rhythm", () => {
-  it("spaces one turn 16 / 12 / 4 with a compact 0 between assistant rows", () => {
+  it("spaces one turn 24 / 16 / 12 / 48 / 4, with the agent's texts 12 apart", () => {
     workspaceCss.inject(RHYTHM_SELECTORS);
     const content = document.createElement("div");
     content.className = "workspace-conversation-content";
@@ -68,20 +68,20 @@ describe("transcript rhythm", () => {
     );
     document.body.appendChild(content);
 
-    // first 0; assistant after user 16; tool in turn 4; assistant after
-    // tool 4; assistant after assistant 0; user after assistant 16; user
-    // after user 4; assistant after user 16; error in turn 4; assistant
+    // first 0; assistant after user 24; tool in turn 16; assistant after
+    // tool 16; assistant after assistant 12; user after assistant 48; user
+    // after user 4; assistant after user 24; error in turn 4; assistant
     // after an error opens on the standard 12 — a failed turn is a
     // boundary, while a notice continues the run at 0 (next test).
     expect(margins(content)).toEqual([
       "0px",
+      "24px",
       "16px",
-      "4px",
-      "4px",
-      "0px",
       "16px",
+      "12px",
+      "48px",
       "4px",
-      "16px",
+      "24px",
       "4px",
       "12px",
     ]);
@@ -105,16 +105,16 @@ describe("transcript rhythm", () => {
     );
     document.body.appendChild(content);
 
-    // first row 0; assistant after user 16; system in turn 4; assistant
-    // after a notice continues the run at 0; tool in turn 4; card in
+    // first row 0; assistant after user 24; system in turn 4; assistant
+    // after a notice continues the run at 0; tool in turn 16; card in
     // turn 4; assistant after a card 4; error in turn 4; assistant after
     // an error opens on the standard 12 — a failed turn is a boundary.
     expect(margins(content)).toEqual([
       "0px",
-      "16px",
+      "24px",
       "4px",
       "0px",
-      "4px",
+      "16px",
       "4px",
       "4px",
       "4px",

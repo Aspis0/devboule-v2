@@ -24,7 +24,7 @@ export const COMPACT_MAX_WIDTH = 440;
 
 /** The smallest top pane worth keeping: the compact pane toolbar, a goal row,
  * two transcript bubbles and the 108px compact composer (splitGeometry.test.ts). */
-export const MIN_TOP_PANE_PX = 279;
+export const MIN_TOP_PANE_PX = 291;
 
 /** The smallest pane below worth keeping: the split header, the page's own
  * chrome, and 120 px of page to read. */

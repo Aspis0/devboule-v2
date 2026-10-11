@@ -36,10 +36,10 @@ describe("timeline computed styles", () => {
     document.body.appendChild(rail);
 
     const style = getComputedStyle(rail);
-    // The lane fills the pane and the 1060 px cap binds it when the pane
+    // The lane fills the pane and the 800 px cap binds it when the pane
     // grows past the reading width; the 20 px sides are the lane's own
     // padding, so the rows and the composer share one axis.
-    expect(style.maxWidth).toBe("1060px");
+    expect(style.maxWidth).toBe("800px");
     expect(style.marginLeft).toBe("auto");
     expect(style.marginRight).toBe("auto");
     // Fills the pane up to the cap instead of shrink-wrapping to the longest
@@ -73,9 +73,9 @@ describe("timeline computed styles", () => {
     document.body.appendChild(bubble);
 
     const style = getComputedStyle(bubble);
-    expect(style.maxWidth).toBe("78%");
-    expect(style.padding).toBe("12px");
-    expect(style.borderRadius).toBe("12px 4px 12px 12px");
+    expect(style.maxWidth).toBe("85%");
+    expect(style.padding).toBe("12px 16px");
+    expect(style.borderRadius).toBe("16px 4px 16px 16px");
     expect(style.backgroundColor).toBe("#ffffff");
     expect(style.color).toBe("#242321");
     bubble.remove();
@@ -147,20 +147,21 @@ describe("timeline computed styles", () => {
     ) {
       throw new Error("Markdown or copy markup did not render");
     }
-    expect(getComputedStyle(assistant).fontSize).toBe("14px");
-    expect(getComputedStyle(assistant).lineHeight).toBe("1.45");
+    expect(getComputedStyle(assistant).fontSize).toBe("15px");
+    expect(getComputedStyle(assistant).lineHeight).toBe("1.5");
     expect(heading).not.toBeNull();
     for (const level of [1, 2, 3, 4, 5, 6]) {
       const levelHeading = assistant.querySelector<HTMLElement>(`.plan-markdown-heading-${level}`);
       expect(levelHeading).not.toBeNull();
       expect(getComputedStyle(levelHeading!).fontSize).toBe(
-        ({ 1: "18px", 2: "16px", 3: "14px", 4: "13px", 5: "12px", 6: "12px" } as const)[
+        ({ 1: "18px", 2: "16px", 3: "15px", 4: "13px", 5: "12px", 6: "12px" } as const)[
           level as 1 | 2 | 3 | 4 | 5 | 6
         ],
       );
       expect(getComputedStyle(levelHeading!).fontWeight).toBe("600");
     }
-    expect(getComputedStyle(list).paddingLeft).toBe("16px");
+    // happy-dom keeps the calc() as written: 12 px icon gap plus 8 px.
+    expect(getComputedStyle(list).paddingLeft).toBe("calc(12px + 8px)");
     expect(getComputedStyle(inlineCode).fontSize).toBe("13px");
     expect(getComputedStyle(inlineCode).fontFamily).toContain("JetBrains Mono");
     expect(getComputedStyle(codeBlock).backgroundColor).toBe("#201f1e");
@@ -244,7 +245,7 @@ describe("timeline computed styles", () => {
     rail.append(typing);
     document.body.append(system, rail);
 
-    expect(getComputedStyle(system).fontSize).toBe("12px");
+    expect(getComputedStyle(system).fontSize).toBe("13px");
     expect(getComputedStyle(system).color).toBe("#484640");
     expect(getComputedStyle(system).fontFamily).toContain("Inter");
     expect(getComputedStyle(typing).fontSize).toBe("12px");

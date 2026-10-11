@@ -171,6 +171,7 @@
   --type-meta: 12px;
   --type-small: 13px;
   --type-interface: 14px;
+  --type-chat: 15px;
   --type-display-sm: 16px;
   --type-display-md: 18px;
   --type-display-lg: 20px;
@@ -183,6 +184,7 @@
   /* leading: three rhythms, and a text block picks one of these rather than
      a number of its own */
   --leading-body: 1.45;
+  --leading-chat: 1.5;
   --leading-dense: 1.35;
   --leading-heading: 1.3;
 
@@ -253,6 +255,10 @@
   /* an expanded tool body and an expanded card detail scroll past this and
      no further, so one long tool call cannot push the turn after it away */
   --transcript-detail-max: 200px;
+  /* the reading column the transcript and the composer share, and a picture
+     thumbnail's height: the chat's own measures, named once */
+  --chat-lane: 800px;
+  --chat-thumb-h: 168px;
 }
 
 [data-theme="dark"] {

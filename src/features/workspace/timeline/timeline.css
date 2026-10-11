@@ -7,21 +7,21 @@
   position: relative;
   box-sizing: border-box;
   width: fit-content;
-  max-width: 78%;
-  padding: var(--space-12);
-  border-radius: var(--radius-12) var(--radius-4) var(--radius-12) var(--radius-12);
+  max-width: 85%;
+  padding: var(--space-12) var(--space-16);
+  border-radius: var(--radius-16) var(--radius-4) var(--radius-16) var(--radius-16);
   background: var(--bubble-bg);
   color: var(--ink);
-  font-size: var(--type-interface);
-  line-height: var(--leading-body);
+  font-size: var(--type-chat);
+  line-height: var(--leading-chat);
   overflow-wrap: anywhere;
 }
 
 .workspace-chat-assistant {
   position: relative;
   width: 100%;
-  font-size: var(--type-interface);
-  line-height: var(--leading-body);
+  font-size: var(--type-chat);
+  line-height: var(--leading-chat);
   color: var(--ink);
 }
 
@@ -31,33 +31,34 @@
   white-space: normal;
 }
 
+/* Paragraphs are 12 px apart; headings take 24 / 12 for h1-h2 and 16 / 8 below. */
 .workspace-chat-assistant .workspace-chat-copy p {
-  margin: var(--space-6) 0;
+  margin: var(--space-12) 0;
 }
 
 .workspace-chat-assistant .workspace-chat-copy .plan-markdown-heading-1 {
-  margin: var(--space-4) 0 var(--space-2);
+  margin: var(--space-24) 0 var(--space-12);
   font-size: var(--type-display-md);
   font-weight: var(--weight-heading);
   line-height: var(--leading-heading);
 }
 
 .workspace-chat-assistant .workspace-chat-copy .plan-markdown-heading-2 {
-  margin: var(--space-4) 0 var(--space-2);
+  margin: var(--space-24) 0 var(--space-12);
   font-size: var(--type-display-sm);
   font-weight: var(--weight-heading);
   line-height: var(--leading-heading);
 }
 
 .workspace-chat-assistant .workspace-chat-copy .plan-markdown-heading-3 {
-  margin: var(--space-4) 0 var(--space-2);
-  font-size: var(--type-interface);
+  margin: var(--space-16) 0 var(--space-8);
+  font-size: var(--type-chat);
   font-weight: var(--weight-heading);
-  line-height: var(--leading-body);
+  line-height: var(--leading-chat);
 }
 
 .workspace-chat-assistant .workspace-chat-copy .plan-markdown-heading-4 {
-  margin: var(--space-4) 0 var(--space-2);
+  margin: var(--space-16) 0 var(--space-8);
   font-size: var(--type-small);
   font-weight: var(--weight-heading);
   line-height: var(--leading-body);
@@ -65,20 +66,21 @@
 
 .workspace-chat-assistant .workspace-chat-copy .plan-markdown-heading-5,
 .workspace-chat-assistant .workspace-chat-copy .plan-markdown-heading-6 {
-  margin: var(--space-4) 0 var(--space-2);
+  margin: var(--space-16) 0 var(--space-8);
   font-size: var(--type-meta);
   font-weight: var(--weight-heading);
   line-height: var(--leading-body);
 }
 
+/* 20 px, the same indent as an opened detail, so nested text shares one edge. */
 .workspace-chat-assistant .workspace-chat-copy ul,
 .workspace-chat-assistant .workspace-chat-copy ol {
   margin: var(--space-6) 0;
-  padding-left: var(--space-16);
+  padding-left: calc(var(--space-12) + var(--space-8));
 }
 
 .workspace-chat-assistant .workspace-chat-copy li {
-  margin: var(--space-2) 0;
+  margin: var(--space-4) 0;
 }
 
 .workspace-chat-assistant .workspace-chat-copy code:not(pre code) {
@@ -137,16 +139,25 @@
 }
 
 /* A completed turn's footer: its copy icon and how long the turn worked, under
-   the last answer at the start edge, always drawn. One footer per turn, not one
-   copy icon per paragraph. */
+   the last answer at the start edge. One footer per turn, not one copy icon per
+   paragraph. It is drawn while the answer is hovered or focused, and always on
+   the last answer of the transcript. */
 .workspace-chat-turn-footer {
   display: flex;
   align-items: center;
   gap: var(--space-8);
-  margin-top: var(--space-4);
+  height: var(--control-dense);
+  margin-top: var(--space-8);
   color: var(--muted);
   font-family: var(--font-ui);
-  font-size: var(--type-meta);
+  font-size: var(--type-small);
+  opacity: 0;
+}
+
+.workspace-chat-assistant:hover .workspace-chat-turn-footer,
+.workspace-chat-assistant:focus-within .workspace-chat-turn-footer,
+.workspace-conversation-content > .workspace-chat-assistant:last-child .workspace-chat-turn-footer {
+  opacity: 1;
 }
 
 .workspace-chat-turn-footer .timeline-copy-chip {

@@ -596,7 +596,7 @@
 .workspace-conversation,
 .workspace-composer {
   width: 100%;
-  max-width: 1060px;
+  max-width: var(--chat-lane);
   margin-left: auto;
   margin-right: auto;
   box-sizing: border-box;
@@ -714,10 +714,10 @@
   flex: none;
   max-width: 100%;
   color: var(--ink);
-  /* Message body: 14px on a 1.45 line, the mock's prose. Every secondary
-     line in the transcript overrides down to --type-meta. */
-  font-size: var(--type-interface);
-  line-height: var(--leading-body);
+  /* Message body: 15px on a 1.5 line. Every secondary line in the transcript
+     overrides down to --type-small or --type-meta. */
+  font-size: var(--type-chat);
+  line-height: var(--leading-chat);
   text-wrap: pretty;
   white-space: pre-wrap;
 }
@@ -746,12 +746,14 @@
   margin-top: var(--space-12);
 }
 
-/* Same-turn flow: a tool or thought row inside the response, and the
-   assistant text that follows one, stay on the 4 px rhythm. */
+/* Agent text and the quiet lines of its turn sit 16 px apart, both ways. */
 .workspace-chat-tool + .workspace-chat-assistant,
 .workspace-chat-tool-group + .workspace-chat-assistant,
-.workspace-chat-thought + .workspace-chat-assistant {
-  margin-top: var(--space-4);
+.workspace-chat-thought + .workspace-chat-assistant,
+.workspace-chat-assistant + .workspace-chat-tool,
+.workspace-chat-assistant + .workspace-chat-tool-group,
+.workspace-chat-assistant + .workspace-chat-thought {
+  margin-top: var(--space-16);
 }
 
 /* An assistant run continues across a system line with no break: the reply
@@ -772,23 +774,25 @@
   margin-top: 0;
 }
 
+/* A user bubble's first reply sits 24 px under it. */
 .workspace-chat-user + .workspace-chat-entry {
-  margin-top: var(--space-16);
+  margin-top: var(--space-24);
 }
 
 .workspace-chat-user + .workspace-chat-user {
   margin-top: var(--space-4);
 }
 
+/* Consecutive agent texts are separate paragraphs of one answer: 12 px apart. */
 .workspace-chat-assistant + .workspace-chat-assistant {
-  margin-top: 0;
+  margin-top: var(--space-12);
 }
 
 .workspace-chat-user {
   align-self: flex-end;
   width: 100%;
-  /* A user row opens a turn: 16 separates it whatever came before. */
-  margin-top: var(--space-16);
+  /* A user row opens a turn: 48 separates it from the agent's last text. */
+  margin-top: var(--space-48);
 }
 
 .workspace-chat-label {
@@ -918,20 +922,21 @@
 .workspace-chat-system {
   color: var(--muted);
   font-family: var(--font-ui);
-  font-size: var(--type-meta);
+  font-size: var(--type-small);
   line-height: var(--leading-dense);
 }
 
-/* A tool call is one flat line in the body font: an icon, a verb, its target,
-   and a status only when it failed. No fill, no border; the output waits
-   behind the line, indented and muted. */
+/* A tool call is one flat quiet line: an icon, a verb, its target, and a status
+   only when it failed. No fill, no border; the line is 28 px tall and its
+   insets hang into the lane's margin so the text stays on the rail. The output
+   waits behind the line, indented and muted. */
 .workspace-chat-tool,
 .workspace-chat-tool-group {
   margin-top: 0;
   color: var(--muted);
   font-family: var(--font-ui);
-  font-size: var(--type-meta);
-  line-height: var(--leading-body);
+  font-size: var(--type-small);
+  line-height: var(--leading-dense);
   white-space: normal;
 }
 
@@ -957,10 +962,19 @@
 .workspace-chat-tool-group-summary {
   position: relative;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--space-8);
   min-width: 0;
-  padding: var(--space-2) var(--space-16) var(--space-2) 0;
+  min-height: var(--control-default);
+  margin: 0 calc(var(--space-8) * -1);
+  padding: 0 var(--space-8);
+  border-radius: var(--radius-8);
+}
+
+.workspace-chat-tool-summary:hover,
+.workspace-chat-tool-group-summary:hover {
+  background: var(--fill-hover);
+  color: var(--ink);
 }
 
 .workspace-chat-tool summary:focus-visible,
@@ -987,9 +1001,19 @@
   min-width: 0;
   max-width: 28ch;
   overflow: hidden;
-  color: var(--ink);
+  color: var(--muted);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.workspace-chat-tool-summary:hover .workspace-chat-tool-label,
+.workspace-chat-tool-group-summary:hover .workspace-chat-tool-label {
+  color: var(--ink);
+}
+
+/* A call still running reads in the ink colour; its state is the label, not a dot. */
+.workspace-chat-tool.is-running .workspace-chat-tool-label {
+  color: var(--ink);
 }
 
 /* A whole sentence on the line (Devboule's agent calls): it yields only at the
@@ -1047,14 +1071,9 @@
   margin-inline-start: var(--space-8);
 }
 
+/* The running state is the label's ink colour alone, so no dot draws at the line's end. */
 .workspace-chat-tool-running {
-  order: 3;
-  flex: none;
-  width: 6px;
-  height: 6px;
-  align-self: center;
-  border-radius: var(--radius-full);
-  background: var(--tone-live);
+  display: none;
 }
 
 .workspace-command-exit {
@@ -1103,11 +1122,14 @@
 }
 
 /* What an open line shows under it: indented, muted, never a panel. */
+/* Indented past the line's icon and its gap, so the output sits under the verb. */
 .workspace-chat-tool-body {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  margin: 0 0 var(--space-4) var(--space-16);
+  max-height: var(--transcript-detail-max);
+  overflow-y: auto;
+  margin: 0 0 var(--space-4) calc(var(--space-12) + var(--space-8));
 }
 
 /* Tall enough for a whole diff preview, so the preview itself does not scroll. */
@@ -1215,39 +1237,20 @@
   margin-inline-start: var(--space-12);
 }
 
+/* A turn error is a quiet line like any other: the triangle marks it, the
+   words stay muted. The row's class would otherwise paint them red. */
 .workspace-chat-error {
-  color: var(--danger);
+  color: var(--muted);
   font-family: var(--font-ui);
-  font-size: var(--type-meta);
+  font-size: var(--type-small);
 }
 
-/* The transcript's error line (SPEC-regions "Error line"): a 12px --danger
-   sentence with the triangle, start-aligned so the icon stays on line one. */
-.workspace-chat-error-line {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-6);
-  line-height: var(--leading-body);
-}
-
-/* A path or URL in an error is one unbreakable token; the flex item needs
-   a zero minimum and anywhere-wrapping to fit it. */
-.workspace-chat-error-line .workspace-chat-copy {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-/* Centres the mark on the first text line: the line box (meta × leading)
-   minus the icon's own box, halved — two named sizes, never one number. */
-.workspace-chat-error-line .workspace-error-line-icon {
-  margin-top: calc((var(--type-meta) * var(--leading-body) - var(--error-icon)) / 2);
-}
-
-/* The demoted raw text under a transcript error item: present for the copy,
-   muted so only the sentence reads at a glance. */
+/* The raw detail behind a turn error's click: mono and muted, so only the
+   sentence reads at a glance. */
 .workspace-chat-error-detail {
   color: var(--muted);
-  font-size: var(--type-meta);
+  font-family: var(--font-mono);
+  font-size: var(--type-mono-sm);
   margin-top: var(--space-2);
   overflow-wrap: anywhere;
   white-space: pre-wrap;
@@ -1434,7 +1437,7 @@
    lines. */
 .workspace-composer-track {
   width: 100%;
-  max-width: 1060px;
+  max-width: var(--chat-lane);
   margin-left: auto;
   margin-right: auto;
 }
@@ -1447,7 +1450,7 @@
   /* An absolute element's 100% is the wrap's padding box, so the wrap's side
      padding is taken off here to put the menu's edges on the field's. */
   width: calc(100% - 2 * var(--space-24));
-  max-width: 1060px;
+  max-width: var(--chat-lane);
   transform: translateX(-50%);
   display: flex;
   /* A window-height budget, so it is charged to the band like every other one:

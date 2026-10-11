@@ -106,9 +106,9 @@ describe("the divider's bounds in a split area of a given height", () => {
   });
 
   it("widens with the window, so a tall workspace keeps the fraction bounds", () => {
-    // Past MIN_TOP_PANE_PX / MIN_SPLIT_SIZE: both floors fit inside the
-    // fraction bounds, so nothing tightens them.
-    expect(splitBoundsFor(1400)).toEqual({ min: MIN_SPLIT_SIZE, max: MAX_SPLIT_SIZE });
+    // Past MIN_TOP_PANE_PX / MIN_SPLIT_SIZE (1455 px): both floors fit inside
+    // the fraction bounds, so nothing tightens them.
+    expect(splitBoundsFor(1500)).toEqual({ min: MIN_SPLIT_SIZE, max: MAX_SPLIT_SIZE });
   });
 
   it("collapses to one place when the area is too short for both floors, and keeps the lower pane's", () => {
@@ -140,11 +140,11 @@ describe("the top pane's floor", () => {
     // the content puts between two entries.
     const top = px(".workspace-conversation", "padding");
     const gap = px(".workspace-split-pane .workspace-conversation-content", "gap");
-    // One line inside a user bubble: the bubble's 12px padding twice plus
-    // --type-interface on --leading-body.
+    // One line inside a user bubble: the bubble's 12px vertical padding twice
+    // plus --type-chat on --leading-chat.
     const bubble =
       2 * px(".workspace-chat-bubble", "padding") +
-      px(".workspace-chat-bubble", "font-size") * Number(css.token("--leading-body"));
+      px(".workspace-chat-bubble", "font-size") * Number(css.token("--leading-chat"));
     // The widest rhythm between two entries: a user row to what follows it.
     const between = px(".workspace-chat-user + .workspace-chat-entry", "margin-top");
     // The compact composer: wrap padding top + the field's own floor + wrap

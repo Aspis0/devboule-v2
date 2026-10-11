@@ -156,10 +156,10 @@ describe("turn rail computed styles", () => {
     const off = build(false);
     const on = build(true);
 
-    // The pane cap: the lane fills the pane up to 1060 px, inset 20 px on
+    // The pane cap: the lane fills the pane up to 800 px, inset 20 px on
     // each side — the conversation is bounded by the cap in both states.
-    expect(getComputedStyle(off).maxWidth).toBe("1060px");
-    expect(getComputedStyle(on).maxWidth).toBe("1060px");
+    expect(getComputedStyle(off).maxWidth).toBe("800px");
+    expect(getComputedStyle(on).maxWidth).toBe("800px");
     // The lane's own sides: the conversation carries the 20 px in either state.
     expect(getComputedStyle(off).paddingLeft).toBe("20px");
     expect(getComputedStyle(on).paddingLeft).toBe("20px");
@@ -175,7 +175,7 @@ describe("turn rail computed styles", () => {
     for (const conversation of [off, on]) {
       expect(conversation.scrollWidth).toBeLessThanOrEqual(conversation.clientWidth);
       expect(conversation.scrollWidth).toBeLessThanOrEqual(720);
-      expect(conversation.scrollWidth).toBeLessThanOrEqual(1060);
+      expect(conversation.scrollWidth).toBeLessThanOrEqual(800);
     }
     off.parentElement!.remove();
     on.parentElement!.remove();

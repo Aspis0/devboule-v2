@@ -90,6 +90,12 @@ describe("tool row computed styles", () => {
       row.append(summary);
       document.body.append(row);
 
+      // The quiet line: 13 px, a 28 px line whose inset hangs into the lane's margin.
+      expect(getComputedStyle(row).fontSize).toBe("13px");
+      expect(getComputedStyle(summary).minHeight).toBe("28px");
+      expect(getComputedStyle(summary).marginLeft).toBe("calc(8px * -1)");
+      expect(getComputedStyle(summary).paddingLeft).toBe("8px");
+
       const ground = css.token("--ground-center");
       expect(ground).toBeDefined();
       // No fill, no border: a line is text, not a container.
@@ -99,7 +105,7 @@ describe("tool row computed styles", () => {
       expect(unpainted(getComputedStyle(summary).backgroundColor)).toBe(true);
       // The body font, not the monospace of the output: one font, two greys.
       expect(rowStyle.fontFamily).toContain("Inter");
-      expect(getComputedStyle(label).color).toBe(css.token("--ink"));
+      expect(getComputedStyle(label).color).toBe(css.token("--muted"));
       expect(getComputedStyle(target).color).toBe(css.token("--muted"));
       // The floors the palette sets: ink 7 on the transcript ground, muted 6.97.
       expect(contrastRatio(getComputedStyle(label).color, ground!)).toBeGreaterThanOrEqual(7);
@@ -157,9 +163,6 @@ describe("tool row computed styles", () => {
           text.className,
         ).toBeGreaterThanOrEqual(4.5);
       }
-      expect(
-        contrastRatio(getComputedStyle(running).backgroundColor, ground),
-      ).toBeGreaterThanOrEqual(3);
       // An interrupted line keeps its verb at full strength: only the state is said in words.
       expect(
         css.rulesFor(".workspace-chat-tool.is-interrupted .workspace-chat-tool-label"),
@@ -249,14 +252,11 @@ describe("tool row computed styles", () => {
       row.append(summary);
       document.body.append(row);
 
-      const order = [failed, running, exit].map((node) => getComputedStyle(node).order);
-      expect(order).toEqual(["2", "3", "5"]);
+      const order = [failed, exit].map((node) => getComputedStyle(node).order);
+      expect(order).toEqual(["2", "5"]);
       expect(getComputedStyle(exit).marginInlineStart).toBe("auto");
-      const dot = getComputedStyle(running);
-      expect(dot.width).toBe("6px");
-      expect(dot.height).toBe("6px");
-      expect(dot.borderRadius).toBe("999px");
-      expect(dot.backgroundColor).toBe(css.token("--tone-live"));
+      // The running state is the label's colour: no dot draws at the line's end.
+      expect(getComputedStyle(running).display).toBe("none");
 
       row.remove();
     },
