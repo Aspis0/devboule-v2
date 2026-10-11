@@ -1,5 +1,6 @@
 import type { AgentChatItem } from "../../../lib/agentSession";
 import { devbouleActivity, devbouleToolName } from "../devbouleToolLine";
+import { isCreationStartNote } from "./creatorNotes";
 import { isFailedToolCall } from "./toolFailure";
 
 /**
@@ -7,34 +8,16 @@ import { isFailedToolCall } from "./toolFailure";
  * the journal and the Tasks panel; this only decides what the transcript draws.
  */
 
-// The daemon's notes to a creator when a child it made starts or fails to
-// (creation/run.rs). They are written for the agent, not for the person.
-const CREATOR_WAKE_PREFIXES = [
-  "The person approved the agent creation:",
-  "The agent creation did not start:",
-];
-
 // Calls the orchestrator makes to answer or poll for its children's cards.
 const PLUMBING_TOOLS = new Set(["answer_permissions", "list_pending_permissions"]);
 
-// The same test entryFrame uses for the sub-agent frame: a null id is the parent's own row.
-function isChildOwned(item: AgentChatItem): boolean {
-  return (
-    "parentToolUseId" in item &&
-    typeof item.parentToolUseId === "string" &&
-    item.parentToolUseId.length > 0
-  );
-}
-
 export function isAgentTraffic(item: AgentChatItem): boolean {
-  // A sub-agent's text and tool calls are read in the child's own tab.
-  if (isChildOwned(item)) return true;
   switch (item.role) {
     case "system":
       // A running agent's row: the Tasks panel carries its state, the chat only its end.
       return (
         (item.task?.kind === "agent" && item.task.state === "running") ||
-        CREATOR_WAKE_PREFIXES.some((prefix) => item.text.startsWith(prefix))
+        isCreationStartNote(item.text)
       );
     case "tool": {
       // A failed call is the person's to see, whatever it was for.

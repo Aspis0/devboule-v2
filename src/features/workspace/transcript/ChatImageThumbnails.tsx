@@ -101,7 +101,24 @@ export function ChatImageThumbnails({
           }
         />
       ))}
-      {hidden > 0 ? <span className="workspace-chat-images-more">+{hidden}</span> : null}
+      {hidden > 0 ? (
+        <button
+          type="button"
+          className="workspace-chat-images-more"
+          aria-label={`Show ${hidden} more`}
+          onClick={(event) =>
+            // No thumbnail was drawn for the picture, so the viewer opens it without a preset.
+            setOpen({
+              index: STRIP_LIMIT,
+              firstIndex: -1,
+              firstUrl: "",
+              opener: event.currentTarget,
+            })
+          }
+        >
+          +{hidden}
+        </button>
+      ) : null}
       {open !== null ? (
         <ImageLightbox
           images={images.map((reference, position) => ({ reference, alt: labels[position]! }))}

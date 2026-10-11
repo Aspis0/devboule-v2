@@ -166,6 +166,11 @@
   pointer-events: auto;
 }
 
+.workspace-chat-turn-footer .timeline-copy-chip svg {
+  width: 14px;
+  height: 14px;
+}
+
 .workspace-chat-turn-worked {
   white-space: nowrap;
 }

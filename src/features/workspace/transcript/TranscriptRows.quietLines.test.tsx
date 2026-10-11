@@ -176,7 +176,9 @@ describe("quiet lines", () => {
     expect(details).not.toBeNull();
     expect(details?.open).toBe(false);
     expect(host.querySelector("summary")?.textContent).toBe("402 Payment Required");
-    expect(details?.querySelector(".workspace-chat-error-detail")?.textContent).toBe(
+    expect(host.querySelector(".workspace-chat-error-detail")).toBeNull();
+    await act(async () => host.querySelector("summary")?.click());
+    expect(host.querySelector(".workspace-chat-error-detail")?.textContent).toBe(
       "raw provider body",
     );
   });
@@ -224,6 +226,32 @@ describe("quiet lines", () => {
 
     expect(host.querySelector(".workspace-chat-tool-failed")?.textContent).toBe("failed");
     expect(host.querySelector(".workspace-chat-tool-summary svg")).not.toBeNull();
+  });
+
+  it("humanises a provider's devboule name that has no devboule_ prefix", async () => {
+    await show([call("mcp__devboule__list_workspaces", "completed")]);
+
+    expect(host.textContent).toContain("Listed workspaces");
+    expect(host.textContent).not.toContain("mcp__devboule__");
+  });
+
+  it("shows a creation that did not start as a failure, even when its call completed", async () => {
+    await show([
+      call(
+        "mcp__devboule__devboule_create_agent",
+        "completed",
+        '{"displayName":"Kid","sessionId":"s.k.1"}',
+      ),
+      {
+        id: "sys-1",
+        role: "system",
+        severity: "info",
+        text: "The agent creation did not start: the provider is required.",
+      },
+    ]);
+
+    expect(host.textContent).toContain("Couldn't start the agent");
+    expect(host.textContent).not.toContain("did not start");
   });
 
   it("humanises a Devboule tool's raw name instead of drawing it", async () => {

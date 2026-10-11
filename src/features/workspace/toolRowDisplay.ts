@@ -70,7 +70,8 @@ const DEVBOULE_PAST_TENSE: Record<string, string> = {
   update: "Updated",
 };
 
-const DEVBOULE_TOOL_NAME = /^(?:mcp__devboule__)?devboule_/;
+// A provider may send the server's qualifier alone, or the qualifier with the tool's own prefix.
+const DEVBOULE_TOOL_NAME = /^(?:mcp__devboule__(?:devboule_)?|devboule_)/;
 
 export function humanizeToolName(name: string): string {
   const trimmed = name.trim();

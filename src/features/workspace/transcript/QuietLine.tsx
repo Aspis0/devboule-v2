@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { ErrorTriangleIcon } from "../ErrorTriangleIcon";
 
 /**
@@ -17,6 +17,7 @@ export function QuietLine({
   onOpen?: () => void;
   children: ReactNode;
 }) {
+  const [opened, setOpened] = useState(false);
   const line = (
     <>
       {failed ? <ErrorTriangleIcon /> : null}
@@ -38,9 +39,14 @@ export function QuietLine({
     return <div className="workspace-chat-tool-summary workspace-chat-quiet-line">{line}</div>;
   }
   return (
-    <details className="workspace-chat-tool-details workspace-chat-quiet-line">
+    <details
+      className="workspace-chat-tool-details workspace-chat-quiet-line"
+      open={opened}
+      onToggle={(event) => setOpened(event.currentTarget.open)}
+    >
       <summary className="workspace-chat-tool-summary">{line}</summary>
-      <div className="workspace-chat-tool-body">{detail}</div>
+      {/* A closed disclosure still holds its children, so the detail mounts only once opened. */}
+      {opened ? <div className="workspace-chat-tool-body">{detail}</div> : null}
     </details>
   );
 }

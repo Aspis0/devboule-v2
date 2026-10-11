@@ -30,7 +30,7 @@ describe("the working line", () => {
   it("says the turn is working, for how long since it began, and how to stop it", async () => {
     await act(async () => root.render(<WorkingLine startedAtMs={START} />));
     const line = host.querySelector(".workspace-working-line");
-    expect(line?.textContent).toBe("Working…01:12esc to interrupt");
+    expect(line?.textContent).toBe("Working01:12");
   });
 
   it("counts from the turn's start, not from when the line was drawn", async () => {
@@ -50,9 +50,7 @@ describe("the working line", () => {
     await act(async () => root.render(<WorkingLine startedAtMs={null} />));
 
     expect(host.querySelector(".workspace-working-clock")).toBeNull();
-    expect(host.querySelector(".workspace-working-line")?.textContent).toBe(
-      "Working…esc to interrupt",
-    );
+    expect(host.querySelector(".workspace-working-line")?.textContent).toBe("Working");
     expect(vi.getTimerCount()).toBe(0);
   });
 

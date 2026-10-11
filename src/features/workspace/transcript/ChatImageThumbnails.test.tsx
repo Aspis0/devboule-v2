@@ -84,6 +84,16 @@ describe("ChatImageThumbnails", () => {
     expect(container.querySelector(".workspace-chat-images-more")?.textContent).toBe("+2");
   });
 
+  it("opens the viewer on the first picture past the limit from its +N button", async () => {
+    await renderThumbnails([REF_A, REF_B, REF_A, REF_B, REF_A, REF_B]);
+
+    const more = container.querySelector<HTMLButtonElement>(".workspace-chat-images-more");
+    expect(more?.tagName).toBe("BUTTON");
+    await act(async () => more?.click());
+
+    expect(document.querySelector(".chat-image-lightbox-count")?.textContent).toContain("5");
+  });
+
   it("draws no +N figure for a strip within the limit", async () => {
     await renderThumbnails([REF_A, REF_B]);
 

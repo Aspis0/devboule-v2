@@ -7,6 +7,7 @@ import { A2aMessageCard, type A2aNameSource } from "../A2aMessageCard";
 import { A2aOutgoingMessageCard } from "../A2aOutgoingMessageCard";
 import { DaemonNoticeCard } from "../DaemonNoticeCard";
 import { agentTaskLineText } from "../../../lib/backgroundTaskText";
+import { creationFailureReason } from "./creatorNotes";
 import { ThoughtRow } from "../ThoughtRow";
 import { entryFrame } from "./entryFrame";
 import { QuietLine } from "./QuietLine";
@@ -69,6 +70,43 @@ export const TranscriptRow = memo(function TranscriptRow({
       return (
         <div className={className} style={style}>
           <CompactionDivider state={compaction} />
+        </div>
+      );
+    }
+    if (item.subagent !== undefined) {
+      const { texts } = item.subagent;
+      return (
+        <div className={className} style={style}>
+          <QuietLine
+            detail={
+              texts.length === 0 ? undefined : (
+                <div className="workspace-chat-subagent-text">
+                  {texts.map((text, index) => (
+                    <MarkdownText key={index} text={text} fileLinks={fileLinks} />
+                  ))}
+                </div>
+              )
+            }
+          >
+            {item.text}
+          </QuietLine>
+        </div>
+      );
+    }
+    const creationFailure = creationFailureReason(item.text);
+    if (creationFailure !== null) {
+      return (
+        <div className={className} style={style}>
+          <QuietLine
+            failed
+            detail={
+              creationFailure === "" ? undefined : (
+                <div className="workspace-chat-error-detail">{creationFailure}</div>
+              )
+            }
+          >
+            Couldn't start the agent
+          </QuietLine>
         </div>
       );
     }

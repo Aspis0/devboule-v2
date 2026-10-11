@@ -965,12 +965,19 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    // A child's own words are read in the child's tab, never in the parent's chat.
+    // A child's own words fold behind one closed line, and the parent's rows stay as they are.
     expect(container.textContent).toContain("Parent output");
     expect(container.textContent).toContain("null parent id");
     expect(container.querySelectorAll(".workspace-chat-subagent")).toHaveLength(0);
-    expect(container.textContent).not.toContain("Child output");
-    expect(container.textContent).not.toContain("Child without measured depth");
+    expect(
+      container.querySelector<HTMLDetailsElement>("details.workspace-chat-quiet-line")?.open,
+    ).toBe(false);
+    await act(async () =>
+      container.querySelector<HTMLElement>("details.workspace-chat-quiet-line summary")?.click(),
+    );
+    expect(container.querySelector(".workspace-chat-subagent-text")?.textContent).toContain(
+      "Child output",
+    );
 
     const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
     if (pill === null) throw new Error("subagent pill did not render");

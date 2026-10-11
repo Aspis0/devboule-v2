@@ -353,11 +353,11 @@
   overflow-wrap: anywhere;
 }
 
-/* One event as one line: an icon-less summary, its detail behind the click. */
+/* One event as one line: a summary, its detail behind the click. */
 .workspace-chat-activity {
   color: var(--muted);
   font-family: var(--font-ui);
-  font-size: var(--type-meta);
+  font-size: var(--type-small);
   line-height: var(--leading-body);
   max-width: 90%;
 }
@@ -380,20 +380,28 @@
   color: var(--muted);
 }
 
+/* A notice is a quiet line like a tool's: the tool line's type, height and inset,
+   hanging into the lane's margin so its text stays on the rail. */
 .workspace-chat-activity-line {
-  /* The same type and grey as a tool line: set here, past the entry’s own body size. */
-  font-size: var(--type-meta);
-  line-height: var(--leading-body);
+  font-size: var(--type-small);
+  line-height: var(--leading-dense);
   color: var(--muted);
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--space-6);
   min-width: 0;
-  padding: var(--space-2) 0;
+  min-height: var(--control-default);
+  margin: 0 calc(var(--space-8) * -1);
+  padding: 0 var(--space-8);
+  border-radius: var(--radius-8);
   overflow: hidden;
-  color: var(--muted);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.workspace-chat-activity-line:hover {
+  background: var(--fill-hover);
+  color: var(--ink);
 }
 
 .workspace-chat-activity-details summary:focus-visible {
@@ -1328,15 +1336,16 @@
   line-height: var(--leading-body);
 }
 
-/* The live turn's one line: a quiet dot, the word, the clock and the way out. */
+/* The live turn's one line: a quiet dot, the word and the clock, 24 px tall. */
 .workspace-working-line {
   display: flex;
   flex: none;
   align-items: center;
   gap: var(--space-8);
+  height: var(--control-dense);
   margin-top: var(--space-4);
   color: var(--muted);
-  font-size: var(--type-meta);
+  font-size: var(--type-small);
 }
 
 .workspace-working-dot {
@@ -1349,11 +1358,6 @@
 
 .workspace-working-clock {
   font-variant-numeric: tabular-nums;
-}
-
-.workspace-working-hint::before {
-  margin-inline-end: var(--space-8);
-  content: "·";
 }
 
 .workspace-chat-empty {

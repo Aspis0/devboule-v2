@@ -17,7 +17,7 @@ const ROLE_CONTEXT = {
   thought: "streamingThought",
   tool: "transcriptEnded",
   error: "none",
-  system: "none",
+  system: "fileLinks",
   permission_request: "none",
   daemon_notice: "none",
   a2a_message: "a2aNames",

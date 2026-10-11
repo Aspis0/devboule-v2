@@ -39,7 +39,7 @@ function user(id: string): AgentChatItem {
 }
 
 describe("isAgentTraffic", () => {
-  it("hides a sub-agent's own rows and keeps a null parent id as the parent's row", () => {
+  it("leaves a sub-agent's rows to the fold, and keeps a null parent id as the parent's row", () => {
     expect(
       isAgentTraffic({
         id: "a",
@@ -48,7 +48,7 @@ describe("isAgentTraffic", () => {
         messageId: null,
         parentToolUseId: "toolu-1",
       }),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       isAgentTraffic({
         id: "b",
@@ -94,7 +94,8 @@ describe("isAgentTraffic", () => {
         system("The person approved the agent creation: 'Website' started as session s.1."),
       ),
     ).toBe(true);
-    expect(isAgentTraffic(system("The agent creation did not start: no provider."))).toBe(true);
+    // A start that failed is the person's to see, so it is drawn as a failure.
+    expect(isAgentTraffic(system("The agent creation did not start: no provider."))).toBe(false);
     expect(
       isAgentTraffic({
         ...system("Running agent Explore auth · test-model · 2 tools"),

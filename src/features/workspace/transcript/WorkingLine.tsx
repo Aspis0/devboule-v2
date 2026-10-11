@@ -22,19 +22,18 @@ function Elapsed({ startedAtMs }: { startedAtMs: number }) {
 
 /**
  * The one line a live turn leaves at the end of the transcript: a quiet dot,
- * "Working…", the time since the turn began when that is known, and how to stop
- * it. It is mounted only while a turn runs, so a finished turn leaves nothing
- * here. A turn this view did not start has no known beginning, and says no time
- * rather than the age of the view. The region is polite and its words never
- * change; the clock ticks outside the announcement.
+ * "Working", and the time since the turn began when that is known. How to stop it
+ * is the stop button's tooltip. It is mounted only while a turn runs. A turn this
+ * view did not start has no known beginning, and says no time rather than the age
+ * of the view. The region is polite and its words never change; the clock ticks
+ * outside the announcement.
  */
 export function WorkingLine({ startedAtMs }: { startedAtMs: number | null }) {
   return (
     <div className="workspace-working-line" role="status">
       <span className="workspace-working-dot" aria-hidden="true" />
-      <span>Working…</span>
+      <span>Working</span>
       {startedAtMs === null ? null : <Elapsed startedAtMs={startedAtMs} />}
-      <span className="workspace-working-hint">esc to interrupt</span>
     </div>
   );
 }

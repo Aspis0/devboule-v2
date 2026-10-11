@@ -228,7 +228,7 @@ describe("timeline computed styles", () => {
     assistant.remove();
   });
 
-  it("keeps system notices quiet, finish metadata at 13 px, and the working line unchanged", () => {
+  it("keeps system notices quiet, finish metadata at 13 px, and the working line at 13 px", () => {
     workspaceCss.inject([
       ".workspace-chat-system",
       ".workspace-chat-finish",
@@ -248,7 +248,7 @@ describe("timeline computed styles", () => {
     expect(getComputedStyle(system).fontSize).toBe("13px");
     expect(getComputedStyle(system).color).toBe("#484640");
     expect(getComputedStyle(system).fontFamily).toContain("Inter");
-    expect(getComputedStyle(typing).fontSize).toBe("12px");
+    expect(getComputedStyle(typing).fontSize).toBe("13px");
     system.remove();
     rail.remove();
   });

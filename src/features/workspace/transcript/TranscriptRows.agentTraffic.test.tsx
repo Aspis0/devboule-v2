@@ -98,10 +98,15 @@ describe("agent-to-agent traffic is not drawn", () => {
     expect(host.textContent).not.toContain("Running agent");
   });
 
-  it("drops the sub-agent's own text, which is read in the child's tab", async () => {
+  it("folds the sub-agent's own text behind its line, closed until the person opens it", async () => {
     await show([assistant("msg-1", "The child's private words.", "toolu_child")]);
 
-    expect(host.textContent).not.toContain("The child's private words.");
+    expect(host.querySelector("details")?.open).toBe(false);
+    expect(host.querySelector(".workspace-chat-subagent-text")).toBeNull();
+    await act(async () => host.querySelector("summary")?.click());
+    expect(host.querySelector(".workspace-chat-subagent-text")?.textContent).toContain(
+      "The child's private words.",
+    );
   });
 
   it("drops the answer and poll calls of the orchestrator, grouped or not", async () => {
