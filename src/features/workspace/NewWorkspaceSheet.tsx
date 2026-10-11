@@ -180,8 +180,10 @@ export const NewWorkspaceSheet = memo(function NewWorkspaceSheet({
           </button>
         </div>
         <form onSubmit={(event) => void handleSubmit(event)}>
-          <fieldset className="new-workspace-group">
-            <legend>Project</legend>
+          <div className="new-workspace-form">
+            <span className="new-workspace-label" id="new-workspace-project-label">
+              Project
+            </span>
             {hostProjects.length === 0 ? (
               <p className="new-workspace-note" role="note">
                 {where === THIS_PC
@@ -198,50 +200,55 @@ export const NewWorkspaceSheet = memo(function NewWorkspaceSheet({
                 value={projectId ?? ""}
                 onChange={setProjectId}
                 disabled={submitting}
-                ariaLabel="Project"
+                labelledBy="new-workspace-project-label"
               />
             )}
-          </fieldset>
 
-          {pairedHosts.length > 0 ? (
-            <fieldset className="new-workspace-group">
-              <legend>Where</legend>
-              <ChoiceGroup
-                options={whereOptions}
-                value={where}
-                onChange={(next) => {
-                  setChosenWhere(next);
-                  setProjectId(null);
-                }}
-                disabled={submitting}
-                ariaLabel="Where"
-              />
-            </fieldset>
-          ) : null}
+            {pairedHosts.length > 0 ? (
+              <>
+                <span className="new-workspace-label" id="new-workspace-where-label">
+                  Where
+                </span>
+                <ChoiceGroup
+                  options={whereOptions}
+                  value={where}
+                  onChange={(next) => {
+                    setChosenWhere(next);
+                    setProjectId(null);
+                  }}
+                  disabled={submitting}
+                  labelledBy="new-workspace-where-label"
+                />
+              </>
+            ) : null}
 
-          <fieldset className="new-workspace-group">
-            <legend>Isolation</legend>
+            <span className="new-workspace-label" id="new-workspace-isolation-label">
+              Isolation
+            </span>
             <ChoiceGroup
               options={ISOLATION_OPTIONS}
               value={isolation}
               onChange={setIsolation}
               disabled={submitting}
-              ariaLabel="Isolation"
+              labelledBy="new-workspace-isolation-label"
             />
-          </fieldset>
 
-          {isolation === "worktree" ? (
-            <label className="workspace-project-input-label" htmlFor="new-workspace-branch">
-              Starting branch
-              <input
-                id="new-workspace-branch"
-                value={branch}
-                onChange={(event) => setBranch(event.target.value)}
-                placeholder="Chosen for you if empty"
-                disabled={submitting}
-              />
-            </label>
-          ) : null}
+            {isolation === "worktree" ? (
+              <>
+                <label className="new-workspace-label" htmlFor="new-workspace-branch">
+                  Branch
+                </label>
+                <input
+                  id="new-workspace-branch"
+                  className="new-workspace-branch"
+                  value={branch}
+                  onChange={(event) => setBranch(event.target.value)}
+                  placeholder="Chosen for you if empty"
+                  disabled={submitting}
+                />
+              </>
+            ) : null}
+          </div>
 
           {error !== null ? (
             <div className="workspace-project-error" role="alert">

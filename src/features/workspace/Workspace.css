@@ -2015,19 +2015,18 @@
 
 .workspace-project-dialog h2,
 .workspace-rename-dialog-header h2 {
-  font-family: var(--font-display);
+  font-family: var(--font-ui);
+  font-size: var(--type-display-sm);
   font-weight: var(--weight-heading);
   line-height: var(--leading-heading);
 }
 
 .workspace-project-dialog h2 {
   margin: var(--space-4) 0 0;
-  font-size: var(--type-display-lg);
 }
 
 .workspace-rename-dialog-header h2 {
   margin: 0;
-  font-size: var(--type-display-lg);
 }
 
 .workspace-dialog-close {
@@ -2365,19 +2364,80 @@
   opacity: 0.6;
 }
 
-/* The new-workspace sheet: three short groups of choices, each under a quiet legend. */
-.new-workspace-sheet fieldset {
-  min-width: 0;
-  margin: 0 0 var(--space-12);
-  padding: 0;
-  border: 0;
+/* The new-workspace sheet: a compact dialog, one grid of label and control rows.
+   The label column is 72px so every control starts on the same line. */
+.new-workspace-sheet.workspace-project-dialog {
+  width: min(440px, 100%);
+  padding: 20px;
 }
 
-.new-workspace-sheet legend {
-  padding: 0;
-  margin-bottom: var(--space-4);
+.new-workspace-sheet h2 {
+  margin: 0;
+}
+
+.new-workspace-sheet .workspace-project-dialog-header {
+  align-items: center;
+  height: var(--control-default);
+  margin-bottom: var(--space-16);
+}
+
+.new-workspace-sheet .workspace-dialog-close {
+  margin-right: -6px;
+  color: var(--muted);
+  font-size: var(--type-interface);
+}
+
+.new-workspace-sheet .workspace-dialog-close:hover,
+.new-workspace-sheet .workspace-dialog-close:focus-visible {
+  color: var(--ink);
+  background: var(--fill-hover);
+}
+
+.new-workspace-form {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: var(--space-16);
+  align-items: start;
+}
+
+.new-workspace-label {
+  padding-top: var(--space-6);
   color: var(--muted);
   font-size: var(--type-meta);
+  line-height: 20px;
+}
+
+.new-workspace-form .choice-group:not(.choice-group-vertical) {
+  justify-self: start;
+}
+
+.new-workspace-form .choice-group-vertical {
+  margin-top: var(--space-2);
+}
+
+.new-workspace-sheet input.new-workspace-branch {
+  height: var(--control-default);
+  padding: 0 var(--space-10);
+  color: var(--ink);
+  background: var(--panel-side);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-8);
+  font-family: var(--font-mono);
+  font-size: var(--type-mono-sm);
+}
+
+.new-workspace-sheet input.new-workspace-branch::placeholder {
+  color: var(--muted);
+}
+
+.new-workspace-sheet .workspace-project-error {
+  margin-top: var(--space-12);
+}
+
+.new-workspace-sheet .workspace-secondary-action:hover,
+.new-workspace-sheet .workspace-secondary-action:focus-visible {
+  color: var(--ink);
+  background: var(--fill-hover);
 }
 
 .new-workspace-note {

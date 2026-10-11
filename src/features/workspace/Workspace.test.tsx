@@ -636,9 +636,9 @@ function firstPromptAgentSession() {
 }
 
 /** The sheet's group legends, in print order. */
-function sheetLegends(): string[] {
-  return [...document.querySelectorAll(".new-workspace-sheet legend")].map(
-    (legend) => legend.textContent ?? "",
+function sheetLabels(): string[] {
+  return [...document.querySelectorAll(".new-workspace-sheet .new-workspace-label")].map(
+    (label) => label.textContent?.trim() ?? "",
   );
 }
 
@@ -667,7 +667,7 @@ async function createFromSheet(choice: { isolation: "local" | "worktree"; branch
   await openSheet();
   if (choice.isolation === "worktree") {
     const worktree = document.querySelector<HTMLElement>(
-      '[role="radiogroup"][aria-label="Isolation"] [role="radio"][data-choice-value="worktree"]',
+      '[role="radiogroup"][aria-labelledby="new-workspace-isolation-label"] [role="radio"][data-choice-value="worktree"]',
     );
     if (worktree === null) throw new Error("the worktree choice did not render");
     await act(async () => worktree.click());
@@ -1779,8 +1779,8 @@ describe("Workspace sessions", () => {
     await openSheet();
 
     // Where is drawn here because the fixture has a paired device; no agent is ever asked.
-    expect(sheetLegends()).toEqual(expect.arrayContaining(["Project", "Isolation"]));
-    expect(sheetLegends()).not.toContain("Agent");
+    expect(sheetLabels()).toEqual(expect.arrayContaining(["Project", "Isolation"]));
+    expect(sheetLabels()).not.toContain("Agent");
     expect(document.querySelector('[aria-label="Choose agent"]')).toBeNull();
     expect(providersList).not.toHaveBeenCalled();
     expect(sessionCreate).not.toHaveBeenCalled();

@@ -52,14 +52,16 @@ async function render(over: Partial<NewWorkspaceSheetProps> = {}): Promise<{
   return { onCreate, onClose };
 }
 
-function groupLegends(): string[] {
-  return [...container.querySelectorAll("legend")].map((legend) => legend.textContent ?? "");
+function rowLabels(): string[] {
+  return [...container.querySelectorAll(".new-workspace-label")].map(
+    (label) => label.textContent?.trim() ?? "",
+  );
 }
 
 function groupOptions(group: string): HTMLElement[] {
   return [
     ...container.querySelectorAll<HTMLElement>(
-      `[role="radiogroup"][aria-label="${group}"] [role="radio"]`,
+      `[role="radiogroup"][aria-labelledby="new-workspace-${group.toLowerCase()}-label"] [role="radio"]`,
     ),
   ];
 }
@@ -111,9 +113,9 @@ describe("the new-workspace sheet's groups", () => {
   it("asks for the project, then how it is isolated; no agent and no Where without a paired host", async () => {
     await render();
 
-    expect(groupLegends()).toEqual(["Project", "Isolation"]);
+    expect(rowLabels()).toEqual(["Project", "Isolation"]);
     expect(container.textContent).not.toMatch(/Claude|Codex|Agent|provider/i);
-    expect(container.querySelector('[role="radiogroup"][aria-label="Where"]')).toBeNull();
+    expect(container.querySelector(".new-workspace-label#new-workspace-where-label")).toBeNull();
   });
 
   it("asks where, between this PC and each paired host, once a paired host exists", async () => {
@@ -121,7 +123,7 @@ describe("the new-workspace sheet's groups", () => {
       pairedHosts: [{ id: "device-mac", name: "MacBookPro.lan", online: true }],
     });
 
-    expect(groupLegends()).toEqual(["Project", "Where", "Isolation"]);
+    expect(rowLabels()).toEqual(["Project", "Where", "Isolation"]);
     expect(isChosen("Where", THIS_PC)).toBe(true);
     expect(isChosen("Where", "device-mac")).toBe(false);
   });
@@ -134,9 +136,23 @@ describe("the new-workspace sheet's groups", () => {
     expect(container.querySelector(".choice-group-offline")?.textContent).toBe("offline");
   });
 
+  it("shows an offline host and does not let it be chosen", async () => {
+    const { onCreate } = await render({
+      pairedHosts: [{ id: "device-mac", name: "MacBookPro.lan", online: false }],
+    });
+
+    const offline = choiceOf("Where", "device-mac");
+    expect(offline.getAttribute("aria-disabled")).toBe("true");
+    await choose(offline);
+    expect(isChosen("Where", THIS_PC)).toBe(true);
+    await submit();
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ where: THIS_PC }));
+  });
+
   it("starts on the preset project, and on the first one when opened from the top", async () => {
     await render({ presetProjectId: "p-2" });
     expect(isChosen("Project", "p-2")).toBe(true);
+    expect(document.activeElement).toBe(choiceOf("Project", "p-2"));
 
     await act(async () => root.unmount());
     root = createRoot(container);
@@ -209,7 +225,7 @@ describe("what the sheet sends", () => {
     const { onCreate } = await render({
       pairedHosts: [{ id: "device-mac", name: "MacBookPro.lan", online: true }],
     });
-    expect(groupLegends()).toContain("Where");
+    expect(rowLabels()).toContain("Where");
     expect(projectRadios()).toEqual(["p-1", "p-2"]);
 
     await choose(choiceOf("Where", "device-mac"));
