@@ -38,3 +38,24 @@ export function treeKeyTarget(
       return null;
   }
 }
+
+/**
+ * Moves focus from a workspace row's wrapper into the agent tree drawn right
+ * after it, and answers whether the tree took focus.
+ */
+export function focusAgentTreeAfter(workspaceRowWrap: HTMLElement | null): boolean {
+  const first = workspaceRowWrap?.nextElementSibling?.querySelector<HTMLElement>(
+    '[role="treeitem"][tabindex="0"]',
+  );
+  if (first === null || first === undefined) return false;
+  first.focus();
+  return true;
+}
+
+/** Moves focus from the agent tree back to the workspace row it hangs under. */
+export function focusWorkspaceRowAbove(agentRows: HTMLElement): boolean {
+  const row = agentRows.previousElementSibling?.querySelector<HTMLElement>("button.workspace-row");
+  if (row === null || row === undefined) return false;
+  row.focus();
+  return true;
+}

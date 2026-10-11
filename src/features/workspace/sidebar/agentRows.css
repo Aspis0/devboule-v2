@@ -82,6 +82,14 @@
   color: var(--tone-attention-text);
 }
 
+.agent-row-tail-danger {
+  color: var(--danger);
+}
+
+.agent-row-tail-muted {
+  color: var(--muted);
+}
+
 /* The 6 px badge sits on the mark's corner; its ring is the rail's own ground,
    so it reads as cut out of the mark. */
 .agent-row-badge {
@@ -101,6 +109,10 @@
 
 .agent-row-badge-waiting {
   background: var(--tone-attention);
+}
+
+.agent-row-badge-failed {
+  background: var(--danger);
 }
 
 @media (prefers-reduced-motion: reduce) {

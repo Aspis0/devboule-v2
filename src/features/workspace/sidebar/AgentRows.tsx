@@ -1,7 +1,8 @@
 import { useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { StripKindMark } from "../strip/StripKindMark";
+import type { ArchiveTarget } from "../subagentArchive";
 import { AgentRowMenu } from "./AgentRowMenu";
-import { treeKeyTarget } from "./agentTreeKeys";
+import { focusWorkspaceRowAbove, treeKeyTarget } from "./agentTreeKeys";
 import type { RailAgent, RailAgentState, RailAgents } from "./railAgents";
 import "./agentRows.css";
 
@@ -9,11 +10,20 @@ const STATE_WORD: Record<RailAgentState, string> = {
   running: "working",
   waiting: "needs you",
   finished: "finished",
+  failed: "failed",
+  stopped: "stopped",
   idle: "idle",
 };
 
 /** The states that carry a badge on the mark; a settled agent is marked by its mark alone. */
-const BADGED: ReadonlySet<RailAgentState> = new Set(["running", "waiting"]);
+const BADGED: ReadonlySet<RailAgentState> = new Set(["running", "waiting", "failed"]);
+
+/** The states whose word shows in the tail, with the tail's colour. */
+const TAIL_TONE: Partial<Record<RailAgentState, string>> = {
+  waiting: "attention",
+  failed: "danger",
+  stopped: "muted",
+};
 
 export interface AgentRowsProps {
   agents: RailAgents;
@@ -21,8 +31,8 @@ export interface AgentRowsProps {
   activeId: string | null;
   onOpenAgent: (sessionId: string) => void;
   onOpenHistory: () => void;
-  /** Archives a finished agent; answers with the refusal sentence, or null. */
-  onArchiveAgent?: (sessionId: string) => Promise<string | null>;
+  /** Archives a child as the row showed it; answers with the refusal sentence, or null. */
+  onArchiveAgent?: (target: ArchiveTarget) => Promise<string | null>;
 }
 
 interface RowProps {
@@ -60,10 +70,11 @@ function AgentRow({
     "agent-row",
     agent.child ? "agent-row-child" : "",
     active ? "agent-row-active" : "",
-    agent.state === "finished" ? "agent-row-settled" : "",
+    agent.state === "finished" || agent.state === "stopped" ? "agent-row-settled" : "",
   ]
     .filter(Boolean)
     .join(" ");
+  const tone = TAIL_TONE[agent.state];
   return (
     <div
       role="treeitem"
@@ -87,17 +98,24 @@ function AgentRow({
         ) : null}
       </span>
       <span className="agent-row-name">{agent.title}</span>
-      {agent.state === "waiting" ? (
-        <span className="agent-row-tail agent-row-tail-attention">{word}</span>
-      ) : null}
+      {tone === undefined ? null : (
+        <span className={`agent-row-tail agent-row-tail-${tone}`}>{word}</span>
+      )}
     </div>
   );
 }
 
+interface OpenMenu {
+  target: ArchiveTarget;
+  title: string;
+  anchor: HTMLElement;
+}
+
 /**
  * The agents of the selected workspace, nested under its row, as one tree.
- * Arrows, Home and End move focus through it; Enter opens the agent; a finished
- * agent's menu offers Archive. Past the cap, a `+N more in History` link.
+ * Arrows, Home and End move focus through it; Up or Left from its top leaves it
+ * for the workspace row; Enter opens the agent; an archivable agent's menu offers
+ * Archive. Past the cap, a `+N more in History` link.
  */
 export function AgentRows({
   agents,
@@ -107,15 +125,15 @@ export function AgentRows({
   onArchiveAgent,
 }: AgentRowsProps) {
   const [focusedId, setFocusedId] = useState<string | null>(null);
-  const [menu, setMenu] = useState<{ id: string; anchor: HTMLElement } | null>(null);
+  const [menu, setMenu] = useState<OpenMenu | null>(null);
   const itemRefs = useRef(new Map<string, HTMLDivElement>());
+  const rootRef = useRef<HTMLDivElement>(null);
   const rows = agents.rows;
   if (rows.length === 0) return null;
   const tabStopId =
     focusedId !== null && rows.some((row) => row.id === focusedId)
       ? focusedId
       : (rows.find((row) => row.id === activeId)?.id ?? rows[0]?.id);
-  const menuRow = menu === null ? undefined : rows.find((row) => row.id === menu.id);
 
   const focusRow = (index: number) => {
     const row = rows[index];
@@ -124,13 +142,15 @@ export function AgentRows({
     itemRefs.current.get(row.id)?.focus();
   };
 
+  // The menu takes the generation the row shows now: the archive checks it when
+  // the person confirms, so a newer generation in between is refused.
   const openMenu = (row: RailAgent, anchor: HTMLElement) => {
-    if (row.state !== "finished" || onArchiveAgent === undefined) return;
-    setMenu({ id: row.id, anchor });
+    if (!row.archivable || onArchiveAgent === undefined || row.generation === null) return;
+    setMenu({ target: { id: row.id, generation: row.generation }, title: row.title, anchor });
   };
 
   return (
-    <div className="agent-rows">
+    <div className="agent-rows" ref={rootRef}>
       <div role="tree" aria-label="Agents">
         {rows.map((agent, index) => (
           <AgentRow
@@ -152,12 +172,21 @@ export function AgentRows({
                 return;
               }
               const target = treeKeyTarget(event.key, index, rows);
-              if (target === null) return;
-              event.preventDefault();
-              focusRow(target);
+              if (target !== null) {
+                event.preventDefault();
+                focusRow(target);
+                return;
+              }
+              if (
+                (event.key === "ArrowUp" || event.key === "ArrowLeft") &&
+                rootRef.current !== null &&
+                focusWorkspaceRowAbove(rootRef.current)
+              ) {
+                event.preventDefault();
+              }
             }}
             onMenu={
-              agent.state === "finished" && onArchiveAgent !== undefined
+              agent.archivable && onArchiveAgent !== undefined
                 ? (event) => {
                     event.preventDefault();
                     openMenu(agent, event.currentTarget);
@@ -176,14 +205,14 @@ export function AgentRows({
           +{agents.hidden} more in History
         </button>
       )}
-      {menu === null || menuRow === undefined || onArchiveAgent === undefined ? null : (
+      {menu === null || onArchiveAgent === undefined ? null : (
         <AgentRowMenu
-          sessionId={menu.id}
-          title={menuRow.title}
+          target={menu.target}
+          title={menu.title}
           anchor={{ current: menu.anchor }}
           onArchive={onArchiveAgent}
           onDismiss={() => {
-            itemRefs.current.get(menu.id)?.focus();
+            itemRefs.current.get(menu.target.id)?.focus();
             setMenu(null);
           }}
         />

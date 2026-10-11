@@ -4,6 +4,7 @@ import { act, type ReactNode, type RefObject } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConfirmProvider } from "../../../components/ConfirmHost";
+import type { ArchiveTarget } from "../subagentArchive";
 import { AgentRowMenu } from "./AgentRowMenu";
 
 vi.mock("../popoverPlace", async (importOriginal) => {
@@ -44,7 +45,7 @@ afterEach(async () => {
 });
 
 async function render(
-  onArchive: (sessionId: string) => Promise<string | null>,
+  onArchive: (target: ArchiveTarget) => Promise<string | null>,
   onDismiss = vi.fn(),
 ) {
   const anchor = document.createElement("button");
@@ -52,7 +53,7 @@ async function render(
     root.render(
       <ConfirmProvider>
         <AgentRowMenu
-          sessionId="child-1"
+          target={{ id: "child-1", generation: 2 }}
           title="Website redesign"
           anchor={{ current: anchor }}
           onArchive={onArchive}
@@ -76,7 +77,7 @@ describe("the agent row's menu", () => {
     expect(onArchive).not.toHaveBeenCalled();
     await act(async () => confirmButton()?.click());
 
-    expect(onArchive).toHaveBeenCalledWith("child-1");
+    expect(onArchive).toHaveBeenCalledWith({ id: "child-1", generation: 2 });
   });
 
   it("closes once the archive went through", async () => {

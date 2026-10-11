@@ -8,6 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { localWorkspaceKey, LOCAL_HOST_ID, type WorkspaceKey } from "../hosts/hostIdentity";
 import type { WorkspaceProject, WorkspaceView } from "../workspaceProjects";
+import type { AgentRowsProps } from "./AgentRows";
 import type { RailAgent } from "./railAgents";
 import { WorkspaceTree, type WorkspaceTreeProps } from "./WorkspaceTree";
 
@@ -53,6 +54,8 @@ const agent = (over: Partial<RailAgent>): RailAgent => ({
   parentId: null,
   parentTitle: null,
   hasChildren: false,
+  generation: 1,
+  archivable: false,
   ...over,
 });
 
@@ -132,4 +135,42 @@ describe("the agents in the rail", () => {
     );
     expect(rowFor("Improve handoff")?.querySelector(".workspace-row-count")).toBeNull();
   });
+
+  it("enters the selected row's agents with Down or Right, and leaves them with Up or Left", async () => {
+    await render({ selectedAgents: agentsUnder("cia") });
+    const workspaceRow = rowFor("Improve handoff");
+    const first = container.querySelector<HTMLElement>('[role="treeitem"]');
+    if (workspaceRow === undefined || first === null) throw new Error("rail did not render");
+
+    workspaceRow.focus();
+    await keyDown(workspaceRow, "ArrowDown");
+    expect(document.activeElement).toBe(first);
+
+    await keyDown(first, "ArrowUp");
+    expect(document.activeElement).toBe(workspaceRow);
+
+    await keyDown(workspaceRow, "ArrowRight");
+    expect(document.activeElement).toBe(first);
+
+    await keyDown(first, "ArrowLeft");
+    expect(document.activeElement).toBe(workspaceRow);
+  });
 });
+
+function agentsUnder(title: string): AgentRowsProps {
+  return {
+    agents: {
+      rows: [agent({ id: "root", title, hasChildren: true })],
+      hidden: 0,
+    },
+    activeId: null,
+    onOpenAgent: vi.fn(),
+    onOpenHistory: vi.fn(),
+  };
+}
+
+async function keyDown(target: HTMLElement, key: string): Promise<void> {
+  await act(async () => {
+    target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+  });
+}

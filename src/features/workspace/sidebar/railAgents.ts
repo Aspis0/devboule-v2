@@ -1,17 +1,16 @@
-import { useMemo, useState } from "react";
 import type { Session, SessionKind } from "../../../types/ipc";
 import { isAgentKind } from "../../../types/ipc";
 import { localWorkspaceKey, type WorkspaceKey } from "../hosts/hostIdentity";
 import { providerName } from "../providerNames";
 import { sessionNeedsApproval } from "../sessionAttention";
-import { childRow } from "../subagentRows";
+import { childRow, isArchivable } from "../subagentRows";
 import type { WorkspaceAgents } from "../workspaceProjects";
 import { sessionTitle } from "../workspaceSessions";
 
 /** Rows the rail lists under the selected workspace; the rest wait behind `+N more in History`. */
 export const RAIL_AGENT_CAP = 8;
 
-export type RailAgentState = "running" | "waiting" | "finished" | "idle";
+export type RailAgentState = "running" | "waiting" | "finished" | "failed" | "stopped" | "idle";
 
 export interface RailAgent {
   id: string;
@@ -27,6 +26,10 @@ export interface RailAgent {
   parentTitle: string | null;
   /** Another shown agent sits directly under this one. */
   hasChildren: boolean;
+  /** The generation the row was read at: an archive closes only that one. */
+  generation: number | null;
+  /** A child the roster can close now, as the pane list offers it. */
+  archivable: boolean;
 }
 
 export interface RailAgents {
@@ -37,30 +40,52 @@ export interface RailAgents {
 
 type TreeNode = Omit<RailAgent, "hasChildren">;
 
+interface Tree {
+  nodes: TreeNode[];
+  /** The ids of agents whose process has ended, which the cap cuts first. */
+  settled: ReadonlySet<string>;
+}
+
 const NO_AGENTS: RailAgents = { rows: [], hidden: 0 };
 
-// A waiting child reads before a running one, and a running one before the rest.
+// A waiting child reads before a running one, a running one before a failed one,
+// and the rest in roster order.
 const CHILD_ORDER: Readonly<Record<RailAgentState, number>> = {
   waiting: 0,
   running: 1,
-  finished: 2,
-  idle: 2,
+  failed: 2,
+  finished: 3,
+  stopped: 3,
+  idle: 3,
 };
 
-/** Only a process that is up is listed: an ended one has no place on the rail. */
+function isChild(session: Session): boolean {
+  return session.createdBy !== undefined && session.createdBy !== session.id;
+}
+
+/**
+ * A root leaves the rail when its process ends. A child stays after it ends, so
+ * the person can archive it here, as the pane list would.
+ */
 function isListed(session: Session): boolean {
+  if (isChild(session)) return true;
   return session.state.type === "live" || session.state.type === "silent";
+}
+
+function isSettled(session: Session): boolean {
+  return session.state.type === "ended" || session.state.type === "recovered";
 }
 
 function stateOf(session: Session, child: boolean): RailAgentState {
   if (sessionNeedsApproval(session)) return "waiting";
   const status = childRow(session).status;
   if (status === "running") return "running";
+  if (status === "failed" || status === "stopped") return status;
   return status === "finished" && child ? "finished" : "idle";
 }
 
 /** Every listed agent in tree order: each root, then its children, then theirs. */
-function treeOf(sessions: readonly Session[], key: WorkspaceKey): TreeNode[] {
+function treeOf(sessions: readonly Session[], key: WorkspaceKey): Tree {
   const agents = sessions.filter(
     (session) =>
       isAgentKind(session.kind) &&
@@ -85,15 +110,18 @@ function treeOf(sessions: readonly Session[], key: WorkspaceKey): TreeNode[] {
 
   const nodes: TreeNode[] = [];
   const visit = (session: Session, parent: Session | undefined) => {
+    const child = parent !== undefined;
     nodes.push({
       id: session.id,
       kind: session.kind,
       provider: providerName(session.provider ?? session.kind),
       title: sessionTitle(session),
-      state: stateOf(session, parent !== undefined),
-      child: parent !== undefined,
+      state: stateOf(session, child),
+      child,
       parentId: parent?.id ?? null,
       parentTitle: parent === undefined ? null : sessionTitle(parent),
+      generation: childRow(session).generation,
+      archivable: child && isArchivable(childRow(session)),
     });
     const children = [...(childrenOf.get(session.id) ?? [])].sort(
       (a, b) => CHILD_ORDER[stateOf(a, true)] - CHILD_ORDER[stateOf(b, true)],
@@ -103,13 +131,14 @@ function treeOf(sessions: readonly Session[], key: WorkspaceKey): TreeNode[] {
   for (const session of agents) {
     if (parentOf(session) === undefined) visit(session, undefined);
   }
-  return nodes;
+  const settled = new Set(agents.filter(isSettled).map((session) => session.id));
+  return { nodes, settled };
 }
 
 /**
  * The agents of one workspace as the rail lists them. Past the cap, what shows
- * is chosen by need: a waiting, running or front agent is never cut, and the
- * creator of a kept child stays with it.
+ * is chosen by need: a waiting, running or front agent is never cut, then the
+ * live rows, then the settled children. A creator is kept with the rows it holds.
  */
 export function railAgentsOf(
   sessions: readonly Session[],
@@ -117,26 +146,28 @@ export function railAgentsOf(
   activeId: string | null,
 ): RailAgents {
   if (key === null) return NO_AGENTS;
-  const tree = treeOf(sessions, key);
+  const { nodes: tree, settled } = treeOf(sessions, key);
   const byId = new Map(tree.map((node) => [node.id, node]));
   const kept = new Set<string>();
+  const keep = (id: string) => {
+    let current: string | null = id;
+    while (current !== null && !kept.has(current)) {
+      kept.add(current);
+      current = byId.get(current)?.parentId ?? null;
+    }
+  };
   for (const node of tree) {
     if (node.state === "waiting" || node.state === "running" || node.id === activeId) {
-      kept.add(node.id);
+      keep(node.id);
     }
   }
-  for (const id of [...kept]) {
-    let parent = byId.get(id)?.parentId ?? null;
-    while (parent !== null && !kept.has(parent)) {
-      kept.add(parent);
-      parent = byId.get(parent)?.parentId ?? null;
-    }
-  }
-  // Tree order puts a creator ahead of its children, so a child is only added
-  // once its creator already is.
-  for (const node of tree) {
+  const fill = [
+    ...tree.filter((node) => !settled.has(node.id)),
+    ...tree.filter((node) => settled.has(node.id)),
+  ];
+  for (const node of fill) {
     if (kept.size >= RAIL_AGENT_CAP) break;
-    kept.add(node.id);
+    keep(node.id);
   }
   const shown = tree.filter((node) => kept.has(node.id));
   const rows = shown.map((node) => ({
@@ -144,47 +175,6 @@ export function railAgentsOf(
     hasChildren: shown.some((other) => other.parentId === node.id),
   }));
   return { rows, hidden: tree.length - shown.length };
-}
-
-function sameRow(a: RailAgent, b: RailAgent): boolean {
-  return (
-    a.id === b.id &&
-    a.kind === b.kind &&
-    a.provider === b.provider &&
-    a.title === b.title &&
-    a.state === b.state &&
-    a.child === b.child &&
-    a.parentId === b.parentId &&
-    a.parentTitle === b.parentTitle &&
-    a.hasChildren === b.hasChildren
-  );
-}
-
-function sameRailAgents(a: RailAgents, b: RailAgents): boolean {
-  return (
-    a.hidden === b.hidden &&
-    a.rows.length === b.rows.length &&
-    a.rows.every((row, index) => {
-      const other = b.rows[index];
-      return other !== undefined && sameRow(row, other);
-    })
-  );
-}
-
-/**
- * The rail's agents for the selected workspace. A roster push that leaves them
- * unchanged hands back the same object, so the rail below does not repaint.
- */
-export function useRailAgents(
-  sessions: readonly Session[],
-  key: WorkspaceKey | null,
-  activeId: string | null,
-): RailAgents {
-  const fresh = useMemo(() => railAgentsOf(sessions, key, activeId), [sessions, key, activeId]);
-  const [stable, setStable] = useState(fresh);
-  const current = sameRailAgents(stable, fresh) ? stable : fresh;
-  if (current !== stable) setStable(current);
-  return current;
 }
 
 /**

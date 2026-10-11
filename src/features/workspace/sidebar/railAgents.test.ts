@@ -119,6 +119,57 @@ describe("the agents the rail lists", () => {
   });
 });
 
+describe("the children that have ended", () => {
+  const endedWith = (code: number | null): Session["state"] => ({
+    type: "ended",
+    generation: 2,
+    code,
+    integrity: { kind: "complete" },
+  });
+
+  it("lists an ended child after the live rows, so it can be archived", () => {
+    const rows = rail([
+      agent({ id: "root" }),
+      agent({ id: "done", createdBy: "root", state: endedWith(0) }),
+    ]).rows;
+    expect(rows.map((row) => [row.id, row.state, row.archivable])).toEqual([
+      ["root", "idle", false],
+      ["done", "finished", true],
+    ]);
+  });
+
+  it("never lists an ended root: only a child is archived from the rail", () => {
+    expect(idsOf([agent({ id: "root", state: endedWith(0) })])).toEqual([]);
+  });
+
+  it("names a failed child failed and a cleanly stopped one stopped", () => {
+    const states = rail([
+      agent({ id: "root" }),
+      agent({ id: "crashed", createdBy: "root", state: endedWith(null) }),
+      agent({ id: "stopped", createdBy: "root", state: endedWith(1) }),
+    ]).rows.map((row) => [row.id, row.state]);
+    expect(states).toEqual([
+      ["root", "idle"],
+      ["crashed", "failed"],
+      ["stopped", "stopped"],
+    ]);
+  });
+
+  it("cuts an ended child before a live one when the cap is full", () => {
+    const sessions = [
+      agent({ id: "done", createdBy: "root", state: endedWith(0) }),
+      agent({ id: "root" }),
+      ...Array.from({ length: RAIL_AGENT_CAP }, (_, index) => agent({ id: `idle-${index}` })),
+    ];
+    expect(idsOf(sessions)).not.toContain("done");
+  });
+
+  it("carries the generation each row was shown with", () => {
+    const rows = rail([agent({ id: "a", state: { type: "live", generation: 3 } })]).rows;
+    expect(rows[0]?.generation).toBe(3);
+  });
+});
+
 describe("the cap", () => {
   it("shows at most the cap and counts what waits behind it", () => {
     const roots = Array.from({ length: RAIL_AGENT_CAP + 2 }, (_, index) =>

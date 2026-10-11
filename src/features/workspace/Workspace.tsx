@@ -40,7 +40,8 @@ import {
   type AgentTasksContext,
   type SidePanelEntry,
 } from "./sidePanelRegistry";
-import { childRow, isArchivable } from "./subagentRows";
+import { childRow } from "./subagentRows";
+import { archiveTargets, type ArchiveTarget } from "./subagentArchive";
 import { useTasksAttention } from "./useTasksAttention";
 import type { BackgroundTaskSource } from "./useBackgroundTaskState";
 import { SIDE_PANEL_BODY_ID, SidePanelTabs, sidePanelTabId } from "./panel/SidePanelTabs";
@@ -130,7 +131,7 @@ import { Sidebar } from "./sidebar/Sidebar";
 import { hostNames } from "./sidebar/hostNames";
 import { LOCAL_HOST_ID, type HostId } from "./hosts/hostIdentity";
 import type { WorkspaceTreeProps } from "./sidebar/WorkspaceTree";
-import { useRailAgents } from "./sidebar/railAgents";
+import { useRailAgents } from "./sidebar/useRailAgents";
 import { HistoryPanel } from "../history/HistoryPanel";
 import { StatusBar, agentStateOf, type FocusedAgent } from "./statusBar/StatusBar";
 import { useWorkspaceStats } from "./sidebar/useWorkspaceStats";
@@ -2548,20 +2549,14 @@ export function Workspace({
     setActiveSidePanel("tasks");
     setRightCollapsed(false);
   }, [setRightCollapsed]);
-  // A finished agent leaves the rail the same way the list's Archive does: closed,
-  // and its tab with it. The transcript stays in History.
+  // The rail archives with the list's act, so both refuse a child the roster has
+  // moved on from. A closed child's tab goes with it; its transcript stays in History.
   const archiveAgent = useCallback(
-    async (sessionId: string): Promise<string | null> => {
-      const row = sessions.find((session) => session.id === sessionId);
-      if (row === undefined || !isArchivable({ kind: "child", status: childRow(row).status })) {
-        return "It is no longer finished, so nothing was archived.";
-      }
-      try {
-        await sessionClose(sessionId);
-      } catch (cause: unknown) {
-        return errorSentence(cause).sentence;
-      }
-      dropSessionPermissions(sessionId);
+    async (target: ArchiveTarget): Promise<string | null> => {
+      const sentences = await archiveTargets([target], sessions, sessionClose);
+      const sentence = sentences.get(target.id);
+      if (sentence !== undefined) return sentence;
+      dropSessionPermissions(target.id);
       await refreshSessions();
       return null;
     },

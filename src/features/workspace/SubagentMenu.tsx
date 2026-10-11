@@ -11,6 +11,7 @@ import "./SubagentMenu.css";
 import type { SessionTask } from "../../types/ipc";
 import type { AgentSubagentStatus } from "../../lib/agentSession";
 import { isArchivable, type SubagentRow } from "./subagentRows";
+import type { ArchiveTarget } from "./subagentArchive";
 import { StripKindMark } from "./strip/StripKindMark";
 import { useOpenedSessions } from "./openedSessions";
 import { useTaskClock } from "./useTaskClock";
@@ -35,13 +36,6 @@ const ARCHIVE_ASK_MESSAGE =
   "They leave this list and their tabs close. Their transcripts stay in History; their attached files are removed.";
 const STOP_MESSAGE = "The agent stops where it is. Its transcript stays in History.";
 
-/** One child as the ask takes it: its id and the generation its roster row
- * held then; the act closes it only while that still matches. */
-export interface SubagentArchiveTarget {
-  id: string;
-  generation: number | null;
-}
-
 export interface SubagentMenuProps {
   rows: readonly SubagentRow[];
   /** The open agent's task list: its running commands and the start of each running turn. */
@@ -50,9 +44,7 @@ export interface SubagentMenuProps {
   attentionById?: ReadonlyMap<string, string>;
   /** Closes the named children, reads the roster back, and answers with one
    * plain sentence for each child that did not close — never raw daemon text. */
-  onArchiveFinished?: (
-    targets: readonly SubagentArchiveTarget[],
-  ) => Promise<ReadonlyMap<string, string>>;
+  onArchiveFinished?: (targets: readonly ArchiveTarget[]) => Promise<ReadonlyMap<string, string>>;
   /** Stops a running child; answers with the refusal sentence, or null. */
   onStopSubagent?: (sessionId: string) => Promise<string | null>;
   /** Opens the Tasks tab: the line's road when it names commands only. */
@@ -90,7 +82,7 @@ export function SubagentMenu({
   const [archiving, setArchiving] = useState(false);
   const [archiveNonce, setArchiveNonce] = useState(0);
   /** The children the open ask was raised for; null while no ask is up. */
-  const [ask, setAsk] = useState<readonly SubagentArchiveTarget[] | null>(null);
+  const [ask, setAsk] = useState<readonly ArchiveTarget[] | null>(null);
   /** Same-tick re-entry: the dialog's open state clears only on the next render. */
   const runningRef = useRef(false);
   const opened = useOpenedSessions();
@@ -190,12 +182,12 @@ export function SubagentMenu({
 
   // The generation each child had as the ask took it — the row's identity at
   // the moment the user saw the count.
-  const askTarget = (row: SubagentRow): SubagentArchiveTarget => ({
+  const askTarget = (row: SubagentRow): ArchiveTarget => ({
     id: row.id,
     generation: row.generation,
   });
 
-  const archiveFinished = async (targets: readonly SubagentArchiveTarget[]): Promise<void> => {
+  const archiveFinished = async (targets: readonly ArchiveTarget[]): Promise<void> => {
     if (runningRef.current || onArchiveFinished === undefined) return;
     runningRef.current = true;
     setArchiving(true);

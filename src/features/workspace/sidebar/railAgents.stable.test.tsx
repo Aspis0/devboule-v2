@@ -5,7 +5,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Session } from "../../../types/ipc";
 import { localWorkspaceKey, type WorkspaceKey } from "../hosts/hostIdentity";
-import { useRailAgents, type RailAgents } from "./railAgents";
+import { type RailAgents } from "./railAgents";
+import { useRailAgentSessions, useRailAgents } from "./useRailAgents";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -49,6 +50,22 @@ describe("the rail's agent rows across roster pushes", () => {
     await act(async () => root.render(<Probe sessions={[agent({ id: "a" })]} seen={seen} />));
 
     expect(seen.at(-1)).toBe(first);
+  });
+
+  it("keeps the rail's own agents when a session of another workspace changes", async () => {
+    const scoped: (readonly Session[])[] = [];
+    const Scope = ({ sessions }: { sessions: Session[] }) => {
+      scoped.push(useRailAgentSessions(sessions, KEY));
+      return null;
+    };
+    const other = (activity?: Session["activity"]) =>
+      agent({ id: "elsewhere", workspaceId: "workspace-2", activity });
+    await act(async () => root.render(<Scope sessions={[agent({ id: "a" }), other()]} />));
+    const first = scoped.at(-1);
+
+    await act(async () => root.render(<Scope sessions={[agent({ id: "a" }), other("working")]} />));
+
+    expect(scoped.at(-1)).toBe(first);
   });
 
   it("gives a new object when an agent's row changes", async () => {

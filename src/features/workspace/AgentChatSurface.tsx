@@ -47,7 +47,6 @@ import type {
 import { acquire, release, peek } from "../../lib/agentSessionRegistry";
 import { AgentSession, lastAssistantMessage, normalizeGoal } from "../../lib/agentSession";
 import type { AgentSessionState, AgentStatus } from "../../lib/agentSession";
-import { errorSentence } from "../../lib/errorSentence";
 import { useConversationScrollStick } from "./useConversationScrollStick";
 import { setPreferredEffort, setPreferredMode, setPreferredModel } from "../../lib/agentPrefs";
 import { forgetCreatedSession, mayApplyPicks } from "./createdSessions";
@@ -57,8 +56,9 @@ import { WorkspaceComposer } from "./WorkspaceComposer";
 import { sendChatImagesByReference } from "./chatImageTransport";
 import { useFileAttachments } from "./useFileAttachments";
 import type { FileUploader } from "./fileUpload";
-import { SubagentMenu, type SubagentArchiveTarget } from "./SubagentMenu";
-import { childRow, childTaskStates, deriveSubagentRows, isArchivable } from "./subagentRows";
+import { SubagentMenu } from "./SubagentMenu";
+import { archiveTargets, type ArchiveTarget } from "./subagentArchive";
+import { childTaskStates, deriveSubagentRows } from "./subagentRows";
 import { useBackgroundTaskState } from "./useBackgroundTaskState";
 import { AgentReadingPublisher } from "./statusBar/AgentReadingPublisher";
 import { AgentContextMeter } from "./statusBar/AgentContextMeter";
@@ -673,34 +673,17 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     rosterRef.current = sessionRoster;
   }, [sessionRoster]);
 
-  // The archive act: each target closes only while its roster row is the one
-  // the ask captured and is still archivable; a row the roster dropped is
-  // already closed.
+  // The archive act the rail's rows share (subagentArchive); a target that is
+  // not in the sentences is closed, or was already.
   const archiveFinishedSubagents = useCallback(
-    async (targets: readonly SubagentArchiveTarget[]): Promise<ReadonlyMap<string, string>> => {
-      const sentences = new Map<string, string>();
-      const closed = new Set<string>();
-      for (const target of targets) {
-        const roster = rosterRef.current;
-        if (roster === undefined) continue;
-        const row = roster.find((session) => session.id === target.id);
-        if (row === undefined) {
-          closed.add(target.id);
-          continue;
-        }
-        // The daemon's close carries no generation: this read is the whole guard.
-        const current = childRow(row);
-        if (current.generation !== target.generation || !isArchivable(current)) {
-          sentences.set(target.id, "It changed since you asked, so it was left open.");
-          continue;
-        }
-        try {
-          await sessionClose(target.id);
-          closed.add(target.id);
-        } catch (cause) {
-          sentences.set(target.id, errorSentence(cause).sentence);
-        }
-      }
+    async (targets: readonly ArchiveTarget[]): Promise<ReadonlyMap<string, string>> => {
+      const roster = rosterRef.current;
+      const sentences = await archiveTargets(targets, roster, sessionClose);
+      const closed = new Set(
+        roster === undefined
+          ? []
+          : targets.map((target) => target.id).filter((id) => !sentences.has(id)),
+      );
       try {
         await onRefreshSubagents?.();
       } catch {

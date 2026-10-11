@@ -18,6 +18,7 @@ import { moveMenuFocus } from "../strip/menuNav";
 import type { WorkspaceView } from "../workspaceProjects";
 import type { HostId, WorkspaceKey } from "../hosts/hostIdentity";
 import { compactLineCount } from "./diffCount";
+import { focusAgentTreeAfter } from "./agentTreeKeys";
 import { agentCountLine } from "./railAgents";
 import { rowStatus } from "./rowStatus";
 import type { WorkspaceStat } from "./useWorkspaceStats";
@@ -217,6 +218,9 @@ export const WorkspaceRow = memo(function WorkspaceRow({
 
   const onRowKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
     if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) openMenu(event);
+    if (event.key !== "ArrowDown" && event.key !== "ArrowRight") return;
+    // Only a row with its agent tree drawn under it has somewhere to go.
+    if (focusAgentTreeAfter(event.currentTarget.parentElement)) event.preventDefault();
   };
 
   const onMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {

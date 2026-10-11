@@ -2,28 +2,24 @@ import { useRef, useState, type RefObject } from "react";
 import { useConfirmAsk } from "../../../components/ConfirmHost";
 import { useMenuOpen } from "../../../lib/menuOpen";
 import { AnchoredPopover } from "../popoverPlace";
+import type { ArchiveTarget } from "../subagentArchive";
 
 // Every clause is a checked effect of the close, as on the list's archive ask.
 const ARCHIVE_MESSAGE =
   "It leaves this list and its tab closes. Its transcript stays in History; its attached files are removed.";
 
 export interface AgentRowMenuProps {
-  sessionId: string;
+  /** The agent as the row showed it when the menu opened. */
+  target: ArchiveTarget;
   title: string;
   anchor: RefObject<HTMLElement | null>;
   /** Archives the agent; answers with the refusal sentence, or null. */
-  onArchive: (sessionId: string) => Promise<string | null>;
+  onArchive: (target: ArchiveTarget) => Promise<string | null>;
   onDismiss: () => void;
 }
 
 /** The menu a finished agent's row opens: Archive, asked first, and a refusal said in place. */
-export function AgentRowMenu({
-  sessionId,
-  title,
-  anchor,
-  onArchive,
-  onDismiss,
-}: AgentRowMenuProps) {
+export function AgentRowMenu({ target, title, anchor, onArchive, onDismiss }: AgentRowMenuProps) {
   const askConfirm = useConfirmAsk();
   const containerRef = useRef<HTMLDivElement>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
@@ -38,7 +34,7 @@ export function AgentRowMenu({
       cancelLabel: "Keep it",
     });
     if (!confirmed) return;
-    const sentence = await onArchive(sessionId);
+    const sentence = await onArchive(target);
     if (sentence === null) onDismiss();
     else setRefusal(sentence);
   };

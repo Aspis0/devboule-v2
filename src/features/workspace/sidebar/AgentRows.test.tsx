@@ -39,6 +39,8 @@ const row = (over: Partial<RailAgent> = {}): RailAgent => ({
   parentId: null,
   parentTitle: null,
   hasChildren: false,
+  generation: 1,
+  archivable: false,
   ...over,
 });
 
@@ -167,18 +169,38 @@ describe("the agent rows under a workspace", () => {
     expect(container.querySelector(".agent-row-more")).toBeNull();
   });
 
-  it("opens the row menu from the keyboard only on a finished agent, which can be archived", async () => {
+  it("opens the row menu from the keyboard on an agent the roster can archive", async () => {
     await render(
       {},
-      { rows: [row({ id: "done", state: "finished", child: true, parentId: "x" })] },
+      {
+        rows: [
+          row({ id: "done", state: "finished", child: true, parentId: "x", archivable: true }),
+        ],
+      },
     );
     await keyDown(items()[0] as HTMLElement, "F10", { shiftKey: true });
     expect(container.querySelector('[role="menu"]')).not.toBeNull();
   });
 
-  it("does not open a menu on a running agent", async () => {
-    await render({}, { rows: [row({ state: "running" })] });
+  it("offers no menu on an agent the roster will not archive", async () => {
+    await render({}, { rows: [row({ state: "running", archivable: false })] });
     await keyDown(items()[0] as HTMLElement, "F10", { shiftKey: true });
     expect(container.querySelector('[role="menu"]')).toBeNull();
+  });
+
+  it("names a failed child failed, and a stopped one stopped", async () => {
+    await render(
+      {},
+      {
+        rows: [
+          row({ id: "crashed", state: "failed", child: true, parentId: "x", archivable: true }),
+          row({ id: "halted", state: "stopped", child: true, parentId: "x", archivable: true }),
+        ],
+      },
+    );
+    expect(items().map((item) => item.querySelector(".agent-row-tail")?.textContent)).toEqual([
+      "failed",
+      "stopped",
+    ]);
   });
 });
