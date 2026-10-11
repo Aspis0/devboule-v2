@@ -137,7 +137,7 @@ fn creation_outcome_text(answer: &Value) -> String {
             .and_then(Value::as_str)
             .unwrap_or_default();
         return format!(
-            "The person approved the agent creation: '{name}' started as session {session_id}. Its finish, error or permission need reaches you as a message that wakes you."
+            "The person approved the agent creation: '{name}' started as session {session_id}. Its finish reaches you as a message that wakes you."
         );
     }
     let reason = answer

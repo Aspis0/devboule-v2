@@ -4703,6 +4703,13 @@ impl Slice5Test {
     /// Every prompt text the stub provider received, each followed by a
     /// newline, once `done` accepts it. A prompt can span lines, so this is
     /// the whole file rather than `observations`' lines.
+    /// The creation outcome a creator receives as a prompt once the person has
+    /// answered its card: the refusal or the new session, in the creator's own
+    /// words. The creator's MCP answer is only "awaiting approval" now.
+    fn creation_outcome(&self) -> Vec<String> {
+        vec![self.wait_for_provider_prompts(|prompts| prompts.contains("agent creation"))]
+    }
+
     fn wait_for_provider_prompts(&self, done: impl Fn(&str) -> bool) -> String {
         let deadline = Instant::now() + Duration::from_secs(45);
         loop {
@@ -5243,7 +5250,7 @@ fn a_profile_naming_a_model_the_agent_does_not_publish_is_refused() {
     let events = test.attach(&creator);
     test.allow_creation_card(&creator.id, &events);
 
-    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    let calls = test.creation_outcome();
     assert!(
         calls[0].contains("stub-nope") && calls[0].contains("is not among the model values"),
         "the refusal names the id and the agent's declared values: {calls:?}"
@@ -5275,7 +5282,7 @@ fn an_agent_that_declares_no_model_surface_refuses_a_profile_with_a_model() {
     let events = test.attach(&creator);
     test.allow_creation_card(&creator.id, &events);
 
-    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    let calls = test.creation_outcome();
     assert!(
         calls[0].contains("declares no model or effort switch surface"),
         "the absence sentence: {calls:?}"
@@ -5306,7 +5313,7 @@ fn a_thinking_option_the_agent_does_not_declare_is_refused() {
     let events = test.attach(&creator);
     test.allow_creation_card(&creator.id, &events);
 
-    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    let calls = test.creation_outcome();
     assert!(
         calls[0].contains("bogus") && calls[0].contains("is not among the thinking options"),
         "the mismatch sentence for the thinking axis: {calls:?}"
@@ -5349,7 +5356,7 @@ fn an_agent_that_refuses_the_delivered_model_refuses_the_creation() {
         "stub-model-new",
         "the switch was on the wire: {received:?}"
     );
-    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    let calls = test.creation_outcome();
     assert!(
         calls[0].contains("the agent refused the delivered model"),
         "the creation carries the refusal: {calls:?}"
@@ -5413,7 +5420,7 @@ fn an_agent_that_dies_mid_delivery_is_named_as_an_exited_provider() {
     let events = test.attach(&creator);
     test.allow_creation_card(&creator.id, &events);
 
-    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    let calls = test.creation_outcome();
     assert!(
         calls[0].contains("provider exited during startup"),
         "the death is named as a startup exit, not a profile refusal: {calls:?}"
@@ -5497,7 +5504,7 @@ fn an_auto_accept_tick_over_the_delivered_asking_mode_is_refused_by_the_delivery
     // delivered mode and the profile's spelling coincide, because the switch
     // succeeded. The stub's starting mode is never named: what is judged is
     // what the child would start in.
-    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    let calls = test.creation_outcome();
     assert!(
         calls[0].contains("which asks the human"),
         "the refusal names the contradiction: {calls:?}"
@@ -5559,7 +5566,7 @@ fn a_ticked_profile_over_an_agent_with_no_modes_is_refused_at_the_handshake() {
     let events = test.attach(&creator);
     test.allow_creation_card(&creator.id, &events);
 
-    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    let calls = test.creation_outcome();
     assert!(
         calls[0].contains("is not available"),
         "the refusal names the mode the agent has no vocabulary for: {calls:?}"
@@ -5611,7 +5618,7 @@ fn an_agent_that_ignores_the_model_switch_cannot_hang_the_creation() {
     let events = test.attach(&creator);
     test.allow_creation_card(&creator.id, &events);
 
-    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    let calls = test.creation_outcome();
     assert!(
         calls[0].contains("did not answer within"),
         "the mute agent is named as an unanswered wait, not a hang: {calls:?}"
@@ -5664,7 +5671,7 @@ fn an_agent_that_dribbles_without_a_newline_cannot_hang_the_creation() {
     let events = test.attach(&creator);
     test.allow_creation_card(&creator.id, &events);
 
-    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    let calls = test.creation_outcome();
     assert!(
         calls[0].contains("did not answer within"),
         "the dribbler is named as an unanswered wait, not a hang: {calls:?}"
@@ -6325,7 +6332,7 @@ fn a_provider_that_dies_during_its_own_startup_is_a_failed_creation() {
 
     // The tool call answers the boundary's error, and the stub recorded what
     // the daemon sent back to the agent that called it.
-    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    let calls = test.creation_outcome();
     assert!(
         calls
             .iter()

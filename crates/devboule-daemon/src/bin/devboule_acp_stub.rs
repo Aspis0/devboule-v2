@@ -1079,7 +1079,12 @@ fn main() -> io::Result<()> {
                 )?;
             }
             "session/prompt" => {
-                if std::env::var_os("DEVBOULE_ACP_STUB_EXIT_ON_PROMPT").is_some() {
+                // The creation outcome is the daemon's prompt to the creator, and
+                // the env switch is set for every stub the test starts: the
+                // creator must answer it, and only the child dies on its prompt.
+                if std::env::var_os("DEVBOULE_ACP_STUB_EXIT_ON_PROMPT").is_some()
+                    && !request.to_string().contains("agent creation")
+                {
                     // The child dies the instant its first prompt arrives:
                     // It lived long enough for the creation to answer Ok, so this
                     // exit is a *child end*.
@@ -1191,10 +1196,13 @@ fn main() -> io::Result<()> {
                     continue;
                 }
                 // Whole word: the daemon's own framing now says "permissions"
-                // in every child prompt, and that must not read as asking.
-                if prompt_text
-                    .split(|cell: char| !cell.is_alphanumeric())
-                    .any(|word| word == "permission")
+                // in every child prompt, and that must not read as asking. A
+                // daemon notice (its <devboule-system> envelope) names a card that
+                // belongs to another session, so it never asks either.
+                if !prompt_text.contains("<devboule-system>")
+                    && prompt_text
+                        .split(|cell: char| !cell.is_alphanumeric())
+                        .any(|word| word == "permission")
                 {
                     if let Some(delay_ms) = std::env::var("DEVBOULE_ACP_STUB_PERMISSION_DELAY_MS")
                         .ok()
