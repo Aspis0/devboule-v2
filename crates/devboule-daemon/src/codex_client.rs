@@ -515,6 +515,9 @@ fn spawn_codex(
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
+        if let Some(path) = crate::agent_shell_path::path_with_real_shell() {
+            process.env("PATH", path);
+        }
         process.creation_flags(0x0800_0000);
     }
     #[cfg(not(windows))]

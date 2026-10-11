@@ -1,5 +1,10 @@
 /** Lines of a failure's excerpt, shown without a click. */
 export const FAILURE_EXCERPT_LINES = 3;
+/**
+ * Characters of a failed call's output a closed line reads for its reason: a
+ * streamed result is not split whole while its line stays closed.
+ */
+export const REASON_HEAD_CHARS = 4096;
 /** Lines mounted when an output is opened: a 100k-line log is not 100k nodes. */
 export const OUTPUT_RENDER_CAP = 2000;
 /** Characters a copy of the output carries; the rest is named, not copied. */
@@ -54,6 +59,17 @@ export function failureExcerpt(lines: readonly string[]): string[] {
   const named = lines.findIndex(namesFailure);
   const worth = (named === -1 ? lines : lines.slice(named)).filter((line) => line.trim() !== "");
   return named === -1 ? worth.slice(-FAILURE_EXCERPT_LINES) : worth.slice(0, FAILURE_EXCERPT_LINES);
+}
+
+/**
+ * The one line that says why a call failed: the line that names the failure,
+ * else the first line of output (a shell that cannot start prints its reason
+ * first, and names no failure marker).
+ */
+export function failureReason(lines: readonly string[]): string | null {
+  const named = lines.find(namesFailure);
+  const reason = named ?? lines.find((line) => line.trim() !== "");
+  return reason === undefined ? null : reason.trim();
 }
 
 /**

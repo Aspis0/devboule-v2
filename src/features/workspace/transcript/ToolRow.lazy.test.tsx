@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolChatItem } from "../../../lib/toolCallGroups";
 import { hideUntrustedFrame } from "../../../lib/untrustedFrame";
 import { ToolRow } from "./ToolRow";
-import { outputLines } from "./toolOutputView";
+import { outputLines, REASON_HEAD_CHARS } from "./toolOutputView";
 
 vi.mock("../../../lib/untrustedFrame", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../lib/untrustedFrame")>();
@@ -78,16 +78,20 @@ describe("ToolRow closed output", () => {
     expect(outputLines).toHaveBeenCalled();
   });
 
-  it("leaves a failure's excerpt unread until the line is opened, like any output", async () => {
+  it("reads only the head of a failure's output while the line is closed", async () => {
     const container = await renderRow(tool({ status: "failed", output: BIG }));
-    expect(outputLines).not.toHaveBeenCalled();
+    const closedReads = vi.mocked(outputLines).mock.calls.map(([text]) => text.length);
+    expect(closedReads.length).toBeGreaterThan(0);
+    expect(Math.max(...closedReads)).toBeLessThanOrEqual(REASON_HEAD_CHARS);
     const details = container.querySelector("details");
     if (details === null) throw new Error("the failed row had nothing to open");
     await act(async () => {
       details.open = true;
       details.dispatchEvent(new Event("toggle"));
     });
-    expect(outputLines).toHaveBeenCalled();
+    expect(vi.mocked(outputLines).mock.calls.some(([text]) => text.length === BIG.length)).toBe(
+      true,
+    );
   });
 
   it("does not read a successful browser call's output at all", async () => {

@@ -17,6 +17,8 @@ mod agent_image;
 mod agent_profiles;
 #[cfg(feature = "server")]
 mod agent_report;
+#[cfg(all(windows, feature = "server"))]
+mod agent_shell_path;
 #[cfg(feature = "server")]
 mod atomic;
 #[cfg(feature = "server")]

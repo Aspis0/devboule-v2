@@ -4,6 +4,7 @@ import {
   copyText,
   diffStats,
   failureExcerpt,
+  failureReason,
   outputLineKind,
   outputLines,
 } from "./toolOutputView";
@@ -163,5 +164,29 @@ describe("copyText", () => {
     expect(truncated).toBe(true);
     expect(text.length).toBeLessThanOrEqual(COPY_CHAR_CAP + 40);
     expect(text.endsWith("(truncated, 0 more lines)")).toBe(true);
+  });
+});
+
+describe("failureReason", () => {
+  it("is the line that names the failure, not the command echo above it", () => {
+    expect(
+      failureReason(["Get-ChildItem", "error[E0425]: cannot find value `x`", "  --> src/lib.rs:1"]),
+    ).toBe("error[E0425]: cannot find value `x`");
+  });
+
+  it("is the first line of output when nothing names the failure", () => {
+    expect(
+      failureReason([
+        "",
+        "Failed to create unified exec process: CreateProcessAsUserW failed: 5 (Access is denied.)",
+        "cwd=C:\\Users\\gualt\\Desktop\\test",
+      ]),
+    ).toBe(
+      "Failed to create unified exec process: CreateProcessAsUserW failed: 5 (Access is denied.)",
+    );
+  });
+
+  it("is absent when the output is empty", () => {
+    expect(failureReason(["", "  "])).toBeNull();
   });
 });

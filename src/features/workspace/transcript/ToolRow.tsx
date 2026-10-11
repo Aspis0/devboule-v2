@@ -20,7 +20,13 @@ import { isScreenshotRow, rowShowsNoOutput } from "../daemonToolVerb";
 import { ToolIcon } from "./ToolIcon";
 import { useOpenedRow } from "./openedRows";
 import { ToolOutput, type OutputExpansion } from "./ToolOutput";
-import { diffStats, failureExcerpt, outputLines } from "./toolOutputView";
+import {
+  diffStats,
+  failureExcerpt,
+  failureReason,
+  outputLines,
+  REASON_HEAD_CHARS,
+} from "./toolOutputView";
 import { isFailedToolCall } from "./toolFailure";
 
 export const ToolRow = memo(function ToolRow({
@@ -56,13 +62,22 @@ export const ToolRow = memo(function ToolRow({
   const childSession =
     devboule !== undefined && !showsOutput ? devbouleChildSession(item.output) : undefined;
   const linkUrl = model.linkUrl;
+  // The line says why a call failed without the person opening it, so the reason
+  // is read from the head of the output even while the row is closed.
+  const reason = useMemo(
+    () =>
+      failed
+        ? failureReason(outputLines(hideUntrustedFrame(item.output.slice(0, REASON_HEAD_CHARS))))
+        : null,
+    [failed, item.output],
+  );
   const isPlan = item.kind === "plan";
   const planDecision =
     isPlan && ["Approved", "Rejected", "Withdrawn"].includes(item.title) ? item.title : undefined;
   // The wire line only decides WHICH rows are command rows; the chip shows
   // the row's display title, which for some providers is the line itself.
   const commandRow = item.command !== undefined;
-  const hasSummary = model.summary !== undefined || planDecision !== undefined;
+  const hasSummary = model.summary !== undefined || planDecision !== undefined || reason !== null;
   // A browser call or a terminal capture prints nothing when it went well; a
   // screenshot's picture is the one exception, and a failure keeps its words.
   const noOutputRow = rowShowsNoOutput(item.kind, item.title);
@@ -138,6 +153,11 @@ export const ToolRow = memo(function ToolRow({
           ) : null}
           {planDecision !== undefined ? (
             <span className="workspace-chat-tool-summary-text">{planDecision}</span>
+          ) : null}
+          {reason !== null ? (
+            <span className="workspace-chat-tool-summary-text" title={reason}>
+              {reason}
+            </span>
           ) : null}
         </span>
       )}
