@@ -3508,3 +3508,36 @@ fn claude_launch_carries_the_devboule_instructions_once() {
     let again = super::launch_with_instructions(args);
     assert_eq!(flags(&again), 1, "a second pass adds no second instruction");
 }
+
+/// A Claude system prompt the person configured survives the bootstrap: the
+/// Devboule text is appended to it, never in its place (review fix pass).
+#[test]
+fn claude_bootstrap_appends_to_the_configured_append_prompt() {
+    let devboule = crate::provider_catalog::DEVBOULE_AGENT_INSTRUCTIONS;
+    let spaced = super::launch_with_instructions(vec![
+        "--append-system-prompt".to_string(),
+        "Answer in Italian.".to_string(),
+    ]);
+    assert_eq!(
+        spaced,
+        vec![
+            "--append-system-prompt".to_string(),
+            format!("Answer in Italian.\n\n{devboule}"),
+        ]
+    );
+    let joined = super::launch_with_instructions(vec![
+        "--append-system-prompt=Answer in Italian.".to_string()
+    ]);
+    assert_eq!(
+        joined,
+        vec![
+            "--append-system-prompt".to_string(),
+            format!("Answer in Italian.\n\n{devboule}"),
+        ]
+    );
+    let again = super::launch_with_instructions(spaced.clone());
+    assert_eq!(
+        again, spaced,
+        "a second pass adds nothing and keeps the person's text"
+    );
+}

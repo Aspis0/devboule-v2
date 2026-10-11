@@ -323,15 +323,45 @@ fn refuse_launch_only_effort(effort: Option<&str>) -> Result<(), WireError> {
 }
 
 /// Tell Claude where it runs (owner bug #14): the append flag carries the
-/// Devboule instructions on top of Claude's own system prompt. One copy only:
-/// any earlier copy is taken out first.
+/// Devboule instructions on top of Claude's own system prompt. A system prompt
+/// the person configured is kept, ahead of ours in one flag; an earlier copy of
+/// ours is dropped first, so a second pass changes nothing.
 fn launch_with_instructions(argv: Vec<String>) -> Vec<String> {
+    let devboule = crate::provider_catalog::DEVBOULE_AGENT_INSTRUCTIONS;
+    let mut prompts: Vec<String> = flag_values(&argv, "--append-system-prompt")
+        .into_iter()
+        .filter_map(|prompt| {
+            if prompt.is_empty() || prompt == devboule {
+                return None;
+            }
+            match prompt.strip_suffix(&format!("\n\n{devboule}")) {
+                Some(person) => Some(person.to_string()),
+                None => Some(prompt),
+            }
+        })
+        .collect();
+    prompts.push(devboule.to_string());
     let mut args = strip_flag(argv, "--append-system-prompt");
-    args.extend([
-        "--append-system-prompt".to_string(),
-        crate::provider_catalog::DEVBOULE_AGENT_INSTRUCTIONS.to_string(),
-    ]);
+    args.extend(["--append-system-prompt".to_string(), prompts.join("\n\n")]);
     args
+}
+
+/// Every value a flag carries in `argv`, in either spelling: `--flag value` or
+/// `--flag=value`. A flag with no value after it carries nothing.
+fn flag_values(argv: &[String], flag: &str) -> Vec<String> {
+    let with_equals = format!("{flag}=");
+    let mut values = Vec::new();
+    let mut iter = argv.iter();
+    while let Some(arg) = iter.next() {
+        if arg == flag {
+            if let Some(value) = iter.next() {
+                values.push(value.clone());
+            }
+        } else if let Some(value) = arg.strip_prefix(&with_equals) {
+            values.push(value.to_string());
+        }
+    }
+    values
 }
 
 fn strip_flag(argv: Vec<String>, flag: &str) -> Vec<String> {
