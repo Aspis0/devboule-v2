@@ -849,9 +849,11 @@ pub struct SessionRegistry {
     /// disk does not carry.
     uploads: crate::attachment_upload::AttachmentUploads,
     transition_sink: Arc<Mutex<Option<TransitionSink>>>,
-    /// The cancel flag of the newest transcript search. A search that starts
-    /// while another runs cancels the older one, so stale queries stop.
-    search_cancel: Arc<Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>>,
+    /// The cancel flag of each owner's newest transcript search. A search that
+    /// starts while the same owner's another runs cancels that one, so stale
+    /// queries stop. Keyed by owner, so one person's search never cancels
+    /// another's.
+    search_cancel: Arc<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>,
     presence: Arc<Mutex<HashMap<u64, ConnectionPresence>>>,
     /// Journal rows are the slow, mostly-static half of a roster. Keep them
     /// out of live-session transition broadcasts; lifecycle operations below
@@ -1017,7 +1019,7 @@ impl SessionRegistry {
             paths,
             journal,
             transition_sink: Arc::new(Mutex::new(None)),
-            search_cancel: Arc::new(Mutex::new(None)),
+            search_cancel: Arc::new(Mutex::new(HashMap::new())),
             presence: Arc::new(Mutex::new(HashMap::new())),
             journal_roster: Arc::new(Mutex::new(None)),
             workspace_paths: Arc::new(Mutex::new(WorkspacePathCache::default())),
@@ -1929,7 +1931,7 @@ impl SessionRegistry {
         let journal = Arc::clone(self.journal.as_ref().ok_or_else(journal_unavailable)?);
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         if let Ok(mut latest) = self.search_cancel.lock() {
-            if let Some(previous) = latest.replace(Arc::clone(&cancel)) {
+            if let Some(previous) = latest.insert(owner.user.clone(), Arc::clone(&cancel)) {
                 previous.store(true, std::sync::atomic::Ordering::Release);
             }
         }
