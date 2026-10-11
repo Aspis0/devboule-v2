@@ -262,6 +262,10 @@ pub use text_safety::{is_invisible_format, is_mandatory_line_break, unsafe_chara
 ///
 /// Protocol 37 adds `SessionsSearch` (the sidebar's transcript search), local
 /// only, behind the `sessions.search` capability. Same new-variant rule.
+///
+/// Also in 37: `SessionsSearch` replies carry `stopped_early`, so a scan cut
+/// short is told apart from an answer that merely hit a cap, and the
+/// `plan_outcome` message kind for a plan decision's line.
 pub const PROTOCOL_VERSION: u32 = 37;
 /// Oldest dialect whose daemon speaks the in-app editor frames
 /// (`WorkspaceFileOpen` / `Version` / `Write` and their app-file spellings).
