@@ -26,6 +26,8 @@ export interface WorkspaceTreeProps {
   onRenameWorkspace: (workspaceId: string, title: string) => Promise<ErrorSentence | null>;
   /** Takes a row's workspace off the list (its folder stays); answers with the refusal, if one came. */
   onArchiveWorkspace: (workspaceId: string, hostId: HostId) => Promise<ErrorSentence | null>;
+  /** Removes a local worktree's folder; answers with the refusal, if one came. */
+  onDeleteWorktree?: (workspaceId: string) => Promise<ErrorSentence | null>;
   /** Takes a project off the list; its folder stays. Answers with the refusal, if one came. */
   onRemoveProject: (projectId: string, hostId: HostId) => Promise<ErrorSentence | null>;
   /** The project whose anchor hosts the provider choice UI. */
@@ -71,6 +73,7 @@ export function WorkspaceTree({
   onNewWorkspace,
   onRenameWorkspace,
   onArchiveWorkspace,
+  onDeleteWorktree,
   onRemoveProject,
   providerMenuAnchorProjectId,
   providerMenu,
@@ -186,6 +189,7 @@ export function WorkspaceTree({
                     onSelect={onSelectWorkspace}
                     onRename={onRenameWorkspace}
                     onArchive={onArchiveWorkspace}
+                    onDeleteWorktree={onDeleteWorktree}
                     remote={!local}
                     hostOffline={!local && !(hostOnline?.get(project.hostId) ?? false)}
                   />

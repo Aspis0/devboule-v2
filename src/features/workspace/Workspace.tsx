@@ -360,6 +360,7 @@ export function Workspace({
     retryProjects,
     renameWorkspace,
     archiveWorkspace,
+    deleteWorktree,
     removeProject,
     createWorkspace,
   } = useWorkspaceProjects(restoredWorkspaceKey);
@@ -550,6 +551,16 @@ export function Workspace({
       return refusal;
     },
     [archiveWorkspace, evictWorkspaceStats],
+  );
+  const handleDeleteWorktree = useCallback(
+    async (workspaceId: string): Promise<ErrorSentence | null> => {
+      const refusal = await deleteWorktree(workspaceId);
+      // The folder is gone with the row, so its cached stats go with it.
+      const key = localWorkspaceKey(workspaceId);
+      if (refusal === null && key !== null) evictWorkspaceStats(key);
+      return refusal;
+    },
+    [deleteWorktree, evictWorkspaceStats],
   );
   const handleRemoveProject = useCallback(
     async (projectId: string, hostId: string = LOCAL_HOST_ID): Promise<ErrorSentence | null> => {
@@ -2497,6 +2508,7 @@ export function Workspace({
       onNewWorkspace: handleNewWorkspace,
       onRenameWorkspace: renameWorkspace,
       onArchiveWorkspace: handleArchiveWorkspace,
+      onDeleteWorktree: handleDeleteWorktree,
       onRemoveProject: handleRemoveProject,
       providerMenuAnchorProjectId:
         providerAnchor?.kind === "project" ? providerAnchor.projectId : null,
@@ -2518,6 +2530,7 @@ export function Workspace({
       handleNewWorkspace,
       renameWorkspace,
       handleArchiveWorkspace,
+      handleDeleteWorktree,
       handleRemoveProject,
       providerAnchor,
       providerMenu,

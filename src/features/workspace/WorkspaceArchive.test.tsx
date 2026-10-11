@@ -74,7 +74,7 @@ describe("archiving a workspace from the sidebar", () => {
     await renderWorkspace();
     await openRowMenu();
 
-    expect(menuLabels()).toEqual(["Rename", "Archive workspace"]);
+    expect(menuLabels()).toEqual(["Rename", "Archive workspace", "Delete worktree"]);
   });
 
   it("the row's kebab opens the same menu a right click does", async () => {

@@ -5,6 +5,7 @@ import {
   workspaceCreate,
   projectRemove,
   workspaceArchive,
+  workspaceDelete,
   workspaceSetTitle,
   workspacesList,
 } from "../../lib/tauri";
@@ -437,6 +438,25 @@ export function useWorkspaceProjects(restoredWorkspaceKey: WorkspaceKey | null) 
     [loadProjects],
   );
 
+  /**
+   * The person's "Delete worktree": the worktree's folder is removed from disk
+   * and its row leaves the list. The daemon refuses while a session runs in it
+   * or its checkout has uncommitted changes, and the refusal comes back as the
+   * sentence the row renders, with the list untouched.
+   */
+  const deleteWorktree = useCallback(
+    async (workspaceId: string): Promise<ErrorSentence | null> => {
+      try {
+        await workspaceDelete(workspaceId);
+      } catch (cause: unknown) {
+        return errorSentence(cause);
+      }
+      await loadProjects();
+      return null;
+    },
+    [loadProjects],
+  );
+
   /** Same contract as `archiveWorkspace`, for a project: off the list, folders kept. */
   const removeProject = useCallback(
     async (projectId: string): Promise<ErrorSentence | null> => {
@@ -524,6 +544,7 @@ export function useWorkspaceProjects(restoredWorkspaceKey: WorkspaceKey | null) 
     createWorkspace,
     renameWorkspace,
     archiveWorkspace,
+    deleteWorktree,
     removeProject,
     projectDialogOpen,
     openProjectDialog,

@@ -88,6 +88,9 @@ export interface WorkspaceRowProps {
   /** Takes the workspace off the list (its folder stays) and answers with the
    * refusal, if one came back. */
   onArchive: (workspaceId: string, hostId: HostId) => Promise<ErrorSentence | null>;
+  /** Removes a worktree's folder and takes the row off the list; answers with the
+   * refusal, if one came. Offered on a local worktree row only. */
+  onDeleteWorktree?: (workspaceId: string) => Promise<ErrorSentence | null>;
   /** A workspace on another machine: read-only here until host-targeted
    * mutations land, and its second line may carry the offline label. */
   remote?: boolean;
@@ -113,6 +116,7 @@ export const WorkspaceRow = memo(function WorkspaceRow({
   onSelect,
   onRename,
   onArchive,
+  onDeleteWorktree,
   remote = false,
   hostOffline = false,
 }: WorkspaceRowProps) {
@@ -123,6 +127,8 @@ export const WorkspaceRow = memo(function WorkspaceRow({
   const [saving, setSaving] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [archiveRefusal, setArchiveRefusal] = useState<ErrorSentence | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleteRefusal, setDeleteRefusal] = useState<ErrorSentence | null>(null);
   // `title` is the pointer's channel alone: the sentence rides the button as a
   // description a screen reader announces. An id of its own, since two hosts
   // may hold the same workspace id.
@@ -259,6 +265,18 @@ export const WorkspaceRow = memo(function WorkspaceRow({
     else focus();
   };
 
+  const startDelete = () => {
+    setDeleteRefusal(null);
+    closeMenu(false);
+    setConfirmingDelete(true);
+  };
+
+  const confirmDelete = async () => {
+    setConfirmingDelete(false);
+    if (onDeleteWorktree === undefined) return;
+    setDeleteRefusal(await onDeleteWorktree(workspace.id));
+  };
+
   const closeEditor = () => {
     setRefusal(null);
     setEditing(false);
@@ -323,6 +341,10 @@ export const WorkspaceRow = memo(function WorkspaceRow({
   if (remote && hostOffline) nameParts.push(OFFLINE_LABEL);
   const ariaLabel = nameParts.join(", ");
   const detail = rowDetail(workspace, branch, stat);
+  // A worktree is removed here; a local row is the project folder, and a remote
+  // row is removed on its own machine.
+  const deleteOffered =
+    !remote && workspace.isolation === "worktree" && onDeleteWorktree !== undefined;
   return (
     <div className="workspace-row-wrap" onContextMenu={openMenu}>
       {editing ? (
@@ -456,12 +478,24 @@ export const WorkspaceRow = memo(function WorkspaceRow({
           <button type="button" role="menuitem" onClick={startArchive}>
             Archive workspace
           </button>
+          {deleteOffered ? (
+            // Separate from Archive: this one removes the worktree's folder, and
+            // it asks first.
+            <button type="button" role="menuitem" onClick={startDelete}>
+              Delete worktree
+            </button>
+          ) : null}
         </div>
       ) : null}
       {archiveRefusal !== null ? (
         // The mapped sentence only: no raw daemon text reaches this surface.
         <span className="workspace-row-delete-refusal" role="alert">
           {archiveRefusal.sentence}
+        </span>
+      ) : null}
+      {deleteRefusal !== null ? (
+        <span className="workspace-row-delete-refusal" role="alert">
+          {deleteRefusal.sentence}
         </span>
       ) : null}
       <ConfirmDialog
@@ -472,6 +506,15 @@ export const WorkspaceRow = memo(function WorkspaceRow({
         tone="accent"
         onConfirm={() => void confirmArchive()}
         onCancel={() => setConfirming(false)}
+      />
+      <ConfirmDialog
+        open={confirmingDelete}
+        title={`Delete the worktree of “${workspace.displayTitle}”?`}
+        message="Removes its folder from disk. Refused while a session runs in it or it has uncommitted changes."
+        confirmLabel="Delete worktree"
+        tone="danger"
+        onConfirm={() => void confirmDelete()}
+        onCancel={() => setConfirmingDelete(false)}
       />
     </div>
   );
