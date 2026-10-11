@@ -2086,6 +2086,15 @@ impl CodexReader {
         let method = value.get("method").and_then(Value::as_str);
         let params = value.get("params").unwrap_or(&Value::Null);
         let root_thread = crate::codex_compaction::is_root_thread(params, &self.state.thread_id());
+        // A settled stall leaves its turn as the tracked one: clear it on the
+        // next root frame, so nothing steers into a turn that is over.
+        if root_thread {
+            if let Some(stalled) = runtime.codex_stalled_turn() {
+                if self.state.current_turn().as_deref() == Some(stalled.as_str()) {
+                    self.state.set_turn(None);
+                }
+            }
+        }
         let completion_turn_id = params.pointer("/turn/id").and_then(Value::as_str);
         // Only the root thread's completion may settle the run. The tracked
         // turn has exactly two writers — a `turn/start` response matched to
@@ -2108,7 +2117,15 @@ impl CodexReader {
         } else {
             None
         };
-        let settling = method == Some("turn/completed") && root_thread && replaced_turn.is_none();
+        // A late completion of a turn a stall settle already ended: it changes
+        // nothing, and the reader forgets the turn it named.
+        let late_after_stall = method == Some("turn/completed")
+            && root_thread
+            && runtime.take_codex_completion(completion_turn_id);
+        let settling = method == Some("turn/completed")
+            && root_thread
+            && replaced_turn.is_none()
+            && !late_after_stall;
         self.view.set_capture_plan(root_thread);
         // For a root `turn/completed`, the plan events go out BEFORE the frame's
         // envelope: live they precede its AgentFinished, and the card's
@@ -2213,6 +2230,9 @@ impl CodexReader {
                     // one now running, so it replaces a tracked turn the run
                     // already ended (the settle clears the run, not the slot).
                     let starts_idle = !runtime.is_running_turn();
+                    if let Some(turn_id) = params.pointer("/turn/id").and_then(Value::as_str) {
+                        runtime.note_codex_turn_started(turn_id);
+                    }
                     if self.state.current_turn().is_none() || starts_idle {
                         if let Some(turn_id) =
                             value.pointer("/params/turn/id").and_then(Value::as_str)

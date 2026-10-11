@@ -211,6 +211,11 @@ pub(crate) struct SessionRuntime {
     /// [`Self::settle_stalled_turn`]). Cleared by any active report, a new
     /// turn, and the turn's own completion.
     pub(crate) codex_idle_since: Mutex<Option<Instant>>,
+    /// The root turn Codex started and has not completed yet, by its id.
+    pub(crate) codex_open_turn: Mutex<Option<String>>,
+    /// The turn a stall settle ended, until its late completion arrives: that
+    /// completion must not publish the run's finish a second time.
+    pub(crate) codex_stalled_turn: Mutex<Option<String>>,
     /// Transition notifications are suppressed until spawn has inserted all
     /// runtime state, so an extremely short-lived child cannot publish an
     /// exit before the corresponding create snapshot.
@@ -640,6 +645,8 @@ impl SessionRuntime {
             reader_finished: AtomicBool::new(false),
             child_reaped: AtomicBool::new(false),
             codex_idle_since: Mutex::new(None),
+            codex_open_turn: Mutex::new(None),
+            codex_stalled_turn: Mutex::new(None),
             transition_ready: AtomicBool::new(false),
             exit_transition_sent: AtomicBool::new(false),
             published_frames: AtomicU64::new(0),
@@ -2669,6 +2676,40 @@ impl SessionRuntime {
         }
     }
 
+    /// Codex started a root turn: it is the open turn until its completion.
+    pub(crate) fn note_codex_turn_started(&self, turn_id: &str) {
+        if let Ok(mut slot) = self.codex_open_turn.lock() {
+            *slot = Some(turn_id.to_string());
+        }
+    }
+
+    /// The turn a stall settle ended, if its late completion has not arrived.
+    pub(crate) fn codex_stalled_turn(&self) -> Option<String> {
+        self.codex_stalled_turn
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
+    /// A root completion for `turn_id` arrived. Answers whether it completes the
+    /// turn a stall settle already ended, which must not finish the run again;
+    /// that marker is spent here. Either way the open turn it names is closed.
+    pub(crate) fn take_codex_completion(&self, turn_id: Option<&str>) -> bool {
+        let late = match self.codex_stalled_turn.lock() {
+            Ok(mut slot) if slot.is_some() && slot.as_deref() == turn_id => {
+                *slot = None;
+                true
+            }
+            _ => false,
+        };
+        if let Ok(mut open) = self.codex_open_turn.lock() {
+            if open.as_deref() == turn_id {
+                *open = None;
+            }
+        }
+        late
+    }
+
     /// Codex reported its root thread active again, or a turn began or ended:
     /// no idle report stands.
     pub(crate) fn clear_codex_thread_idle(&self) {
@@ -2693,11 +2734,22 @@ impl SessionRuntime {
             return false;
         }
         self.clear_codex_thread_idle();
+        // The turn this run is in is over as far as the daemon is concerned:
+        // its late completion, if one comes, is ignored.
+        let open = self
+            .codex_open_turn
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take());
+        if let Ok(mut stalled) = self.codex_stalled_turn.lock() {
+            *stalled = open;
+        }
         self.publish_session_notice(
             "Codex did not report the end of this turn, so Devboule ended the run.".to_string(),
             devboule_protocol::NoticeSeverity::Warning,
         );
         self.publish_journaled_finish(SessionEvent::AgentFinished {
+            at_ms: None,
             stop_reason: "stalled".to_string(),
             model_id: None,
             usage: None,

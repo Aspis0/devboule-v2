@@ -719,3 +719,48 @@ fn a_silent_codex_turn_is_never_settled_however_long_it_stays_quiet() {
     );
     assert!(runtime.is_running_turn(), "the run stays working");
 }
+
+#[test]
+fn a_completion_that_arrives_after_a_stall_settle_does_not_finish_the_run_again() {
+    // The turn settled as stalled, then Codex sends its completion after all.
+    // The run is already over: the completion publishes no second finish, and
+    // the turn the reader tracked is cleared.
+    let (mut reader, state, runtime, conn) = started_reader();
+    for frame in measured_first_turn(false) {
+        reader.dispatch_value(frame, &runtime);
+    }
+    let now = std::time::Instant::now();
+    let grace = crate::agent_activity::CODEX_IDLE_GRACE;
+    assert!(runtime.settle_stalled_turn(now + grace + std::time::Duration::from_secs(1), grace));
+    // `published` drains the connection, so each read below sees only what came since.
+    assert_eq!(
+        finished(&published(&conn)).len(),
+        1,
+        "the stall finished the run once"
+    );
+
+    let late = measured_first_turn(true)
+        .pop()
+        .expect("the measured completion");
+    assert_eq!(
+        late["method"], "turn/completed",
+        "the frame is the completion"
+    );
+    reader.dispatch_value(late, &runtime);
+    assert_eq!(
+        finished(&published(&conn)).len(),
+        0,
+        "the late completion publishes no second finish"
+    );
+    assert!(!runtime.is_running_turn(), "the run stays ended");
+    assert_eq!(
+        state.current_turn(),
+        None,
+        "the reader forgets the stalled turn"
+    );
+    assert_eq!(
+        runtime.codex_stalled_turn(),
+        None,
+        "the stall marker is spent by the completion"
+    );
+}
