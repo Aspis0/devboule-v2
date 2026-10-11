@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ChoiceGroup, type ChoiceOption } from "../../components/ChoiceGroup";
 import {
   defaultStorage,
   getActiveThemePreference,
@@ -8,7 +9,7 @@ import {
 } from "../../lib/theme";
 import { SettingsRow } from "./rows";
 
-const OPTIONS: readonly { value: ThemePreference; label: string }[] = [
+const OPTIONS: readonly ChoiceOption<ThemePreference>[] = [
   { value: "light", label: "Light" },
   { value: "dark", label: "Dark" },
   { value: "system", label: "Match system" },
@@ -40,20 +41,7 @@ export function AppearanceSection({
       <SettingsRow
         title="Theme"
         control={
-          <div className="settings-choices" role="radiogroup" aria-label="Theme">
-            {OPTIONS.map((option) => (
-              <label className="settings-choice" key={option.value}>
-                <input
-                  type="radio"
-                  name="appearance-theme"
-                  value={option.value}
-                  checked={preference === option.value}
-                  onChange={() => choose(option.value)}
-                />
-                <span>{option.label}</span>
-              </label>
-            ))}
-          </div>
+          <ChoiceGroup options={OPTIONS} value={preference} onChange={choose} ariaLabel="Theme" />
         }
       />
       {persisted ? null : (

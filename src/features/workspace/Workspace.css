@@ -2098,8 +2098,8 @@
   font-size: var(--type-meta);
 }
 
-.workspace-project-dialog input,
-.workspace-rename-dialog input {
+.workspace-project-dialog input:not([type="radio"]),
+.workspace-rename-dialog input:not([type="radio"]) {
   width: 100%;
   height: var(--control-large);
   padding: 0 var(--space-12);
@@ -2113,7 +2113,7 @@
 /* The two fields are different kinds of text: a path is code-like, a name is
    not, and SPEC principle 2 allows mono only in code, diffs, command chips
    and terminals. */
-.workspace-project-dialog input {
+.workspace-project-dialog input:not([type="radio"]) {
   font-family: var(--font-mono);
   font-size: var(--type-mono-sm);
 }
@@ -2376,22 +2376,6 @@
 .new-workspace-sheet legend {
   padding: 0;
   margin-bottom: var(--space-4);
-  color: var(--muted);
-  font-size: var(--type-meta);
-}
-
-.new-workspace-option {
-  display: flex;
-  align-items: center;
-  gap: var(--space-8);
-  min-height: 28px;
-  color: var(--ink);
-  font-size: var(--type-interface);
-  cursor: pointer;
-}
-
-.new-workspace-offline {
-  margin-left: auto;
   color: var(--muted);
   font-size: var(--type-meta);
 }

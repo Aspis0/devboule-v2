@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { ChoiceGroup, type ChoiceOption } from "../../components/ChoiceGroup";
 import { errorSentence } from "../../lib/errorSentence";
 import { surfaceSettingsGet, surfaceSettingsSet } from "../../lib/tauri";
 import type { SurfaceSettingsRead } from "../../lib/tauri";
@@ -9,7 +10,7 @@ import {
 } from "./closeBehaviorChoice";
 import { SettingsRow } from "./rows";
 
-const CHOICES: readonly { value: CloseBehaviorChoice; label: string }[] = [
+const CHOICES: readonly ChoiceOption<CloseBehaviorChoice>[] = [
   { value: "ask", label: "Ask every time" },
   { value: "tray", label: "Keep running in the tray" },
   { value: "quit", label: "Quit Devboule" },
@@ -75,20 +76,12 @@ export function CloseBehaviorSetting() {
       <SettingsRow
         title="When I close the window"
         control={
-          <div className="settings-choices" role="radiogroup" aria-label="When I close the window">
-            {CHOICES.map((option) => (
-              <label className="settings-choice" key={option.value}>
-                <input
-                  type="radio"
-                  name="close-behavior"
-                  value={option.value}
-                  checked={choice === option.value}
-                  onChange={() => handleChange(option.value)}
-                />
-                <span>{option.label}</span>
-              </label>
-            ))}
-          </div>
+          <ChoiceGroup
+            options={CHOICES}
+            value={choice}
+            onChange={handleChange}
+            ariaLabel="When I close the window"
+          />
         }
       />
       {error !== null && (

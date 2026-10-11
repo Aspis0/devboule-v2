@@ -666,8 +666,8 @@ async function createFromSheet(choice: { isolation: "local" | "worktree"; branch
   vi.mocked(workspacesList).mockResolvedValue([workspace, createdWorkspace]);
   await openSheet();
   if (choice.isolation === "worktree") {
-    const worktree = document.querySelector<HTMLInputElement>(
-      'input[name="new-workspace-isolation"][value="worktree"]',
+    const worktree = document.querySelector<HTMLElement>(
+      '[role="radiogroup"][aria-label="Isolation"] [role="radio"][data-choice-value="worktree"]',
     );
     if (worktree === null) throw new Error("the worktree choice did not render");
     await act(async () => worktree.click());

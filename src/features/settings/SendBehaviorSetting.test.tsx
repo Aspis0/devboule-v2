@@ -19,14 +19,20 @@ async function renderSetting(): Promise<void> {
   });
 }
 
-function radios(): NodeListOf<HTMLInputElement> {
-  return container.querySelectorAll<HTMLInputElement>('input[type="radio"]');
+function radios(): NodeListOf<HTMLElement> {
+  return container.querySelectorAll<HTMLElement>('[role="radio"]');
 }
 
-function radioFor(value: string): HTMLInputElement {
-  const input = container.querySelector<HTMLInputElement>(`input[value="${value}"]`);
-  if (input === null) throw new Error(`${value} option did not render`);
-  return input;
+function optionFor(value: string): HTMLElement {
+  const option = container.querySelector<HTMLElement>(
+    `[role="radio"][data-choice-value="${value}"]`,
+  );
+  if (option === null) throw new Error(`${value} option did not render`);
+  return option;
+}
+
+function isChosen(value: string): boolean {
+  return optionFor(value).getAttribute("aria-checked") === "true";
 }
 
 beforeEach(() => {
@@ -55,9 +61,9 @@ describe("SendBehaviorSetting", () => {
   it("offers Steer, Interrupt and Queue, Steer checked by default", async () => {
     await renderSetting();
     expect(radios()).toHaveLength(3);
-    expect(radioFor("steer-and-send").checked).toBe(true);
-    expect(radioFor("interrupt-and-send").checked).toBe(false);
-    expect(radioFor("queue").checked).toBe(false);
+    expect(isChosen("steer-and-send")).toBe(true);
+    expect(isChosen("interrupt-and-send")).toBe(false);
+    expect(isChosen("queue")).toBe(false);
     // The alternate key is the act the composer's button names, and the copy
     // has to say so. The copy sits under the collapsed Advanced disclosure.
     expect(container.querySelector("[data-settings-advanced]")).not.toBeNull();
@@ -70,28 +76,28 @@ describe("SendBehaviorSetting", () => {
     expect(container.textContent).toContain(
       "When the agent is running, Enter queues. Command/Ctrl+Enter interrupts the running turn and sends.",
     );
-    expect(radioFor("steer-and-send").closest("label")?.textContent).toContain("Steer");
-    expect(radioFor("interrupt-and-send").closest("label")?.textContent).toContain("Interrupt");
+    expect(optionFor("steer-and-send").textContent).toContain("Steer");
+    expect(optionFor("interrupt-and-send").textContent).toContain("Interrupt");
   });
 
   it("persists Steer through the store so the next surface reads it back", async () => {
     await renderSetting();
-    await act(async () => radioFor("interrupt-and-send").click());
+    await act(async () => optionFor("interrupt-and-send").click());
     expect(getSendBehavior()).toBe("interrupt-and-send");
-    expect(radioFor("interrupt-and-send").checked).toBe(true);
+    expect(isChosen("interrupt-and-send")).toBe(true);
 
     await act(async () => root.unmount());
     container.innerHTML = "";
     await renderSetting();
-    expect(radioFor("interrupt-and-send").checked).toBe(true);
+    expect(isChosen("interrupt-and-send")).toBe(true);
   });
 
   it("follows a change made elsewhere while the row is mounted", async () => {
     await renderSetting();
-    expect(radioFor("steer-and-send").checked).toBe(true);
+    expect(isChosen("steer-and-send")).toBe(true);
     await act(async () => setSendBehavior("interrupt-and-send"));
-    expect(radioFor("interrupt-and-send").checked).toBe(true);
+    expect(isChosen("interrupt-and-send")).toBe(true);
     await act(async () => setSendBehavior("queue"));
-    expect(radioFor("queue").checked).toBe(true);
+    expect(isChosen("queue")).toBe(true);
   });
 });

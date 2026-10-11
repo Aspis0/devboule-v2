@@ -1,7 +1,5 @@
 // @vitest-environment happy-dom
 
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -23,14 +21,16 @@ function fakeStorage(initial: Record<string, string> = {}): StorageLike {
   };
 }
 
-function inputFor(scope: ParentNode, value: string): HTMLInputElement {
+function optionFor(scope: ParentNode, value: string): HTMLElement {
   // Semantic hook, not a style class: the ghost-class guard in
   // settingsStatic.test.ts forbids selecting on `.appearance-option`.
-  const found = scope.querySelector<HTMLInputElement>(
-    `input[name="appearance-theme"][value="${value}"]`,
-  );
-  if (!found) throw new Error(`no radio for ${value}`);
+  const found = scope.querySelector<HTMLElement>(`[role="radio"][data-choice-value="${value}"]`);
+  if (!found) throw new Error(`no option for ${value}`);
   return found;
+}
+
+function isChosen(scope: ParentNode, value: string): boolean {
+  return optionFor(scope, value).getAttribute("aria-checked") === "true";
 }
 
 describe("the Appearance row", () => {
@@ -70,10 +70,12 @@ describe("the Appearance row", () => {
 
   it("offers Light, Dark and Match system", () => {
     const current = mount(fakeStorage());
-    const radios = [
-      ...current.querySelectorAll<HTMLInputElement>('input[name="appearance-theme"]'),
-    ];
-    expect(radios.map((radio) => radio.value)).toEqual(["light", "dark", "system"]);
+    const options = [...current.querySelectorAll<HTMLElement>('[role="radio"]')];
+    expect(options.map((option) => option.dataset.choiceValue)).toEqual([
+      "light",
+      "dark",
+      "system",
+    ]);
     expect(current.querySelector('[role="radiogroup"]')).not.toBeNull();
   });
 
@@ -81,11 +83,11 @@ describe("the Appearance row", () => {
     const storage = fakeStorage({ [THEME_STORAGE_KEY]: "dark" });
     setThemePreference("dark", storage);
     const stored = mount(storage);
-    expect(inputFor(stored, "dark").checked).toBe(true);
+    expect(isChosen(stored, "dark")).toBe(true);
 
     setThemePreference("system", null);
     const fresh = mount(fakeStorage());
-    expect(inputFor(fresh, "system").checked).toBe(true);
+    expect(isChosen(fresh, "system")).toBe(true);
   });
 
   it("persists and applies the choice immediately", () => {
@@ -93,12 +95,12 @@ describe("the Appearance row", () => {
     const current = mount(storage);
 
     act(() => {
-      inputFor(current, "dark").click();
+      optionFor(current, "dark").click();
     });
     expect(storage.getItem(THEME_STORAGE_KEY)).toBe("dark");
     expect(getActiveThemePreference()).toBe("dark");
     expect(document.documentElement.dataset.theme).toBe("dark");
-    expect(inputFor(current, "dark").checked).toBe(true);
+    expect(isChosen(current, "dark")).toBe(true);
   });
 
   it("says so when the choice could not be saved, and still applies it", () => {
@@ -111,9 +113,9 @@ describe("the Appearance row", () => {
     const current = mount(throwing);
 
     act(() => {
-      inputFor(current, "dark").click();
+      optionFor(current, "dark").click();
     });
-    expect(inputFor(current, "dark").checked).toBe(true);
+    expect(isChosen(current, "dark")).toBe(true);
     expect(document.documentElement.dataset.theme).toBe("dark");
     const note = current.querySelector('[role="status"]');
     expect(note?.textContent).toContain("Not saved");
@@ -122,7 +124,7 @@ describe("the Appearance row", () => {
   it("a saved choice shows no failure note", () => {
     const current = mount(fakeStorage());
     act(() => {
-      inputFor(current, "light").click();
+      optionFor(current, "light").click();
     });
     expect(current.querySelector('[role="status"]')).toBeNull();
   });
@@ -137,7 +139,7 @@ describe("the Appearance row", () => {
     });
     try {
       const current = mount();
-      expect(inputFor(current, "system").checked).toBe(true);
+      expect(isChosen(current, "system")).toBe(true);
     } finally {
       if (saved) {
         Object.defineProperty(globalThis, "localStorage", saved);
@@ -158,18 +160,8 @@ describe("the Appearance row", () => {
         }) as unknown as MediaQueryList);
     const current = mount(fakeStorage());
     act(() => {
-      inputFor(current, "dark").click();
+      optionFor(current, "dark").click();
     });
     expect(document.documentElement.dataset.theme).toBe("dark");
-  });
-});
-
-describe("the Appearance radios (static CSS contract)", () => {
-  const css = readFileSync(resolve(import.meta.dirname, "rows.css"), "utf8");
-  const block = /\.settings-choice input\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
-
-  it("draw in the neutral on colour, not the OS default", () => {
-    expect(block, "a .settings-choice input rule is missing").not.toBe("");
-    expect(block).toContain("accent-color: var(--control-on)");
   });
 });

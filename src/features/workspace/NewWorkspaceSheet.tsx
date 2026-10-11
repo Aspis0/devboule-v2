@@ -3,11 +3,17 @@ import { getFocusableElements } from "../../lib/focusableElements";
 import { isImeComposition } from "../../lib/imeComposition";
 import { useModalOpen } from "../../lib/modalOpen";
 import type { ErrorSentence } from "../../lib/errorSentence";
+import { ChoiceGroup, type ChoiceOption } from "../../components/ChoiceGroup";
 import { ErrorText } from "../../components/ErrorText";
 import "./Workspace.css";
 
 /** The "Where" value for this machine. A paired host carries its own device id. */
 export const THIS_PC = "this-pc";
+
+const ISOLATION_OPTIONS: readonly ChoiceOption<NewWorkspaceChoice["isolation"]>[] = [
+  { value: "local", label: "Project folder" },
+  { value: "worktree", label: "New worktree" },
+];
 
 export interface SheetProject {
   id: string;
@@ -80,7 +86,8 @@ export const NewWorkspaceSheet = memo(function NewWorkspaceSheet({
   useEffect(() => {
     const dialog = dialogRef.current;
     if (dialog === null) return;
-    dialog.querySelector<HTMLElement>("[data-dialog-initial-focus]")?.focus();
+    // The first tab stop is the selected Project, the dialog's first control.
+    dialog.querySelector<HTMLElement>('[role="radio"][tabindex="0"]')?.focus();
 
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -112,6 +119,15 @@ export const NewWorkspaceSheet = memo(function NewWorkspaceSheet({
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
+
+  const whereOptions: readonly ChoiceOption<string>[] = [
+    { value: THIS_PC, label: "This PC" },
+    ...pairedHosts.map((host): ChoiceOption<string> => ({
+      value: host.id,
+      label: host.name,
+      hint: host.online ? undefined : "offline",
+    })),
+  ];
 
   const canCreate = projectId !== null && !submitting;
 
@@ -172,84 +188,46 @@ export const NewWorkspaceSheet = memo(function NewWorkspaceSheet({
                   ? "No project here yet. Add one first."
                   : "That PC lists no project yet."}
               </p>
-            ) : null}
-            {hostProjects.map((project, index) => (
-              <label key={project.id} className="new-workspace-option">
-                <input
-                  type="radio"
-                  name="new-workspace-project"
-                  value={project.id}
-                  checked={projectId === project.id}
-                  onChange={() => setProjectId(project.id)}
-                  data-dialog-initial-focus={index === 0 ? "true" : undefined}
-                  disabled={submitting}
-                />
-                {project.name}
-              </label>
-            ))}
+            ) : (
+              <ChoiceGroup
+                orientation="vertical"
+                options={hostProjects.map((project) => ({
+                  value: project.id,
+                  label: project.name,
+                }))}
+                value={projectId ?? ""}
+                onChange={setProjectId}
+                disabled={submitting}
+                ariaLabel="Project"
+              />
+            )}
           </fieldset>
 
           {pairedHosts.length > 0 ? (
             <fieldset className="new-workspace-group">
               <legend>Where</legend>
-              <label className="new-workspace-option">
-                <input
-                  type="radio"
-                  name="new-workspace-where"
-                  value={THIS_PC}
-                  checked={where === THIS_PC}
-                  onChange={() => {
-                    setChosenWhere(THIS_PC);
-                    setProjectId(null);
-                  }}
-                  disabled={submitting}
-                />
-                This PC
-              </label>
-              {pairedHosts.map((host) => (
-                <label key={host.id} className="new-workspace-option">
-                  <input
-                    type="radio"
-                    name="new-workspace-where"
-                    value={host.id}
-                    checked={where === host.id}
-                    onChange={() => {
-                      setChosenWhere(host.id);
-                      setProjectId(null);
-                    }}
-                    disabled={submitting}
-                  />
-                  {host.name}
-                  {host.online ? null : <span className="new-workspace-offline">offline</span>}
-                </label>
-              ))}
+              <ChoiceGroup
+                options={whereOptions}
+                value={where}
+                onChange={(next) => {
+                  setChosenWhere(next);
+                  setProjectId(null);
+                }}
+                disabled={submitting}
+                ariaLabel="Where"
+              />
             </fieldset>
           ) : null}
 
           <fieldset className="new-workspace-group">
             <legend>Isolation</legend>
-            <label className="new-workspace-option">
-              <input
-                type="radio"
-                name="new-workspace-isolation"
-                value="local"
-                checked={isolation === "local"}
-                onChange={() => setIsolation("local")}
-                disabled={submitting}
-              />
-              Project folder
-            </label>
-            <label className="new-workspace-option">
-              <input
-                type="radio"
-                name="new-workspace-isolation"
-                value="worktree"
-                checked={isolation === "worktree"}
-                onChange={() => setIsolation("worktree")}
-                disabled={submitting}
-              />
-              New worktree
-            </label>
+            <ChoiceGroup
+              options={ISOLATION_OPTIONS}
+              value={isolation}
+              onChange={setIsolation}
+              disabled={submitting}
+              ariaLabel="Isolation"
+            />
           </fieldset>
 
           {isolation === "worktree" ? (

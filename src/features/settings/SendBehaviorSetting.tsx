@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { ChoiceGroup } from "../../components/ChoiceGroup";
 import {
   getSendBehavior,
   setSendBehavior,
@@ -41,24 +42,12 @@ export function SendBehaviorSetting() {
       <SettingsRow
         title="Enter while the agent runs"
         control={
-          <div
-            className="settings-choices"
-            role="radiogroup"
-            aria-label="Enter while the agent runs"
-          >
-            {OPTIONS.map((option) => (
-              <label className="settings-choice" key={option.value}>
-                <input
-                  type="radio"
-                  name="send-behavior"
-                  value={option.value}
-                  checked={behavior === option.value}
-                  onChange={() => setSendBehavior(option.value)}
-                />
-                <span>{option.label}</span>
-              </label>
-            ))}
-          </div>
+          <ChoiceGroup
+            options={OPTIONS}
+            value={behavior}
+            onChange={setSendBehavior}
+            ariaLabel="Enter while the agent runs"
+          />
         }
       />
       <SettingsAdvanced>

@@ -369,7 +369,7 @@ function DiagnosticsPanelContent() {
       <SettingsRow
         title="Report"
         control={
-          <div className="settings-choices">
+          <div className="settings-row-actions">
             <button
               type="button"
               className="diagnostics-copy settings-device-action"

@@ -18,17 +18,21 @@ vi.mock("../../lib/tauri", async (importOriginal) => {
 const getMock = vi.mocked(surfaceSettingsGet);
 const setMock = vi.mocked(surfaceSettingsSet);
 
-function radioFor(container: ParentNode, value: string): HTMLInputElement {
-  const found = container.querySelector<HTMLInputElement>(
-    `input[name="close-behavior"][value="${value}"]`,
+function optionFor(container: ParentNode, value: string): HTMLElement {
+  const found = container.querySelector<HTMLElement>(
+    `[role="radio"][data-choice-value="${value}"]`,
   );
   if (!found) throw new Error(`the ${value} choice did not render`);
   return found;
 }
 
+function isChosen(container: ParentNode, value: string): boolean {
+  return optionFor(container, value).getAttribute("aria-checked") === "true";
+}
+
 async function choose(container: ParentNode, value: string): Promise<void> {
   await act(async () => {
-    radioFor(container, value).click();
+    optionFor(container, value).click();
   });
 }
 
@@ -52,7 +56,7 @@ describe("CloseBehaviorSetting", () => {
     root = createRoot(container);
     await act(async () => root.render(<CloseBehaviorSetting />));
     expect(getMock).toHaveBeenCalledWith("close-behavior");
-    expect(radioFor(container, "tray").checked).toBe(true);
+    expect(isChosen(container, "tray")).toBe(true);
   });
 
   it("offers the three choices as one visible set, not a closed select", async () => {
@@ -100,7 +104,7 @@ describe("CloseBehaviorSetting", () => {
     const alert = container.querySelector("[role=alert]")?.textContent ?? "";
     expect(alert).toBe("A system or file operation failed on this machine.");
     expect(alert).not.toContain("os error");
-    expect(container.querySelector("input[name=close-behavior]")).not.toBeNull();
+    expect(container.querySelector('[role="radio"]')).not.toBeNull();
   });
 
   it("restores the stored choice when the save fails", async () => {
@@ -110,7 +114,7 @@ describe("CloseBehaviorSetting", () => {
     await act(async () => root.render(<CloseBehaviorSetting />));
     await choose(container, "quit");
     await act(async () => undefined); // let the failure settle
-    expect(radioFor(container, "ask").checked).toBe(true);
+    expect(isChosen(container, "ask")).toBe(true);
     expect(container.querySelector("[role=alert]")?.textContent).toBe(
       "A system or file operation failed on this machine.",
     );

@@ -52,26 +52,30 @@ async function render(over: Partial<NewWorkspaceSheetProps> = {}): Promise<{
   return { onCreate, onClose };
 }
 
-function groupLegendsAll(): string[] {
-  return [...container.querySelectorAll("legend")].map((legend) => legend.textContent ?? "");
-}
-
-function projectRadios(): string[] {
-  return [
-    ...container.querySelectorAll<HTMLInputElement>('input[name="new-workspace-project"]'),
-  ].map((input) => input.value);
-}
-
 function groupLegends(): string[] {
   return [...container.querySelectorAll("legend")].map((legend) => legend.textContent ?? "");
 }
 
-function radio(name: string, value: string): HTMLInputElement {
-  const found = container.querySelector<HTMLInputElement>(
-    `input[type="radio"][name="${name}"][value="${value}"]`,
-  );
-  if (found === null) throw new Error(`no ${name} radio for ${value}`);
+function groupOptions(group: string): HTMLElement[] {
+  return [
+    ...container.querySelectorAll<HTMLElement>(
+      `[role="radiogroup"][aria-label="${group}"] [role="radio"]`,
+    ),
+  ];
+}
+
+function projectRadios(): string[] {
+  return groupOptions("Project").map((option) => option.dataset.choiceValue ?? "");
+}
+
+function choiceOf(group: string, value: string): HTMLElement {
+  const found = groupOptions(group).find((option) => option.dataset.choiceValue === value);
+  if (found === undefined) throw new Error(`no ${group} choice for ${value}`);
   return found;
+}
+
+function isChosen(group: string, value: string): boolean {
+  return choiceOf(group, value).getAttribute("aria-checked") === "true";
 }
 
 function createButton(): HTMLButtonElement {
@@ -82,9 +86,9 @@ function createButton(): HTMLButtonElement {
   return button;
 }
 
-async function choose(input: HTMLInputElement): Promise<void> {
+async function choose(option: HTMLElement): Promise<void> {
   await act(async () => {
-    input.click();
+    option.click();
   });
 }
 
@@ -109,7 +113,7 @@ describe("the new-workspace sheet's groups", () => {
 
     expect(groupLegends()).toEqual(["Project", "Isolation"]);
     expect(container.textContent).not.toMatch(/Claude|Codex|Agent|provider/i);
-    expect(container.querySelector('input[name="new-workspace-where"]')).toBeNull();
+    expect(container.querySelector('[role="radiogroup"][aria-label="Where"]')).toBeNull();
   });
 
   it("asks where, between this PC and each paired host, once a paired host exists", async () => {
@@ -118,8 +122,8 @@ describe("the new-workspace sheet's groups", () => {
     });
 
     expect(groupLegends()).toEqual(["Project", "Where", "Isolation"]);
-    expect(radio("new-workspace-where", THIS_PC).checked).toBe(true);
-    expect(radio("new-workspace-where", "device-mac").checked).toBe(false);
+    expect(isChosen("Where", THIS_PC)).toBe(true);
+    expect(isChosen("Where", "device-mac")).toBe(false);
   });
 
   it("marks a paired host that does not answer as offline, once", async () => {
@@ -127,24 +131,24 @@ describe("the new-workspace sheet's groups", () => {
       pairedHosts: [{ id: "device-mac", name: "MacBookPro.lan", online: false }],
     });
 
-    expect(container.querySelector(".new-workspace-offline")?.textContent).toBe("offline");
+    expect(container.querySelector(".choice-group-offline")?.textContent).toBe("offline");
   });
 
   it("starts on the preset project, and on the first one when opened from the top", async () => {
     await render({ presetProjectId: "p-2" });
-    expect(radio("new-workspace-project", "p-2").checked).toBe(true);
+    expect(isChosen("Project", "p-2")).toBe(true);
 
     await act(async () => root.unmount());
     root = createRoot(container);
     await render({ presetProjectId: null });
-    expect(radio("new-workspace-project", "p-1").checked).toBe(true);
+    expect(isChosen("Project", "p-1")).toBe(true);
   });
 
   it("asks for a starting branch only for a new worktree", async () => {
     await render();
     expect(container.querySelector("#new-workspace-branch")).toBeNull();
 
-    await choose(radio("new-workspace-isolation", "worktree"));
+    await choose(choiceOf("Isolation", "worktree"));
 
     expect(container.querySelector("#new-workspace-branch")).not.toBeNull();
   });
@@ -167,7 +171,7 @@ describe("what the sheet sends", () => {
 
   it("sends the typed branch for a worktree, and null when the branch is left blank", async () => {
     const { onCreate } = await render();
-    await choose(radio("new-workspace-isolation", "worktree"));
+    await choose(choiceOf("Isolation", "worktree"));
     const branch = container.querySelector<HTMLInputElement>("#new-workspace-branch");
     if (branch === null) throw new Error("the branch field did not render");
 
@@ -205,13 +209,13 @@ describe("what the sheet sends", () => {
     const { onCreate } = await render({
       pairedHosts: [{ id: "device-mac", name: "MacBookPro.lan", online: true }],
     });
-    expect(groupLegendsAll()).toContain("Where");
+    expect(groupLegends()).toContain("Where");
     expect(projectRadios()).toEqual(["p-1", "p-2"]);
 
-    await choose(radio("new-workspace-where", "device-mac"));
+    await choose(choiceOf("Where", "device-mac"));
 
     expect(projectRadios()).toEqual(["p-mac"]);
-    expect(radio("new-workspace-project", "p-mac").checked).toBe(true);
+    expect(isChosen("Project", "p-mac")).toBe(true);
     await submit();
     expect(onCreate).toHaveBeenCalledWith({
       projectId: "p-mac",
@@ -227,7 +231,7 @@ describe("what the sheet sends", () => {
       pairedHosts: [{ id: "device-mac", name: "MacBookPro.lan", online: true }],
     });
 
-    await choose(radio("new-workspace-where", "device-mac"));
+    await choose(choiceOf("Where", "device-mac"));
 
     expect(createButton().disabled).toBe(true);
     expect(container.textContent).toContain("That PC lists no project yet.");
@@ -242,7 +246,7 @@ describe("the answers", () => {
       detail: null,
     }));
     const { onClose } = await render({ onCreate });
-    await choose(radio("new-workspace-isolation", "worktree"));
+    await choose(choiceOf("Isolation", "worktree"));
 
     await submit();
 
